@@ -30,6 +30,7 @@ import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager as manager_module
 import erlab.interactive.imagetool.manager._console as manager_console
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
+import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._modelview as manager_modelview
 import erlab.interactive.imagetool.manager._provenance_edit as manager_provenance_edit
@@ -46,7 +47,25 @@ from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
-from erlab.interactive.imagetool import itool, provenance
+from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._provenance._code import uses_default_replay_input
+from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
+    FileLoadSource,
+    FileReplayCall,
+    ScriptInput,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    file_load,
+    full_data,
+    script,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    AverageOperation,
+    GaussianFilterOperation,
+    ImageToolSelectionSourceBinding,
+    RenameOperation,
+)
 from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch, replace_data
 from erlab.interactive.imagetool.manager._dialogs import (
@@ -196,7 +215,7 @@ def _workspace_sweep_json(value: typing.Any) -> typing.Any:
 
 
 def _workspace_sweep_spec_payload(
-    spec: provenance.ToolProvenanceSpec | None,
+    spec: ToolProvenanceSpec | None,
 ) -> dict[str, typing.Any] | None:
     if spec is None:
         return None
@@ -207,7 +226,7 @@ def _workspace_sweep_spec_payload(
 
 
 def _workspace_sweep_binding_payload(
-    binding: provenance.ImageToolSelectionSourceBinding | None,
+    binding: ImageToolSelectionSourceBinding | None,
 ) -> dict[str, typing.Any] | None:
     if binding is None:
         return None
@@ -300,11 +319,9 @@ def _configure_workspace_sweep_imagetool(
     area._load_func = (
         xr.load_dataarray,
         {"engine": "h5netcdf"},
-        provenance.FileDataSelection(kind="dataarray"),
+        FileDataSelection(kind="dataarray"),
     )
-    area.apply_filter_operation(
-        provenance.GaussianFilterOperation(sigma={"x": 0.5}), update=False
-    )
+    area.apply_filter_operation(GaussianFilterOperation(sigma={"x": 0.5}), update=False)
 
 
 def _workspace_sweep_node_snapshot(
@@ -505,15 +522,15 @@ def _wait_for_fit_idle(qtbot, tool: Fit1DTool, *, timeout: int = 10000) -> None:
 
 
 def _workspace_test_file_spec(path: pathlib.Path):
-    return provenance.file_load(
+    return file_load(
         start_label="Load source",
         seed_code=f"derived = xr.load_dataarray({str(path)!r})",
-        file_load_source=provenance.FileLoadSource(
+        file_load_source=FileLoadSource(
             path=str(path),
             loader_label="xarray.load_dataarray",
             loader_text="xarray.load_dataarray",
             kwargs_text="",
-            replay_call=provenance.FileReplayCall(
+            replay_call=FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 selected_index=0,
@@ -539,27 +556,23 @@ def test_workspace_file_suffix_helpers_collect_nested_inputs(tmp_path) -> None:
     first = _workspace_test_file_spec(tmp_path / "scan_a.h5")
     second = _workspace_test_file_spec(tmp_path / "scan_b.h5")
     third = _workspace_test_file_spec(tmp_path / "scan_c.h5")
-    nested = provenance.script(
+    nested = script(
         start_label="Combine",
         seed_code="derived = data_0 + data_1",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(name="data_1", label="B", provenance_spec=second),
-            provenance.ScriptInput(name="data_2", label="C", provenance_spec=third),
-            provenance.ScriptInput(
-                name="data_0", label="A duplicate", provenance_spec=first
-            ),
+            ScriptInput(name="data_1", label="B", provenance_spec=second),
+            ScriptInput(name="data_2", label="C", provenance_spec=third),
+            ScriptInput(name="data_0", label="A duplicate", provenance_spec=first),
         ),
     )
-    combined = provenance.script(
+    combined = script(
         start_label="Combine nested",
         seed_code="derived = data_0",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(name="data_0", label="A", provenance_spec=first),
-            provenance.ScriptInput(
-                name="nested", label="Nested", provenance_spec=nested
-            ),
+            ScriptInput(name="data_0", label="A", provenance_spec=first),
+            ScriptInput(name="nested", label="Nested", provenance_spec=nested),
         ),
     )
 
@@ -1092,9 +1105,7 @@ def test_workspace_backing_uses_persistence_data_for_filtered_file_data(
         name="scan",
     )
     data.to_netcdf(file_path, engine="h5netcdf")
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 1.0}
-    )
+    operation = GaussianFilterOperation(sigma={"x": 1.0})
 
     with manager_context() as manager:
         manager.show()
@@ -1806,9 +1817,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
             watched_connected=False,
             source_input_ndim=root_data.ndim,
             provenance_spec=root_provenance,
-            source_spec=provenance.full_data(
-                provenance.RenameOperation(name="root-live")
-            ),
+            source_spec=full_data(RenameOperation(name="root-live")),
             source_auto_update=True,
             source_state="fresh",
         )
@@ -1837,7 +1846,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
         assert manager._tool_graph.displayed_indices == [1, 0]
 
         source_data, _state = root_tool.slicer_area.persistence_data_and_state()
-        child_binding = provenance.ImageToolSelectionSourceBinding(
+        child_binding = ImageToolSelectionSourceBinding(
             selection_mode="isel",
             selection_indexers={"z": 1},
             transpose_dims=("x", "y", "eV"),
@@ -1857,7 +1866,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
             uid="child-image",
             snapshot_token=child_marker,
             created_time=child_created,
-            provenance_spec=provenance.script(
+            provenance_spec=script(
                 start_label="Build child image",
                 seed_code="derived = data.isel(z=1).squeeze()",
                 active_name="derived",
@@ -1880,12 +1889,10 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
             uid="nested-image",
             snapshot_token=nested_marker,
             created_time=child_created + datetime.timedelta(seconds=1),
-            provenance_spec=provenance.full_data(
-                provenance.RenameOperation(name="nested-image")
-            ),
+            provenance_spec=full_data(RenameOperation(name="nested-image")),
         )
 
-        tool_binding = provenance.ImageToolSelectionSourceBinding(
+        tool_binding = ImageToolSelectionSourceBinding(
             selection_mode="isel",
             selection_indexers={"z": 0},
             transpose_dims=("x", "y", "eV"),
@@ -2082,7 +2089,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
         assert root_payload["manager_node_watched_connected"] is False
         assert root_payload["manager_node_source_input_ndim"] == root_data.ndim
         assert root_payload["itool_state"]["filter_operation"] == (
-            provenance.GaussianFilterOperation(sigma={"x": 0.5}).model_dump(mode="json")
+            GaussianFilterOperation(sigma={"x": 0.5}).model_dump(mode="json")
         )
         assert root_payload["itool_state"]["slice"]["snap_to_data"] is True
         assert root_payload["itool_state"]["slice"]["twin_coord_names"] == [
@@ -2721,7 +2728,11 @@ def test_manager_pending_memory_file_source_reload_available_without_materializi
             manager=False,
             execute=False,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
@@ -2778,7 +2789,11 @@ def test_manager_pending_memory_child_routes_reload_to_file_source_parent(
             manager=False,
             execute=False,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
@@ -2791,9 +2806,7 @@ def test_manager_pending_memory_child_routes_reload_to_file_source_parent(
             child,
             0,
             show=False,
-            source_spec=provenance.full_data(
-                provenance.AverageOperation(dims=("alpha",))
-            ),
+            source_spec=full_data(AverageOperation(dims=("alpha",))),
             source_state="stale",
         )
         child.hide()
@@ -2874,9 +2887,7 @@ def test_manager_pending_memory_child_source_change_marks_stale_not_unavailable(
             child,
             0,
             show=False,
-            source_spec=provenance.full_data(
-                provenance.AverageOperation(dims=("alpha",))
-            ),
+            source_spec=full_data(AverageOperation(dims=("alpha",))),
         )
         child.hide()
 
@@ -4232,7 +4243,11 @@ def test_manager_workspace_load_migrates_legacy_manual_title_to_data_name(
         manager=False,
         execute=False,
         file_path=file_path,
-        load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        load_func=(
+            xr.load_dataarray,
+            {"engine": "h5netcdf"},
+            FileDataSelection(kind="dataarray"),
+        ),
     )
     assert isinstance(root, erlab.interactive.imagetool.ImageTool)
     qtbot.addWidget(root)
@@ -6173,7 +6188,7 @@ def test_manager_load_workspace_dataset_ignores_invalid_saved_metadata(
         assert target in manager._tool_graph.root_wrappers
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        binding = provenance.ImageToolSelectionSourceBinding(
+        binding = ImageToolSelectionSourceBinding(
             selection_mode="isel",
             selection_indexers={"x": 0},
         )
@@ -6230,7 +6245,7 @@ def test_manager_workspace_tool_data_reference_roundtrip(
         manager.add_imagetool(root, show=False)
 
         child = _AddedTimeChildTool(data.copy(deep=False))
-        child.set_source_binding(provenance.full_data())
+        child.set_source_binding(full_data())
         child_uid = manager.add_childtool(child, 0, show=False)
 
         tree = manager._to_datatree()
@@ -6278,7 +6293,7 @@ def test_manager_workspace_tool_data_reference_falls_back_on_shape_mismatch(
         manager.add_imagetool(root, show=False)
 
         child = DerivativeTool(child_data)
-        child.set_source_binding(provenance.full_data())
+        child.set_source_binding(full_data())
         child_uid = manager.add_childtool(child, 0, show=False)
 
         tree = manager._to_datatree()
@@ -11538,7 +11553,7 @@ def test_manager_offload_to_workspace_preserves_child_source_state(
 
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(root, show=False, provenance_spec=provenance.full_data())
+        manager.add_imagetool(root, show=False, provenance_spec=full_data())
 
         child = itool(data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child, erlab.interactive.imagetool.ImageTool)
@@ -11546,7 +11561,7 @@ def test_manager_offload_to_workspace_preserves_child_source_state(
             child,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=True,
         )
         child_node = manager._child_node(child_uid)
@@ -13217,7 +13232,7 @@ def test_pending_workspace_imagetool_attrs_optional_metadata(
             watched_source_uid="source-uid",
             watched_connected=False,
             source_input_ndim=2,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=True,
             source_state="stale",
             note="remember this",
@@ -13299,22 +13314,35 @@ def test_wrapper_pending_workspace_branch_helpers(
             wrapper.update_pending_workspace_payload_attrs({"itool_state": raw_state})
             assert wrapper._pending_workspace_load_source_details() is None
 
+        dataarray_selection = FileDataSelection(kind="dataarray")
+        serialized_selection = dataarray_selection.model_dump(mode="json")
         assert wrapper._load_func_from_serialized_state("bad") is None
         assert wrapper._load_func_from_serialized_state(["bad", {}, None]) is None
         assert (
-            wrapper._load_func_from_serialized_state(["math:missing", {}, None]) is None
+            wrapper._load_func_from_serialized_state(
+                ["math:missing", {}, serialized_selection]
+            )
+            is None
         )
-        assert wrapper._load_func_from_serialized_state(["math:pi", {}, None]) is None
         assert (
-            wrapper._load_func_from_serialized_state(["math:sqrt", {}, None])[
-                0
-            ].__name__
+            wrapper._load_func_from_serialized_state(
+                ["math:pi", {}, serialized_selection]
+            )
+            is None
+        )
+        assert (
+            wrapper._load_func_from_serialized_state(
+                ["math:sqrt", {}, serialized_selection]
+            )[0].__name__
             == "sqrt"
         )
-        assert wrapper._load_func_from_serialized_state(["da30", {}, None]) == (
+        assert wrapper._load_func_from_serialized_state(
+            ["da30", {}, serialized_selection]
+        ) == ("da30", {}, dataarray_selection)
+        assert wrapper._load_func_from_serialized_state(["da30", {}, 0]) == (
             "da30",
             {},
-            None,
+            FileDataSelection(kind="parsed_index", value=0),
         )
 
         original_tool = wrapper._imagetool
@@ -13445,8 +13473,12 @@ def test_pending_workspace_reload_reason_branches(
 ) -> None:
     with manager_context() as manager:
         controller = manager._lineage_controller
-        monkeypatch.setattr(provenance, "can_reload_without_trust", lambda _spec: False)
-        monkeypatch.setattr(provenance, "has_file_load_source", lambda _spec: False)
+        monkeypatch.setattr(
+            manager_lineage, "can_reload_without_trust", lambda _spec: False
+        )
+        monkeypatch.setattr(
+            manager_lineage, "has_file_load_source", lambda _spec: False
+        )
 
         file_spec = types.SimpleNamespace(kind="file")
         monkeypatch.setattr(
@@ -13466,7 +13498,9 @@ def test_pending_workspace_reload_reason_branches(
 
         script_spec = types.SimpleNamespace(kind="script")
         monkeypatch.setattr(
-            provenance, "script_provenance_requires_trust", lambda _spec: True
+            manager_lineage,
+            "script_provenance_requires_trust",
+            lambda _spec: True,
         )
         trust_reason = controller._pending_imagetool_reload_unavailable_reason(
             types.SimpleNamespace(
@@ -13478,7 +13512,9 @@ def test_pending_workspace_reload_reason_branches(
         assert "trust confirmation" in trust_reason
 
         monkeypatch.setattr(
-            provenance, "script_provenance_requires_trust", lambda _spec: False
+            manager_lineage,
+            "script_provenance_requires_trust",
+            lambda _spec: False,
         )
         replay_reason = controller._pending_imagetool_reload_unavailable_reason(
             types.SimpleNamespace(
@@ -13590,10 +13626,8 @@ def test_pending_workspace_provenance_edit_materialization_failures(
         node = types.SimpleNamespace(
             materialize_pending_workspace_payload=lambda: False
         )
-        operation = typing.cast(
-            "provenance.ToolProvenanceOperation", types.SimpleNamespace()
-        )
-        spec = provenance.full_data()
+        operation = typing.cast("ToolProvenanceOperation", types.SimpleNamespace())
+        spec = full_data()
         data = xr.DataArray(np.arange(4), dims=("x",))
 
         with pytest.raises(RuntimeError, match="saved data"):
@@ -15593,7 +15627,7 @@ def test_pending_workspace_filter_validation(monkeypatch) -> None:
 
     def _set_filter_result(result: xr.DataArray) -> None:
         monkeypatch.setattr(
-            manager_workspace_io.provenance,
+            manager_workspace_io,
             "parse_tool_provenance_operation",
             lambda _payload: _FakeOperation(result),
         )
@@ -15710,16 +15744,18 @@ def test_manager_pending_memory_file_source_full_code_uses_saved_load_code(
             manager=False,
             execute=False,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
         root.hide()
 
         node = manager._tool_graph.root_wrappers[0]
-        node.set_detached_provenance(
-            provenance.full_data(provenance.AverageOperation(dims=("alpha",)))
-        )
+        node.set_detached_provenance(full_data(AverageOperation(dims=("alpha",))))
 
         fname = tmp_path / "pending-file-source-replay.itws"
         manager._save_workspace_document(fname, force_full=True)
@@ -15757,7 +15793,7 @@ def test_manager_pending_memory_file_source_full_code_uses_saved_load_code(
         trigger_menu_action(menu, manager._metadata_copy_full_action)
 
         assert copied
-        assert not provenance.uses_default_replay_input(copied[-1])
+        assert not uses_default_replay_input(copied[-1])
         namespace = _exec_generated_code(copied[-1], {})
         xr.testing.assert_identical(
             namespace["derived"].rename(None),
@@ -17228,7 +17264,7 @@ def test_pending_toolwindow_source_metadata_decodes_saved_state(
 ) -> None:
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-        binding = provenance.ImageToolSelectionSourceBinding(
+        binding = ImageToolSelectionSourceBinding(
             selection_mode="isel",
             selection_indexers={"x": 0},
             transpose_dims=("y",),
@@ -17548,7 +17584,7 @@ def test_manager_active_filter_edit_materializes_hidden_memory_payload(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    restored: list[provenance.ToolProvenanceOperation] = []
+    restored: list[ToolProvenanceOperation] = []
 
     class _FilterDialog(manager_provenance_edit.dialogs.DataFilterDialog):
         def __init__(self, slicer_area) -> None:
@@ -17582,7 +17618,7 @@ def test_manager_active_filter_edit_materializes_hidden_memory_payload(
 
         wrapper = manager._tool_graph.root_wrappers[0]
         assert wrapper.pending_workspace_memory_payload is not None
-        operation = provenance.GaussianFilterOperation(sigma={"x": 1.0})
+        operation = GaussianFilterOperation(sigma={"x": 1.0})
 
         manager._provenance_edit_controller._edit_active_filter(
             wrapper,
@@ -17660,7 +17696,7 @@ def test_manager_workspace_child_tool_reference_keeps_pending_parent_unmateriali
 
         child_data = data.copy(deep=True).rename("child")
         child = _WorkspaceSweepChildTool(child_data)
-        child.set_source_binding(provenance.full_data())
+        child.set_source_binding(full_data())
         child_uid = manager.add_childtool(child, 0, show=False)
 
         fname = tmp_path / "pending-parent-child-reference.itws"
@@ -19245,7 +19281,7 @@ def test_manager_workspace_roundtrip_goldtool_child(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         child = GoldTool(gold.copy(deep=True), data_name="gold_input")
-        child.set_source_binding(erlab.interactive.imagetool.provenance.full_data())
+        child.set_source_binding(full_data())
         child_uid = manager.add_childtool(child, 0, show=False)
         configure_goldtool_child(child, fitted=True, spline=True)
 

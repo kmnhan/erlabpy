@@ -8,12 +8,12 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
-from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool._load_source import (
     _load_code_from_file_details,
     _resolve_identified_path,
     _scan_number_load_call_args,
 )
+from erlab.interactive.imagetool._provenance._model import FileDataSelection
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
     _CoordinateAttrsPickerDialog,
@@ -28,9 +28,7 @@ def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
     example_loader,
 ) -> None:
     file_path = tmp_path / "example.pxt"
-    dataarray_selection = erlab.interactive.imagetool.provenance.FileDataSelection(
-        kind="dataarray"
-    )
+    dataarray_selection = FileDataSelection(kind="dataarray")
     code = _load_code_from_file_details(
         file_path,
         ("merlin", {"bad-key": 1, "single": True}, dataarray_selection),
@@ -78,7 +76,7 @@ def test_load_code_from_file_details_uses_stable_file_selectors(
         (
             xr.load_dataset,
             {"engine": "h5netcdf"},
-            provenance.FileDataSelection(kind="dataset_variable", value="second"),
+            FileDataSelection(kind="dataset_variable", value="second"),
         ),
     )
     assert dataset_code == (
@@ -93,15 +91,29 @@ def test_load_code_from_file_details_uses_stable_file_selectors(
         (
             xr.load_datatree,
             {"engine": "h5netcdf"},
-            provenance.FileDataSelection(kind="datatree_path", value="/diag/image"),
+            FileDataSelection(kind="datatree_variable", value=("/diag", "image")),
         ),
     )
     assert datatree_code == (
         "import xarray\n\n"
         f'data = xarray.load_datatree({str(file_path)!r}, engine="h5netcdf")'
-        "['/diag/image']"
+        "['/diag'].dataset['image']"
     )
     assert "_parse_input" not in datatree_code
+
+    keyed_datatree_code = _load_code_from_file_details(
+        file_path,
+        (
+            xr.load_datatree,
+            {"engine": "h5netcdf"},
+            FileDataSelection(
+                kind="datatree_variable",
+                value=("/diag", 1),
+            ),
+        ),
+    )
+    assert keyed_datatree_code is not None
+    assert "['/diag'].dataset[1]" in keyed_datatree_code
 
 
 def test_load_code_from_file_details_uses_public_merlin_bcs_import(
@@ -109,9 +121,7 @@ def test_load_code_from_file_details_uses_public_merlin_bcs_import(
 ) -> None:
     from erlab.io.plugins.merlin import load_bcs
 
-    dataarray_selection = erlab.interactive.imagetool.provenance.FileDataSelection(
-        kind="dataarray"
-    )
+    dataarray_selection = FileDataSelection(kind="dataarray")
     file_path = tmp_path / "scan.txt"
 
     code = _load_code_from_file_details(file_path, (load_bcs, {}, dataarray_selection))
@@ -128,9 +138,7 @@ def test_load_code_from_file_details_prefers_scan_number_for_erlab_loader(
     example_data_dir: pathlib.Path,
 ) -> None:
     file_path = example_data_dir / "data_002.h5"
-    dataarray_selection = erlab.interactive.imagetool.provenance.FileDataSelection(
-        kind="dataarray"
-    )
+    dataarray_selection = FileDataSelection(kind="dataarray")
     code = _load_code_from_file_details(file_path, ("example", {}, dataarray_selection))
     assert code == (
         "erlab.io.set_loader('example')\n"

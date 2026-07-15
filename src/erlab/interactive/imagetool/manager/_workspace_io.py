@@ -27,8 +27,20 @@ import erlab.interactive._options.core
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
 from erlab.interactive import _qt_state
-from erlab.interactive.imagetool import _serialization, provenance
+from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
+from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    mark_promoted_1d_source,
+    parse_tool_provenance_operation,
+    parse_tool_provenance_spec,
+    require_live_source_spec,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    ImageToolSelectionSourceBinding,
+)
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
 from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
@@ -229,12 +241,12 @@ class _PendingWorkspaceLinkTarget:
 
 
 def _workspace_provenance_file_stems(
-    spec: provenance.ToolProvenanceSpec | None,
+    spec: ToolProvenanceSpec | None,
 ) -> tuple[str, ...]:
     stems: list[str] = []
 
     def collect(
-        current: provenance.ToolProvenanceSpec | None,
+        current: ToolProvenanceSpec | None,
     ) -> None:
         if current is None:
             return
@@ -259,7 +271,7 @@ def _workspace_compact_file_suffix(stems: tuple[str, ...]) -> str:
 
 def _legacy_saved_title_data_name(
     ds: xr.Dataset,
-    provenance_spec: provenance.ToolProvenanceSpec | None,
+    provenance_spec: ToolProvenanceSpec | None,
 ) -> str | None:
     title = _strip_workspace_modified_placeholder(str(ds.attrs.get("itool_title", "")))
     if ": " in title:
@@ -521,7 +533,7 @@ class _WorkspaceIOController:
             return data
         if not isinstance(filter_payload, dict):
             raise TypeError("Invalid pending filter operation")
-        operation = provenance.parse_tool_provenance_operation(filter_payload)
+        operation = parse_tool_provenance_operation(filter_payload)
         source_shape = tuple(data.sizes[dim] for dim in data.dims)
         filtered = operation.apply(data, parent_data=data)
         if filtered.ndim != data.ndim or set(filtered.dims) != set(data.dims):
@@ -571,7 +583,7 @@ class _WorkspaceIOController:
                         data, state.get("filter_operation")
                     )
         if isinstance(node, _ImageToolWrapper) and node.source_input_ndim == 1:
-            data = provenance.mark_promoted_1d_source(data)
+            data = mark_promoted_1d_source(data)
         return data.copy(deep=False)
 
     def _workspace_tool_reference_source_data(
@@ -1174,8 +1186,8 @@ class _WorkspaceIOController:
     def _workspace_tool_source_metadata(
         self, attrs: Mapping[str, typing.Any]
     ) -> tuple[
-        provenance.ToolProvenanceSpec | None,
-        provenance.ImageToolSelectionSourceBinding | None,
+        ToolProvenanceSpec | None,
+        ImageToolSelectionSourceBinding | None,
         bool,
         _ManagedWindowNode._source_state_type,
     ]:
@@ -1183,8 +1195,8 @@ class _WorkspaceIOController:
         raw_source_spec = attrs.get(erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR)
         if raw_source_spec is not None:
             try:
-                source_spec = provenance.require_live_source_spec(
-                    provenance.parse_tool_provenance_spec(
+                source_spec = require_live_source_spec(
+                    parse_tool_provenance_spec(
                         typing.cast(
                             "Mapping[str, typing.Any]",
                             json.loads(raw_source_spec),
@@ -1202,14 +1214,12 @@ class _WorkspaceIOController:
             and erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR in attrs
         ):
             try:
-                source_binding = (
-                    provenance.ImageToolSelectionSourceBinding.model_validate(
-                        typing.cast(
-                            "Mapping[str, typing.Any]",
-                            json.loads(
-                                attrs[erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR]
-                            ),
-                        )
+                source_binding = ImageToolSelectionSourceBinding.model_validate(
+                    typing.cast(
+                        "Mapping[str, typing.Any]",
+                        json.loads(
+                            attrs[erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR]
+                        ),
                     )
                 )
             except Exception:
@@ -1496,9 +1506,7 @@ class _WorkspaceIOController:
                             parent_uid, owner_node=node
                         )
 
-                    def _input_provenance_parent_fetcher() -> (
-                        provenance.ToolProvenanceSpec | None
-                    ):
+                    def _input_provenance_parent_fetcher() -> ToolProvenanceSpec | None:
                         return self._manager._node_for_target(
                             parent_uid
                         ).displayed_provenance_spec
@@ -3186,7 +3194,7 @@ class _WorkspaceIOController:
             provenance_spec = ds.attrs.get("manager_node_provenance_spec")
             live_source_spec = ds.attrs.get("manager_node_live_source_spec")
             live_source_binding = ds.attrs.get("manager_node_live_source_binding")
-            parse_provenance_spec = provenance.parse_tool_provenance_spec
+            parse_provenance_spec = parse_tool_provenance_spec
             parsed_provenance_spec = None
             if provenance_spec is not None:
                 try:
@@ -3208,7 +3216,7 @@ class _WorkspaceIOController:
                         "Mapping[str, typing.Any]",
                         json.loads(live_source_spec),
                     )
-                    parsed_source_spec = provenance.require_live_source_spec(
+                    parsed_source_spec = require_live_source_spec(
                         parse_provenance_spec(source_payload)
                     )
                 except Exception:
@@ -3224,7 +3232,7 @@ class _WorkspaceIOController:
                         "Mapping[str, typing.Any]",
                         json.loads(live_source_binding),
                     )
-                    binding_type = provenance.ImageToolSelectionSourceBinding
+                    binding_type = ImageToolSelectionSourceBinding
                     parsed_source_binding = binding_type.model_validate(binding_payload)
                 except Exception:
                     logger.warning(
@@ -7371,7 +7379,7 @@ class _WorkspaceIOController:
         kwargs.setdefault("options_model", self._manager.effective_interactive_options)
 
         load_func = kwargs.pop("load_func", None)
-        load_indices = kwargs.pop("load_indices", None)
+        load_selections = kwargs.pop("load_selections", None)
         load_preparation_operations = kwargs.pop("preparation_operations", None)
         source_input_ndims = kwargs.pop("source_input_ndims", None)
         source_input_dtypes = kwargs.pop("source_input_dtypes", None)
@@ -7383,19 +7391,62 @@ class _WorkspaceIOController:
                 "workspace_link_id", self._manager._workspace_state.link_id
             )
 
+        embedded_load_selection: FileDataSelection | None = None
+        if load_func is not None:
+            if len(load_func) not in (2, 3):
+                raise ValueError(
+                    "load_func must contain a loader and kwargs, optionally followed "
+                    "by one selection"
+                )
+            if len(load_func) == 2 and load_selections is None:
+                raise ValueError(
+                    "A two-item load_func requires explicit load_selections"
+                )
+            if len(load_func) == 3:
+                if not isinstance(load_func[2], FileDataSelection):
+                    raise TypeError("load_func selection must be a FileDataSelection")
+                if load_selections is None and len(prepared_data) != 1:
+                    raise ValueError(
+                        "A load_func selection can only describe one prepared array"
+                    )
+                embedded_load_selection = load_func[2]
+
+        normalized_load_selections: tuple[FileDataSelection, ...] | None = None
+        if load_selections is not None:
+            if isinstance(load_selections, str | bytes) or not isinstance(
+                load_selections, collections.abc.Sequence
+            ):
+                raise TypeError("load_selections must be a sequence")
+            normalized_load_selections = tuple(load_selections)
+            if len(normalized_load_selections) != len(prepared_data):
+                raise ValueError(
+                    "load_selections must contain one selection per prepared array"
+                )
+            if any(
+                not isinstance(selection, FileDataSelection)
+                for selection in normalized_load_selections
+            ):
+                raise TypeError(
+                    "load_selections must contain FileDataSelection instances"
+                )
+
         for i, prepared in enumerate(prepared_data):
             d = prepared.data
             # Set selection-specific load function if provided
             load_selection = (
-                typing.cast("Sequence[typing.Any]", load_indices)[i]
-                if load_indices is not None
-                else i
+                normalized_load_selections[i]
+                if normalized_load_selections is not None
+                else (
+                    embedded_load_selection
+                    if embedded_load_selection is not None
+                    else prepared.selection
+                )
             )
             this_load_func = (*load_func[:2], load_selection) if load_func else None
             preparation_operations = (
                 tuple(
                     typing.cast(
-                        "Sequence[provenance.ToolProvenanceOperation]",
+                        "Sequence[ToolProvenanceOperation]",
                         load_preparation_operations,
                     )[i]
                 )

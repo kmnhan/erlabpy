@@ -210,7 +210,9 @@ class _MultiFileHandler(QtCore.QObject):
             kwargs={
                 "file_path": file_path,
                 "load_func": (func, self._kwargs.copy()),
-                "load_indices": tuple(prepared.selection for prepared in selected_data),
+                "load_selections": tuple(
+                    prepared.selection for prepared in selected_data
+                ),
                 "preparation_operations": tuple(
                     prepared.operations for prepared in selected_data
                 ),

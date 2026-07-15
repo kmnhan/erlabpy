@@ -18,7 +18,25 @@ from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import _provenance_framework, provenance
+from erlab.interactive.imagetool._provenance._code import (
+    _restore_nonuniform_dims_expression,
+)
+from erlab.interactive.imagetool._provenance._model import (
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    compose_display_provenance,
+    public_data,
+    selection,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    IselOperation,
+    QSelOperation,
+    SelectCoordOperation,
+    SelOperation,
+    SortCoordOrderOperation,
+    SqueezeOperation,
+    TransposeOperation,
+)
 from erlab.interactive.imagetool.viewer_linking import record_history, suppress_history
 from erlab.interactive.imagetool.viewer_state import (
     GuidelineState,
@@ -1266,7 +1284,7 @@ class ItoolPlotItem(pg.PlotItem):
             return sel_code
         selection_expr = data_name
         if self.array_slicer._nonuniform_axes:
-            selection_expr = _provenance_framework._restore_nonuniform_dims_expression(
+            selection_expr = _restore_nonuniform_dims_expression(
                 selection_expr,
                 erlab.utils.array._nonuniform_dim_mapping(self.slicer_area.data),
             )
@@ -1274,7 +1292,7 @@ class ItoolPlotItem(pg.PlotItem):
 
     def make_tool_source_spec(
         self, *, transpose: bool = False, squeeze: bool = False
-    ) -> provenance.ToolProvenanceSpec:
+    ) -> ToolProvenanceSpec:
         """Return a source spec for the current plot selection.
 
         The spec contains ``qsel``, ``isel``, and ``sel`` operations for the current
@@ -1290,7 +1308,7 @@ class ItoolPlotItem(pg.PlotItem):
 
         Returns
         -------
-        provenance.ToolProvenanceSpec
+        ToolProvenanceSpec
             Source spec for the current parent data.
         """
         cursor = self.slicer_area.current_cursor
@@ -1299,10 +1317,10 @@ class ItoolPlotItem(pg.PlotItem):
             in QtWidgets.QApplication.queryKeyboardModifiers()
         )
         parent_data = self.slicer_area._tool_source_parent_data()
-        selection_data = provenance.ToolProvenanceSpec._starting_data_for_kind(
+        selection_data = ToolProvenanceSpec._starting_data_for_kind(
             "selection", parent_data
         )
-        operations: list[provenance.ToolProvenanceOperation] = []
+        operations: list[ToolProvenanceOperation] = []
         selection_code = self.selection_code_for_cursor(cursor)
         selection_indexers = self.array_slicer.isel_args(
             cursor, self.display_axis, int_if_one=True
@@ -1317,7 +1335,7 @@ class ItoolPlotItem(pg.PlotItem):
                 if binned[axis_idx]:
                     selection_binned_dims.append(dim)
             operations.append(
-                provenance.QSelOperation(
+                QSelOperation(
                     kwargs=erlab.interactive.imagetool.slicer.qsel_args_from_indexers(
                         selection_data,
                         selection_indexers,
@@ -1326,7 +1344,7 @@ class ItoolPlotItem(pg.PlotItem):
                 )
             )
         elif selection_indexers:
-            operations.append(provenance.IselOperation(kwargs=selection_indexers))
+            operations.append(IselOperation(kwargs=selection_indexers))
 
         crop_sel_indexers: dict[Hashable, slice] = {}
         crop_isel_indexers: dict[Hashable, slice] = {}
@@ -1366,21 +1384,19 @@ class ItoolPlotItem(pg.PlotItem):
                     )
                 else:
                     crop_sel_kwargs[dim] = erlab.utils.misc._convert_to_native(coord)
-            operations.append(provenance.SelOperation(kwargs=crop_sel_kwargs))
+            operations.append(SelOperation(kwargs=crop_sel_kwargs))
 
         if crop_isel_indexers:
-            operations.append(provenance.IselOperation(kwargs=crop_isel_indexers))
+            operations.append(IselOperation(kwargs=crop_isel_indexers))
 
-        operations.append(provenance.SortCoordOrderOperation())
+        operations.append(SortCoordOrderOperation())
         if transpose:
             operations.append(
-                provenance.TransposeOperation(
-                    dims=tuple(reversed(self.current_data.dims))
-                )
+                TransposeOperation(dims=tuple(reversed(self.current_data.dims)))
             )
         if squeeze and any(size == 1 for size in self.current_data.shape):
-            operations.append(provenance.SqueezeOperation())
-        return provenance.selection(*operations)
+            operations.append(SqueezeOperation())
+        return selection(*operations)
 
     @property
     def is_guidelines_visible(self) -> bool:
@@ -1563,7 +1579,7 @@ class ItoolPlotItem(pg.PlotItem):
     def _open_data_in_new_window(
         self,
         data: xr.DataArray,
-        source_spec: provenance.ToolProvenanceSpec,
+        source_spec: ToolProvenanceSpec,
         *,
         use_parent_colormap: bool,
     ) -> None:
@@ -1608,7 +1624,7 @@ class ItoolPlotItem(pg.PlotItem):
         tool_window = erlab.interactive.itool(**itool_kw)
         if isinstance(tool_window, erlab.interactive.imagetool.ImageTool):
             tool_window.set_provenance_spec(
-                provenance.compose_display_provenance(
+                compose_display_provenance(
                     self.slicer_area.displayed_provenance_spec(),
                     source_spec,
                     parent_data=self.slicer_area._tool_source_parent_data(),
@@ -1631,11 +1647,11 @@ class ItoolPlotItem(pg.PlotItem):
     def open_associated_coord(
         self, coord_name: Hashable, *, displayed_profile: bool
     ) -> None:
-        operation = provenance.SelectCoordOperation(coord_name=coord_name)
+        operation = SelectCoordOperation(coord_name=coord_name)
         source_spec = (
             self.make_tool_source_spec().append_operations(operation)
             if displayed_profile
-            else provenance.public_data(operation)
+            else public_data(operation)
         )
         data = source_spec.apply(self.slicer_area._tool_source_parent_data())
         self._open_data_in_new_window(

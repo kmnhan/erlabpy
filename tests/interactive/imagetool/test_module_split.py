@@ -137,6 +137,41 @@ def test_manager_import_does_not_load_figure_dialog_widgets() -> None:
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
+def test_provenance_layers_load_in_one_direction() -> None:
+    code = textwrap.dedent(
+        """
+        import importlib.util
+        import sys
+
+        from erlab.interactive.imagetool._provenance import _model
+
+        prefix = "erlab.interactive.imagetool._provenance"
+        assert f"{prefix}._code" in sys.modules
+        assert f"{prefix}._graph" not in sys.modules
+        assert f"{prefix}._execution" not in sys.modules
+        assert f"{prefix}._operations" not in sys.modules
+        assert "qtpy.QtWidgets" not in sys.modules
+        assert "pyqtgraph" not in sys.modules
+
+        operation = _model.parse_tool_provenance_operation(
+            {"op": "rename", "name": "renamed"}
+        )
+        assert operation.name == "renamed"
+        assert f"{prefix}._operations" in sys.modules
+        assert f"{prefix}._graph" not in sys.modules
+        assert f"{prefix}._execution" not in sys.modules
+
+        assert importlib.util.find_spec(
+            "erlab.interactive.imagetool._provenance_framework"
+        ) is None
+        assert importlib.util.find_spec(
+            "erlab.interactive.imagetool._replay_graph"
+        ) is None
+        """
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
 def test_plot_items_loads_figure_composer_only_for_action() -> None:
     code = textwrap.dedent(
         """

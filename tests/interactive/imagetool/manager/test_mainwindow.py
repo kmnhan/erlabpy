@@ -36,8 +36,26 @@ from erlab.interactive._figurecomposer._model._document import FigureSourceAddRe
 from erlab.interactive._widgets import _CenteredIconToolButton
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
-from erlab.interactive.imagetool import _kspace_conversion, itool, provenance
+from erlab.interactive.imagetool import _kspace_conversion, itool
 from erlab.interactive.imagetool._load_source import _LoadSourceDetails
+from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
+    ScriptInput,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    full_data,
+    public_data,
+    selection,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    AssignAttrsOperation,
+    ImageToolSelectionSourceBinding,
+    IselOperation,
+    NormalizeOperation,
+    RenameOperation,
+    RestoreNonuniformDimsOperation,
+    ScriptCodeOperation,
+)
 from erlab.interactive.imagetool.manager import _figure_dialogs, fetch, replace_data
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._dialogs import (
@@ -429,11 +447,11 @@ def _select_batch_operation(
 
 
 class _BatchTransformStub:
-    operation_types = (provenance.AssignAttrsOperation,)
+    operation_types = (AssignAttrsOperation,)
 
     def __init__(
         self,
-        operations: list[provenance.ToolProvenanceOperation] | None = None,
+        operations: list[ToolProvenanceOperation] | None = None,
         *,
         source_error: Exception | None = None,
         public_source: bool = False,
@@ -443,39 +461,37 @@ class _BatchTransformStub:
         self._public_source = public_source
         self.keep_colors = False
 
-    def source_operations(self) -> list[provenance.ToolProvenanceOperation]:
+    def source_operations(self) -> list[ToolProvenanceOperation]:
         if self._source_error is not None:
             raise self._source_error
         if self._operations is not None:
             return list(self._operations)
-        return [provenance.AssignAttrsOperation(attrs={"batch": True})]
+        return [AssignAttrsOperation(attrs={"batch": True})]
 
     def source_spec_for_data(
         self,
         data: xr.DataArray,
         new_name: str | None = None,
-    ) -> provenance.ToolProvenanceSpec:
+    ) -> ToolProvenanceSpec:
         del data, new_name
-        builder = (
-            provenance.public_data if self._public_source else provenance.full_data
-        )
+        builder = public_data if self._public_source else full_data
         return builder(*self.source_operations())
 
     def _detached_provenance_spec(
         self,
-        parent_provenance: provenance.ToolProvenanceSpec | None,
-        source_spec: provenance.ToolProvenanceSpec,
+        parent_provenance: ToolProvenanceSpec | None,
+        source_spec: ToolProvenanceSpec,
         new_name: str,
-    ) -> provenance.ToolProvenanceSpec:
+    ) -> ToolProvenanceSpec:
         del parent_provenance, new_name
         return source_spec
 
     def _compose_transform_provenance(
         self,
-        base_spec: provenance.ToolProvenanceSpec | None,
-        source_spec: provenance.ToolProvenanceSpec,
+        base_spec: ToolProvenanceSpec | None,
+        source_spec: ToolProvenanceSpec,
         new_name: str,
-    ) -> provenance.ToolProvenanceSpec:
+    ) -> ToolProvenanceSpec:
         del base_spec, new_name
         return source_spec
 
@@ -489,15 +505,15 @@ class _BatchTransformStub:
 
 
 class _BatchFilterStub:
-    operation_types = (provenance.NormalizeOperation,)
+    operation_types = (NormalizeOperation,)
 
     def __init__(
         self,
-        operation: provenance.ToolProvenanceOperation | None,
+        operation: ToolProvenanceOperation | None,
     ) -> None:
         self._operation = operation
 
-    def filter_operation(self) -> provenance.ToolProvenanceOperation | None:
+    def filter_operation(self) -> ToolProvenanceOperation | None:
         return self._operation
 
 
@@ -516,7 +532,7 @@ def test_batch_operation_metadata_matches_launcher() -> None:
         for operation_type in dialog_cls.operation_types
         if not operation_type.batch_available
     ] == []
-    assert provenance.RestoreNonuniformDimsOperation.batch_available
+    assert RestoreNonuniformDimsOperation.batch_available
 
 
 def test_batch_dialog_defensive_paths_and_launch(
@@ -748,13 +764,13 @@ def test_details_panel_script_input_labels_omit_redundant_history() -> None:
 
     assert (
         controller._script_input_row_label(
-            provenance.ScriptInput(name="source"), include_history=False
+            ScriptInput(name="source"), include_history=False
         )
         == "Use source"
     )
     assert (
         controller._script_input_row_label(
-            provenance.ScriptInput(name="source", node_uid="missing"),
+            ScriptInput(name="source", node_uid="missing"),
             include_history=True,
         )
         == "Missing source for source"
@@ -869,22 +885,20 @@ def test_batch_action_transform_error_paths(
             "replace",
         )
         assert not manager.apply_batch_transform_dialog(
-            _BatchTransformStub([provenance.NormalizeOperation(dims=("x",))]),
+            _BatchTransformStub([NormalizeOperation(dims=("x",))]),
             "replace",
         )
 
         class _ScriptTransformStub(_BatchTransformStub):
-            operation_types = (provenance.ScriptCodeOperation,)
+            operation_types = (ScriptCodeOperation,)
 
         assert not manager.apply_batch_transform_dialog(
-            _ScriptTransformStub(
-                [provenance.ScriptCodeOperation(label="Custom", code=None)]
-            ),
+            _ScriptTransformStub([ScriptCodeOperation(label="Custom", code=None)]),
             "replace",
         )
 
-        manager._node_for_target(0).set_source_binding(provenance.full_data())
-        manager._node_for_target(1).set_detached_provenance(provenance.full_data())
+        manager._node_for_target(0).set_source_binding(full_data())
+        manager._node_for_target(1).set_detached_provenance(full_data())
         assert manager.apply_batch_transform_dialog(
             _BatchTransformStub(public_source=True),
             "replace",
@@ -948,7 +962,7 @@ def test_batch_transform_memory_preflight_runs_before_processing(
             self,
             data: xr.DataArray,
             new_name: str | None = None,
-        ) -> provenance.ToolProvenanceSpec:
+        ) -> ToolProvenanceSpec:
             self.source_spec_calls += 1
             return super().source_spec_for_data(data, new_name)
 
@@ -996,13 +1010,13 @@ def test_batch_filter_error_paths(
         select_tools(manager, [0, 1])
 
         class _ScriptFilterStub(_BatchFilterStub):
-            operation_types = (provenance.ScriptCodeOperation,)
+            operation_types = (ScriptCodeOperation,)
 
         assert not manager.apply_batch_filter_dialog(
-            _ScriptFilterStub(provenance.ScriptCodeOperation(label="Custom", code=None))
+            _ScriptFilterStub(ScriptCodeOperation(label="Custom", code=None))
         )
         assert not manager.apply_batch_filter_dialog(
-            _BatchFilterStub(provenance.NormalizeOperation(dims=("missing",)))
+            _BatchFilterStub(NormalizeOperation(dims=("missing",)))
         )
 
         real_get_imagetool = manager.get_imagetool
@@ -1017,7 +1031,7 @@ def test_batch_filter_error_paths(
 
         monkeypatch.setattr(manager, "get_imagetool", _raise_during_commit)
         assert not manager.apply_batch_filter_dialog(
-            _BatchFilterStub(provenance.NormalizeOperation(dims=("x",)))
+            _BatchFilterStub(NormalizeOperation(dims=("x",)))
         )
         assert len(messages) >= 3
 
@@ -1458,7 +1472,7 @@ def test_batch_filter_applies_in_place_only(
             operation = manager.get_imagetool(
                 index
             ).slicer_area._accepted_filter_provenance_operation
-            assert isinstance(operation, provenance.NormalizeOperation)
+            assert isinstance(operation, NormalizeOperation)
 
 
 def test_batch_transform_preflight_failure_leaves_all_targets_unchanged(
@@ -1637,9 +1651,7 @@ def test_manager_metadata_full_code_generated_only_when_copied(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         wrapper = manager._tool_graph.root_wrappers[0]
         wrapper.set_detached_provenance(
-            provenance.full_data(
-                provenance.RenameOperation(name="renamed")
-            ).to_replay_spec()
+            full_data(RenameOperation(name="renamed")).to_replay_spec()
         )
 
         monkeypatch.setattr(
@@ -3732,7 +3744,11 @@ def test_manager_reload_selected_preserves_manual_root_name(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -3799,7 +3815,11 @@ def test_manager_file_suffix_does_not_seed_unnamed_root_name(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -3824,7 +3844,7 @@ def test_manager_rename_updates_accepted_filter_data(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    operation = provenance.NormalizeOperation(
+    operation = NormalizeOperation(
         dims=("alpha",),
         mode="min",
     )
@@ -3870,7 +3890,11 @@ def test_manager_reload_selected_preserves_manual_child_imagetool_name(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -3880,7 +3904,7 @@ def test_manager_reload_selected_preserves_manual_child_imagetool_name(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=False,
         )
 
@@ -3963,7 +3987,11 @@ def test_managed_child_imagetool_file_menu_reload_refreshes_file_parent(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -3973,7 +4001,7 @@ def test_managed_child_imagetool_file_menu_reload_refreshes_file_parent(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=False,
         )
 
@@ -4050,7 +4078,11 @@ def test_managed_child_imagetool_file_menu_reload_uses_own_file_source(
             manager=False,
             execute=False,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
         child_uid = manager.add_imagetool_child(child_tool, 0, show=False)
@@ -4098,7 +4130,11 @@ def test_manager_workspace_reload_preserves_manual_root_name(
             source,
             manager=True,
             file_path=source_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -4155,7 +4191,11 @@ def test_manager_workspace_reload_preserves_manual_child_imagetool_name(
             source,
             manager=True,
             file_path=source_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -4165,7 +4205,7 @@ def test_manager_workspace_reload_preserves_manual_child_imagetool_name(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=False,
         )
         manager._child_node(child_uid).name = "saved manual child"
@@ -4233,7 +4273,7 @@ def test_manager_notes_persist_workspace_roundtrip(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             note="child note",
         )
         figure_uid = manager.add_figuretool(
@@ -4285,7 +4325,7 @@ def test_manager_notes_preserved_by_duplicate_and_promote(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             note="child note",
         )
 
@@ -4347,7 +4387,11 @@ def test_manager_reload_selected_child_tool_refreshes_from_file_parent(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -4400,7 +4444,11 @@ def test_managed_child_tool_file_menu_reload_refreshes_file_parent(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -4462,13 +4510,15 @@ def test_managed_nested_child_tool_file_menu_reload_refreshes_file_ancestor(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        child_source_spec = provenance.selection(
-            provenance.IselOperation(kwargs={"alpha": slice(0, 4)})
-        )
+        child_source_spec = selection(IselOperation(kwargs={"alpha": slice(0, 4)}))
         child_tool = itool(
             child_source_spec.apply(source), manager=False, execute=False
         )
@@ -4562,7 +4612,7 @@ def test_managed_child_tool_shows_reload_reason_without_reloadable_ancestor(
         parent_tool.slicer_area._load_func = (
             xr.load_dataarray,
             {"engine": "h5netcdf"},
-            0,
+            FileDataSelection(kind="dataarray"),
         )
 
         unavailable_reasons.clear()
@@ -4601,7 +4651,11 @@ def test_manager_reload_selected_nested_child_refreshes_from_file_ancestor(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -4611,7 +4665,7 @@ def test_manager_reload_selected_nested_child_refreshes_from_file_ancestor(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=False,
         )
 
@@ -4623,9 +4677,7 @@ def test_manager_reload_selected_nested_child_refreshes_from_file_ancestor(
             grandchild_tool,
             child_uid,
             show=False,
-            source_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"y": slice(0, 2)})
-            ),
+            source_spec=selection(IselOperation(kwargs={"y": slice(0, 2)})),
             source_auto_update=False,
         )
 
@@ -4675,7 +4727,11 @@ def test_manager_reload_multi_selected_children_dedupes_file_ancestor(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -4687,18 +4743,14 @@ def test_manager_reload_multi_selected_children_dedupes_file_ancestor(
             first_tool,
             0,
             show=False,
-            source_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"x": slice(0, 2)})
-            ),
+            source_spec=selection(IselOperation(kwargs={"x": slice(0, 2)})),
             source_auto_update=False,
         )
         second_uid = manager.add_imagetool_child(
             second_tool,
             0,
             show=False,
-            source_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"x": slice(2, 4)})
-            ),
+            source_spec=selection(IselOperation(kwargs={"x": slice(2, 4)})),
             source_auto_update=False,
         )
 
@@ -4762,7 +4814,11 @@ def test_manager_reload_mixed_child_selection_requires_all_children_eligible(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -4774,9 +4830,7 @@ def test_manager_reload_mixed_child_selection_requires_all_children_eligible(
             eligible_tool,
             0,
             show=False,
-            source_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"x": slice(0, 2)})
-            ),
+            source_spec=selection(IselOperation(kwargs={"x": slice(0, 2)})),
             source_auto_update=False,
         )
         unbound_uid = manager.add_imagetool_child(unbound_tool, 0, show=False)
@@ -4953,7 +5007,7 @@ def test_manager_selection_child_replays_stable_source_spec_after_coordinate_shi
         assert "manager_node_live_source_binding" not in child_attrs
         assert "manager_node_live_source_spec" in child_attrs
         child_attrs["manager_node_live_source_binding"] = json.dumps(
-            provenance.ImageToolSelectionSourceBinding(
+            ImageToolSelectionSourceBinding(
                 selection_mode="isel",
                 selection_indexers={"z": 0},
             ).model_dump(mode="json")
@@ -4994,7 +5048,7 @@ def test_manager_add_imagetool_child_materializes_source_binding_without_spec(
         coords={"x": np.arange(3.0), "y": np.arange(4.0)},
         name="scan",
     )
-    source_binding = provenance.ImageToolSelectionSourceBinding(
+    source_binding = ImageToolSelectionSourceBinding(
         selection_mode="isel",
         selection_indexers={"y": slice(1, 3)},
     )

@@ -7,6 +7,12 @@ functionality of the ImageTool window, including GUI controls and keyboard short
 
 from __future__ import annotations
 
+from erlab.interactive.imagetool._provenance._model import (
+    ReplayStage,
+    ToolProvenanceSpec,
+    parse_tool_provenance_spec,
+)
+
 __all__ = ["BaseImageTool", "ImageTool"]
 
 import json
@@ -20,7 +26,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive import _qt_state
-from erlab.interactive.imagetool import _serialization, provenance
+from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._load_source import _load_provenance_from_file_details
 from erlab.interactive.imagetool.viewer_state import _select_input_dataarrays
 
@@ -62,7 +68,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         super().__init__(parent=parent)
         state = kwargs.pop("state", None)
         transpose = bool(kwargs.pop("transpose", False))
-        self._provenance_spec: provenance.ToolProvenanceSpec | None = None
+        self._provenance_spec: ToolProvenanceSpec | None = None
         self._slicer_area = erlab.interactive.imagetool.viewer.ImageSlicerArea(
             self, data, **kwargs
         )
@@ -162,28 +168,26 @@ class BaseImageTool(QtWidgets.QMainWindow):
     @property
     def provenance_spec(
         self,
-    ) -> provenance.ToolProvenanceSpec | None:
+    ) -> ToolProvenanceSpec | None:
         """Canonical replay provenance for the current ImageTool data."""
         return self._provenance_spec
 
     def set_provenance_spec(
         self,
-        provenance_spec: provenance.ToolProvenanceSpec
-        | Mapping[str, typing.Any]
-        | None,
+        provenance_spec: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
     ) -> None:
         """Set canonical replay provenance for the current ImageTool data."""
-        self._provenance_spec = provenance.parse_tool_provenance_spec(provenance_spec)
+        self._provenance_spec = parse_tool_provenance_spec(provenance_spec)
 
     def _sync_file_load_provenance(self) -> None:
         """Use file-load details as replay provenance when the current data has them."""
         file_path = self.slicer_area._file_path
         if file_path is None:
             return
-        replay_stages: tuple[provenance.ReplayStage, ...] = ()
+        replay_stages: tuple[ReplayStage, ...] = ()
         if self.slicer_area._load_preparation_operations:
             replay_stages = (
-                provenance.ReplayStage(
+                ReplayStage(
                     source_kind="full_data",
                     operations=self.slicer_area._load_preparation_operations,
                 ),

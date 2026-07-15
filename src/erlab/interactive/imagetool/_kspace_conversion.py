@@ -15,7 +15,18 @@ import psutil
 import erlab
 from erlab.accessors.kspace import IncompleteDataError
 from erlab.constants import AxesConfiguration
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool._provenance._model import (
+    ToolProvenanceOperation,
+    operation_group_range,
+    stamp_operation_group,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    KspaceConfigurationOperation,
+    KspaceConvertOperation,
+    KspaceInnerPotentialOperation,
+    KspaceSetNormalOperation,
+    KspaceWorkFunctionOperation,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -39,12 +50,15 @@ _FOCUS_NORMAL = "normal_emission"
 _FOCUS_CONVERT = "bounds_resolution"
 
 _KSPACE_SETUP_TYPES = (
-    provenance.KspaceConfigurationOperation,
-    provenance.KspaceWorkFunctionOperation,
-    provenance.KspaceInnerPotentialOperation,
-    provenance.KspaceSetNormalOperation,
+    KspaceConfigurationOperation,
+    KspaceWorkFunctionOperation,
+    KspaceInnerPotentialOperation,
+    KspaceSetNormalOperation,
 )
-_KSPACE_CONVERSION_TYPES = (*_KSPACE_SETUP_TYPES, provenance.KspaceConvertOperation)
+_KSPACE_CONVERSION_TYPES = (
+    *_KSPACE_SETUP_TYPES,
+    KspaceConvertOperation,
+)
 _GIB = 1024**3
 
 
@@ -497,17 +511,15 @@ def kspace_conversion_operations(
     force_scalars: bool,
     alpha_scale: float | None = None,
     beta_scale: float | None = None,
-) -> tuple[provenance.ToolProvenanceOperation, ...]:
-    operations: list[provenance.ToolProvenanceOperation] = []
+) -> tuple[ToolProvenanceOperation, ...]:
+    operations: list[ToolProvenanceOperation] = []
     focuses: list[str] = []
     target_configuration = AxesConfiguration(int(target_configuration))
     if source_configuration is None:
         source_configuration = source_data.kspace.configuration
     if int(target_configuration) != int(source_configuration):
         operations.append(
-            provenance.KspaceConfigurationOperation(
-                configuration=int(target_configuration)
-            )
+            KspaceConfigurationOperation(configuration=int(target_configuration))
         )
         focuses.append(_FOCUS_CONFIGURATION)
         configured_data = source_data.kspace.as_configuration(target_configuration)
@@ -519,9 +531,7 @@ def kspace_conversion_operations(
             current_v0 = configured_data.kspace.inner_potential
         if force_scalars or not np.isclose(inner_potential, current_v0):
             operations.append(
-                provenance.KspaceInnerPotentialOperation(
-                    inner_potential=float(inner_potential)
-                )
+                KspaceInnerPotentialOperation(inner_potential=float(inner_potential))
             )
             focuses.append(_FOCUS_INNER_POTENTIAL)
 
@@ -529,7 +539,7 @@ def kspace_conversion_operations(
         current_wf = configured_data.kspace.work_function
     if force_scalars or not np.isclose(work_function, current_wf):
         operations.append(
-            provenance.KspaceWorkFunctionOperation(work_function=float(work_function))
+            KspaceWorkFunctionOperation(work_function=float(work_function))
         )
         focuses.append(_FOCUS_WORK_FUNCTION)
 
@@ -539,7 +549,7 @@ def kspace_conversion_operations(
         beta_scale = configured_data.kspace.beta_scale
 
     operations.append(
-        provenance.KspaceSetNormalOperation(
+        KspaceSetNormalOperation(
             alpha=float(normal_emission[0]),
             beta=float(normal_emission[1]),
             delta=None if delta is None else float(delta),
@@ -548,11 +558,9 @@ def kspace_conversion_operations(
         )
     )
     focuses.append(_FOCUS_NORMAL)
-    operations.append(
-        provenance.KspaceConvertOperation(bounds=bounds, resolution=resolution)
-    )
+    operations.append(KspaceConvertOperation(bounds=bounds, resolution=resolution))
     focuses.append(_FOCUS_CONVERT)
-    return provenance.stamp_operation_group(
+    return stamp_operation_group(
         operations,
         kind=KSPACE_CONVERSION_GROUP_KIND,
         focuses=focuses,
@@ -560,27 +568,42 @@ def kspace_conversion_operations(
 
 
 def _focus_for_operation(
-    operation: provenance.ToolProvenanceOperation,
+    operation: ToolProvenanceOperation,
 ) -> str | None:
-    if isinstance(operation, provenance.KspaceConfigurationOperation):
+    if isinstance(
+        operation,
+        KspaceConfigurationOperation,
+    ):
         return _FOCUS_CONFIGURATION
-    if isinstance(operation, provenance.KspaceWorkFunctionOperation):
+    if isinstance(
+        operation,
+        KspaceWorkFunctionOperation,
+    ):
         return _FOCUS_WORK_FUNCTION
-    if isinstance(operation, provenance.KspaceInnerPotentialOperation):
+    if isinstance(
+        operation,
+        KspaceInnerPotentialOperation,
+    ):
         return _FOCUS_INNER_POTENTIAL
-    if isinstance(operation, provenance.KspaceSetNormalOperation):
+    if isinstance(
+        operation,
+        KspaceSetNormalOperation,
+    ):
         return _FOCUS_NORMAL
-    if isinstance(operation, provenance.KspaceConvertOperation):
+    if isinstance(
+        operation,
+        KspaceConvertOperation,
+    ):
         return _FOCUS_CONVERT
     return None
 
 
 def _complete_kspace_conversion_group(
-    operations: Sequence[provenance.ToolProvenanceOperation],
+    operations: Sequence[ToolProvenanceOperation],
 ) -> bool:
     if not operations or not isinstance(
         operations[-1],
-        provenance.KspaceConvertOperation,
+        KspaceConvertOperation,
     ):
         return False
     setup_operations = operations[:-1]
@@ -590,7 +613,10 @@ def _complete_kspace_conversion_group(
         return False
     if (
         sum(
-            isinstance(operation, provenance.KspaceSetNormalOperation)
+            isinstance(
+                operation,
+                KspaceSetNormalOperation,
+            )
             for operation in setup_operations
         )
         != 1
@@ -608,11 +634,11 @@ def _complete_kspace_conversion_group(
 
 
 def is_kspace_conversion_group(
-    operations: Sequence[provenance.ToolProvenanceOperation],
+    operations: Sequence[ToolProvenanceOperation],
     operation_index: int,
 ) -> tuple[int, int] | None:
     """Return the contiguous momentum-conversion operation range for an operation."""
-    group = provenance.operation_group_range(
+    group = operation_group_range(
         operations,
         operation_index,
         kind=KSPACE_CONVERSION_GROUP_KIND,
@@ -625,8 +651,8 @@ def is_kspace_conversion_group(
 
 
 def stamp_kspace_conversion_groups(
-    operations: Sequence[provenance.ToolProvenanceOperation],
-) -> tuple[provenance.ToolProvenanceOperation, ...]:
+    operations: Sequence[ToolProvenanceOperation],
+) -> tuple[ToolProvenanceOperation, ...]:
     """Stamp complete ungrouped kspace conversion runs in a console operation chain."""
     output = list(operations)
     index = 0
@@ -647,13 +673,16 @@ def stamp_kspace_conversion_groups(
                 _KSPACE_CONVERSION_TYPES,
             )
         ):
-            if isinstance(output[index], provenance.KspaceConvertOperation):
+            if isinstance(
+                output[index],
+                KspaceConvertOperation,
+            ):
                 index += 1
                 break
             index += 1
         stop = index
         if _complete_kspace_conversion_group(output[start:stop]):
-            stamped = provenance.stamp_operation_group(
+            stamped = stamp_operation_group(
                 output[start:stop],
                 kind=KSPACE_CONVERSION_GROUP_KIND,
                 focuses=tuple(
@@ -668,7 +697,7 @@ def stamp_kspace_conversion_groups(
 
 
 def incomplete_kspace_conversion_edit_reason(
-    operation: provenance.ToolProvenanceOperation,
+    operation: ToolProvenanceOperation,
 ) -> str | None:
     """Return the edit tooltip/message for standalone primitive kspace rows."""
     if not isinstance(operation, _KSPACE_CONVERSION_TYPES):

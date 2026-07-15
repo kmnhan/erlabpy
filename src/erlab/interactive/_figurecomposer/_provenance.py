@@ -6,7 +6,7 @@ import ast
 import typing
 
 import erlab.interactive._figurecomposer._codegen
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
 
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping
@@ -14,7 +14,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
-class _FigureBuildCodeOperation(provenance.ScriptCodeOperation):
+class _FigureBuildCodeOperation(ScriptCodeOperation):
     hoist_imports: typing.ClassVar[bool] = True
 
 
@@ -77,7 +77,7 @@ def _figure_build_operation(
     *,
     skip_source_selection_names: frozenset[str] = frozenset(),
     source_name_map: Mapping[str, str] | None = None,
-) -> provenance.ScriptCodeOperation:
+) -> ScriptCodeOperation:
     code = _figure_build_code(
         tool,
         skip_source_selection_names=skip_source_selection_names,

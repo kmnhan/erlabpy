@@ -18,6 +18,21 @@ import unicodedata
 import uuid
 import weakref
 
+from erlab.interactive.imagetool._provenance._model import (
+    ScriptInput,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    public_data,
+    rebase_script_input_node_uids,
+    script,
+    to_replay_provenance_spec,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    IselOperation,
+    QSelAggregationOperation,
+    QSelOperation,
+)
+
 # Matplotlib's Qt backend should see the qtpy-selected binding first.
 # isort: off
 from qtpy import QtCore, QtGui, QtWidgets
@@ -151,7 +166,6 @@ from erlab.interactive._figurecomposer._ui._source_panel import (
     FigureSourceRow,
     FigureSourceSelectionRow,
 )
-from erlab.interactive.imagetool import provenance
 
 if typing.TYPE_CHECKING:
     from collections.abc import (
@@ -4072,7 +4086,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 updates["node_uid"] = uid_map[source.node_uid]
             if source.provenance_spec is not None:
                 try:
-                    rebased = provenance.rebase_script_input_node_uids(
+                    rebased = rebase_script_input_node_uids(
                         source.provenance_spec, uid_map
                     )
                 except (TypeError, ValueError):
@@ -4698,11 +4712,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     @staticmethod
     def _source_selection_replay_operations(
         source: FigureSourceState,
-    ) -> tuple[provenance.ToolProvenanceOperation, ...]:
-        operations: list[provenance.ToolProvenanceOperation] = []
+    ) -> tuple[ToolProvenanceOperation, ...]:
+        operations: list[ToolProvenanceOperation] = []
         if source.isel:
             operations.append(
-                provenance.IselOperation(
+                IselOperation(
                     kwargs=typing.cast(
                         "dict[Hashable, typing.Any]",
                         dict(source.isel),
@@ -4711,7 +4725,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
         if source.qsel:
             operations.append(
-                provenance.QSelOperation(
+                QSelOperation(
                     kwargs=typing.cast(
                         "dict[Hashable, typing.Any]",
                         dict(source.qsel),
@@ -4720,7 +4734,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
         if source.mean_dims:
             operations.append(
-                provenance.QSelAggregationOperation(
+                QSelAggregationOperation(
                     dims=tuple(source.mean_dims),
                     func="mean",
                 )
@@ -4769,9 +4783,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @staticmethod
     def _script_input_with_name(
-        script_input: provenance.ScriptInput,
+        script_input: ScriptInput,
         name: str,
-    ) -> provenance.ScriptInput:
+    ) -> ScriptInput:
         if script_input.name == name:
             return script_input
         updates = {"name": name}
@@ -4785,7 +4799,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         *,
         display_name: str,
         source_by_name: Mapping[str, FigureSourceState],
-    ) -> provenance.ScriptInput | None:
+    ) -> ScriptInput | None:
         lineage: list[FigureSourceState] = []
         seen: set[str] = set()
         current = source
@@ -4802,7 +4816,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 break
             current = parent
 
-        base_input: provenance.ScriptInput | None = None
+        base_input: ScriptInput | None = None
         base_index = -1
         try:
             for candidate_index in range(len(lineage) - 1, -1, -1):
@@ -4812,7 +4826,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 candidate_spec = candidate_input.parsed_provenance_spec()
                 if candidate_spec is None:
                     continue
-                if provenance.to_replay_provenance_spec(candidate_spec) is None:
+                if to_replay_provenance_spec(candidate_spec) is None:
                     continue
                 base_input = candidate_input
                 base_index = candidate_index
@@ -4828,7 +4842,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if base_input is None:
                 return None
             source_label = " ".join(source.label.split())
-            selected_spec = provenance.script(
+            selected_spec = script(
                 start_label=f"Select data for {source_label or source.name}",
                 seed_code=(
                     None
@@ -4842,11 +4856,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 operations = self._source_selection_replay_operations(selected_source)
                 if operations:
                     selected_spec = selected_spec.append_replay_stage(
-                        provenance.public_data(*operations)
+                        public_data(*operations)
                     )
         except (TypeError, ValueError, pydantic.ValidationError):
             return None
-        return provenance.ScriptInput(
+        return ScriptInput(
             name=display_name,
             label=(
                 source_label
@@ -4859,7 +4873,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _display_code_source_plan(
         self,
     ) -> tuple[
-        tuple[provenance.ScriptInput, ...],
+        tuple[ScriptInput, ...],
         frozenset[str],
         dict[str, str],
     ]:
@@ -4888,12 +4902,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     self._document.recipe.setup, reserved_names=source_names
                 ).values()
             )
-        script_inputs: list[provenance.ScriptInput] = []
+        script_inputs: list[ScriptInput] = []
         script_input_names: set[str] = set()
         skip_source_selection_names: set[str] = set()
         source_name_map: dict[str, str] = {}
 
-        def append_script_input(script_input: provenance.ScriptInput | None) -> None:
+        def append_script_input(
+            script_input: ScriptInput | None,
+        ) -> None:
             if script_input is None or script_input.name in script_input_names:
                 return
             script_inputs.append(script_input)
@@ -4906,7 +4922,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 source,
                 used_names=used_code_names,
             )
-            script_input: provenance.ScriptInput | None = None
+            script_input: ScriptInput | None = None
             if _source_has_selection(source):
                 script_input = self._selected_source_script_input(
                     source,
@@ -4942,14 +4958,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def current_provenance_spec(
         self, *, flush_deferred_restore: bool = True
-    ) -> provenance.ToolProvenanceSpec | None:
+    ) -> ToolProvenanceSpec | None:
         del flush_deferred_restore
         script_inputs, skip_source_selection_names, source_name_map = (
             self._display_code_source_plan()
         )
         if not script_inputs:
             return None
-        return provenance.script(
+        return script(
             erlab.interactive._figurecomposer._provenance._figure_build_operation(
                 self,
                 skip_source_selection_names=skip_source_selection_names,

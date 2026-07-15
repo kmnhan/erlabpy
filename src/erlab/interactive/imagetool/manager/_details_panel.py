@@ -14,7 +14,25 @@ import erlab
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.utils
 from erlab.interactive._widgets import _CenteredIconToolButton
-from erlab.interactive.imagetool import _replay_graph, provenance
+from erlab.interactive.imagetool._provenance._code import (
+    rebase_default_replay_input,
+    uses_default_replay_input,
+)
+from erlab.interactive.imagetool._provenance._graph import (
+    ReplayGraphError,
+    compile_replay_graph,
+    emit_replay_code,
+    script_inputs_code,
+)
+from erlab.interactive.imagetool._provenance._model import (
+    ScriptInput,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    _ProvenanceDisplayRow,
+    parse_tool_provenance_operation,
+    strip_partial_operation_groups,
+)
+from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
 from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_ACTIVATABLE_ROLE,
     _METADATA_DERIVATION_CODE_ROLE,
@@ -51,7 +69,14 @@ _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
 
 def _provenance_step_clipboard_payload(
     mime_data: QtCore.QMimeData | None,
-) -> tuple[tuple[provenance.ToolProvenanceOperation, ...], str, bool] | None:
+) -> (
+    tuple[
+        tuple[ToolProvenanceOperation, ...],
+        str,
+        bool,
+    ]
+    | None
+):
     if mime_data is None:
         return None
     payload_text: str | None = None
@@ -80,10 +105,10 @@ def _provenance_step_clipboard_payload(
         if not isinstance(operations_payload, list):
             return None
         operations = tuple(
-            provenance.parse_tool_provenance_operation(operation)
+            parse_tool_provenance_operation(operation)
             for operation in operations_payload
         )
-        operations = provenance.strip_partial_operation_groups(operations)
+        operations = strip_partial_operation_groups(operations)
     except (
         TypeError,
         ValueError,
@@ -294,7 +319,7 @@ class _DetailsPanelController:
 
     def _script_input_row_label(
         self,
-        script_input: provenance.ScriptInput,
+        script_input: ScriptInput,
         *,
         include_history: bool,
     ) -> str:
@@ -317,9 +342,9 @@ class _DetailsPanelController:
 
     @staticmethod
     def _script_input_for_row(
-        spec: provenance.ToolProvenanceSpec | None,
-        row: provenance._ProvenanceDisplayRow,
-    ) -> provenance.ScriptInput | None:
+        spec: ToolProvenanceSpec | None,
+        row: _ProvenanceDisplayRow,
+    ) -> ScriptInput | None:
         ref = row.replay_ref
         if (
             spec is None
@@ -344,11 +369,11 @@ class _DetailsPanelController:
 
     def _current_derivation_display_row(
         self,
-        row: provenance._ProvenanceDisplayRow,
-        spec: provenance.ToolProvenanceSpec | None,
+        row: _ProvenanceDisplayRow,
+        spec: ToolProvenanceSpec | None,
         *,
         include_history: bool,
-    ) -> provenance._ProvenanceDisplayRow:
+    ) -> _ProvenanceDisplayRow:
         children = tuple(
             self._current_derivation_display_row(
                 child,
@@ -376,12 +401,12 @@ class _DetailsPanelController:
         node: _ImageToolWrapper | _ManagedWindowNode,
         *,
         include_history: bool = False,
-    ) -> list[provenance._ProvenanceDisplayRow]:
+    ) -> list[_ProvenanceDisplayRow]:
         spec = getattr(node, "displayed_provenance_spec", None)
         rows = getattr(node, "derivation_display_rows", None)
         if rows is None:
             rows = [
-                provenance._ProvenanceDisplayRow(entry)
+                _ProvenanceDisplayRow(entry)
                 for entry in getattr(node, "derivation_entries", ())
             ]
         return [
@@ -395,9 +420,9 @@ class _DetailsPanelController:
 
     @staticmethod
     def _flatten_derivation_rows(
-        rows: Iterable[provenance._ProvenanceDisplayRow],
-    ) -> list[provenance._ProvenanceDisplayRow]:
-        flattened: list[provenance._ProvenanceDisplayRow] = []
+        rows: Iterable[_ProvenanceDisplayRow],
+    ) -> list[_ProvenanceDisplayRow]:
+        flattened: list[_ProvenanceDisplayRow] = []
         for row in rows:
             flattened.append(row)
             flattened.extend(
@@ -407,7 +432,7 @@ class _DetailsPanelController:
 
     def _metadata_derivation_item(
         self,
-        row: provenance._ProvenanceDisplayRow,
+        row: _ProvenanceDisplayRow,
     ) -> _MetadataDerivationTreeItem:
         entry = row.entry
         item = _MetadataDerivationTreeItem(entry.label)
@@ -765,18 +790,31 @@ class _DetailsPanelController:
 
     def _selected_derivation_step_payload(
         self,
-    ) -> tuple[tuple[provenance.ToolProvenanceOperation, ...], str, bool] | None:
+    ) -> (
+        tuple[
+            tuple[
+                ToolProvenanceOperation,
+                ...,
+            ],
+            str,
+            bool,
+        ]
+        | None
+    ):
         if self._manager._metadata_node_uid is None:
             return None
         node = self._manager._tool_graph.nodes.get(self._manager._metadata_node_uid)
         if node is None:
             return None
 
-        operations: list[provenance.ToolProvenanceOperation] = []
+        operations: list[ToolProvenanceOperation] = []
         script_active_names: list[str] = []
         for item in self._manager._selected_derivation_items():
             row = item.data(_METADATA_DERIVATION_ROW_ROLE)
-            if not isinstance(row, provenance._ProvenanceDisplayRow):
+            if not isinstance(
+                row,
+                _ProvenanceDisplayRow,
+            ):
                 continue
             ref = row.replay_ref
             if ref is None or ref.kind != "operation":
@@ -794,7 +832,10 @@ class _DetailsPanelController:
             operation = spec._operation_for_ref(ref)
             if operation is None:
                 continue
-            if isinstance(operation, provenance.ScriptCodeOperation):
+            if isinstance(
+                operation,
+                ScriptCodeOperation,
+            ):
                 if operation.copyable and operation.code:
                     operations.append(operation)
                     script_active_names.append(spec.active_name or "derived")
@@ -811,7 +852,7 @@ class _DetailsPanelController:
             active_name != script_active_name for active_name in script_active_names
         ):
             return None
-        operations = list(provenance.strip_partial_operation_groups(operations))
+        operations = list(strip_partial_operation_groups(operations))
         return (
             tuple(operations),
             script_active_name,
@@ -820,12 +861,12 @@ class _DetailsPanelController:
 
     def _selected_derivation_row(
         self,
-    ) -> provenance._ProvenanceDisplayRow | None:
+    ) -> _ProvenanceDisplayRow | None:
         items = self._manager._selected_derivation_items()
         if len(items) != 1:
             return None
         row = items[0].data(_METADATA_DERIVATION_ROW_ROLE)
-        if isinstance(row, provenance._ProvenanceDisplayRow):
+        if isinstance(row, _ProvenanceDisplayRow):
             return row
         return None
 
@@ -973,15 +1014,15 @@ class _DetailsPanelController:
 
     def _replayable_script_input_labels(
         self,
-        spec: provenance.ToolProvenanceSpec | None,
+        spec: ToolProvenanceSpec | None,
     ) -> set[str]:
         if spec is None or spec.kind != "script":
             return set()
         replayable_labels: set[str] = set()
         for script_input in spec.script_inputs:
             try:
-                _replay_graph.script_inputs_code((script_input,), display=True)
-            except _replay_graph.ReplayGraphError:
+                script_inputs_code((script_input,), display=True)
+            except ReplayGraphError:
                 continue
             replayable_labels.add(
                 " ".join(
@@ -1000,12 +1041,12 @@ class _DetailsPanelController:
         if spec is None or spec.kind != "script" or not spec.operations:
             return None
         try:
-            graph = _replay_graph.compile_replay_graph(spec, display=True)
-            _replay_graph.emit_replay_code(
+            graph = compile_replay_graph(spec, display=True)
+            emit_replay_code(
                 graph,
                 output_name=typing.cast("str", spec.active_name),
             )
-        except _replay_graph.ReplayGraphError as exc:
+        except ReplayGraphError as exc:
             return "".join(traceback.TracebackException.from_exception(exc).format())
         return None
 
@@ -1052,16 +1093,16 @@ class _DetailsPanelController:
         if not code:
             self._show_unavailable_replay_code_dialog(node)
             return
-        if provenance.uses_default_replay_input(code):
+        if uses_default_replay_input(code):
             load_source = self._manager._load_source_for_replay(node)
             if load_source is None:
                 source_name = self._manager._prompt_replay_input_name(node)
                 if source_name is None:
                     return
-                code = provenance.rebase_default_replay_input(code, source_name)
+                code = rebase_default_replay_input(code, source_name)
             else:
                 source_name, load_code = load_source
-                rebased_code = provenance.rebase_default_replay_input(code, source_name)
+                rebased_code = rebase_default_replay_input(code, source_name)
                 code = "\n\n".join(part for part in (load_code, rebased_code) if part)
         if code:
             erlab.interactive.utils.copy_to_clipboard(code)

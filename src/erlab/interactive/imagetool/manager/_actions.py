@@ -12,8 +12,21 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
-from erlab.interactive.imagetool import _kspace_conversion, provenance
+from erlab.interactive.imagetool import _kspace_conversion
 from erlab.interactive.imagetool._mainwindow import ImageTool
+from erlab.interactive.imagetool._provenance._model import (
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    compose_display_provenance,
+    compose_full_provenance,
+    require_live_source_spec,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    AssignCoord1DOperation,
+    AssignScalarCoordOperation,
+    ImageToolSelectionSourceBinding,
+    RestoreNonuniformDimsOperation,
+)
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
 from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
 from erlab.interactive.imagetool.manager._dialogs import (
@@ -330,9 +343,12 @@ class _ActionsController:
     def _validate_batch_operations(
         self,
         dialog: typing.Any,
-        operations: Iterable[provenance.ToolProvenanceOperation],
+        operations: Iterable[ToolProvenanceOperation],
         *,
-        extra_types: tuple[type[provenance.ToolProvenanceOperation], ...] = (),
+        extra_types: tuple[
+            type[ToolProvenanceOperation],
+            ...,
+        ] = (),
     ) -> None:
         declared_types = tuple(dialog.operation_types)
         accepted_types = declared_types + extra_types
@@ -349,15 +365,15 @@ class _ActionsController:
 
     def _validate_batch_target_operations(
         self,
-        operations: Iterable[provenance.ToolProvenanceOperation],
+        operations: Iterable[ToolProvenanceOperation],
         data: xr.DataArray,
     ) -> None:
         for operation in operations:
             if not isinstance(
                 operation,
                 (
-                    provenance.AssignScalarCoordOperation,
-                    provenance.AssignCoord1DOperation,
+                    AssignScalarCoordOperation,
+                    AssignCoord1DOperation,
                 ),
             ):
                 continue
@@ -449,7 +465,7 @@ class _ActionsController:
                 self._validate_batch_operations(
                     dialog,
                     source_spec.operations,
-                    extra_types=(provenance.RestoreNonuniformDimsOperation,),
+                    extra_types=(RestoreNonuniformDimsOperation,),
                 )
                 source_data = slicer_area.data
                 if source_spec.kind == "public_data":
@@ -499,7 +515,7 @@ class _ActionsController:
                 parent_provenance = node.displayed_provenance_spec
                 if parent_provenance is None:
                     parent_provenance = slicer_area.displayed_provenance_spec()
-                nested_provenance = provenance.compose_full_provenance(
+                nested_provenance = compose_full_provenance(
                     parent_provenance,
                     source_spec,
                 )
@@ -533,10 +549,7 @@ class _ActionsController:
                         replace_provenance = detached_provenance
                     if replace_kind == "detached":
                         with contextlib.suppress(TypeError):
-                            if (
-                                provenance.require_live_source_spec(replace_provenance)
-                                is not None
-                            ):
+                            if require_live_source_spec(replace_provenance) is not None:
                                 replace_live_parent_data = (
                                     node.detached_live_parent_data
                                     if node.detached_live_parent_data is not None
@@ -670,7 +683,7 @@ class _ActionsController:
                 def _apply_filter(
                     *,
                     area: ImageSlicerArea = slicer_area,
-                    op: provenance.ToolProvenanceOperation | None = operation,
+                    op: ToolProvenanceOperation | None = operation,
                     edited: bool = emit_edited,
                 ) -> None:
                     area.apply_filter_operation(op, emit_edited=edited)
@@ -1551,7 +1564,7 @@ class _ActionsController:
 
         def _parent_provenance_fetcher(
             parent_uid: str = parent.uid,
-        ) -> provenance.ToolProvenanceSpec | None:
+        ) -> ToolProvenanceSpec | None:
             return self._manager._node_for_target(parent_uid).displayed_provenance_spec
 
         tool.set_source_parent_fetcher(_parent_source_fetcher)
@@ -1573,9 +1586,9 @@ class _ActionsController:
         show: bool = True,
         activate: bool = False,
         uid: str | None = None,
-        provenance_spec: provenance.ToolProvenanceSpec | None = None,
-        source_spec: provenance.ToolProvenanceSpec | None = None,
-        source_binding: provenance.ImageToolSelectionSourceBinding | None = None,
+        provenance_spec: ToolProvenanceSpec | None = None,
+        source_spec: ToolProvenanceSpec | None = None,
+        source_binding: ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
@@ -1590,7 +1603,7 @@ class _ActionsController:
         elif source_spec is not None:
             source_binding = None
         if provenance_spec is None and source_spec is not None:
-            provenance_spec = provenance.compose_display_provenance(
+            provenance_spec = compose_display_provenance(
                 parent_node.displayed_provenance_spec,
                 source_spec,
                 parent_data=parent_node.current_source_data(),

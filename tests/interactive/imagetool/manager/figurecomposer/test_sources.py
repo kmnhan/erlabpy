@@ -1,5 +1,4 @@
 # ruff: noqa: F403, F405
-
 import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
 import erlab.interactive._figurecomposer._ui._axes_widgets as axes_widgets
 import erlab.interactive._figurecomposer._ui._figure_window as figure_window_ui
@@ -12,6 +11,20 @@ from erlab.interactive._figurecomposer._operations._plot_slices import (
 )
 from erlab.interactive._figurecomposer._ui import (
     _source_panel as figurecomposer_source_panel,
+)
+from erlab.interactive.imagetool._provenance._execution import execute_replay_graph
+from erlab.interactive.imagetool._provenance._graph import compile_replay_graph
+from erlab.interactive.imagetool._provenance._model import (
+    ScriptInput,
+    ToolProvenanceSpec,
+    parse_tool_provenance_spec,
+    public_data,
+    script_input_dependency_refs,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    IselOperation,
+    QSelAggregationOperation,
+    QSelOperation,
 )
 
 from ._common import *
@@ -2773,7 +2786,7 @@ def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
         coords={"eV": [-1.0, 0.0], "alpha": [0.0, 1.0, 2.0]},
         name="base",
     )
-    base_spec = provenance.public_data().model_dump(mode="json")
+    base_spec = public_data().model_dump(mode="json")
     base_source = FigureSourceState(
         name="base",
         node_uid="base-node",
@@ -2804,9 +2817,9 @@ def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
         )
     )
     assert operation_types == (
-        provenance.IselOperation,
-        provenance.QSelOperation,
-        provenance.QSelAggregationOperation,
+        IselOperation,
+        QSelOperation,
+        QSelAggregationOperation,
     )
     assert tool._source_code_name_candidate("ImageTool 3: data_5") == "source_5"
     assert tool._source_code_name_candidate("2 sample map") == "source_2_sample_map"
@@ -2859,7 +2872,7 @@ def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
     assert script_inputs[0].name == "gs0_source"
     assert source_name_map["source_data"] == "gs0_source"
 
-    script_input = provenance.ScriptInput(name="base", provenance_spec=base_spec)
+    script_input = ScriptInput(name="base", provenance_spec=base_spec)
     assert tool._script_input_with_name(script_input, "base") is script_input
     renamed_script_input = tool._script_input_with_name(script_input, "renamed")
     assert renamed_script_input.name == "renamed"
@@ -2927,16 +2940,16 @@ def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
     assert live_selected_input.node_uid is None
     live_selected_spec = live_selected_input.parsed_provenance_spec()
     assert live_selected_spec is not None
-    [live_dependency] = provenance.script_input_dependency_refs(live_selected_spec)
+    [live_dependency] = script_input_dependency_refs(live_selected_spec)
     assert live_dependency.node_uid == "live-node"
-    live_selected_graph = _replay_graph.compile_replay_graph(
+    live_selected_graph = compile_replay_graph(
         live_selected_spec,
         live_input_resolver=lambda script_input: (
             (base_data, script_input) if script_input.node_uid == "live-node" else None
         ),
     )
     xr.testing.assert_identical(
-        _replay_graph.execute_replay_graph(live_selected_graph),
+        execute_replay_graph(live_selected_graph),
         base_data.qsel(eV=0.0),
     )
 
@@ -3702,12 +3715,12 @@ def test_figure_composer_line_source_combo_uses_alias_data_and_updates_recipe(
 
 def test_figure_composer_rebases_source_node_uids(qtbot) -> None:
     data = _figure_composer_image_source("data")
-    nested_spec = provenance.ToolProvenanceSpec(
+    nested_spec = ToolProvenanceSpec(
         kind="script",
         start_label="nested",
         active_name="nested",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="nested",
                 label="nested",
                 node_uid="old-nested",
@@ -3736,7 +3749,7 @@ def test_figure_composer_rebases_source_node_uids(qtbot) -> None:
 
     source = tool.tool_status.sources[0]
     assert source.node_uid == "new-source"
-    rebased_spec = provenance.parse_tool_provenance_spec(source.provenance_spec)
+    rebased_spec = parse_tool_provenance_spec(source.provenance_spec)
     assert rebased_spec is not None
     assert rebased_spec.script_inputs[0].node_uid == "new-nested"
 
@@ -3849,24 +3862,24 @@ def test_figure_composer_provenance_replays_transitive_selected_source_chain(
     assert selected_spec is not None
     assert len(selected_spec.replay_stages) == 2
     assert all(len(stage.operations) == 1 for stage in selected_spec.replay_stages)
-    [dependency] = provenance.script_input_dependency_refs(selected_spec)
+    [dependency] = script_input_dependency_refs(selected_spec)
     assert dependency.node_uid == "base-node"
 
     resolved_names: list[str] = []
 
     def resolve_live(
-        script_input: provenance.ScriptInput,
-    ) -> tuple[xr.DataArray, provenance.ScriptInput] | None:
+        script_input: ScriptInput,
+    ) -> tuple[xr.DataArray, ScriptInput] | None:
         if script_input.node_uid != "base-node":
             return None
         resolved_names.append(script_input.name)
         return base, script_input
 
-    selected_graph = _replay_graph.compile_replay_graph(
+    selected_graph = compile_replay_graph(
         selected_spec,
         live_input_resolver=resolve_live,
     )
-    live_selected = _replay_graph.execute_replay_graph(selected_graph)
+    live_selected = execute_replay_graph(selected_graph)
     xr.testing.assert_identical(live_selected, selected_v)
     assert resolved_names == ["base"]
 
@@ -5298,7 +5311,7 @@ def test_figure_composer_selected_source_script_input_skips_nonreplayable_input(
     data = xr.DataArray(
         np.arange(2.0), dims=("x",), coords={"x": [0.0, 1.0]}, name="base"
     )
-    provenance_spec = provenance.public_data().model_dump(mode="json")
+    provenance_spec = public_data().model_dump(mode="json")
     base = FigureSourceState(name="base", provenance_spec=provenance_spec)
     selected = FigureSourceState(
         name="selected",
@@ -5314,7 +5327,11 @@ def test_figure_composer_selected_source_script_input_skips_nonreplayable_input(
     )
     qtbot.addWidget(tool)
 
-    monkeypatch.setattr(provenance, "to_replay_provenance_spec", lambda _spec: None)
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "to_replay_provenance_spec",
+        lambda _spec: None,
+    )
     assert (
         tool._selected_source_script_input(
             selected,

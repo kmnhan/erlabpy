@@ -691,11 +691,22 @@ which ImageTool data and selection opened it:
   active cursor or cropped selection.
 - Use ``erlab.interactive.imagetool.provenance.full_data()`` when the whole current
   array should be used again during an update.
-- Use the operation models in ``erlab.interactive.imagetool.provenance`` such as
-  ``QSelOperation(...)``, ``IselOperation(...)``, ``SelOperation(...)``,
-  ``QSelAggregationOperation(...)``, and ``TransposeOperation(...)`` when a tool
-  needs to write or modify the saved operation list explicitly. Pass those operation
-  instances to ``selection(...)`` or ``full_data(...)``.
+- To describe a tool's data transformations, import concrete operation models from
+  ``erlab.interactive.imagetool._provenance._operations`` when a tool needs to write
+  or modify the saved operation list explicitly. Pass those operation instances to
+  source constructors such as
+  ``erlab.interactive.imagetool.provenance.selection(...)`` or
+  ``erlab.interactive.imagetool.provenance.full_data(...)``. The concrete operation
+  catalog is still an internal, evolving interface; tool authors who depend on it are
+  responsible for updating their integrations when those models change.
+- If none of the existing models represents the transformation, implement a
+  ``erlab.interactive.imagetool.provenance.ToolProvenanceOperation`` subclass. Give it
+  a unique literal ``op`` value and Pydantic fields for every argument needed to repeat
+  the operation. Implement ``apply(...)``, ``derivation_label()``, and either
+  ``expression_code(...)`` for expression-based APIs or ``statement_code(...)`` for a
+  mutating API. Generated code must use public APIs and caller-provided variable names.
+  Test both ``apply(...)`` and the executed generated code against the same expected
+  ``DataArray``.
 - When a tool or dialog emits a sequence of primitive operations that should be edited
   as one unit, stamp the complete sequence as an operation group before returning it.
   The canonical order should be the order needed for clean generated code and replay.
@@ -796,9 +807,9 @@ def mytool(
 ```
 
 This launcher is what should get the user-facing docstring. Treat it as part of the
-real tool API, not as a thin convenience wrapper: built-in tools typically infer
-`data_name` here, then pass that stable name into the `ToolWindow` instance so generated
-code and saved state stay readable.
+real tool API, not as a thin convenience wrapper: existing ERLabPy launchers typically
+infer `data_name` here, then pass that stable name into the `ToolWindow` instance so
+generated code and saved state stay readable.
 
 To make the tool discoverable across ERLabPy, update the relevant entry points:
 

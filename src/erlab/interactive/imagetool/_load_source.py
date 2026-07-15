@@ -11,7 +11,15 @@ from dataclasses import dataclass
 import numpy as np
 
 import erlab
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool._provenance._code import _provenance_value_code
+from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
+    FileLoadSource,
+    FileReplayCall,
+    ReplayStage,
+    ToolProvenanceSpec,
+    file_load,
+)
 
 if typing.TYPE_CHECKING:
     import os
@@ -40,13 +48,21 @@ _RESERVED_REPLAY_SOURCE_NAMES = {
     "_processed",
 }
 
-_FileDataSelection = provenance.FileDataSelection
 _LoadFunc: typing.TypeAlias = tuple[
     Callable[..., typing.Any] | str,
     dict[str, typing.Any],
-    int | dict[str, typing.Any] | _FileDataSelection,
+    FileDataSelection,
 ]
 _LoadKind: typing.TypeAlias = typing.Literal["erlab_loader", "callable"]
+
+
+def _parse_serialized_file_data_selection(value: typing.Any) -> FileDataSelection:
+    """Parse current and legacy selections at persisted-state boundaries."""
+    if isinstance(value, np.integer):
+        value = int(value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        value = {"kind": "parsed_index", "value": value}
+    return FileDataSelection.model_validate(value)
 
 
 @dataclass(frozen=True)
@@ -82,7 +98,7 @@ class _ResolvedLoadFunc:
     setup_lines: tuple[str, ...]
     loader_name: str | None
     kwargs: dict[str, typing.Any]
-    selection: provenance.FileDataSelection
+    selection: FileDataSelection
     cast_float64: bool
 
     @property
@@ -96,9 +112,9 @@ class _ResolvedLoadFunc:
 
     def replay_call(
         self,
-    ) -> provenance.FileReplayCall:
+    ) -> FileReplayCall:
         """Return the serialized loader call used by structured file replay."""
-        return provenance.FileReplayCall(
+        return FileReplayCall(
             kind=self.kind,
             target=self.target,
             kwargs=self.kwargs,
@@ -106,19 +122,25 @@ class _ResolvedLoadFunc:
             cast_float64=self.cast_float64,
         )
 
-    def load_code(self, file_path: Path, *, assign: str) -> str:
+    def load_code(self, file_path: Path, *, assign: str) -> str | None:
         """Return user-facing Python that reloads the same selected file data."""
+        if self.selection.kind == "parsed_index":
+            return None
+
         imports = list(self.imports)
         call_args = self._call_args(file_path)
         call_expr = f"{self.loader_expr}({', '.join(call_args)})"
-        call_expr = _file_data_selection_code(call_expr, self.selection)
-        if self.cast_float64:
-            call_expr = f'{call_expr}.astype("float64")'
 
+        if self.selection.kind == "sequence_index":
+            imports.append("import xarray as xr")
         lines = list(dict.fromkeys(imports))
         if lines:
             lines.append("")
         lines.extend(self.setup_lines)
+
+        call_expr = _file_data_selection_code(call_expr, self.selection)
+        if self.cast_float64:
+            call_expr = f'{call_expr}.astype("float64")'
         lines.append(f"{assign} = {call_expr}")
         return "\n".join(lines)
 
@@ -157,20 +179,26 @@ def _needs_float64_cast(source_input_dtype: np.dtype[typing.Any] | str | None) -
 
 def _file_data_selection_code(
     load_expr: str,
-    selection: provenance.FileDataSelection,
+    selection: FileDataSelection,
 ) -> str:
     if selection.kind == "dataarray":
         return load_expr
     if selection.kind == "dataset_variable":
-        variable_code = provenance._provenance_value_code(selection.value)
+        variable_code = _provenance_value_code(selection.value)
         return f"{load_expr}[{variable_code}]"
-    if selection.kind == "datatree_path":
-        return f"{load_expr}[{selection.value!r}]"
+    if selection.kind == "datatree_variable":
+        node_path, variable = typing.cast(
+            "tuple[str, typing.Hashable]", selection.value
+        )
+        variable_code = _provenance_value_code(variable)
+        return f"{load_expr}[{node_path!r}].dataset[{variable_code}]"
+    if selection.kind == "sequence_index":
+        return f"xr.DataArray({load_expr}[{int(selection.value)}])"
 
-    return (
-        "erlab.interactive.imagetool.viewer_state._parse_input("
-        f"{load_expr})[{selection.value}]"
-    )
+    if selection.kind == "parsed_index":
+        raise ValueError("Legacy parsed-index selections cannot emit direct load code")
+
+    raise ValueError(f"Unsupported file data selection kind {selection.kind!r}")
 
 
 def _resolve_identified_path(
@@ -294,7 +322,11 @@ def _resolve_load_func(
         return None
 
     loader, kwargs, selection = load_func
-    selection = _FileDataSelection.model_validate(selection)
+    if not isinstance(selection, FileDataSelection):
+        raise TypeError(
+            "load_func must use a FileDataSelection; integer and mapping "
+            "selections are only supported while migrating persisted state"
+        )
     cast_float64 = _needs_float64_cast(source_input_dtype)
     if isinstance(loader, str):
         return _ResolvedLoadFunc(
@@ -434,7 +466,7 @@ def _load_source_details_from_file(
 
 
 def _load_source_details_from_provenance(
-    load_source: provenance.FileLoadSource,
+    load_source: FileLoadSource,
 ) -> _LoadSourceDetails:
     """Build manager metadata details from serialized provenance file metadata."""
     return _LoadSourceDetails(
@@ -457,8 +489,8 @@ def _load_provenance_from_file_details(
     load_func: _LoadFunc | None,
     *,
     source_input_dtype: np.dtype[typing.Any] | str | None = None,
-    replay_stages: Sequence[provenance.ReplayStage] = (),
-) -> provenance.ToolProvenanceSpec | None:
+    replay_stages: Sequence[ReplayStage] = (),
+) -> ToolProvenanceSpec | None:
     """Build replay provenance whose seed reloads the current data from disk."""
     resolved = _resolve_load_func(
         load_func,
@@ -467,10 +499,13 @@ def _load_provenance_from_file_details(
     if resolved is None:
         return None
     details = _load_source_details(file_path, load_func, resolved)
-    return provenance.file_load(
+    seed_code = resolved.load_code(file_path, assign="derived")
+    if seed_code is None:
+        return None
+    return file_load(
         start_label=f"Load data from file {file_path.name!r}",
-        seed_code=resolved.load_code(file_path, assign="derived"),
-        file_load_source=provenance.FileLoadSource(
+        seed_code=seed_code,
+        file_load_source=FileLoadSource(
             path=str(details.path),
             loader_label=details.loader_label,
             loader_text=details.loader_text,
@@ -480,3 +515,30 @@ def _load_provenance_from_file_details(
         ),
         replay_stages=replay_stages,
     )
+
+
+def _migrate_legacy_file_data_selection(
+    file_path: Path,
+    load_func: _LoadFunc,
+) -> FileDataSelection:
+    """Resolve a persisted parsed index against the selected loader output."""
+    resolved = _resolve_load_func(load_func)
+    if resolved is None:
+        raise ValueError("Selected loader cannot be replayed")
+    if resolved.selection.kind != "parsed_index":
+        return resolved.selection
+
+    from erlab.interactive.imagetool._provenance._execution import (
+        _load_file_source_object,
+        _semantic_file_data_selection,
+    )
+
+    load_source = FileLoadSource(
+        path=str(file_path),
+        loader_label=resolved.loader_label,
+        loader_text=resolved.loader_text,
+        kwargs_text=resolved.kwargs_text,
+        replay_call=resolved.replay_call(),
+    )
+    loaded = _load_file_source_object(load_source)
+    return _semantic_file_data_selection(loaded, resolved.selection)

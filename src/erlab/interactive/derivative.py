@@ -13,6 +13,8 @@
         :class: only-dark
 """
 
+from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+
 __all__ = ["dtool"]
 
 import enum
@@ -29,7 +31,6 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import provenance
 
 if typing.TYPE_CHECKING:
     import varname
@@ -579,16 +580,16 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
 
     def _result_provenance(
         self, *, input_name: str | None = None, transpose_output: bool = False
-    ) -> tuple[provenance.ScriptCodeOperation, ...]:
+    ) -> tuple[ScriptCodeOperation, ...]:
         operations = [
-            provenance.ScriptCodeOperation(
+            ScriptCodeOperation(
                 label="Compute derivative output",
                 code=self._build_copy_code(input_name=input_name),
             )
         ]
         if transpose_output:
             operations.append(
-                provenance.ScriptCodeOperation(
+                ScriptCodeOperation(
                     label="Transpose derivative output for ImageTool display",
                     code="result = result.transpose()",
                 )
@@ -600,7 +601,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         *,
         input_name: str | None = None,
         data: xr.DataArray | None = None,
-    ) -> tuple[provenance.ScriptCodeOperation, ...]:
+    ) -> tuple[ScriptCodeOperation, ...]:
         return self._result_provenance(input_name=input_name)
 
     def _output_provenance(
@@ -608,7 +609,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         *,
         input_name: str | None = None,
         data: xr.DataArray | None = None,
-    ) -> tuple[provenance.ScriptCodeOperation, ...]:
+    ) -> tuple[ScriptCodeOperation, ...]:
         return self._result_provenance(
             input_name=input_name,
             transpose_output=True,

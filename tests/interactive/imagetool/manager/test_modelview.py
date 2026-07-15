@@ -19,7 +19,14 @@ import erlab.interactive._options.core
 import erlab.interactive.imagetool.manager._base as manager_base
 import erlab.interactive.imagetool.manager._io as manager_io
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
-from erlab.interactive.imagetool import itool, provenance
+from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
+    ScriptInput,
+    ToolProvenanceSpec,
+    full_data,
+    script,
+)
 from erlab.interactive.imagetool.manager import ImageToolManager, load_in_manager
 from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
@@ -47,17 +54,17 @@ logger = logging.getLogger(__name__)
 
 
 def test_dependency_tracker_uses_passive_tool_provenance() -> None:
-    source = provenance.script(
+    source = script(
         start_label="Source",
         seed_code="source = data",
         active_name="source",
     )
-    dependent = provenance.script(
+    dependent = script(
         start_label="Dependent",
         seed_code="derived = source",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="source",
                 label="Source",
                 node_uid="source-uid",
@@ -69,7 +76,7 @@ def test_dependency_tracker_uses_passive_tool_provenance() -> None:
     class _PassiveTool:
         def current_provenance_spec(
             self, *, flush_deferred_restore: bool = True
-        ) -> provenance.ToolProvenanceSpec:
+        ) -> ToolProvenanceSpec:
             assert flush_deferred_restore is False
             return dependent
 
@@ -1528,7 +1535,7 @@ def test_manager_file_open_uses_selected_dataset_variable(
         coords={"u": np.arange(4), "v": np.arange(5)},
         name="second",
     )
-    selection = erlab.interactive.imagetool.provenance.FileDataSelection(
+    selection = FileDataSelection(
         kind="dataset_variable",
         value="second",
     )
@@ -2129,7 +2136,7 @@ def test_manager_child_imagetool_dask_badge(
             child_tool,
             0,
             show=False,
-            source_spec=erlab.interactive.imagetool.provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=True,
         )
         child_tool.slicer_area._auto_chunk()

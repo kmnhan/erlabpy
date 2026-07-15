@@ -1,3 +1,4 @@
+import ast
 import enum
 import json
 import pathlib
@@ -28,7 +29,65 @@ from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive._mesh import MeshTool
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
-from erlab.interactive.imagetool import _kspace_conversion, itool, provenance
+from erlab.interactive.imagetool import _kspace_conversion, itool
+from erlab.interactive.imagetool._provenance._code import uses_default_replay_input
+from erlab.interactive.imagetool._provenance._execution import (
+    replay_file_provenance,
+    replay_script_provenance,
+)
+from erlab.interactive.imagetool._provenance._model import (
+    DerivationEntry,
+    FileDataSelection,
+    FileLoadSource,
+    FileReplayCall,
+    ReplayStage,
+    ScriptInput,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    _ProvenanceDisplayRow,
+    _ProvenanceStepRef,
+    compose_display_provenance,
+    compose_full_provenance,
+    file_load,
+    full_data,
+    operation_group_range,
+    script,
+    selection,
+    stamp_operation_group,
+    strip_operation_groups,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    AffineCoordOperation,
+    AssignAttrsOperation,
+    AssignCoord1DOperation,
+    AssignCoordsOperation,
+    AssignScalarCoordOperation,
+    AverageOperation,
+    CoarsenOperation,
+    DivideByCoordOperation,
+    GaussianFilterOperation,
+    InterpolationOperation,
+    IselOperation,
+    KspaceConvertOperation,
+    KspaceSetNormalOperation,
+    KspaceWorkFunctionOperation,
+    LeadingEdgeOperation,
+    NormalizeOperation,
+    QSelAggregationOperation,
+    QSelOperation,
+    RenameDimsCoordsOperation,
+    RenameOperation,
+    RestoreNonuniformDimsOperation,
+    RotateOperation,
+    ScriptCodeOperation,
+    SelOperation,
+    SortByOperation,
+    SwapDimsOperation,
+    SymmetrizeNfoldOperation,
+    SymmetrizeOperation,
+    ThinOperation,
+    TransposeOperation,
+)
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager import fetch, replace_data
 from erlab.interactive.imagetool.manager._modelview import (
@@ -66,15 +125,15 @@ def isolate_qt_clipboard(monkeypatch: pytest.MonkeyPatch) -> InMemoryClipboard:
 
 
 def _manager_provenance_file_spec(path: pathlib.Path):
-    return provenance.file_load(
+    return file_load(
         start_label="Load source",
         seed_code=f"derived = xr.load_dataarray({str(path)!r})",
-        file_load_source=provenance.FileLoadSource(
+        file_load_source=FileLoadSource(
             path=str(path),
             loader_label="xarray.load_dataarray",
             loader_text="xarray.load_dataarray",
             kwargs_text="",
-            replay_call=provenance.FileReplayCall(
+            replay_call=FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 selected_index=0,
@@ -85,20 +144,20 @@ def _manager_provenance_file_spec(path: pathlib.Path):
 
 def _manager_replay_file_spec(
     path: pathlib.Path,
-    *operations: provenance.ToolProvenanceOperation,
-) -> provenance.ToolProvenanceSpec:
-    spec = provenance.file_load(
+    *operations: ToolProvenanceOperation,
+) -> ToolProvenanceSpec:
+    spec = file_load(
         start_label=f"Load data from file {path.name!r}",
         seed_code=(
             "import xarray\n\n"
             f"derived = xarray.load_dataarray({str(path)!r}, engine='h5netcdf')"
         ),
-        file_load_source=provenance.FileLoadSource(
+        file_load_source=FileLoadSource(
             path=str(path),
             loader_label="Load Function",
             loader_text="xarray.load_dataarray",
             kwargs_text="engine='h5netcdf'",
-            replay_call=provenance.FileReplayCall(
+            replay_call=FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 kwargs={"engine": "h5netcdf"},
@@ -107,14 +166,14 @@ def _manager_replay_file_spec(
         ),
     )
     if operations:
-        spec = spec.append_replay_stage(provenance.full_data(*operations))
+        spec = spec.append_replay_stage(full_data(*operations))
     return spec
 
 
 def _add_file_replay_tool(
     manager: erlab.interactive.imagetool.manager.ImageToolManager,
     data: xr.DataArray,
-    spec: provenance.ToolProvenanceSpec,
+    spec: ToolProvenanceSpec,
 ) -> erlab.interactive.imagetool.ImageTool:
     tool = itool(data, manager=False, execute=False)
     assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
@@ -185,7 +244,7 @@ def _provenance_paste_test_data(name: str = "data") -> xr.DataArray:
 
 
 def _set_provenance_steps_clipboard(
-    operations: tuple[provenance.ToolProvenanceOperation, ...],
+    operations: tuple[ToolProvenanceOperation, ...],
     *,
     active_name: str = "derived",
 ) -> None:
@@ -239,12 +298,12 @@ def _seed_fit2d_param_results(child: Fit2DTool, params_list: list[typing.Any]) -
 
 
 def test_file_load_edit_dialog_uses_loader_options_widget(qtbot) -> None:
-    load_source = provenance.FileLoadSource(
+    load_source = FileLoadSource(
         path="scan.h5",
         loader_label="Load Function",
         loader_text="xarray.load_dataarray",
         kwargs_text="engine='h5netcdf'",
-        replay_call=provenance.FileReplayCall(
+        replay_call=FileReplayCall(
             kind="callable",
             target="xarray.load_dataarray",
             kwargs={"engine": "h5netcdf"},
@@ -271,12 +330,12 @@ def test_file_load_edit_dialog_open_is_metadata_only(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    load_source = provenance.FileLoadSource(
+    load_source = FileLoadSource(
         path="scan.h5",
         loader_label="Load Function",
         loader_text="xarray.load_dataarray",
         kwargs_text="engine='h5netcdf'",
-        replay_call=provenance.FileReplayCall(
+        replay_call=FileReplayCall(
             kind="callable",
             target="xarray.load_dataarray",
             kwargs={"engine": "h5netcdf"},
@@ -284,7 +343,7 @@ def test_file_load_edit_dialog_open_is_metadata_only(
         ),
     )
     monkeypatch.setattr(
-        provenance,
+        manager_provenance_edit,
         "replay_file_provenance",
         lambda *_args, **_kwargs: pytest.fail(
             "opening file-load editor must not replay the file"
@@ -315,12 +374,17 @@ def test_file_load_edit_dialog_allows_loader_change(
     loader = example_loader()
     monkeypatch.setitem(erlab.io.loaders._loaders, loader.name, loader)
     monkeypatch.setitem(erlab.io.loaders._alias_mapping, loader.name, loader.name)
-    load_source = provenance.FileLoadSource(
-        path=str(tmp_path / "scan.h5"),
+    file_path = tmp_path / "scan.h5"
+    xr.DataArray(
+        np.ones((2, 3)),
+        dims=("ThetaX", "BindingEnergy"),
+    ).to_netcdf(file_path, engine="h5netcdf")
+    load_source = FileLoadSource(
+        path=str(file_path),
         loader_label="Load Function",
         loader_text="xarray.load_dataarray",
         kwargs_text="engine='h5netcdf'",
-        replay_call=provenance.FileReplayCall(
+        replay_call=FileReplayCall(
             kind="callable",
             target="xarray.load_dataarray",
             kwargs={"engine": "h5netcdf"},
@@ -343,7 +407,9 @@ def test_file_load_edit_dialog_allows_loader_change(
     ).setChecked(True)
     dialog.kwargs_edit.setText("single=True")
 
-    spec = dialog.provenance_spec(active_name="derived", replay_stages=())
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", erlab.io.dataloader.ValidationWarning)
+        spec = dialog.provenance_spec(active_name="derived", replay_stages=())
 
     assert spec.file_load_source is not None
     replay_call = spec.file_load_source.replay_call
@@ -351,21 +417,19 @@ def test_file_load_edit_dialog_allows_loader_change(
     assert replay_call.kind == "erlab_loader"
     assert replay_call.target == "example"
     assert replay_call.kwargs == {"single": True}
-    assert replay_call.selection == provenance.FileDataSelection(
-        kind="parsed_index", value=0
-    )
+    assert replay_call.selection == FileDataSelection(kind="dataarray")
 
 
 def test_file_load_edit_dialog_updates_loader_options_for_replacement_path(
     qtbot,
     tmp_path: pathlib.Path,
 ) -> None:
-    load_source = provenance.FileLoadSource(
+    load_source = FileLoadSource(
         path=str(tmp_path / "scan.h5"),
         loader_label="Load Function",
         loader_text="xarray.load_dataarray",
         kwargs_text="engine='h5netcdf'",
-        replay_call=provenance.FileReplayCall(
+        replay_call=FileReplayCall(
             kind="callable",
             target="xarray.load_dataarray",
             kwargs={"engine": "h5netcdf"},
@@ -504,6 +568,10 @@ def test_file_load_edit_dialog_batch_manual_path_override(
     assert dialog.selected_batch_peers() == (peer,)
 
     manual_path = manual_dir / "explicit.h5"
+    xr.DataArray(np.ones((2, 3)), dims=("x", "y")).to_netcdf(
+        manual_path,
+        engine="h5netcdf",
+    )
     item.setText(2, str(manual_path))
     dialog.path_edit.setText(str(new_dir / "a.h5"))
 
@@ -525,7 +593,7 @@ def test_file_load_edit_dialog_repair_checks_required_and_preserves_peer_loader(
     current_spec = _manager_replay_file_spec(old_dir / "a.h5")
     required_spec = _manager_replay_file_spec(
         old_dir / "b.h5",
-        provenance.IselOperation(kwargs={"x": 0}),
+        IselOperation(kwargs={"x": 0}),
     )
     optional_spec = _manager_replay_file_spec(old_dir / "c.h5")
     assert current_spec.file_load_source is not None
@@ -701,51 +769,51 @@ def test_file_load_edit_dialog_batch_disabled_without_peers(qtbot) -> None:
 @pytest.mark.parametrize(
     "operation",
     [
-        provenance.RotateOperation(
+        RotateOperation(
             angle=5.0,
             axes=("x", "y"),
             center=(0.0, 1.0),
         ),
-        provenance.QSelOperation(kwargs={"x": 1.0}),
-        provenance.IselOperation(kwargs={"x": 0}),
-        provenance.SelOperation(kwargs={"x": 1.0}),
-        provenance.SortByOperation(variables=("x",)),
-        provenance.AverageOperation(dims=("x",)),
-        provenance.QSelAggregationOperation(dims=("x",), func="mean"),
-        provenance.InterpolationOperation(dim="x", values=[0.0, 1.0]),
-        provenance.LeadingEdgeOperation(dim="x", fraction=0.5),
-        provenance.CoarsenOperation(
+        QSelOperation(kwargs={"x": 1.0}),
+        IselOperation(kwargs={"x": 0}),
+        SelOperation(kwargs={"x": 1.0}),
+        SortByOperation(variables=("x",)),
+        AverageOperation(dims=("x",)),
+        QSelAggregationOperation(dims=("x",), func="mean"),
+        InterpolationOperation(dim="x", values=[0.0, 1.0]),
+        LeadingEdgeOperation(dim="x", fraction=0.5),
+        CoarsenOperation(
             dim={"x": 2},
             boundary="trim",
             side="left",
             coord_func="mean",
             reducer="mean",
         ),
-        provenance.ThinOperation(mode="global", factor=2),
-        provenance.SymmetrizeOperation(dim="x", center=0.0),
-        provenance.SymmetrizeNfoldOperation(
+        ThinOperation(mode="global", factor=2),
+        SymmetrizeOperation(dim="x", center=0.0),
+        SymmetrizeNfoldOperation(
             fold=4,
             axes=("x", "y"),
             center={"x": 0.0, "y": 1.0},
         ),
-        provenance.NormalizeOperation(dims=("x",), mode="area"),
-        provenance.DivideByCoordOperation(coord_name="x"),
-        provenance.GaussianFilterOperation(sigma={"x": 1.0}),
-        provenance.SwapDimsOperation(mapping={"x": "kx"}),
-        provenance.RenameDimsCoordsOperation(mapping={"x": "kx"}),
-        provenance.AffineCoordOperation(coord_name="x", scale=1.0, offset=0.0),
-        provenance.AssignCoordsOperation(coord_name="x", values=[0.0, 1.0]),
-        provenance.AssignScalarCoordOperation(coord_name="temperature", value=20.0),
-        provenance.AssignCoord1DOperation(
+        NormalizeOperation(dims=("x",), mode="area"),
+        DivideByCoordOperation(coord_name="x"),
+        GaussianFilterOperation(sigma={"x": 1.0}),
+        SwapDimsOperation(mapping={"x": "kx"}),
+        RenameDimsCoordsOperation(mapping={"x": "kx"}),
+        AffineCoordOperation(coord_name="x", scale=1.0, offset=0.0),
+        AssignCoordsOperation(coord_name="x", values=[0.0, 1.0]),
+        AssignScalarCoordOperation(coord_name="temperature", value=20.0),
+        AssignCoord1DOperation(
             coord_name="kx",
             dim="x",
             values=[0.0, 1.0],
         ),
-        provenance.AssignAttrsOperation(attrs={"note": "edited"}),
+        AssignAttrsOperation(attrs={"note": "edited"}),
     ],
 )
 def test_manager_provenance_structured_operations_have_edit_dialogs(
-    operation: provenance.ToolProvenanceOperation,
+    operation: ToolProvenanceOperation,
 ) -> None:
     assert manager_provenance_edit._dialog_class_for_operation(operation) is not None
 
@@ -759,12 +827,12 @@ def test_manager_provenance_editor_contract_rejects_group_without_matcher() -> N
         manager_provenance_edit.dialogs.DataTransformDialog
     ):
         __module__ = manager_provenance_edit.dialogs.__name__
-        operation_types = (provenance.ScriptCodeOperation,)
+        operation_types = (ScriptCodeOperation,)
         grouped_operation_only = True
 
         def restore_transform_operations(
             self,
-            operations: Sequence[provenance.ToolProvenanceOperation],
+            operations: Sequence[ToolProvenanceOperation],
         ) -> None:
             del operations
 
@@ -782,23 +850,23 @@ def test_manager_provenance_editor_contract_rejects_group_without_matcher() -> N
 def test_manager_provenance_editor_contract_rejects_mixed_editors() -> None:
     class _StandaloneScriptDialog(manager_provenance_edit.dialogs.DataTransformDialog):
         __module__ = manager_provenance_edit.dialogs.__name__
-        operation_types = (provenance.ScriptCodeOperation,)
+        operation_types = (ScriptCodeOperation,)
 
         def restore_transform_operation(
             self,
-            operation: provenance.ToolProvenanceOperation,
+            operation: ToolProvenanceOperation,
         ) -> None:
             del operation
 
     class _GroupedScriptDialog(manager_provenance_edit.dialogs.DataTransformDialog):
         __module__ = manager_provenance_edit.dialogs.__name__
-        operation_types = (provenance.ScriptCodeOperation,)
+        operation_types = (ScriptCodeOperation,)
         grouped_operation_only = True
 
         @classmethod
         def operation_group_for_edit(
             cls,
-            operations: Sequence[provenance.ToolProvenanceOperation],
+            operations: Sequence[ToolProvenanceOperation],
             operation_index: int,
         ) -> tuple[int, int] | None:
             del cls, operations, operation_index
@@ -806,7 +874,7 @@ def test_manager_provenance_editor_contract_rejects_mixed_editors() -> None:
 
         def restore_transform_operations(
             self,
-            operations: Sequence[provenance.ToolProvenanceOperation],
+            operations: Sequence[ToolProvenanceOperation],
         ) -> None:
             del operations
 
@@ -825,21 +893,21 @@ def test_manager_provenance_editor_contract_rejects_mixed_editors() -> None:
 def test_manager_provenance_editor_contract_rejects_ambiguous_editors() -> None:
     class _StandaloneScriptDialogA(manager_provenance_edit.dialogs.DataTransformDialog):
         __module__ = manager_provenance_edit.dialogs.__name__
-        operation_types = (provenance.ScriptCodeOperation,)
+        operation_types = (ScriptCodeOperation,)
 
         def restore_transform_operation(
             self,
-            operation: provenance.ToolProvenanceOperation,
+            operation: ToolProvenanceOperation,
         ) -> None:
             del operation
 
     class _StandaloneScriptDialogB(manager_provenance_edit.dialogs.DataTransformDialog):
         __module__ = manager_provenance_edit.dialogs.__name__
-        operation_types = (provenance.ScriptCodeOperation,)
+        operation_types = (ScriptCodeOperation,)
 
         def restore_transform_operation(
             self,
-            operation: provenance.ToolProvenanceOperation,
+            operation: ToolProvenanceOperation,
         ) -> None:
             del operation
 
@@ -847,7 +915,7 @@ def test_manager_provenance_editor_contract_rejects_ambiguous_editors() -> None:
         errors = manager_provenance_edit._operation_editor_contract_errors()
         with pytest.raises(RuntimeError, match="Multiple standalone"):
             manager_provenance_edit._standalone_editor_dialog_class_for_operation_type(
-                provenance.ScriptCodeOperation
+                ScriptCodeOperation
             )
     finally:
         _StandaloneScriptDialogA.operation_types = ()
@@ -862,13 +930,13 @@ def test_manager_provenance_editor_contract_rejects_ambiguous_editors() -> None:
 def test_manager_provenance_editor_contract_rejects_multiple_grouped_editors() -> None:
     class _GroupedScriptDialogA(manager_provenance_edit.dialogs.DataTransformDialog):
         __module__ = manager_provenance_edit.dialogs.__name__
-        operation_types = (provenance.ScriptCodeOperation,)
+        operation_types = (ScriptCodeOperation,)
         grouped_operation_only = True
 
         @classmethod
         def operation_group_for_edit(
             cls,
-            operations: Sequence[provenance.ToolProvenanceOperation],
+            operations: Sequence[ToolProvenanceOperation],
             operation_index: int,
         ) -> tuple[int, int] | None:
             del cls, operations, operation_index
@@ -876,19 +944,19 @@ def test_manager_provenance_editor_contract_rejects_multiple_grouped_editors() -
 
         def restore_transform_operations(
             self,
-            operations: Sequence[provenance.ToolProvenanceOperation],
+            operations: Sequence[ToolProvenanceOperation],
         ) -> None:
             del operations
 
     class _GroupedScriptDialogB(manager_provenance_edit.dialogs.DataTransformDialog):
         __module__ = manager_provenance_edit.dialogs.__name__
-        operation_types = (provenance.ScriptCodeOperation,)
+        operation_types = (ScriptCodeOperation,)
         grouped_operation_only = True
 
         @classmethod
         def operation_group_for_edit(
             cls,
-            operations: Sequence[provenance.ToolProvenanceOperation],
+            operations: Sequence[ToolProvenanceOperation],
             operation_index: int,
         ) -> tuple[int, int] | None:
             del cls, operations, operation_index
@@ -896,7 +964,7 @@ def test_manager_provenance_editor_contract_rejects_multiple_grouped_editors() -
 
         def restore_transform_operations(
             self,
-            operations: Sequence[provenance.ToolProvenanceOperation],
+            operations: Sequence[ToolProvenanceOperation],
         ) -> None:
             del operations
 
@@ -917,11 +985,11 @@ def test_manager_provenance_editor_contract_rejects_missing_editor() -> None:
         manager_provenance_edit.dialogs.DataTransformDialog
     ):
         __module__ = manager_provenance_edit.dialogs.__name__
-        operation_types = (provenance.ScriptCodeOperation,)
+        operation_types = (ScriptCodeOperation,)
 
     class _ScriptFilterWithoutRestore(manager_provenance_edit.dialogs.DataFilterDialog):
         __module__ = manager_provenance_edit.dialogs.__name__
-        operation_types = (provenance.ScriptCodeOperation,)
+        operation_types = (ScriptCodeOperation,)
 
     try:
         errors = manager_provenance_edit._operation_editor_contract_errors()
@@ -937,13 +1005,13 @@ def test_manager_provenance_editor_contract_rejects_missing_editor() -> None:
 @pytest.mark.parametrize(
     "operation",
     [
-        provenance.SelOperation(kwargs={"x": slice(0.0, 1.0)}),
-        provenance.IselOperation(kwargs={"x": slice(0, 1)}),
-        provenance.QSelOperation(kwargs={"x": 1.0}),
+        SelOperation(kwargs={"x": slice(0.0, 1.0)}),
+        IselOperation(kwargs={"x": slice(0, 1)}),
+        QSelOperation(kwargs={"x": 1.0}),
     ],
 )
 def test_manager_provenance_selection_operations_use_selection_dialog(
-    operation: provenance.ToolProvenanceOperation,
+    operation: ToolProvenanceOperation,
 ) -> None:
     assert (
         manager_provenance_edit._dialog_class_for_operation(operation)
@@ -974,7 +1042,7 @@ def test_manager_provenance_loader_kwargs_parser_and_file_dialog_branches(
     with pytest.raises(TypeError, match="unpacking"):
         parse("**kwargs")
 
-    load_source = provenance.FileLoadSource(
+    load_source = FileLoadSource(
         path=str(tmp_path / "old.h5"),
         loader_label="Load Function",
         loader_text="xarray.load_dataarray",
@@ -1011,14 +1079,14 @@ def test_manager_provenance_dialog_class_lookup_skips_base_restore_hooks() -> No
     class _NoRestoreTransformDialog(
         manager_provenance_edit.dialogs.DataTransformDialog
     ):
-        operation_types = (provenance.ScriptCodeOperation,)
+        operation_types = (ScriptCodeOperation,)
 
     class _NoRestoreFilterDialog(manager_provenance_edit.dialogs.DataFilterDialog):
-        operation_types = (provenance.ScriptCodeOperation,)
+        operation_types = (ScriptCodeOperation,)
 
     assert (
         manager_provenance_edit._dialog_class_for_operation(
-            provenance.ScriptCodeOperation(label="script", code="derived = data")
+            ScriptCodeOperation(label="script", code="derived = data")
         )
         is None
     )
@@ -1069,14 +1137,14 @@ def _fake_edit_controller(
 
 
 def _fake_edit_node(
-    spec: provenance.ToolProvenanceSpec | None,
+    spec: ToolProvenanceSpec | None,
     *,
     uid: str = "node",
     display_text: str = "Node",
-    source_spec: provenance.ToolProvenanceSpec | None = None,
-    source_display_spec: provenance.ToolProvenanceSpec | None = None,
+    source_spec: ToolProvenanceSpec | None = None,
+    source_display_spec: ToolProvenanceSpec | None = None,
     parent_uid: str | None = None,
-    active_filter: provenance.ToolProvenanceOperation | None = None,
+    active_filter: ToolProvenanceOperation | None = None,
 ) -> types.SimpleNamespace:
     return types.SimpleNamespace(
         uid=uid,
@@ -1097,15 +1165,15 @@ def _fake_edit_node(
     )
 
 
-def _trust_required_script_spec() -> provenance.ToolProvenanceSpec:
-    return provenance.script(
-        provenance.ScriptCodeOperation(
+def _trust_required_script_spec() -> ToolProvenanceSpec:
+    return script(
+        ScriptCodeOperation(
             label="User code",
             code="import os\nderived = data_0 + int(os.path.exists(os.devnull))",
         ),
         start_label="Run user code",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+        script_inputs=(ScriptInput(name="data_0", label="Input"),),
     )
 
 
@@ -1117,7 +1185,7 @@ def test_manager_selection_provenance_edit_restores_from_high_dimensional_source
         np.zeros((2, 3, 4, 5, 6)),
         dims=("scan", "eV", "kx", "ky", "temperature"),
     )
-    spec = provenance.full_data(provenance.IselOperation(kwargs={"scan": 1}))
+    spec = full_data(IselOperation(kwargs={"scan": 1}))
     node = _fake_edit_node(spec)
     node.detached_live_parent_data = parent_data
 
@@ -1182,7 +1250,7 @@ def test_manager_selection_provenance_edit_restores_from_high_dimensional_source
         "scan_method": "isel",
         "scan_index": 1,
     }
-    assert replacements == [provenance.IselOperation(kwargs={"scan": 1})]
+    assert replacements == [IselOperation(kwargs={"scan": 1})]
 
 
 def test_manager_source_bound_derivation_rows_are_metadata_only(
@@ -1191,7 +1259,7 @@ def test_manager_source_bound_derivation_rows_are_metadata_only(
     calls: list[str] = []
 
     def record_apply(
-        self: provenance.ToolProvenanceOperation,
+        self: ToolProvenanceOperation,
         data: xr.DataArray,
         *,
         parent_data: xr.DataArray,
@@ -1200,20 +1268,20 @@ def test_manager_source_bound_derivation_rows_are_metadata_only(
         return data
 
     monkeypatch.setattr(
-        provenance.SymmetrizeNfoldOperation,
+        SymmetrizeNfoldOperation,
         "apply",
         record_apply,
     )
     monkeypatch.setattr(
-        provenance.KspaceConvertOperation,
+        KspaceConvertOperation,
         "apply",
         record_apply,
     )
-    source_spec = provenance.full_data(
-        provenance.SymmetrizeNfoldOperation(fold=4, axes=("x", "y")),
-        provenance.KspaceConvertOperation(),
+    source_spec = full_data(
+        SymmetrizeNfoldOperation(fold=4, axes=("x", "y")),
+        KspaceConvertOperation(),
     )
-    parent = _fake_edit_node(provenance.full_data(), uid="parent")
+    parent = _fake_edit_node(full_data(), uid="parent")
     parent.current_source_data = lambda: pytest.fail(
         "metadata rendering must not compute parent source data"
     )
@@ -1252,7 +1320,7 @@ def test_manager_trusted_script_replay_prompt_is_session_scoped(
     changed_spec = spec.model_copy(
         update={
             "operations": (
-                provenance.ScriptCodeOperation(
+                ScriptCodeOperation(
                     label="User code",
                     code=(
                         "import os\n"
@@ -1290,8 +1358,8 @@ def test_manager_trusted_script_replay_safe_and_prompt_paths(
 ) -> None:
     manager = types.SimpleNamespace(_trusted_script_replay_keys=set())
     controller = manager_lineage._LineageController(typing.cast("typing.Any", manager))
-    safe_spec = provenance.script(
-        provenance.ScriptCodeOperation(label="Offset", code="derived = data + 1"),
+    safe_spec = script(
+        ScriptCodeOperation(label="Offset", code="derived = data + 1"),
         start_label="Run safe script",
         seed_code="derived = data",
         active_name="derived",
@@ -1397,9 +1465,9 @@ def test_manager_provenance_lightweight_helper_edges() -> None:
         == "ImageTool child"
     )
 
-    script_input_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("Use data_0 from Input", None),
-        replay_ref=provenance._ProvenanceStepRef(
+    script_input_row = _ProvenanceDisplayRow(
+        DerivationEntry("Use data_0 from Input", None),
+        replay_ref=_ProvenanceStepRef(
             "script_input",
             script_input_index=0,
         ),
@@ -1407,17 +1475,17 @@ def test_manager_provenance_lightweight_helper_edges() -> None:
     )
     assert (
         manager_details_panel._DetailsPanelController._script_input_for_row(
-            provenance.full_data(),
+            full_data(),
             script_input_row,
         )
         is None
     )
     assert (
         manager_details_panel._DetailsPanelController._script_input_for_row(
-            provenance.script(
+            script(
                 start_label="Run script",
                 active_name="derived",
-                script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+                script_inputs=(ScriptInput(name="data_0", label="Input"),),
             ),
             script_input_row,
         )
@@ -1426,18 +1494,18 @@ def test_manager_provenance_lightweight_helper_edges() -> None:
 
     forwarded: list[
         tuple[
-            provenance.ToolProvenanceSpec,
+            ToolProvenanceSpec,
             str,
             set[str] | None,
         ]
     ] = []
-    spec = provenance.script(
+    spec = script(
         start_label="Run script",
         active_name="derived",
     )
 
     def ensure_script_provenance_trusted(
-        spec_arg: provenance.ToolProvenanceSpec,
+        spec_arg: ToolProvenanceSpec,
         *,
         reason: str,
         external_input_names: set[str] | None = None,
@@ -1482,14 +1550,14 @@ def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
     )
 
     def rebuild_script_provenance(
-        spec_arg: provenance.ToolProvenanceSpec,
+        spec_arg: ToolProvenanceSpec,
         **kwargs: typing.Any,
-    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         trusted_flags.append(bool(kwargs["trusted_user_code"]))
         return xr.DataArray([2.0], dims=("x",)), spec_arg
 
     monkeypatch.setattr(
-        manager_lineage._replay_graph,
+        manager_lineage,
         "rebuild_script_provenance",
         rebuild_script_provenance,
     )
@@ -1505,16 +1573,16 @@ def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
 def test_manager_provenance_edit_file_load_helper_edges(tmp_path: pathlib.Path) -> None:
     source_path = tmp_path / "scan.nc"
     replacement_path = tmp_path / "replacement.nc"
-    script_spec = provenance.script(
+    script_spec = script(
         start_label="Load script",
         seed_code=f"loaded = xr.load_dataarray({str(source_path)!r})",
         active_name="loaded",
-        file_load_source=provenance.FileLoadSource(
+        file_load_source=FileLoadSource(
             path=str(source_path),
             loader_label="xarray.load_dataarray",
             loader_text="xarray.load_dataarray",
             kwargs_text="",
-            replay_call=provenance.FileReplayCall(
+            replay_call=FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 selected_index=0,
@@ -1535,7 +1603,7 @@ def test_manager_provenance_edit_file_load_helper_edges(tmp_path: pathlib.Path) 
     with pytest.raises(RuntimeError, match="not a file load"):
         manager_provenance_edit._replace_file_load_fields(
             script_spec,
-            provenance.full_data(),
+            full_data(),
         )
 
     invalid_filename = FileNotFoundError()
@@ -1560,7 +1628,7 @@ def test_manager_script_code_edit_dialog_uses_python_code_editor(
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)
     dialog = manager_provenance_edit._ScriptCodeEditDialog(
-        provenance.ScriptCodeOperation(
+        ScriptCodeOperation(
             label="Evaluate console expression",
             code="derived = data_0 + 1",
         ),
@@ -1592,22 +1660,22 @@ def test_manager_script_code_edit_dialog_uses_python_code_editor(
 def test_manager_edit_script_code_row_replaces_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    spec = script(
+        ScriptCodeOperation(
             label="Evaluate console expression",
             code="derived = data_0 + 1",
         ),
         start_label="Run ImageTool manager console code",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+        script_inputs=(ScriptInput(name="data_0", label="Input"),),
     )
     controller = _fake_edit_controller(_fake_edit_node(spec))
-    candidates: list[provenance.ToolProvenanceSpec] = []
+    candidates: list[ToolProvenanceSpec] = []
 
     class FakeDialog:
         def __init__(
             self,
-            operation: provenance.ScriptCodeOperation,
+            operation: ScriptCodeOperation,
             _parent: QtWidgets.QWidget,
         ) -> None:
             assert operation.code == "derived = data_0 + 1"
@@ -1628,25 +1696,25 @@ def test_manager_edit_script_code_row_replaces_code(
     controller.edit_row(spec.display_rows()[2])
 
     assert len(candidates) == 1
-    assert isinstance(candidates[0].operations[0], provenance.ScriptCodeOperation)
+    assert isinstance(candidates[0].operations[0], ScriptCodeOperation)
     assert candidates[0].operations[0].code == "derived = data_0 + 2"
 
 
 def test_manager_edit_nested_script_code_row_replaces_nested_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    nested = provenance.script(
-        provenance.ScriptCodeOperation(label="Offset input", code="derived = data + 1"),
+    nested = script(
+        ScriptCodeOperation(label="Offset input", code="derived = data + 1"),
         start_label="Build nested",
         seed_code="data = xr.DataArray([1.0], dims=('x',))",
         active_name="derived",
     )
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(label="Use nested", code="derived = data_0"),
+    spec = script(
+        ScriptCodeOperation(label="Use nested", code="derived = data_0"),
         start_label="Run parent",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="Nested",
                 provenance_spec=nested,
@@ -1654,7 +1722,7 @@ def test_manager_edit_nested_script_code_row_replaces_nested_code(
         ),
     )
     controller = _fake_edit_controller(_fake_edit_node(spec))
-    candidates: list[provenance.ToolProvenanceSpec] = []
+    candidates: list[ToolProvenanceSpec] = []
 
     class FakeDialog:
         def __init__(self, *_args: typing.Any) -> None:
@@ -1684,8 +1752,8 @@ def test_manager_edit_live_script_code_row_replays_with_data_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     parent_data = xr.DataArray([1.0, 2.0], dims=("x",))
-    spec = provenance.full_data(
-        provenance.ScriptCodeOperation(
+    spec = full_data(
+        ScriptCodeOperation(
             label="Live user code",
             code="derived = derived + 1",
         )
@@ -1693,12 +1761,12 @@ def test_manager_edit_live_script_code_row_replays_with_data_context(
     node = _fake_edit_node(spec)
     node.detached_live_parent_data = parent_data
     controller = _fake_edit_controller(node)
-    applied: list[tuple[xr.DataArray, provenance.ToolProvenanceSpec]] = []
+    applied: list[tuple[xr.DataArray, ToolProvenanceSpec]] = []
 
     class FakeDialog:
         def __init__(
             self,
-            operation: provenance.ScriptCodeOperation,
+            operation: ScriptCodeOperation,
             _parent: QtWidgets.QWidget,
         ) -> None:
             assert operation.code == "derived = derived + 1"
@@ -1731,11 +1799,11 @@ def test_manager_edit_live_script_code_row_replays_with_data_context(
 def test_manager_edit_script_code_trust_cancel_does_not_show_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(label="User code", code="derived = data_0 + 1"),
+    spec = script(
+        ScriptCodeOperation(label="User code", code="derived = data_0 + 1"),
         start_label="Run user code",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+        script_inputs=(ScriptInput(name="data_0", label="Input"),),
     )
     controller = _fake_edit_controller(_fake_edit_node(spec))
     failures: list[object] = []
@@ -1816,10 +1884,10 @@ def test_manager_provenance_file_load_batch_peer_matching(
         _manager_replay_file_spec(old_dir / "e.h5"),
         uid="source-bound",
         parent_uid="parent",
-        source_spec=provenance.full_data(),
+        source_spec=full_data(),
     )
     no_spec = _fake_edit_node(None, uid="no-spec")
-    non_file = _fake_edit_node(provenance.full_data(), uid="non-file")
+    non_file = _fake_edit_node(full_data(), uid="non-file")
     no_load_source = _fake_edit_node(
         _manager_replay_file_spec(old_dir / "f.h5").model_copy(
             update={"file_load_source": None},
@@ -1871,7 +1939,7 @@ def test_manager_provenance_file_load_batch_peer_matching(
     assert (
         controller._file_load_batch_peers(
             typing.cast("typing.Any", current),
-            provenance.full_data(),
+            full_data(),
         )
         == ()
     )
@@ -1882,35 +1950,35 @@ def test_manager_provenance_collects_nested_file_load_targets(
 ) -> None:
     first_spec = _manager_replay_file_spec(tmp_path / "a.h5")
     second_file_spec = _manager_replay_file_spec(tmp_path / "b.h5")
-    second_parent_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    second_parent_spec = script(
+        ScriptCodeOperation(
             label="Use nested file",
             code="derived = nested",
         ),
         start_label="Run nested script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="nested",
                 label="Nested",
                 provenance_spec=second_file_spec,
             ),
         ),
     )
-    root_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    root_spec = script(
+        ScriptCodeOperation(
             label="Combine inputs",
             code="derived = data_0 + data_1",
         ),
         start_label="Run manager script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="First",
                 provenance_spec=first_spec,
             ),
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_1",
                 label="Second",
                 provenance_spec=second_parent_spec,
@@ -1945,20 +2013,20 @@ def test_manager_provenance_nested_file_load_batch_keeps_top_level_matches(
     first_spec = _manager_replay_file_spec(old_dir / "a.h5")
     second_spec = _manager_replay_file_spec(old_dir / "b.h5")
     matching_spec = _manager_replay_file_spec(old_dir / "c.h5")
-    root_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    root_spec = script(
+        ScriptCodeOperation(
             label="Combine inputs",
             code="derived = data_0 + data_1",
         ),
         start_label="Run manager script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="First",
                 provenance_spec=first_spec,
             ),
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_1",
                 label="Second",
                 provenance_spec=second_spec,
@@ -2014,20 +2082,20 @@ def test_manager_provenance_missing_repair_peers_include_nonmatching_nested(
             )
         }
     )
-    root_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    root_spec = script(
+        ScriptCodeOperation(
             label="Combine inputs",
             code="derived = data_0 + data_1",
         ),
         start_label="Run manager script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="First",
                 provenance_spec=first_spec,
             ),
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_1",
                 label="Second",
                 provenance_spec=second_spec,
@@ -2068,7 +2136,7 @@ def test_manager_provenance_missing_repair_peers_skip_available_or_unreplayable(
     old_dir.mkdir()
     available_path = old_dir / "available.h5"
     available_path.touch()
-    node = _fake_edit_node(provenance.full_data())
+    node = _fake_edit_node(full_data())
     focused = manager_provenance_edit._FileLoadBatchPeer(
         node=typing.cast("typing.Any", node),
         scope="display",
@@ -2113,7 +2181,7 @@ def test_manager_provenance_missing_repair_peers_skip_available_or_unreplayable(
         controller._missing_file_load_repair_peers(
             typing.cast("typing.Any", node),
             "display",
-            provenance.full_data(),
+            full_data(),
             focused,
         )
         == ()
@@ -2126,7 +2194,7 @@ def test_manager_provenance_nested_file_load_batch_skips_unmatched_targets(
     old_dir = tmp_path / "old"
     old_dir.mkdir()
     focused_spec = _manager_replay_file_spec(old_dir / "focused.h5")
-    node = _fake_edit_node(provenance.full_data())
+    node = _fake_edit_node(full_data())
     focused = manager_provenance_edit._FileLoadBatchPeer(
         node=typing.cast("typing.Any", node),
         scope="display",
@@ -2177,14 +2245,12 @@ def test_manager_provenance_nested_file_load_batch_skips_unmatched_targets(
         script_input_path=(2,),
     )
     controller = _fake_edit_controller(node)
-    row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("Focused", None),
+    row = _ProvenanceDisplayRow(
+        DerivationEntry("Focused", None),
         scope="display",
         script_input_path=(0,),
     )
-    controller._root_display_spec_for_row = lambda *_args, **_kwargs: (
-        provenance.full_data()
-    )
+    controller._root_display_spec_for_row = lambda *_args, **_kwargs: full_data()
     controller._file_load_targets = lambda *_args, **_kwargs: (
         focused,
         unavailable,
@@ -2211,7 +2277,7 @@ def test_manager_provenance_file_load_batch_helper_branches(
         == ()
     )
 
-    replacement = provenance.full_data()
+    replacement = full_data()
     assert (
         controller._replace_file_load_target_spec(
             replacement,
@@ -2227,9 +2293,9 @@ def test_manager_provenance_file_load_batch_helper_branches(
         is replacement
     )
 
-    source_spec = provenance.selection()
+    source_spec = selection()
     source_node = _fake_edit_node(
-        provenance.full_data(),
+        full_data(),
         source_display_spec=source_spec,
     )
     assert (
@@ -2249,7 +2315,7 @@ def test_manager_provenance_file_load_batch_helper_branches(
             manager_provenance_edit._FileLoadBatchPeer(
                 node=typing.cast("typing.Any", node),
                 scope="display",
-                spec=provenance.full_data(),
+                spec=full_data(),
                 original_path=pathlib.Path("scan.h5"),
                 loader_summary="xarray.load_dataarray",
             )
@@ -2258,7 +2324,7 @@ def test_manager_provenance_file_load_batch_helper_branches(
     stale_target = manager_provenance_edit._FileLoadBatchPeer(
         node=typing.cast("typing.Any", node),
         scope="display",
-        spec=provenance.full_data(),
+        spec=full_data(),
         original_path=pathlib.Path("scan.h5"),
         loader_summary="xarray.load_dataarray",
     )
@@ -2277,7 +2343,7 @@ def test_manager_provenance_file_load_batch_helper_branches(
         "This source was not recorded as an editable file-load step.",
     )
 
-    source = provenance.FileLoadSource(
+    source = FileLoadSource(
         path="scan.h5",
         loader_label="Load Function",
         loader_text="xarray.load_dataarray",
@@ -2336,7 +2402,7 @@ def test_manager_provenance_edit_file_load_source_uses_display_spec(
         tuple[
             object,
             typing.Literal["display", "source"],
-            provenance.ToolProvenanceSpec,
+            ToolProvenanceSpec,
             dict[str, typing.Any],
         ]
     ] = []
@@ -2344,7 +2410,7 @@ def test_manager_provenance_edit_file_load_source_uses_display_spec(
     def _edit_file_load_spec(
         edit_node: object,
         scope: typing.Literal["display", "source"],
-        spec: provenance.ToolProvenanceSpec,
+        spec: ToolProvenanceSpec,
         **kwargs: typing.Any,
     ) -> None:
         calls.append((edit_node, scope, spec, kwargs))
@@ -2374,10 +2440,10 @@ def test_manager_provenance_edit_file_load_source_uses_script_display_spec(
     tmp_path: pathlib.Path,
 ) -> None:
     source_path = tmp_path / "missing.h5"
-    script_spec = provenance.compose_full_provenance(
+    script_spec = compose_full_provenance(
         _manager_replay_file_spec(source_path),
-        provenance.script(
-            provenance.ScriptCodeOperation(
+        script(
+            ScriptCodeOperation(
                 label="Calculate result",
                 code="result = derived + 1",
             ),
@@ -2388,12 +2454,12 @@ def test_manager_provenance_edit_file_load_source_uses_script_display_spec(
     assert script_spec is not None
     node = _fake_edit_node(script_spec)
     controller = _fake_edit_controller(node)
-    calls: list[provenance.ToolProvenanceSpec] = []
+    calls: list[ToolProvenanceSpec] = []
 
     def _edit_file_load_spec(
         _edit_node: object,
         _scope: typing.Literal["display", "source"],
-        spec: provenance.ToolProvenanceSpec,
+        spec: ToolProvenanceSpec,
         **_kwargs: typing.Any,
     ) -> None:
         calls.append(spec)
@@ -2421,7 +2487,7 @@ def test_manager_provenance_edit_file_load_source_falls_back_to_source_spec(
     source_display_spec = _manager_replay_file_spec(source_path)
     node = _fake_edit_node(
         _manager_replay_file_spec(display_path),
-        source_spec=provenance.full_data(),
+        source_spec=full_data(),
         source_display_spec=source_display_spec,
         parent_uid="parent",
     )
@@ -2430,7 +2496,7 @@ def test_manager_provenance_edit_file_load_source_falls_back_to_source_spec(
         tuple[
             object,
             typing.Literal["display", "source"],
-            provenance.ToolProvenanceSpec,
+            ToolProvenanceSpec,
         ]
     ] = []
     monkeypatch.setattr(
@@ -2461,7 +2527,7 @@ def test_manager_provenance_edit_file_load_source_prefers_source_spec(
     source_display_spec = _manager_replay_file_spec(source_path)
     node = _fake_edit_node(
         _manager_replay_file_spec(source_path),
-        source_spec=provenance.full_data(),
+        source_spec=full_data(),
         source_display_spec=source_display_spec,
         parent_uid="parent",
     )
@@ -2470,7 +2536,7 @@ def test_manager_provenance_edit_file_load_source_prefers_source_spec(
         tuple[
             object,
             typing.Literal["display", "source"],
-            provenance.ToolProvenanceSpec,
+            ToolProvenanceSpec,
         ]
     ] = []
     monkeypatch.setattr(
@@ -2503,8 +2569,8 @@ def test_manager_provenance_edit_file_load_source_uses_parent_display_spec(
     node = _fake_edit_node(
         _manager_replay_file_spec(source_path),
         uid="child",
-        source_spec=provenance.full_data(),
-        source_display_spec=provenance.full_data(),
+        source_spec=full_data(),
+        source_display_spec=full_data(),
         parent_uid="parent",
     )
     controller = _fake_edit_controller(
@@ -2517,7 +2583,7 @@ def test_manager_provenance_edit_file_load_source_uses_parent_display_spec(
         tuple[
             object,
             typing.Literal["display", "source"],
-            provenance.ToolProvenanceSpec,
+            ToolProvenanceSpec,
         ]
     ] = []
     monkeypatch.setattr(
@@ -2547,8 +2613,8 @@ def test_manager_provenance_edit_file_load_source_rejects_source_bound_mismatch(
     parent = _fake_edit_node(_manager_replay_file_spec(tmp_path / "parent.h5"))
     node = _fake_edit_node(
         _manager_replay_file_spec(tmp_path / "child.h5"),
-        source_spec=provenance.full_data(),
-        source_display_spec=provenance.full_data(),
+        source_spec=full_data(),
+        source_display_spec=full_data(),
         parent_uid="parent",
     )
     controller = _fake_edit_controller(
@@ -2666,10 +2732,10 @@ def test_manager_provenance_edit_file_load_source_rejects_unavailable_node(
 
 
 def test_manager_provenance_edit_controller_availability_branches() -> None:
-    edit_ref = provenance._ProvenanceStepRef("operation", operation_index=0)
-    replay_ref = provenance._ProvenanceStepRef("operation", operation_index=0)
-    row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("row", None),
+    edit_ref = _ProvenanceStepRef("operation", operation_index=0)
+    replay_ref = _ProvenanceStepRef("operation", operation_index=0)
+    row = _ProvenanceDisplayRow(
+        DerivationEntry("row", None),
         edit_ref=edit_ref,
         replay_ref=replay_ref,
     )
@@ -2677,29 +2743,29 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     assert not _fake_edit_controller().can_edit_row(row)[0]
     assert not _fake_edit_controller().can_revert_row(row)[0]
 
-    node = _fake_edit_node(provenance.full_data(provenance.IselOperation()))
+    node = _fake_edit_node(full_data(IselOperation()))
     node.parent_uid = "parent"
-    node.source_spec = provenance.selection()
+    node.source_spec = selection()
     controller = _fake_edit_controller(node)
     assert not controller.can_edit_row(row)[0]
     assert not controller.can_revert_row(row)[0]
 
-    nested_parent_history = provenance.script(
-        provenance.AverageOperation(dims=("x",)),
-        provenance.IselOperation(kwargs={"y": 0}),
+    nested_parent_history = script(
+        AverageOperation(dims=("x",)),
+        IselOperation(kwargs={"y": 0}),
         start_label="Load parent input",
         seed_code="data_0 = xr.DataArray([[1.0]], dims=['x', 'y'])",
         active_name="data_0",
     )
-    parent_context = provenance.script(
-        provenance.ScriptCodeOperation(
+    parent_context = script(
+        ScriptCodeOperation(
             label="Use parent input",
             code="derived = data_0",
         ),
         start_label="Run parent script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="Parent input",
                 provenance_spec=nested_parent_history,
@@ -2709,7 +2775,7 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     nested_parent_row = parent_context.display_rows()[1].children[1]
     node = _fake_edit_node(
         parent_context,
-        source_spec=provenance.selection(),
+        source_spec=selection(),
         parent_uid="parent",
     )
     controller = _fake_edit_controller(node)
@@ -2726,17 +2792,17 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     assert not controller.can_edit_row(row)[0]
     assert not controller.can_revert_row(row)[0]
 
-    file_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("load", None),
-        edit_ref=provenance._ProvenanceStepRef("file_load"),
-        replay_ref=provenance._ProvenanceStepRef("file_load"),
+    file_row = _ProvenanceDisplayRow(
+        DerivationEntry("load", None),
+        edit_ref=_ProvenanceStepRef("file_load"),
+        replay_ref=_ProvenanceStepRef("file_load"),
     )
-    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    controller = _fake_edit_controller(_fake_edit_node(full_data()))
     assert not controller.can_edit_row(file_row)[0]
 
     no_replay_file = _manager_provenance_file_spec(pathlib.Path("scan.h5")).model_copy(
         update={
-            "file_load_source": provenance.FileLoadSource(
+            "file_load_source": FileLoadSource(
                 path="scan.h5",
                 loader_label="Load Function",
                 loader_text="load",
@@ -2748,10 +2814,10 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     controller = _fake_edit_controller(_fake_edit_node(no_replay_file))
     assert not controller.can_edit_row(file_row)[0]
 
-    script_file = provenance.compose_full_provenance(
+    script_file = compose_full_provenance(
         _manager_provenance_file_spec(pathlib.Path("scan.h5")),
-        provenance.script(
-            provenance.ScriptCodeOperation(
+        script(
+            ScriptCodeOperation(
                 label="Calculate result",
                 code="result = derived + 1",
             ),
@@ -2761,26 +2827,24 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     )
     assert script_file is not None
     script_file_row = script_file.display_rows()[0]
-    assert script_file_row.edit_ref == provenance._ProvenanceStepRef("file_load")
+    assert script_file_row.edit_ref == _ProvenanceStepRef("file_load")
     controller = _fake_edit_controller(_fake_edit_node(script_file))
     assert controller.can_edit_row(script_file_row) == (True, "")
 
-    missing_operation_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("missing", None),
-        edit_ref=provenance._ProvenanceStepRef("operation", operation_index=10),
+    missing_operation_row = _ProvenanceDisplayRow(
+        DerivationEntry("missing", None),
+        edit_ref=_ProvenanceStepRef("operation", operation_index=10),
         replay_ref=replay_ref,
     )
-    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    controller = _fake_edit_controller(_fake_edit_node(full_data()))
     assert not controller.can_edit_row(missing_operation_row)[0]
 
-    script_operation_spec = provenance.ToolProvenanceSpec(
+    script_operation_spec = ToolProvenanceSpec(
         kind="full_data",
-        operations=(
-            provenance.ScriptCodeOperation(label="script", code="derived = data"),
-        ),
+        operations=(ScriptCodeOperation(label="script", code="derived = data"),),
     )
-    script_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("script", None),
+    script_row = _ProvenanceDisplayRow(
+        DerivationEntry("script", None),
         edit_ref=edit_ref,
         replay_ref=replay_ref,
     )
@@ -2789,15 +2853,15 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     )
     assert not controller.can_edit_row(script_row)[0]
 
-    script_with_structured_step = provenance.script(
-        provenance.ScriptCodeOperation(
+    script_with_structured_step = script(
+        ScriptCodeOperation(
             label="Create derived data",
             code="derived = data_0 + 1.0",
         ),
-        provenance.AverageOperation(dims=("x",)),
+        AverageOperation(dims=("x",)),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+        script_inputs=(ScriptInput(name="data_0", label="Input"),),
     )
     controller = _fake_edit_controller(_fake_edit_node(script_with_structured_step))
     script_code_row, structured_row = script_with_structured_step.display_rows()[2:]
@@ -2810,21 +2874,21 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     )
     assert controller.can_edit_row(structured_row) == (True, "")
 
-    script_parent = provenance.script(
-        provenance.ScriptCodeOperation(
+    script_parent = script(
+        ScriptCodeOperation(
             label="Concatenate selected ImageTools",
             code="derived = data_0 + data_1",
         ),
         start_label="Run ImageTool manager action",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(name="data_0", label="ImageTool 0: scan"),
-            provenance.ScriptInput(name="data_1", label="ImageTool 1: scan"),
+            ScriptInput(name="data_0", label="ImageTool 0: scan"),
+            ScriptInput(name="data_1", label="ImageTool 1: scan"),
         ),
     )
-    script_with_composed_structured_step = provenance.compose_full_provenance(
+    script_with_composed_structured_step = compose_full_provenance(
         script_parent,
-        provenance.full_data(provenance.SortByOperation(variables=("x",))),
+        full_data(SortByOperation(variables=("x",))),
     )
     assert script_with_composed_structured_step is not None
     script_code_row, sort_row = script_with_composed_structured_step.display_rows()[3:]
@@ -2834,16 +2898,16 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     )
     assert controller.can_edit_row(sort_row) == (True, "")
 
-    active_filter = provenance.AverageOperation(dims=("x",))
-    active_filter_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    active_filter = AverageOperation(dims=("x",))
+    active_filter_spec = script(
+        ScriptCodeOperation(
             label="Create derived data",
             code="derived = data_0 + 1.0",
         ),
         active_filter,
         start_label="Run script",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+        script_inputs=(ScriptInput(name="data_0", label="Input"),),
     )
     active_row = active_filter_spec.display_rows()[3]
     controller = _fake_edit_controller(
@@ -2852,52 +2916,50 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
     )
     assert controller.can_edit_row(active_row) == (True, "")
 
-    source_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("source", None),
+    source_row = _ProvenanceDisplayRow(
+        DerivationEntry("source", None),
         edit_ref=edit_ref,
         replay_ref=replay_ref,
         scope="source",
     )
 
-    unsupported_spec = provenance.full_data(provenance.RestoreNonuniformDimsOperation())
+    unsupported_spec = full_data(RestoreNonuniformDimsOperation())
     controller = _fake_edit_controller(
         _fake_edit_node(
-            provenance.full_data(),
+            full_data(),
             source_display_spec=unsupported_spec,
             parent_uid="parent",
         )
     )
     assert not controller.can_edit_row(source_row)[0]
 
-    live_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("live", None),
+    live_row = _ProvenanceDisplayRow(
+        DerivationEntry("live", None),
         edit_ref=edit_ref,
         replay_ref=replay_ref,
     )
-    controller = _fake_edit_controller(
-        _fake_edit_node(provenance.selection(provenance.IselOperation()))
-    )
+    controller = _fake_edit_controller(_fake_edit_node(selection(IselOperation())))
     assert not controller.can_edit_row(live_row)[0]
     assert not controller.can_revert_row(live_row)[0]
 
-    script_input_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("input", None),
-        replay_ref=provenance._ProvenanceStepRef("script_input", script_input_index=0),
+    script_input_row = _ProvenanceDisplayRow(
+        DerivationEntry("input", None),
+        replay_ref=_ProvenanceStepRef("script_input", script_input_index=0),
     )
     assert not controller.can_revert_row(script_input_row)[0]
 
-    earlier_source_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("source", None),
+    earlier_source_row = _ProvenanceDisplayRow(
+        DerivationEntry("source", None),
         edit_ref=edit_ref,
         replay_ref=edit_ref,
         scope="source",
     )
     controller = _fake_edit_controller(
         _fake_edit_node(
-            provenance.selection(provenance.IselOperation()),
-            source_display_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"x": 0}),
-                provenance.IselOperation(kwargs={"y": 0}),
+            selection(IselOperation()),
+            source_display_spec=selection(
+                IselOperation(kwargs={"x": 0}),
+                IselOperation(kwargs={"y": 0}),
             ),
             parent_uid="parent",
         )
@@ -2908,21 +2970,21 @@ def test_manager_provenance_edit_controller_availability_branches() -> None:
 def test_manager_provenance_edit_nested_script_input_operation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    parent_spec = provenance.script(
-        provenance.AverageOperation(dims=("x",)),
+    parent_spec = script(
+        AverageOperation(dims=("x",)),
         start_label="Load parent",
         seed_code="data_0 = xr.DataArray([1.0, 2.0], dims=['x'])",
         active_name="data_0",
     )
-    root_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    root_spec = script(
+        ScriptCodeOperation(
             label="Use parent",
             code="derived = data_0",
         ),
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="Parent",
                 node_uid="parent",
@@ -2938,8 +3000,8 @@ def test_manager_provenance_edit_nested_script_input_operation(
     assert controller._display_spec_for_row(node, nested_row) == parent_spec
     assert controller.can_edit_row(nested_row) == (True, "")
 
-    replacement = provenance.AverageOperation(dims=("y",))
-    replaced: list[provenance.ToolProvenanceSpec] = []
+    replacement = AverageOperation(dims=("y",))
+    replaced: list[ToolProvenanceSpec] = []
     monkeypatch.setattr(
         controller,
         "_replay_candidate",
@@ -2971,28 +3033,28 @@ def test_manager_provenance_nested_script_input_revert_delete_and_file_load(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     file_spec = _manager_provenance_file_spec(pathlib.Path("scan.h5"))
-    parent_spec = provenance.script(
-        provenance.AverageOperation(dims=("x",)),
-        provenance.IselOperation(kwargs={"y": 0}),
+    parent_spec = script(
+        AverageOperation(dims=("x",)),
+        IselOperation(kwargs={"y": 0}),
         start_label="Use file parent",
         active_name="data_0",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="file_parent",
                 label="File parent",
                 provenance_spec=file_spec,
             ),
         ),
     )
-    root_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    root_spec = script(
+        ScriptCodeOperation(
             label="Use parent",
             code="derived = data_0",
         ),
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="Parent",
                 node_uid="parent",
@@ -3039,7 +3101,7 @@ def test_manager_provenance_nested_script_input_revert_delete_and_file_load(
     with pytest.raises(RuntimeError, match="does not have replayable provenance"):
         controller._replace_script_input_path_spec(no_history, (0,), parent_spec)
 
-    replaced: list[provenance.ToolProvenanceSpec] = []
+    replaced: list[ToolProvenanceSpec] = []
     monkeypatch.setattr(controller, "can_revert_row", lambda _row: (True, ""))
     monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
     monkeypatch.setattr(
@@ -3068,8 +3130,8 @@ def test_manager_provenance_nested_script_input_revert_delete_and_file_load(
         tuple[
             object,
             typing.Literal["display", "source"],
-            provenance.ToolProvenanceSpec,
-            provenance._ProvenanceDisplayRow | None,
+            ToolProvenanceSpec,
+            _ProvenanceDisplayRow | None,
             tuple[object, ...],
         ]
     ] = []
@@ -3099,22 +3161,22 @@ def test_manager_provenance_nested_file_load_batch_replaces_one_root_candidate(
     new_b = new_dir / "b.h5"
     first_spec = _manager_replay_file_spec(old_a)
     second_spec = _manager_replay_file_spec(old_b)
-    root_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    root_spec = script(
+        ScriptCodeOperation(
             label="Combine inputs",
             code="derived = data_0 + data_1",
         ),
         start_label="Run manager script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="First",
                 node_uid="first",
                 node_snapshot_token=str(object()),
                 provenance_spec=first_spec,
             ),
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_1",
                 label="Second",
                 node_uid="second",
@@ -3139,7 +3201,7 @@ def test_manager_provenance_nested_file_load_batch_replaces_one_root_candidate(
     class _Dialog:
         def __init__(
             self,
-            _load_source: provenance.FileLoadSource,
+            _load_source: FileLoadSource,
             _parent: QtWidgets.QWidget,
             *,
             batch_peers: tuple[manager_provenance_edit._FileLoadBatchPeer, ...],
@@ -3154,8 +3216,8 @@ def test_manager_provenance_nested_file_load_batch_replaces_one_root_candidate(
             self,
             *,
             active_name: str,
-            replay_stages: tuple[provenance.ReplayStage, ...],
-        ) -> provenance.ToolProvenanceSpec:
+            replay_stages: tuple[ReplayStage, ...],
+        ) -> ToolProvenanceSpec:
             del active_name, replay_stages
             return replacement_first
 
@@ -3167,11 +3229,11 @@ def test_manager_provenance_nested_file_load_batch_replaces_one_root_candidate(
         def peer_provenance_spec(
             self,
             peer: manager_provenance_edit._FileLoadBatchPeer,
-        ) -> provenance.ToolProvenanceSpec:
+        ) -> ToolProvenanceSpec:
             assert peer is peers[0]
             return replacement_second
 
-    validated: list[provenance.ToolProvenanceSpec] = []
+    validated: list[ToolProvenanceSpec] = []
     applied: list[str] = []
     monkeypatch.setattr(manager_provenance_edit, "_FileLoadEditDialog", _Dialog)
     monkeypatch.setattr(
@@ -3223,15 +3285,15 @@ def test_manager_provenance_file_load_batch_replaces_nested_peer_root(
     new_dir.mkdir()
     current_spec = _manager_replay_file_spec(old_dir / "current.h5")
     peer_file_spec = _manager_replay_file_spec(old_dir / "peer.h5")
-    peer_root = provenance.script(
-        provenance.ScriptCodeOperation(
+    peer_root = script(
+        ScriptCodeOperation(
             label="Use file input",
             code="derived = data_0",
         ),
         start_label="Run manager script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="Peer file",
                 provenance_spec=peer_file_spec,
@@ -3259,7 +3321,7 @@ def test_manager_provenance_file_load_batch_replaces_nested_peer_root(
     class _Dialog:
         def __init__(
             self,
-            _load_source: provenance.FileLoadSource,
+            _load_source: FileLoadSource,
             _parent: QtWidgets.QWidget,
             *,
             batch_peers: tuple[manager_provenance_edit._FileLoadBatchPeer, ...],
@@ -3274,8 +3336,8 @@ def test_manager_provenance_file_load_batch_replaces_nested_peer_root(
             self,
             *,
             active_name: str,
-            replay_stages: tuple[provenance.ReplayStage, ...],
-        ) -> provenance.ToolProvenanceSpec:
+            replay_stages: tuple[ReplayStage, ...],
+        ) -> ToolProvenanceSpec:
             del active_name, replay_stages
             return replacement_current
 
@@ -3287,11 +3349,11 @@ def test_manager_provenance_file_load_batch_replaces_nested_peer_root(
         def peer_provenance_spec(
             self,
             selected_peer: manager_provenance_edit._FileLoadBatchPeer,
-        ) -> provenance.ToolProvenanceSpec:
+        ) -> ToolProvenanceSpec:
             assert selected_peer is peer
             return replacement_peer
 
-    validated: list[tuple[str, provenance.ToolProvenanceSpec]] = []
+    validated: list[tuple[str, ToolProvenanceSpec]] = []
     monkeypatch.setattr(manager_provenance_edit, "_FileLoadEditDialog", _Dialog)
     monkeypatch.setattr(
         controller,
@@ -3329,18 +3391,18 @@ def test_manager_provenance_file_load_batch_replaces_nested_peer_root(
 def test_manager_provenance_revert_rejects_current_prefixes(
     tmp_path: pathlib.Path,
 ) -> None:
-    invalid_operation_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("invalid", None),
-        replay_ref=provenance._ProvenanceStepRef("operation"),
+    invalid_operation_row = _ProvenanceDisplayRow(
+        DerivationEntry("invalid", None),
+        replay_ref=_ProvenanceStepRef("operation"),
     )
-    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    controller = _fake_edit_controller(_fake_edit_node(full_data()))
     revertible, reason = controller.can_revert_row(invalid_operation_row)
     assert not revertible
     assert reason
 
-    file_load_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("load", None),
-        replay_ref=provenance._ProvenanceStepRef("file_load"),
+    file_load_row = _ProvenanceDisplayRow(
+        DerivationEntry("load", None),
+        replay_ref=_ProvenanceStepRef("file_load"),
     )
     controller = _fake_edit_controller(
         _fake_edit_node(_manager_replay_file_spec(tmp_path / "scan.h5"))
@@ -3351,20 +3413,20 @@ def test_manager_provenance_revert_rejects_current_prefixes(
 
     file_stage_spec = _manager_replay_file_spec(
         tmp_path / "scan.h5",
-        provenance.IselOperation(kwargs={"x": 0}),
-        provenance.IselOperation(kwargs={"y": 0}),
+        IselOperation(kwargs={"x": 0}),
+        IselOperation(kwargs={"y": 0}),
     )
-    earlier_stage_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("isel", None),
-        replay_ref=provenance._ProvenanceStepRef(
+    earlier_stage_row = _ProvenanceDisplayRow(
+        DerivationEntry("isel", None),
+        replay_ref=_ProvenanceStepRef(
             "operation",
             operation_index=0,
             stage_index=0,
         ),
     )
-    latest_stage_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("isel", None),
-        replay_ref=provenance._ProvenanceStepRef(
+    latest_stage_row = _ProvenanceDisplayRow(
+        DerivationEntry("isel", None),
+        replay_ref=_ProvenanceStepRef(
             "operation",
             operation_index=1,
             stage_index=0,
@@ -3376,12 +3438,12 @@ def test_manager_provenance_revert_rejects_current_prefixes(
     assert not revertible
     assert reason
 
-    script_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    script_spec = script(
+        ScriptCodeOperation(
             label="Run script",
             code="derived = xr.DataArray([1.0], dims=('x',))",
         ),
-        provenance.IselOperation(kwargs={"x": 0}),
+        IselOperation(kwargs={"x": 0}),
         start_label="Run script",
         active_name="derived",
     )
@@ -3390,9 +3452,9 @@ def test_manager_provenance_revert_rejects_current_prefixes(
     assert not revertible
     assert reason
 
-    latest_script_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("isel", None),
-        replay_ref=provenance._ProvenanceStepRef(
+    latest_script_row = _ProvenanceDisplayRow(
+        DerivationEntry("isel", None),
+        replay_ref=_ProvenanceStepRef(
             "operation",
             operation_index=1,
         ),
@@ -3401,18 +3463,18 @@ def test_manager_provenance_revert_rejects_current_prefixes(
     assert not revertible
     assert reason
 
-    source_latest_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("source", None),
-        replay_ref=provenance._ProvenanceStepRef("operation", operation_index=1),
+    source_latest_row = _ProvenanceDisplayRow(
+        DerivationEntry("source", None),
+        replay_ref=_ProvenanceStepRef("operation", operation_index=1),
         scope="source",
     )
-    source_spec = provenance.selection(
-        provenance.IselOperation(kwargs={"x": 0}),
-        provenance.IselOperation(kwargs={"y": 0}),
+    source_spec = selection(
+        IselOperation(kwargs={"x": 0}),
+        IselOperation(kwargs={"y": 0}),
     )
     controller = _fake_edit_controller(
         _fake_edit_node(
-            provenance.full_data(),
+            full_data(),
             source_display_spec=source_spec,
             parent_uid="parent",
         )
@@ -3425,7 +3487,7 @@ def test_manager_provenance_revert_rejects_current_prefixes(
 def test_manager_provenance_edit_controller_error_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    node = _fake_edit_node(provenance.full_data())
+    node = _fake_edit_node(full_data())
     controller = _fake_edit_controller(node)
     unavailable: list[str] = []
     failed: list[tuple[str, Exception]] = []
@@ -3438,9 +3500,9 @@ def test_manager_provenance_edit_controller_error_paths(
     controller.revert_row(None)
     assert len(unavailable) == 2
 
-    row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("row", None),
-        replay_ref=provenance._ProvenanceStepRef("operation", operation_index=0),
+    row = _ProvenanceDisplayRow(
+        DerivationEntry("row", None),
+        replay_ref=_ProvenanceStepRef("operation", operation_index=0),
     )
     monkeypatch.setattr(controller, "can_revert_row", lambda _row: (True, ""))
     monkeypatch.setattr(controller, "_confirm_revert", lambda: True)
@@ -3451,7 +3513,7 @@ def test_manager_provenance_edit_controller_error_paths(
     monkeypatch.setattr(
         controller,
         "_display_spec_for_row",
-        lambda _node, _row: provenance.full_data(),
+        lambda _node, _row: full_data(),
     )
     monkeypatch.setattr(
         controller,
@@ -3502,7 +3564,7 @@ def test_manager_provenance_file_load_batch_partial_failure_decision(
     class _Dialog:
         def __init__(
             self,
-            _load_source: provenance.FileLoadSource,
+            _load_source: FileLoadSource,
             _parent: QtWidgets.QWidget,
             *,
             batch_peers: tuple[manager_provenance_edit._FileLoadBatchPeer, ...],
@@ -3517,8 +3579,8 @@ def test_manager_provenance_file_load_batch_partial_failure_decision(
             self,
             *,
             active_name: str,
-            replay_stages: tuple[provenance.ReplayStage, ...],
-        ) -> provenance.ToolProvenanceSpec:
+            replay_stages: tuple[ReplayStage, ...],
+        ) -> ToolProvenanceSpec:
             del active_name, replay_stages
             return current_spec
 
@@ -3530,7 +3592,7 @@ def test_manager_provenance_file_load_batch_partial_failure_decision(
         def peer_provenance_spec(
             self,
             peer: manager_provenance_edit._FileLoadBatchPeer,
-        ) -> provenance.ToolProvenanceSpec:
+        ) -> ToolProvenanceSpec:
             return peer.spec
 
     monkeypatch.setattr(manager_provenance_edit, "_FileLoadEditDialog", _Dialog)
@@ -3548,7 +3610,7 @@ def test_manager_provenance_file_load_batch_partial_failure_decision(
     def _validated_edit(
         node: typing.Any,
         scope: typing.Literal["display", "source"],
-        candidate: provenance.ToolProvenanceSpec,
+        candidate: ToolProvenanceSpec,
         *,
         where: str,
     ) -> manager_provenance_edit._ValidatedProvenanceEdit:
@@ -3570,9 +3632,9 @@ def test_manager_provenance_file_load_batch_partial_failure_decision(
         "_apply_validated_edit",
         lambda edit: applied.append(edit.node.uid),
     )
-    row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("load", None),
-        edit_ref=provenance._ProvenanceStepRef("file_load"),
+    row = _ProvenanceDisplayRow(
+        DerivationEntry("load", None),
+        edit_ref=_ProvenanceStepRef("file_load"),
     )
 
     controller._edit_file_load_row(typing.cast("typing.Any", current), row)
@@ -3615,8 +3677,8 @@ def test_manager_provenance_file_load_batch_current_failure_aborts_all(
             self,
             *,
             active_name: str,
-            replay_stages: tuple[provenance.ReplayStage, ...],
-        ) -> provenance.ToolProvenanceSpec:
+            replay_stages: tuple[ReplayStage, ...],
+        ) -> ToolProvenanceSpec:
             del active_name, replay_stages
             return current_spec
 
@@ -3628,7 +3690,7 @@ def test_manager_provenance_file_load_batch_current_failure_aborts_all(
         def peer_provenance_spec(
             self,
             peer: manager_provenance_edit._FileLoadBatchPeer,
-        ) -> provenance.ToolProvenanceSpec:
+        ) -> ToolProvenanceSpec:
             return peer.spec
 
     monkeypatch.setattr(manager_provenance_edit, "_FileLoadEditDialog", _Dialog)
@@ -3653,9 +3715,9 @@ def test_manager_provenance_file_load_batch_current_failure_aborts_all(
         "_apply_validated_edit",
         lambda edit: applied.append(edit.node.uid),
     )
-    row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("load", None),
-        edit_ref=provenance._ProvenanceStepRef("file_load"),
+    row = _ProvenanceDisplayRow(
+        DerivationEntry("load", None),
+        edit_ref=_ProvenanceStepRef("file_load"),
     )
 
     with pytest.raises(RuntimeError, match="current failed"):
@@ -3677,7 +3739,7 @@ def test_manager_provenance_file_load_batch_failure_confirmation_dialog(
     dialog_result: int,
     expected: bool,
 ) -> None:
-    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    controller = _fake_edit_controller(_fake_edit_node(full_data()))
     peer_spec = _manager_replay_file_spec(tmp_path / "b.h5")
     peer_node = _fake_edit_node(peer_spec, uid="peer", display_text="Peer")
     peer = manager_provenance_edit._FileLoadBatchPeer(
@@ -3733,7 +3795,7 @@ def test_manager_provenance_file_load_batch_failure_confirmation_button_fallback
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
 ) -> None:
-    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    controller = _fake_edit_controller(_fake_edit_node(full_data()))
     peer_spec = _manager_replay_file_spec(tmp_path / "b.h5")
     peer_node = _fake_edit_node(peer_spec, uid="peer", display_text="Peer")
     peer = manager_provenance_edit._FileLoadBatchPeer(
@@ -3773,7 +3835,7 @@ def test_manager_provenance_file_load_batch_failure_confirmation_button_fallback
 def test_manager_provenance_edit_controller_failed_dialog_uses_message_dialog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    controller = _fake_edit_controller(_fake_edit_node(full_data()))
     dialogs: list[dict[str, typing.Any]] = []
 
     class _RecordingMessageDialog:
@@ -3844,7 +3906,7 @@ def test_manager_provenance_missing_source_after_edit_ok_opens_file_load_editor(
     peer_path = tmp_path / "peer.h5"
     spec = _manager_replay_file_spec(
         missing_path,
-        provenance.IselOperation(kwargs={"x": 0}),
+        IselOperation(kwargs={"x": 0}),
     )
     node = _fake_edit_node(spec, uid="current", display_text="Current")
     peer = _fake_edit_node(
@@ -3857,14 +3919,14 @@ def test_manager_provenance_missing_source_after_edit_ok_opens_file_load_editor(
         nodes={node.uid: node, peer.uid: peer},
         metadata_uid=node.uid,
     )
-    row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("isel", None),
-        edit_ref=provenance._ProvenanceStepRef(
+    row = _ProvenanceDisplayRow(
+        DerivationEntry("isel", None),
+        edit_ref=_ProvenanceStepRef(
             "operation",
             operation_index=0,
             stage_index=0,
         ),
-        replay_ref=provenance._ProvenanceStepRef(
+        replay_ref=_ProvenanceStepRef(
             "operation",
             operation_index=0,
             stage_index=0,
@@ -3875,7 +3937,7 @@ def test_manager_provenance_missing_source_after_edit_ok_opens_file_load_editor(
         tuple[
             typing.Any,
             str,
-            provenance.ToolProvenanceSpec,
+            ToolProvenanceSpec,
             tuple[manager_provenance_edit._FileLoadBatchPeer, ...],
         ]
     ] = []
@@ -3896,7 +3958,7 @@ def test_manager_provenance_missing_source_after_edit_ok_opens_file_load_editor(
     monkeypatch.setattr(
         controller,
         "_edited_native_operations",
-        lambda *_args, **_kwargs: [provenance.IselOperation(kwargs={"x": 0})],
+        lambda *_args, **_kwargs: [IselOperation(kwargs={"x": 0})],
     )
     missing = manager_provenance_edit._MissingProvenanceSourceFileError(missing_path)
     failure = manager_provenance_edit._ProvenanceReplayFailure(
@@ -3942,15 +4004,15 @@ def test_manager_provenance_missing_source_revert_repairs_revert_target(
     missing_path = tmp_path / "missing.h5"
     spec = _manager_replay_file_spec(
         missing_path,
-        provenance.IselOperation(kwargs={"x": 0}),
+        IselOperation(kwargs={"x": 0}),
     )
     node = _fake_edit_node(spec)
     controller = _fake_edit_controller(node)
-    row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("load", None),
-        replay_ref=provenance._ProvenanceStepRef("file_load"),
+    row = _ProvenanceDisplayRow(
+        DerivationEntry("load", None),
+        replay_ref=_ProvenanceStepRef("file_load"),
     )
-    opened: list[provenance.ToolProvenanceSpec] = []
+    opened: list[ToolProvenanceSpec] = []
 
     class _AcceptingMessageDialog:
         def __init__(self, *_args: typing.Any, **kwargs: typing.Any) -> None:
@@ -3985,10 +4047,10 @@ def test_manager_provenance_script_file_revert_reports_missing_source(
     missing_path = tmp_path / "missing.h5"
     file_spec = _manager_replay_file_spec(
         missing_path,
-        provenance.IselOperation(kwargs={"x": 0}),
+        IselOperation(kwargs={"x": 0}),
     )
-    script_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    script_spec = script(
+        ScriptCodeOperation(
             label="Use loaded data",
             code="derived = derived + 1.0",
         ),
@@ -4061,13 +4123,13 @@ def test_manager_provenance_missing_source_without_file_load_shows_dedicated_dia
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
 ) -> None:
-    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    controller = _fake_edit_controller(_fake_edit_node(full_data()))
     missing = manager_provenance_edit._MissingProvenanceSourceFileError(
         tmp_path / "missing.h5",
     )
     exc = manager_provenance_edit._ProvenanceReplayFailure("repairing source", missing)
     exc.__cause__ = missing
-    row = provenance._ProvenanceDisplayRow(provenance.DerivationEntry("row", None))
+    row = _ProvenanceDisplayRow(DerivationEntry("row", None))
     dialogs: list[dict[str, typing.Any]] = []
 
     class _RecordingMessageDialog:
@@ -4090,7 +4152,7 @@ def test_manager_provenance_missing_source_without_file_load_shows_dedicated_dia
     )
 
     assert controller._handle_missing_source_file(
-        typing.cast("typing.Any", _fake_edit_node(provenance.full_data())),
+        typing.cast("typing.Any", _fake_edit_node(full_data())),
         row,
         title="Could Not Apply Provenance Edit",
         exc=exc,
@@ -4108,7 +4170,7 @@ def test_manager_provenance_missing_source_dialog_button_fallback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
 ) -> None:
-    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    controller = _fake_edit_controller(_fake_edit_node(full_data()))
     missing = manager_provenance_edit._MissingProvenanceSourceFileError(
         tmp_path / "missing.h5",
     )
@@ -4149,20 +4211,20 @@ def test_manager_provenance_missing_nested_source_uses_batch_relink_dialog(
     old_dir.mkdir()
     first_spec = _manager_replay_file_spec(old_dir / "a.h5")
     second_spec = _manager_replay_file_spec(old_dir / "b.h5")
-    root_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    root_spec = script(
+        ScriptCodeOperation(
             label="Combine inputs",
             code="derived = data_0 + data_1",
         ),
         start_label="Run manager script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="First",
                 provenance_spec=first_spec,
             ),
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_1",
                 label="Second",
                 provenance_spec=second_spec,
@@ -4198,7 +4260,7 @@ def test_manager_provenance_missing_nested_source_uses_batch_relink_dialog(
     class _Dialog:
         def __init__(
             self,
-            load_source: provenance.FileLoadSource,
+            load_source: FileLoadSource,
             _parent: QtWidgets.QWidget,
             *,
             batch_peers: tuple[manager_provenance_edit._FileLoadBatchPeer, ...],
@@ -4257,7 +4319,7 @@ def test_manager_provenance_missing_nested_repair_relinks_nonmatching_inputs(
     first_spec = _manager_replay_file_spec(old_a_path)
     second_spec = _manager_replay_file_spec(
         old_b_path,
-        provenance.IselOperation(kwargs={"x": 0}),
+        IselOperation(kwargs={"x": 0}),
     )
     assert second_spec.file_load_source is not None
     second_replay_call = second_spec.file_load_source.replay_call
@@ -4274,22 +4336,22 @@ def test_manager_provenance_missing_nested_repair_relinks_nonmatching_inputs(
             )
         }
     )
-    root_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    root_spec = script(
+        ScriptCodeOperation(
             label="Combine inputs",
             code="derived = data_0 + data_1",
         ),
         start_label="Run manager script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="First",
                 node_uid="deleted-a",
                 node_snapshot_token=str(object()),
                 provenance_spec=first_spec,
             ),
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_1",
                 label="Second",
                 node_uid="deleted-b",
@@ -4306,8 +4368,8 @@ def test_manager_provenance_missing_nested_repair_relinks_nonmatching_inputs(
         missing,
     )
     script_row = root_spec.display_rows()[-1]
-    validated: list[provenance.ToolProvenanceSpec] = []
-    applied: list[provenance.ToolProvenanceSpec] = []
+    validated: list[ToolProvenanceSpec] = []
+    applied: list[ToolProvenanceSpec] = []
 
     class _AcceptingMessageDialog:
         def __init__(self, _parent: typing.Any, **kwargs: typing.Any) -> None:
@@ -4319,7 +4381,7 @@ def test_manager_provenance_missing_nested_repair_relinks_nonmatching_inputs(
     class _Dialog:
         def __init__(
             self,
-            load_source: provenance.FileLoadSource,
+            load_source: FileLoadSource,
             _parent: QtWidgets.QWidget,
             *,
             batch_peers: tuple[manager_provenance_edit._FileLoadBatchPeer, ...],
@@ -4342,8 +4404,8 @@ def test_manager_provenance_missing_nested_repair_relinks_nonmatching_inputs(
             self,
             *,
             active_name: str,
-            replay_stages: tuple[provenance.ReplayStage, ...],
-        ) -> provenance.ToolProvenanceSpec:
+            replay_stages: tuple[ReplayStage, ...],
+        ) -> ToolProvenanceSpec:
             del active_name, replay_stages
             return _manager_replay_file_spec(new_a_path)
 
@@ -4355,7 +4417,7 @@ def test_manager_provenance_missing_nested_repair_relinks_nonmatching_inputs(
         def peer_provenance_spec(
             self,
             peer: manager_provenance_edit._FileLoadBatchPeer,
-        ) -> provenance.ToolProvenanceSpec:
+        ) -> ToolProvenanceSpec:
             return manager_provenance_edit._relinked_file_load_spec(
                 peer.spec,
                 new_b_path,
@@ -4425,20 +4487,20 @@ def test_manager_provenance_missing_nested_repair_partial_selection_fails(
     new_a_path = new_dir / "a.h5"
     first_spec = _manager_replay_file_spec(old_a_path)
     second_spec = _manager_replay_file_spec(old_b_path)
-    root_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    root_spec = script(
+        ScriptCodeOperation(
             label="Combine inputs",
             code="derived = data_0 + data_1",
         ),
         start_label="Run manager script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="First",
                 provenance_spec=first_spec,
             ),
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_1",
                 label="Second",
                 provenance_spec=second_spec,
@@ -4453,7 +4515,7 @@ def test_manager_provenance_missing_nested_repair_partial_selection_fails(
         missing,
     )
     script_row = root_spec.display_rows()[-1]
-    validated: list[provenance.ToolProvenanceSpec] = []
+    validated: list[ToolProvenanceSpec] = []
     dialog_results = [
         int(QtWidgets.QDialog.DialogCode.Accepted),
         int(QtWidgets.QDialog.DialogCode.Rejected),
@@ -4469,7 +4531,7 @@ def test_manager_provenance_missing_nested_repair_partial_selection_fails(
     class _Dialog:
         def __init__(
             self,
-            load_source: provenance.FileLoadSource,
+            load_source: FileLoadSource,
             _parent: QtWidgets.QWidget,
             *,
             batch_peers: tuple[manager_provenance_edit._FileLoadBatchPeer, ...],
@@ -4490,8 +4552,8 @@ def test_manager_provenance_missing_nested_repair_partial_selection_fails(
             self,
             *,
             active_name: str,
-            replay_stages: tuple[provenance.ReplayStage, ...],
-        ) -> provenance.ToolProvenanceSpec:
+            replay_stages: tuple[ReplayStage, ...],
+        ) -> ToolProvenanceSpec:
             del active_name, replay_stages
             return _manager_replay_file_spec(new_a_path)
 
@@ -4503,7 +4565,7 @@ def test_manager_provenance_missing_nested_repair_partial_selection_fails(
     def _validated_edit(
         _edit_node: typing.Any,
         _scope: typing.Literal["display", "source"],
-        candidate: provenance.ToolProvenanceSpec,
+        candidate: ToolProvenanceSpec,
         **_kwargs: typing.Any,
     ) -> manager_provenance_edit._ValidatedProvenanceEdit:
         validated.append(candidate)
@@ -4548,15 +4610,15 @@ def test_manager_provenance_missing_nested_source_repair_keeps_script_root(
     tmp_path: pathlib.Path,
 ) -> None:
     file_spec = _manager_replay_file_spec(tmp_path / "missing.h5")
-    root_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    root_spec = script(
+        ScriptCodeOperation(
             label="Use file input",
             code="derived = data_0",
         ),
         start_label="Run manager script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="File input",
                 provenance_spec=file_spec,
@@ -4576,8 +4638,8 @@ def test_manager_provenance_missing_nested_source_repair_keeps_script_root(
     edit_calls: list[
         tuple[
             typing.Literal["display", "source"],
-            provenance.ToolProvenanceSpec,
-            provenance._ProvenanceDisplayRow | None,
+            ToolProvenanceSpec,
+            _ProvenanceDisplayRow | None,
         ]
     ] = []
 
@@ -4625,17 +4687,17 @@ def test_manager_provenance_missing_source_repair_relinks_repair_root_candidate(
     new_path = tmp_path / "current.h5"
     old_file_spec = _manager_replay_file_spec(old_path)
     new_file_spec = _manager_replay_file_spec(new_path)
-    current_root = provenance.script(
-        provenance.ScriptCodeOperation(
+    current_root = script(
+        ScriptCodeOperation(
             label="Use file input",
             code="derived = data_0",
         ),
-        provenance.AverageOperation(dims=("x",)),
-        provenance.IselOperation(kwargs={"y": 0}),
+        AverageOperation(dims=("x",)),
+        IselOperation(kwargs={"y": 0}),
         start_label="Run manager script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="File input",
                 provenance_spec=old_file_spec,
@@ -4653,10 +4715,10 @@ def test_manager_provenance_missing_source_repair_relinks_repair_root_candidate(
         "replaying revert target",
         missing,
     )
-    row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("Aggregate", None),
+    row = _ProvenanceDisplayRow(
+        DerivationEntry("Aggregate", None),
     )
-    validated: list[provenance.ToolProvenanceSpec] = []
+    validated: list[ToolProvenanceSpec] = []
 
     class _AcceptingMessageDialog:
         def __init__(self, _parent: typing.Any, **kwargs: typing.Any) -> None:
@@ -4668,7 +4730,7 @@ def test_manager_provenance_missing_source_repair_relinks_repair_root_candidate(
     class _Dialog:
         def __init__(
             self,
-            load_source: provenance.FileLoadSource,
+            load_source: FileLoadSource,
             _parent: QtWidgets.QWidget,
             **_kwargs: typing.Any,
         ) -> None:
@@ -4681,8 +4743,8 @@ def test_manager_provenance_missing_source_repair_relinks_repair_root_candidate(
             self,
             *,
             active_name: str,
-            replay_stages: tuple[provenance.ReplayStage, ...],
-        ) -> provenance.ToolProvenanceSpec:
+            replay_stages: tuple[ReplayStage, ...],
+        ) -> ToolProvenanceSpec:
             del active_name, replay_stages
             return new_file_spec
 
@@ -4744,7 +4806,7 @@ def test_manager_provenance_missing_source_repair_failure_branches(
     )
     exc = manager_provenance_edit._ProvenanceReplayFailure("replaying file", missing)
     exc.__cause__ = missing
-    row = provenance._ProvenanceDisplayRow(provenance.DerivationEntry("row", None))
+    row = _ProvenanceDisplayRow(DerivationEntry("row", None))
     failed: list[Exception] = []
     dialogs: list[str] = []
     repair_attempts = 0
@@ -4813,11 +4875,11 @@ def test_manager_provenance_file_replay_validation_prechecks_missing_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
 ) -> None:
-    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    controller = _fake_edit_controller(_fake_edit_node(full_data()))
     spec = _manager_provenance_file_spec(tmp_path / "missing.h5")
 
     monkeypatch.setattr(
-        manager_provenance_edit.provenance,
+        manager_provenance_edit,
         "replay_file_provenance",
         lambda _spec: pytest.fail("missing files should fail before loader replay"),
     )
@@ -4837,10 +4899,10 @@ def test_manager_provenance_file_replay_validation_captures_loader_warnings(
 ) -> None:
     file_path = tmp_path / "scan.h5"
     file_path.touch()
-    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    controller = _fake_edit_controller(_fake_edit_node(full_data()))
     spec = _manager_provenance_file_spec(file_path)
 
-    def _warn_then_fail(_spec: provenance.ToolProvenanceSpec) -> xr.DataArray:
+    def _warn_then_fail(_spec: ToolProvenanceSpec) -> xr.DataArray:
         warnings.warn(
             "Loading f_003_S001 with inferred index 3 resulted in an error.",
             UserWarning,
@@ -4849,7 +4911,7 @@ def test_manager_provenance_file_replay_validation_captures_loader_warnings(
         raise RuntimeError("real replay failure")
 
     monkeypatch.setattr(
-        manager_provenance_edit.provenance,
+        manager_provenance_edit,
         "replay_file_provenance",
         _warn_then_fail,
     )
@@ -4867,9 +4929,9 @@ def test_manager_provenance_file_replay_validation_captures_loader_warnings(
 
 def test_manager_provenance_edit_controller_private_error_branches() -> None:
     controller = _fake_edit_controller(_fake_edit_node(None))
-    file_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("load", None),
-        edit_ref=provenance._ProvenanceStepRef("file_load"),
+    file_row = _ProvenanceDisplayRow(
+        DerivationEntry("load", None),
+        edit_ref=_ProvenanceStepRef("file_load"),
     )
     with pytest.raises(RuntimeError, match="file load"):
         controller._edit_file_load_row(
@@ -4877,15 +4939,15 @@ def test_manager_provenance_edit_controller_private_error_branches() -> None:
         )
     with pytest.raises(RuntimeError, match="file load"):
         controller._edit_file_load_spec(
-            typing.cast("typing.Any", _fake_edit_node(provenance.full_data())),
+            typing.cast("typing.Any", _fake_edit_node(full_data())),
             "display",
-            provenance.full_data(),
+            full_data(),
             where="testing",
         )
 
-    operation_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("op", None),
-        edit_ref=provenance._ProvenanceStepRef("operation", operation_index=0),
+    operation_row = _ProvenanceDisplayRow(
+        DerivationEntry("op", None),
+        edit_ref=_ProvenanceStepRef("operation", operation_index=0),
     )
     with pytest.raises(RuntimeError, match="No provenance"):
         controller._edit_operation_row(
@@ -4893,16 +4955,14 @@ def test_manager_provenance_edit_controller_private_error_branches() -> None:
         )
     with pytest.raises(RuntimeError, match="not available"):
         controller._edit_operation_row(
-            typing.cast("typing.Any", _fake_edit_node(provenance.full_data())),
+            typing.cast("typing.Any", _fake_edit_node(full_data())),
             operation_row,
         )
     with pytest.raises(RuntimeError, match="No editing dialog"):
         controller._edit_operation_row(
             typing.cast(
                 "typing.Any",
-                _fake_edit_node(
-                    provenance.full_data(provenance.RestoreNonuniformDimsOperation())
-                ),
+                _fake_edit_node(full_data(RestoreNonuniformDimsOperation())),
             ),
             operation_row,
         )
@@ -4926,13 +4986,13 @@ def test_manager_provenance_native_transform_edit_mode_uses_dialog_operations(
     assert not hasattr(dialog, "launch_mode_combo")
     manager_provenance_edit._ProvenanceEditController._restore_native_edit_dialog(
         dialog,
-        (provenance.QSelAggregationOperation(dims=("y",), func="mean"),),
+        (QSelAggregationOperation(dims=("y",), func="mean"),),
         "dims",
     )
     _set_aggregate(dialog, dims=("x",), func="sum")
 
     assert dialog.provenance_edit_operations() == [
-        provenance.QSelAggregationOperation(dims=("x",), func="sum")
+        QSelAggregationOperation(dims=("x",), func="sum")
     ]
 
 
@@ -4988,12 +5048,12 @@ def test_manager_provenance_base_edit_mode_accept_paths(
     class _EditModeDialog(manager_provenance_edit.dialogs._DataManipulationDialog):
         def provenance_edit_operations(
             self,
-        ) -> list[provenance.ToolProvenanceOperation]:
+        ) -> list[ToolProvenanceOperation]:
             if mode == "empty":
                 return []
             if mode == "error":
                 raise RuntimeError("operation failure")
-            return [provenance.IselOperation(kwargs={"x": 0})]
+            return [IselOperation(kwargs={"x": 0})]
 
     dialog = _EditModeDialog(tool.slicer_area, provenance_edit_mode=True)
     warnings_shown: list[tuple[object, ...]] = []
@@ -5067,12 +5127,12 @@ def test_manager_provenance_native_selection_edit_restores_slice_operations(
     assert not hasattr(dialog, "launch_mode_combo")
     manager_provenance_edit._ProvenanceEditController._restore_native_edit_dialog(
         dialog,
-        (provenance.SelOperation(kwargs={"y": slice(1.0, 3.0)}),),
+        (SelOperation(kwargs={"y": slice(1.0, 3.0)}),),
         None,
     )
 
     assert dialog.provenance_edit_operations() == [
-        provenance.SelOperation(kwargs={"y": slice(1.0, 3.0)})
+        SelOperation(kwargs={"y": slice(1.0, 3.0)})
     ]
 
 
@@ -5094,7 +5154,7 @@ def _native_current_seed_data() -> xr.DataArray:
     ("operation", "dialog_cls"),
     [
         pytest.param(
-            provenance.NormalizeOperation(
+            NormalizeOperation(
                 dims=("x",),
                 mode="minmax",
                 denominator_rtol=1e-7,
@@ -5103,17 +5163,17 @@ def _native_current_seed_data() -> xr.DataArray:
             id="normalize",
         ),
         pytest.param(
-            provenance.GaussianFilterOperation(sigma={"x": 0.25}),
+            GaussianFilterOperation(sigma={"x": 0.25}),
             manager_provenance_edit.dialogs.GaussianFilterDialog,
             id="gaussian",
         ),
         pytest.param(
-            provenance.DivideByCoordOperation(coord_name="scale"),
+            DivideByCoordOperation(coord_name="scale"),
             manager_provenance_edit.dialogs.DivideByCoordDialog,
             id="divide_by_coord",
         ),
         pytest.param(
-            provenance.SortByOperation(variables=("order",), ascending=False),
+            SortByOperation(variables=("order",), ascending=False),
             manager_provenance_edit.dialogs.SortByDialog,
             id="sortby",
         ),
@@ -5122,7 +5182,7 @@ def _native_current_seed_data() -> xr.DataArray:
 def test_manager_terminal_current_data_edit_opens_without_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
-    operation: provenance.ToolProvenanceOperation,
+    operation: ToolProvenanceOperation,
     dialog_cls: type[manager_provenance_edit.dialogs._DataManipulationDialog],
 ) -> None:
     base = _native_current_seed_data()
@@ -5188,16 +5248,16 @@ def test_manager_terminal_current_data_edit_opens_without_replay(
     )
 
     assert captured["dialog_cls"] is dialog_cls
-    if isinstance(operation, provenance.NormalizeOperation):
+    if isinstance(operation, NormalizeOperation):
         assert captured["dims"] == ("x",)
         assert captured["mode"] == "minmax"
         assert captured["denominator_rtol"] == pytest.approx(1e-7)
-    elif isinstance(operation, provenance.GaussianFilterOperation):
+    elif isinstance(operation, GaussianFilterOperation):
         assert captured["dims"] == ("x",)
         assert captured["sigma"]["x"] == pytest.approx(0.25)
-    elif isinstance(operation, provenance.DivideByCoordOperation):
+    elif isinstance(operation, DivideByCoordOperation):
         assert captured["coord_name"] == "scale"
-    elif isinstance(operation, provenance.SortByOperation):
+    elif isinstance(operation, SortByOperation):
         assert captured["sort_keys"] == ("order",)
         assert captured["ascending"] is False
 
@@ -5207,7 +5267,7 @@ def test_manager_terminal_current_data_edit_accept_still_replays_for_validation(
     tmp_path: pathlib.Path,
 ) -> None:
     base = _native_current_seed_data()
-    operation = provenance.NormalizeOperation(
+    operation = NormalizeOperation(
         dims=("x",),
         mode="minmax",
         denominator_rtol=1e-7,
@@ -5217,14 +5277,14 @@ def test_manager_terminal_current_data_edit_accept_still_replays_for_validation(
     node = _fake_edit_node(spec)
     node.current_source_data = lambda: current
     controller = _fake_edit_controller(node)
-    replayed: list[provenance.ToolProvenanceSpec] = []
-    replaced: list[provenance.ToolProvenanceSpec] = []
+    replayed: list[ToolProvenanceSpec] = []
+    replaced: list[ToolProvenanceSpec] = []
 
     def replay_candidate_result(
         _node: typing.Any,
         _scope: typing.Literal["display", "source"],
-        candidate: provenance.ToolProvenanceSpec,
-    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        candidate: ToolProvenanceSpec,
+    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         replayed.append(candidate)
         return current, candidate
 
@@ -5251,10 +5311,10 @@ def test_manager_terminal_current_data_edit_seed_rejects_grouped_operations(
     tmp_path: pathlib.Path,
 ) -> None:
     data = _native_current_seed_data()
-    operation = provenance.NormalizeOperation(dims=("x",), mode="minmax")
-    operations: tuple[provenance.ToolProvenanceOperation, ...] = (
+    operation = NormalizeOperation(dims=("x",), mode="minmax")
+    operations: tuple[ToolProvenanceOperation, ...] = (
         operation,
-        provenance.SortByOperation(variables=("x",)),
+        SortByOperation(variables=("x",)),
     )
     spec = _manager_replay_file_spec(tmp_path / "source.h5", *operations)
     node = _fake_edit_node(spec)
@@ -5282,43 +5342,43 @@ def test_manager_terminal_current_data_edit_seed_rejects_grouped_operations(
     ("operation", "dialog_cls", "current_data"),
     [
         pytest.param(
-            provenance.NormalizeOperation(dims=("missing",), mode="minmax"),
+            NormalizeOperation(dims=("missing",), mode="minmax"),
             manager_provenance_edit.dialogs.NormalizeDialog,
             _native_current_seed_data(),
             id="normalize-missing-dim",
         ),
         pytest.param(
-            provenance.GaussianFilterOperation(sigma={"missing": 0.25}),
+            GaussianFilterOperation(sigma={"missing": 0.25}),
             manager_provenance_edit.dialogs.GaussianFilterDialog,
             _native_current_seed_data(),
             id="gaussian-missing-dim",
         ),
         pytest.param(
-            provenance.GaussianFilterOperation(sigma={"x": 0.25}),
+            GaussianFilterOperation(sigma={"x": 0.25}),
             manager_provenance_edit.dialogs.GaussianFilterDialog,
             _native_current_seed_data().isel(x=slice(0, 1)),
             id="gaussian-degenerate-coord",
         ),
         pytest.param(
-            provenance.GaussianFilterOperation(sigma={"x": 0.25}),
+            GaussianFilterOperation(sigma={"x": 0.25}),
             manager_provenance_edit.dialogs.GaussianFilterDialog,
             _native_current_seed_data().assign_coords(x=["a", "b", "c"]),
             id="gaussian-nonnumeric-coord",
         ),
         pytest.param(
-            provenance.DivideByCoordOperation(coord_name="missing"),
+            DivideByCoordOperation(coord_name="missing"),
             manager_provenance_edit.dialogs.DivideByCoordDialog,
             _native_current_seed_data(),
             id="divide-by-missing-coord",
         ),
         pytest.param(
-            provenance.DivideByCoordOperation(coord_name="label"),
+            DivideByCoordOperation(coord_name="label"),
             manager_provenance_edit.dialogs.DivideByCoordDialog,
             _native_current_seed_data().assign_coords(label=("x", ["a", "b", "c"])),
             id="divide-by-nonnumeric-coord",
         ),
         pytest.param(
-            provenance.SortByOperation(variables=("missing",)),
+            SortByOperation(variables=("missing",)),
             manager_provenance_edit.dialogs.SortByDialog,
             _native_current_seed_data(),
             id="sortby-missing-key",
@@ -5327,7 +5387,7 @@ def test_manager_terminal_current_data_edit_seed_rejects_grouped_operations(
 )
 def test_manager_terminal_current_data_edit_seed_rejects_invalid_metadata(
     tmp_path: pathlib.Path,
-    operation: provenance.ToolProvenanceOperation,
+    operation: ToolProvenanceOperation,
     dialog_cls: type[manager_provenance_edit.dialogs._DataManipulationDialog],
     current_data: xr.DataArray,
 ) -> None:
@@ -5358,7 +5418,7 @@ def test_manager_affine_coord_edit_opens_without_replay(
         dims=("x", "y"),
         coords={"x": [0.0, 1.0], "y": [10.0, 20.0, 30.0]},
     )
-    operation = provenance.AffineCoordOperation(
+    operation = AffineCoordOperation(
         coord_name="y",
         scale=2.0,
         offset=0.5,
@@ -5425,7 +5485,7 @@ def test_manager_affine_coord_edit_accept_still_replays_for_validation(
         dims=("x", "y"),
         coords={"x": [0.0, 1.0], "y": [10.0, 20.0, 30.0]},
     )
-    operation = provenance.AffineCoordOperation(
+    operation = AffineCoordOperation(
         coord_name="y",
         scale=2.0,
         offset=0.5,
@@ -5435,14 +5495,14 @@ def test_manager_affine_coord_edit_accept_still_replays_for_validation(
     node = _fake_edit_node(spec)
     node.current_source_data = lambda: current
     controller = _fake_edit_controller(node)
-    replayed: list[provenance.ToolProvenanceSpec] = []
-    replaced: list[provenance.ToolProvenanceSpec] = []
+    replayed: list[ToolProvenanceSpec] = []
+    replaced: list[ToolProvenanceSpec] = []
 
     def replay_candidate_result(
         _node: typing.Any,
         _scope: typing.Literal["display", "source"],
-        candidate: provenance.ToolProvenanceSpec,
-    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        candidate: ToolProvenanceSpec,
+    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         replayed.append(candidate)
         return current, candidate
 
@@ -5470,12 +5530,12 @@ def test_manager_affine_coord_edit_accept_still_replays_for_validation(
     [
         pytest.param(
             (
-                provenance.AffineCoordOperation(
+                AffineCoordOperation(
                     coord_name="y",
                     scale=2.0,
                     offset=0.5,
                 ),
-                provenance.SortByOperation(variables=("y",)),
+                SortByOperation(variables=("y",)),
             ),
             xr.DataArray(
                 np.arange(6, dtype=float).reshape((2, 3)),
@@ -5485,7 +5545,7 @@ def test_manager_affine_coord_edit_accept_still_replays_for_validation(
             id="grouped-operations",
         ),
         pytest.param(
-            (provenance.NormalizeOperation(dims=("x",), mode="minmax"),),
+            (NormalizeOperation(dims=("x",), mode="minmax"),),
             xr.DataArray(
                 np.arange(6, dtype=float).reshape((2, 3)),
                 dims=("x", "y"),
@@ -5495,7 +5555,7 @@ def test_manager_affine_coord_edit_accept_still_replays_for_validation(
         ),
         pytest.param(
             (
-                provenance.AffineCoordOperation(
+                AffineCoordOperation(
                     coord_name="y",
                     scale=2.0,
                     offset=0.5,
@@ -5510,7 +5570,7 @@ def test_manager_affine_coord_edit_accept_still_replays_for_validation(
         ),
         pytest.param(
             (
-                provenance.AffineCoordOperation(
+                AffineCoordOperation(
                     coord_name="y",
                     scale=2.0,
                     offset=0.5,
@@ -5525,7 +5585,7 @@ def test_manager_affine_coord_edit_accept_still_replays_for_validation(
         ),
         pytest.param(
             (
-                provenance.AffineCoordOperation(
+                AffineCoordOperation(
                     coord_name="missing",
                     scale=2.0,
                     offset=0.5,
@@ -5542,7 +5602,7 @@ def test_manager_affine_coord_edit_accept_still_replays_for_validation(
 )
 def test_manager_affine_coord_edit_seed_rejects_unsafe_current_data(
     tmp_path: pathlib.Path,
-    operations: tuple[provenance.ToolProvenanceOperation, ...],
+    operations: tuple[ToolProvenanceOperation, ...],
     current_data: xr.DataArray,
 ) -> None:
     spec = _manager_replay_file_spec(tmp_path / "source.h5", *operations)
@@ -5572,12 +5632,12 @@ def test_manager_affine_coord_edit_seed_rejects_unsafe_current_data(
     [
         pytest.param(
             (
-                provenance.AffineCoordOperation(
+                AffineCoordOperation(
                     coord_name="y",
                     scale=2.0,
                     offset=0.5,
                 ),
-                provenance.TransposeOperation(dims=("y", "x")),
+                TransposeOperation(dims=("y", "x")),
             ),
             xr.DataArray(
                 np.arange(6, dtype=float).reshape((2, 3)),
@@ -5588,7 +5648,7 @@ def test_manager_affine_coord_edit_seed_rejects_unsafe_current_data(
         ),
         pytest.param(
             (
-                provenance.AffineCoordOperation(
+                AffineCoordOperation(
                     coord_name="y",
                     scale=0.0,
                     offset=0.5,
@@ -5606,7 +5666,7 @@ def test_manager_affine_coord_edit_seed_rejects_unsafe_current_data(
 def test_manager_affine_coord_edit_falls_back_to_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
-    operations: tuple[provenance.ToolProvenanceOperation, ...],
+    operations: tuple[ToolProvenanceOperation, ...],
     current_data: xr.DataArray,
 ) -> None:
     replay_data = xr.DataArray(
@@ -5618,13 +5678,13 @@ def test_manager_affine_coord_edit_falls_back_to_replay(
     node = _fake_edit_node(spec)
     node.current_source_data = lambda: current_data
     controller = _fake_edit_controller(node)
-    replayed: list[provenance.ToolProvenanceSpec] = []
+    replayed: list[ToolProvenanceSpec] = []
 
     def replay_candidate_result(
         _node: typing.Any,
         _scope: typing.Literal["display", "source"],
-        candidate: provenance.ToolProvenanceSpec,
-    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        candidate: ToolProvenanceSpec,
+    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         replayed.append(candidate)
         return replay_data, candidate
 
@@ -5666,12 +5726,12 @@ def test_manager_terminal_current_data_edit_falls_back_to_replay(
     case: str,
 ) -> None:
     replay_data = _native_current_seed_data()
-    operation: provenance.ToolProvenanceOperation
+    operation: ToolProvenanceOperation
     if case == "nonterminal":
-        operation = provenance.NormalizeOperation(dims=("x",), mode="minmax")
-        operations: tuple[provenance.ToolProvenanceOperation, ...] = (
+        operation = NormalizeOperation(dims=("x",), mode="minmax")
+        operations: tuple[ToolProvenanceOperation, ...] = (
             operation,
-            provenance.TransposeOperation(dims=("eV", "x")),
+            TransposeOperation(dims=("eV", "x")),
         )
         current_data = operation.apply(replay_data, parent_data=replay_data).transpose(
             "eV",
@@ -5679,12 +5739,12 @@ def test_manager_terminal_current_data_edit_falls_back_to_replay(
         )
         dialog_cls = manager_provenance_edit.dialogs.NormalizeDialog
     elif case == "current-source-unavailable":
-        operation = provenance.NormalizeOperation(dims=("x",), mode="minmax")
+        operation = NormalizeOperation(dims=("x",), mode="minmax")
         operations = (operation,)
         current_data = None
         dialog_cls = manager_provenance_edit.dialogs.NormalizeDialog
     else:
-        operation = provenance.LeadingEdgeOperation(
+        operation = LeadingEdgeOperation(
             dim="eV",
             fraction=0.25,
             direction="negative",
@@ -5702,13 +5762,13 @@ def test_manager_terminal_current_data_edit_falls_back_to_replay(
     else:
         node.current_source_data = lambda: current_data
     controller = _fake_edit_controller(node)
-    replayed: list[provenance.ToolProvenanceSpec] = []
+    replayed: list[ToolProvenanceSpec] = []
 
     def replay_candidate_result(
         _node: typing.Any,
         _scope: typing.Literal["display", "source"],
-        candidate: provenance.ToolProvenanceSpec,
-    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        candidate: ToolProvenanceSpec,
+    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         replayed.append(candidate)
         return replay_data, candidate
 
@@ -5742,18 +5802,16 @@ def test_manager_terminal_current_data_edit_falls_back_to_replay(
 
 def test_manager_provenance_edit_controller_native_dialog_error_branches() -> None:
     controller = _fake_edit_controller()
-    operation = provenance.NormalizeOperation(dims=("x",), mode="area")
-    spec = provenance.full_data(
-        provenance.QSelAggregationOperation(dims=("x",), func="mean")
+    operation = NormalizeOperation(dims=("x",), mode="area")
+    spec = full_data(QSelAggregationOperation(dims=("x",), func="mean"))
+    row = _ProvenanceDisplayRow(
+        DerivationEntry("Aggregate", None),
     )
-    row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("Aggregate", None),
-    )
-    ref = provenance._ProvenanceStepRef("operation", operation_index=0)
+    ref = _ProvenanceStepRef("operation", operation_index=0)
 
     with pytest.raises(RuntimeError, match="Active display filter"):
         controller._edit_active_filter(
-            typing.cast("typing.Any", _fake_edit_node(provenance.full_data())),
+            typing.cast("typing.Any", _fake_edit_node(full_data())),
             operation,
             manager_provenance_edit.dialogs.AggregateDialog,
         )
@@ -5776,25 +5834,25 @@ def test_manager_provenance_native_operation_editor_cancel_and_replay_failures(
 ) -> None:
     controller = _fake_edit_controller()
     data = xr.DataArray(np.arange(4.0), dims=("x",))
-    operation = provenance.IselOperation(kwargs={"x": 0})
-    spec = provenance.full_data(operation)
-    row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("isel", None),
-        edit_ref=provenance._ProvenanceStepRef("operation", operation_index=0),
+    operation = IselOperation(kwargs={"x": 0})
+    spec = full_data(operation)
+    row = _ProvenanceDisplayRow(
+        DerivationEntry("isel", None),
+        edit_ref=_ProvenanceStepRef("operation", operation_index=0),
     )
-    ref = typing.cast("provenance._ProvenanceStepRef", row.edit_ref)
+    ref = typing.cast("_ProvenanceStepRef", row.edit_ref)
     dialog_match = manager_provenance_edit._OperationDialogMatch(
         SelectionDialog,
         0,
         1,
     )
-    replayed_specs: list[provenance.ToolProvenanceSpec] = []
+    replayed_specs: list[ToolProvenanceSpec] = []
 
     def _replay_candidate_result(
         _node: typing.Any,
         _scope: typing.Literal["display", "source"],
-        candidate: provenance.ToolProvenanceSpec,
-    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        candidate: ToolProvenanceSpec,
+    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         replayed_specs.append(candidate)
         return data, candidate
 
@@ -5819,12 +5877,12 @@ def test_manager_provenance_native_operation_editor_cancel_and_replay_failures(
         )
         is None
     )
-    assert replayed_specs == [provenance.full_data()]
+    assert replayed_specs == [full_data()]
 
     def _raise_replay_cancelled(
         *_args: object,
         **_kwargs: object,
-    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         raise manager_provenance_edit._TrustedScriptReplayCancelled
 
     monkeypatch.setattr(
@@ -5867,7 +5925,7 @@ def test_manager_provenance_restore_native_edit_dialog_rejects_bad_dialogs(
     base_dialog = manager_provenance_edit.dialogs._DataManipulationDialog(
         tool.slicer_area
     )
-    filter_operation = provenance.NormalizeOperation(dims=("x",), mode="area")
+    filter_operation = NormalizeOperation(dims=("x",), mode="area")
 
     manager_provenance_edit._ProvenanceEditController._restore_native_edit_dialog(
         filter_dialog,
@@ -5881,15 +5939,15 @@ def test_manager_provenance_restore_native_edit_dialog_rejects_bad_dialogs(
         manager_provenance_edit._ProvenanceEditController._restore_native_edit_dialog(
             filter_dialog,
             (
-                provenance.NormalizeOperation(dims=("x",), mode="area"),
-                provenance.NormalizeOperation(dims=("x",), mode="min"),
+                NormalizeOperation(dims=("x",), mode="area"),
+                NormalizeOperation(dims=("x",), mode="min"),
             ),
             None,
         )
     with pytest.raises(TypeError, match="transform or filter"):
         manager_provenance_edit._ProvenanceEditController._restore_native_edit_dialog(
             base_dialog,
-            (provenance.IselOperation(kwargs={"x": 0}),),
+            (IselOperation(kwargs={"x": 0}),),
             None,
         )
 
@@ -5897,18 +5955,18 @@ def test_manager_provenance_restore_native_edit_dialog_rejects_bad_dialogs(
 @pytest.mark.parametrize(
     "operation",
     [
-        provenance.QSelOperation(kwargs={"x": slice(0.0, 2.0)}),
-        provenance.SelOperation(kwargs={"y": slice(1.0, 3.0)}),
-        provenance.IselOperation(kwargs={"y": slice(1, 3)}),
+        QSelOperation(kwargs={"x": slice(0.0, 2.0)}),
+        SelOperation(kwargs={"y": slice(1.0, 3.0)}),
+        IselOperation(kwargs={"y": slice(1, 3)}),
     ],
 )
 def test_manager_provenance_slice_selection_rows_remain_editable(
-    operation: provenance.ToolProvenanceOperation,
+    operation: ToolProvenanceOperation,
 ) -> None:
-    spec = provenance.selection(operation)
+    spec = selection(operation)
     controller = _fake_edit_controller(
         _fake_edit_node(
-            provenance.full_data(),
+            full_data(),
             source_spec=spec,
             source_display_spec=spec,
             parent_uid="parent",
@@ -5922,18 +5980,18 @@ def test_manager_provenance_slice_selection_rows_remain_editable(
 def test_manager_provenance_validation_preserves_active_filter_with_one_replay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    controller = _fake_edit_controller(_fake_edit_node(full_data()))
     data = xr.DataArray([1.0, 2.0], dims=("x",))
-    candidate = provenance.full_data()
-    base_candidate = provenance.full_data()
-    filter_operation = provenance.NormalizeOperation(dims=("x",), mode="area")
-    replayed_specs: list[provenance.ToolProvenanceSpec] = []
+    candidate = full_data()
+    base_candidate = full_data()
+    filter_operation = NormalizeOperation(dims=("x",), mode="area")
+    replayed_specs: list[ToolProvenanceSpec] = []
 
     def _replay_candidate_result(
         _node: typing.Any,
         _scope: typing.Literal["display", "source"],
-        spec: provenance.ToolProvenanceSpec,
-    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        spec: ToolProvenanceSpec,
+    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         replayed_specs.append(spec)
         return data, spec
 
@@ -5949,7 +6007,7 @@ def test_manager_provenance_validation_preserves_active_filter_with_one_replay(
     )
 
     edit = controller._validated_edit(
-        typing.cast("typing.Any", _fake_edit_node(provenance.full_data())),
+        typing.cast("typing.Any", _fake_edit_node(full_data())),
         "display",
         candidate,
         where="validating edited filter",
@@ -5962,10 +6020,10 @@ def test_manager_provenance_validation_preserves_active_filter_with_one_replay(
 
 
 def test_manager_provenance_filter_validation_uses_live_slicer_result() -> None:
-    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    controller = _fake_edit_controller(_fake_edit_node(full_data()))
     data = xr.DataArray([1.0, 2.0], dims=("x",))
-    operation = provenance.NormalizeOperation(dims=("x",), mode="area")
-    calls: list[tuple[xr.DataArray, provenance.ToolProvenanceOperation]] = []
+    operation = NormalizeOperation(dims=("x",), mode="area")
+    calls: list[tuple[xr.DataArray, ToolProvenanceOperation]] = []
     node = types.SimpleNamespace(
         imagetool=object(),
         slicer_area=types.SimpleNamespace(
@@ -5988,17 +6046,17 @@ def test_manager_provenance_filter_validation_uses_live_slicer_result() -> None:
 def test_manager_provenance_validation_reports_active_filter_validation_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    controller = _fake_edit_controller(_fake_edit_node(provenance.full_data()))
+    controller = _fake_edit_controller(_fake_edit_node(full_data()))
     data = xr.DataArray([1.0], dims=("x",))
-    candidate = provenance.full_data()
-    base_candidate = provenance.full_data()
+    candidate = full_data()
+    base_candidate = full_data()
     calls = 0
 
     def _replay_candidate_result(
         _node: typing.Any,
         _scope: typing.Literal["display", "source"],
-        spec: provenance.ToolProvenanceSpec,
-    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        spec: ToolProvenanceSpec,
+    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         nonlocal calls
         calls += 1
         return data, spec
@@ -6013,13 +6071,13 @@ def test_manager_provenance_validation_reports_active_filter_validation_failure(
         "_split_active_filter",
         lambda _node, _spec: (
             base_candidate,
-            provenance.DivideByCoordOperation(coord_name="missing"),
+            DivideByCoordOperation(coord_name="missing"),
         ),
     )
 
     with pytest.raises(manager_provenance_edit._ProvenanceReplayFailure) as exc:
         controller._validated_edit(
-            typing.cast("typing.Any", _fake_edit_node(provenance.full_data())),
+            typing.cast("typing.Any", _fake_edit_node(full_data())),
             "display",
             candidate,
             where="validating edited filter",
@@ -6034,21 +6092,21 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
         np.arange(6, dtype=float).reshape((2, 3)), dims=("x", "y")
     )
     parent = types.SimpleNamespace(
-        displayed_provenance_spec=provenance.full_data(),
+        displayed_provenance_spec=full_data(),
         current_source_data=lambda: parent_data,
     )
     node = _fake_edit_node(
-        provenance.full_data(),
+        full_data(),
         parent_uid="parent",
-        source_display_spec=provenance.selection(),
+        source_display_spec=selection(),
     )
-    replaced: list[tuple[xr.DataArray, provenance.ToolProvenanceSpec, bool, bool]] = []
+    replaced: list[tuple[xr.DataArray, ToolProvenanceSpec, bool, bool]] = []
     source_bindings: list[
         tuple[
-            provenance.ToolProvenanceSpec,
+            ToolProvenanceSpec,
             bool,
             str,
-            provenance.ToolProvenanceSpec,
+            ToolProvenanceSpec,
         ]
     ] = []
     node._replace_imagetool_data = (
@@ -6060,7 +6118,7 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
         source_bindings.append((spec, auto_update, state, provenance_spec))
     )
     controller = _fake_edit_controller(node, parent=parent)
-    spec = provenance.selection(provenance.IselOperation(kwargs={"x": 1}))
+    spec = selection(IselOperation(kwargs={"x": 1}))
 
     data, replayed_spec = controller._replay_candidate_result(
         typing.cast("typing.Any", node),
@@ -6075,7 +6133,7 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
         "source",
         data,
         spec,
-        provenance.NormalizeOperation(dims=("y",), mode="area"),
+        NormalizeOperation(dims=("y",), mode="area"),
     )
 
     assert source_bindings
@@ -6083,7 +6141,7 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
     assert source_bindings[-1][1:] == (
         True,
         "fresh",
-        provenance.compose_display_provenance(
+        compose_display_provenance(
             parent.displayed_provenance_spec,
             spec,
             parent_data=parent_data,
@@ -6117,30 +6175,30 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
 
 def test_manager_provenance_edit_controller_active_filter_refs_and_split() -> None:
     controller = _fake_edit_controller()
-    active = provenance.NormalizeOperation(dims=("x",), mode="area")
-    node = _fake_edit_node(provenance.full_data(), active_filter=active)
+    active = NormalizeOperation(dims=("x",), mode="area")
+    node = _fake_edit_node(full_data(), active_filter=active)
 
     assert (
         controller._active_filter_ref(
-            typing.cast("typing.Any", _fake_edit_node(provenance.full_data())),
-            provenance.full_data(active),
+            typing.cast("typing.Any", _fake_edit_node(full_data())),
+            full_data(active),
         )
         is None
     )
 
-    live_spec = provenance.full_data(provenance.IselOperation(kwargs={"x": 0}), active)
+    live_spec = full_data(IselOperation(kwargs={"x": 0}), active)
     assert controller._active_filter_ref(
         typing.cast("typing.Any", node),
         live_spec,
-    ) == provenance._ProvenanceStepRef("operation", operation_index=1)
+    ) == _ProvenanceStepRef("operation", operation_index=1)
 
     file_spec = _manager_provenance_file_spec(
         pathlib.Path("scan.h5")
-    ).append_replay_stage(provenance.full_data(active))
+    ).append_replay_stage(full_data(active))
     assert controller._active_filter_ref(
         typing.cast("typing.Any", node),
         file_spec,
-    ) == provenance._ProvenanceStepRef(
+    ) == _ProvenanceStepRef(
         "operation",
         operation_index=0,
         stage_index=0,
@@ -6152,7 +6210,7 @@ def test_manager_provenance_edit_controller_active_filter_refs_and_split() -> No
     assert split_operation == active
     assert base_spec.replay_stages == ()
 
-    script_file_spec = provenance.script(
+    script_file_spec = script(
         start_label="Load source",
         seed_code=typing.cast("str", file_spec.seed_code),
         active_name="derived",
@@ -6162,7 +6220,7 @@ def test_manager_provenance_edit_controller_active_filter_refs_and_split() -> No
     assert controller._active_filter_ref(
         typing.cast("typing.Any", node),
         script_file_spec,
-    ) == provenance._ProvenanceStepRef(
+    ) == _ProvenanceStepRef(
         "operation",
         operation_index=0,
         stage_index=0,
@@ -6183,13 +6241,13 @@ def test_manager_provenance_edit_controller_active_filter_refs_and_split() -> No
 
 
 def test_tool_provenance_spec_row_reference_helpers_cover_edge_branches() -> None:
-    isel = provenance.IselOperation(kwargs={"x": 0})
-    sel = provenance.SelOperation(kwargs={"y": 1.0})
-    spec = provenance.selection(isel, sel)
-    start_ref = provenance._ProvenanceStepRef("start")
-    first_ref = provenance._ProvenanceStepRef("operation", operation_index=0)
-    missing_ref = provenance._ProvenanceStepRef("operation", operation_index=20)
-    script_input_ref = provenance._ProvenanceStepRef(
+    isel = IselOperation(kwargs={"x": 0})
+    sel = SelOperation(kwargs={"y": 1.0})
+    spec = selection(isel, sel)
+    start_ref = _ProvenanceStepRef("start")
+    first_ref = _ProvenanceStepRef("operation", operation_index=0)
+    missing_ref = _ProvenanceStepRef("operation", operation_index=20)
+    script_input_ref = _ProvenanceStepRef(
         "script_input",
         script_input_index=0,
     )
@@ -6209,8 +6267,8 @@ def test_tool_provenance_spec_row_reference_helpers_cover_edge_branches() -> Non
 
     file_spec = _manager_provenance_file_spec(
         pathlib.Path("scan.h5")
-    ).append_replay_stage(provenance.full_data(isel, sel))
-    stage_ref = provenance._ProvenanceStepRef(
+    ).append_replay_stage(full_data(isel, sel))
+    stage_ref = _ProvenanceStepRef(
         "operation",
         operation_index=1,
         stage_index=0,
@@ -6218,14 +6276,12 @@ def test_tool_provenance_spec_row_reference_helpers_cover_edge_branches() -> Non
     assert file_spec._operation_for_ref(stage_ref) == sel
     assert (
         file_spec._operation_for_ref(
-            provenance._ProvenanceStepRef("operation", operation_index=1, stage_index=2)
+            _ProvenanceStepRef("operation", operation_index=1, stage_index=2)
         )
         is None
     )
     assert (
-        file_spec._prefix_through_ref(
-            provenance._ProvenanceStepRef("file_load")
-        ).replay_stages
+        file_spec._prefix_through_ref(_ProvenanceStepRef("file_load")).replay_stages
         == ()
     )
     assert file_spec._prefix_before_ref(stage_ref).replay_stages[0].operations == (
@@ -6321,9 +6377,7 @@ def test_manager_metadata_derivation_list_has_visible_splitter(
     ],
 ) -> None:
     rows = [
-        provenance._ProvenanceDisplayRow(
-            provenance.DerivationEntry(f"Step {index}", "derived = data", True)
-        )
+        _ProvenanceDisplayRow(DerivationEntry(f"Step {index}", "derived = data", True))
         for index in range(8)
     ]
 
@@ -6354,7 +6408,7 @@ def test_manager_metadata_derivation_list_has_visible_splitter(
                     has_note=False,
                     is_imagetool=True,
                     type_badge_text="",
-                    displayed_provenance_spec=provenance.full_data(),
+                    displayed_provenance_spec=full_data(),
                     metadata_fields=[
                         manager_wrapper._MetadataField("Kind", "ImageTool")
                     ],
@@ -6406,22 +6460,16 @@ def test_manager_file_label_helpers_and_file_replay_rename_update(tmp_path) -> N
     assert manager_wrapper._compact_file_suffix(paths) == " (scan_a, scan_b, +1)"
 
     spec = _manager_provenance_file_spec(paths[0]).append_replay_stage(
-        provenance.full_data(
-            provenance.AverageOperation(dims=("x",))
-        ).append_final_rename("old")
+        full_data(AverageOperation(dims=("x",))).append_final_rename("old")
     )
     renamed = manager_wrapper._spec_with_final_data_name(spec, "new")
 
     assert renamed.kind == "file"
     assert renamed.replay_stages
-    assert renamed.replay_stages[-1].operations[-1] == provenance.RenameOperation(
-        name="new"
-    )
-    assert renamed.replay_stages[-1].operations[:-1] == (
-        provenance.AverageOperation(dims=("x",)),
-    )
+    assert renamed.replay_stages[-1].operations[-1] == RenameOperation(name="new")
+    assert renamed.replay_stages[-1].operations[:-1] == (AverageOperation(dims=("x",)),)
 
-    script_spec = provenance.script(
+    script_spec = script(
         start_label="Load source",
         seed_code=typing.cast("str", spec.seed_code),
         active_name="derived",
@@ -6434,8 +6482,8 @@ def test_manager_file_label_helpers_and_file_replay_rename_update(tmp_path) -> N
     assert script_renamed.replay_stages
     assert script_renamed.operations == ()
     script_stage_operations = script_renamed.replay_stages[-1].operations
-    assert script_stage_operations[-1] == provenance.RenameOperation(name="newer")
-    assert script_stage_operations[:-1] == (provenance.AverageOperation(dims=("x",)),)
+    assert script_stage_operations[-1] == RenameOperation(name="newer")
+    assert script_stage_operations[:-1] == (AverageOperation(dims=("x",)),)
 
 
 def test_manager_childtool_from_filtered_parent_uses_display_provenance(
@@ -6449,7 +6497,7 @@ def test_manager_childtool_from_filtered_parent_uses_display_provenance(
         dims=["alpha", "eV"],
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
-    operation = provenance.GaussianFilterOperation(sigma={"alpha": 1.0})
+    operation = GaussianFilterOperation(sigma={"alpha": 1.0})
     expected = operation.apply(data, parent_data=data)
 
     with manager_context() as manager:
@@ -6493,7 +6541,7 @@ def test_manager_filtered_parent_updates_source_bound_child(
         dims=["alpha", "eV"],
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
-    operation = provenance.GaussianFilterOperation(sigma={"alpha": 1.0})
+    operation = GaussianFilterOperation(sigma={"alpha": 1.0})
     expected = operation.apply(data, parent_data=data)
 
     with manager_context() as manager:
@@ -6510,7 +6558,7 @@ def test_manager_filtered_parent_updates_source_bound_child(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=True,
         )
         child_node = manager._child_node(child_uid)
@@ -6544,7 +6592,7 @@ def test_manager_filtered_source_bound_child_refresh_keeps_filter(
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
     updated = data + 100.0
-    operation = provenance.GaussianFilterOperation(sigma={"alpha": 1.0})
+    operation = GaussianFilterOperation(sigma={"alpha": 1.0})
     expected = operation.apply(updated, parent_data=updated)
 
     with manager_context() as manager:
@@ -6561,7 +6609,7 @@ def test_manager_filtered_source_bound_child_refresh_keeps_filter(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=True,
         )
         child_node = manager._child_node(child_uid)
@@ -6605,7 +6653,7 @@ def test_manager_filtered_source_bound_child_failed_refresh_keeps_filter(
         dims=["u", "y"],
         coords={"u": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
     )
-    operation = provenance.GaussianFilterOperation(sigma={"x": 1.0})
+    operation = GaussianFilterOperation(sigma={"x": 1.0})
     expected = operation.apply(data, parent_data=data)
 
     with manager_context() as manager:
@@ -6622,7 +6670,7 @@ def test_manager_filtered_source_bound_child_failed_refresh_keeps_filter(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=True,
         )
         child_node = manager._child_node(child_uid)
@@ -6650,7 +6698,7 @@ def test_manager_duplicate_filtered_child_records_filter_once(
         dims=["alpha", "eV"],
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
-    operation = provenance.GaussianFilterOperation(sigma={"alpha": 1.0})
+    operation = GaussianFilterOperation(sigma={"alpha": 1.0})
     expected = operation.apply(data, parent_data=data)
 
     with manager_context() as manager:
@@ -6667,7 +6715,7 @@ def test_manager_duplicate_filtered_child_records_filter_once(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=True,
         )
         child_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
@@ -6698,7 +6746,7 @@ def test_manager_workspace_roundtrip_filtered_child_records_filter_once(
         dims=["alpha", "eV"],
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
-    operation = provenance.GaussianFilterOperation(sigma={"alpha": 1.0})
+    operation = GaussianFilterOperation(sigma={"alpha": 1.0})
 
     with manager_context() as manager:
         manager.show()
@@ -6714,7 +6762,7 @@ def test_manager_workspace_roundtrip_filtered_child_records_filter_once(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=True,
         )
         child_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
@@ -6789,13 +6837,11 @@ def test_manager_operation_filter_preserves_output_binding(
 
         def output_imagetool_provenance(
             self, output_id: str | enum.Enum, data: xr.DataArray
-        ) -> provenance.ToolProvenanceSpec | None:
+        ) -> ToolProvenanceSpec | None:
             assert output_id == "out"
             del data
-            return provenance.script(
-                provenance.ScriptCodeOperation(
-                    label="Use output", code="result = data + 10"
-                ),
+            return script(
+                ScriptCodeOperation(label="Use output", code="result = data + 10"),
                 start_label="Start from parent",
                 active_name="result",
             )
@@ -6830,7 +6876,7 @@ def test_manager_operation_filter_preserves_output_binding(
             source_state="fresh",
             output_id="out",
         )
-        operation = provenance.GaussianFilterOperation(sigma={"x": 1.0})
+        operation = GaussianFilterOperation(sigma={"x": 1.0})
         output_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
         expected = operation.apply(initial_output, parent_data=initial_output)
 
@@ -6871,7 +6917,7 @@ def test_manager_non_imagetool_node_displayed_provenance_uses_tool_provenance(
         def __init__(
             self,
             data: xr.DataArray,
-            provenance_spec: provenance.ToolProvenanceSpec,
+            provenance_spec: ToolProvenanceSpec,
         ) -> None:
             super().__init__()
             self._data = data
@@ -6896,13 +6942,13 @@ def test_manager_non_imagetool_node_displayed_provenance_uses_tool_provenance(
 
         def current_provenance_spec(
             self, *, flush_deferred_restore: bool = True
-        ) -> provenance.ToolProvenanceSpec | None:
+        ) -> ToolProvenanceSpec | None:
             del flush_deferred_restore
             return self._provenance_spec
 
     data = xr.DataArray(np.arange(4.0), dims=("x",))
-    provenance_spec = provenance.script(
-        provenance.ScriptCodeOperation(label="Double data", code="result = data * 2"),
+    provenance_spec = script(
+        ScriptCodeOperation(label="Double data", code="result = data * 2"),
         start_label="Start from data",
         seed_code="data = source",
         active_name="result",
@@ -7160,12 +7206,8 @@ def test_manager_nested_imagetool_refresh_updates_descendant_dependency(
         coords={"x": np.arange(4), "y": np.arange(4)},
         name="scan",
     )
-    initial_root_spec = provenance.selection(
-        provenance.IselOperation(kwargs={"x": slice(0, 2)})
-    )
-    updated_root_spec = provenance.selection(
-        provenance.IselOperation(kwargs={"x": slice(1, 3)})
-    )
+    initial_root_spec = selection(IselOperation(kwargs={"x": slice(0, 2)}))
+    updated_root_spec = selection(IselOperation(kwargs={"x": slice(1, 3)}))
 
     with manager_context() as manager:
         manager.show()
@@ -7182,7 +7224,7 @@ def test_manager_nested_imagetool_refresh_updates_descendant_dependency(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=True,
         )
 
@@ -7193,9 +7235,7 @@ def test_manager_nested_imagetool_refresh_updates_descendant_dependency(
             grandchild_tool,
             child_uid,
             show=False,
-            source_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"y": slice(0, 2)})
-            ),
+            source_spec=selection(IselOperation(kwargs={"y": slice(0, 2)})),
             source_auto_update=True,
         )
 
@@ -7220,8 +7260,14 @@ def test_manager_nested_imagetool_refresh_updates_descendant_dependency(
             timeout=5000,
         )
         code = typing.cast("str", grandchild_node.provenance_spec.derivation_code())
-        assert "derived = derived.isel(x=slice(1, 3))" in code
-        assert "derived = derived.isel(x=slice(0, 2))" not in code
+        assert ".isel(x=slice(1, 3))" in code
+        assert ".isel(x=slice(0, 2))" not in code
+        namespace = {"data": base}
+        exec(code, namespace)  # noqa: S102
+        xr.testing.assert_identical(
+            namespace["derived"],
+            base.isel(x=slice(1, 3), y=slice(0, 2)),
+        )
 
 
 def test_manager_nested_imagetool_auto_update_can_be_disabled_from_auto_badge(
@@ -7248,9 +7294,7 @@ def test_manager_nested_imagetool_auto_update_can_be_disabled_from_auto_badge(
         manager.add_imagetool(
             root_tool,
             show=False,
-            provenance_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"x": slice(0, 2)})
-            ),
+            provenance_spec=selection(IselOperation(kwargs={"x": slice(0, 2)})),
         )
 
         child_tool = itool(root_data.copy(deep=False), manager=False, execute=False)
@@ -7259,14 +7303,14 @@ def test_manager_nested_imagetool_auto_update_can_be_disabled_from_auto_badge(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=False,
         )
         child_node = manager._child_node(child_uid)
 
         updated = base.isel(x=slice(2, 4))
         manager._tool_graph.root_wrappers[0].set_detached_provenance(
-            provenance.selection(provenance.IselOperation(kwargs={"x": slice(2, 4)}))
+            selection(IselOperation(kwargs={"x": slice(2, 4)}))
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated)
@@ -7335,7 +7379,7 @@ def test_manager_nested_imagetool_auto_update_can_be_disabled_from_auto_badge(
 
         updated2 = base.isel(x=slice(4, 6))
         manager._tool_graph.root_wrappers[0].set_detached_provenance(
-            provenance.selection(provenance.IselOperation(kwargs={"x": slice(4, 6)}))
+            selection(IselOperation(kwargs={"x": slice(4, 6)}))
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated2)
@@ -7367,9 +7411,7 @@ def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
         manager.add_imagetool(
             root_tool,
             show=False,
-            provenance_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"x": slice(0, 2)})
-            ),
+            provenance_spec=selection(IselOperation(kwargs={"x": slice(0, 2)})),
         )
 
         child_tool = itool(root_data.copy(deep=False), manager=False, execute=False)
@@ -7378,7 +7420,7 @@ def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=False,
         )
 
@@ -7390,9 +7432,7 @@ def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
             grandchild_tool,
             child_uid,
             show=False,
-            source_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"y": slice(0, 2)})
-            ),
+            source_spec=selection(IselOperation(kwargs={"y": slice(0, 2)})),
             source_auto_update=True,
         )
 
@@ -7401,7 +7441,7 @@ def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
         grandchild_node = manager._child_node(grandchild_uid)
 
         root_node.set_detached_provenance(
-            provenance.selection(provenance.IselOperation(kwargs={"x": slice(1, 3)}))
+            selection(IselOperation(kwargs={"x": slice(1, 3)}))
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, base.isel(x=slice(1, 3)))
@@ -7434,9 +7474,7 @@ def test_manager_manual_nested_refresh_updates_stale_ancestors(
         manager.add_imagetool(
             root_tool,
             show=False,
-            provenance_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"x": slice(0, 2)})
-            ),
+            provenance_spec=selection(IselOperation(kwargs={"x": slice(0, 2)})),
         )
 
         child_tool = itool(root_data.copy(deep=False), manager=False, execute=False)
@@ -7445,7 +7483,7 @@ def test_manager_manual_nested_refresh_updates_stale_ancestors(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=False,
         )
 
@@ -7457,9 +7495,7 @@ def test_manager_manual_nested_refresh_updates_stale_ancestors(
             grandchild_tool,
             child_uid,
             show=False,
-            source_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"y": slice(0, 2)})
-            ),
+            source_spec=selection(IselOperation(kwargs={"y": slice(0, 2)})),
             source_auto_update=False,
         )
 
@@ -7468,7 +7504,7 @@ def test_manager_manual_nested_refresh_updates_stale_ancestors(
         updated_root = base.isel(x=slice(2, 4))
 
         manager._tool_graph.root_wrappers[0].set_detached_provenance(
-            provenance.selection(provenance.IselOperation(kwargs={"x": slice(2, 4)}))
+            selection(IselOperation(kwargs={"x": slice(2, 4)}))
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated_root)
@@ -7558,7 +7594,7 @@ def test_manager_manual_nested_refresh_resumes_after_deferred_parent(
 
         parent_tool = _DeferredTool(root_data)
         parent_uid = manager.add_childtool(parent_tool, 0, show=False)
-        parent_tool.set_source_binding(provenance.full_data(), auto_update=False)
+        parent_tool.set_source_binding(full_data(), auto_update=False)
 
         leaf_tool = itool(root_data.isel(y=slice(0, 2)), manager=False, execute=False)
         assert isinstance(leaf_tool, erlab.interactive.imagetool.ImageTool)
@@ -7566,9 +7602,7 @@ def test_manager_manual_nested_refresh_resumes_after_deferred_parent(
             leaf_tool,
             parent_uid,
             show=False,
-            source_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"y": slice(0, 2)})
-            ),
+            source_spec=selection(IselOperation(kwargs={"y": slice(0, 2)})),
             source_auto_update=False,
         )
 
@@ -7868,9 +7902,7 @@ def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_output_id(
             nested_tool,
             output_uid,
             show=False,
-            source_spec=provenance.selection(
-                provenance.QSelOperation(kwargs={"alpha": 1, "alpha_width": 1})
-            ),
+            source_spec=selection(QSelOperation(kwargs={"alpha": 1, "alpha_width": 1})),
             source_auto_update=True,
         )
 
@@ -7902,8 +7934,8 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         parent_tool = manager.get_imagetool(0)
         parent_tool.set_provenance_spec(
-            provenance.script(
-                provenance.ScriptCodeOperation(
+            script(
+                ScriptCodeOperation(
                     label="Prepare parent data",
                     code="prepared_parent = data + 1",
                 ),
@@ -8000,12 +8032,47 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
         assert "prepared_parent = data + 1" in values_code
         assert "prepared_parent = data + 1" in second_values_code
         assert "prepared_parent = data + 1" in stderr_code
-        assert f".modelfit_coefficients.sel(param={first_param_name!r})" in values_code
-        assert (
-            f".modelfit_coefficients.sel(param={second_param_name!r})"
-            in second_values_code
+
+        def selected_fit_output(code: str) -> tuple[str, str]:
+            for call in (
+                node for node in ast.walk(ast.parse(code)) if isinstance(node, ast.Call)
+            ):
+                if (
+                    not isinstance(call.func, ast.Attribute)
+                    or call.func.attr != "sel"
+                    or not isinstance(call.func.value, ast.Attribute)
+                    or call.func.value.attr
+                    not in {"modelfit_coefficients", "modelfit_stderr"}
+                ):
+                    continue
+                param_keyword = next(
+                    (
+                        keyword
+                        for keyword in call.keywords
+                        if keyword.arg == "param"
+                        and isinstance(keyword.value, ast.Constant)
+                        and isinstance(keyword.value.value, str)
+                    ),
+                    None,
+                )
+                if param_keyword is not None:
+                    return call.func.value.attr, typing.cast(
+                        "str", param_keyword.value.value
+                    )
+            raise AssertionError("generated fit code does not select a parameter")
+
+        assert selected_fit_output(values_code) == (
+            "modelfit_coefficients",
+            first_param_name,
         )
-        assert f".modelfit_stderr.sel(param={first_param_name!r})" in stderr_code
+        assert selected_fit_output(second_values_code) == (
+            "modelfit_coefficients",
+            second_param_name,
+        )
+        assert selected_fit_output(stderr_code) == (
+            "modelfit_stderr",
+            first_param_name,
+        )
 
 
 def test_manager_output_refresh_updates_stale_parent_source(
@@ -8053,12 +8120,10 @@ def test_manager_output_refresh_updates_stale_parent_source(
 
         def output_imagetool_provenance(
             self, output_id: str | enum.Enum, data: xr.DataArray
-        ) -> provenance.ToolProvenanceSpec | None:
+        ) -> ToolProvenanceSpec | None:
             assert output_id == "out"
-            return provenance.script(
-                provenance.ScriptCodeOperation(
-                    label="Use output", code="result = data + 10"
-                ),
+            return script(
+                ScriptCodeOperation(label="Use output", code="result = data + 10"),
                 start_label="Start from parent",
                 active_name="result",
             )
@@ -8080,7 +8145,7 @@ def test_manager_output_refresh_updates_stale_parent_source(
 
         child = _OutputTool(data)
         child_uid = manager.add_childtool(child, 0, show=False)
-        child.set_source_binding(provenance.full_data(), auto_update=False)
+        child.set_source_binding(full_data(), auto_update=False)
 
         initial_output = typing.cast("xr.DataArray", child.output_imagetool_data("out"))
         output_tool = itool(initial_output, manager=False, execute=False)
@@ -8192,7 +8257,11 @@ def test_manager_open_in_new_window_nests_image_tool_children(
             test_data,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -8314,7 +8383,7 @@ def test_manager_open_in_new_window_nests_image_tool_children(
         )
         trigger_menu_action(menu, manager._metadata_copy_full_action)
         assert copied
-        assert not provenance.uses_default_replay_input(copied[-1])
+        assert not uses_default_replay_input(copied[-1])
         namespace = _exec_generated_code(copied[-1], {})
         result = namespace["result"]
         assert isinstance(result, xr.DataArray)
@@ -8518,7 +8587,11 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
             data,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -8717,7 +8790,7 @@ def test_manager_replace_transform_on_filtered_source_child_keeps_live_source(
         coords={"x": np.arange(3, dtype=float), "y": np.arange(4, dtype=float)},
         name="scan",
     )
-    operation = provenance.GaussianFilterOperation(sigma={"x": 1.0})
+    operation = GaussianFilterOperation(sigma={"x": 1.0})
 
     with manager_context() as manager:
         manager.show()
@@ -8733,7 +8806,7 @@ def test_manager_replace_transform_on_filtered_source_child_keeps_live_source(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=True,
         )
         child_node = manager._child_node(child_uid)
@@ -8795,7 +8868,11 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
             test_data,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -8881,7 +8958,11 @@ def test_manager_provenance_file_load_edit_accept_and_cancel(
             first,
             manager=True,
             file_path=first_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -9019,22 +9100,22 @@ def test_manager_provenance_nested_file_load_batch_relinks_deleted_parents(
 
     first_spec = _manager_replay_file_spec(old_a_path)
     second_spec = _manager_replay_file_spec(old_b_path)
-    root_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    root_spec = script(
+        ScriptCodeOperation(
             label="Combine deleted parent tools",
             code="derived = data_0 + data_1",
         ),
         start_label="Run ImageTool manager console code",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="ImageTool 0: a",
                 node_uid="deleted-a",
                 node_snapshot_token=str(object()),
                 provenance_spec=first_spec,
             ),
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_1",
                 label="ImageTool 1: b",
                 node_uid="deleted-b",
@@ -9103,9 +9184,9 @@ def test_manager_provenance_rows_dim_when_not_activatable(
         dims=("x", "y"),
         name="scripted",
     )
-    script_spec = provenance.script(
-        provenance.ScriptCodeOperation(label="Copy source", code="derived = data"),
-        provenance.QSelAggregationOperation(dims=("x",), func="mean"),
+    script_spec = script(
+        ScriptCodeOperation(label="Copy source", code="derived = data"),
+        QSelAggregationOperation(dims=("x",), func="mean"),
         start_label="Run script",
         active_name="derived",
     )
@@ -9183,7 +9264,7 @@ def test_manager_provenance_row_activation_uses_edit_default_action(
     test_data.to_netcdf(file_path, engine="h5netcdf")
     spec = _manager_replay_file_spec(
         file_path,
-        provenance.QSelAggregationOperation(dims=("alpha",), func="mean"),
+        QSelAggregationOperation(dims=("alpha",), func="mean"),
     )
 
     with manager_context() as manager:
@@ -9194,7 +9275,7 @@ def test_manager_provenance_row_activation_uses_edit_default_action(
 
         select_tools(manager, [0])
         manager._update_info()
-        activated_rows: list[provenance._ProvenanceDisplayRow | None] = []
+        activated_rows: list[_ProvenanceDisplayRow | None] = []
         monkeypatch.setattr(
             manager._provenance_edit_controller,
             "edit_row",
@@ -9244,9 +9325,9 @@ def test_manager_provenance_row_activation_ignores_noneditable_row(
         dims=("x", "y"),
         name="scan",
     )
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(label="Copy source", code="derived = data"),
-        provenance.QSelAggregationOperation(dims=("x",), func="mean"),
+    spec = script(
+        ScriptCodeOperation(label="Copy source", code="derived = data"),
+        QSelAggregationOperation(dims=("x",), func="mean"),
         start_label="Run script",
         active_name="derived",
     )
@@ -9295,10 +9376,10 @@ def test_manager_provenance_context_menu_preserves_extended_selection(
 ) -> None:
     file_path = tmp_path / "scan.h5"
     test_data.to_netcdf(file_path, engine="h5netcdf")
-    operation = provenance.AssignAttrsOperation(attrs={"note": "selected"})
+    operation = AssignAttrsOperation(attrs={"note": "selected"})
     spec = _manager_replay_file_spec(
         file_path,
-        provenance.QSelAggregationOperation(dims=("alpha",), func="mean"),
+        QSelAggregationOperation(dims=("alpha",), func="mean"),
         operation,
     )
     displayed = operation.apply(
@@ -9374,7 +9455,7 @@ def test_manager_provenance_context_menu_on_empty_space_keeps_paste(
     test_data.to_netcdf(file_path, engine="h5netcdf")
     spec = _manager_replay_file_spec(
         file_path,
-        provenance.QSelAggregationOperation(dims=("alpha",), func="mean"),
+        QSelAggregationOperation(dims=("alpha",), func="mean"),
     )
 
     with manager_context() as manager:
@@ -9387,7 +9468,7 @@ def test_manager_provenance_context_menu_on_empty_space_keeps_paste(
         manager._update_info()
         select_metadata_rows(manager, [1])
         _set_provenance_steps_clipboard(
-            (provenance.AssignAttrsOperation(attrs={"copied": "yes"}),)
+            (AssignAttrsOperation(attrs={"copied": "yes"}),)
         )
         menu = manager._build_metadata_derivation_menu(include_row_actions=False)
         assert menu is not None
@@ -9411,7 +9492,7 @@ def test_manager_provenance_paste_filter_respects_focus_guards(
     with manager_context() as manager:
         tool = itool(data, manager=False, execute=False)
         assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(tool, show=False, provenance_spec=provenance.full_data())
+        manager.add_imagetool(tool, show=False, provenance_spec=full_data())
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         assert manager._provenance_paste_filter is not None
         paste_event = QtGui.QKeyEvent(
@@ -9476,7 +9557,7 @@ def test_manager_provenance_context_menu_groups_row_commands(
     test_data.to_netcdf(file_path, engine="h5netcdf")
     spec = _manager_replay_file_spec(
         file_path,
-        provenance.QSelAggregationOperation(dims=("alpha",), func="mean"),
+        QSelAggregationOperation(dims=("alpha",), func="mean"),
     )
 
     with manager_context() as manager:
@@ -9519,9 +9600,9 @@ def test_manager_provenance_unresolved_script_prefix_blocks_structured_edit(
         dims=("x", "y"),
         name="scan",
     )
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(label="Copy source", code="derived = data"),
-        provenance.QSelAggregationOperation(dims=("x",), func="mean"),
+    spec = script(
+        ScriptCodeOperation(label="Copy source", code="derived = data"),
+        QSelAggregationOperation(dims=("x",), func="mean"),
         start_label="Run script",
         active_name="derived",
     )
@@ -9568,24 +9649,24 @@ def test_manager_provenance_script_structured_row_can_revert(
     file_path = tmp_path / "scan.h5"
     data.to_netcdf(file_path, engine="h5netcdf")
     file_spec = _manager_replay_file_spec(file_path)
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    spec = script(
+        ScriptCodeOperation(
             label="Use source",
             code="derived = source.copy()",
         ),
-        provenance.QSelAggregationOperation(dims=("x",), func="mean"),
-        provenance.IselOperation(kwargs={"y": 0}),
+        QSelAggregationOperation(dims=("x",), func="mean"),
+        IselOperation(kwargs={"y": 0}),
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="source",
                 label="Recorded source",
                 provenance_spec=file_spec,
             ),
         ),
     )
-    initial = provenance.replay_script_provenance(spec, {})
+    initial = replay_script_provenance(spec, {})
 
     with manager_context() as manager:
         manager.show()
@@ -9603,8 +9684,7 @@ def test_manager_provenance_script_structured_row_can_revert(
         aggregate_row = next(
             row
             for row in rows
-            if row.replay_ref
-            == provenance._ProvenanceStepRef("operation", operation_index=1)
+            if row.replay_ref == _ProvenanceStepRef("operation", operation_index=1)
         )
         aggregate_item = None
         for row_index in range(manager.metadata_derivation_list.count()):
@@ -9663,7 +9743,7 @@ def test_manager_provenance_structured_operation_edit_accept_and_cancel(
     data.to_netcdf(file_path, engine="h5netcdf")
     spec = _manager_replay_file_spec(
         file_path,
-        provenance.QSelAggregationOperation(dims=("y",), func="mean"),
+        QSelAggregationOperation(dims=("y",), func="mean"),
     )
 
     with manager_context() as manager:
@@ -9672,7 +9752,7 @@ def test_manager_provenance_structured_operation_edit_accept_and_cancel(
 
         tool = _add_file_replay_tool(
             manager,
-            provenance.replay_file_provenance(spec),
+            replay_file_provenance(spec),
             spec,
         )
         root = manager._tool_graph.root_wrappers[0]
@@ -9700,9 +9780,7 @@ def test_manager_provenance_structured_operation_edit_accept_and_cancel(
 
         assert root.provenance_spec is not None
         stage = root.provenance_spec.replay_stages[0]
-        assert stage.operations == (
-            provenance.QSelAggregationOperation(dims=("x",), func="sum"),
-        )
+        assert stage.operations == (QSelAggregationOperation(dims=("x",), func="sum"),)
         xr.testing.assert_identical(
             tool.slicer_area._data.rename(None),
             data.qsel.sum("x").rename(None),
@@ -9732,16 +9810,16 @@ def test_manager_provenance_script_derived_structured_step_is_editable(
         manager.add_imagetool(input_tool, show=False)
         input_node = manager._tool_graph.root_wrappers[0]
         derived_data = (data + 1.0).qsel.mean("y")
-        spec = provenance.script(
-            provenance.ScriptCodeOperation(
+        spec = script(
+            ScriptCodeOperation(
                 label="Evaluate console expression",
                 code="derived = data_0 + 1.0",
             ),
-            provenance.QSelAggregationOperation(dims=("y",), func="mean"),
+            QSelAggregationOperation(dims=("y",), func="mean"),
             start_label="Run ImageTool manager console code",
             active_name="derived",
             script_inputs=(
-                provenance.ScriptInput(
+                ScriptInput(
                     name="data_0",
                     label="ImageTool 0: scan",
                     node_uid=input_node.uid,
@@ -9776,11 +9854,11 @@ def test_manager_provenance_script_derived_structured_step_is_editable(
 
         assert derived_node.provenance_spec is not None
         assert derived_node.provenance_spec.operations == (
-            provenance.ScriptCodeOperation(
+            ScriptCodeOperation(
                 label="Evaluate console expression",
                 code="derived = data_0 + 1.0",
             ),
-            provenance.QSelAggregationOperation(dims=("x",), func="sum"),
+            QSelAggregationOperation(dims=("x",), func="sum"),
         )
         xr.testing.assert_identical(
             derived_tool.slicer_area._data.rename(None),
@@ -9811,7 +9889,7 @@ def test_manager_provenance_active_filter_edit_accept_and_cancel(
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
         tool = _add_file_replay_tool(manager, data, spec)
-        operation = provenance.NormalizeOperation(dims=("x",), mode="area")
+        operation = NormalizeOperation(dims=("x",), mode="area")
         tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
 
         select_tools(manager, [0])
@@ -9839,7 +9917,7 @@ def test_manager_provenance_active_filter_edit_accept_and_cancel(
         accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_filter)
 
         assert tool.slicer_area._accepted_filter_provenance_operation == (
-            provenance.NormalizeOperation(dims=("y",), mode="min")
+            NormalizeOperation(dims=("y",), mode="min")
         )
         xr.testing.assert_identical(tool.slicer_area._data, before_source)
 
@@ -9868,15 +9946,15 @@ def test_manager_provenance_edit_rejects_incompatible_downstream_and_reverts(
     data.to_netcdf(file_path, engine="h5netcdf")
     spec = _manager_replay_file_spec(
         file_path,
-        provenance.QSelAggregationOperation(dims=("x",), func="mean"),
-        provenance.IselOperation(kwargs={"y": 0}),
+        QSelAggregationOperation(dims=("x",), func="mean"),
+        IselOperation(kwargs={"y": 0}),
     )
 
     with manager_context() as manager:
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
-        initial = provenance.replay_file_provenance(spec)
+        initial = replay_file_provenance(spec)
         tool = _add_file_replay_tool(manager, initial, spec)
         root = manager._tool_graph.root_wrappers[0]
 
@@ -9896,7 +9974,7 @@ def test_manager_provenance_edit_rejects_incompatible_downstream_and_reverts(
             manager._provenance_edit_controller,
             "_edited_native_operations",
             lambda *_args, **_kwargs: [
-                provenance.QSelAggregationOperation(dims=("y",), func="mean")
+                QSelAggregationOperation(dims=("y",), func="mean")
             ],
         )
 
@@ -9924,7 +10002,7 @@ def test_manager_provenance_edit_rejects_incompatible_downstream_and_reverts(
 
         assert root.provenance_spec is not None
         assert root.provenance_spec.replay_stages[0].operations == (
-            provenance.QSelAggregationOperation(dims=("x",), func="mean"),
+            QSelAggregationOperation(dims=("x",), func="mean"),
         )
         xr.testing.assert_identical(
             tool.slicer_area._data.rename(None),
@@ -9952,7 +10030,11 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
             test_data,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -10330,7 +10412,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         transforms = [
             op
             for op in typing.cast(
-                "provenance.ToolProvenanceSpec",
+                "ToolProvenanceSpec",
                 child_node.source_spec,
             ).operations
             if op.op == "qsel_aggregate"
@@ -10407,7 +10489,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
             copied[-1],
             {"source_data": data.copy(deep=True)},
         )
-        assert not provenance.uses_default_replay_input(copied[-1])
+        assert not uses_default_replay_input(copied[-1])
         full_result = full_namespace["derived"]
         assert isinstance(full_result, xr.DataArray)
         xr.testing.assert_identical(
@@ -10524,7 +10606,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
 
 
 def test_manager_provenance_step_clipboard_payload_validation() -> None:
-    operation_payload = provenance.AverageOperation(dims=("z",)).model_dump(mode="json")
+    operation_payload = AverageOperation(dims=("z",)).model_dump(mode="json")
     valid_payload = {
         "type": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE,
         "version": manager_details_panel._PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION,
@@ -10538,7 +10620,7 @@ def test_manager_provenance_step_clipboard_payload_validation() -> None:
     )
     payload = manager_details_panel._provenance_step_clipboard_payload(mime_data)
     assert payload is not None
-    assert payload[0] == (provenance.AverageOperation(dims=("z",)),)
+    assert payload[0] == (AverageOperation(dims=("z",)),)
     assert payload[1] == "derived"
     assert not payload[2]
 
@@ -10591,7 +10673,7 @@ def test_manager_provenance_step_clipboard_payload_validation() -> None:
 
 def test_manager_selected_derivation_step_payload_filters_rows() -> None:
     def item(
-        row: provenance._ProvenanceDisplayRow | str,
+        row: _ProvenanceDisplayRow | str,
         *,
         copyable: bool = True,
         code: str | None = "derived = data",
@@ -10605,46 +10687,44 @@ def test_manager_selected_derivation_step_payload_filters_rows() -> None:
         list_item.setData(manager_details_panel._METADATA_DERIVATION_CODE_ROLE, code)
         return list_item
 
-    operation_ref = provenance._ProvenanceStepRef("operation", operation_index=0)
-    script_row_a = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("script a", None),
+    operation_ref = _ProvenanceStepRef("operation", operation_index=0)
+    script_row_a = _ProvenanceDisplayRow(
+        DerivationEntry("script a", None),
         replay_ref=operation_ref,
     )
-    script_row_b = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("script b", None),
+    script_row_b = _ProvenanceDisplayRow(
+        DerivationEntry("script b", None),
         replay_ref=operation_ref,
     )
-    missing_operation_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("missing op", None),
-        replay_ref=provenance._ProvenanceStepRef(
+    missing_operation_row = _ProvenanceDisplayRow(
+        DerivationEntry("missing op", None),
+        replay_ref=_ProvenanceStepRef(
             "operation",
             operation_index=10,
         ),
     )
-    non_copyable_script_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("non-copyable script", None),
+    non_copyable_script_row = _ProvenanceDisplayRow(
+        DerivationEntry("non-copyable script", None),
         replay_ref=operation_ref,
     )
-    non_live_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("non-live", None),
+    non_live_row = _ProvenanceDisplayRow(
+        DerivationEntry("non-live", None),
         replay_ref=operation_ref,
     )
     row_to_spec = {
-        script_row_a: provenance.script(
-            provenance.ScriptCodeOperation(label="script a", code="a = data"),
+        script_row_a: script(
+            ScriptCodeOperation(label="script a", code="a = data"),
             start_label="Start script a",
             active_name="a",
         ),
-        script_row_b: provenance.script(
-            provenance.ScriptCodeOperation(label="script b", code="b = data"),
+        script_row_b: script(
+            ScriptCodeOperation(label="script b", code="b = data"),
             start_label="Start script b",
             active_name="b",
         ),
-        missing_operation_row: provenance.full_data(
-            provenance.AverageOperation(dims=("x",))
-        ),
+        missing_operation_row: full_data(AverageOperation(dims=("x",))),
         non_copyable_script_row: types.SimpleNamespace(
-            _operation_for_ref=lambda _ref: provenance.ScriptCodeOperation(
+            _operation_for_ref=lambda _ref: ScriptCodeOperation(
                 label="hidden script",
                 code="derived = data",
                 copyable=False,
@@ -10677,20 +10757,18 @@ def test_manager_selected_derivation_step_payload_filters_rows() -> None:
     manager._metadata_node_uid = "node"
     selected_items = [
         item("not a row"),
+        item(_ProvenanceDisplayRow(DerivationEntry("start", None))),
         item(
-            provenance._ProvenanceDisplayRow(provenance.DerivationEntry("start", None))
-        ),
-        item(
-            provenance._ProvenanceDisplayRow(
-                provenance.DerivationEntry("file", None),
-                replay_ref=provenance._ProvenanceStepRef("file_load"),
+            _ProvenanceDisplayRow(
+                DerivationEntry("file", None),
+                replay_ref=_ProvenanceStepRef("file_load"),
             )
         ),
         item(script_row_a, copyable=False),
         item(script_row_a, code=None),
         item(
-            provenance._ProvenanceDisplayRow(
-                provenance.DerivationEntry("no spec", None),
+            _ProvenanceDisplayRow(
+                DerivationEntry("no spec", None),
                 replay_ref=operation_ref,
             )
         ),
@@ -10705,23 +10783,23 @@ def test_manager_selected_derivation_step_payload_filters_rows() -> None:
 
 
 def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
-    child_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("Offset parent", "data_0 = data_0 + 1", True),
-        edit_ref=provenance._ProvenanceStepRef("operation", operation_index=0),
-        replay_ref=provenance._ProvenanceStepRef("operation", operation_index=0),
+    child_row = _ProvenanceDisplayRow(
+        DerivationEntry("Offset parent", "data_0 = data_0 + 1", True),
+        edit_ref=_ProvenanceStepRef("operation", operation_index=0),
+        replay_ref=_ProvenanceStepRef("operation", operation_index=0),
         script_input_path=(0,),
     )
-    parent_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("Use data_0 from Parent", None, False),
-        replay_ref=provenance._ProvenanceStepRef(
+    parent_row = _ProvenanceDisplayRow(
+        DerivationEntry("Use data_0 from Parent", None, False),
+        replay_ref=_ProvenanceStepRef(
             "script_input",
             script_input_index=0,
         ),
         children=(child_row,),
     )
-    sibling_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("Use derived data", None, False),
-        replay_ref=provenance._ProvenanceStepRef("operation", operation_index=0),
+    sibling_row = _ProvenanceDisplayRow(
+        DerivationEntry("Use derived data", None, False),
+        replay_ref=_ProvenanceStepRef("operation", operation_index=0),
     )
     derivation_list = manager_widgets._MetadataDerivationListWidget()
     qtbot.addWidget(derivation_list)
@@ -10738,7 +10816,7 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
     )
     node = types.SimpleNamespace(
         uid="node",
-        displayed_provenance_spec=provenance.full_data(),
+        displayed_provenance_spec=full_data(),
         metadata_fields=[],
         derivation_display_rows=[parent_row, sibling_row],
     )
@@ -10813,17 +10891,17 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
 
 
 def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
-    source_spec = provenance.script(
+    source_spec = script(
         start_label="Build source",
         seed_code="derived = xr.DataArray([1.0], dims=('x',))",
         active_name="derived",
     )
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(label="Copy", code="derived = data_10"),
+    spec = script(
+        ScriptCodeOperation(label="Copy", code="derived = data_10"),
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_10",
                 label="ImageTool 10: stale",
                 node_uid="n16",
@@ -10872,12 +10950,12 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
 
 
 def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None:
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(label="Copy", code="derived = data_10"),
+    spec = script(
+        ScriptCodeOperation(label="Copy", code="derived = data_10"),
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_10",
                 label="ImageTool 10: stale",
                 node_uid="missing",
@@ -10942,20 +11020,20 @@ def test_manager_copy_selected_derivation_code_fallbacks(
     monkeypatch.setattr(
         controller,
         "_selected_derivation_step_payload",
-        lambda: ((provenance.AverageOperation(dims=("x",)),), "derived", False),
+        lambda: ((AverageOperation(dims=("x",)),), "derived", False),
     )
     monkeypatch.setattr(QtWidgets.QApplication, "clipboard", lambda: None)
     controller._copy_selected_derivation_code()
 
 
 def test_manager_unavailable_replay_details_skip_replayable_script_inputs() -> None:
-    source_spec = provenance.script(
+    source_spec = script(
         start_label="Build source",
         seed_code="derived = xr.DataArray([1.0], dims=('x',))",
         active_name="derived",
     )
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    spec = script(
+        ScriptCodeOperation(
             label="Run opaque code",
             code=None,
             copyable=False,
@@ -10963,7 +11041,7 @@ def test_manager_unavailable_replay_details_skip_replayable_script_inputs() -> N
         start_label="Build figure",
         active_name="fig",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_3",
                 label="ImageTool 3: D10cu",
                 provenance_spec=source_spec,
@@ -11024,21 +11102,21 @@ def test_manager_paste_steps_validation_error_branches(
     unavailable: list[str] = []
     monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
     controller.paste_steps(
-        (provenance.AverageOperation(dims=("x",)),),
+        (AverageOperation(dims=("x",)),),
         active_name="derived",
         contains_script=False,
     )
     assert unavailable
 
     node = _fake_edit_node(
-        provenance.full_data(),
+        full_data(),
         parent_uid="parent",
-        source_display_spec=provenance.full_data(),
+        source_display_spec=full_data(),
     )
     with pytest.raises(TypeError, match="Only live provenance operations"):
         controller._paste_structured_steps(
             node,
-            (provenance.ScriptCodeOperation(label="script", code="derived = data"),),
+            (ScriptCodeOperation(label="script", code="derived = data"),),
         )
 
     monkeypatch.setattr(
@@ -11049,22 +11127,22 @@ def test_manager_paste_steps_validation_error_branches(
     with pytest.raises(manager_provenance_edit._ProvenanceReplayFailure) as exc_info:
         controller._paste_structured_steps(
             node,
-            (provenance.AverageOperation(dims=("x",)),),
+            (AverageOperation(dims=("x",)),),
         )
     assert "pasted provenance steps" in exc_info.value.where
 
 
 def test_manager_paste_steps_targets_editable_imagetools_only() -> None:
-    editable = _fake_edit_node(provenance.full_data(), uid="editable")
-    pending = _fake_edit_node(provenance.full_data(), uid="pending")
+    editable = _fake_edit_node(full_data(), uid="editable")
+    pending = _fake_edit_node(full_data(), uid="pending")
     pending.imagetool = None
     pending.pending_workspace_memory_payload = (
         pathlib.Path("workspace.itws"),
         "0/imagetool",
     )
-    unavailable = _fake_edit_node(provenance.full_data(), uid="unavailable")
+    unavailable = _fake_edit_node(full_data(), uid="unavailable")
     unavailable.imagetool = None
-    non_imagetool = _fake_edit_node(provenance.full_data(), uid="non-imagetool")
+    non_imagetool = _fake_edit_node(full_data(), uid="non-imagetool")
     non_imagetool.is_imagetool = False
     graph_nodes = {
         editable.uid: editable,
@@ -11081,7 +11159,7 @@ def test_manager_paste_steps_targets_editable_imagetools_only() -> None:
 
     assert controller._paste_target_nodes() == [editable, pending]
     assert controller.can_paste_steps(
-        (provenance.AssignAttrsOperation(attrs={"copied": "yes"}),)
+        (AssignAttrsOperation(attrs={"copied": "yes"}),)
     ) == (True, "")
 
 
@@ -11089,19 +11167,19 @@ def test_manager_paste_detached_steps_uses_replay_spec_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data = _provenance_paste_test_data()
-    local = provenance.full_data(provenance.AverageOperation(dims=("z",)))
+    local = full_data(AverageOperation(dims=("z",)))
     controller = _fake_edit_controller(None, metadata_uid=None)
-    replaced: list[tuple[xr.DataArray, provenance.ToolProvenanceSpec, bool]] = []
+    replaced: list[tuple[xr.DataArray, ToolProvenanceSpec, bool]] = []
     node = types.SimpleNamespace(
         uid="node",
-        displayed_provenance_spec=provenance.full_data(),
+        displayed_provenance_spec=full_data(),
         current_source_data=lambda: data,
         replace_with_detached_data=lambda data, spec, preserve_filter: replaced.append(
             (data, spec, preserve_filter)
         ),
     )
     monkeypatch.setattr(
-        provenance,
+        manager_provenance_edit,
         "compose_full_provenance",
         lambda _parent, _local: None,
     )
@@ -11121,13 +11199,13 @@ def test_manager_paste_detached_steps_uses_replay_spec_fallback(
 def test_manager_can_delete_row_reports_unavailable_branches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    operation_ref = provenance._ProvenanceStepRef(
+    operation_ref = _ProvenanceStepRef(
         "operation",
         operation_index=0,
         stage_index=0,
     )
-    row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("Average", None),
+    row = _ProvenanceDisplayRow(
+        DerivationEntry("Average", None),
         replay_ref=operation_ref,
     )
 
@@ -11137,9 +11215,9 @@ def test_manager_can_delete_row_reports_unavailable_branches(
     assert reason
 
     source_child = _fake_edit_node(
-        provenance.full_data(provenance.AverageOperation(dims=("x",))),
+        full_data(AverageOperation(dims=("x",))),
         parent_uid="parent",
-        source_spec=provenance.full_data(),
+        source_spec=full_data(),
     )
     controller = _fake_edit_controller(source_child)
     deletable, reason = controller.can_delete_row(row)
@@ -11151,16 +11229,16 @@ def test_manager_can_delete_row_reports_unavailable_branches(
     assert not deletable
     assert reason
 
-    missing_ref_row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("Missing", None),
-        replay_ref=provenance._ProvenanceStepRef(
+    missing_ref_row = _ProvenanceDisplayRow(
+        DerivationEntry("Missing", None),
+        replay_ref=_ProvenanceStepRef(
             "operation",
             operation_index=99,
             stage_index=0,
         ),
     )
     controller = _fake_edit_controller(
-        _fake_edit_node(provenance.full_data(provenance.AverageOperation(dims=("x",))))
+        _fake_edit_node(full_data(AverageOperation(dims=("x",))))
     )
     deletable, reason = controller.can_delete_row(missing_ref_row)
     assert not deletable
@@ -11168,7 +11246,7 @@ def test_manager_can_delete_row_reports_unavailable_branches(
 
     broken_script_spec = types.SimpleNamespace(
         kind="script",
-        _operation_for_ref=lambda _ref: provenance.ScriptCodeOperation(
+        _operation_for_ref=lambda _ref: ScriptCodeOperation(
             label="Broken",
             code="derived = data",
         ),
@@ -11183,29 +11261,29 @@ def test_manager_can_delete_row_reports_unavailable_branches(
     assert not deletable
     assert reason
 
-    valid_script_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    valid_script_spec = script(
+        ScriptCodeOperation(
             label="Offset",
             code="derived = derived + 1",
         ),
-        provenance.ScriptCodeOperation(
+        ScriptCodeOperation(
             label="Scale",
             code="derived = derived * 2",
         ),
         start_label="Start from data",
         seed_code="derived = data_0",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+        script_inputs=(ScriptInput(name="data_0", label="Input"),),
     )
     controller = _fake_edit_controller(_fake_edit_node(valid_script_spec))
     deletable, reason = controller.can_delete_row(valid_script_spec.display_rows()[2])
     assert deletable
     assert reason == ""
 
-    source_live_spec = provenance.full_data(provenance.AverageOperation(dims=("x",)))
+    source_live_spec = full_data(AverageOperation(dims=("x",)))
     live_row = source_live_spec.display_rows(scope="source")[1]
     source_bound = _fake_edit_node(
-        provenance.full_data(),
+        full_data(),
         parent_uid="parent",
         source_display_spec=source_live_spec,
     )
@@ -11223,17 +11301,15 @@ def test_manager_can_delete_row_reports_unavailable_branches(
 def test_manager_delete_row_error_branches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    row = provenance._ProvenanceDisplayRow(
-        provenance.DerivationEntry("Average", None),
-        replay_ref=provenance._ProvenanceStepRef(
+    row = _ProvenanceDisplayRow(
+        DerivationEntry("Average", None),
+        replay_ref=_ProvenanceStepRef(
             "operation",
             operation_index=0,
             stage_index=0,
         ),
     )
-    node = _fake_edit_node(
-        provenance.full_data(provenance.AverageOperation(dims=("x",)))
-    )
+    node = _fake_edit_node(full_data(AverageOperation(dims=("x",))))
     controller = _fake_edit_controller(node)
     monkeypatch.setattr(controller, "can_delete_row", lambda _row: (True, ""))
 
@@ -11251,7 +11327,7 @@ def test_manager_delete_row_error_branches(
     monkeypatch.setattr(
         controller,
         "_display_spec_for_row",
-        lambda *_args: provenance.full_data(provenance.AverageOperation(dims=("x",))),
+        lambda *_args: full_data(AverageOperation(dims=("x",))),
     )
     monkeypatch.setattr(
         controller,
@@ -11275,21 +11351,19 @@ def test_manager_delete_row_error_branches(
     controller.delete_row(row)
     assert failures == []
 
-    live_row = provenance.full_data(
-        provenance.AverageOperation(dims=("x",))
-    ).display_rows()[1]
+    live_row = full_data(AverageOperation(dims=("x",))).display_rows()[1]
     replaced: list[
         tuple[
             object,
             typing.Literal["display", "source"],
-            provenance.ToolProvenanceSpec,
+            ToolProvenanceSpec,
         ]
     ] = []
     monkeypatch.setattr(controller, "can_delete_row", lambda _row: (True, ""))
     monkeypatch.setattr(
         controller,
         "_display_spec_for_row",
-        lambda *_args: provenance.full_data(provenance.AverageOperation(dims=("x",))),
+        lambda *_args: full_data(AverageOperation(dims=("x",))),
     )
     monkeypatch.setattr(
         controller,
@@ -11313,11 +11387,11 @@ def test_manager_delete_provenance_step_preserves_later_operations(
     file_path = tmp_path / "scan.h5"
     data.to_netcdf(file_path, engine="h5netcdf")
     operations = (
-        provenance.AverageOperation(dims=("z",)),
-        provenance.IselOperation(kwargs={"y": 1}),
+        AverageOperation(dims=("z",)),
+        IselOperation(kwargs={"y": 1}),
     )
     spec = _manager_replay_file_spec(file_path, *operations)
-    displayed = provenance.replay_file_provenance(spec)
+    displayed = replay_file_provenance(spec)
 
     with manager_context() as manager:
         tool = _add_file_replay_tool(manager, displayed, spec)
@@ -11334,14 +11408,14 @@ def test_manager_delete_provenance_step_preserves_later_operations(
         trigger_menu_action(menu, manager._metadata_delete_step_action)
 
         expected_spec = spec._replace_operation_ref(
-            provenance._ProvenanceStepRef(
+            _ProvenanceStepRef(
                 "operation",
                 operation_index=0,
                 stage_index=0,
             ),
             (),
         )
-        expected = provenance.replay_file_provenance(expected_spec)
+        expected = replay_file_provenance(expected_spec)
         xr.testing.assert_identical(tool.slicer_area._data, expected)
         root = manager._tool_graph.root_wrappers[index]
         assert root.provenance_spec == expected_spec
@@ -11359,22 +11433,22 @@ def test_manager_delete_invalid_script_step_rolls_back(
 ) -> None:
     data = _provenance_paste_test_data("scan")
     operations = (
-        provenance.ScriptCodeOperation(
+        ScriptCodeOperation(
             label="Create result",
             code="result = derived + 1.0",
         ),
-        provenance.ScriptCodeOperation(
+        ScriptCodeOperation(
             label="Use result",
             code="result = result * 2.0",
         ),
     )
-    spec = provenance.script(
+    spec = script(
         *operations,
         start_label="Start from data",
         seed_code="derived = data",
         active_name="result",
     )
-    displayed = provenance.replay_script_provenance(spec, {"data": data})
+    displayed = replay_script_provenance(spec, {"data": data})
 
     with manager_context() as manager:
         tool = itool(displayed, manager=False, execute=False)
@@ -11413,24 +11487,24 @@ def test_manager_copy_paste_structured_provenance_steps(
 ) -> None:
     source_base = _provenance_paste_test_data("source")
     source_operations = (
-        provenance.AssignAttrsOperation(attrs={"copied": "yes"}),
-        provenance.AverageOperation(dims=("z",)),
+        AssignAttrsOperation(attrs={"copied": "yes"}),
+        AverageOperation(dims=("z",)),
     )
-    source_spec = provenance.full_data(*source_operations)
+    source_spec = full_data(*source_operations)
     source_data = source_spec.apply(source_base)
 
     dest_base = _provenance_paste_test_data("dest") + 100.0
-    dest_seed_op = provenance.ScriptCodeOperation(
+    dest_seed_op = ScriptCodeOperation(
         label="Keep existing destination provenance",
         code="derived = derived.assign_attrs({'existing': 'yes'})",
     )
-    dest_spec = provenance.script(
+    dest_spec = script(
         dest_seed_op,
         start_label="Start from destination data",
         seed_code="derived = data",
         active_name="derived",
     )
-    dest_data = provenance.replay_script_provenance(dest_spec, {"data": dest_base})
+    dest_data = replay_script_provenance(dest_spec, {"data": dest_base})
 
     with manager_context() as manager:
         source_tool = itool(source_data, manager=False, execute=False)
@@ -11532,10 +11606,10 @@ def test_manager_paste_structured_provenance_steps_into_selected_imagetools(
     ],
 ) -> None:
     operations = (
-        provenance.AssignAttrsOperation(attrs={"copied": "yes"}),
-        provenance.AverageOperation(dims=("z",)),
+        AssignAttrsOperation(attrs={"copied": "yes"}),
+        AverageOperation(dims=("z",)),
     )
-    source_spec = provenance.full_data(*operations)
+    source_spec = full_data(*operations)
     dest_data_a = _provenance_paste_test_data("dest_a") + 100.0
     dest_data_b = _provenance_paste_test_data("dest_b") + 200.0
     expected_a = source_spec.apply(dest_data_a)
@@ -11549,12 +11623,12 @@ def test_manager_paste_structured_provenance_steps_into_selected_imagetools(
         index_a = manager.add_imagetool(
             tool_a,
             show=False,
-            provenance_spec=provenance.full_data(),
+            provenance_spec=full_data(),
         )
         index_b = manager.add_imagetool(
             tool_b,
             show=False,
-            provenance_spec=provenance.full_data(),
+            provenance_spec=full_data(),
         )
         _set_provenance_steps_clipboard(operations)
 
@@ -11576,8 +11650,8 @@ def test_manager_paste_structured_provenance_steps_into_pending_memory_imagetool
     ],
 ) -> None:
     data = _provenance_paste_test_data("pending_dest").assign_coords(z=np.arange(5))
-    operations = (provenance.AssignAttrsOperation(attrs={"copied": "yes"}),)
-    expected = provenance.full_data(*operations).apply(data)
+    operations = (AssignAttrsOperation(attrs={"copied": "yes"}),)
+    expected = full_data(*operations).apply(data)
 
     with manager_context() as manager:
         tool = itool(data.copy(deep=True), manager=False, execute=False)
@@ -11585,7 +11659,7 @@ def test_manager_paste_structured_provenance_steps_into_pending_memory_imagetool
         index = manager.add_imagetool(
             tool,
             show=False,
-            provenance_spec=provenance.full_data(),
+            provenance_spec=full_data(),
         )
         tool.hide()
 
@@ -11643,10 +11717,10 @@ def test_manager_paste_structured_provenance_steps_reports_partial_failures(
     ],
 ) -> None:
     operations = (
-        provenance.AssignAttrsOperation(attrs={"copied": "yes"}),
-        provenance.AverageOperation(dims=("z",)),
+        AssignAttrsOperation(attrs={"copied": "yes"}),
+        AverageOperation(dims=("z",)),
     )
-    source_spec = provenance.full_data(*operations)
+    source_spec = full_data(*operations)
     good_data = _provenance_paste_test_data("good") + 100.0
     bad_data = xr.DataArray(
         np.arange(12, dtype=float).reshape(3, 4),
@@ -11664,12 +11738,12 @@ def test_manager_paste_structured_provenance_steps_reports_partial_failures(
         good_index = manager.add_imagetool(
             good_tool,
             show=False,
-            provenance_spec=provenance.full_data(),
+            provenance_spec=full_data(),
         )
         bad_index = manager.add_imagetool(
             bad_tool,
             show=False,
-            provenance_spec=provenance.full_data(),
+            provenance_spec=full_data(),
         )
         reports: list[
             tuple[
@@ -11718,20 +11792,20 @@ def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
     ],
 ) -> None:
     source_base = anglemap.qsel(eV=-0.1).copy(deep=True)
-    source_operations = provenance.stamp_operation_group(
+    source_operations = stamp_operation_group(
         (
-            provenance.KspaceWorkFunctionOperation(work_function=4.2),
-            provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
-            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+            KspaceWorkFunctionOperation(work_function=4.2),
+            KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
+            KspaceConvertOperation(bounds=None, resolution=None),
         ),
         kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
     )
-    source_spec = provenance.full_data(*source_operations)
+    source_spec = full_data(*source_operations)
     source_data = source_spec.apply(source_base)
     dest_base = source_base.copy(deep=True)
     dest_base.values = dest_base.values + 100.0
     expected = source_spec.apply(dest_base)
-    child_base_spec = provenance.full_data()
+    child_base_spec = full_data()
 
     with manager_context() as manager:
         source_tool = itool(source_data, manager=False, execute=False)
@@ -11797,7 +11871,7 @@ def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
             row_item = manager.metadata_derivation_list.item(row_index)
             assert row_item is not None
             row = row_item.data(manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
-            assert isinstance(row, provenance._ProvenanceDisplayRow)
+            assert isinstance(row, _ProvenanceDisplayRow)
             editable, reason = manager._provenance_edit_controller.can_edit_row(row)
             assert not editable
             assert "complete editable momentum-conversion group" in reason
@@ -11831,10 +11905,10 @@ def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
         child_node = manager._child_node(child_uid)
         assert child_node.displayed_source_spec is not None
         pasted_operations = child_node.displayed_source_spec.operations
-        assert provenance.strip_operation_groups(
-            pasted_operations
-        ) == provenance.strip_operation_groups(source_operations)
-        assert provenance.operation_group_range(
+        assert strip_operation_groups(pasted_operations) == strip_operation_groups(
+            source_operations
+        )
+        assert operation_group_range(
             pasted_operations,
             0,
             kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
@@ -11855,7 +11929,7 @@ def test_manager_copy_paste_kspace_conversion_steps_remain_group_editable(
             row_item = manager.metadata_derivation_list.item(row_index)
             assert row_item is not None
             row = row_item.data(manager_details_panel._METADATA_DERIVATION_ROW_ROLE)
-            assert isinstance(row, provenance._ProvenanceDisplayRow)
+            assert isinstance(row, _ProvenanceDisplayRow)
             editable, reason = manager._provenance_edit_controller.can_edit_row(row)
             assert editable, reason
 
@@ -11866,12 +11940,10 @@ def test_manager_paste_structured_steps_preserves_source_binding(
     ],
 ) -> None:
     parent_data = _provenance_paste_test_data("parent")
-    copied_operation = provenance.AverageOperation(dims=("z",))
-    source_spec = provenance.full_data(copied_operation)
+    copied_operation = AverageOperation(dims=("z",))
+    source_spec = full_data(copied_operation)
     source_data = source_spec.apply(parent_data)
-    child_base_spec = provenance.full_data(
-        provenance.AssignAttrsOperation(attrs={"child": "bound"})
-    )
+    child_base_spec = full_data(AssignAttrsOperation(attrs={"child": "bound"}))
     child_data = child_base_spec.apply(parent_data)
 
     with manager_context() as manager:
@@ -11888,7 +11960,7 @@ def test_manager_paste_structured_steps_preserves_source_binding(
             source_auto_update=True,
         )
         child_node = manager._child_node(child_uid)
-        filter_operation = provenance.GaussianFilterOperation(sigma={"z": 1.0})
+        filter_operation = GaussianFilterOperation(sigma={"z": 1.0})
         child_tool.slicer_area.apply_filter_operation(filter_operation)
         displayed_child_source = child_node.displayed_source_spec
         assert displayed_child_source is not None
@@ -11932,24 +12004,24 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
     ],
 ) -> None:
     data = _provenance_paste_test_data("scan")
-    child_source_spec = provenance.full_data(
-        provenance.AssignAttrsOperation(attrs={"before": "script paste"})
+    child_source_spec = full_data(
+        AssignAttrsOperation(attrs={"before": "script paste"})
     )
     child_data = child_source_spec.apply(data)
     script_operations = (
-        provenance.ScriptCodeOperation(
+        ScriptCodeOperation(
             label="Offset data",
             code="result = derived + 2.0",
         ),
-        provenance.AverageOperation(dims=("z",)),
+        AverageOperation(dims=("z",)),
     )
-    script_spec = provenance.script(
+    script_spec = script(
         *script_operations,
         start_label="Run copied script",
         seed_code="derived = data",
         active_name="result",
     )
-    script_data = provenance.replay_script_provenance(script_spec, {"data": data})
+    script_data = replay_script_provenance(script_spec, {"data": data})
 
     with manager_context() as manager:
         parent_tool = itool(data, manager=False, execute=False)
@@ -11991,7 +12063,7 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
         manager._paste_provenance_steps_from_clipboard()
 
         child_node = manager._child_node(child_uid)
-        expected = provenance.replay_script_provenance(
+        expected = replay_script_provenance(
             script_spec,
             {"data": child_data},
         )
@@ -12013,11 +12085,11 @@ def test_manager_copy_paste_script_provenance_steps_detaches_and_rolls_back(
         assert not any("Paste provenance steps" in label for label in derivation)
         assert not any("derived = data" in label for label in derivation)
 
-        bad_operation = provenance.ScriptCodeOperation(
+        bad_operation = ScriptCodeOperation(
             label="Use unavailable scratch value",
             code="result = scratch + 1.0",
         )
-        bad_spec = provenance.script(
+        bad_spec = script(
             bad_operation,
             start_label="Run invalid copied script",
             seed_code="derived = data",
@@ -12070,8 +12142,8 @@ def test_manager_paste_script_steps_replays_from_current_output_name(
     ],
 ) -> None:
     data = _provenance_paste_test_data("scan")
-    dest_base_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    dest_base_spec = script(
+        ScriptCodeOperation(
             label="Compute destination result",
             code="result = derived + 1.0",
         ),
@@ -12079,18 +12151,18 @@ def test_manager_paste_script_steps_replays_from_current_output_name(
         seed_code="derived = data",
         active_name="result",
     )
-    dest_data = provenance.replay_script_provenance(dest_base_spec, {"data": data})
-    copied_operation = provenance.ScriptCodeOperation(
+    dest_data = replay_script_provenance(dest_base_spec, {"data": data})
+    copied_operation = ScriptCodeOperation(
         label="Offset copied result",
         code="result = derived + 2.0",
     )
-    source_spec = provenance.script(
+    source_spec = script(
         copied_operation,
         start_label="Run copied script",
         seed_code="derived = data",
         active_name="result",
     )
-    source_data = provenance.replay_script_provenance(source_spec, {"data": data})
+    source_data = replay_script_provenance(source_spec, {"data": data})
 
     with manager_context() as manager:
         dest_tool = itool(dest_data, manager=False, execute=False)
@@ -12223,7 +12295,7 @@ def test_manager_divide_by_coord_child_refresh_and_code(
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
         trigger_menu_action(menu, manager._metadata_copy_full_action)
-        assert not provenance.uses_default_replay_input(copied[-1])
+        assert not uses_default_replay_input(copied[-1])
 
         namespace = _exec_generated_code(
             copied[-1], {"source_data": data.copy(deep=True)}
@@ -12283,7 +12355,7 @@ def test_manager_affine_coord_child_refreshes_from_formula(
         child_node = manager._child_node(child_uid)
         child_tool = manager.get_imagetool(child_uid)
 
-        operation = provenance.AffineCoordOperation(
+        operation = AffineCoordOperation(
             coord_name="y",
             scale=2.0,
             offset=0.5,
@@ -12358,9 +12430,7 @@ def test_manager_assign_attrs_child_refreshes_from_operation(
         child_node = manager._child_node(child_uid)
         child_tool = manager.get_imagetool(child_uid)
 
-        operation = provenance.AssignAttrsOperation(
-            attrs={"source": "new", "flag": True}
-        )
+        operation = AssignAttrsOperation(attrs={"source": "new", "flag": True})
         expected = operation.apply(data, parent_data=data).rename("scan")
         xr.testing.assert_identical(child_tool.slicer_area._data, expected)
 
@@ -12784,9 +12854,7 @@ def test_manager_non_watched_full_code_prompts_for_source_variable(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         node = manager._tool_graph.root_wrappers[0]
-        node.set_detached_provenance(
-            provenance.full_data(provenance.AverageOperation(dims=("alpha",)))
-        )
+        node.set_detached_provenance(full_data(AverageOperation(dims=("alpha",))))
 
         copied: list[str] = []
         prompted: list[str] = []
@@ -12809,7 +12877,7 @@ def test_manager_non_watched_full_code_prompts_for_source_variable(
 
         assert prompted == [node.uid]
         assert copied
-        assert not provenance.uses_default_replay_input(copied[-1])
+        assert not uses_default_replay_input(copied[-1])
         namespace = _exec_generated_code(
             copied[-1], {"source_data": test_data.copy(deep=True)}
         )
@@ -12832,9 +12900,7 @@ def test_manager_non_watched_full_code_prompt_cancel_does_not_copy(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         node = manager._tool_graph.root_wrappers[0]
-        node.set_detached_provenance(
-            provenance.full_data(provenance.AverageOperation(dims=("alpha",)))
-        )
+        node.set_detached_provenance(full_data(AverageOperation(dims=("alpha",))))
 
         copied: list[str] = []
         monkeypatch.setattr(
@@ -12873,14 +12939,16 @@ def test_manager_file_backed_full_code_uses_load_code(
             test_data,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         node = manager._tool_graph.root_wrappers[0]
-        node.set_detached_provenance(
-            provenance.full_data(provenance.AverageOperation(dims=("alpha",)))
-        )
+        node.set_detached_provenance(full_data(AverageOperation(dims=("alpha",))))
 
         copied: list[str] = []
         monkeypatch.setattr(
@@ -12901,9 +12969,56 @@ def test_manager_file_backed_full_code_uses_load_code(
         trigger_menu_action(menu, manager._metadata_copy_full_action)
 
         assert copied
-        assert not provenance.uses_default_replay_input(copied[-1])
+        assert not uses_default_replay_input(copied[-1])
         namespace = _exec_generated_code(copied[-1], {})
         xr.testing.assert_identical(namespace["derived"], test_data.qsel.mean("alpha"))
+
+
+def test_manager_data_recv_validates_load_selection_metadata(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    selection = FileDataSelection(kind="dataarray")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        with pytest.raises(ValueError, match="loader and kwargs"):
+            manager._data_recv([test_data], {"load_func": (xr.load_dataarray,)})
+        with pytest.raises(TypeError, match="selection must be a FileDataSelection"):
+            manager._data_recv(
+                [test_data],
+                {"load_func": (xr.load_dataarray, {}, 0)},
+            )
+        with pytest.raises(ValueError, match="only describe one prepared array"):
+            manager._data_recv(
+                [test_data, test_data],
+                {"load_func": (xr.load_dataarray, {}, selection)},
+            )
+        with pytest.raises(ValueError, match="requires explicit load_selections"):
+            manager._data_recv(
+                [test_data],
+                {"load_func": (xr.load_dataarray, {})},
+            )
+        with pytest.raises(TypeError, match="must be a sequence"):
+            manager._data_recv(
+                [test_data],
+                {"load_func": (xr.load_dataarray, {}), "load_selections": 0},
+            )
+        with pytest.raises(ValueError, match="one selection per prepared array"):
+            manager._data_recv(
+                [test_data],
+                {"load_func": (xr.load_dataarray, {}), "load_selections": ()},
+            )
+        with pytest.raises(TypeError, match="FileDataSelection instances"):
+            manager._data_recv(
+                [test_data],
+                {"load_func": (xr.load_dataarray, {}), "load_selections": (0,)},
+            )
 
 
 def test_manager_file_backed_full_code_prefers_scan_number_loader(
@@ -12926,14 +13041,12 @@ def test_manager_file_backed_full_code_prefers_scan_number_loader(
             data,
             manager=True,
             file_path=file_path,
-            load_func=("example", {}, 0),
+            load_func=("example", {}, FileDataSelection(kind="dataarray")),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         node = manager._tool_graph.root_wrappers[0]
-        node.set_detached_provenance(
-            provenance.full_data(provenance.AverageOperation(dims=("alpha",)))
-        )
+        node.set_detached_provenance(full_data(AverageOperation(dims=("alpha",))))
 
         copied: list[str] = []
         monkeypatch.setattr(

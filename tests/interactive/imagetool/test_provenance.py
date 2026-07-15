@@ -12,7 +12,135 @@ import xarray as xr
 from pydantic import ValidationError
 
 import erlab
-from erlab.interactive.imagetool import _provenance_framework, provenance
+from erlab.interactive.imagetool._provenance import _code
+from erlab.interactive.imagetool._provenance._code import (
+    _MAPPING_MARKER,
+    _SCRIPT_REPLAY_ALLOWED_BUILTINS,
+    _TUPLE_MARKER,
+    _expression_receiver_code,
+    _format_selection_step,
+    _migrate_legacy_nonuniform_restore_code,
+    _provenance_value_code,
+    _replace_code_identifiers,
+    _restore_nonuniform_dims_expression,
+    _simplify_display_code,
+    _statement_load_count,
+    _statement_store_count,
+    _validate_active_name,
+    _validate_script_replay_code,
+    rebase_default_replay_input,
+    uses_default_replay_input,
+)
+from erlab.interactive.imagetool._provenance._execution import (
+    _load_file_source_data,
+    _parse_replay_input,
+    _resolve_importable_callable,
+    _select_replay_input,
+    can_reload_without_trust,
+    file_load_source_status,
+    replay_file_provenance,
+    replay_script_provenance,
+    script_provenance_replayable,
+    script_provenance_requires_trust,
+)
+from erlab.interactive.imagetool._provenance._model import (
+    _OPERATION_TYPES,
+    ConsoleCall,
+    ConsoleOperationPattern,
+    DerivationEntry,
+    FileDataSelection,
+    FileLoadSource,
+    FileReplayCall,
+    OperationGroupMarker,
+    ReplayStage,
+    ScriptInput,
+    ScriptInputDependencyRef,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    _as_script_replay_spec,
+    _callable_paths,
+    _coerce_float_sequence,
+    _console_mapping_values,
+    _console_values_equal,
+    _encode_provenance_hashable,
+    _ensure_float_tuple,
+    _format_derivation_value,
+    _is_whole_array_rename_entry,
+    _normalize_provenance_hashable,
+    _ProvenanceDisplayContext,
+    _ProvenanceStepRef,
+    _SourceViewOperation,
+    compose_display_provenance,
+    compose_full_provenance,
+    decode_provenance_value,
+    direct_replay_input_name,
+    encode_provenance_value,
+    file_load,
+    full_data,
+    has_file_load_source,
+    iter_operation_refs,
+    mark_promoted_1d_source,
+    operation_from_console_call,
+    operation_group_range,
+    operations_expression_code,
+    parse_tool_provenance_operation,
+    parse_tool_provenance_spec,
+    public_data,
+    rebase_script_input_node_uids,
+    replay_input_name,
+    require_live_source_spec,
+    restamp_operation_groups,
+    script,
+    script_input_dependency_refs,
+    selection,
+    stamp_operation_group,
+    strip_operation_groups,
+    strip_partial_operation_groups,
+    to_replay_provenance_spec,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    AffineCoordOperation,
+    AssignAttrsOperation,
+    AssignCoord1DOperation,
+    AssignCoordsOperation,
+    AssignScalarCoordOperation,
+    AverageOperation,
+    CoarsenOperation,
+    CorrectWithEdgeOperation,
+    DivideByCoordOperation,
+    GaussianFilterOperation,
+    ImageToolSelectionSourceBinding,
+    InterpolationOperation,
+    IselOperation,
+    KspaceConfigurationOperation,
+    KspaceConvertOperation,
+    KspaceInnerPotentialOperation,
+    KspaceSetNormalOperation,
+    KspaceWorkFunctionOperation,
+    LeadingEdgeOperation,
+    MaskWithPolygonOperation,
+    ModelFitOperation,
+    NormalizeOperation,
+    QSelAggregationOperation,
+    QSelOperation,
+    RenameDimsCoordsOperation,
+    RenameOperation,
+    RestoreNonuniformDimsOperation,
+    RotateOperation,
+    ScriptCodeOperation,
+    SelectCoordOperation,
+    SelOperation,
+    SliceAlongPathOperation,
+    SortByOperation,
+    SortCoordOrderOperation,
+    SqueezeOperation,
+    SwapDimsOperation,
+    SymmetrizeNfoldOperation,
+    SymmetrizeOperation,
+    ThinOperation,
+    TransposeOperation,
+    _ModelFitParameterSpec,
+)
 
 
 def _exec_generated_code(
@@ -112,6 +240,10 @@ def test_provenance_import_keeps_analysis_targets_lazy() -> None:
     code = (
         "import sys\n"
         "from erlab.interactive.imagetool import provenance\n"
+        "assert 'AverageOperation' not in provenance.__all__\n"
+        "assert not hasattr(provenance, 'AverageOperation')\n"
+        "assert 'erlab.interactive.imagetool._provenance._operations' "
+        "not in sys.modules\n"
         "loaded = sorted("
         "name for name in sys.modules if name.startswith('erlab.analysis.') "
         "or name.startswith('scipy.interpolate') or name.startswith('scipy.linalg')"
@@ -129,46 +261,107 @@ def test_provenance_import_keeps_analysis_targets_lazy() -> None:
     assert result.stdout == ""
 
 
-def test_public_provenance_module_registers_operations_in_fresh_process() -> None:
+def test_console_operation_lookup_loads_catalog_independently() -> None:
+    code = (
+        "from erlab.interactive.imagetool._provenance._model import (\n"
+        "    ConsoleCall, operation_from_console_call,\n"
+        ")\n"
+        "operation = operation_from_console_call(ConsoleCall(\n"
+        "    dataarray_method='isel',\n"
+        "    kwargs={'x': 0},\n"
+        "    display_code='data.isel(x=0)',\n"
+        "    has_extra_tracked_inputs=False,\n"
+        "))\n"
+        "assert operation is not None\n"
+        "assert operation.op == 'isel'\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_public_provenance_constructors_expose_required_value_models() -> None:
+    from erlab.interactive.imagetool import provenance
+
+    selection = provenance.FileDataSelection(kind="dataarray")
+    replay_call = provenance.FileReplayCall(
+        kind="callable",
+        target="xarray.load_dataarray",
+        selection=selection,
+    )
+    load_source = provenance.FileLoadSource(
+        path="scan.h5",
+        loader_label="Load Function",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="(none)",
+        replay_call=replay_call,
+    )
+    stage = provenance.ReplayStage.from_source_spec(provenance.full_data())
+    spec = provenance.file_load(
+        start_label="Load scan",
+        seed_code="import xarray\n\nderived = xarray.load_dataarray('scan.h5')",
+        file_load_source=load_source,
+        replay_stages=(stage,),
+    )
+    script_input = provenance.ScriptInput(
+        name="data_0",
+        provenance_spec=spec.model_dump(mode="json"),
+    )
+
+    assert script_input.parsed_provenance_spec() == spec
+    assert provenance.DerivationEntry("Load scan", None).label == "Load scan"
+
+
+def test_provenance_model_registers_operations_in_fresh_process() -> None:
     code = (
         "import importlib.util\n"
-        "from erlab.interactive.imagetool import provenance\n"
+        "from erlab.interactive.imagetool._provenance._model import (\n"
+        "    FileLoadSource, FileReplayCall, ToolProvenanceSpec, file_load,\n"
+        "    full_data, parse_tool_provenance_operation,\n"
+        "    parse_tool_provenance_spec, script, selection,\n"
+        ")\n"
         "assert importlib.util.find_spec("
         "'erlab.interactive.imagetool.provenance_operations') is None\n"
         "assert importlib.util.find_spec("
         "'erlab.interactive.imagetool.provenance_framework') is None\n"
-        "spec = provenance.full_data(\n"
-        "    provenance.AverageOperation(dims=('x',))\n"
-        ").append_final_rename('avg')\n"
-        "payload = spec.model_dump(mode='json')\n"
-        "parsed = provenance.parse_tool_provenance_spec(payload)\n"
-        "assert isinstance(parsed, provenance.ToolProvenanceSpec)\n"
-        "assert isinstance(parsed.operations[0], provenance.AverageOperation)\n"
-        "assert parsed.operations[-1] == provenance.RenameOperation(name='avg')\n"
-        "assert isinstance(\n"
-        "    provenance.parse_tool_provenance_operation("
-        "{'op': 'rename', 'name': 'renamed'}),\n"
-        "    provenance.RenameOperation,\n"
+        "payload = {\n"
+        "    'schema_version': 2,\n"
+        "    'kind': 'full_data',\n"
+        "    'operations': [\n"
+        "        {'op': 'average', 'dims': ['x']},\n"
+        "        {'op': 'rename', 'name': 'avg'},\n"
+        "    ],\n"
+        "}\n"
+        "parsed = parse_tool_provenance_spec(payload)\n"
+        "from erlab.interactive.imagetool._provenance._operations import (\n"
+        "    AverageOperation, IselOperation, RenameOperation,\n"
+        "    ScriptCodeOperation,\n"
         ")\n"
-        "assert provenance.selection(provenance.IselOperation(kwargs={'x': 0})).kind "
+        "assert isinstance(parsed, ToolProvenanceSpec)\n"
+        "assert isinstance(parsed.operations[0], AverageOperation)\n"
+        "assert parsed.operations[-1] == RenameOperation(name='avg')\n"
+        "assert isinstance(\n"
+        "    parse_tool_provenance_operation("
+        "{'op': 'rename', 'name': 'renamed'}),\n"
+        "    RenameOperation,\n"
+        ")\n"
+        "assert selection(IselOperation(kwargs={'x': 0})).kind "
         "== 'selection'\n"
-        "assert provenance.script(\n"
-        "    provenance.ScriptCodeOperation(label='Step', code='derived = data'),\n"
+        "assert script(\n"
+        "    ScriptCodeOperation(label='Step', code='derived = data'),\n"
         "    start_label='Run script',\n"
         "    active_name='derived',\n"
         ").kind == 'script'\n"
-        "source = provenance.FileLoadSource(\n"
+        "source = FileLoadSource(\n"
         "    path='scan.h5',\n"
         "    loader_label='xarray.load_dataarray',\n"
         "    loader_text='xarray.load_dataarray',\n"
         "    kwargs_text='',\n"
-        "    replay_call=provenance.FileReplayCall(\n"
+        "    replay_call=FileReplayCall(\n"
         "        kind='callable',\n"
         "        target='xarray.load_dataarray',\n"
         "        selected_index=0,\n"
         "    ),\n"
         ")\n"
-        "file_spec = provenance.file_load(\n"
+        "file_spec = file_load(\n"
         "    start_label='Load data',\n"
         "    seed_code='derived = data',\n"
         "    file_load_source=source,\n"
@@ -183,19 +376,24 @@ def test_script_replay_keeps_unused_aliases_lazy() -> None:
         "import sys\n"
         "import numpy as np\n"
         "import xarray as xr\n"
-        "from erlab.interactive.imagetool import provenance\n"
+        "from erlab.interactive.imagetool._provenance._execution import "
+        "replay_script_provenance\n"
+        "from erlab.interactive.imagetool._provenance._model import "
+        "ScriptInput, script\n"
+        "from erlab.interactive.imagetool._provenance._operations import "
+        "ScriptCodeOperation\n"
         "data = xr.DataArray(np.arange(2.0), dims=('x',))\n"
-        "spec = provenance.script(\n"
-        "    provenance.ScriptCodeOperation(label='Subtract', "
+        "spec = script(\n"
+        "    ScriptCodeOperation(label='Subtract', "
         "code='derived = data_0 - data_1'),\n"
         "    start_label='Run script',\n"
         "    active_name='derived',\n"
         "    script_inputs=(\n"
-        "        provenance.ScriptInput(name='data_0', label='A'),\n"
-        "        provenance.ScriptInput(name='data_1', label='B'),\n"
+        "        ScriptInput(name='data_0', label='A'),\n"
+        "        ScriptInput(name='data_1', label='B'),\n"
         "    ),\n"
         ")\n"
-        "provenance.replay_script_provenance(spec, {'data_0': data, 'data_1': data})\n"
+        "replay_script_provenance(spec, {'data_0': data, 'data_1': data})\n"
         "loaded = sorted(\n"
         "    name for name in sys.modules\n"
         "    if name.startswith('erlab.analysis.')\n"
@@ -221,13 +419,13 @@ def _file_replay_source(
     replay_call: typing.Any = None,
 ) -> typing.Any:
     if replay_call is None:
-        replay_call = provenance.FileReplayCall(
+        replay_call = FileReplayCall(
             kind="callable",
             target="xarray.load_dataarray",
             kwargs={},
             selected_index=0,
         )
-    return provenance.FileLoadSource(
+    return FileLoadSource(
         path=path,
         loader_label="Load Function",
         loader_text="xarray.load_dataarray",
@@ -238,126 +436,146 @@ def _file_replay_source(
 
 
 def _file_provenance_spec(path: typing.Any = "scan.h5") -> typing.Any:
-    return provenance.file_load(
+    return file_load(
         start_label="Load data from file 'scan.h5'",
         seed_code="import xarray\n\nderived = xarray.load_dataarray('scan.h5')",
         file_load_source=_file_replay_source(path),
     )
 
 
-def _representative_structured_operations() -> tuple[
-    provenance.ToolProvenanceOperation, ...
-]:
+def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ...]:
     edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})
     vertices = np.array([[0.0, 10.0], [1.0, 11.0], [2.0, 12.0]])
     return (
-        provenance.QSelOperation(kwargs={"x": 1.0}),
-        provenance.IselOperation(kwargs={"x": slice(0, 2)}),
-        provenance.SelOperation(kwargs={"y": slice(10.0, 12.0)}),
-        provenance.SortCoordOrderOperation(),
-        provenance.SortByOperation(variables=("x",), ascending=False),
-        provenance.SelectCoordOperation(coord_name="x"),
-        provenance.TransposeOperation(dims=("y", "x", "z")),
-        provenance.SqueezeOperation(),
-        provenance.RenameOperation(name="renamed"),
-        provenance.RestoreNonuniformDimsOperation(),
-        provenance.RotateOperation(angle=0.0, axes=("x", "y"), center=(0.0, 10.0)),
-        provenance.AverageOperation(dims=("x",)),
-        provenance.QSelAggregationOperation(dims=("x",), func="sum"),
-        provenance.InterpolationOperation(dim="x", values=[0.25, 0.75]),
-        provenance.LeadingEdgeOperation(fraction=0.5, dim="x"),
-        provenance.DivideByCoordOperation(coord_name="x"),
-        provenance.GaussianFilterOperation(sigma={"x": 0.5}),
-        provenance.NormalizeOperation(dims=("x",), mode="minmax"),
-        provenance.CoarsenOperation(
+        QSelOperation(kwargs={"x": 1.0}),
+        IselOperation(kwargs={"x": slice(0, 2)}),
+        SelOperation(kwargs={"y": slice(10.0, 12.0)}),
+        SortCoordOrderOperation(),
+        SortByOperation(variables=("x",), ascending=False),
+        SelectCoordOperation(coord_name="x"),
+        TransposeOperation(dims=("y", "x", "z")),
+        SqueezeOperation(),
+        RenameOperation(name="renamed"),
+        RestoreNonuniformDimsOperation(),
+        RotateOperation(angle=0.0, axes=("x", "y"), center=(0.0, 10.0)),
+        AverageOperation(dims=("x",)),
+        QSelAggregationOperation(dims=("x",), func="sum"),
+        InterpolationOperation(dim="x", values=[0.25, 0.75]),
+        LeadingEdgeOperation(fraction=0.5, dim="x"),
+        DivideByCoordOperation(coord_name="x"),
+        GaussianFilterOperation(sigma={"x": 0.5}),
+        NormalizeOperation(dims=("x",), mode="minmax"),
+        CoarsenOperation(
             dim={"x": 2},
             boundary="trim",
             side="left",
             coord_func="mean",
             reducer="mean",
         ),
-        provenance.ThinOperation(mode="per_dim", factors={"x": 2}),
-        provenance.SymmetrizeOperation(dim="x", center=1.0),
-        provenance.SymmetrizeNfoldOperation(
+        ThinOperation(mode="per_dim", factors={"x": 2}),
+        SymmetrizeOperation(dim="x", center=1.0),
+        SymmetrizeNfoldOperation(
             fold=4,
             axes=("x", "y"),
             center={"x": 1.0, "y": 10.0},
         ),
-        provenance.CorrectWithEdgeOperation(edge_fit=edge_fit, shift_coords=False),
-        provenance.SwapDimsOperation(mapping={"x": "x_alt"}),
-        provenance.RenameDimsCoordsOperation(mapping={"x": "energy"}),
-        provenance.AffineCoordOperation(coord_name="x", scale=2.0, offset=1.0),
-        provenance.AssignCoordsOperation(coord_name="x", values=[0.0, 1.0, 2.0]),
-        provenance.AssignScalarCoordOperation(coord_name="temperature", value=20.0),
-        provenance.AssignCoord1DOperation(
+        CorrectWithEdgeOperation(edge_fit=edge_fit, shift_coords=False),
+        SwapDimsOperation(mapping={"x": "x_alt"}),
+        RenameDimsCoordsOperation(mapping={"x": "energy"}),
+        AffineCoordOperation(coord_name="x", scale=2.0, offset=1.0),
+        AssignCoordsOperation(coord_name="x", values=[0.0, 1.0, 2.0]),
+        AssignScalarCoordOperation(coord_name="temperature", value=20.0),
+        AssignCoord1DOperation(
             coord_name="temperature",
             dim="x",
             values=[1.0, 2.0, 3.0],
         ),
-        provenance.AssignAttrsOperation(attrs={"sample": "test"}),
-        provenance.KspaceConfigurationOperation(configuration=2),
-        provenance.KspaceWorkFunctionOperation(work_function=4.2),
-        provenance.KspaceInnerPotentialOperation(inner_potential=12.0),
-        provenance.KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0),
-        provenance.KspaceConvertOperation(
+        AssignAttrsOperation(attrs={"sample": "test"}),
+        KspaceConfigurationOperation(configuration=2),
+        KspaceWorkFunctionOperation(work_function=4.2),
+        KspaceInnerPotentialOperation(inner_potential=12.0),
+        KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0),
+        KspaceConvertOperation(
             bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
             resolution={"kx": 0.02, "ky": 0.02},
         ),
-        provenance.SliceAlongPathOperation(
+        SliceAlongPathOperation(
             vertices={"x": [0.0, 1.0], "y": [10.0, 11.0]},
             step_size=0.1,
             dim_name="path",
         ),
-        provenance.MaskWithPolygonOperation(vertices=vertices, dims=("x", "y")),
+        MaskWithPolygonOperation(vertices=vertices, dims=("x", "y")),
+        ModelFitOperation(
+            fit_dim="x",
+            model="PolynomialModel",
+            model_kwargs={"degree": 1},
+            parameters={
+                "c0": _ModelFitParameterSpec(value=0.0),
+                "c1": _ModelFitParameterSpec(value=1.0),
+            },
+            method="leastsq",
+            parameter="c1",
+        ),
     )
 
 
+@pytest.mark.parametrize(
+    "operation",
+    _representative_structured_operations(),
+    ids=lambda operation: operation.op,
+)
+def test_structured_operations_generate_public_code(
+    operation: ToolProvenanceOperation,
+) -> None:
+    try:
+        code = f"derived = {operation.expression_code('data')}"
+    except NotImplementedError:
+        code = operation.statement_code("data", output_name="derived")
+
+    assert "erlab.interactive.imagetool" not in code
+    assert "decode_provenance_value" not in code
+
+
 def test_operation_group_markers_round_trip_and_strip_partial_groups() -> None:
-    operations = provenance.stamp_operation_group(
+    operations = stamp_operation_group(
         (
-            provenance.AverageOperation(dims=("x",)),
-            provenance.SqueezeOperation(),
+            AverageOperation(dims=("x",)),
+            SqueezeOperation(),
         ),
         kind="demo",
         group_id="group-1",
         focuses=("first", "second"),
     )
 
-    assert provenance.operation_group_range(operations, 0, kind="demo") == (0, 2)
-    assert provenance.operation_group_range(operations, 1, kind="demo") == (0, 2)
+    assert operation_group_range(operations, 0, kind="demo") == (0, 2)
+    assert operation_group_range(operations, 1, kind="demo") == (0, 2)
     assert operations[0].group is not None
     assert operations[0].group.focus == "first"
-    assert "group" not in provenance.AverageOperation(dims=("x",)).model_dump(
-        mode="json"
-    )
+    assert "group" not in AverageOperation(dims=("x",)).model_dump(mode="json")
 
     parsed = tuple(
-        provenance.parse_tool_provenance_operation(operation.model_dump(mode="json"))
+        parse_tool_provenance_operation(operation.model_dump(mode="json"))
         for operation in operations
     )
     assert parsed == operations
 
-    assert provenance.strip_partial_operation_groups(operations) == operations
-    partial = provenance.strip_partial_operation_groups(operations[:1])
+    assert strip_partial_operation_groups(operations) == operations
+    partial = strip_partial_operation_groups(operations[:1])
     assert partial[0].group is None
 
-    scrambled = provenance.strip_partial_operation_groups(
-        (operations[1], operations[0])
-    )
+    scrambled = strip_partial_operation_groups((operations[1], operations[0]))
     assert all(operation.group is None for operation in scrambled)
 
-    restamped = provenance.restamp_operation_groups(operations)
-    assert provenance.strip_operation_groups(
-        restamped
-    ) == provenance.strip_operation_groups(operations)
-    assert provenance.operation_group_range(restamped, 0, kind="demo") == (0, 2)
+    restamped = restamp_operation_groups(operations)
+    assert strip_operation_groups(restamped) == strip_operation_groups(operations)
+    assert operation_group_range(restamped, 0, kind="demo") == (0, 2)
     assert restamped[0].group is not None
     assert operations[0].group is not None
     assert restamped[0].group.id != operations[0].group.id
 
-    adjacent = provenance.restamp_operation_groups(operations + operations)
-    assert provenance.operation_group_range(adjacent, 0, kind="demo") == (0, 2)
-    assert provenance.operation_group_range(adjacent, 2, kind="demo") == (2, 4)
+    adjacent = restamp_operation_groups(operations + operations)
+    assert operation_group_range(adjacent, 0, kind="demo") == (0, 2)
+    assert operation_group_range(adjacent, 2, kind="demo") == (2, 4)
     assert adjacent[0].group is not None
     assert adjacent[2].group is not None
     assert adjacent[0].group.id != adjacent[2].group.id
@@ -377,71 +595,69 @@ def test_operation_group_marker_rejects_invalid_metadata(
     kwargs: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
-        provenance.OperationGroupMarker(**kwargs)
+        OperationGroupMarker(**kwargs)
 
 
 def test_operation_group_helpers_reject_broken_ranges() -> None:
-    operations = provenance.stamp_operation_group(
+    operations = stamp_operation_group(
         (
-            provenance.AverageOperation(dims=("x",)),
-            provenance.SqueezeOperation(),
+            AverageOperation(dims=("x",)),
+            SqueezeOperation(),
         ),
         kind="demo",
         group_id="group-1",
     )
-    plain = provenance.AverageOperation(dims=("y",))
+    plain = AverageOperation(dims=("y",))
 
-    assert provenance.stamp_operation_group((), kind="demo") == ()
+    assert stamp_operation_group((), kind="demo") == ()
     with pytest.raises(ValueError, match="focuses must match"):
-        provenance.stamp_operation_group(
+        stamp_operation_group(
             operations,
             kind="demo",
             focuses=("first",),
         )
-    assert provenance.strip_operation_groups((plain,)) == (plain,)
+    assert strip_operation_groups((plain,)) == (plain,)
 
-    assert provenance.operation_group_range(operations, -1) is None
-    assert provenance.operation_group_range(operations, len(operations)) is None
-    assert provenance.operation_group_range((plain,), 0) is None
-    assert provenance.operation_group_range(operations, 0, kind="other") is None
-    assert provenance.operation_group_range((operations[1],), 0) is None
+    assert operation_group_range(operations, -1) is None
+    assert operation_group_range(operations, len(operations)) is None
+    assert operation_group_range((plain,), 0) is None
+    assert operation_group_range(operations, 0, kind="other") is None
+    assert operation_group_range((operations[1],), 0) is None
 
     neighbor = plain.model_copy(update={"group": operations[0].group})
-    assert provenance.operation_group_range((*operations, neighbor), 0) is None
+    assert operation_group_range((*operations, neighbor), 0) is None
 
-    restamped = provenance.restamp_operation_groups((operations[1],))
+    restamped = restamp_operation_groups((operations[1],))
     assert restamped[0].group is None
 
 
 def test_tool_provenance_codec_and_combinators() -> None:
     edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})
-    encoded = provenance.encode_provenance_value(
+    encoded = encode_provenance_value(
         {"sel": slice(1.0, 2.0), "data": _base_data(), "edge_fit": edge_fit}
     )
-    decoded = provenance.decode_provenance_value(encoded)
+    decoded = decode_provenance_value(encoded)
 
     assert decoded["sel"] == slice(1.0, 2.0)
     xr.testing.assert_identical(decoded["data"], _base_data())
     xr.testing.assert_identical(decoded["edge_fit"], edge_fit)
 
-    hashable_encoded = provenance.encode_provenance_value(
+    hashable_encoded = encode_provenance_value(
         {1: slice(0.0, 1.0), ("beta", 0): {"nested": [1, 2, 3]}}
     )
-    assert provenance._MAPPING_MARKER in hashable_encoded
-    mapping_entries = hashable_encoded[provenance._MAPPING_MARKER]
+    assert _MAPPING_MARKER in hashable_encoded
+    mapping_entries = hashable_encoded[_MAPPING_MARKER]
     assert mapping_entries[0][0] == 1
-    assert mapping_entries[1][0] == {provenance._TUPLE_MARKER: ["beta", 0]}
-    assert provenance.decode_provenance_value(hashable_encoded) == {
+    assert mapping_entries[1][0] == {_TUPLE_MARKER: ["beta", 0]}
+    assert decode_provenance_value(hashable_encoded) == {
         1: slice(0.0, 1.0),
         ("beta", 0): {"nested": [1, 2, 3]},
     }
 
-    spec = provenance.full_data(
-        provenance.AverageOperation(dims=("y",))
-    ).append_final_rename("avg")
+    spec = full_data(AverageOperation(dims=("y",))).append_final_rename("avg")
     trimmed = spec.drop_trailing_rename()
     replaced = spec.append_replacement_operations(
-        provenance.ThinOperation(mode="global", factor=2)
+        ThinOperation(mode="global", factor=2)
     )
 
     assert [op.op for op in spec.operations] == ["average", "rename"]
@@ -451,9 +667,7 @@ def test_tool_provenance_codec_and_combinators() -> None:
     with pytest.raises(ValidationError, match="Instance is frozen"):
         spec.kind = "selection"
     with pytest.raises(TypeError, match="ToolProvenanceOperation instances only"):
-        erlab.interactive.imagetool.provenance.full_data(
-            {"op": "average", "dims": ["y"]}
-        )
+        full_data({"op": "average", "dims": ["y"]})
     with pytest.raises(TypeError, match="ToolProvenanceOperation instances only"):
         spec.append_replacement_operations(
             {"op": "thin", "mode": "global", "factor": 2}
@@ -465,12 +679,12 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
         "schema_version": 1,
         "kind": "full_data",
         "operations": [
-            {"op": "average", "dims": {provenance._TUPLE_MARKER: ["x"]}},
+            {"op": "average", "dims": {_TUPLE_MARKER: ["x"]}},
             {"op": "rename", "name": "avg"},
         ],
     }
 
-    spec = provenance.parse_tool_provenance_spec(payload)
+    spec = parse_tool_provenance_spec(payload)
 
     assert spec is not None
     assert spec.schema_version == 2
@@ -498,11 +712,11 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
     assert "active_name" in dumped
     assert dumped["active_name"] is None
     assert dumped["operations"][0]["op"] == "average"
-    assert dumped["operations"][0]["dims"] == {provenance._TUPLE_MARKER: ["x"]}
+    assert dumped["operations"][0]["dims"] == {_TUPLE_MARKER: ["x"]}
     assert spec.to_replay_spec().active_name == "derived"
 
     with pytest.raises(ValidationError, match="Unknown provenance operation"):
-        provenance.parse_tool_provenance_spec(
+        parse_tool_provenance_spec(
             {
                 "kind": "full_data",
                 "operations": [
@@ -518,7 +732,7 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
     with pytest.raises(
         ValidationError, match="script provenance specs must define `active_name`"
     ):
-        provenance.parse_tool_provenance_spec(
+        parse_tool_provenance_spec(
             {
                 "kind": "script",
                 "start_label": "Start from current parent ImageTool data",
@@ -530,12 +744,12 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
     with pytest.raises(
         TypeError, match="Serialized provenance operations must be a sequence"
     ):
-        provenance.parse_tool_provenance_spec({"kind": "full_data", "operations": 1})
+        parse_tool_provenance_spec({"kind": "full_data", "operations": 1})
 
     with pytest.raises(
         TypeError, match="Serialized provenance operations must be a sequence"
     ):
-        provenance.parse_tool_provenance_spec(
+        parse_tool_provenance_spec(
             {"kind": "full_data", "operations": {"op": "average", "dims": ["x"]}}
         )
 
@@ -562,7 +776,7 @@ def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
         ],
     }
 
-    spec = provenance.parse_tool_provenance_spec(payload)
+    spec = parse_tool_provenance_spec(payload)
 
     assert spec is not None
     migrated_code = spec.derivation_code()
@@ -573,7 +787,7 @@ def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
     namespace = _exec_generated_code(migrated_code, {"data": uniform})
     xr.testing.assert_identical(namespace["derived"], public)
 
-    seed_spec = provenance.parse_tool_provenance_spec(
+    seed_spec = parse_tool_provenance_spec(
         {
             "schema_version": 2,
             "kind": "script",
@@ -587,7 +801,7 @@ def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
     assert seed_spec.seed_code is not None
     assert "erlab.utils.array._restore_nonuniform_dims(data)" in seed_spec.seed_code
 
-    file_source = provenance.FileLoadSource.model_validate(
+    file_source = FileLoadSource.model_validate(
         {
             "path": "scan.nc",
             "loader_label": "Load scan.nc",
@@ -603,9 +817,7 @@ def test_tool_provenance_migrates_legacy_nonuniform_restore_code() -> None:
         f'# café: keep "{legacy_call}" as documentation\n'
         f"derived  =  {legacy_call}  # keep formatting\n"
     )
-    assert _provenance_framework._migrate_legacy_nonuniform_restore_code(
-        preserved_code
-    ) == (
+    assert _migrate_legacy_nonuniform_restore_code(preserved_code) == (
         f'# café: keep "{legacy_call}" as documentation\n'
         "derived  =  erlab.utils.array._restore_nonuniform_dims(data)  "
         "# keep formatting\n"
@@ -616,7 +828,7 @@ def test_registered_provenance_define_operation_code_api() -> None:
 
     structured_operation_types = [
         operation_type
-        for op, operation_type in provenance._OPERATION_TYPES.items()
+        for op, operation_type in _OPERATION_TYPES.items()
         if op != "script_code"
     ]
     assert [
@@ -628,10 +840,8 @@ def test_registered_provenance_define_operation_code_api() -> None:
         operation_type
         for operation_type in structured_operation_types
         if (
-            operation_type.expression_code
-            is provenance.ToolProvenanceOperation.expression_code
-            and operation_type.statement_code
-            is provenance.ToolProvenanceOperation.statement_code
+            operation_type.expression_code is ToolProvenanceOperation.expression_code
+            and operation_type.statement_code is ToolProvenanceOperation.statement_code
         )
     ] == []
 
@@ -639,29 +849,29 @@ def test_registered_provenance_define_operation_code_api() -> None:
 @pytest.mark.parametrize(
     "operation",
     [
-        provenance.IselOperation(kwargs={"x": slice(0, 2)}),
-        provenance.SelOperation(kwargs={"y": 11.0}),
-        provenance.DivideByCoordOperation(coord_name="scale"),
-        provenance.GaussianFilterOperation(sigma={"x": 0.5}),
-        provenance.NormalizeOperation(
+        IselOperation(kwargs={"x": slice(0, 2)}),
+        SelOperation(kwargs={"y": 11.0}),
+        DivideByCoordOperation(coord_name="scale"),
+        GaussianFilterOperation(sigma={"x": 0.5}),
+        NormalizeOperation(
             dims=("x",),
             mode="minmax",
         ),
-        provenance.CoarsenOperation(
+        CoarsenOperation(
             dim={"x": 2},
             boundary="trim",
             side="left",
             coord_func="mean",
             reducer="mean",
         ),
-        provenance.ThinOperation(
+        ThinOperation(
             mode="per_dim",
             factors={"y": 2},
         ),
     ],
 )
 def test_operation_replay_code_uses_requested_names(
-    operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+    operation: ToolProvenanceOperation,
 ) -> None:
     data = _base_data().drop_vars("x_alt").assign_coords(scale=("x", [1.0, 2.0, 3.0]))
 
@@ -679,7 +889,7 @@ def test_operation_replay_code_uses_requested_names(
     expected = operation.apply(data, parent_data=data)
     if isinstance(
         operation,
-        provenance.DivideByCoordOperation,
+        DivideByCoordOperation,
     ):
         result = result.rename(None)
         expected = expected.rename(None)
@@ -690,7 +900,7 @@ def test_operation_replay_code_uses_requested_names(
 def test_operation_replay_code_passes_source_context() -> None:
     parent = _base_data()
     child = parent.transpose("z", "x", "y")
-    operation = provenance.SortCoordOrderOperation()
+    operation = SortCoordOrderOperation()
 
     code = operation.replay_code("child", output_name="result", source_name="parent")
     assert "parent.coords.keys()" in code
@@ -713,32 +923,32 @@ def test_operation_code_base_edges() -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",))
 
     with pytest.raises(NotImplementedError):
-        provenance.ToolProvenanceOperation().expression_code("data")
+        ToolProvenanceOperation().expression_code("data")
     with pytest.raises(NotImplementedError):
-        provenance.ToolProvenanceOperation().statement_code(
+        ToolProvenanceOperation().statement_code(
             "data",
             output_name="derived",
         )
     with pytest.raises(NotImplementedError):
-        provenance.KspaceWorkFunctionOperation(work_function=4.2).replay_code(
+        KspaceWorkFunctionOperation(work_function=4.2).replay_code(
             "data",
             output_name=None,
         )
 
     assert (
-        provenance.IselOperation(kwargs={"x": 0}).replay_code("data", output_name=None)
+        IselOperation(kwargs={"x": 0}).replay_code("data", output_name=None)
         == "data.isel(x=0)"
     )
-    assert provenance._expression_receiver_code("data +") == "(data +)"
+    assert _expression_receiver_code("data +") == "(data +)"
     assert (
-        provenance._simplify_display_code(
+        _simplify_display_code(
             "derived = data\nfor item in []:\n    pass",
             inline_targets={"derived"},
         )
         == "for item in []:\n    pass"
     )
     xr.testing.assert_identical(
-        provenance.NormalizeOperation(dims=()).apply(data, parent_data=data),
+        NormalizeOperation(dims=()).apply(data, parent_data=data),
         data,
     )
 
@@ -747,21 +957,21 @@ def test_operation_code_base_edges() -> None:
     ("operation", "expected"),
     [
         (
-            provenance.NormalizeOperation(dims=("x",), mode="area"),
+            NormalizeOperation(dims=("x",), mode="area"),
             'data / data.mean("x")',
         ),
         (
-            provenance.NormalizeOperation(dims=("x",), mode="min"),
+            NormalizeOperation(dims=("x",), mode="min"),
             'data - data.min("x")',
         ),
         (
-            provenance.NormalizeOperation(dims=("x",), mode="min_area"),
+            NormalizeOperation(dims=("x",), mode="min_area"),
             '(data - data.min("x")) / data.mean("x")',
         ),
     ],
 )
 def test_normalize_operation_expression_modes(
-    operation: provenance.NormalizeOperation,
+    operation: NormalizeOperation,
     expected: str,
 ) -> None:
     assert operation.expression_code("data") == expected
@@ -770,12 +980,12 @@ def test_normalize_operation_expression_modes(
 def test_roi_operation_derivation_labels() -> None:
     vertices = np.array([[0.0, 0.0], [1.0, 1.0]])
 
-    path_operation = provenance.SliceAlongPathOperation(
+    path_operation = SliceAlongPathOperation(
         vertices={"x": [0.0, 1.0], "y": [0.0, 1.0]},
         step_size=0.1,
         dim_name="s",
     )
-    mask_operation = provenance.MaskWithPolygonOperation(
+    mask_operation = MaskWithPolygonOperation(
         vertices=vertices,
         dims=("x", "y"),
     )
@@ -787,11 +997,11 @@ def test_roi_operation_derivation_labels() -> None:
 def test_operations_expression_code_chains_without_relay_assignments() -> None:
     data = _base_data().assign_coords(scale=("x", [1.0, 2.0, 3.0]))
     operations = (
-        provenance.DivideByCoordOperation(coord_name="scale"),
-        provenance.IselOperation(kwargs={"x": slice(0, 2)}),
+        DivideByCoordOperation(coord_name="scale"),
+        IselOperation(kwargs={"x": slice(0, 2)}),
     )
 
-    code = provenance.operations_expression_code(operations, "data")
+    code = operations_expression_code(operations, "data")
     assert code.startswith("(data / data.scale).isel(")
     assert ".rename(" not in code
     assert "derived" not in code
@@ -817,7 +1027,7 @@ def test_nonuniform_restore_statement_code_is_safe_to_reingest(
         coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 1.0]},
     )
     internal = erlab.utils.array._make_dims_uniform(public)
-    operation = provenance.RestoreNonuniformDimsOperation(
+    operation = RestoreNonuniformDimsOperation(
         dimension_mapping=(
             erlab.utils.array._nonuniform_dim_mapping(internal)
             if record_mapping
@@ -826,21 +1036,19 @@ def test_nonuniform_restore_statement_code_is_safe_to_reingest(
     )
 
     with pytest.raises(NotImplementedError):
-        provenance.operations_expression_code((operation,), "data")
+        operations_expression_code((operation,), "data")
 
     code = operation.replay_code("data", output_name="derived")
-    spec = provenance.script(
+    spec = script(
         start_label="Restore ImageTool dimensions",
         seed_code=code,
         active_name="derived",
     )
 
     assert "lambda" not in code
-    assert not provenance.script_provenance_requires_trust(
-        spec, external_input_names={"data"}
-    )
+    assert not script_provenance_requires_trust(spec, external_input_names={"data"})
     xr.testing.assert_identical(
-        provenance.replay_script_provenance(spec, {"data": internal}),
+        replay_script_provenance(spec, {"data": internal}),
         public,
     )
 
@@ -854,7 +1062,7 @@ def test_nonuniform_restore_expression_is_linear_and_restores_applicable_dims() 
     internal = erlab.utils.array._make_dims_uniform(public)
     recorded_mapping = erlab.utils.array._nonuniform_dim_mapping(internal)
     mapping = {**recorded_mapping, "missing_idx": "missing"}
-    code = _provenance_framework._restore_nonuniform_dims_expression("data", mapping)
+    code = _restore_nonuniform_dims_expression("data", mapping)
 
     attributes = tuple(
         node.attr
@@ -881,9 +1089,7 @@ def test_nonuniform_restore_expression_preserves_inapplicable_coordinates() -> N
         dims=("x",),
         coords={"x": [0.0, 1.0, 2.0], "x_idx": ("x", [10, 11, 12])},
     )
-    code = _provenance_framework._restore_nonuniform_dims_expression(
-        "data", {"x_idx": "x"}
-    )
+    code = _restore_nonuniform_dims_expression("data", {"x_idx": "x"})
 
     namespace = _exec_generated_code(f"result = {code}", {"data": data})
 
@@ -892,7 +1098,7 @@ def test_nonuniform_restore_expression_preserves_inapplicable_coordinates() -> N
 
 def test_statement_operation_replay_code_mutates_working_copy() -> None:
     data = _kspace_data()
-    operation = provenance.KspaceWorkFunctionOperation(work_function=4.2)
+    operation = KspaceWorkFunctionOperation(work_function=4.2)
 
     code = operation.replay_code("data", output_name="result", source_name="data")
 
@@ -905,7 +1111,7 @@ def test_statement_operation_replay_code_mutates_working_copy() -> None:
 
 
 def test_statement_operation_derivation_entry_omits_same_name_noop() -> None:
-    operation = provenance.KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0)
+    operation = KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0)
 
     code = operation.derivation_entry().code
 
@@ -915,14 +1121,14 @@ def test_statement_operation_derivation_entry_omits_same_name_noop() -> None:
 def test_tool_provenance_mixed_statement_and_expression_display_code() -> None:
     data = _kspace_data()
     operations = (
-        provenance.KspaceWorkFunctionOperation(work_function=4.2),
-        provenance.KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0),
-        provenance.KspaceConvertOperation(
+        KspaceWorkFunctionOperation(work_function=4.2),
+        KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0),
+        KspaceConvertOperation(
             bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
             resolution={"kx": 0.02, "ky": 0.02},
         ),
     )
-    spec = provenance.full_data(*operations).to_replay_spec()
+    spec = full_data(*operations).to_replay_spec()
 
     code = typing.cast("str", spec.display_code())
 
@@ -968,7 +1174,7 @@ def test_tool_provenance_parse_legacy_file_script_metadata() -> None:
         ],
     }
 
-    spec = provenance.parse_tool_provenance_spec(payload)
+    spec = parse_tool_provenance_spec(payload)
 
     assert spec is not None
     assert spec.schema_version == 2
@@ -977,7 +1183,7 @@ def test_tool_provenance_parse_legacy_file_script_metadata() -> None:
     assert spec.file_load_source.path == "scan.h5"
     assert spec.file_load_source.replay_call is None
     assert [operation.op for operation in spec.operations] == ["average"]
-    assert spec.display_rows()[1].edit_ref == provenance._ProvenanceStepRef(
+    assert spec.display_rows()[1].edit_ref == _ProvenanceStepRef(
         "operation",
         operation_index=0,
     )
@@ -1002,22 +1208,22 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
         name="data",
     )
     nonuniform = erlab.utils.array._make_dims_uniform(nonuniform_public)
-    selection_spec = erlab.interactive.imagetool.provenance.selection(
-        provenance.QSelOperation(kwargs={"beta": 2.0}),
-        provenance.IselOperation(kwargs={"alpha": slice(1, 3)}),
-        provenance.SortCoordOrderOperation(),
+    selection_spec = selection(
+        QSelOperation(kwargs={"beta": 2.0}),
+        IselOperation(kwargs={"alpha": slice(1, 3)}),
+        SortCoordOrderOperation(),
     )
     xr.testing.assert_identical(
         selection_spec.apply(nonuniform),
         nonuniform_public.qsel(beta=2.0).isel({"alpha": slice(1, 3)}),
     )
 
-    transformed = erlab.interactive.imagetool.provenance.full_data(
-        provenance.IselOperation(kwargs={"z": 0}),
-        provenance.SelOperation(kwargs={"y": slice(11.0, 12.0)}),
-        provenance.TransposeOperation(dims=("y", "x")),
-        provenance.SqueezeOperation(),
-        provenance.RenameOperation(name="done"),
+    transformed = full_data(
+        IselOperation(kwargs={"z": 0}),
+        SelOperation(kwargs={"y": slice(11.0, 12.0)}),
+        TransposeOperation(dims=("y", "x")),
+        SqueezeOperation(),
+        RenameOperation(name="done"),
     )
     xr.testing.assert_identical(
         transformed.apply(data),
@@ -1029,14 +1235,12 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     )
 
     xr.testing.assert_identical(
-        erlab.interactive.imagetool.provenance.full_data(
-            provenance.AverageOperation(dims=("y",))
-        ).apply(data),
+        full_data(AverageOperation(dims=("y",))).apply(data),
         data.qsel.mean("y"),
     )
     xr.testing.assert_identical(
-        erlab.interactive.imagetool.provenance.full_data(
-            provenance.QSelAggregationOperation(
+        full_data(
+            QSelAggregationOperation(
                 dims=("y",),
                 func="sum",
             )
@@ -1044,8 +1248,8 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
         data.qsel.sum("y"),
     )
     xr.testing.assert_identical(
-        erlab.interactive.imagetool.provenance.full_data(
-            provenance.CoarsenOperation(
+        full_data(
+            CoarsenOperation(
                 dim={"y": 2},
                 boundary="trim",
                 side="left",
@@ -1056,32 +1260,26 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
         data.coarsen(y=2, boundary="trim", side="left", coord_func="mean").mean(),
     )
     xr.testing.assert_identical(
-        erlab.interactive.imagetool.provenance.full_data(
-            provenance.ThinOperation(mode="global", factor=2)
-        ).apply(data),
+        full_data(ThinOperation(mode="global", factor=2)).apply(data),
         data.thin(2),
     )
     xr.testing.assert_identical(
-        erlab.interactive.imagetool.provenance.full_data(
-            provenance.ThinOperation(mode="per_dim", factors={"x": 2})
-        ).apply(data),
+        full_data(ThinOperation(mode="per_dim", factors={"x": 2})).apply(data),
         data.thin({"x": 2}),
     )
     xr.testing.assert_identical(
-        erlab.interactive.imagetool.provenance.full_data(
-            provenance.SwapDimsOperation(mapping={"x": "x_alt"})
-        ).apply(data),
+        full_data(SwapDimsOperation(mapping={"x": "x_alt"})).apply(data),
         data.swap_dims({"x": "x_alt"}),
     )
     xr.testing.assert_identical(
-        erlab.interactive.imagetool.provenance.full_data(
-            provenance.RenameDimsCoordsOperation(mapping={"x": "kx", "x_alt": "label"})
+        full_data(
+            RenameDimsCoordsOperation(mapping={"x": "kx", "x_alt": "label"})
         ).apply(data),
         data.rename({"x": "kx", "x_alt": "label"}),
     )
 
-    assigned = erlab.interactive.imagetool.provenance.full_data(
-        provenance.AssignCoordsOperation(
+    assigned = full_data(
+        AssignCoordsOperation(
             coord_name="y", values=np.array([100.0, 101.0, 102.0, 103.0])
         )
     ).apply(data)
@@ -1099,14 +1297,12 @@ def test_tool_provenance_rename_dims_coords_round_trip_and_code() -> None:
     data = _string_key_data().assign_coords(
         {"coord-1": xr.DataArray([100.0, 101.0, 102.0], dims=["k-space"])}
     )
-    operation = provenance.RenameDimsCoordsOperation(
+    operation = RenameDimsCoordsOperation(
         mapping={"k-space": "kx", "coord-1": "temperature"}
     )
     expected = data.rename({"k-space": "kx", "coord-1": "temperature"})
 
-    parsed = provenance.parse_tool_provenance_operation(
-        operation.model_dump(mode="json")
-    )
+    parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
     assert parsed == operation
     xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
 
@@ -1116,7 +1312,7 @@ def test_tool_provenance_rename_dims_coords_round_trip_and_code() -> None:
     namespace = _exec_generated_code(entry.code, {"derived": data.copy(deep=True)})
     xr.testing.assert_identical(namespace["derived"], expected)
 
-    spec = provenance.full_data(operation).to_replay_spec()
+    spec = full_data(operation).to_replay_spec()
     code = spec.display_code(parent_data=data)
     assert code is not None
     assert ".rename(" in code
@@ -1132,15 +1328,11 @@ def test_tool_provenance_interpolation_operation_round_trip_and_code() -> None:
         name="data",
     )
     values = np.linspace(0.0, 2.0, 5)
-    operation = provenance.InterpolationOperation(
-        dim="k-space", values=values, method="linear"
-    )
+    operation = InterpolationOperation(dim="k-space", values=values, method="linear")
     expected = data.interp({"k-space": values}, method="linear")
 
     xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
-    parsed = provenance.parse_tool_provenance_operation(
-        operation.model_dump(mode="json")
-    )
+    parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
     assert parsed == operation
     xr.testing.assert_identical(parsed.apply(data, parent_data=data), expected)
 
@@ -1152,9 +1344,7 @@ def test_tool_provenance_interpolation_operation_round_trip_and_code() -> None:
     namespace = _exec_generated_code(entry.code, {"derived": data.copy(deep=True)})
     xr.testing.assert_identical(namespace["derived"], expected)
 
-    code = (
-        provenance.full_data(operation).to_replay_spec().display_code(parent_data=data)
-    )
+    code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
     assert any(call.endswith(".interp") for call in _generated_call_names(code))
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
@@ -1169,7 +1359,7 @@ def test_tool_provenance_leading_edge_operation_round_trip_and_code() -> None:
         coords={"x": np.arange(3), "eV": ev},
         name="data",
     )
-    operation = provenance.LeadingEdgeOperation(
+    operation = LeadingEdgeOperation(
         fraction=0.5,
         dim="eV",
         direction="positive",
@@ -1177,15 +1367,13 @@ def test_tool_provenance_leading_edge_operation_round_trip_and_code() -> None:
     expected = erlab.analysis.interpolate.leading_edge(data)
 
     xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
-    parsed = provenance.parse_tool_provenance_operation(
-        operation.model_dump(mode="json")
-    )
+    parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
     assert parsed == operation
     xr.testing.assert_identical(parsed.apply(data, parent_data=data), expected)
 
-    payload = provenance.full_data(operation).model_dump(mode="json")
+    payload = full_data(operation).model_dump(mode="json")
     json.dumps(payload)
-    reparsed_spec = provenance.parse_tool_provenance_spec(payload)
+    reparsed_spec = parse_tool_provenance_spec(payload)
     assert reparsed_spec is not None
     xr.testing.assert_identical(reparsed_spec.apply(data), expected)
 
@@ -1196,9 +1384,7 @@ def test_tool_provenance_leading_edge_operation_round_trip_and_code() -> None:
     namespace = _exec_generated_code(entry.code, {"derived": data.copy(deep=True)})
     xr.testing.assert_identical(namespace["derived"], expected)
 
-    code = (
-        provenance.full_data(operation).to_replay_spec().display_code(parent_data=data)
-    )
+    code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
     assert any(call.endswith(".leading_edge") for call in _generated_call_names(code))
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
@@ -1219,8 +1405,8 @@ def test_tool_provenance_assign_coords_replay_display_code(
 ) -> None:
     data = _base_data()
 
-    spec = provenance.full_data(
-        provenance.AssignCoordsOperation(coord_name="y", values=values)
+    spec = full_data(
+        AssignCoordsOperation(coord_name="y", values=values)
     ).to_replay_spec()
 
     code = spec.display_code(parent_data=data)
@@ -1246,8 +1432,8 @@ def test_tool_provenance_assign_coords_single_value_uses_linspace() -> None:
     )
     values = np.array([5.0])
 
-    spec = provenance.full_data(
-        provenance.AssignCoordsOperation(coord_name="x", values=values)
+    spec = full_data(
+        AssignCoordsOperation(coord_name="x", values=values)
     ).to_replay_spec()
 
     code = spec.display_code(parent_data=data)
@@ -1263,9 +1449,7 @@ def test_tool_provenance_assign_coords_single_value_uses_linspace() -> None:
 
 def test_tool_provenance_assign_scalar_coord_operation() -> None:
     data = _base_data()
-    operation = provenance.AssignScalarCoordOperation(
-        coord_name="temperature", value=21.5
-    )
+    operation = AssignScalarCoordOperation(coord_name="temperature", value=21.5)
     expected = erlab.utils.array.sort_coord_order(
         data.assign_coords({"temperature": 21.5}),
         keys=data.coords.keys(),
@@ -1273,14 +1457,10 @@ def test_tool_provenance_assign_scalar_coord_operation() -> None:
     )
 
     xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
-    parsed = provenance.parse_tool_provenance_operation(
-        operation.model_dump(mode="json")
-    )
+    parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
     assert parsed == operation
 
-    code = (
-        provenance.full_data(operation).to_replay_spec().display_code(parent_data=data)
-    )
+    code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
     assert any(call.endswith(".assign_coords") for call in _generated_call_names(code))
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
@@ -1292,16 +1472,16 @@ def test_tool_provenance_assign_scalar_coord_operation() -> None:
 def test_tool_provenance_nonfinite_coord_and_attr_code() -> None:
     data = _base_data()
 
-    scalar_spec = provenance.full_data(
-        provenance.AssignScalarCoordOperation(coord_name="temperature", value=np.nan)
+    scalar_spec = full_data(
+        AssignScalarCoordOperation(coord_name="temperature", value=np.nan)
     )
     scalar_code = typing.cast("str", scalar_spec.derivation_code())
     assert "np.nan" in scalar_code
     scalar_namespace = _exec_generated_code(scalar_code, {"data": data.copy(deep=True)})
     assert np.isnan(scalar_namespace["derived"].coords["temperature"].item())
 
-    attrs_spec = provenance.full_data(
-        provenance.AssignAttrsOperation(
+    attrs_spec = full_data(
+        AssignAttrsOperation(
             attrs={
                 "offset": np.inf,
                 "bad": np.nan,
@@ -1319,8 +1499,8 @@ def test_tool_provenance_nonfinite_coord_and_attr_code() -> None:
     assert np.isnan(attrs_namespace["derived"].attrs["complex"].real)
     assert np.isinf(attrs_namespace["derived"].attrs["complex"].imag)
 
-    coord_spec = provenance.full_data(
-        provenance.AssignCoord1DOperation(
+    coord_spec = full_data(
+        AssignCoord1DOperation(
             coord_name="temperature",
             dim="x",
             values=np.array([np.nan, np.inf, -np.inf]),
@@ -1339,7 +1519,7 @@ def test_tool_provenance_nonfinite_coord_and_attr_code() -> None:
 def test_tool_provenance_assign_1d_coord_operation() -> None:
     data = _base_data()
     values = np.array(["low", "mid", "high"])
-    operation = provenance.AssignCoord1DOperation(
+    operation = AssignCoord1DOperation(
         coord_name="label",
         dim="x",
         values=values,
@@ -1351,14 +1531,10 @@ def test_tool_provenance_assign_1d_coord_operation() -> None:
     )
 
     xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
-    parsed = provenance.parse_tool_provenance_operation(
-        operation.model_dump(mode="json")
-    )
+    parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
     assert parsed == operation
 
-    code = (
-        provenance.full_data(operation).to_replay_spec().display_code(parent_data=data)
-    )
+    code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
     assert any(call.endswith(".assign_coords") for call in _generated_call_names(code))
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
@@ -1370,18 +1546,14 @@ def test_tool_provenance_assign_1d_coord_operation() -> None:
 def test_tool_provenance_assign_attrs_operation() -> None:
     data = _base_data().assign_attrs(source="old", count=1)
     attrs = {"source": "new", "flag": True, "meta": {"scan": 1}}
-    operation = provenance.AssignAttrsOperation(attrs=attrs)
+    operation = AssignAttrsOperation(attrs=attrs)
     expected = data.assign_attrs(attrs)
 
     xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
-    parsed = provenance.parse_tool_provenance_operation(
-        operation.model_dump(mode="json")
-    )
+    parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
     assert parsed == operation
 
-    code = (
-        provenance.full_data(operation).to_replay_spec().display_code(parent_data=data)
-    )
+    code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
     assert any(call.endswith(".assign_attrs") for call in _generated_call_names(code))
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
@@ -1390,14 +1562,12 @@ def test_tool_provenance_assign_attrs_operation() -> None:
 
 def test_kspace_configuration_operation_round_trip_and_code() -> None:
     data = _kspace_data()
-    operation = provenance.KspaceConfigurationOperation(
+    operation = KspaceConfigurationOperation(
         configuration=erlab.constants.AxesConfiguration.Type2
     )
     expected = data.kspace.as_configuration(erlab.constants.AxesConfiguration.Type2)
 
-    parsed = provenance.parse_tool_provenance_operation(
-        operation.model_dump(mode="json")
-    )
+    parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
 
     assert parsed == operation
     xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
@@ -1412,26 +1582,24 @@ def test_kspace_configuration_operation_round_trip_and_code() -> None:
     ("operation", "attr_name", "expected"),
     [
         (
-            provenance.KspaceWorkFunctionOperation(work_function=4.2),
+            KspaceWorkFunctionOperation(work_function=4.2),
             "sample_workfunction",
             4.2,
         ),
         (
-            provenance.KspaceInnerPotentialOperation(inner_potential=12.0),
+            KspaceInnerPotentialOperation(inner_potential=12.0),
             "inner_potential",
             12.0,
         ),
     ],
 )
 def test_kspace_scalar_statement_operations_round_trip_and_code(
-    operation: provenance.ToolProvenanceOperation,
+    operation: ToolProvenanceOperation,
     attr_name: str,
     expected: float,
 ) -> None:
     data = _kspace_data()
-    parsed = provenance.parse_tool_provenance_operation(
-        operation.model_dump(mode="json")
-    )
+    parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
 
     result = parsed.apply(data, parent_data=data)
 
@@ -1451,15 +1619,13 @@ def test_kspace_scalar_statement_operations_round_trip_and_code(
 
 def test_kspace_set_normal_operation_round_trip_and_code() -> None:
     data = _kspace_data()
-    operation = provenance.KspaceSetNormalOperation(
+    operation = KspaceSetNormalOperation(
         alpha=1.5,
         beta=-0.5,
         delta=2.0,
     )
 
-    parsed = provenance.parse_tool_provenance_operation(
-        operation.model_dump(mode="json")
-    )
+    parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
     result = parsed.apply(data, parent_data=data)
 
     assert result.kspace.offsets["delta"] == pytest.approx(2.0)
@@ -1475,7 +1641,7 @@ def test_kspace_set_normal_operation_round_trip_and_code() -> None:
 
 def test_kspace_convert_operation_round_trip_and_code() -> None:
     data = _kspace_data()
-    operation = provenance.KspaceConvertOperation(
+    operation = KspaceConvertOperation(
         bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
         resolution={"kx": 0.02, "ky": 0.02},
     )
@@ -1485,9 +1651,7 @@ def test_kspace_convert_operation_round_trip_and_code() -> None:
         silent=True,
     )
 
-    parsed = provenance.parse_tool_provenance_operation(
-        operation.model_dump(mode="json")
-    )
+    parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
 
     assert parsed == operation
     xr.testing.assert_allclose(parsed.apply(data, parent_data=data), expected)
@@ -1501,26 +1665,26 @@ def test_kspace_convert_operation_round_trip_and_code() -> None:
     ("call", "operation"),
     [
         (
-            provenance.ConsoleCall(
+            ConsoleCall(
                 accessor_path=("kspace", "as_configuration"),
                 args=(2,),
                 display_code="data.kspace.as_configuration(2)",
                 has_extra_tracked_inputs=False,
             ),
-            provenance.KspaceConfigurationOperation(configuration=2),
+            KspaceConfigurationOperation(configuration=2),
         ),
         (
-            provenance.ConsoleCall(
+            ConsoleCall(
                 accessor_path=("kspace", "set_normal"),
                 args=(1.5, -0.5),
                 kwargs={"delta": 2.0},
                 display_code="data.kspace.set_normal(1.5, -0.5, delta=2.0)",
                 has_extra_tracked_inputs=False,
             ),
-            provenance.KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0),
+            KspaceSetNormalOperation(alpha=1.5, beta=-0.5, delta=2.0),
         ),
         (
-            provenance.ConsoleCall(
+            ConsoleCall(
                 accessor_path=("kspace", "convert"),
                 args=(),
                 kwargs={
@@ -1532,7 +1696,7 @@ def test_kspace_convert_operation_round_trip_and_code() -> None:
                 ),
                 has_extra_tracked_inputs=False,
             ),
-            provenance.KspaceConvertOperation(
+            KspaceConvertOperation(
                 bounds={"kx": (-0.02, 0.02), "ky": (-0.02, 0.02)},
                 resolution={"kx": 0.02, "ky": 0.02},
             ),
@@ -1540,10 +1704,10 @@ def test_kspace_convert_operation_round_trip_and_code() -> None:
     ],
 )
 def test_kspace_operations_match_console_calls(
-    call: provenance.ConsoleCall,
-    operation: provenance.ToolProvenanceOperation,
+    call: ConsoleCall,
+    operation: ToolProvenanceOperation,
 ) -> None:
-    assert provenance.operation_from_console_call(call) == operation
+    assert operation_from_console_call(call) == operation
 
 
 def _expected_affine_coord(
@@ -1581,7 +1745,7 @@ def _expected_affine_coord(
 def test_tool_provenance_affine_coord_operation(
     data: xr.DataArray, coord_name: str, scale: float, offset: float
 ) -> None:
-    operation = provenance.AffineCoordOperation(
+    operation = AffineCoordOperation(
         coord_name=coord_name,
         scale=scale,
         offset=offset,
@@ -1590,15 +1754,11 @@ def test_tool_provenance_affine_coord_operation(
     expected = _expected_affine_coord(data, coord_name, scale, offset)
     xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
 
-    parsed = provenance.parse_tool_provenance_operation(
-        operation.model_dump(mode="json")
-    )
+    parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
     assert parsed == operation
     xr.testing.assert_identical(parsed.apply(data, parent_data=data), expected)
 
-    code = (
-        provenance.full_data(operation).to_replay_spec().display_code(parent_data=data)
-    )
+    code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
     call_names = _generated_call_names(code)
     assert any(call.endswith(".assign_coords") for call in call_names)
@@ -1636,15 +1796,13 @@ def test_tool_provenance_affine_coord_display_code_formats_no_ops(
     forbidden_fragments: tuple[str, ...],
 ) -> None:
     data = _base_data()
-    operation = provenance.AffineCoordOperation(
+    operation = AffineCoordOperation(
         coord_name="y",
         scale=scale,
         offset=offset,
     )
 
-    code = (
-        provenance.full_data(operation).to_replay_spec().display_code(parent_data=data)
-    )
+    code = full_data(operation).to_replay_spec().display_code(parent_data=data)
     assert code is not None
     for fragment in expected_fragments:
         assert fragment in code
@@ -1672,7 +1830,7 @@ def test_tool_provenance_affine_coord_rejects_nonfinite_values(
     with pytest.raises(
         ValidationError, match="affine coordinate scale and offset must be finite"
     ):
-        provenance.AffineCoordOperation(
+        AffineCoordOperation(
             coord_name="y",
             scale=scale,
             offset=offset,
@@ -1682,9 +1840,7 @@ def test_tool_provenance_affine_coord_rejects_nonfinite_values(
 def test_tool_provenance_divide_by_coord_operation() -> None:
     data = _base_data().assign_coords(mesh_current=("x", [1.0, 2.0, 4.0]))
 
-    spec = provenance.full_data(
-        provenance.DivideByCoordOperation(coord_name="mesh_current")
-    )
+    spec = full_data(DivideByCoordOperation(coord_name="mesh_current"))
     expected = (data / data.mesh_current).rename(data.name)
     xr.testing.assert_identical(spec.apply(data), expected)
     code = spec.derivation_code()
@@ -1694,7 +1850,7 @@ def test_tool_provenance_divide_by_coord_operation() -> None:
     namespace = _exec_generated_code(code, {"data": data})
     xr.testing.assert_identical(namespace["derived"], data / data.mesh_current)
 
-    reparsed = provenance.parse_tool_provenance_spec(spec.model_dump(mode="json"))
+    reparsed = parse_tool_provenance_spec(spec.model_dump(mode="json"))
     assert reparsed == spec
     xr.testing.assert_identical(reparsed.apply(data), expected)
 
@@ -1711,9 +1867,7 @@ def test_tool_provenance_divide_by_coord_fallback_code_and_broadcast() -> None:
         }
     )
 
-    spaced_spec = provenance.full_data(
-        provenance.DivideByCoordOperation(coord_name="mesh current")
-    )
+    spaced_spec = full_data(DivideByCoordOperation(coord_name="mesh current"))
     spaced_code = spaced_spec.derivation_code()
     assert spaced_code is not None
     assert 'derived.coords["mesh current"]' in spaced_code
@@ -1723,9 +1877,7 @@ def test_tool_provenance_divide_by_coord_fallback_code_and_broadcast() -> None:
         namespace["derived"], data / data.coords["mesh current"]
     )
 
-    conflict_spec = provenance.full_data(
-        provenance.DivideByCoordOperation(coord_name="mean")
-    )
+    conflict_spec = full_data(DivideByCoordOperation(coord_name="mean"))
     conflict_code = conflict_spec.derivation_code()
     assert conflict_code is not None
     assert 'derived.coords["mean"]' in conflict_code
@@ -1733,9 +1885,7 @@ def test_tool_provenance_divide_by_coord_fallback_code_and_broadcast() -> None:
     namespace = _exec_generated_code(conflict_code, {"data": data})
     xr.testing.assert_identical(namespace["derived"], data / data.coords["mean"])
 
-    broadcast_spec = provenance.full_data(
-        provenance.DivideByCoordOperation(coord_name="mesh_map")
-    )
+    broadcast_spec = full_data(DivideByCoordOperation(coord_name="mesh_map"))
     xr.testing.assert_identical(
         broadcast_spec.apply(data), (data / data.coords["mesh_map"]).rename(data.name)
     )
@@ -1743,9 +1893,7 @@ def test_tool_provenance_divide_by_coord_fallback_code_and_broadcast() -> None:
 
 def test_tool_provenance_divide_by_coord_rejects_zero_values() -> None:
     data = _base_data().assign_coords(mesh_current=("x", [1.0, 0.0, 4.0]))
-    spec = provenance.full_data(
-        provenance.DivideByCoordOperation(coord_name="mesh_current")
-    )
+    spec = full_data(DivideByCoordOperation(coord_name="mesh_current"))
 
     with pytest.raises(ValueError, match="zero values"):
         spec.apply(data)
@@ -1760,8 +1908,8 @@ def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> No
     )
     uniform = erlab.utils.array._make_dims_uniform(public)
 
-    spec = provenance.public_data(
-        provenance.CoarsenOperation(
+    spec = public_data(
+        CoarsenOperation(
             dim={"x": 2},
             boundary="trim",
             side="left",
@@ -1769,7 +1917,7 @@ def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> No
             reducer="mean",
         )
     )
-    reparsed = provenance.parse_tool_provenance_spec(spec.model_dump(mode="json"))
+    reparsed = parse_tool_provenance_spec(spec.model_dump(mode="json"))
 
     assert reparsed is not None
     assert reparsed.kind == "public_data"
@@ -1783,13 +1931,13 @@ def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> No
     assert "coarsen(x=2" in display_code
     assert "x_idx" not in display_code
 
-    restored_spec = provenance.full_data(
-        provenance.AverageOperation(dims=("y",)),
-        provenance.RestoreNonuniformDimsOperation(
+    restored_spec = full_data(
+        AverageOperation(dims=("y",)),
+        RestoreNonuniformDimsOperation(
             dimension_mapping=erlab.utils.array._nonuniform_dim_mapping(uniform)
         ),
     )
-    reparsed_restored = provenance.parse_tool_provenance_spec(
+    reparsed_restored = parse_tool_provenance_spec(
         restored_spec.model_dump(mode="json")
     )
 
@@ -1818,16 +1966,16 @@ def test_recorded_nonuniform_mapping_is_not_restored_after_rotation_drops_coord(
     )
     internal = erlab.utils.array._make_dims_uniform(public)
     mapping = erlab.utils.array._nonuniform_dim_mapping(internal)
-    rotation = provenance.RotateOperation(
+    rotation = RotateOperation(
         angle=10.0,
         axes=("x_idx", "y"),
         center=(0.0, 0.0),
     )
     rotated = rotation.apply(internal, parent_data=internal)
     expected = erlab.utils.array._restore_nonuniform_dims(rotated)
-    spec = provenance.full_data(
+    spec = full_data(
         rotation,
-        provenance.RestoreNonuniformDimsOperation(dimension_mapping=mapping),
+        RestoreNonuniformDimsOperation(dimension_mapping=mapping),
     )
 
     assert "x_idx" in rotated.dims
@@ -1847,9 +1995,7 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
     data = _hashable_data()
     string_key_data = _string_key_data()
 
-    qsel_spec = provenance.full_data(
-        provenance.QSelOperation(kwargs={"k-space": 1.0, "k-space_width": 1.0})
-    )
+    qsel_spec = full_data(QSelOperation(kwargs={"k-space": 1.0, "k-space_width": 1.0}))
     assert qsel_spec.derivation_code() == (
         'derived = data\nderived = derived.qsel({"k-space": 1.0, "k-space_width": 1.0})'
     )
@@ -1858,16 +2004,14 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
         string_key_data.qsel({"k-space": 1.0, "k-space_width": 1.0}),
     )
 
-    isel_spec = provenance.full_data(provenance.IselOperation(kwargs={1: slice(1, 3)}))
+    isel_spec = full_data(IselOperation(kwargs={1: slice(1, 3)}))
     assert (
         isel_spec.derivation_code()
         == "derived = data\nderived = derived.isel({1: slice(1, 3)})"
     )
     xr.testing.assert_identical(isel_spec.apply(data), data.isel({1: slice(1, 3)}))
 
-    transpose_spec = provenance.full_data(
-        provenance.TransposeOperation(dims=(("beta", 0), 1))
-    )
+    transpose_spec = full_data(TransposeOperation(dims=(("beta", 0), 1)))
     assert (
         transpose_spec.derivation_code()
         == 'derived = data\nderived = derived.transpose(*(("beta", 0), 1))'
@@ -1876,7 +2020,7 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
         transpose_spec.apply(data), data.transpose(("beta", 0), 1)
     )
 
-    average_spec = provenance.full_data(provenance.AverageOperation(dims=("k-space",)))
+    average_spec = full_data(AverageOperation(dims=("k-space",)))
     assert (
         average_spec.derivation_code()
         == 'derived = data\nderived = derived.qsel.mean("k-space")'
@@ -1885,17 +2029,13 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
         average_spec.apply(string_key_data), string_key_data.qsel.mean("k-space")
     )
 
-    tuple_average_spec = provenance.full_data(
-        provenance.AverageOperation(dims=(("beta", 0),))
-    )
+    tuple_average_spec = full_data(AverageOperation(dims=(("beta", 0),)))
     assert (
         tuple_average_spec.derivation_code()
         == 'derived = data\nderived = derived.qsel.mean((("beta", 0),))'
     )
 
-    aggregate_spec = provenance.full_data(
-        provenance.QSelAggregationOperation(dims=("k-space",), func="sum")
-    )
+    aggregate_spec = full_data(QSelAggregationOperation(dims=("k-space",), func="sum"))
     assert (
         aggregate_spec.derivation_code()
         == 'derived = data\nderived = derived.qsel.sum("k-space")'
@@ -1904,8 +2044,8 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
         aggregate_spec.apply(string_key_data), string_key_data.qsel.sum("k-space")
     )
 
-    mean_aggregate_spec = provenance.full_data(
-        provenance.QSelAggregationOperation(dims=(("beta", 0),), func="mean")
+    mean_aggregate_spec = full_data(
+        QSelAggregationOperation(dims=(("beta", 0),), func="mean")
     )
     assert mean_aggregate_spec.derivation_code() == (
         'derived = data\nderived = derived.qsel.mean((("beta", 0),))'
@@ -1914,14 +2054,14 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
     dumped = aggregate_spec.model_dump(mode="json")
     assert dumped["operations"][0] == {
         "op": "qsel_aggregate",
-        "dims": {provenance._TUPLE_MARKER: ["k-space"]},
+        "dims": {_TUPLE_MARKER: ["k-space"]},
         "func": "sum",
     }
-    reparsed = provenance.parse_tool_provenance_spec(dumped)
+    reparsed = parse_tool_provenance_spec(dumped)
     assert reparsed.operations[0] == aggregate_spec.operations[0]
 
-    coarsen_spec = provenance.full_data(
-        provenance.CoarsenOperation(
+    coarsen_spec = full_data(
+        CoarsenOperation(
             dim={1: 2},
             boundary="trim",
             side="left",
@@ -1939,17 +2079,13 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
         ).mean(),
     )
 
-    thin_spec = provenance.full_data(
-        provenance.ThinOperation(mode="per_dim", factors={1: 2})
-    )
+    thin_spec = full_data(ThinOperation(mode="per_dim", factors={1: 2}))
     assert (
         thin_spec.derivation_code() == "derived = data\nderived = derived.thin({1: 2})"
     )
     xr.testing.assert_identical(thin_spec.apply(data), data.thin({1: 2}))
 
-    swap_spec = provenance.full_data(
-        provenance.SwapDimsOperation(mapping={1: "coord_1"})
-    )
+    swap_spec = full_data(SwapDimsOperation(mapping={1: "coord_1"}))
     assert (
         swap_spec.derivation_code()
         == 'derived = data\nderived = derived.swap_dims({1: "coord_1"})'
@@ -1958,32 +2094,30 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
 
     dumped = tuple_average_spec.model_dump(mode="json")
     assert dumped["operations"][0]["dims"] == {
-        provenance._TUPLE_MARKER: [{provenance._TUPLE_MARKER: ["beta", 0]}]
+        _TUPLE_MARKER: [{_TUPLE_MARKER: ["beta", 0]}]
     }
 
     coarsen_dump = coarsen_spec.model_dump(mode="json")
-    assert coarsen_dump["operations"][0]["dim"] == {
-        provenance._MAPPING_MARKER: [[1, 2]]
-    }
+    assert coarsen_dump["operations"][0]["dim"] == {_MAPPING_MARKER: [[1, 2]]}
 
 
 def test_tool_provenance_display_entries_streamline_live_source() -> None:
     data = _base_data()
 
-    hidden_spec = provenance.full_data(
-        provenance.IselOperation(kwargs={}),
-        provenance.SortCoordOrderOperation(),
-        provenance.TransposeOperation(dims=data.dims),
-        provenance.SqueezeOperation(),
+    hidden_spec = full_data(
+        IselOperation(kwargs={}),
+        SortCoordOrderOperation(),
+        TransposeOperation(dims=data.dims),
+        SqueezeOperation(),
     )
     assert [entry.label for entry in hidden_spec.display_entries(parent_data=data)] == [
         "Start from current parent ImageTool data"
     ]
     assert hidden_spec.display_code(parent_data=data) is None
 
-    squeezed_spec = provenance.full_data(
-        provenance.IselOperation(kwargs={"z": slice(0, 1)}),
-        provenance.SqueezeOperation(),
+    squeezed_spec = full_data(
+        IselOperation(kwargs={"z": slice(0, 1)}),
+        SqueezeOperation(),
     )
     squeezed_entries = squeezed_spec.display_entries(parent_data=data)
     assert squeezed_entries[0].label == "Start from current parent ImageTool data"
@@ -2000,15 +2134,15 @@ def test_tool_provenance_display_entries_streamline_live_source() -> None:
         data.isel(z=slice(0, 1)).squeeze(),
     )
 
-    hidden_dim_spec = provenance.full_data(provenance.SqueezeOperation(dims=("z",)))
+    hidden_dim_spec = full_data(SqueezeOperation(dims=("z",)))
     assert [
         entry.label for entry in hidden_dim_spec.display_entries(parent_data=data)
     ] == ["Start from current parent ImageTool data"]
     assert hidden_dim_spec.display_code(parent_data=data) is None
 
-    specific_squeezed_spec = provenance.full_data(
-        provenance.IselOperation(kwargs={"z": slice(0, 1)}),
-        provenance.SqueezeOperation(dims=("z",), drop=True),
+    specific_squeezed_spec = full_data(
+        IselOperation(kwargs={"z": slice(0, 1)}),
+        SqueezeOperation(dims=("z",), drop=True),
     )
     specific_squeezed_entries = specific_squeezed_spec.display_entries(parent_data=data)
     assert specific_squeezed_entries[-1].label == 'squeeze(dim=("z",), drop=True)'
@@ -2031,9 +2165,9 @@ def test_tool_provenance_display_entries_streamline_live_source() -> None:
         dims=("x", "z"),
         name="scan",
     )
-    chained_squeeze_spec = provenance.full_data(
-        provenance.SqueezeOperation(dims=("z",)),
-        provenance.SqueezeOperation(),
+    chained_squeeze_spec = full_data(
+        SqueezeOperation(dims=("z",)),
+        SqueezeOperation(),
     )
     chained_squeeze_entries = chained_squeeze_spec.display_entries(
         parent_data=chained_squeeze_data
@@ -2066,7 +2200,7 @@ def test_tool_provenance_display_streamlining_is_metadata_only(
     calls: list[str] = []
 
     def record_apply(
-        self: provenance.ToolProvenanceOperation,
+        self: ToolProvenanceOperation,
         data: xr.DataArray,
         *,
         parent_data: xr.DataArray,
@@ -2075,18 +2209,18 @@ def test_tool_provenance_display_streamlining_is_metadata_only(
         return data
 
     monkeypatch.setattr(
-        provenance.SymmetrizeNfoldOperation,
+        SymmetrizeNfoldOperation,
         "apply",
         record_apply,
     )
     monkeypatch.setattr(
-        provenance.KspaceConvertOperation,
+        KspaceConvertOperation,
         "apply",
         record_apply,
     )
-    spec = provenance.full_data(
-        provenance.SymmetrizeNfoldOperation(fold=4, axes=("x", "y")),
-        provenance.KspaceConvertOperation(),
+    spec = full_data(
+        SymmetrizeNfoldOperation(fold=4, axes=("x", "y")),
+        KspaceConvertOperation(),
     )
 
     rows = spec.display_rows(parent_data=data)
@@ -2100,11 +2234,11 @@ def test_tool_provenance_display_streamlining_is_metadata_only(
     assert "symmetrize_nfold" in code
     assert ".kspace.convert(" in code
 
-    staged_spec = provenance.script(
+    staged_spec = script(
         start_label="Run script",
         seed_code="derived = data",
         active_name="derived",
-        replay_stages=(provenance.ReplayStage.from_source_spec(spec),),
+        replay_stages=(ReplayStage.from_source_spec(spec),),
     )
     assert staged_spec.display_rows(parent_data=data)
     assert staged_spec.display_code(parent_data=data) is not None
@@ -2115,10 +2249,10 @@ def test_tool_provenance_display_streamlining_is_metadata_only(
 
 
 def test_tool_provenance_unknown_display_context_keeps_noop_candidates() -> None:
-    spec = provenance.full_data(
-        provenance.TransposeOperation(dims=("x", "y", "z")),
-        provenance.SqueezeOperation(),
-        provenance.RestoreNonuniformDimsOperation(),
+    spec = full_data(
+        TransposeOperation(dims=("x", "y", "z")),
+        SqueezeOperation(),
+        RestoreNonuniformDimsOperation(),
     )
     assert [entry.label for entry in spec.display_entries()] == [
         "Start from current parent ImageTool data",
@@ -2141,7 +2275,7 @@ def test_tool_provenance_unknown_display_context_keeps_noop_candidates() -> None
 
 def test_tool_provenance_display_metadata_context_branches() -> None:
     data = _base_data()
-    context_cls = _provenance_framework._ProvenanceDisplayContext
+    context_cls = _ProvenanceDisplayContext
 
     context = context_cls.from_source("full_data", data)
     assert context.dims == data.dims
@@ -2167,91 +2301,66 @@ def test_tool_provenance_display_metadata_context_branches() -> None:
     assert indexer_size([0, 2], 5) == (True, 2)
     assert indexer_size(object(), 5) == (False, None)
 
-    assert context.advance(provenance.SortCoordOrderOperation()) == context
-    assert context.advance(provenance.RenameOperation(name="renamed")) == context
-    assert (
-        context.advance(
-            _provenance_framework._SourceViewOperation(source_kind="full_data")
-        )
-        == context
-    )
-    assert (
-        context.advance(
-            _provenance_framework._SourceViewOperation(source_kind="public_data")
-        )
-        == context
-    )
+    assert context.advance(SortCoordOrderOperation()) == context
+    assert context.advance(RenameOperation(name="renamed")) == context
+    assert context.advance(_SourceViewOperation(source_kind="full_data")) == context
+    assert context.advance(_SourceViewOperation(source_kind="public_data")) == context
     nonuniform_context = context_cls(("x_idx", "y"), {"x_idx": 3, "y": 4})
     assert (
-        nonuniform_context.advance(
-            _provenance_framework._SourceViewOperation(source_kind="public_data")
-        ).dims
+        nonuniform_context.advance(_SourceViewOperation(source_kind="public_data")).dims
         is None
     )
-    assert context.advance(provenance.QSelOperation()) == context
-    assert context.advance(provenance.QSelOperation(kwargs={"x": 1.0})).dims is None
-    assert context.advance(provenance.SelOperation()) == context
-    assert context.advance(provenance.SelOperation(kwargs={"x": 1.0})).dims is None
-    assert context.advance(provenance.IselOperation()) == context
-    assert context.advance(provenance.IselOperation(kwargs={"missing": 0})).dims is None
+    assert context.advance(QSelOperation()) == context
+    assert context.advance(QSelOperation(kwargs={"x": 1.0})).dims is None
+    assert context.advance(SelOperation()) == context
+    assert context.advance(SelOperation(kwargs={"x": 1.0})).dims is None
+    assert context.advance(IselOperation()) == context
+    assert context.advance(IselOperation(kwargs={"missing": 0})).dims is None
     assert (
         context.advance(
-            provenance.IselOperation(kwargs={"x": xr.DataArray([0], dims=("index",))})
+            IselOperation(kwargs={"x": xr.DataArray([0], dims=("index",))})
         ).dims
         is None
     )
-    assert context.advance(provenance.IselOperation(kwargs={"z": 0})).dims == (
+    assert context.advance(IselOperation(kwargs={"z": 0})).dims == (
         "x",
         "y",
     )
-    vector_index_context = context.advance(
-        provenance.IselOperation(kwargs={"x": [0, 2]})
-    )
+    vector_index_context = context.advance(IselOperation(kwargs={"x": [0, 2]}))
     assert vector_index_context.dims == data.dims
     assert vector_index_context.sizes == {"x": 2, "y": 4, "z": 2}
-    assert (
-        context.advance(provenance.TransposeOperation(dims=("x", "missing", "z"))).dims
-        is None
-    )
-    assert context.advance(provenance.TransposeOperation()).dims == ("z", "y", "x")
+    assert context.advance(TransposeOperation(dims=("x", "missing", "z"))).dims is None
+    assert context.advance(TransposeOperation()).dims == ("z", "y", "x")
 
     unknown_context = context_cls()
-    assert unknown_context.advance(provenance.TransposeOperation()).dims is None
-    assert unknown_context.advance(provenance.SqueezeOperation()).dims is None
+    assert unknown_context.advance(TransposeOperation()).dims is None
+    assert unknown_context.advance(SqueezeOperation()).dims is None
 
-    assert context.advance(provenance.SqueezeOperation(dims=("missing",))).dims is None
+    assert context.advance(SqueezeOperation(dims=("missing",))).dims is None
     mixed_squeeze_context = context_cls.from_source(
         "full_data", xr.DataArray(np.ones((1, 2)), dims=("x", "z"), name="scan")
     )
+    assert mixed_squeeze_context.advance(SqueezeOperation(dims=("x", "z"))).dims is None
     assert (
-        mixed_squeeze_context.advance(provenance.SqueezeOperation(dims=("x", "z"))).dims
-        is None
-    )
-    assert (
-        mixed_squeeze_context.advance(provenance.SqueezeOperation(dims=("z",)))
+        mixed_squeeze_context.advance(SqueezeOperation(dims=("z",)))
         == mixed_squeeze_context
     )
-    assert mixed_squeeze_context.advance(
-        provenance.SqueezeOperation(dims=("x",))
-    ).dims == ("z",)
-    assert mixed_squeeze_context.advance(provenance.SqueezeOperation()).dims == ("z",)
-    assert context.advance(provenance.RestoreNonuniformDimsOperation()) == context
-    assert (
-        nonuniform_context.advance(provenance.RestoreNonuniformDimsOperation()).dims
-        is None
-    )
-    assert context.advance(provenance.AverageOperation(dims=("x",))).dims is None
+    assert mixed_squeeze_context.advance(SqueezeOperation(dims=("x",))).dims == ("z",)
+    assert mixed_squeeze_context.advance(SqueezeOperation()).dims == ("z",)
+    assert context.advance(RestoreNonuniformDimsOperation()) == context
+    assert nonuniform_context.advance(RestoreNonuniformDimsOperation()).dims is None
+    assert context.advance(AverageOperation(dims=("x",))).dims is None
 
-    staged_spec = provenance.script(
+    staged_spec = script(
         start_label="Run script",
         seed_code="derived = data",
         active_name="derived",
         replay_stages=(
-            provenance.ReplayStage(
+            ReplayStage(
                 source_kind="full_data",
                 operations=(
-                    provenance.RestoreNonuniformDimsOperation(),
-                    provenance.SqueezeOperation(),
+                    RestoreNonuniformDimsOperation(),
+                    SqueezeOperation(),
                 ),
             ),
         ),
@@ -2263,27 +2372,27 @@ def test_tool_provenance_display_metadata_context_branches() -> None:
 
 def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
 
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(label="isel()", code="derived = derived.isel()"),
-        provenance.ScriptCodeOperation(
+    spec = script(
+        ScriptCodeOperation(label="isel()", code="derived = derived.isel()"),
+        ScriptCodeOperation(
             label="Sort coordinates to parent order",
             code=(
                 "derived = erlab.utils.array.sort_coord_order("
                 "derived, data.coords.keys())"
             ),
         ),
-        provenance.ScriptCodeOperation(
+        ScriptCodeOperation(
             label="Custom coordinate-order step",
             code=(
                 "derived = erlab.utils.array.sort_coord_order("
                 "derived, data.coords.keys(), dims_first=False)"
             ),
         ),
-        provenance.ScriptCodeOperation(
+        ScriptCodeOperation(
             label="transpose(('x', 'y', 'z'))",
             code="derived = derived.transpose(*('x', 'y', 'z'))",
         ),
-        provenance.ScriptCodeOperation(
+        ScriptCodeOperation(
             label="squeeze()",
             code="derived = derived.squeeze()",
         ),
@@ -2309,9 +2418,9 @@ def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
 
 def test_tool_provenance_display_keeps_name_rename_before_script_code() -> None:
     data = _base_data().rename("source")
-    spec = provenance.script(
-        provenance.RenameOperation(name="renamed"),
-        provenance.ScriptCodeOperation(
+    spec = script(
+        RenameOperation(name="renamed"),
+        ScriptCodeOperation(
             label="Use DataArray name",
             code="derived = derived.rename(derived.name + '_used')",
         ),
@@ -2331,7 +2440,7 @@ def test_imagetool_selection_source_binding_materializes_current_coordinates() -
     original = _base_data()
     shifted = original.assign_coords(y=[20.0, 21.0, 22.0, 23.0])
 
-    binned = provenance.ImageToolSelectionSourceBinding(
+    binned = ImageToolSelectionSourceBinding(
         selection_indexers={"y": slice(1, 4)},
         selection_binned_dims=("y",),
     )
@@ -2344,14 +2453,12 @@ def test_imagetool_selection_source_binding_materializes_current_coordinates() -
         new_spec.apply(shifted), shifted.qsel(y=22.0, y_width=3.0)
     )
 
-    unbinned = provenance.ImageToolSelectionSourceBinding(selection_indexers={"y": 2})
+    unbinned = ImageToolSelectionSourceBinding(selection_indexers={"y": 2})
     unbinned_spec = unbinned.materialize(shifted)
     assert unbinned_spec.operations[0].decoded_kwargs == {"y": 22.0}
     xr.testing.assert_identical(unbinned_spec.apply(shifted), shifted.qsel(y=22.0))
 
-    cropped = provenance.ImageToolSelectionSourceBinding(
-        crop_sel_indexers={"y": slice(1, 3)}
-    )
+    cropped = ImageToolSelectionSourceBinding(crop_sel_indexers={"y": slice(1, 3)})
     cropped_spec = cropped.materialize(shifted)
     assert cropped_spec.operations[0].decoded_kwargs == {"y": slice(21.0, 22.0)}
     xr.testing.assert_identical(
@@ -2362,7 +2469,7 @@ def test_imagetool_selection_source_binding_materializes_current_coordinates() -
 
 def test_imagetool_selection_source_binding_round_trips_and_reuses_operations() -> None:
     data = _base_data()
-    binding = provenance.ImageToolSelectionSourceBinding(
+    binding = ImageToolSelectionSourceBinding(
         selection_mode="isel",
         selection_indexers={"z": 1},
         crop_sel_indexers={"x": slice(0, 3)},
@@ -2371,7 +2478,7 @@ def test_imagetool_selection_source_binding_round_trips_and_reuses_operations() 
         squeeze=True,
     )
 
-    reparsed = provenance.ImageToolSelectionSourceBinding.model_validate(
+    reparsed = ImageToolSelectionSourceBinding.model_validate(
         binding.model_dump(mode="json")
     )
     assert reparsed == binding
@@ -2404,16 +2511,16 @@ def test_imagetool_selection_source_binding_validates_crop_indexers() -> None:
     )
 
     with pytest.raises(ValueError, match="Dimension `missing` not found"):
-        provenance.ImageToolSelectionSourceBinding(
+        ImageToolSelectionSourceBinding(
             crop_sel_indexers={"missing": slice(0, 1)}
         ).materialize(data)
 
     with pytest.raises(ValueError, match="Selection for dimension `x` is empty"):
-        provenance.ImageToolSelectionSourceBinding(
+        ImageToolSelectionSourceBinding(
             crop_sel_indexers={"x": slice(1, 1)}
         ).materialize(data)
 
-    binding = provenance.ImageToolSelectionSourceBinding(
+    binding = ImageToolSelectionSourceBinding(
         crop_sel_indexers={"x": typing.cast("typing.Any", 1)}
     )
     spec = binding.materialize(data)
@@ -2428,38 +2535,38 @@ def test_tool_provenance_rejects_unsupported_hashables() -> None:
             return 0
 
     with pytest.raises(TypeError, match="provenance hashable fields only support"):
-        provenance.AverageOperation(dims=(_UnsupportedHashable(),))
+        AverageOperation(dims=(_UnsupportedHashable(),))
 
 
 def test_tool_provenance_validation_helpers_and_error_branches() -> None:
-    base_operation = provenance.ToolProvenanceOperation()
+    base_operation = ToolProvenanceOperation()
 
-    assert provenance._format_derivation_value([1, 2]) == "(1, 2)"
-    assert provenance._format_selection_step("isel", {}) == "derived = derived.isel()"
-    assert provenance._simplify_display_code("if") == "if"
-    assert provenance._simplify_display_code("") == ""
+    assert _format_derivation_value([1, 2]) == "(1, 2)"
+    assert _format_selection_step("isel", {}) == "derived = derived.isel()"
+    assert _simplify_display_code("if") == "if"
+    assert _simplify_display_code("") == ""
     assert (
-        provenance._simplify_display_code("for item in []:\n    pass")
+        _simplify_display_code("for item in []:\n    pass")
         == "for item in []:\n    pass"
     )
-    assert provenance._simplify_display_code(
-        "derived = data\nresult = derived + 1"
-    ) == ("result = data + 1")
-    simplified = provenance._simplify_display_code(
+    assert _simplify_display_code("derived = data\nresult = derived + 1") == (
+        "result = data + 1"
+    )
+    simplified = _simplify_display_code(
         "derived = data\nscale = 2\nresult = derived + scale"
     )
     simplified_namespace = _exec_generated_code(simplified, {"data": 3})
     assert simplified_namespace["result"] == 5
     assert "derived" not in simplified_namespace
     assert (
-        provenance._simplify_display_code(
+        _simplify_display_code(
             "derived = data\nscale = 2\nleft, right = (data * scale, data + 1)",
             inline_targets={"derived"},
         )
         == "scale = 2\nleft, right = (data * scale, data + 1)"
     )
     assert (
-        provenance._simplify_display_code(
+        _simplify_display_code(
             "left, right = (data - 1, data + 1)\n"
             "derived = left\n"
             "derived = derived.sel(x=0)"
@@ -2467,44 +2574,37 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
         == "left, right = (data - 1, data + 1)\nderived = left.sel(x=0)"
     )
     invalidated_namespace = _exec_generated_code(
-        provenance._simplify_display_code(
-            "derived = data + 1\ndata = other\nresult = derived"
-        ),
+        _simplify_display_code("derived = data + 1\ndata = other\nresult = derived"),
         {"data": 3, "other": 10},
     )
     assert invalidated_namespace["result"] == 4
-    rebased = provenance.rebase_default_replay_input(
+    rebased = rebase_default_replay_input(
         "derived = data\nscale = 2\nresult = derived + scale",
         "source_data",
     )
     rebased_namespace = _exec_generated_code(rebased, {"source_data": 3})
     assert rebased_namespace["result"] == 5
     assert "derived" not in rebased_namespace
-    assert provenance.uses_default_replay_input("result = data + 1")
-    assert not provenance.uses_default_replay_input("result = source_data + 1")
+    assert uses_default_replay_input("result = data + 1")
+    assert not uses_default_replay_input("result = source_data + 1")
     helper_code = (
         "def normalize(data):\n"
         "    return data / data.max()\n"
         "\n"
         "derived = normalize(data_0)"
     )
-    assert not provenance.uses_default_replay_input(helper_code)
-    assert (
-        provenance.rebase_default_replay_input(helper_code, "source_data")
-        == helper_code
-    )
+    assert not uses_default_replay_input(helper_code)
+    assert rebase_default_replay_input(helper_code, "source_data") == helper_code
     mixed_helper_code = (
         "def normalize(data):\n"
         "    return data / data.max()\n"
         "\n"
         "derived = normalize(data)"
     )
-    rebased_helper_code = provenance.rebase_default_replay_input(
-        mixed_helper_code, "source_data"
-    )
+    rebased_helper_code = rebase_default_replay_input(mixed_helper_code, "source_data")
     assert "def normalize(data):\n    return data / data.max()" in rebased_helper_code
     assert "derived = normalize(source_data)" in rebased_helper_code
-    replaced_helper_code = provenance._replace_code_identifiers(
+    replaced_helper_code = _replace_code_identifiers(
         "def normalize(data):\n    return data / data.max()\n\nderived = data",
         {"data": "source_data", "derived": "result"},
     )
@@ -2512,52 +2612,45 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
     assert "result = source_data" in replaced_helper_code
 
     with pytest.raises(ValueError, match="Expected 2 items"):
-        provenance._ensure_float_tuple([1.0], expected_len=2)
+        _ensure_float_tuple([1.0], expected_len=2)
     with pytest.raises(TypeError, match="expected an array-like sequence"):
-        provenance._coerce_float_sequence("not-a-sequence")
+        _coerce_float_sequence("not-a-sequence")
     with pytest.raises(TypeError, match="active_name must be a string"):
-        provenance._validate_active_name(1)
+        _validate_active_name(1)
     with pytest.raises(ValueError, match="active_name must be a valid"):
-        provenance._validate_active_name("for")
+        _validate_active_name("for")
     with pytest.raises(TypeError, match="expected a sequence"):
-        provenance.ToolProvenanceOperation._coerce_hashable_tuple_field("x")
+        ToolProvenanceOperation._coerce_hashable_tuple_field("x")
     with pytest.raises(ValueError, match="Expected 2 items"):
-        provenance.ToolProvenanceOperation._coerce_hashable_tuple_field(
-            [1], expected_len=2
-        )
-    assert provenance.ToolProvenanceOperation._coerce_hashable_mapping_field(None) == {}
+        ToolProvenanceOperation._coerce_hashable_tuple_field([1], expected_len=2)
+    assert ToolProvenanceOperation._coerce_hashable_mapping_field(None) == {}
     with pytest.raises(TypeError, match="expected a mapping"):
-        provenance.ToolProvenanceOperation._coerce_hashable_mapping_field([("x", 1)])
+        ToolProvenanceOperation._coerce_hashable_mapping_field([("x", 1)])
     with pytest.raises(NotImplementedError):
         base_operation.apply(_base_data(), parent_data=_base_data())
     with pytest.raises(NotImplementedError):
         base_operation.derivation_entry()
     with pytest.raises(TypeError, match="must be mappings"):
-        provenance.parse_tool_provenance_operation(1)
+        parse_tool_provenance_operation(1)
     with pytest.raises(TypeError, match="must include a string `op`"):
-        provenance.parse_tool_provenance_operation({"op": 1})
+        parse_tool_provenance_operation({"op": 1})
     with pytest.raises(TypeError, match="array-like"):
-        provenance.AssignCoordsOperation(coord_name="x", values=object())
+        AssignCoordsOperation(coord_name="x", values=object())
     with pytest.raises(TypeError, match=r"xarray\.Dataset"):
-        provenance.CorrectWithEdgeOperation(edge_fit=object())
+        CorrectWithEdgeOperation(edge_fit=object())
 
-    assert (
-        provenance.ToolProvenanceSpec(kind="full_data", operations=None).operations
-        == ()
-    )
+    assert ToolProvenanceSpec(kind="full_data", operations=None).operations == ()
     with pytest.raises(ValidationError, match="must define `start_label`"):
-        provenance.ToolProvenanceSpec(kind="script", active_name="derived")
+        ToolProvenanceSpec(kind="script", active_name="derived")
     with pytest.raises(ValidationError, match="Only script or file provenance specs"):
-        provenance.ToolProvenanceSpec(kind="full_data", start_label="bad")
+        ToolProvenanceSpec(kind="full_data", start_label="bad")
     with pytest.raises(TypeError, match="Script and file provenance use"):
-        provenance.script(
-            start_label="Start", active_name="derived"
-        )._display_operations()
+        script(start_label="Start", active_name="derived")._display_operations()
 
 
 def test_select_coord_operation_round_trips_and_applies() -> None:
     data = _base_data().assign_coords(temp=("x", [100.0, 200.0, 300.0]))
-    operation = provenance.SelectCoordOperation(coord_name="temp")
+    operation = SelectCoordOperation(coord_name="temp")
 
     xr.testing.assert_identical(
         operation.apply(data, parent_data=data), data.coords["temp"]
@@ -2569,13 +2662,11 @@ def test_select_coord_operation_round_trips_and_applies() -> None:
     namespace = _exec_generated_code(entry.code, {"derived": data.copy(deep=True)})
     xr.testing.assert_identical(namespace["derived"], data.coords["temp"])
 
-    parsed = provenance.parse_tool_provenance_operation(
-        operation.model_dump(mode="json")
-    )
+    parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
     assert parsed == operation
 
-    spec = provenance.public_data(operation)
-    assert provenance.require_live_source_spec(spec) == spec
+    spec = public_data(operation)
+    assert require_live_source_spec(spec) == spec
     xr.testing.assert_identical(spec.apply(data), data.coords["temp"])
 
 
@@ -2583,19 +2674,15 @@ def test_tool_provenance_remaining_operation_and_display_branches(monkeypatch) -
     data = _base_data()
 
     xr.testing.assert_identical(
-        provenance.full_data(provenance.TransposeOperation()).apply(data),
+        full_data(TransposeOperation()).apply(data),
         data.transpose(*reversed(data.dims)),
     )
-    assert provenance.TransposeOperation().derivation_entry().code == (
+    assert TransposeOperation().derivation_entry().code == (
         "derived = derived.transpose(*reversed(derived.dims))"
     )
-    assert provenance.SortCoordOrderOperation().derivation_entry().copyable is True
-    assert (
-        provenance.SelOperation(kwargs={"x": 1.0})
-        .derivation_entry()
-        .label.startswith("sel(")
-    )
-    rename_entry = provenance.RenameOperation(name="renamed").derivation_entry()
+    assert SortCoordOrderOperation().derivation_entry().copyable is True
+    assert SelOperation(kwargs={"x": 1.0}).derivation_entry().label.startswith("sel(")
+    rename_entry = RenameOperation(name="renamed").derivation_entry()
     assert rename_entry.copyable is True
     assert rename_entry.code is not None
     namespace = _exec_generated_code(
@@ -2603,28 +2690,25 @@ def test_tool_provenance_remaining_operation_and_display_branches(monkeypatch) -
         {"derived": data.copy(deep=True)},
     )
     xr.testing.assert_identical(namespace["derived"], data.rename("renamed"))
-    assert provenance.full_data().derivation_code() is None
-    assert (
-        provenance.script(start_label="Start", active_name="derived").display_code()
-        is None
-    )
-    edge_entry = provenance.CorrectWithEdgeOperation(
+    assert full_data().derivation_code() is None
+    assert script(start_label="Start", active_name="derived").display_code() is None
+    edge_entry = CorrectWithEdgeOperation(
         edge_fit=xr.Dataset(), shift_coords=True
     ).derivation_entry()
     assert edge_entry.copyable is True
     assert edge_entry.code is not None
 
     with pytest.raises(TypeError, match="script_code operations"):
-        provenance.ScriptCodeOperation(label="Step", code="derived = data").apply(
+        ScriptCodeOperation(label="Step", code="derived = data").apply(
             data, parent_data=data
         )
     with pytest.raises(ValidationError, match="thin global mode requires factor"):
-        provenance.ThinOperation(mode="global")
+        ThinOperation(mode="global")
     with pytest.raises(ValidationError, match="thin per_dim mode requires factors"):
-        provenance.ThinOperation(mode="per_dim")
-    assert provenance.ThinOperation(
-        mode="global", factor=2
-    ).derivation_entry().code == ("derived = derived.thin(2)")
+        ThinOperation(mode="per_dim")
+    assert ThinOperation(mode="global", factor=2).derivation_entry().code == (
+        "derived = derived.thin(2)"
+    )
 
     monkeypatch.setattr(
         erlab.interactive.utils,
@@ -2634,37 +2718,35 @@ def test_tool_provenance_remaining_operation_and_display_branches(monkeypatch) -
         ),
     )
     assert (
-        provenance.RotateOperation(angle=45.0, axes=("x", "y"), center=(0.0, 0.0))
+        RotateOperation(angle=45.0, axes=("x", "y"), center=(0.0, 0.0))
         .derivation_entry()
         .code
         == "derived = generated()"
     )
     assert (
-        provenance.SymmetrizeOperation(dim="x", center=0.0).derivation_entry().code
+        SymmetrizeOperation(dim="x", center=0.0).derivation_entry().code
         == "derived = generated()"
     )
     assert (
-        provenance.SymmetrizeNfoldOperation(fold=4, axes=("x", "y"))
-        .derivation_entry()
-        .code
+        SymmetrizeNfoldOperation(fold=4, axes=("x", "y")).derivation_entry().code
         == "derived = generated()"
     )
-    symmetrize_nfold_payload = provenance.SymmetrizeNfoldOperation(
+    symmetrize_nfold_payload = SymmetrizeNfoldOperation(
         fold=4, axes=("x", "y"), center=(0.0, 0.0)
     ).model_dump(mode="json")
-    assert provenance.parse_tool_provenance_operation(
+    assert parse_tool_provenance_operation(
         symmetrize_nfold_payload
-    ) == provenance.SymmetrizeNfoldOperation(fold=4, axes=("x", "y"), center=(0.0, 0.0))
+    ) == SymmetrizeNfoldOperation(fold=4, axes=("x", "y"), center=(0.0, 0.0))
 
-    assign_entry = provenance.AssignCoordsOperation(
+    assign_entry = AssignCoordsOperation(
         coord_name="x", values=np.array([2.0, 1.0, 0.0])
     ).derivation_entry()
     assert assign_entry.copyable is True
     assert "assign_coords" in typing.cast("str", assign_entry.code)
 
-    ambiguous = provenance.full_data(
-        provenance.SelOperation(kwargs={"missing": 0}),
-        provenance.SqueezeOperation(),
+    ambiguous = full_data(
+        SelOperation(kwargs={"missing": 0}),
+        SqueezeOperation(),
     )
     assert [entry.label for entry in ambiguous.display_entries(parent_data=data)] == [
         "Start from current parent ImageTool data",
@@ -2672,45 +2754,43 @@ def test_tool_provenance_remaining_operation_and_display_branches(monkeypatch) -
         "squeeze()",
     ]
 
-    parent = provenance.script(
+    parent = script(
         start_label="Start from watched variable 'my_1d'",
         seed_code="derived = my_1d",
     )
-    promoted = provenance.mark_promoted_1d_source(data.copy(deep=False))
+    promoted = mark_promoted_1d_source(data.copy(deep=False))
     assert (
-        provenance.compose_display_provenance(
+        compose_display_provenance(
             parent,
-            provenance.selection(provenance.IselOperation(kwargs={"x": 0})),
+            selection(IselOperation(kwargs={"x": 0})),
             parent_data=promoted,
         )
         is not parent
     )
     assert (
-        provenance.compose_display_provenance(
+        compose_display_provenance(
             parent,
-            provenance.selection(provenance.AverageOperation(dims=("x",))),
+            selection(AverageOperation(dims=("x",))),
             parent_data=promoted,
         )
         is not parent
     )
     assert (
-        provenance.direct_replay_input_name(
-            provenance.script(start_label="Start", seed_code="prepared = data")
+        direct_replay_input_name(
+            script(start_label="Start", seed_code="prepared = data")
         )
         is None
     )
     assert (
-        provenance.direct_replay_input_name(
-            provenance.script(start_label="Start", seed_code="derived = for")
-        )
+        direct_replay_input_name(script(start_label="Start", seed_code="derived = for"))
         is None
     )
-    assert provenance.compose_full_provenance(parent, None) == parent
+    assert compose_full_provenance(parent, None) == parent
 
 
 def test_append_display_operation_preserves_final_rename_for_live_sources() -> None:
-    operation = provenance.NormalizeOperation(dims=("x",), mode="min")
-    spec = provenance.full_data().append_final_rename("filtered")
+    operation = NormalizeOperation(dims=("x",), mode="min")
+    spec = full_data().append_final_rename("filtered")
 
     displayed = spec.append_display_operation(operation)
 
@@ -2718,12 +2798,12 @@ def test_append_display_operation_preserves_final_rename_for_live_sources() -> N
         "normalize",
         "rename",
     ]
-    assert displayed.operations[-1] == provenance.RenameOperation(name="filtered")
+    assert displayed.operations[-1] == RenameOperation(name="filtered")
 
 
 def test_append_display_operation_rejects_non_live_sources() -> None:
-    operation = provenance.NormalizeOperation(dims=("x",), mode="min")
-    spec = provenance.script(
+    operation = NormalizeOperation(dims=("x",), mode="min")
+    spec = script(
         start_label="Evaluate console expression",
         active_name="derived",
     )
@@ -2759,22 +2839,22 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
         erlab.analysis.mask, "mask_with_polygon", _record("mask_with_polygon")
     )
 
-    rotate_spec = erlab.interactive.imagetool.provenance.full_data(
-        provenance.RotateOperation(
+    rotate_spec = full_data(
+        RotateOperation(
             angle=45.0, axes=("x", "y"), center=(0.5, 1.5), reshape=False, order=3
         )
     )
     assert rotate_spec.apply(data).attrs["last_op"] == "rotate"
 
-    symmetrize_spec = erlab.interactive.imagetool.provenance.full_data(
-        provenance.SymmetrizeOperation(
+    symmetrize_spec = full_data(
+        SymmetrizeOperation(
             dim="x", center=1.0, subtract=True, mode="valid", part="below"
         )
     )
     assert symmetrize_spec.apply(data).attrs["last_op"] == "symmetrize"
 
-    symmetrize_nfold_spec = erlab.interactive.imagetool.provenance.full_data(
-        provenance.SymmetrizeNfoldOperation(
+    symmetrize_nfold_spec = full_data(
+        SymmetrizeNfoldOperation(
             fold=4,
             axes=("x", "y"),
             center={"x": 1.0, "y": 11.0},
@@ -2784,8 +2864,8 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     )
     assert symmetrize_nfold_spec.apply(data).attrs["last_op"] == "symmetrize_nfold"
 
-    edge_spec = erlab.interactive.imagetool.provenance.full_data(
-        provenance.CorrectWithEdgeOperation(edge_fit=edge_fit, shift_coords=False)
+    edge_spec = full_data(
+        CorrectWithEdgeOperation(edge_fit=edge_fit, shift_coords=False)
     )
     assert edge_spec.apply(data).attrs["last_op"] == "correct_with_edge"
     entries = edge_spec.derivation_entries()
@@ -2793,8 +2873,8 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     assert entries[-1].code is not None
     assert edge_spec.derivation_code() is not None
 
-    path_spec = erlab.interactive.imagetool.provenance.full_data(
-        provenance.SliceAlongPathOperation(
+    path_spec = full_data(
+        SliceAlongPathOperation(
             vertices={"x": [0.0, 1.0], "y": [10.0, 12.0]},
             step_size=0.5,
             dim_name="path",
@@ -2802,8 +2882,8 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     )
     assert path_spec.apply(data).attrs["last_op"] == "slice_along_path"
 
-    mask_spec = erlab.interactive.imagetool.provenance.full_data(
-        provenance.MaskWithPolygonOperation(
+    mask_spec = full_data(
+        MaskWithPolygonOperation(
             vertices=np.array([[0.0, 10.0], [1.0, 11.0], [2.0, 12.0]]),
             dims=("x", "y"),
             invert=True,
@@ -2842,23 +2922,17 @@ def test_tool_provenance_roundtrip_correct_with_edge(monkeypatch) -> None:
         ),
     )
 
-    spec = provenance.full_data(
-        provenance.CorrectWithEdgeOperation(edge_fit=edge_fit, shift_coords=False)
-    )
+    spec = full_data(CorrectWithEdgeOperation(edge_fit=edge_fit, shift_coords=False))
     payload = spec.model_dump(mode="json")
 
-    reparsed_operation = provenance.parse_tool_provenance_operation(
-        payload["operations"][0]
-    )
+    reparsed_operation = parse_tool_provenance_operation(payload["operations"][0])
     assert isinstance(
         reparsed_operation,
-        provenance.CorrectWithEdgeOperation,
+        CorrectWithEdgeOperation,
     )
     xr.testing.assert_identical(reparsed_operation.decoded_edge_fit, edge_fit)
 
-    reparsed_spec = erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
-        payload
-    )
+    reparsed_spec = parse_tool_provenance_spec(payload)
     assert reparsed_spec is not None
     assert reparsed_spec.apply(data).attrs["last_op"] == "correct_with_edge"
     entries = reparsed_spec.derivation_entries()
@@ -2880,13 +2954,13 @@ def test_correct_with_edge_code_handles_nonfinite_dataset(monkeypatch) -> None:
         return data_arg.assign_attrs(shift_coords=shift_coords)
 
     monkeypatch.setattr(erlab.analysis.gold, "correct_with_edge", correct_with_edge)
-    spec = provenance.full_data(
-        provenance.CorrectWithEdgeOperation(edge_fit=edge_fit, shift_coords=False)
-    )
+    spec = full_data(CorrectWithEdgeOperation(edge_fit=edge_fit, shift_coords=False))
     code = typing.cast("str", spec.derivation_code())
 
     assert "np.nan" in code
     assert "np.inf" in code
+    assert "imagetool" not in code
+    assert "xr.Dataset.from_dict" in code
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
     assert namespace["derived"].attrs["shift_coords"] is False
 
@@ -2894,17 +2968,15 @@ def test_correct_with_edge_code_handles_nonfinite_dataset(monkeypatch) -> None:
 def test_tool_provenance_roundtrip_correct_with_edge_fit_dataset(
     gold, gold_fit_res
 ) -> None:
-    spec = provenance.full_data(
-        provenance.CorrectWithEdgeOperation(edge_fit=gold_fit_res, shift_coords=False)
+    spec = full_data(
+        CorrectWithEdgeOperation(edge_fit=gold_fit_res, shift_coords=False)
     )
 
     payload = spec.model_dump(mode="json")
     json.dumps(payload)
 
-    reparsed_operation = provenance.parse_tool_provenance_operation(
-        payload["operations"][0]
-    )
-    assert isinstance(reparsed_operation, provenance.CorrectWithEdgeOperation)
+    reparsed_operation = parse_tool_provenance_operation(payload["operations"][0])
+    assert isinstance(reparsed_operation, CorrectWithEdgeOperation)
     decoded = reparsed_operation.decoded_edge_fit
     xr.testing.assert_identical(
         decoded.drop_vars("modelfit_results"),
@@ -2915,8 +2987,9 @@ def test_tool_provenance_roundtrip_correct_with_edge_fit_dataset(
         == gold_fit_res.modelfit_results.item().success
     )
 
-    reparsed_spec = provenance.parse_tool_provenance_spec(payload)
+    reparsed_spec = parse_tool_provenance_spec(payload)
     assert reparsed_spec is not None
+    assert reparsed_spec.derivation_code() is None
     xr.testing.assert_allclose(
         reparsed_spec.apply(gold),
         erlab.analysis.gold.correct_with_edge(gold, gold_fit_res, shift_coords=False),
@@ -2925,17 +2998,15 @@ def test_tool_provenance_roundtrip_correct_with_edge_fit_dataset(
 
 def test_tool_provenance_script_specs_reject_live_source() -> None:
 
-    script_spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    script_spec = script(
+        ScriptCodeOperation(
             label="Fit current tool data",
             code="result = data.mean()",
         ),
         start_label="Start from current analysis-tool input data",
         seed_code="prepared = data.copy()",
     )
-    reparsed_script = provenance.parse_tool_provenance_spec(
-        script_spec.model_dump(mode="json")
-    )
+    reparsed_script = parse_tool_provenance_spec(script_spec.model_dump(mode="json"))
 
     assert reparsed_script is not None
     assert reparsed_script.derivation_entries()[0].label == (
@@ -2947,7 +3018,7 @@ def test_tool_provenance_script_specs_reject_live_source() -> None:
     with pytest.raises(
         TypeError, match="source_spec must be a live ToolProvenanceSpec"
     ):
-        provenance.require_live_source_spec(reparsed_script)
+        require_live_source_spec(reparsed_script)
 
 
 def test_tool_provenance_parse_restores_legacy_structured_script_steps() -> None:
@@ -2975,7 +3046,7 @@ def test_tool_provenance_parse_restores_legacy_structured_script_steps() -> None
         ],
     }
 
-    parsed = provenance.parse_tool_provenance_spec(payload)
+    parsed = parse_tool_provenance_spec(payload)
 
     assert parsed is not None
     assert [operation.op for operation in parsed.operations] == [
@@ -2990,7 +3061,7 @@ def test_tool_provenance_parse_restores_legacy_structured_script_steps() -> None
     ]
     assert [row.edit_ref is not None for row in rows] == [True, True, True]
     data = _base_data()
-    replayed = provenance.replay_script_provenance(
+    replayed = replay_script_provenance(
         parsed,
         {
             "data": data.copy(deep=True),
@@ -3030,14 +3101,14 @@ def test_tool_provenance_parse_keeps_non_active_self_assignments_as_script() -> 
         ],
     }
 
-    parsed = provenance.parse_tool_provenance_spec(payload)
+    parsed = parse_tool_provenance_spec(payload)
 
     assert parsed is not None
     assert [operation.op for operation in parsed.operations] == [
         "script_code",
         "script_code",
     ]
-    replayed = provenance.replay_script_provenance(parsed, {"data": data})
+    replayed = replay_script_provenance(parsed, {"data": data})
     xr.testing.assert_identical(replayed, data)
 
 
@@ -3067,14 +3138,14 @@ def test_tool_provenance_parse_keeps_script_input_self_assignment_as_script() ->
         ],
     }
 
-    parsed = provenance.parse_tool_provenance_spec(payload)
+    parsed = parse_tool_provenance_spec(payload)
 
     assert parsed is not None
     assert [operation.op for operation in parsed.operations] == [
         "script_code",
         "script_code",
     ]
-    replayed = provenance.replay_script_provenance(parsed, {"data_0": data})
+    replayed = replay_script_provenance(parsed, {"data_0": data})
     xr.testing.assert_identical(replayed, data)
 
 
@@ -3099,11 +3170,11 @@ def test_tool_provenance_parse_restores_active_alias_structured_steps() -> None:
         ],
     }
 
-    parsed = provenance.parse_tool_provenance_spec(payload)
+    parsed = parse_tool_provenance_spec(payload)
 
     assert parsed is not None
     assert [operation.op for operation in parsed.operations] == ["sortby"]
-    replayed = provenance.replay_script_provenance(parsed, {"data": data})
+    replayed = replay_script_provenance(parsed, {"data": data})
     xr.testing.assert_identical(replayed, data.sortby("x"))
 
 
@@ -3114,8 +3185,8 @@ def test_tool_provenance_parse_legacy_script_call_parser_edges() -> None:
         active_name: str = "derived",
         script_inputs: tuple[dict[str, str], ...] = (),
         copyable: bool = True,
-    ) -> provenance.ToolProvenanceSpec:
-        parsed = provenance.parse_tool_provenance_spec(
+    ) -> ToolProvenanceSpec:
+        parsed = parse_tool_provenance_spec(
             {
                 "kind": "script",
                 "start_label": "Run ImageTool manager action",
@@ -3146,15 +3217,15 @@ def test_tool_provenance_parse_legacy_script_call_parser_edges() -> None:
         "coarsen",
         "qsel",
     ]
-    assert parsed.operations[0] == provenance.IselOperation(kwargs={"x": slice(0, 2)})
-    assert parsed.operations[1] == provenance.CoarsenOperation(
+    assert parsed.operations[0] == IselOperation(kwargs={"x": slice(0, 2)})
+    assert parsed.operations[1] == CoarsenOperation(
         dim={"x": 2},
         boundary="exact",
         side="left",
         coord_func="mean",
         reducer="mean",
     )
-    assert parsed.operations[2] == provenance.QSelOperation(kwargs={"x": 1.0})
+    assert parsed.operations[2] == QSelOperation(kwargs={"x": 1.0})
 
     conservative_codes = (
         "derived = derived.isel(x=slice(0, stop))",
@@ -3175,8 +3246,7 @@ def test_tool_provenance_parse_legacy_script_call_parser_edges() -> None:
     )
     parsed = parse_codes(*conservative_codes)
     assert all(
-        isinstance(operation, provenance.ScriptCodeOperation)
-        for operation in parsed.operations
+        isinstance(operation, ScriptCodeOperation) for operation in parsed.operations
     )
     assert [operation.code for operation in parsed.operations] == list(
         conservative_codes
@@ -3228,7 +3298,7 @@ def test_tool_provenance_parse_restores_mixed_active_legacy_steps() -> None:
         ],
     }
 
-    parsed = provenance.parse_tool_provenance_spec(payload)
+    parsed = parse_tool_provenance_spec(payload)
 
     assert parsed is not None
     assert [operation.op for operation in parsed.operations] == [
@@ -3236,7 +3306,7 @@ def test_tool_provenance_parse_restores_mixed_active_legacy_steps() -> None:
         "sortby",
         "qsel_aggregate",
     ]
-    replayed = provenance.replay_script_provenance(parsed, {"data": data})
+    replayed = replay_script_provenance(parsed, {"data": data})
     xr.testing.assert_identical(
         replayed,
         data.sortby("x", ascending=False).qsel.mean("y"),
@@ -3245,21 +3315,22 @@ def test_tool_provenance_parse_restores_mixed_active_legacy_steps() -> None:
 
 def test_current_structured_operations_round_trip_without_script_fallback() -> None:
     operations = _representative_structured_operations()
-    assert {operation.op for operation in operations} == set(
-        provenance._OPERATION_TYPES
-    ) - {"script_code", "source_view"}
+    assert {operation.op for operation in operations} == set(_OPERATION_TYPES) - {
+        "script_code",
+        "source_view",
+    }
     assert (
-        provenance.parse_tool_provenance_operation(
+        parse_tool_provenance_operation(
             {"op": "source_view", "source_kind": "selection"}
         ).op
         == "source_view"
     )
 
     def assert_round_trip_operations(
-        spec: provenance.ToolProvenanceSpec,
+        spec: ToolProvenanceSpec,
         expected_ops: tuple[str, ...],
     ) -> None:
-        parsed = provenance.parse_tool_provenance_spec(spec.model_dump(mode="json"))
+        parsed = parse_tool_provenance_spec(spec.model_dump(mode="json"))
         assert parsed is not None
         if parsed.kind == "file":
             parsed_ops = tuple(
@@ -3270,26 +3341,24 @@ def test_current_structured_operations_round_trip_without_script_fallback() -> N
         else:
             parsed_ops = parsed.operations
         assert tuple(operation.op for operation in parsed_ops) == expected_ops
-        assert not any(
-            isinstance(op, provenance.ScriptCodeOperation) for op in parsed_ops
-        )
+        assert not any(isinstance(op, ScriptCodeOperation) for op in parsed_ops)
 
     for operation in operations:
         expected = (operation.op,)
-        assert_round_trip_operations(provenance.full_data(operation), expected)
-        assert_round_trip_operations(provenance.public_data(operation), expected)
-        assert_round_trip_operations(provenance.selection(operation), expected)
+        assert_round_trip_operations(full_data(operation), expected)
+        assert_round_trip_operations(public_data(operation), expected)
+        assert_round_trip_operations(selection(operation), expected)
         assert_round_trip_operations(
-            provenance.full_data(operation).to_replay_spec(),
+            full_data(operation).to_replay_spec(),
             expected,
         )
         assert_round_trip_operations(
-            provenance.file_load(
+            file_load(
                 start_label="Load data",
                 seed_code="derived = data",
                 file_load_source=_file_replay_source(),
                 replay_stages=(
-                    provenance.ReplayStage(
+                    ReplayStage(
                         source_kind="full_data",
                         operations=(operation,),
                     ),
@@ -3301,44 +3370,47 @@ def test_current_structured_operations_round_trip_without_script_fallback() -> N
 
 def test_tool_replay_provenance_helpers_compose_parent_provenance() -> None:
 
-    parent = provenance.selection(provenance.IselOperation(kwargs={"x": slice(0, 2)}))
-    local = provenance.script(
-        provenance.ScriptCodeOperation(
+    parent = selection(IselOperation(kwargs={"x": slice(0, 2)}))
+    local = script(
+        ScriptCodeOperation(
             label="Compute tool output",
             code="result = derived.mean()",
         ),
         start_label="Start from current tool input data",
     )
 
-    composed = provenance.compose_full_provenance(parent, local)
+    composed = compose_full_provenance(parent, local)
 
     assert composed is not None
     assert composed.derivation_entries()[0].label == (
         "Start from selected parent ImageTool data"
     )
     assert composed.derivation_entries()[-1].label == "Compute tool output"
-    assert composed.derivation_code() == (
-        "derived = data\nderived = derived.isel(x=slice(0, 2))\nresult = derived.mean()"
-    )
+    code = composed.derivation_code()
+    assert code is not None
+    assert code.count("derived =") == 1
+    data = xr.DataArray([1.0, 2.0, 3.0], dims="x")
+    namespace = _exec_generated_code(code, {"data": data})
+    xr.testing.assert_identical(namespace["result"], data.isel(x=slice(0, 2)).mean())
 
-    assert provenance.compose_display_provenance(parent, provenance.full_data()) == (
-        provenance.to_replay_provenance_spec(parent)
+    assert compose_display_provenance(parent, full_data()) == (
+        to_replay_provenance_spec(parent)
     )
 
 
 def test_tool_provenance_compose_full_uses_parent_active_name_for_live_local() -> None:
     data = _base_data()
-    parent = provenance.script(
-        provenance.ScriptCodeOperation(
+    parent = script(
+        ScriptCodeOperation(
             label="Compute intermediate result",
             code="result = data + 1",
         ),
         start_label="Start from current tool input data",
         active_name="result",
     )
-    local = provenance.full_data(provenance.AverageOperation(dims=("x",)))
+    local = full_data(AverageOperation(dims=("x",)))
 
-    composed = provenance.compose_full_provenance(parent, local)
+    composed = compose_full_provenance(parent, local)
 
     assert composed is not None
     code = composed.derivation_code()
@@ -3353,24 +3425,24 @@ def test_tool_provenance_compose_full_uses_parent_active_name_for_live_local() -
 
 def test_tool_provenance_compose_full_preserves_structured_live_steps() -> None:
     data = _base_data()
-    parent = provenance.script(
-        provenance.ScriptCodeOperation(
+    parent = script(
+        ScriptCodeOperation(
             label="Concatenate selected ImageTools",
             code="derived = data_0 + data_1",
         ),
         start_label="Run ImageTool manager action",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(name="data_0", label="ImageTool 0: scan"),
-            provenance.ScriptInput(name="data_1", label="ImageTool 1: scan"),
+            ScriptInput(name="data_0", label="ImageTool 0: scan"),
+            ScriptInput(name="data_1", label="ImageTool 1: scan"),
         ),
     )
-    local = provenance.full_data(
-        provenance.SortByOperation(variables=("x",), ascending=False),
-        provenance.AverageOperation(dims=("y",)),
+    local = full_data(
+        SortByOperation(variables=("x",), ascending=False),
+        AverageOperation(dims=("y",)),
     )
 
-    composed = provenance.compose_full_provenance(parent, local)
+    composed = compose_full_provenance(parent, local)
 
     assert composed is not None
     assert [operation.op for operation in composed.operations] == [
@@ -3384,7 +3456,7 @@ def test_tool_provenance_compose_full_preserves_structured_live_steps() -> None:
         if row.replay_ref is not None and row.replay_ref.kind == "operation"
     ]
     assert [row.edit_ref is not None for row in rows] == [True, True, True]
-    derived = provenance.replay_script_provenance(
+    derived = replay_script_provenance(
         composed,
         {
             "data_0": data.copy(deep=True),
@@ -3399,8 +3471,8 @@ def test_tool_provenance_compose_full_preserves_structured_live_steps() -> None:
 
 def test_tool_provenance_script_context_binding_replays_current_output() -> None:
     data = _base_data()
-    parent = provenance.script(
-        provenance.ScriptCodeOperation(
+    parent = script(
+        ScriptCodeOperation(
             label="Compute intermediate result",
             code="result = derived + 1",
         ),
@@ -3408,21 +3480,21 @@ def test_tool_provenance_script_context_binding_replays_current_output() -> None
         seed_code="derived = data",
         active_name="result",
     )
-    local = provenance.script(
-        provenance.ScriptCodeOperation(
+    local = script(
+        ScriptCodeOperation(
             label="Offset copied result",
             code="result = derived + 2",
         ),
         start_label="Start from current ImageTool data",
         active_name="result",
     )
-    current = provenance.replay_script_provenance(parent, {"data": data})
-    expected = provenance.replay_script_provenance(
+    current = replay_script_provenance(parent, {"data": data})
+    expected = replay_script_provenance(
         local,
         {"data": current, "derived": current},
     )
 
-    composed = provenance.compose_full_provenance(
+    composed = compose_full_provenance(
         parent,
         local,
         script_context_names=("data", "derived", "data"),
@@ -3444,7 +3516,7 @@ def test_tool_provenance_script_context_binding_replays_current_output() -> None
         binding.model_dump(mode="json") for binding in composed.script_context_bindings
     ] == [{"operation_index": 1, "names": ["data", "derived"]}]
 
-    replayed = provenance.replay_script_provenance(composed, {"data": data})
+    replayed = replay_script_provenance(composed, {"data": data})
     xr.testing.assert_identical(replayed, expected)
     code = typing.cast("str", composed.derivation_code())
     assert "Start from current ImageTool data" not in code
@@ -3456,12 +3528,12 @@ def test_tool_provenance_script_context_binding_replays_current_output() -> None
 
 
 def test_tool_provenance_script_context_binding_validation() -> None:
-    operation = provenance.ScriptCodeOperation(
+    operation = ScriptCodeOperation(
         label="Offset copied result",
         code="result = derived + 2",
     )
 
-    spec = provenance.ToolProvenanceSpec(
+    spec = ToolProvenanceSpec(
         kind="script",
         start_label="Run script",
         seed_code="derived = data",
@@ -3475,7 +3547,7 @@ def test_tool_provenance_script_context_binding_validation() -> None:
         binding.model_dump(mode="json") for binding in spec.script_context_bindings
     ] == [{"operation_index": 0, "names": ["data", "derived"]}]
     assert (
-        provenance.ToolProvenanceSpec(
+        ToolProvenanceSpec(
             kind="script",
             start_label="Run script",
             active_name="result",
@@ -3515,7 +3587,7 @@ def test_tool_provenance_script_context_binding_validation() -> None:
     )
     for bindings, exc_type, message in invalid_payloads:
         with pytest.raises(exc_type, match=message):
-            provenance.ToolProvenanceSpec(
+            ToolProvenanceSpec(
                 kind="script",
                 start_label="Run script",
                 active_name="result",
@@ -3524,7 +3596,7 @@ def test_tool_provenance_script_context_binding_validation() -> None:
             )
 
     with pytest.raises(ValidationError, match="operation boundary"):
-        provenance.ToolProvenanceSpec(
+        ToolProvenanceSpec(
             kind="script",
             start_label="Run script",
             active_name="result",
@@ -3534,7 +3606,7 @@ def test_tool_provenance_script_context_binding_validation() -> None:
             ],
         )
     with pytest.raises(ValidationError, match="file provenance specs"):
-        provenance.ToolProvenanceSpec(
+        ToolProvenanceSpec(
             kind="file",
             start_label="Load source",
             seed_code="derived = data",
@@ -3545,7 +3617,7 @@ def test_tool_provenance_script_context_binding_validation() -> None:
             ],
         )
     with pytest.raises(ValidationError, match="Only script or file provenance specs"):
-        provenance.ToolProvenanceSpec(
+        ToolProvenanceSpec(
             kind="full_data",
             script_context_bindings=[
                 {"operation_index": 0, "names": ["data"]},
@@ -3554,16 +3626,16 @@ def test_tool_provenance_script_context_binding_validation() -> None:
 
 
 def test_tool_provenance_script_context_bindings_follow_operation_edits() -> None:
-    first = provenance.ScriptCodeOperation(
+    first = ScriptCodeOperation(
         label="Compute intermediate result",
         code="result = derived + 1",
     )
-    second = provenance.ScriptCodeOperation(
+    second = ScriptCodeOperation(
         label="Offset copied result",
         code="result = derived + 2",
     )
-    average = provenance.AverageOperation(dims=("x",))
-    spec = provenance.ToolProvenanceSpec(
+    average = AverageOperation(dims=("x",))
+    spec = ToolProvenanceSpec(
         kind="script",
         start_label="Run script",
         seed_code="derived = data",
@@ -3576,15 +3648,15 @@ def test_tool_provenance_script_context_bindings_follow_operation_edits() -> Non
     )
 
     def binding_payloads(
-        value: provenance.ToolProvenanceSpec,
+        value: ToolProvenanceSpec,
     ) -> list[dict[str, typing.Any]]:
         return [
             binding.model_dump(mode="json") for binding in value.script_context_bindings
         ]
 
     expanded = spec._replace_operation_ref(
-        provenance._ProvenanceStepRef("operation", operation_index=0),
-        (first, provenance.SqueezeOperation()),
+        _ProvenanceStepRef("operation", operation_index=0),
+        (first, SqueezeOperation()),
     )
     assert binding_payloads(expanded) == [
         {"operation_index": 2, "names": ["data", "derived"]},
@@ -3592,10 +3664,10 @@ def test_tool_provenance_script_context_bindings_follow_operation_edits() -> Non
     ]
 
     replaced_at_binding = spec._replace_operation_ref(
-        provenance._ProvenanceStepRef("operation", operation_index=1),
+        _ProvenanceStepRef("operation", operation_index=1),
         (
-            provenance.SqueezeOperation(),
-            provenance.AssignAttrsOperation(attrs={"edited": True}),
+            SqueezeOperation(),
+            AssignAttrsOperation(attrs={"edited": True}),
         ),
     )
     assert binding_payloads(replaced_at_binding) == [
@@ -3604,7 +3676,7 @@ def test_tool_provenance_script_context_bindings_follow_operation_edits() -> Non
     ]
 
     deleted_last = spec._replace_operation_ref(
-        provenance._ProvenanceStepRef("operation", operation_index=2),
+        _ProvenanceStepRef("operation", operation_index=2),
         (),
     )
     assert binding_payloads(deleted_last) == [
@@ -3612,36 +3684,36 @@ def test_tool_provenance_script_context_bindings_follow_operation_edits() -> Non
     ]
 
     through_second = spec._prefix_through_ref(
-        provenance._ProvenanceStepRef("operation", operation_index=1)
+        _ProvenanceStepRef("operation", operation_index=1)
     )
     assert binding_payloads(through_second) == [
         {"operation_index": 1, "names": ["data", "derived"]},
     ]
     before_second = spec._prefix_before_ref(
-        provenance._ProvenanceStepRef("operation", operation_index=1)
+        _ProvenanceStepRef("operation", operation_index=1)
     )
     assert binding_payloads(before_second) == []
-    start_only = spec._prefix_through_ref(provenance._ProvenanceStepRef("start"))
+    start_only = spec._prefix_through_ref(_ProvenanceStepRef("start"))
     assert start_only.operations == ()
     assert start_only.script_context_bindings == ()
 
 
 def test_tool_provenance_script_replay_stage_prefix_and_fallback_rows() -> None:
-    stage = provenance.ReplayStage(
+    stage = ReplayStage(
         source_kind="full_data",
         operations=(
-            provenance.AverageOperation(dims=("x",)),
-            provenance.IselOperation(kwargs={"missing": 0}),
+            AverageOperation(dims=("x",)),
+            IselOperation(kwargs={"missing": 0}),
         ),
     )
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(label="Offset", code="result = result + 1"),
+    spec = script(
+        ScriptCodeOperation(label="Offset", code="result = result + 1"),
         start_label="Run script",
         seed_code="result = data",
         active_name="result",
         replay_stages=(stage,),
     )
-    stage_ref = provenance._ProvenanceStepRef(
+    stage_ref = _ProvenanceStepRef(
         "operation",
         operation_index=0,
         stage_index=0,
@@ -3652,11 +3724,11 @@ def test_tool_provenance_script_replay_stage_prefix_and_fallback_rows() -> None:
     assert through_stage.script_context_bindings == ()
     assert through_stage.active_name == "result"
     assert [stage.operations for stage in through_stage.replay_stages] == [
-        (provenance.AverageOperation(dims=("x",)),)
+        (AverageOperation(dims=("x",)),)
     ]
 
     before_stage = spec._prefix_before_ref(
-        provenance._ProvenanceStepRef(
+        _ProvenanceStepRef(
             "operation",
             operation_index=1,
             stage_index=0,
@@ -3666,7 +3738,7 @@ def test_tool_provenance_script_replay_stage_prefix_and_fallback_rows() -> None:
     assert before_stage.script_context_bindings == ()
     assert before_stage.active_name == "result"
     assert [stage.operations for stage in before_stage.replay_stages] == [
-        (provenance.AverageOperation(dims=("x",)),)
+        (AverageOperation(dims=("x",)),)
     ]
 
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="scan")
@@ -3683,7 +3755,7 @@ def test_tool_provenance_script_replay_stage_prefix_and_fallback_rows() -> None:
     assert rows[3].entry.label == "Offset"
 
     assert (
-        provenance.ToolProvenanceSpec(
+        ToolProvenanceSpec(
             kind="script",
             start_label="Run script",
             active_name="result",
@@ -3693,24 +3765,24 @@ def test_tool_provenance_script_replay_stage_prefix_and_fallback_rows() -> None:
 
 
 def test_tool_provenance_operation_group_replacement_preserves_script_context() -> None:
-    grouped = provenance.stamp_operation_group(
+    grouped = stamp_operation_group(
         (
-            provenance.ScriptCodeOperation(
+            ScriptCodeOperation(
                 label="Offset copied result",
                 code="result = derived + 2",
             ),
-            provenance.AverageOperation(dims=("x",)),
+            AverageOperation(dims=("x",)),
         ),
         kind="demo",
         group_id="group-1",
     )
-    spec = provenance.ToolProvenanceSpec(
+    spec = ToolProvenanceSpec(
         kind="script",
         start_label="Run script",
         seed_code="derived = data",
         active_name="result",
         operations=(
-            provenance.ScriptCodeOperation(
+            ScriptCodeOperation(
                 label="Compute intermediate result",
                 code="result = derived + 1",
             ),
@@ -3722,8 +3794,8 @@ def test_tool_provenance_operation_group_replacement_preserves_script_context() 
     )
 
     replaced = spec._replace_operation_group_ref(
-        provenance._ProvenanceStepRef("operation", operation_index=2),
-        (provenance.SqueezeOperation(),),
+        _ProvenanceStepRef("operation", operation_index=2),
+        (SqueezeOperation(),),
         kind="demo",
     )
 
@@ -3737,20 +3809,20 @@ def test_tool_provenance_operation_group_replacement_preserves_script_context() 
 
 
 def test_tool_provenance_group_ref_helpers_cover_invalid_and_stage_refs() -> None:
-    operations = provenance.stamp_operation_group(
+    operations = stamp_operation_group(
         (
-            provenance.AverageOperation(dims=("x",)),
-            provenance.SqueezeOperation(),
+            AverageOperation(dims=("x",)),
+            SqueezeOperation(),
         ),
         kind="demo",
     )
-    spec = provenance.full_data(*operations)
-    ref = provenance._ProvenanceStepRef("operation", operation_index=0)
+    spec = full_data(*operations)
+    ref = _ProvenanceStepRef("operation", operation_index=0)
 
     assert spec._operation_group_range_ref(ref, kind="demo") == (0, 2)
     assert (
         spec._operation_group_range_ref(
-            provenance._ProvenanceStepRef("start"),
+            _ProvenanceStepRef("start"),
             kind="demo",
         )
         is None
@@ -3759,7 +3831,7 @@ def test_tool_provenance_group_ref_helpers_cover_invalid_and_stage_refs() -> Non
         spec._replace_operation_group_ref(ref, (), kind="other")
     with pytest.raises(ValueError, match="operation provenance row"):
         spec._replace_operation_range_ref(
-            provenance._ProvenanceStepRef("start"),
+            _ProvenanceStepRef("start"),
             0,
             1,
             (),
@@ -3770,9 +3842,9 @@ def test_tool_provenance_group_ref_helpers_cover_invalid_and_stage_refs() -> Non
     deleted = spec._delete_operation_group_ref(ref, kind="demo")
     assert deleted.operations == ()
 
-    file_spec = _file_provenance_spec().append_replay_stage(provenance.full_data())
-    stage_spec = file_spec.append_replay_stage(provenance.full_data(*operations))
-    stage_ref = provenance._ProvenanceStepRef(
+    file_spec = _file_provenance_spec().append_replay_stage(full_data())
+    stage_spec = file_spec.append_replay_stage(full_data(*operations))
+    stage_ref = _ProvenanceStepRef(
         "operation",
         operation_index=1,
         stage_index=1,
@@ -3780,16 +3852,16 @@ def test_tool_provenance_group_ref_helpers_cover_invalid_and_stage_refs() -> Non
     assert stage_spec._operation_group_range_ref(stage_ref, kind="demo") == (0, 2)
     replaced = stage_spec._replace_operation_group_ref(
         stage_ref,
-        (provenance.ThinOperation(mode="per_dim", factors={"x": 2}),),
+        (ThinOperation(mode="per_dim", factors={"x": 2}),),
         kind="demo",
     )
     assert [stage.operations for stage in replaced.replay_stages] == [
         (),
-        (provenance.ThinOperation(mode="per_dim", factors={"x": 2}),),
+        (ThinOperation(mode="per_dim", factors={"x": 2}),),
     ]
     assert (
         stage_spec._operation_group_range_ref(
-            provenance._ProvenanceStepRef(
+            _ProvenanceStepRef(
                 "operation",
                 operation_index=0,
                 stage_index=3,
@@ -3801,8 +3873,8 @@ def test_tool_provenance_group_ref_helpers_cover_invalid_and_stage_refs() -> Non
 
 
 def test_tool_provenance_script_context_names_are_validation_only() -> None:
-    parent = provenance.script(
-        provenance.ScriptCodeOperation(
+    parent = script(
+        ScriptCodeOperation(
             label="Compute intermediate result",
             code="result = derived + 1",
         ),
@@ -3810,23 +3882,23 @@ def test_tool_provenance_script_context_names_are_validation_only() -> None:
         seed_code="derived = data",
         active_name="result",
     )
-    local_script = provenance.script(
-        provenance.ScriptCodeOperation(
+    local_script = script(
+        ScriptCodeOperation(
             label="Offset copied result",
             code="result = derived + 2",
         ),
         start_label="Run pasted script",
         active_name="result",
     )
-    local_structured = provenance.full_data(provenance.AverageOperation(dims=("x",)))
+    local_structured = full_data(AverageOperation(dims=("x",)))
 
     with pytest.raises(ValueError, match="script context names"):
-        provenance.compose_full_provenance(
+        compose_full_provenance(
             parent,
             local_script,
             script_context_names=(typing.cast("str", None),),
         )
-    composed = provenance.compose_full_provenance(
+    composed = compose_full_provenance(
         parent,
         local_structured,
         script_context_names=("data", "derived"),
@@ -3837,60 +3909,71 @@ def test_tool_provenance_script_context_names_are_validation_only() -> None:
 
 
 def test_file_load_source_replay_call_round_trips() -> None:
-    xarray_source = provenance.FileLoadSource(
+    xarray_source = FileLoadSource(
         path="scan.h5",
         loader_label="Load Function",
         loader_text="xarray.load_dataarray",
         kwargs_text='engine="h5netcdf"',
-        replay_call=provenance.FileReplayCall(
+        replay_call=FileReplayCall(
             kind="callable",
             target="xarray.load_dataarray",
             kwargs={"engine": "h5netcdf"},
-            selection=provenance.FileDataSelection(kind="dataarray"),
+            selection=FileDataSelection(kind="dataarray"),
             cast_float64=True,
         ),
         load_code='import xarray\n\ndata = xarray.load_dataarray("/tmp/scan.h5")',
     )
-    parsed_xarray = provenance.FileLoadSource.model_validate(
-        xarray_source.model_dump(mode="json")
-    )
+    parsed_xarray = FileLoadSource.model_validate(xarray_source.model_dump(mode="json"))
     assert parsed_xarray == xarray_source
     assert parsed_xarray.replay_call.kind == "callable"
     assert parsed_xarray.replay_call.target == "xarray.load_dataarray"
     assert parsed_xarray.replay_call.kwargs == {"engine": "h5netcdf"}
-    assert parsed_xarray.replay_call.selection == provenance.FileDataSelection(
-        kind="dataarray"
-    )
+    assert parsed_xarray.replay_call.selection == FileDataSelection(kind="dataarray")
     assert parsed_xarray.replay_call.cast_float64 is True
 
-    legacy_call = provenance.FileReplayCall.model_validate(
+    legacy_call = FileReplayCall.model_validate(
         {
             "kind": "callable",
             "target": "xarray.load_dataarray",
             "selected_index": 2,
         }
     )
-    assert legacy_call.selection == provenance.FileDataSelection(
-        kind="parsed_index", value=2
-    )
+    assert legacy_call.selection == FileDataSelection(kind="parsed_index", value=2)
     assert "selected_index" not in legacy_call.model_dump(mode="json")
 
-    erlab_source = provenance.FileLoadSource(
+    legacy_tree_call = FileReplayCall.model_validate(
+        {
+            "kind": "callable",
+            "target": "xarray.load_datatree",
+            "selection": {
+                "kind": "datatree_path",
+                "value": "/branch/image",
+            },
+        }
+    )
+    assert legacy_tree_call.selection == FileDataSelection(
+        kind="datatree_variable",
+        value=("/branch", "image"),
+    )
+    assert legacy_tree_call.model_dump(mode="json")["selection"] == {
+        "kind": "datatree_variable",
+        "value": ["/branch", "image"],
+    }
+
+    erlab_source = FileLoadSource(
         path="data_002.h5",
         loader_label="Loader",
         loader_text="example",
         kwargs_text="(none)",
-        replay_call=provenance.FileReplayCall(
+        replay_call=FileReplayCall(
             kind="erlab_loader",
             target="example",
             kwargs={},
-            selection=provenance.FileDataSelection(kind="dataarray"),
+            selection=FileDataSelection(kind="dataarray"),
         ),
         load_code="erlab.io.set_loader('example')\ndata = erlab.io.load(2)",
     )
-    parsed_erlab = provenance.FileLoadSource.model_validate(
-        erlab_source.model_dump(mode="json")
-    )
+    parsed_erlab = FileLoadSource.model_validate(erlab_source.model_dump(mode="json"))
     assert parsed_erlab == erlab_source
     assert parsed_erlab.replay_call.kind == "erlab_loader"
     assert parsed_erlab.replay_call.target == "example"
@@ -3901,7 +3984,7 @@ def test_provenance_file_source_capabilities_cover_script_backed_files(
 ) -> None:
     path = tmp_path / "scan.h5"
     xr.DataArray(np.arange(3.0), dims=("x",)).to_netcdf(path, engine="h5netcdf")
-    replay_call = provenance.FileReplayCall(
+    replay_call = FileReplayCall(
         kind="callable",
         target="xarray.load_dataarray",
         kwargs={"engine": "h5netcdf"},
@@ -3912,14 +3995,12 @@ def test_provenance_file_source_capabilities_cover_script_backed_files(
         "import xarray\n\n"
         f"derived = xarray.load_dataarray({str(path)!r}, engine='h5netcdf')"
     )
-    file_spec = provenance.file_load(
+    file_spec = file_load(
         start_label="Load data",
         seed_code=seed_code,
         file_load_source=load_source,
-    ).append_replay_stage(
-        provenance.full_data(provenance.AverageOperation(dims=("x",)))
-    )
-    script_spec = provenance.script(
+    ).append_replay_stage(full_data(AverageOperation(dims=("x",))))
+    script_spec = script(
         start_label="Load data",
         seed_code=seed_code,
         active_name="derived",
@@ -3928,15 +4009,15 @@ def test_provenance_file_source_capabilities_cover_script_backed_files(
     )
 
     for spec in (file_spec, script_spec):
-        assert provenance.has_file_load_source(spec)
-        assert provenance.file_load_source_status(spec) == "loadable"
-        assert provenance.can_reload_without_trust(spec)
-        operation_refs = tuple(provenance.iter_operation_refs(spec))
+        assert has_file_load_source(spec)
+        assert file_load_source_status(spec) == "loadable"
+        assert can_reload_without_trust(spec)
+        operation_refs = tuple(iter_operation_refs(spec))
         ref_locations = [
             (ref.stage_index, ref.operation_index) for ref, _op in operation_refs
         ]
         assert ref_locations == [(0, 0)]
-        assert isinstance(operation_refs[0][1], provenance.AverageOperation)
+        assert isinstance(operation_refs[0][1], AverageOperation)
 
     missing_spec = script_spec.model_copy(
         update={
@@ -3945,16 +4026,16 @@ def test_provenance_file_source_capabilities_cover_script_backed_files(
             )
         }
     )
-    assert provenance.file_load_source_status(missing_spec) == "missing-file"
-    assert not provenance.can_reload_without_trust(missing_spec)
+    assert file_load_source_status(missing_spec) == "missing-file"
+    assert not can_reload_without_trust(missing_spec)
 
     no_replay_call_spec = script_spec.model_copy(
         update={
             "file_load_source": load_source.model_copy(update={"replay_call": None})
         }
     )
-    assert provenance.file_load_source_status(no_replay_call_spec) == "no-replay-call"
-    assert not provenance.can_reload_without_trust(no_replay_call_spec)
+    assert file_load_source_status(no_replay_call_spec) == "no-replay-call"
+    assert not can_reload_without_trust(no_replay_call_spec)
 
     missing_loader = "definitely-missing-erlab-loader"
     missing_loader_spec = script_spec.model_copy(
@@ -3968,8 +4049,8 @@ def test_provenance_file_source_capabilities_cover_script_backed_files(
             )
         }
     )
-    assert provenance.file_load_source_status(missing_loader_spec) == "missing-loader"
-    assert not provenance.can_reload_without_trust(missing_loader_spec)
+    assert file_load_source_status(missing_loader_spec) == "missing-loader"
+    assert not can_reload_without_trust(missing_loader_spec)
 
     missing_callable_spec = script_spec.model_copy(
         update={
@@ -3985,28 +4066,28 @@ def test_provenance_file_source_capabilities_cover_script_backed_files(
             )
         }
     )
-    assert provenance.file_load_source_status(missing_callable_spec) == "missing-loader"
-    assert not provenance.can_reload_without_trust(missing_callable_spec)
+    assert file_load_source_status(missing_callable_spec) == "missing-loader"
+    assert not can_reload_without_trust(missing_callable_spec)
 
-    plain_script = provenance.script(
-        provenance.ScriptCodeOperation(
+    plain_script = script(
+        ScriptCodeOperation(
             label="Make data",
             code="derived = xr.DataArray([1.0])",
         ),
         start_label="Run script",
         active_name="derived",
     )
-    assert not provenance.has_file_load_source(plain_script)
-    assert provenance.file_load_source_status(plain_script) == "no-file-load-source"
-    assert provenance.can_reload_without_trust(plain_script)
+    assert not has_file_load_source(plain_script)
+    assert file_load_source_status(plain_script) == "no-file-load-source"
+    assert can_reload_without_trust(plain_script)
 
 
 def test_provenance_replay_stage_source_view_and_empty_refs() -> None:
     data = _base_data()
 
-    selection_view = _provenance_framework._SourceViewOperation(source_kind="selection")
-    public_view = _provenance_framework._SourceViewOperation(source_kind="public_data")
-    full_view = _provenance_framework._SourceViewOperation(source_kind="full_data")
+    selection_view = _SourceViewOperation(source_kind="selection")
+    public_view = _SourceViewOperation(source_kind="public_data")
+    full_view = _SourceViewOperation(source_kind="full_data")
 
     xr.testing.assert_identical(
         selection_view.apply(data, parent_data=data),
@@ -4023,56 +4104,46 @@ def test_provenance_replay_stage_source_view_and_empty_refs() -> None:
     assert full_view.expression_code("data") == "data.copy(deep=False)"
     with pytest.raises(NotImplementedError):
         selection_view.expression_code("data")
-    assert tuple(provenance.iter_operation_refs(None)) == ()
+    assert tuple(iter_operation_refs(None)) == ()
 
 
 def test_file_provenance_validation_rejects_invalid_payloads() -> None:
-    replay_stage = provenance.ReplayStage(source_kind="full_data")
+    replay_stage = ReplayStage(source_kind="full_data")
     file_source = _file_replay_source()
 
-    with pytest.raises(ValidationError, match="parsed file selection index"):
-        provenance.FileReplayCall(
+    with pytest.raises(ValidationError, match="file selection index"):
+        FileReplayCall(
             kind="callable", target="xarray.load_dataarray", selected_index=-1
         )
     with pytest.raises(ValidationError, match="target"):
-        provenance.FileReplayCall(kind="callable", target="", selected_index=0)
+        FileReplayCall(kind="callable", target="", selected_index=0)
 
-    bad_kwargs_call = provenance.FileReplayCall.model_construct(
+    bad_kwargs_call = FileReplayCall.model_construct(
         kind="callable",
         target="xarray.load_dataarray",
         kwargs={1: "bad"},
-        selection=provenance.FileDataSelection(kind="dataarray"),
+        selection=FileDataSelection(kind="dataarray"),
     )
     with pytest.raises(TypeError, match="string keys"):
         bad_kwargs_call._validate_replay_call()
 
-    assert (
-        provenance.ReplayStage(source_kind="full_data", operations=None).operations
-        == ()
-    )
+    assert ReplayStage(source_kind="full_data", operations=None).operations == ()
     with pytest.raises(TypeError, match="replay stage operations"):
-        provenance.ReplayStage(source_kind="full_data", operations=1)
+        ReplayStage(source_kind="full_data", operations=1)
     with pytest.raises(TypeError, match="script-only operations"):
-        provenance.ReplayStage(
+        ReplayStage(
             source_kind="full_data",
             operations=[
-                provenance.ScriptCodeOperation(
-                    label="Generated", code="derived = derived"
-                )
+                ScriptCodeOperation(label="Generated", code="derived = derived")
             ],
         )
     with pytest.raises(TypeError, match="source must not be None"):
-        provenance.ReplayStage.from_source_spec(typing.cast("typing.Any", None))
+        ReplayStage.from_source_spec(typing.cast("typing.Any", None))
 
-    assert (
-        provenance.ToolProvenanceSpec(
-            kind="full_data", replay_stages=None
-        ).replay_stages
-        == ()
-    )
+    assert ToolProvenanceSpec(kind="full_data", replay_stages=None).replay_stages == ()
     with pytest.raises(TypeError, match="Serialized replay stages"):
-        provenance.ToolProvenanceSpec(kind="full_data", replay_stages=1)
-    assert provenance.ToolProvenanceSpec(
+        ToolProvenanceSpec(kind="full_data", replay_stages=1)
+    assert ToolProvenanceSpec(
         kind="script",
         start_label="Start",
         active_name="derived",
@@ -4080,35 +4151,35 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
     ).replay_stages == (replay_stage,)
 
     with pytest.raises(ValidationError, match="must define `start_label`"):
-        provenance.ToolProvenanceSpec(
+        ToolProvenanceSpec(
             kind="file",
             seed_code="derived = data",
             active_name="derived",
             file_load_source=file_source,
         )
     with pytest.raises(ValidationError, match="must define `seed_code`"):
-        provenance.ToolProvenanceSpec(
+        ToolProvenanceSpec(
             kind="file",
             start_label="Load",
             active_name="derived",
             file_load_source=file_source,
         )
     with pytest.raises(ValidationError, match="must define `active_name`"):
-        provenance.ToolProvenanceSpec(
+        ToolProvenanceSpec(
             kind="file",
             start_label="Load",
             seed_code="derived = data",
             file_load_source=file_source,
         )
     with pytest.raises(ValidationError, match="must define `file_load_source`"):
-        provenance.ToolProvenanceSpec(
+        ToolProvenanceSpec(
             kind="file",
             start_label="Load",
             seed_code="derived = data",
             active_name="derived",
         )
     with pytest.raises(ValidationError, match="must define `replay_call`"):
-        provenance.ToolProvenanceSpec(
+        ToolProvenanceSpec(
             kind="file",
             start_label="Load",
             seed_code="derived = data",
@@ -4116,25 +4187,23 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
             file_load_source=file_source.model_copy(update={"replay_call": None}),
         )
     with pytest.raises(ValidationError, match="cannot define operations"):
-        provenance.ToolProvenanceSpec(
+        ToolProvenanceSpec(
             kind="file",
             start_label="Load",
             seed_code="derived = data",
             active_name="derived",
             file_load_source=file_source,
-            operations=[provenance.AverageOperation(dims=("x",))],
+            operations=[AverageOperation(dims=("x",))],
         )
     with pytest.raises(TypeError, match="Replay stages can only"):
-        provenance.full_data().append_replay_stage(provenance.full_data())
+        full_data().append_replay_stage(full_data())
 
 
 def test_file_provenance_display_entries_keep_steps_after_stage_failure() -> None:
     spec = (
         _file_provenance_spec()
-        .append_replay_stage(
-            provenance.full_data(provenance.SelOperation(kwargs={"missing": 0}))
-        )
-        .append_replay_stage(provenance.full_data(provenance.SqueezeOperation()))
+        .append_replay_stage(full_data(SelOperation(kwargs={"missing": 0})))
+        .append_replay_stage(full_data(SqueezeOperation()))
     )
 
     assert [entry.label for entry in spec.derivation_entries()] == [
@@ -4156,21 +4225,21 @@ def test_file_provenance_display_entries_keep_steps_after_stage_failure() -> Non
 
 def test_tool_provenance_display_rows_expose_edit_and_replay_refs() -> None:
     file_spec = _file_provenance_spec().append_replay_stage(
-        provenance.full_data(provenance.QSelAggregationOperation(dims=("x",)))
+        full_data(QSelAggregationOperation(dims=("x",)))
     )
     file_rows = file_spec.display_rows(parent_data=_base_data())
 
-    assert file_rows[0].edit_ref == provenance._ProvenanceStepRef("file_load")
-    assert file_rows[0].replay_ref == provenance._ProvenanceStepRef("file_load")
-    assert file_rows[1].edit_ref == provenance._ProvenanceStepRef(
+    assert file_rows[0].edit_ref == _ProvenanceStepRef("file_load")
+    assert file_rows[0].replay_ref == _ProvenanceStepRef("file_load")
+    assert file_rows[1].edit_ref == _ProvenanceStepRef(
         "operation",
         operation_index=0,
         stage_index=0,
     )
     assert file_rows[1].replay_ref == file_rows[1].edit_ref
 
-    live_spec = provenance.full_data(
-        provenance.CoarsenOperation(
+    live_spec = full_data(
+        CoarsenOperation(
             dim={"x": 2},
             boundary="trim",
             side="left",
@@ -4182,36 +4251,36 @@ def test_tool_provenance_display_rows_expose_edit_and_replay_refs() -> None:
 
     assert live_rows[0].scope == "source"
     assert live_rows[0].edit_ref is None
-    assert live_rows[0].replay_ref == provenance._ProvenanceStepRef("start")
+    assert live_rows[0].replay_ref == _ProvenanceStepRef("start")
     assert live_rows[1].scope == "source"
-    assert live_rows[1].edit_ref == provenance._ProvenanceStepRef(
+    assert live_rows[1].edit_ref == _ProvenanceStepRef(
         "operation",
         operation_index=0,
     )
 
-    script_spec = provenance.script(
-        provenance.ScriptCodeOperation(label="Run code", code="derived = data"),
-        provenance.QSelAggregationOperation(dims=("x",)),
+    script_spec = script(
+        ScriptCodeOperation(label="Run code", code="derived = data"),
+        QSelAggregationOperation(dims=("x",)),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="source", label="Input"),),
+        script_inputs=(ScriptInput(name="source", label="Input"),),
     )
     script_rows = script_spec.display_rows()
 
     assert script_rows[1].edit_ref is None
-    assert script_rows[1].replay_ref == provenance._ProvenanceStepRef(
+    assert script_rows[1].replay_ref == _ProvenanceStepRef(
         "script_input",
         script_input_index=0,
     )
-    assert script_rows[2].edit_ref == provenance._ProvenanceStepRef(
+    assert script_rows[2].edit_ref == _ProvenanceStepRef(
         "operation",
         operation_index=0,
     )
-    assert script_rows[2].replay_ref == provenance._ProvenanceStepRef(
+    assert script_rows[2].replay_ref == _ProvenanceStepRef(
         "operation",
         operation_index=0,
     )
-    assert script_rows[3].edit_ref == provenance._ProvenanceStepRef(
+    assert script_rows[3].edit_ref == _ProvenanceStepRef(
         "operation",
         operation_index=1,
     )
@@ -4220,39 +4289,33 @@ def test_tool_provenance_display_rows_expose_edit_and_replay_refs() -> None:
 def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
     file_spec = _file_provenance_spec()
 
-    assert provenance.replay_input_name(None) is None
+    assert replay_input_name(None) is None
+    assert script(start_label="Start", active_name="derived").derivation_code() is None
     assert (
-        provenance.script(start_label="Start", active_name="derived").derivation_code()
-        is None
-    )
-    assert (
-        provenance.script(
+        script(
             start_label="Start",
             seed_code="derived = data",
             active_name="derived",
         ).display_code()
         is None
     )
-    assert provenance.compose_full_provenance(None, None) is None
-    local_replay = provenance.compose_full_provenance(
-        None, provenance.full_data(provenance.AverageOperation(dims=("x",)))
+    assert compose_full_provenance(None, None) is None
+    local_replay = compose_full_provenance(
+        None, full_data(AverageOperation(dims=("x",)))
     )
     assert local_replay is not None
     assert local_replay.kind == "script"
 
-    assert (
-        provenance.compose_full_provenance(file_spec, provenance.full_data())
-        == file_spec
-    )
-    assert provenance._as_script_replay_spec(provenance.full_data()).kind == "script"
+    assert compose_full_provenance(file_spec, full_data()) == file_spec
+    assert _as_script_replay_spec(full_data()).kind == "script"
 
-    script_local = provenance.script(
-        provenance.ScriptCodeOperation(label="Offset", code="result = derived + 1"),
+    script_local = script(
+        ScriptCodeOperation(label="Offset", code="result = derived + 1"),
         start_label="Run generated code",
         seed_code="derived = data",
         active_name="result",
     )
-    file_with_script = provenance.compose_full_provenance(file_spec, script_local)
+    file_with_script = compose_full_provenance(file_spec, script_local)
     assert file_with_script is not None
     assert file_with_script.kind == "script"
     assert file_with_script.file_load_source == file_spec.file_load_source
@@ -4263,9 +4326,9 @@ def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
     )
 
     file_with_stage = file_spec.append_replay_stage(
-        provenance.full_data(provenance.AverageOperation(dims=("x",)))
+        full_data(AverageOperation(dims=("x",)))
     )
-    staged_with_script = provenance.compose_full_provenance(
+    staged_with_script = compose_full_provenance(
         file_with_stage,
         script_local,
     )
@@ -4275,42 +4338,40 @@ def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
     assert len(staged_with_script.replay_stages) == 1
     assert isinstance(
         staged_with_script.replay_stages[0].operations[0],
-        provenance.AverageOperation,
+        AverageOperation,
     )
     assert all(
-        not isinstance(operation, provenance.ScriptCodeOperation)
+        not isinstance(operation, ScriptCodeOperation)
         for stage in staged_with_script.replay_stages
         for operation in stage.operations
     )
     staged_rows = staged_with_script.display_rows()
-    assert staged_rows[0].edit_ref == provenance._ProvenanceStepRef("file_load")
-    assert staged_rows[1].edit_ref == provenance._ProvenanceStepRef(
+    assert staged_rows[0].edit_ref == _ProvenanceStepRef("file_load")
+    assert staged_rows[1].edit_ref == _ProvenanceStepRef(
         "operation",
         operation_index=0,
         stage_index=0,
     )
 
-    script_parent = provenance.script(
-        provenance.ScriptCodeOperation(
+    script_parent = script(
+        ScriptCodeOperation(
             label="Crop",
             code="derived = derived.isel(x=0)",
         ),
         start_label="Run parent script",
         seed_code="derived = data_0",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
+        script_inputs=(ScriptInput(name="data_0", label="Input"),),
     )
-    staged_local = provenance.script(
-        provenance.ScriptCodeOperation(label="Offset", code="result = derived + 1"),
+    staged_local = script(
+        ScriptCodeOperation(label="Offset", code="result = derived + 1"),
         start_label="Run local script",
         active_name="result",
         replay_stages=(
-            provenance.ReplayStage.from_source_spec(
-                provenance.selection(provenance.AverageOperation(dims=("x",)))
-            ),
+            ReplayStage.from_source_spec(selection(AverageOperation(dims=("x",)))),
         ),
     )
-    script_with_ordered_stage = provenance.compose_full_provenance(
+    script_with_ordered_stage = compose_full_provenance(
         script_parent,
         staged_local,
     )
@@ -4327,69 +4388,67 @@ def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
     assert all(row.entry.label != staged_local.start_label for row in ordered_rows)
     assert any(
         row.edit_ref
-        == provenance._ProvenanceStepRef(
+        == _ProvenanceStepRef(
             "operation",
             operation_index=2,
         )
         for row in ordered_rows
     )
 
-    alias_local = provenance.script(
-        provenance.AverageOperation(dims=("x",)),
+    alias_local = script(
+        AverageOperation(dims=("x",)),
         start_label="Start from current ktool input data",
         seed_code="scan_kconv = derived",
         active_name="scan_kconv",
     )
-    alias_composed = provenance.compose_full_provenance(file_spec, alias_local)
+    alias_composed = compose_full_provenance(file_spec, alias_local)
     assert alias_composed is not None
     assert alias_composed.kind == "script"
-    assert isinstance(alias_composed.operations[0], provenance.ScriptCodeOperation)
+    assert isinstance(alias_composed.operations[0], ScriptCodeOperation)
     assert alias_composed.operations[0].visible is False
-    assert isinstance(alias_composed.operations[1], provenance.AverageOperation)
+    assert isinstance(alias_composed.operations[1], AverageOperation)
     assert all(
         row.entry.label != "Start from current ktool input data"
         for row in alias_composed.display_rows()
     )
     assert any(
-        isinstance(row.edit_ref, provenance._ProvenanceStepRef)
+        isinstance(row.edit_ref, _ProvenanceStepRef)
         and row.edit_ref.operation_index == 1
         for row in alias_composed.display_rows()
     )
 
-    watched_parent = provenance.script(
+    watched_parent = script(
         start_label="Start from watched variable 'watched_data'",
         seed_code="derived = watched_data",
         active_name="derived",
     )
-    default_seed_local = provenance.script(
-        provenance.ScriptCodeOperation(label="Mean", code="result = derived.mean()"),
+    default_seed_local = script(
+        ScriptCodeOperation(label="Mean", code="result = derived.mean()"),
         start_label="Use current parent output",
         seed_code="derived = data",
         active_name="result",
     )
-    watched_composed = provenance.compose_full_provenance(
-        watched_parent, default_seed_local
-    )
+    watched_composed = compose_full_provenance(watched_parent, default_seed_local)
     assert watched_composed is not None
     assert watched_composed.derivation_code() == (
         "derived = watched_data\nresult = derived.mean()"
     )
     assert watched_composed.display_code() == "result = watched_data.mean()"
 
-    result_parent = provenance.script(
-        provenance.ScriptCodeOperation(
+    result_parent = script(
+        ScriptCodeOperation(
             label="Compute intermediate result",
             code="result = data + 1",
         ),
         start_label="Start",
         active_name="result",
     )
-    no_seed_local = provenance.script(
-        provenance.ScriptCodeOperation(label="Mean", code="result = derived.mean()"),
+    no_seed_local = script(
+        ScriptCodeOperation(label="Mean", code="result = derived.mean()"),
         start_label="Use parent result",
         active_name="derived",
     )
-    result_composed = provenance.compose_full_provenance(result_parent, no_seed_local)
+    result_composed = compose_full_provenance(result_parent, no_seed_local)
     assert result_composed is not None
     assert result_composed.derivation_code() == (
         "result = data + 1\nderived = result\nresult = derived.mean()"
@@ -4398,25 +4457,23 @@ def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
         row.entry.label != "Use parent result" for row in result_composed.display_rows()
     )
 
-    promoted = provenance.mark_promoted_1d_source(_base_data().copy(deep=False))
+    promoted = mark_promoted_1d_source(_base_data().copy(deep=False))
     assert (
-        provenance.compose_display_provenance(
+        compose_display_provenance(
             watched_parent,
-            provenance.selection(
-                provenance.IselOperation(), provenance.SortCoordOrderOperation()
-            ),
+            selection(IselOperation(), SortCoordOrderOperation()),
             parent_data=promoted,
         )
         is not None
     )
-    assert provenance.compose_display_provenance(
+    assert compose_display_provenance(
         watched_parent, None
-    ) == provenance.to_replay_provenance_spec(watched_parent)
+    ) == to_replay_provenance_spec(watched_parent)
 
 
 def test_script_provenance_supports_named_console_inputs() -> None:
-    left = provenance.script(
-        provenance.ScriptCodeOperation(
+    left = script(
+        ScriptCodeOperation(
             label="Offset left input",
             code="data_0 = data_0 + 1.0",
         ),
@@ -4424,26 +4481,26 @@ def test_script_provenance_supports_named_console_inputs() -> None:
         seed_code="data_0 = xr.DataArray([1.0, 2.0], dims=['x'])",
         active_name="data_0",
     )
-    right = provenance.script(
+    right = script(
         start_label="Load right",
         seed_code="data_1 = xr.DataArray([0.5, 1.5], dims=['x'])",
         active_name="data_1",
     )
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    spec = script(
+        ScriptCodeOperation(
             label="Subtract console inputs",
             code="derived = data_0 - data_1",
         ),
         start_label="Run ImageTool manager console code",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="ImageTool 0",
                 node_uid="left",
                 provenance_spec=left,
             ),
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_1",
                 label="ImageTool 1",
                 node_uid="right",
@@ -4452,7 +4509,7 @@ def test_script_provenance_supports_named_console_inputs() -> None:
         ),
     )
 
-    reparsed = provenance.parse_tool_provenance_spec(spec.model_dump(mode="json"))
+    reparsed = parse_tool_provenance_spec(spec.model_dump(mode="json"))
 
     assert reparsed == spec
     assert [entry.label for entry in spec.display_entries()] == [
@@ -4463,23 +4520,23 @@ def test_script_provenance_supports_named_console_inputs() -> None:
     ]
     rows = spec.display_rows()
     assert rows[1].children[0].entry.label == "Load left"
-    assert rows[1].children[0].replay_ref == provenance._ProvenanceStepRef("start")
+    assert rows[1].children[0].replay_ref == _ProvenanceStepRef("start")
     assert rows[1].children[0].script_input_path == (0,)
     assert rows[1].children[1].entry.label == "Offset left input"
-    assert rows[1].children[1].edit_ref == provenance._ProvenanceStepRef(
+    assert rows[1].children[1].edit_ref == _ProvenanceStepRef(
         "operation", operation_index=0
     )
-    assert rows[1].children[1].replay_ref == provenance._ProvenanceStepRef(
+    assert rows[1].children[1].replay_ref == _ProvenanceStepRef(
         "operation", operation_index=0
     )
     assert rows[1].children[1].script_input_path == (0,)
     assert rows[2].children[0].entry.label == "Load right"
     assert rows[2].children[0].script_input_path == (1,)
-    assert rows[3].edit_ref == provenance._ProvenanceStepRef(
+    assert rows[3].edit_ref == _ProvenanceStepRef(
         "operation",
         operation_index=0,
     )
-    assert rows[3].replay_ref == provenance._ProvenanceStepRef(
+    assert rows[3].replay_ref == _ProvenanceStepRef(
         "operation",
         operation_index=0,
     )
@@ -4501,54 +4558,54 @@ def test_script_input_code_reuses_shared_file_replay_prefix(
         coords={"pol": ["LH", "LV"], "energy": [0.0, 1.0], "k": [0, 1, 2]},
     )
     source.to_netcdf(path)
-    file_spec = provenance.file_load(
+    file_spec = file_load(
         start_label="Load both polarizations",
         seed_code=f"import xarray\n\nderived = xarray.load_dataarray({str(path)!r})",
-        file_load_source=provenance.FileLoadSource(
+        file_load_source=FileLoadSource(
             path=str(path),
             loader_label="xarray.load_dataarray",
             loader_text="xarray.load_dataarray",
             kwargs_text="",
-            replay_call=provenance.FileReplayCall(
+            replay_call=FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 selected_index=0,
             ),
         ),
     )
-    shared_stage = provenance.full_data(provenance.AverageOperation(dims=("k",)))
-    left_stage = provenance.selection(
-        provenance.SelOperation(kwargs={"pol": "LH"}),
-        provenance.SqueezeOperation(),
+    shared_stage = full_data(AverageOperation(dims=("k",)))
+    left_stage = selection(
+        SelOperation(kwargs={"pol": "LH"}),
+        SqueezeOperation(),
     )
-    right_stage = provenance.selection(
-        provenance.SelOperation(kwargs={"pol": "LV"}),
-        provenance.SqueezeOperation(),
+    right_stage = selection(
+        SelOperation(kwargs={"pol": "LV"}),
+        SqueezeOperation(),
     )
-    left_spec = provenance.compose_full_provenance(
-        provenance.compose_full_provenance(file_spec, shared_stage),
+    left_spec = compose_full_provenance(
+        compose_full_provenance(file_spec, shared_stage),
         left_stage,
     )
-    right_spec = provenance.compose_full_provenance(
-        provenance.compose_full_provenance(file_spec, shared_stage),
+    right_spec = compose_full_provenance(
+        compose_full_provenance(file_spec, shared_stage),
         right_stage,
     )
     assert left_spec is not None
     assert right_spec is not None
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    spec = script(
+        ScriptCodeOperation(
             label="Subtract polarizations",
             code="derived = data_0 - data_1",
         ),
         start_label="Run ImageTool manager console code",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="ImageTool 0: LH",
                 provenance_spec=left_spec,
             ),
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_1",
                 label="ImageTool 1: LV",
                 provenance_spec=right_spec,
@@ -4571,42 +4628,40 @@ def test_script_input_code_reuses_shared_file_replay_prefix(
 
 
 def test_script_input_code_keeps_distinct_structured_replay_nodes() -> None:
-    first = provenance.file_load(
+    first = file_load(
         start_label="Load first",
         seed_code="import xarray\n\nderived = xarray.load_dataarray('scan.h5')",
         file_load_source=_file_replay_source(
             "scan.h5",
-            replay_call=provenance.FileReplayCall(
+            replay_call=FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 selected_index=0,
             ),
         ),
     )
-    second = provenance.file_load(
+    second = file_load(
         start_label="Load second",
         seed_code="import xarray\n\nderived = xarray.load_dataarray('scan.h5')",
         file_load_source=_file_replay_source(
             "scan.h5",
-            replay_call=provenance.FileReplayCall(
+            replay_call=FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 selected_index=1,
             ),
         ),
     )
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    spec = script(
+        ScriptCodeOperation(
             label="Subtract inputs",
             code="derived = data_0 - data_1",
         ),
         start_label="Run ImageTool manager console code",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
-                name="data_0", label="ImageTool 0", provenance_spec=first
-            ),
-            provenance.ScriptInput(
+            ScriptInput(name="data_0", label="ImageTool 0", provenance_spec=first),
+            ScriptInput(
                 name="data_1",
                 label="ImageTool 1",
                 provenance_spec=second,
@@ -4623,21 +4678,21 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
     left_snapshot_id = "left-snapshot"
     right_snapshot_id = "right-snapshot"
     extra_snapshot_id = "extra-snapshot"
-    nested = provenance.script(
-        provenance.ScriptCodeOperation(
+    nested = script(
+        ScriptCodeOperation(
             label="Subtract console inputs",
             code="diff = data_0 - data_1",
         ),
         start_label="Run ImageTool manager console code",
         active_name="diff",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_0",
                 label="ImageTool 0",
                 node_uid="old-left",
                 node_snapshot_token=left_snapshot_id,
             ),
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_1",
                 label="ImageTool 1",
                 node_uid="old-right",
@@ -4645,21 +4700,21 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
             ),
         ),
     )
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    spec = script(
+        ScriptCodeOperation(
             label="Add nested input",
             code="derived = diff + data_2",
         ),
         start_label="Run ImageTool manager console code",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="diff",
                 label="console variable 'diff'",
                 node_uid="",
                 provenance_spec=nested,
             ),
-            provenance.ScriptInput(
+            ScriptInput(
                 name="data_2",
                 label="ImageTool 2",
                 node_uid="old-extra",
@@ -4668,7 +4723,7 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
         ),
     )
 
-    refs = provenance.script_input_dependency_refs(spec)
+    refs = script_input_dependency_refs(spec)
     assert [
         (ref.name, ref.label, ref.node_uid, ref.node_snapshot_token) for ref in refs
     ] == [
@@ -4677,7 +4732,7 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
         ("data_2", "ImageTool 2", "old-extra", extra_snapshot_id),
     ]
 
-    rebased = provenance.rebase_script_input_node_uids(
+    rebased = rebase_script_input_node_uids(
         spec,
         {
             "old-left": "new-left",
@@ -4693,56 +4748,50 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
     )
     assert [
         (ref.name, ref.label, ref.node_uid, ref.node_snapshot_token)
-        for ref in provenance.script_input_dependency_refs(rebased)
+        for ref in script_input_dependency_refs(rebased)
     ] == [
         ("data_0", "ImageTool 0", "new-left", left_snapshot_id),
         ("data_1", "ImageTool 1", "new-right", right_snapshot_id),
         ("data_2", "ImageTool 2", "new-extra", extra_snapshot_id),
     ]
-    assert provenance.script_input_dependency_refs(None) == ()
-    assert provenance.rebase_script_input_node_uids(spec, {}) is spec
+    assert script_input_dependency_refs(None) == ()
+    assert rebase_script_input_node_uids(spec, {}) is spec
     with pytest.raises(TypeError, match="Expected provenance spec"):
-        provenance.rebase_script_input_node_uids(None, {})
+        rebase_script_input_node_uids(None, {})
 
 
 def test_low_level_provenance_replay_helper_branches() -> None:
 
-    assert not provenance._is_whole_array_rename_entry(
-        provenance.DerivationEntry("rename", "derived =")
+    assert not _is_whole_array_rename_entry(DerivationEntry("rename", "derived ="))
+    assert not _is_whole_array_rename_entry(
+        DerivationEntry("rename", "derived = derived.rename('a', 'b')")
     )
-    assert not provenance._is_whole_array_rename_entry(
-        provenance.DerivationEntry("rename", "derived = derived.rename('a', 'b')")
+    assert not _is_whole_array_rename_entry(
+        DerivationEntry("rename", "derived = derived.rename(mapping={'x': 'y'})")
     )
-    assert not provenance._is_whole_array_rename_entry(
-        provenance.DerivationEntry(
-            "rename", "derived = derived.rename(mapping={'x': 'y'})"
-        )
-    )
-    assert provenance._is_whole_array_rename_entry(
-        provenance.DerivationEntry(
+    assert _is_whole_array_rename_entry(
+        DerivationEntry(
             "rename",
             "derived = derived.rename(new_name_or_name_dict=None)",
         )
     )
 
-    assert provenance._provenance_value_code({"left": (1,)}) == "{'left': (1,)}"
+    assert _provenance_value_code({"left": (1,)}) == "{'left': (1,)}"
     with pytest.raises(TypeError, match="Cannot generate replay code"):
-        provenance._provenance_value_code(object())
+        _provenance_value_code(object())
     with pytest.raises(TypeError, match="hashable fields"):
-        provenance._normalize_provenance_hashable(object())
-    assert provenance._encode_provenance_hashable(("x", 1)) == {
-        provenance._TUPLE_MARKER: ["x", 1]
-    }
+        _normalize_provenance_hashable(object())
+    assert _encode_provenance_hashable(("x", 1)) == {_TUPLE_MARKER: ["x", 1]}
     with pytest.raises(ValueError, match="Expected 2 items"):
-        provenance._ensure_float_tuple([1], expected_len=2)
+        _ensure_float_tuple([1], expected_len=2)
     for value in (1, "abc"):
         with pytest.raises(TypeError, match="array-like sequence"):
-            provenance._coerce_float_sequence(value)
-    assert provenance._format_selection_step("sel", {}) == "derived = derived.sel()"
-    assert provenance._validate_active_name(None) is None
+            _coerce_float_sequence(value)
+    assert _format_selection_step("sel", {}) == "derived = derived.sel()"
+    assert _validate_active_name(None) is None
     for value, error in ((1, TypeError), ("class", ValueError)):
         with pytest.raises(error):
-            provenance._validate_active_name(value)
+            _validate_active_name(value)
 
     code = """
 @decorator
@@ -4759,30 +4808,25 @@ class Child(Base, metaclass=data_5):
     pass
 """
     statements = ast.parse(code).body
-    assert provenance._statement_load_count(statements[0], "data_0") == 1
-    assert provenance._statement_load_count(statements[0], "data_1") == 1
-    assert provenance._statement_load_count(statements[0], "data_2") == 1
+    assert _statement_load_count(statements[0], "data_0") == 1
+    assert _statement_load_count(statements[0], "data_1") == 1
+    assert _statement_load_count(statements[0], "data_2") == 1
     assert (
-        provenance._statement_store_count(
-            statements[0], "helper", count_definition_names=True
-        )
+        _statement_store_count(statements[0], "helper", count_definition_names=True)
         == 1
     )
-    assert provenance._statement_load_count(statements[1], "data_3") == 1
-    assert provenance._statement_load_count(statements[2], "data_4") == 1
-    assert provenance._statement_load_count(statements[3], "class_decorator") == 1
-    assert provenance._statement_load_count(statements[3], "data_5") == 1
+    assert _statement_load_count(statements[1], "data_3") == 1
+    assert _statement_load_count(statements[2], "data_4") == 1
+    assert _statement_load_count(statements[3], "class_decorator") == 1
+    assert _statement_load_count(statements[3], "data_5") == 1
     assert (
-        provenance._statement_store_count(
-            statements[3], "Child", count_definition_names=True
-        )
-        == 1
+        _statement_store_count(statements[3], "Child", count_definition_names=True) == 1
     )
-    assert "source_data" in provenance._replace_code_identifiers(
+    assert "source_data" in _replace_code_identifiers(
         code,
         {"data_0": "source_data"},
     )
-    rebased = provenance.rebase_default_replay_input(
+    rebased = rebase_default_replay_input(
         """
 def normalize(value=data) -> data:
     return value
@@ -4798,22 +4842,20 @@ derived = data
     )
     assert "source_data" in rebased
     assert (
-        provenance.rebase_default_replay_input("derived = data", "not valid python(")
+        rebase_default_replay_input("derived = data", "not valid python(")
         == "derived = data"
     )
-    assert provenance._simplify_display_code("derived =") == "derived ="
-    assert provenance._simplify_display_code("") == ""
-    assert provenance._simplify_display_code("for item in data:\n    pass") == (
+    assert _simplify_display_code("derived =") == "derived ="
+    assert _simplify_display_code("") == ""
+    assert _simplify_display_code("for item in data:\n    pass") == (
         "for item in data:\n    pass"
     )
-    assert provenance._simplify_display_code("left = right = data\nresult = left") == (
+    assert _simplify_display_code("left = right = data\nresult = left") == (
         "left = right = data\nresult = left"
     )
+    assert _simplify_display_code("tmp = data\nresult = tmp") == "result = data"
     assert (
-        provenance._simplify_display_code("tmp = data\nresult = tmp") == "result = data"
-    )
-    assert (
-        provenance._simplify_display_code(
+        _simplify_display_code(
             "tmp = data\nother = 1\nresult = tmp",
             inline_targets={"missing"},
         )
@@ -4821,24 +4863,19 @@ derived = data
     )
 
     wrapped = staticmethod(lambda: None)
-    assert any(
-        path.endswith(".<lambda>") for path in provenance._callable_paths(wrapped)
-    )
-    assert (
-        provenance._callable_paths(types.SimpleNamespace(__module__=1, __name__=2))
-        == set()
-    )
+    assert any(path.endswith(".<lambda>") for path in _callable_paths(wrapped))
+    assert _callable_paths(types.SimpleNamespace(__module__=1, __name__=2)) == set()
 
     with pytest.raises(ValidationError):
-        provenance.ScriptInput(name=None, label="Input")
+        ScriptInput(name=None, label="Input")
     with pytest.raises(ValidationError):
-        provenance.ScriptInput(name="data_0", label="Input", node_snapshot_token="")
+        ScriptInput(name="data_0", label="Input", node_snapshot_token="")
     with pytest.raises(TypeError, match="script input provenance"):
-        provenance.ScriptInput(name="data_0", label="Input", provenance_spec=object())
+        ScriptInput(name="data_0", label="Input", provenance_spec=object())
     with pytest.raises(TypeError, match="Serialized replay stages"):
-        provenance.ToolProvenanceSpec(kind="full_data", replay_stages="bad")
+        ToolProvenanceSpec(kind="full_data", replay_stages="bad")
     with pytest.raises(TypeError, match="Serialized script inputs"):
-        provenance.ToolProvenanceSpec(
+        ToolProvenanceSpec(
             kind="script",
             start_label="Run",
             active_name="derived",
@@ -4846,28 +4883,28 @@ derived = data
         )
 
     assert (
-        provenance.script(start_label="Run", active_name="derived")._script_graph_code(
+        script(start_label="Run", active_name="derived")._script_graph_code(
             display=True
         )
         is None
     )
     assert (
-        provenance.full_data(
-            provenance.ScriptCodeOperation(label="Opaque", code=None, copyable=False)
+        full_data(
+            ScriptCodeOperation(label="Opaque", code=None, copyable=False)
         ).derivation_code()
         is None
     )
     with pytest.raises(ValueError, match="not valid Python"):
-        provenance._validate_script_replay_code("derived =")
-    provenance._validate_script_replay_code(
+        _validate_script_replay_code("derived =")
+    _validate_script_replay_code(
         "try:\n    import numpy as np\nexcept ImportError:\n    pass\nderived = data"
     )
     with pytest.raises(TypeError, match="unsupported Import"):
-        provenance._validate_script_replay_code(
+        _validate_script_replay_code(
             "try:\n    import seaborn\nexcept ImportError:\n    pass\nderived = data"
         )
     with pytest.raises(TypeError, match="unsupported Try"):
-        provenance._validate_script_replay_code(
+        _validate_script_replay_code(
             "try:\n"
             "    import seaborn\n"
             "except ImportError as exc:\n"
@@ -4875,7 +4912,7 @@ derived = data
             "derived = data"
         )
     with pytest.raises(TypeError, match="unsupported Try"):
-        provenance._validate_script_replay_code(
+        _validate_script_replay_code(
             "try:\n"
             "    import seaborn\n"
             "except (ImportError, ModuleNotFoundError):\n"
@@ -4888,12 +4925,12 @@ derived = data
         ("derived = open('path')", "cannot call"),
     ):
         with pytest.raises(ValueError, match=message):
-            provenance._validate_script_replay_code(code_snippet)
+            _validate_script_replay_code(code_snippet)
 
 
 def test_script_input_label_is_preserved_and_defaults_to_name() -> None:
 
-    script_input = provenance.ScriptInput(
+    script_input = ScriptInput(
         name="data_0",
         label="  ImageTool 0:\n\n  processed data  ",
     )
@@ -4901,46 +4938,46 @@ def test_script_input_label_is_preserved_and_defaults_to_name() -> None:
     assert script_input.name == "data_0"
     assert script_input.label == "ImageTool 0: processed data"
     assert script_input.model_dump()["label"] == "ImageTool 0: processed data"
-    assert provenance.ScriptInput(name="data_0").label == "data_0"
-    assert provenance.ScriptInput(name="data_0", label=None).label == "data_0"
+    assert ScriptInput(name="data_0").label == "data_0"
+    assert ScriptInput(name="data_0", label=None).label == "data_0"
 
     node_marker = "snapshot"
-    assert provenance.ScriptInputDependencyRef(
+    assert ScriptInputDependencyRef(
         "data_0", "ImageTool 0", "node", node_marker
-    ) == provenance.ScriptInputDependencyRef(
+    ) == ScriptInputDependencyRef(
         name="data_0",
         label="ImageTool 0",
         node_uid="node",
         node_snapshot_token=node_marker,
     )
-    legacy_dependency = provenance.ScriptInputDependencyRef("data_0", "", "")
+    legacy_dependency = ScriptInputDependencyRef("data_0", "", "")
     assert legacy_dependency.label == ""
     assert legacy_dependency.node_uid == ""
 
     with pytest.raises(TypeError, match="script input label"):
-        provenance.ScriptInput(name="data_0", label=1)
+        ScriptInput(name="data_0", label=1)
     with pytest.raises(ValidationError):
-        provenance.ScriptInput(name="data_0", label="\n  \t")
+        ScriptInput(name="data_0", label="\n  \t")
 
 
 def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> None:
     left = xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0, 1]})
     right = xr.DataArray([0.5, 1.5], dims=("x",), coords={"x": [0, 1]})
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    spec = script(
+        ScriptCodeOperation(
             label="Mutate local input",
             code="data_0[0] = 10.0\nderived = data_0 - data_1",
         ),
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(name="data_0", label="ImageTool 0"),
-            provenance.ScriptInput(name="data_1", label="ImageTool 1"),
+            ScriptInput(name="data_0", label="ImageTool 0"),
+            ScriptInput(name="data_1", label="ImageTool 1"),
         ),
     )
 
-    assert provenance.script_provenance_replayable(spec)
-    result = provenance.replay_script_provenance(
+    assert script_provenance_replayable(spec)
+    result = replay_script_provenance(
         spec,
         {"data_0": left, "data_1": right},
     )
@@ -4958,22 +4995,22 @@ def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> Non
 def test_untrusted_script_replay_imports_use_executor_owned_modules() -> None:
     data = xr.DataArray([1.0], dims=("x",))
 
-    def script_with_code(code: str) -> provenance.ToolProvenanceSpec:
-        return provenance.script(
-            provenance.ScriptCodeOperation(label="Import", code=code),
+    def script_with_code(code: str) -> ToolProvenanceSpec:
+        return script(
+            ScriptCodeOperation(label="Import", code=code),
             start_label="Run script",
             active_name="derived",
-            script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+            script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
         )
 
-    safe_import = provenance.script(
-        provenance.ScriptCodeOperation(
+    safe_import = script(
+        ScriptCodeOperation(
             label="Use NumPy",
             code="import numpy as np\nderived = data_0 + np.float64(1.0)",
         ),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
     )
     safe_erlab_import = script_with_code("import erlab\nderived = data_0.copy()")
     optional_approved_import = script_with_code(
@@ -4982,6 +5019,12 @@ def test_untrusted_script_replay_imports_use_executor_owned_modules() -> None:
         "except ImportError:\n"
         "    pass\n"
         "derived = data_0 + xr.DataArray(1.0)"
+    )
+    nested_analysis_alias = script_with_code(
+        "def identity(value):\n"
+        "    _ = era\n"
+        "    return value\n"
+        "derived = identity(data_0)"
     )
     optional_external_import = script_with_code(
         "try:\n    import seaborn\nexcept ImportError:\n    pass\nderived = data_0"
@@ -4995,55 +5038,60 @@ def test_untrusted_script_replay_imports_use_executor_owned_modules() -> None:
         "derived = data_0 + int(exposed.os.path.exists('/'))"
     )
     unsafe_internal_import = script_with_code(
-        "import erlab.interactive.imagetool._provenance_framework as exposed\n"
+        "import erlab.interactive.imagetool._provenance._code as exposed\n"
         "derived = data_0 + exposed.np.float64(1.0)"
     )
     unsafe_dunder_alias = script_with_code(
         "import numpy as __builtins__\nderived = data_0"
     )
     poisoned_import_policy = script_with_code(
-        "framework = erlab.interactive.imagetool._provenance_framework\n"
+        "framework = erlab.interactive.imagetool._provenance._code\n"
         "framework._SCRIPT_REPLAY_PREBOUND_IMPORTS = {\n"
-        "    'numpy': framework.importlib.import_module('os'),\n"
+        "    'numpy': framework,\n"
         "}\n"
         "import numpy as imported_numpy\n"
         "derived = data_0 + imported_numpy.float64(1.0)"
     )
 
-    assert provenance.script_provenance_replayable(safe_import)
-    assert not provenance.script_provenance_requires_trust(safe_import)
+    assert script_provenance_replayable(safe_import)
+    assert not script_provenance_requires_trust(safe_import)
     xr.testing.assert_identical(
-        provenance.replay_script_provenance(safe_import, {"data_0": data}),
+        replay_script_provenance(safe_import, {"data_0": data}),
         data + 1.0,
     )
     xr.testing.assert_identical(
-        provenance.replay_script_provenance(safe_erlab_import, {"data_0": data}),
+        replay_script_provenance(safe_erlab_import, {"data_0": data}),
         data,
     )
-    assert provenance.script_provenance_replayable(optional_approved_import)
-    assert not provenance.script_provenance_requires_trust(optional_approved_import)
+    assert script_provenance_replayable(optional_approved_import)
+    assert not script_provenance_requires_trust(optional_approved_import)
     xr.testing.assert_identical(
-        provenance.replay_script_provenance(optional_approved_import, {"data_0": data}),
+        replay_script_provenance(optional_approved_import, {"data_0": data}),
         data + 1.0,
     )
-    assert "__import__" not in _provenance_framework._SCRIPT_REPLAY_ALLOWED_BUILTINS
-    assert not hasattr(_provenance_framework, "_SCRIPT_REPLAY_PREBOUND_IMPORTS")
+    assert script_provenance_replayable(nested_analysis_alias)
+    xr.testing.assert_identical(
+        replay_script_provenance(nested_analysis_alias, {"data_0": data}),
+        data,
+    )
+    assert "__import__" not in _SCRIPT_REPLAY_ALLOWED_BUILTINS
+    assert not hasattr(_code, "_SCRIPT_REPLAY_PREBOUND_IMPORTS")
 
     try:
         xr.testing.assert_identical(
-            provenance.replay_script_provenance(
+            replay_script_provenance(
                 poisoned_import_policy,
                 {"data_0": data},
             ),
             data + 1.0,
         )
         xr.testing.assert_identical(
-            provenance.replay_script_provenance(safe_import, {"data_0": data}),
+            replay_script_provenance(safe_import, {"data_0": data}),
             data + 1.0,
         )
     finally:
-        if hasattr(_provenance_framework, "_SCRIPT_REPLAY_PREBOUND_IMPORTS"):
-            del _provenance_framework._SCRIPT_REPLAY_PREBOUND_IMPORTS
+        if hasattr(_code, "_SCRIPT_REPLAY_PREBOUND_IMPORTS"):
+            del _code._SCRIPT_REPLAY_PREBOUND_IMPORTS
 
     for unsafe, message in (
         (optional_external_import, "unsupported Import"),
@@ -5052,13 +5100,13 @@ def test_untrusted_script_replay_imports_use_executor_owned_modules() -> None:
         (unsafe_internal_import, "unsupported Import"),
         (unsafe_dunder_alias, "unsupported Import"),
     ):
-        assert not provenance.script_provenance_replayable(unsafe)
-        assert provenance.script_provenance_requires_trust(unsafe)
+        assert not script_provenance_replayable(unsafe)
+        assert script_provenance_requires_trust(unsafe)
         with pytest.raises(TypeError, match=message):
-            provenance.replay_script_provenance(unsafe, {"data_0": data})
+            replay_script_provenance(unsafe, {"data_0": data})
 
     xr.testing.assert_identical(
-        provenance.replay_script_provenance(
+        replay_script_provenance(
             optional_external_import,
             {"data_0": data},
             trusted_user_code=True,
@@ -5066,7 +5114,7 @@ def test_untrusted_script_replay_imports_use_executor_owned_modules() -> None:
         data,
     )
     xr.testing.assert_identical(
-        provenance.replay_script_provenance(
+        replay_script_provenance(
             unsafe_from_import,
             {"data_0": data},
             trusted_user_code=True,
@@ -5074,7 +5122,7 @@ def test_untrusted_script_replay_imports_use_executor_owned_modules() -> None:
         data + 42.0,
     )
     xr.testing.assert_identical(
-        provenance.replay_script_provenance(
+        replay_script_provenance(
             unsafe_dotted_import,
             {"data_0": data},
             trusted_user_code=True,
@@ -5085,65 +5133,65 @@ def test_untrusted_script_replay_imports_use_executor_owned_modules() -> None:
 
 def test_replay_script_provenance_rejects_unsupported_or_incomplete_code() -> None:
     data = xr.DataArray([1.0], dims=("x",))
-    unsupported = provenance.script(
-        provenance.ScriptCodeOperation(
+    unsupported = script(
+        ScriptCodeOperation(
             label="Unsupported",
             code="import os\nderived = data_0",
         ),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
     )
-    incomplete = provenance.script(
-        provenance.ScriptCodeOperation(label="Incomplete", code=None),
+    incomplete = script(
+        ScriptCodeOperation(label="Incomplete", code=None),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
     )
-    missing_seed = provenance.script(
-        provenance.AverageOperation(dims=("x",)),
+    missing_seed = script(
+        AverageOperation(dims=("x",)),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
     )
-    active_input = provenance.script(
-        provenance.AverageOperation(dims=("x",)),
+    active_input = script(
+        AverageOperation(dims=("x",)),
         start_label="Run script",
         active_name="data_0",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
     )
-    rename_input = provenance.script(
-        provenance.RenameOperation(name="renamed"),
+    rename_input = script(
+        RenameOperation(name="renamed"),
         start_label="Run script",
         seed_code="derived = data_0",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
     )
-    external_active_input = provenance.script(
-        provenance.AverageOperation(dims=("x",)),
+    external_active_input = script(
+        AverageOperation(dims=("x",)),
         start_label="Run script",
         active_name="data_0",
     )
-    function_local_active = provenance.script(
-        provenance.ScriptCodeOperation(
+    function_local_active = script(
+        ScriptCodeOperation(
             label="Helper",
             code="def helper(data):\n    derived = data\n",
         ),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
     )
-    missing_helper = provenance.script(
-        provenance.ScriptCodeOperation(
+    missing_helper = script(
+        ScriptCodeOperation(
             label="Missing helper",
             code="derived = helper(data_0)",
         ),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
     )
-    missing_helper_global = provenance.script(
-        provenance.ScriptCodeOperation(
+    missing_helper_global = script(
+        ScriptCodeOperation(
             label="Missing helper global",
             code=(
                 "def helper(data):\n    return data + scale\n\nderived = helper(data_0)"
@@ -5151,10 +5199,10 @@ def test_replay_script_provenance_rejects_unsupported_or_incomplete_code() -> No
         ),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
     )
-    captured_helper_global = provenance.script(
-        provenance.ScriptCodeOperation(
+    captured_helper_global = script(
+        ScriptCodeOperation(
             label="Captured helper global",
             code=(
                 "scale = 2.0\n"
@@ -5167,10 +5215,10 @@ def test_replay_script_provenance_rejects_unsupported_or_incomplete_code() -> No
         ),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
     )
-    late_helper_global = provenance.script(
-        provenance.ScriptCodeOperation(
+    late_helper_global = script(
+        ScriptCodeOperation(
             label="Late helper global",
             code=(
                 "def helper(data):\n"
@@ -5182,10 +5230,10 @@ def test_replay_script_provenance_rejects_unsupported_or_incomplete_code() -> No
         ),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
     )
-    redefined_helper = provenance.script(
-        provenance.ScriptCodeOperation(
+    redefined_helper = script(
+        ScriptCodeOperation(
             label="Redefined helper",
             code=(
                 "def helper(data):\n"
@@ -5199,52 +5247,52 @@ def test_replay_script_provenance_rejects_unsupported_or_incomplete_code() -> No
         ),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
     )
 
-    assert not provenance.script_provenance_replayable(unsupported)
-    assert not provenance.script_provenance_replayable(incomplete)
-    assert not provenance.script_provenance_replayable(missing_seed)
-    assert not provenance.script_provenance_replayable(function_local_active)
-    assert not provenance.script_provenance_replayable(missing_helper)
-    assert not provenance.script_provenance_replayable(missing_helper_global)
-    assert not provenance.script_provenance_replayable(late_helper_global)
-    assert provenance.script_provenance_replayable(active_input)
-    assert provenance.script_provenance_replayable(rename_input)
-    assert provenance.script_provenance_replayable(captured_helper_global)
-    assert provenance.script_provenance_replayable(redefined_helper)
+    assert not script_provenance_replayable(unsupported)
+    assert not script_provenance_replayable(incomplete)
+    assert not script_provenance_replayable(missing_seed)
+    assert not script_provenance_replayable(function_local_active)
+    assert not script_provenance_replayable(missing_helper)
+    assert not script_provenance_replayable(missing_helper_global)
+    assert not script_provenance_replayable(late_helper_global)
+    assert script_provenance_replayable(active_input)
+    assert script_provenance_replayable(rename_input)
+    assert script_provenance_replayable(captured_helper_global)
+    assert script_provenance_replayable(redefined_helper)
     with pytest.raises(TypeError, match="unsupported Import"):
-        provenance.replay_script_provenance(unsupported, {"data_0": data})
+        replay_script_provenance(unsupported, {"data_0": data})
     with pytest.raises(ValueError, match="non-replayable"):
-        provenance.replay_script_provenance(incomplete, {"data_0": data})
+        replay_script_provenance(incomplete, {"data_0": data})
     with pytest.raises(TypeError, match="no replay code"):
-        provenance.replay_script_provenance(missing_seed, {"data_0": data})
+        replay_script_provenance(missing_seed, {"data_0": data})
     with pytest.raises(TypeError, match="no replay code"):
-        provenance.replay_script_provenance(function_local_active, {"data_0": data})
+        replay_script_provenance(function_local_active, {"data_0": data})
     with pytest.raises(TypeError, match="unresolved name 'helper'"):
-        provenance.replay_script_provenance(missing_helper, {"data_0": data})
+        replay_script_provenance(missing_helper, {"data_0": data})
     with pytest.raises(TypeError, match="unresolved name 'scale'"):
-        provenance.replay_script_provenance(missing_helper_global, {"data_0": data})
+        replay_script_provenance(missing_helper_global, {"data_0": data})
     with pytest.raises(TypeError, match="unresolved name 'scale'"):
-        provenance.replay_script_provenance(late_helper_global, {"data_0": data})
+        replay_script_provenance(late_helper_global, {"data_0": data})
     xr.testing.assert_identical(
-        provenance.replay_script_provenance(active_input, {"data_0": data}),
+        replay_script_provenance(active_input, {"data_0": data}),
         data.qsel.average("x"),
     )
     xr.testing.assert_identical(
-        provenance.replay_script_provenance(rename_input, {"data_0": data}),
+        replay_script_provenance(rename_input, {"data_0": data}),
         data.rename("renamed"),
     )
     xr.testing.assert_identical(
-        provenance.replay_script_provenance(external_active_input, {"data_0": data}),
+        replay_script_provenance(external_active_input, {"data_0": data}),
         data.qsel.average("x"),
     )
     xr.testing.assert_identical(
-        provenance.replay_script_provenance(captured_helper_global, {"data_0": data}),
+        replay_script_provenance(captured_helper_global, {"data_0": data}),
         data + 2.0,
     )
     xr.testing.assert_identical(
-        provenance.replay_script_provenance(redefined_helper, {"data_0": data}),
+        replay_script_provenance(redefined_helper, {"data_0": data}),
         data,
     )
 
@@ -5255,8 +5303,8 @@ def test_replay_script_provenance_accepts_console_module_aliases() -> None:
         dims=("x", "y"),
         coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
     )
-    spec = provenance.script(
-        provenance.ScriptCodeOperation(
+    spec = script(
+        ScriptCodeOperation(
             label="Rotate",
             code=(
                 "derived = era.transform.rotate("
@@ -5265,12 +5313,12 @@ def test_replay_script_provenance_accepts_console_module_aliases() -> None:
         ),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
+        script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
     )
 
-    assert provenance.script_provenance_replayable(spec)
+    assert script_provenance_replayable(spec)
     xr.testing.assert_identical(
-        provenance.replay_script_provenance(spec, {"data_0": data}),
+        replay_script_provenance(spec, {"data_0": data}),
         erlab.analysis.transform.rotate(data, 0.0, axes=("x", "y"), reshape=False),
     )
 
@@ -5278,8 +5326,8 @@ def test_replay_script_provenance_accepts_console_module_aliases() -> None:
 def test_console_pattern_expands_named_xarray_mapping_arguments() -> None:
     data = xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0.0, 1.0]})
 
-    qsel_operation = provenance.operation_from_console_call(
-        provenance.ConsoleCall(
+    qsel_operation = operation_from_console_call(
+        ConsoleCall(
             accessor_path=("qsel",),
             kwargs={"indexers": {"x": 1.0}},
             display_code="data.qsel(indexers={'x': 1.0})",
@@ -5287,8 +5335,8 @@ def test_console_pattern_expands_named_xarray_mapping_arguments() -> None:
             receiver_data=data,
         )
     )
-    isel_operation = provenance.operation_from_console_call(
-        provenance.ConsoleCall(
+    isel_operation = operation_from_console_call(
+        ConsoleCall(
             dataarray_method="isel",
             kwargs={"indexers": {"x": 1}},
             display_code="data.isel(indexers={'x': 1})",
@@ -5296,8 +5344,8 @@ def test_console_pattern_expands_named_xarray_mapping_arguments() -> None:
             receiver_data=data,
         )
     )
-    sel_operation = provenance.operation_from_console_call(
-        provenance.ConsoleCall(
+    sel_operation = operation_from_console_call(
+        ConsoleCall(
             dataarray_method="sel",
             kwargs={"indexers": {"x": 1.0}},
             display_code="data.sel(indexers={'x': 1.0})",
@@ -5305,8 +5353,8 @@ def test_console_pattern_expands_named_xarray_mapping_arguments() -> None:
             receiver_data=data,
         )
     )
-    interp_operation = provenance.operation_from_console_call(
-        provenance.ConsoleCall(
+    interp_operation = operation_from_console_call(
+        ConsoleCall(
             dataarray_method="interp",
             kwargs={"coords": {"x": [0.25, 0.75]}},
             display_code="data.interp(coords={'x': [0.25, 0.75]})",
@@ -5314,8 +5362,8 @@ def test_console_pattern_expands_named_xarray_mapping_arguments() -> None:
             receiver_data=data,
         )
     )
-    rename_operation = provenance.operation_from_console_call(
-        provenance.ConsoleCall(
+    rename_operation = operation_from_console_call(
+        ConsoleCall(
             dataarray_method="rename",
             kwargs={"new_name_or_name_dict": {"x": "energy"}},
             display_code="data.rename(new_name_or_name_dict={'x': 'energy'})",
@@ -5323,8 +5371,8 @@ def test_console_pattern_expands_named_xarray_mapping_arguments() -> None:
             receiver_data=data,
         )
     )
-    multidim_coord_operation = provenance.operation_from_console_call(
-        provenance.ConsoleCall(
+    multidim_coord_operation = operation_from_console_call(
+        ConsoleCall(
             dataarray_method="assign_coords",
             kwargs={"foo": (("x", "y"), np.ones((2, 2)))},
             display_code="data.assign_coords(foo=(('x', 'y'), values))",
@@ -5333,21 +5381,17 @@ def test_console_pattern_expands_named_xarray_mapping_arguments() -> None:
         )
     )
 
-    assert qsel_operation == provenance.QSelOperation(kwargs={"x": 1.0})
-    assert isel_operation == provenance.IselOperation(kwargs={"x": 1})
-    assert sel_operation == provenance.SelOperation(kwargs={"x": 1.0})
-    assert interp_operation == provenance.InterpolationOperation(
-        dim="x", values=[0.25, 0.75]
-    )
-    assert rename_operation == provenance.RenameDimsCoordsOperation(
-        mapping={"x": "energy"}
-    )
+    assert qsel_operation == QSelOperation(kwargs={"x": 1.0})
+    assert isel_operation == IselOperation(kwargs={"x": 1})
+    assert sel_operation == SelOperation(kwargs={"x": 1.0})
+    assert interp_operation == InterpolationOperation(dim="x", values=[0.25, 0.75])
+    assert rename_operation == RenameDimsCoordsOperation(mapping={"x": "energy"})
     assert multidim_coord_operation is None
-    assert isinstance(qsel_operation, provenance.QSelOperation)
-    assert isinstance(isel_operation, provenance.IselOperation)
-    assert isinstance(sel_operation, provenance.SelOperation)
-    assert isinstance(interp_operation, provenance.InterpolationOperation)
-    assert isinstance(rename_operation, provenance.RenameDimsCoordsOperation)
+    assert isinstance(qsel_operation, QSelOperation)
+    assert isinstance(isel_operation, IselOperation)
+    assert isinstance(sel_operation, SelOperation)
+    assert isinstance(interp_operation, InterpolationOperation)
+    assert isinstance(rename_operation, RenameDimsCoordsOperation)
     xr.testing.assert_identical(
         qsel_operation.apply(data, parent_data=data),
         data.qsel(indexers={"x": 1.0}),
@@ -5373,8 +5417,8 @@ def test_console_pattern_expands_named_xarray_mapping_arguments() -> None:
 def test_console_pattern_matches_public_parameter_aliases() -> None:
     edge_fit = xr.Dataset({"center": ("x", [0.0, 1.0])})
 
-    operation = provenance.operation_from_console_call(
-        provenance.ConsoleCall(
+    operation = operation_from_console_call(
+        ConsoleCall(
             func=erlab.analysis.gold.correct_with_edge,
             kwargs={"modelresult": edge_fit, "shift_coords": False},
             display_code="era.gold.correct_with_edge(data, modelresult=edge_fit)",
@@ -5382,7 +5426,7 @@ def test_console_pattern_matches_public_parameter_aliases() -> None:
         )
     )
 
-    assert isinstance(operation, provenance.CorrectWithEdgeOperation)
+    assert isinstance(operation, CorrectWithEdgeOperation)
     assert not operation.shift_coords
     xr.testing.assert_identical(operation.decoded_edge_fit, edge_fit)
 
@@ -5394,8 +5438,8 @@ def test_console_pattern_matches_new_replayable_operations() -> None:
         coords={"x": [0.0, 1.0], "eV": [0.0, 1.0, 2.0]},
     )
 
-    aggregate_operation = provenance.operation_from_console_call(
-        provenance.ConsoleCall(
+    aggregate_operation = operation_from_console_call(
+        ConsoleCall(
             accessor_path=("qsel", "sum"),
             args=("x",),
             display_code='data.qsel.sum("x")',
@@ -5403,8 +5447,8 @@ def test_console_pattern_matches_new_replayable_operations() -> None:
             receiver_data=data,
         )
     )
-    leading_edge_operation = provenance.operation_from_console_call(
-        provenance.ConsoleCall(
+    leading_edge_operation = operation_from_console_call(
+        ConsoleCall(
             func=erlab.analysis.interpolate.leading_edge,
             kwargs={"fraction": 0.25, "dim": "eV", "direction": "negative"},
             display_code=(
@@ -5416,10 +5460,8 @@ def test_console_pattern_matches_new_replayable_operations() -> None:
         )
     )
 
-    assert aggregate_operation == provenance.QSelAggregationOperation(
-        dims=("x",), func="sum"
-    )
-    assert leading_edge_operation == provenance.LeadingEdgeOperation(
+    assert aggregate_operation == QSelAggregationOperation(dims=("x",), func="sum")
+    assert leading_edge_operation == LeadingEdgeOperation(
         fraction=0.25,
         dim="eV",
         direction="negative",
@@ -5452,23 +5494,21 @@ def test_sortby_operation_apply_code_and_console_calls() -> None:
         name="tuple_coord_scan",
     )
 
-    single = provenance.SortByOperation(variables=("x",))
-    multi = provenance.SortByOperation(
+    single = SortByOperation(variables=("x",))
+    multi = SortByOperation(
         variables=("x", "sample temp"),
         ascending=False,
     )
-    non_identifier = provenance.SortByOperation(variables=("sample temp",))
-    tuple_key_operation = provenance.SortByOperation(variables=(tuple_key,))
+    non_identifier = SortByOperation(variables=("sample temp",))
+    tuple_key_operation = SortByOperation(variables=(tuple_key,))
 
-    assert provenance.SortByOperation(variables="x") == single
+    assert SortByOperation(variables="x") == single
     with pytest.raises(TypeError, match="sortby variables must be coordinate names"):
-        provenance.SortByOperation(variables=lambda darr: darr.x)
+        SortByOperation(variables=lambda darr: darr.x)
     assert multi.derivation_label().startswith("Sort By(")
     for operation in (single, multi, tuple_key_operation):
         assert (
-            provenance.parse_tool_provenance_operation(
-                operation.model_dump(mode="json")
-            )
+            parse_tool_provenance_operation(operation.model_dump(mode="json"))
             == operation
         )
 
@@ -5497,8 +5537,8 @@ def test_sortby_operation_apply_code_and_console_calls() -> None:
     xr.testing.assert_identical(namespace["derived"], tuple_key_data.sortby(tuple_key))
 
     assert (
-        provenance.operation_from_console_call(
-            provenance.ConsoleCall(
+        operation_from_console_call(
+            ConsoleCall(
                 dataarray_method="sortby",
                 args=("x",),
                 display_code='data.sortby("x")',
@@ -5509,8 +5549,8 @@ def test_sortby_operation_apply_code_and_console_calls() -> None:
         == single
     )
     assert (
-        provenance.operation_from_console_call(
-            provenance.ConsoleCall(
+        operation_from_console_call(
+            ConsoleCall(
                 dataarray_method="sortby",
                 kwargs={"variables": ["x", "sample temp"], "ascending": False},
                 display_code=(
@@ -5523,8 +5563,8 @@ def test_sortby_operation_apply_code_and_console_calls() -> None:
         == multi
     )
     assert (
-        provenance.operation_from_console_call(
-            provenance.ConsoleCall(
+        operation_from_console_call(
+            ConsoleCall(
                 dataarray_method="sortby",
                 args=(tuple_key,),
                 display_code="data.sortby(('beta', 0))",
@@ -5541,8 +5581,8 @@ def test_sortby_operation_apply_code_and_console_calls() -> None:
         ((), {}),
     ):
         assert (
-            provenance.SortByOperation.from_console_call(
-                provenance.ConsoleCall(
+            SortByOperation.from_console_call(
+                ConsoleCall(
                     dataarray_method="sortby",
                     args=args,
                     kwargs=kwargs,
@@ -5556,8 +5596,8 @@ def test_sortby_operation_apply_code_and_console_calls() -> None:
 
     for variables in (lambda darr: darr.x, data.x, [lambda darr: darr.x], [data.x], []):
         assert (
-            provenance.SortByOperation.from_console_call(
-                provenance.ConsoleCall(
+            SortByOperation.from_console_call(
+                ConsoleCall(
                     dataarray_method="sortby",
                     args=(variables,),
                     display_code="data.sortby(...)",
@@ -5568,8 +5608,8 @@ def test_sortby_operation_apply_code_and_console_calls() -> None:
             is None
         )
     assert (
-        provenance.SortByOperation.from_console_call(
-            provenance.ConsoleCall(
+        SortByOperation.from_console_call(
+            ConsoleCall(
                 dataarray_method="sortby",
                 args=("x",),
                 display_code='data.sortby("x")',
@@ -5583,23 +5623,20 @@ def test_sortby_operation_apply_code_and_console_calls() -> None:
 
 def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
 
-    assert provenance._console_values_equal(np.nan, np.nan)
-    assert provenance._console_mapping_values(
+    assert _console_values_equal(np.nan, np.nan)
+    assert _console_mapping_values(
         (None,), {"coords": None, "x": 1}, mapping_kwargs=("coords",)
     ) == {"x": 1}
-    assert provenance._console_mapping_values(
+    assert _console_mapping_values(
         ({"x": 1},), {"coords": {"y": 2}}, mapping_kwargs=("coords",)
     ) == {"x": 1, "y": 2}
-    assert provenance._console_mapping_values((1, 2), {}) is None
-    assert provenance._console_mapping_values((1,), {}) is None
+    assert _console_mapping_values((1, 2), {}) is None
+    assert _console_mapping_values((1,), {}) is None
     assert (
-        provenance._console_mapping_values(
-            (), {"coords": 1}, mapping_kwargs=("coords",)
-        )
-        is None
+        _console_mapping_values((), {"coords": 1}, mapping_kwargs=("coords",)) is None
     )
 
-    pattern = provenance.ConsoleOperationPattern(
+    pattern = ConsoleOperationPattern(
         target="builtins.abs",
         fields=("value",),
         field_aliases={"old_value": "value"},
@@ -5609,7 +5646,7 @@ def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
 
     assert (
         pattern.match(
-            provenance.ConsoleCall(
+            ConsoleCall(
                 display_code="abs(3)",
                 has_extra_tracked_inputs=True,
             )
@@ -5618,7 +5655,7 @@ def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
     )
     assert (
         pattern.match(
-            provenance.ConsoleCall(
+            ConsoleCall(
                 display_code="abs(3)",
                 has_extra_tracked_inputs=False,
             )
@@ -5627,7 +5664,7 @@ def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
     )
     assert (
         pattern.match(
-            provenance.ConsoleCall(
+            ConsoleCall(
                 func=len,
                 args=(3,),
                 display_code="len(3)",
@@ -5638,7 +5675,7 @@ def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
     )
     assert (
         pattern.match(
-            provenance.ConsoleCall(
+            ConsoleCall(
                 func=abs,
                 kwargs={"old_value": 3, "value": 4},
                 display_code="abs(old_value=3, value=4)",
@@ -5649,7 +5686,7 @@ def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
     )
     assert (
         pattern.match(
-            provenance.ConsoleCall(
+            ConsoleCall(
                 func=abs,
                 args=(3,),
                 kwargs={"drop": True},
@@ -5660,7 +5697,7 @@ def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
         is None
     )
     assert pattern.match(
-        provenance.ConsoleCall(
+        ConsoleCall(
             func=abs,
             args=(3,),
             kwargs={"scale": 2, "drop": False},
@@ -5670,8 +5707,8 @@ def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
     ) == {"value": 3, "scale": 2}
 
     assert (
-        provenance.ConsoleOperationPattern(dataarray_method="isel").match(
-            provenance.ConsoleCall(
+        ConsoleOperationPattern(dataarray_method="isel").match(
+            ConsoleCall(
                 dataarray_method="sel",
                 display_code="data.sel()",
                 has_extra_tracked_inputs=False,
@@ -5680,8 +5717,8 @@ def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
         is None
     )
     assert (
-        provenance.ConsoleOperationPattern().match(
-            provenance.ConsoleCall(
+        ConsoleOperationPattern().match(
+            ConsoleCall(
                 dataarray_method="isel",
                 display_code="data.isel()",
                 has_extra_tracked_inputs=False,
@@ -5690,8 +5727,8 @@ def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
         is None
     )
     assert (
-        provenance.ConsoleOperationPattern(accessor_path=("qsel",)).match(
-            provenance.ConsoleCall(
+        ConsoleOperationPattern(accessor_path=("qsel",)).match(
+            ConsoleCall(
                 accessor_path=("qsel", "mean"),
                 display_code="data.qsel.mean()",
                 has_extra_tracked_inputs=False,
@@ -5700,8 +5737,8 @@ def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
         is None
     )
     assert (
-        provenance.ConsoleOperationPattern(fields=("required",)).match(
-            provenance.ConsoleCall(
+        ConsoleOperationPattern(fields=("required",)).match(
+            ConsoleCall(
                 display_code="data.call()",
                 has_extra_tracked_inputs=False,
             )
@@ -5709,8 +5746,8 @@ def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
         is None
     )
     assert (
-        provenance.ConsoleOperationPattern().match(
-            provenance.ConsoleCall(
+        ConsoleOperationPattern().match(
+            ConsoleCall(
                 kwargs={"unexpected": 1},
                 display_code="data.call(unexpected=1)",
                 has_extra_tracked_inputs=False,
@@ -5719,8 +5756,8 @@ def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
         is None
     )
     assert (
-        provenance.ConsoleOperationPattern(kwargs_field="mapping").match(
-            provenance.ConsoleCall(
+        ConsoleOperationPattern(kwargs_field="mapping").match(
+            ConsoleCall(
                 args=(1,),
                 display_code="data.call(1)",
                 has_extra_tracked_inputs=False,
@@ -5741,122 +5778,120 @@ def test_console_operations_match_branch_specific_calls() -> None:
         kwargs.setdefault("display_code", "data.call()")
         kwargs.setdefault("has_extra_tracked_inputs", False)
         kwargs.setdefault("receiver_data", data)
-        return provenance.ConsoleCall(**kwargs)
+        return ConsoleCall(**kwargs)
 
-    assert provenance.TransposeOperation.from_console_call(
+    assert TransposeOperation.from_console_call(
         call(
             dataarray_method="transpose",
             args=("y", "x"),
             kwargs={"transpose_coords": True, "missing_dims": "raise"},
         )
-    ) == provenance.TransposeOperation(dims=("y", "x"))
+    ) == TransposeOperation(dims=("y", "x"))
     assert (
-        provenance.TransposeOperation.from_console_call(
+        TransposeOperation.from_console_call(
             call(dataarray_method="transpose", kwargs={"transpose_coords": False})
         )
         is None
     )
 
     assert (
-        provenance.SqueezeOperation.from_console_call(
+        SqueezeOperation.from_console_call(
             call(dataarray_method="squeeze", kwargs={"dim": None, "axis": None})
         )
-        == provenance.SqueezeOperation()
+        == SqueezeOperation()
     )
-    assert provenance.SqueezeOperation.from_console_call(
+    assert SqueezeOperation.from_console_call(
         call(dataarray_method="squeeze", kwargs={"drop": True})
-    ) == provenance.SqueezeOperation(drop=True)
-    assert provenance.SqueezeOperation.from_console_call(
+    ) == SqueezeOperation(drop=True)
+    assert SqueezeOperation.from_console_call(
         call(dataarray_method="squeeze", args=("z",), kwargs={"drop": True})
-    ) == provenance.SqueezeOperation(dims=("z",), drop=True)
-    assert provenance.SqueezeOperation.from_console_call(
+    ) == SqueezeOperation(dims=("z",), drop=True)
+    assert SqueezeOperation.from_console_call(
         call(dataarray_method="squeeze", kwargs={"dim": ("z",)})
-    ) == provenance.SqueezeOperation(dims=("z",))
+    ) == SqueezeOperation(dims=("z",))
     assert (
-        provenance.SqueezeOperation.from_console_call(
+        SqueezeOperation.from_console_call(
             call(dataarray_method="squeeze", args=("z",), kwargs={"dim": "z"})
         )
         is None
     )
     assert (
-        provenance.SqueezeOperation.from_console_call(
+        SqueezeOperation.from_console_call(
             call(dataarray_method="squeeze", args=("x", "z"), kwargs={})
         )
         is None
     )
     assert (
-        provenance.SqueezeOperation.from_console_call(
+        SqueezeOperation.from_console_call(
             call(dataarray_method="squeeze", kwargs={"axis": 0})
         )
         is None
     )
     assert (
-        provenance.SqueezeOperation.from_console_call(
+        SqueezeOperation.from_console_call(
             call(dataarray_method="squeeze", kwargs={"drop": "yes"})
         )
         is None
     )
     assert (
-        provenance.SqueezeOperation.from_console_call(
+        SqueezeOperation.from_console_call(
             call(dataarray_method="squeeze", kwargs={"unknown": True})
         )
         is None
     )
 
-    assert provenance.RenameOperation.from_console_call(
+    assert RenameOperation.from_console_call(
         call(dataarray_method="rename", args=("renamed",))
-    ) == provenance.RenameOperation(name="renamed")
+    ) == RenameOperation(name="renamed")
     assert (
-        provenance.RenameOperation.from_console_call(
+        RenameOperation.from_console_call(
             call(dataarray_method="rename", args=("renamed",), kwargs={"bad": 1})
         )
         is None
     )
 
-    assert provenance.AverageOperation.from_console_call(
+    assert AverageOperation.from_console_call(
         call(accessor_path=("qsel", "average"), kwargs={"dim": "x"})
-    ) == provenance.AverageOperation(dims=("x",))
+    ) == AverageOperation(dims=("x",))
     assert (
-        provenance.AverageOperation.from_console_call(
+        AverageOperation.from_console_call(
             call(accessor_path=("qsel", "average"), args=("x",), kwargs={"dim": "x"})
         )
         is None
     )
 
-    assert provenance.QSelAggregationOperation.from_console_call(
+    assert QSelAggregationOperation.from_console_call(
         call(accessor_path=("qsel", "mean"), kwargs={"dim": ("x", "y")})
-    ) == provenance.QSelAggregationOperation(dims=("x", "y"), func="mean")
+    ) == QSelAggregationOperation(dims=("x", "y"), func="mean")
     assert (
-        provenance.QSelAggregationOperation.from_console_call(
+        QSelAggregationOperation.from_console_call(
             call(accessor_path=("qsel", "median"), kwargs={"dim": "x"})
         )
         is None
     )
 
-    assert provenance.InterpolationOperation.from_console_call(
+    assert InterpolationOperation.from_console_call(
         call(
             dataarray_method="interp",
             args=({"x": [0.25, 0.75]},),
             kwargs={"method": "nearest", "assume_sorted": False, "kwargs": None},
         )
-    ) == provenance.InterpolationOperation(
-        dim="x", values=[0.25, 0.75], method="nearest"
-    )
+    ) == InterpolationOperation(dim="x", values=[0.25, 0.75], method="nearest")
     for bad_call in (
         call(dataarray_method="interp", kwargs={"method": "cubic", "x": [0.5]}),
         call(dataarray_method="interp", kwargs={"x": [0.5], "assume_sorted": True}),
         call(dataarray_method="interp", args=({"x": [0.5], "y": [0.5]},)),
         call(dataarray_method="interp", kwargs={"x": [[0.0, 1.0]]}),
     ):
-        assert provenance.InterpolationOperation.from_console_call(bad_call) is None
+        assert InterpolationOperation.from_console_call(bad_call) is None
 
-    assert provenance.CoarsenOperation.from_console_call(
+    assert CoarsenOperation.from_console_call(
         call(
             dataarray_method="coarsen",
             args=({"x": 2},),
             kwargs={"_reducer": "mean", "boundary": "trim"},
         )
-    ) == provenance.CoarsenOperation(
+    ) == CoarsenOperation(
         dim={"x": 2},
         boundary="trim",
         side="left",
@@ -5877,49 +5912,47 @@ def test_console_operations_match_branch_specific_calls() -> None:
             kwargs={"_reducer": "mean", "extra": object()},
         ),
     ):
-        assert provenance.CoarsenOperation.from_console_call(bad_call) is None
+        assert CoarsenOperation.from_console_call(bad_call) is None
 
-    assert provenance.ThinOperation.from_console_call(
+    assert ThinOperation.from_console_call(
         call(dataarray_method="thin", args=(2,))
-    ) == provenance.ThinOperation(mode="global", factor=2)
-    assert provenance.ThinOperation.from_console_call(
+    ) == ThinOperation(mode="global", factor=2)
+    assert ThinOperation.from_console_call(
         call(dataarray_method="thin", args=(None,), kwargs={"x": 2})
-    ) == provenance.ThinOperation(mode="per_dim", factors={"x": 2})
-    assert provenance.ThinOperation.from_console_call(
+    ) == ThinOperation(mode="per_dim", factors={"x": 2})
+    assert ThinOperation.from_console_call(
         call(dataarray_method="thin", args=({"x": 2},), kwargs={"y": 2})
-    ) == provenance.ThinOperation(mode="per_dim", factors={"x": 2, "y": 2})
+    ) == ThinOperation(mode="per_dim", factors={"x": 2, "y": 2})
     for bad_call in (
         call(dataarray_method="thin", args=(1, 2)),
         call(dataarray_method="thin", args=(1,), kwargs={"x": 2}),
     ):
-        assert provenance.ThinOperation.from_console_call(bad_call) is None
+        assert ThinOperation.from_console_call(bad_call) is None
 
-    assert provenance.RenameDimsCoordsOperation.from_console_call(
+    assert RenameDimsCoordsOperation.from_console_call(
         call(dataarray_method="rename", kwargs={"new_name_or_name_dict": {"x": "kx"}})
-    ) == provenance.RenameDimsCoordsOperation(mapping={"x": "kx"})
+    ) == RenameDimsCoordsOperation(mapping={"x": "kx"})
     assert (
-        provenance.RenameDimsCoordsOperation.from_console_call(
+        RenameDimsCoordsOperation.from_console_call(
             call(dataarray_method="rename", args=(None,))
         )
         is None
     )
 
-    assigned = provenance.AssignCoordsOperation.from_console_call(
+    assigned = AssignCoordsOperation.from_console_call(
         call(dataarray_method="assign_coords", kwargs={"x": np.array([2.0, 3.0])})
     )
-    assert isinstance(assigned, provenance.AssignCoordsOperation)
+    assert isinstance(assigned, AssignCoordsOperation)
     np.testing.assert_allclose(assigned.decoded_values, [2.0, 3.0])
-    assert provenance.AssignScalarCoordOperation.from_console_call(
+    assert AssignScalarCoordOperation.from_console_call(
         call(dataarray_method="assign_coords", kwargs={"temperature": 21.5})
-    ) == provenance.AssignScalarCoordOperation(coord_name="temperature", value=21.5)
-    assert provenance.AssignCoord1DOperation.from_console_call(
+    ) == AssignScalarCoordOperation(coord_name="temperature", value=21.5)
+    assert AssignCoord1DOperation.from_console_call(
         call(
             dataarray_method="assign_coords",
             kwargs={"temperature": ("x", [100, 101])},
         )
-    ) == provenance.AssignCoord1DOperation(
-        coord_name="temperature", dim="x", values=[100, 101]
-    )
+    ) == AssignCoord1DOperation(coord_name="temperature", dim="x", values=[100, 101])
     for bad_call in (
         call(dataarray_method="assign_coords", args=(1, 2)),
         call(dataarray_method="assign_coords", kwargs={"z": np.array([1.0, 2.0])}),
@@ -5932,10 +5965,10 @@ def test_console_operations_match_branch_specific_calls() -> None:
             kwargs={"temperature": ("x", np.ones((2, 2)))},
         ),
     ):
-        assert provenance.AssignCoordsOperation.from_console_call(bad_call) is None
-        assert provenance.AssignCoord1DOperation.from_console_call(bad_call) is None
+        assert AssignCoordsOperation.from_console_call(bad_call) is None
+        assert AssignCoord1DOperation.from_console_call(bad_call) is None
     assert (
-        provenance.AssignCoordsOperation.from_console_call(
+        AssignCoordsOperation.from_console_call(
             call(
                 dataarray_method="assign_coords",
                 kwargs={"x": ("x", [2.0, 3.0])},
@@ -5958,7 +5991,7 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
         name="five_dim",
     )
 
-    parsed_array = provenance._parse_replay_input(np.arange(6).reshape((2, 3)))
+    parsed_array = _parse_replay_input(np.arange(6).reshape((2, 3)))
     assert len(parsed_array) == 1
     assert isinstance(parsed_array[0], xr.DataArray)
 
@@ -5970,62 +6003,89 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
             "scalar": xr.DataArray(1.0),
         }
     )
-    assert [darr.name for darr in provenance._parse_replay_input(dataset)] == [
+    assert [darr.name for darr in _parse_replay_input(dataset)] == [
         "line",
         "image",
         "five_dim",
     ]
 
     tree = xr.DataTree.from_dict({"leaf": xr.Dataset({"image": image})})
-    assert [darr.name for darr in provenance._parse_replay_input(tree)] == ["image"]
+    assert [darr.name for darr in _parse_replay_input(tree)] == ["image"]
     xr.testing.assert_identical(
-        provenance._select_replay_input(
+        _select_replay_input(
             dataset,
-            provenance.FileDataSelection(kind="dataset_variable", value="image"),
+            FileDataSelection(kind="dataset_variable", value="image"),
         ),
         image,
     )
     xr.testing.assert_identical(
-        provenance._select_replay_input(
+        _select_replay_input(
             tree,
-            provenance.FileDataSelection(kind="datatree_path", value="/leaf/image"),
+            FileDataSelection(kind="datatree_variable", value=("/leaf", "image")),
         ),
         image,
     )
-    assert provenance._select_replay_input(
-        np.arange(6).reshape((2, 3)),
-        provenance.FileDataSelection(kind="dataarray"),
-    ).shape == (2, 3)
-
-    with pytest.raises(ValueError, match="No valid data"):
-        provenance._parse_replay_input([])
-    with pytest.raises(ValueError, match="No valid data"):
-        provenance._parse_replay_input(xr.Dataset({"scalar": xr.DataArray(1.0)}))
-    with pytest.raises(TypeError, match="Unsupported input type list"):
-        provenance._parse_replay_input([object()])
-    with pytest.raises(KeyError, match="Selected file variable"):
-        provenance._select_replay_input(
-            dataset,
-            provenance.FileDataSelection(kind="dataset_variable", value="missing"),
-        )
-    with pytest.raises(KeyError, match="Selected file DataTree path"):
-        provenance._select_replay_input(
-            tree,
-            provenance.FileDataSelection(kind="datatree_path", value="/missing/image"),
-        )
-
+    keyed_tree = xr.DataTree.from_dict({"leaf": xr.Dataset({1: image.rename(1)})})
+    keyed_selection = FileDataSelection(
+        kind="datatree_variable",
+        value=("/leaf", 1),
+    )
+    xr.testing.assert_identical(
+        _select_replay_input(keyed_tree, keyed_selection),
+        image.rename(1),
+    )
     assert (
-        provenance._resolve_importable_callable("xarray.load_dataarray")
-        is xr.load_dataarray
+        FileDataSelection.model_validate(keyed_selection.model_dump(mode="json"))
+        == keyed_selection
     )
+    assert _select_replay_input(
+        np.arange(6).reshape((2, 3)),
+        FileDataSelection(kind="dataarray"),
+    ).shape == (2, 3)
+    xr.testing.assert_identical(
+        _select_replay_input(
+            [line, image],
+            FileDataSelection(kind="sequence_index", value=1),
+        ),
+        image,
+    )
+
+    with pytest.raises(ValueError, match="No valid data"):
+        _parse_replay_input([])
+    with pytest.raises(ValueError, match="No valid data"):
+        _parse_replay_input(xr.Dataset({"scalar": xr.DataArray(1.0)}))
+    with pytest.raises(TypeError, match="Unsupported input type list"):
+        _parse_replay_input([object()])
+    with pytest.raises(KeyError, match="Selected file variable"):
+        _select_replay_input(
+            dataset,
+            FileDataSelection(kind="dataset_variable", value="missing"),
+        )
+    with pytest.raises(KeyError, match="Selected file DataTree variable"):
+        _select_replay_input(
+            tree,
+            FileDataSelection(kind="datatree_variable", value=("/missing", "image")),
+        )
+    with pytest.raises(TypeError, match="require the loader to return a sequence"):
+        _select_replay_input(
+            image,
+            FileDataSelection(kind="sequence_index", value=0),
+        )
+    with pytest.raises(IndexError, match="sequence index 2 is out of range"):
+        _select_replay_input(
+            [image],
+            FileDataSelection(kind="sequence_index", value=2),
+        )
+
+    assert _resolve_importable_callable("xarray.load_dataarray") is xr.load_dataarray
     with pytest.raises(ValueError, match="must be dotted"):
-        provenance._resolve_importable_callable("load")
+        _resolve_importable_callable("load")
     with pytest.raises(ModuleNotFoundError):
-        provenance._resolve_importable_callable("missing_erlab_replay_loader.load")
+        _resolve_importable_callable("missing_erlab_replay_loader.load")
     with pytest.raises(AttributeError):
-        provenance._resolve_importable_callable("xarray.missing_loader.load")
+        _resolve_importable_callable("xarray.missing_loader.load")
     with pytest.raises(TypeError, match="not callable"):
-        provenance._resolve_importable_callable("math.pi")
+        _resolve_importable_callable("math.pi")
 
     broken_module = tmp_path / "broken_loader.py"
     broken_module.write_text(
@@ -6034,21 +6094,21 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
     )
     monkeypatch.syspath_prepend(str(tmp_path))
     with pytest.raises(ModuleNotFoundError, match="missing_erlab_replay_dependency"):
-        provenance._resolve_importable_callable("broken_loader.load")
+        _resolve_importable_callable("broken_loader.load")
 
     source_file = tmp_path / "source.h5"
     image.to_netcdf(source_file, engine="h5netcdf")
     dataset_file = tmp_path / "dataset.h5"
     dataset.to_netcdf(dataset_file, engine="h5netcdf")
     xr.testing.assert_identical(
-        provenance._load_file_source_data(
+        _load_file_source_data(
             _file_replay_source(
                 dataset_file,
-                replay_call=provenance.FileReplayCall(
+                replay_call=FileReplayCall(
                     kind="callable",
                     target="xarray.load_dataset",
                     kwargs={"engine": "h5netcdf"},
-                    selection=provenance.FileDataSelection(
+                    selection=FileDataSelection(
                         kind="dataset_variable",
                         value="image",
                     ),
@@ -6060,16 +6120,16 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
     datatree_file = tmp_path / "tree.h5"
     tree.to_netcdf(datatree_file, engine="h5netcdf")
     xr.testing.assert_identical(
-        provenance._load_file_source_data(
+        _load_file_source_data(
             _file_replay_source(
                 datatree_file,
-                replay_call=provenance.FileReplayCall(
+                replay_call=FileReplayCall(
                     kind="callable",
                     target="xarray.load_datatree",
                     kwargs={"engine": "h5netcdf"},
-                    selection=provenance.FileDataSelection(
-                        kind="datatree_path",
-                        value="/leaf/image",
+                    selection=FileDataSelection(
+                        kind="datatree_variable",
+                        value=("/leaf", "image"),
                     ),
                 ),
             )
@@ -6077,10 +6137,10 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
         image,
     )
     with pytest.raises(IndexError, match="out of range"):
-        provenance._load_file_source_data(
+        _load_file_source_data(
             _file_replay_source(
                 source_file,
-                replay_call=provenance.FileReplayCall(
+                replay_call=FileReplayCall(
                     kind="callable",
                     target="xarray.load_dataarray",
                     kwargs={"engine": "h5netcdf"},
@@ -6089,8 +6149,8 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
             )
         )
     with pytest.raises(ValueError, match="replay metadata"):
-        provenance._load_file_source_data(
-            provenance.FileLoadSource(
+        _load_file_source_data(
+            FileLoadSource(
                 path=source_file,
                 loader_label="Load Function",
                 loader_text="xarray.load_dataarray",
@@ -6098,20 +6158,20 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
             )
         )
     with pytest.raises(TypeError, match="Expected structured file provenance"):
-        provenance.replay_file_provenance(provenance.full_data())
+        replay_file_provenance(full_data())
     with pytest.raises(TypeError, match="Expected structured file provenance"):
-        provenance.replay_file_provenance(typing.cast("typing.Any", None))
+        replay_file_provenance(typing.cast("typing.Any", None))
 
 
 def test_file_replay_uses_erlab_loader(example_loader, example_data_dir) -> None:
     del example_loader
     file_path = example_data_dir / "data_002.h5"
-    spec = provenance.file_load(
+    spec = file_load(
         start_label="Load data from file 'data_002.h5'",
         seed_code="import erlab\n\nderived = erlab.io.load(2)",
         file_load_source=_file_replay_source(
             file_path,
-            replay_call=provenance.FileReplayCall(
+            replay_call=FileReplayCall(
                 kind="erlab_loader",
                 target="example",
                 kwargs={},
@@ -6121,7 +6181,7 @@ def test_file_replay_uses_erlab_loader(example_loader, example_data_dir) -> None
     )
 
     xr.testing.assert_identical(
-        provenance.replay_file_provenance(spec),
+        replay_file_provenance(spec),
         erlab.io.loaders["example"].load(file_path),
     )
 
@@ -6138,19 +6198,19 @@ def test_file_provenance_composes_structured_stages_and_replays_modified_source(
     )
     data.to_netcdf(path, engine="h5netcdf")
 
-    file_spec = provenance.file_load(
+    file_spec = file_load(
         start_label=f"Load data from file {path.name!r}",
         seed_code=(
             "import xarray\n\n"
             f"derived = xarray.load_dataarray({str(path)!r}, "
             'engine="h5netcdf").astype("float64")'
         ),
-        file_load_source=provenance.FileLoadSource(
+        file_load_source=FileLoadSource(
             path=path,
             loader_label="Load Function",
             loader_text="xarray.load_dataarray",
             kwargs_text='engine="h5netcdf"',
-            replay_call=provenance.FileReplayCall(
+            replay_call=FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 kwargs={"engine": "h5netcdf"},
@@ -6164,21 +6224,21 @@ def test_file_provenance_composes_structured_stages_and_replays_modified_source(
             ),
         ),
     )
-    first_stage = provenance.full_data(
-        provenance.AverageOperation(dims=("x",)),
-        provenance.RenameOperation(name="avg"),
+    first_stage = full_data(
+        AverageOperation(dims=("x",)),
+        RenameOperation(name="avg"),
     )
-    second_stage = provenance.selection(
-        provenance.IselOperation(kwargs={"y": slice(0, 2)}),
-        provenance.RenameDimsCoordsOperation(mapping={"y": "energy"}),
-        provenance.AssignCoordsOperation(
+    second_stage = selection(
+        IselOperation(kwargs={"y": slice(0, 2)}),
+        RenameDimsCoordsOperation(mapping={"y": "energy"}),
+        AssignCoordsOperation(
             coord_name="energy",
             values=np.array([10.0, 20.0]),
         ),
     )
 
-    composed = provenance.compose_full_provenance(file_spec, first_stage)
-    composed = provenance.compose_full_provenance(composed, second_stage)
+    composed = compose_full_provenance(file_spec, first_stage)
+    composed = compose_full_provenance(composed, second_stage)
 
     assert composed is not None
     assert composed.kind == "file"
@@ -6187,7 +6247,7 @@ def test_file_provenance_composes_structured_stages_and_replays_modified_source(
         "selection",
     ]
     assert all(
-        not isinstance(operation, provenance.ScriptCodeOperation)
+        not isinstance(operation, ScriptCodeOperation)
         for stage in composed.replay_stages
         for operation in stage.operations
     )
@@ -6207,23 +6267,21 @@ def test_file_provenance_composes_structured_stages_and_replays_modified_source(
     updated = data + 100
     updated.to_netcdf(path, engine="h5netcdf")
     live_expected = second_stage.apply(first_stage.apply(updated.astype(np.float64)))
-    xr.testing.assert_identical(
-        provenance.replay_file_provenance(composed), live_expected
-    )
+    xr.testing.assert_identical(replay_file_provenance(composed), live_expected)
 
 
 def test_tool_provenance_compose_display_provenance_streamlines_live_source() -> None:
-    parent = provenance.script(
+    parent = script(
         start_label="Start from watched variable 'my_data_name'",
         seed_code="derived = my_data_name",
     )
-    source = provenance.selection(
-        provenance.IselOperation(kwargs={"z": 0}),
-        provenance.SortCoordOrderOperation(),
-        provenance.SqueezeOperation(),
+    source = selection(
+        IselOperation(kwargs={"z": 0}),
+        SortCoordOrderOperation(),
+        SqueezeOperation(),
     )
 
-    composed = provenance.compose_display_provenance(
+    composed = compose_display_provenance(
         parent,
         source,
         parent_data=_base_data(),
@@ -6243,13 +6301,13 @@ def test_tool_provenance_compose_display_provenance_streamlines_live_source() ->
 
 
 def test_tool_provenance_display_compose_keeps_default_seed_without_parent() -> None:
-    source = provenance.selection(
-        provenance.IselOperation(kwargs={"z": 0}),
-        provenance.SortCoordOrderOperation(),
-        provenance.SqueezeOperation(),
+    source = selection(
+        IselOperation(kwargs={"z": 0}),
+        SortCoordOrderOperation(),
+        SqueezeOperation(),
     )
 
-    composed = provenance.compose_display_provenance(
+    composed = compose_display_provenance(
         None,
         source,
         parent_data=_base_data(),
@@ -6266,22 +6324,20 @@ def test_tool_provenance_display_compose_keeps_default_seed_without_parent() -> 
 
 def test_tool_provenance_direct_replay_input_name_requires_simple_seed() -> None:
 
-    watched = provenance.script(
+    watched = script(
         start_label="Start from watched variable 'my_data'",
         seed_code="derived = my_data",
     )
-    assert provenance.direct_replay_input_name(watched) == "my_data"
-    watched_cast = provenance.script(
+    assert direct_replay_input_name(watched) == "my_data"
+    watched_cast = script(
         start_label="Start from watched variable 'my_data'",
         seed_code="derived = my_data.astype(np.float64)",
     )
-    assert provenance.direct_replay_input_name(watched_cast) == (
-        "my_data.astype(np.float64)"
-    )
+    assert direct_replay_input_name(watched_cast) == ("my_data.astype(np.float64)")
 
     assert (
-        provenance.direct_replay_input_name(
-            provenance.script(
+        direct_replay_input_name(
+            script(
                 start_label="Start from current parent ImageTool data",
                 seed_code="derived = data",
             )
@@ -6289,8 +6345,8 @@ def test_tool_provenance_direct_replay_input_name_requires_simple_seed() -> None
         is None
     )
     assert (
-        provenance.direct_replay_input_name(
-            provenance.script(
+        direct_replay_input_name(
+            script(
                 start_label="Start from watched variable 'my_data'",
                 seed_code="derived = data.sel(x=0)",
             )
@@ -6300,22 +6356,22 @@ def test_tool_provenance_direct_replay_input_name_requires_simple_seed() -> None
 
 
 def test_tool_provenance_compose_display_replay_omits_synthetic_1d_squeeze() -> None:
-    parent = provenance.script(
+    parent = script(
         start_label="Start from watched variable 'my_1d'",
         seed_code="derived = my_1d",
     )
-    source = provenance.selection(
-        provenance.SortCoordOrderOperation(),
-        provenance.SqueezeOperation(),
+    source = selection(
+        SortCoordOrderOperation(),
+        SqueezeOperation(),
     )
     parent_data = xr.DataArray(
         np.arange(5).reshape((5, 1)),
         dims=("x", "stack_dim"),
         coords={"x": np.arange(5), "stack_dim": [0]},
     )
-    parent_data = provenance.mark_promoted_1d_source(parent_data)
+    parent_data = mark_promoted_1d_source(parent_data)
 
-    composed = provenance.compose_display_provenance(
+    composed = compose_display_provenance(
         parent,
         source,
         parent_data=parent_data,
@@ -6335,11 +6391,11 @@ def test_tool_provenance_compose_display_replay_omits_synthetic_1d_squeeze() -> 
     xr.testing.assert_identical(derived, watched_data)
     assert ".squeeze()" not in code
 
-    explicit_source = provenance.selection(
-        provenance.SortCoordOrderOperation(),
-        provenance.SqueezeOperation(drop=True),
+    explicit_source = selection(
+        SortCoordOrderOperation(),
+        SqueezeOperation(drop=True),
     )
-    explicit_composed = provenance.compose_display_provenance(
+    explicit_composed = compose_display_provenance(
         parent,
         explicit_source,
         parent_data=parent_data,
@@ -6355,3 +6411,92 @@ def test_tool_provenance_compose_display_replay_omits_synthetic_1d_squeeze() -> 
     explicit_derived = explicit_namespace["derived"]
     assert isinstance(explicit_derived, xr.DataArray)
     xr.testing.assert_identical(explicit_derived, watched_data.squeeze(drop=True))
+
+
+def test_model_fit_operation_replays_selected_parameter_as_dataarray() -> None:
+    x = np.linspace(-1.0, 1.0, 11)
+    y = np.array([0, 1])
+    data = xr.DataArray(
+        np.stack((1.0 + 2.0 * x, 3.0 + 4.0 * x)),
+        dims=("y", "x"),
+        coords={"y": y, "x": x},
+    )
+    operation = ModelFitOperation(
+        fit_dim="x",
+        model="PolynomialModel",
+        model_kwargs={"degree": 1},
+        parameters={
+            "c0": _ModelFitParameterSpec(value=(0.5, 2.5)),
+            "c1": _ModelFitParameterSpec(
+                value=(1.5, 3.5),
+                minimum=(-np.inf, 0.0),
+                maximum=(3.0, np.inf),
+            ),
+        },
+        method="leastsq",
+        parameter="c1",
+        broadcast_dim="y",
+    )
+
+    expected = operation.apply(data, parent_data=data)
+    assert expected.name == "c1_values"
+    np.testing.assert_allclose(expected.values, [2.0, 4.0])
+
+    code = f"derived = {operation.expression_code('data')}"
+    assert "imagetool" not in code
+    assert "fit_result" not in code
+    assert "-np.inf" in code
+    assert "np.inf" in code
+    namespace = _exec_generated_code(code, {"data": data})
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+    parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
+    assert isinstance(parsed, ModelFitOperation)
+    assert parsed == operation
+
+    stderr_operation = operation.model_copy(update={"output": "stderr"})
+    stderr = stderr_operation.apply(data, parent_data=data)
+    assert stderr.name == "c1_stderr"
+    assert isinstance(stderr, xr.DataArray)
+    assert np.isfinite(stderr.values).all()
+
+
+def test_model_fit_operation_rejects_ambiguous_parameter_shapes() -> None:
+    parameters = {
+        "c0": _ModelFitParameterSpec(value=(0.0, 1.0)),
+        "c1": _ModelFitParameterSpec(value=1.0),
+    }
+    with pytest.raises(ValueError, match="broadcast dimension"):
+        ModelFitOperation(
+            fit_dim="x",
+            model="PolynomialModel",
+            model_kwargs={"degree": 1},
+            parameters=parameters,
+            method="leastsq",
+            parameter="c1",
+        )
+    with pytest.raises(ValueError, match="Unsupported model-fit model"):
+        ModelFitOperation(
+            fit_dim="x",
+            model="CustomModel",
+            parameters={"c1": _ModelFitParameterSpec(value=1.0)},
+            method="leastsq",
+            parameter="c1",
+        )
+
+    operation = ModelFitOperation(
+        fit_dim="x",
+        model="PolynomialModel",
+        model_kwargs={"degree": 1},
+        parameters=parameters,
+        method="leastsq",
+        parameter="c1",
+        broadcast_dim="y",
+    )
+    data = xr.DataArray(
+        np.ones((3, 5)),
+        dims=("y", "x"),
+        coords={"y": [0, 1, 2], "x": np.arange(5)},
+    )
+    with pytest.raises(ValueError, match="does not match dimension"):
+        operation.apply(data, parent_data=data)

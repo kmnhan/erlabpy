@@ -16,10 +16,13 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
+    ToolProvenanceOperation,
+)
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Collection, Hashable
+    from collections.abc import Hashable, Sequence
 
     import qtawesome
 
@@ -32,17 +35,16 @@ else:
 
 logger = logging.getLogger(__name__)
 
-_FileDataSelection = provenance.FileDataSelection
-_FileSelection: typing.TypeAlias = int | dict[str, typing.Any] | _FileDataSelection
+_SerializedFileDataSelection: typing.TypeAlias = int | dict[str, typing.Any]
 
 
 @dataclasses.dataclass(frozen=True)
 class _PreparedInputData:
     data: xr.DataArray
-    selection: _FileSelection
+    selection: FileDataSelection
     source_ndim: int
     source_dtype: np.dtype[typing.Any]
-    operations: tuple[provenance.ToolProvenanceOperation, ...] = ()
+    operations: tuple[ToolProvenanceOperation, ...] = ()
 
 
 class ColorMapState(typing.TypedDict):
@@ -90,7 +92,7 @@ class ImageSlicerState(typing.TypedDict):
     controls_visible: typing.NotRequired[bool]
     file_path: typing.NotRequired[str | None]
     load_func: typing.NotRequired[
-        tuple[str, dict[str, typing.Any], _FileSelection] | None
+        tuple[str, dict[str, typing.Any], _SerializedFileDataSelection] | None
     ]
     splitter_sizes: typing.NotRequired[list[list[int]]]
     plotitem_states: typing.NotRequired[list[PlotItemState]]
@@ -136,12 +138,11 @@ def _reducible_shape(darr: xr.DataArray) -> bool:
     return _processed_ndim(darr) >= 2
 
 
-def _datatree_dataarray_path(source_path: str, variable_name: Hashable) -> str:
-    source_path = source_path.rstrip("/")
-    variable_path = str(variable_name).strip("/")
-    if not source_path:
-        return f"/{variable_path}"
-    return f"{source_path}/{variable_path}"
+def _datatree_dataarray_selection(
+    source_path: str, variable_name: Hashable
+) -> tuple[str, Hashable]:
+    node_path = source_path.rstrip("/") or "/"
+    return node_path, variable_name
 
 
 class _SelectDataArraysDialog(QtWidgets.QDialog):
@@ -152,7 +153,7 @@ class _SelectDataArraysDialog(QtWidgets.QDialog):
     ) -> None:
         super().__init__(parent)
         self._data_arrays: list[xr.DataArray] = []
-        self._selections: list[_FileDataSelection] = []
+        self._selections: list[FileDataSelection] = []
         self._source_paths: list[str] = []
         variable_names: list[str] = []
 
@@ -161,7 +162,7 @@ class _SelectDataArraysDialog(QtWidgets.QDialog):
                 if _reducible_shape(darr):
                     self._data_arrays.append(darr)
                     self._selections.append(
-                        _FileDataSelection(
+                        FileDataSelection(
                             kind="dataset_variable",
                             value=variable_name,
                         )
@@ -175,9 +176,9 @@ class _SelectDataArraysDialog(QtWidgets.QDialog):
                     if _reducible_shape(darr):
                         self._data_arrays.append(darr)
                         self._selections.append(
-                            _FileDataSelection(
-                                kind="datatree_path",
-                                value=_datatree_dataarray_path(
+                            FileDataSelection(
+                                kind="datatree_variable",
+                                value=_datatree_dataarray_selection(
                                     source_path, variable_name
                                 ),
                             )
@@ -544,7 +545,7 @@ class _SelectDataArraysDialog(QtWidgets.QDialog):
 
 
 def _select_input_dataarrays(
-    data: Collection[xr.DataArray | npt.NDArray]
+    data: Sequence[xr.DataArray | npt.NDArray]
     | xr.DataArray
     | npt.NDArray
     | xr.Dataset
@@ -614,7 +615,7 @@ def _associated_coord_icon(color: QtGui.QColor) -> QtGui.QIcon:
 
 
 def _parse_input(
-    data: Collection[xr.DataArray | npt.NDArray]
+    data: Sequence[xr.DataArray | npt.NDArray]
     | xr.DataArray
     | npt.NDArray
     | xr.Dataset
@@ -631,7 +632,7 @@ def _parse_input(
 
 
 def _prepare_input_data(
-    data: Collection[xr.DataArray | npt.NDArray]
+    data: Sequence[xr.DataArray | npt.NDArray]
     | xr.DataArray
     | npt.NDArray
     | xr.Dataset
@@ -681,7 +682,7 @@ def _prepare_parsed_input_data(
 
 
 def _parse_input_data(
-    data: Collection[xr.DataArray | npt.NDArray]
+    data: Sequence[xr.DataArray | npt.NDArray]
     | xr.DataArray
     | npt.NDArray
     | xr.Dataset
@@ -695,7 +696,7 @@ def _parse_input_data(
         parsed = (
             _PreparedInputData(
                 data=data_array,
-                selection=_FileDataSelection(kind="dataarray"),
+                selection=FileDataSelection(kind="dataarray"),
                 source_ndim=data_array.ndim,
                 source_dtype=np.dtype(data_array.dtype),
             ),
@@ -704,7 +705,7 @@ def _parse_input_data(
         parsed = tuple(
             _PreparedInputData(
                 data=darr,
-                selection=_FileDataSelection(
+                selection=FileDataSelection(
                     kind="dataset_variable",
                     value=variable_name,
                 ),
@@ -718,9 +719,9 @@ def _parse_input_data(
         parsed = tuple(
             _PreparedInputData(
                 data=darr,
-                selection=_FileDataSelection(
-                    kind="datatree_path",
-                    value=_datatree_dataarray_path(str(leaf.path), variable_name),
+                selection=FileDataSelection(
+                    kind="datatree_variable",
+                    value=_datatree_dataarray_selection(str(leaf.path), variable_name),
                 ),
                 source_ndim=darr.ndim,
                 source_dtype=np.dtype(darr.dtype),
@@ -730,7 +731,7 @@ def _parse_input_data(
             if _reducible_shape(darr)
         )
     else:
-        if not isinstance(data, collections.abc.Collection):
+        if not isinstance(data, collections.abc.Sequence):
             raise TypeError(
                 f"Unsupported input type {input_cls}. Expected DataArray, Dataset, "
                 "DataTree, numpy array, or a list of DataArray or numpy arrays."
@@ -749,7 +750,7 @@ def _parse_input_data(
             parsed_list.append(
                 _PreparedInputData(
                     data=data_array,
-                    selection=_FileDataSelection(kind="parsed_index", value=index),
+                    selection=FileDataSelection(kind="sequence_index", value=index),
                     source_ndim=data_array.ndim,
                     source_dtype=np.dtype(data_array.dtype),
                 )

@@ -13,10 +13,44 @@ from qtpy import QtCore, QtWidgets
 import erlab
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.utils
-from erlab.interactive.imagetool import _kspace_conversion, dialogs, provenance
+from erlab.interactive.imagetool import _kspace_conversion, dialogs
 from erlab.interactive.imagetool._load_source import (
     _load_provenance_from_file_details,
     _loader_callable_text,
+    _migrate_legacy_file_data_selection,
+)
+from erlab.interactive.imagetool._provenance._execution import (
+    replay_file_provenance,
+    replay_script_provenance,
+    script_provenance_replayable,
+    script_provenance_requires_trust,
+)
+from erlab.interactive.imagetool._provenance._model import (
+    DerivationEntry,
+    FileDataSelection,
+    FileLoadSource,
+    FileReplayCall,
+    ReplayStage,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    _ProvenanceDisplayRow,
+    _ProvenanceStepRef,
+    compose_display_provenance,
+    compose_full_provenance,
+    encode_provenance_value,
+    full_data,
+    iter_operation_refs,
+    require_live_source_spec,
+    restamp_operation_groups,
+    script,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    AffineCoordOperation,
+    DivideByCoordOperation,
+    GaussianFilterOperation,
+    NormalizeOperation,
+    ScriptCodeOperation,
+    SortByOperation,
 )
 from erlab.interactive.imagetool.manager._dialogs import _LoaderOptionsWidget
 from erlab.interactive.imagetool.manager._widgets import _TrustedScriptReplayCancelled
@@ -37,7 +71,7 @@ if typing.TYPE_CHECKING:
 class _FileLoadBatchPeer:
     node: _ImageToolWrapper | _ManagedWindowNode
     scope: typing.Literal["display", "source"]
-    spec: provenance.ToolProvenanceSpec
+    spec: ToolProvenanceSpec
     original_path: pathlib.Path
     loader_summary: str
     script_input_path: tuple[int, ...] = ()
@@ -59,8 +93,8 @@ class _ValidatedProvenanceEdit:
     node: _ImageToolWrapper | _ManagedWindowNode
     scope: typing.Literal["display", "source"]
     data: xr.DataArray
-    spec: provenance.ToolProvenanceSpec
-    filter_operation: provenance.ToolProvenanceOperation | None
+    spec: ToolProvenanceSpec
+    filter_operation: ToolProvenanceOperation | None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -74,14 +108,26 @@ class _OperationDialogMatch:
 _NATIVE_TERMINAL_CURRENT_DATA_EDITORS: tuple[
     tuple[
         type[dialogs._DataManipulationDialog],
-        type[provenance.ToolProvenanceOperation],
+        type[ToolProvenanceOperation],
     ],
     ...,
 ] = (
-    (dialogs.NormalizeDialog, provenance.NormalizeOperation),
-    (dialogs.GaussianFilterDialog, provenance.GaussianFilterOperation),
-    (dialogs.DivideByCoordDialog, provenance.DivideByCoordOperation),
-    (dialogs.SortByDialog, provenance.SortByOperation),
+    (
+        dialogs.NormalizeDialog,
+        NormalizeOperation,
+    ),
+    (
+        dialogs.GaussianFilterDialog,
+        GaussianFilterOperation,
+    ),
+    (
+        dialogs.DivideByCoordDialog,
+        DivideByCoordOperation,
+    ),
+    (
+        dialogs.SortByDialog,
+        SortByOperation,
+    ),
 )
 
 
@@ -186,7 +232,7 @@ def _parse_loader_kwargs(text: str) -> dict[str, typing.Any]:
 class _FileLoadEditDialog(QtWidgets.QDialog):
     def __init__(
         self,
-        load_source: provenance.FileLoadSource,
+        load_source: FileLoadSource,
         parent: QtWidgets.QWidget,
         *,
         batch_peers: Sequence[_FileLoadBatchPeer] = (),
@@ -209,7 +255,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self._updating_batch_peer_paths = False
         self._replay_call = load_source.replay_call
         self._selection = (
-            provenance.FileDataSelection(kind="dataarray")
+            FileDataSelection(kind="dataarray")
             if self._replay_call is None
             else self._replay_call.selection
         )
@@ -452,8 +498,8 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self,
         *,
         active_name: str,
-        replay_stages: tuple[provenance.ReplayStage, ...],
-    ) -> provenance.ToolProvenanceSpec:
+        replay_stages: tuple[ReplayStage, ...],
+    ) -> ToolProvenanceSpec:
         return self._provenance_spec_for(
             path=self.file_path(),
             selection=self._selection,
@@ -464,7 +510,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
     def peer_provenance_spec(
         self,
         peer: _FileLoadBatchPeer,
-    ) -> provenance.ToolProvenanceSpec:
+    ) -> ToolProvenanceSpec:
         load_source = peer.spec.file_load_source
         replay_call = None if load_source is None else load_source.replay_call
         if replay_call is None:
@@ -482,11 +528,16 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self,
         *,
         path: pathlib.Path,
-        selection: provenance.FileDataSelection,
+        selection: FileDataSelection,
         active_name: str,
-        replay_stages: tuple[provenance.ReplayStage, ...],
-    ) -> provenance.ToolProvenanceSpec:
+        replay_stages: tuple[ReplayStage, ...],
+    ) -> ToolProvenanceSpec:
         _filter_name, func, kwargs = self.loader_options.checked_filter()
+        if selection.kind == "parsed_index":
+            selection = _migrate_legacy_file_data_selection(
+                path,
+                (func, kwargs, selection),
+            )
         spec = _load_provenance_from_file_details(
             path,
             (func, kwargs, selection),
@@ -566,7 +617,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
 class _ScriptCodeEditDialog(QtWidgets.QDialog):
     def __init__(
         self,
-        operation: provenance.ScriptCodeOperation,
+        operation: ScriptCodeOperation,
         parent: QtWidgets.QWidget,
     ) -> None:
         super().__init__(parent)
@@ -638,7 +689,7 @@ def _iter_imagetool_dialog_classes(
 
 def _dialog_declares_operation_type(
     dialog_cls: type[dialogs._DataManipulationDialog],
-    operation_type: type[provenance.ToolProvenanceOperation],
+    operation_type: type[ToolProvenanceOperation],
 ) -> bool:
     return any(
         issubclass(operation_type, declared_type)
@@ -647,7 +698,7 @@ def _dialog_declares_operation_type(
 
 
 def _operation_matches_dialog(
-    operation: provenance.ToolProvenanceOperation,
+    operation: ToolProvenanceOperation,
     dialog_cls: type[dialogs._DataManipulationDialog],
 ) -> bool:
     return any(
@@ -692,7 +743,7 @@ def _dialog_overrides_operation_group_for_edit(
 
 
 def _standalone_editor_dialog_classes_for_operation_type(
-    operation_type: type[provenance.ToolProvenanceOperation],
+    operation_type: type[ToolProvenanceOperation],
 ) -> tuple[type[dialogs._DataManipulationDialog], ...]:
     matches: list[type[dialogs._DataManipulationDialog]] = []
     for dialog_base_cls in _iter_imagetool_dialog_classes(dialogs.DataTransformDialog):
@@ -715,7 +766,7 @@ def _standalone_editor_dialog_classes_for_operation_type(
 
 
 def _grouped_editor_dialog_classes_for_operation_type(
-    operation_type: type[provenance.ToolProvenanceOperation],
+    operation_type: type[ToolProvenanceOperation],
 ) -> tuple[type[dialogs.DataTransformDialog], ...]:
     matches: list[type[dialogs.DataTransformDialog]] = []
     for dialog_base_cls in _iter_imagetool_dialog_classes(dialogs.DataTransformDialog):
@@ -732,7 +783,7 @@ def _grouped_editor_dialog_classes_for_operation_type(
 
 
 def _standalone_editor_dialog_class_for_operation_type(
-    operation_type: type[provenance.ToolProvenanceOperation],
+    operation_type: type[ToolProvenanceOperation],
 ) -> type[dialogs._DataManipulationDialog] | None:
     matches = _standalone_editor_dialog_classes_for_operation_type(operation_type)
     if len(matches) > 1:
@@ -745,7 +796,7 @@ def _standalone_editor_dialog_class_for_operation_type(
 
 
 def _operation_editor_contract_errors() -> list[str]:
-    operation_types: set[type[provenance.ToolProvenanceOperation]] = set()
+    operation_types: set[type[ToolProvenanceOperation]] = set()
     for base_cls in (dialogs.DataTransformDialog, dialogs.DataFilterDialog):
         for dialog_cls in _iter_imagetool_dialog_classes(base_cls):
             operation_types.update(dialog_cls.operation_types)
@@ -809,16 +860,16 @@ def _validate_operation_editor_contract() -> None:
 
 
 def _dialog_class_for_operation(
-    operation: provenance.ToolProvenanceOperation,
+    operation: ToolProvenanceOperation,
 ) -> type[dialogs._DataManipulationDialog] | None:
     _validate_operation_editor_contract()
     return _standalone_editor_dialog_class_for_operation_type(type(operation))
 
 
 def _operations_for_ref(
-    spec: provenance.ToolProvenanceSpec,
-    ref: provenance._ProvenanceStepRef,
-) -> tuple[provenance.ToolProvenanceOperation, ...]:
+    spec: ToolProvenanceSpec,
+    ref: _ProvenanceStepRef,
+) -> tuple[ToolProvenanceOperation, ...]:
     if ref.kind != "operation" or ref.operation_index is None:
         return ()
     if ref.stage_index is None:
@@ -830,8 +881,8 @@ def _operations_for_ref(
 
 
 def _dialog_match_for_operation_ref(
-    spec: provenance.ToolProvenanceSpec,
-    ref: provenance._ProvenanceStepRef,
+    spec: ToolProvenanceSpec,
+    ref: _ProvenanceStepRef,
 ) -> _OperationDialogMatch | None:
     _validate_operation_editor_contract()
     operation = spec._operation_for_ref(ref)
@@ -887,8 +938,8 @@ def _dialog_match_for_operation_ref(
 
 
 def _editable_group_range_for_ref(
-    spec: provenance.ToolProvenanceSpec,
-    ref: provenance._ProvenanceStepRef,
+    spec: ToolProvenanceSpec,
+    ref: _ProvenanceStepRef,
 ) -> tuple[int, int] | None:
     match = _dialog_match_for_operation_ref(spec, ref)
     if match is None or match.stop - match.start <= 1:
@@ -897,7 +948,7 @@ def _editable_group_range_for_ref(
 
 
 def _uneditable_operation_reason(
-    operation: provenance.ToolProvenanceOperation,
+    operation: ToolProvenanceOperation,
 ) -> str | None:
     return _kspace_conversion.incomplete_kspace_conversion_edit_reason(operation)
 
@@ -908,7 +959,7 @@ class _ProvenanceEditController:
 
     def can_paste_steps(
         self,
-        operations: Sequence[provenance.ToolProvenanceOperation] | None,
+        operations: Sequence[ToolProvenanceOperation] | None,
     ) -> tuple[bool, str]:
         if not operations:
             return False, "The clipboard does not contain copied ImageTool steps."
@@ -918,7 +969,7 @@ class _ProvenanceEditController:
 
     def paste_steps(
         self,
-        operations: Sequence[provenance.ToolProvenanceOperation],
+        operations: Sequence[ToolProvenanceOperation],
         *,
         active_name: str,
         contains_script: bool,
@@ -931,7 +982,7 @@ class _ProvenanceEditController:
         failures: list[tuple[_ImageToolWrapper | _ManagedWindowNode, Exception]] = []
         pasted_count = 0
         for node in targets:
-            steps = provenance.restamp_operation_groups(operations)
+            steps = restamp_operation_groups(operations)
             try:
                 self._paste_steps_into_node(
                     node,
@@ -967,7 +1018,7 @@ class _ProvenanceEditController:
     def _paste_steps_into_node(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        steps: tuple[provenance.ToolProvenanceOperation, ...],
+        steps: tuple[ToolProvenanceOperation, ...],
         *,
         active_name: str,
         contains_script: bool,
@@ -975,7 +1026,7 @@ class _ProvenanceEditController:
         if contains_script or any(not operation.live_applicable for operation in steps):
             self._paste_detached_steps(
                 node,
-                provenance.script(
+                script(
                     *steps,
                     start_label="Start from current ImageTool data",
                     active_name=active_name or "derived",
@@ -988,7 +1039,7 @@ class _ProvenanceEditController:
     def _paste_structured_steps(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        operations: tuple[provenance.ToolProvenanceOperation, ...],
+        operations: tuple[ToolProvenanceOperation, ...],
     ) -> None:
         for operation in operations:
             if not operation.live_applicable:
@@ -1018,7 +1069,7 @@ class _ProvenanceEditController:
             self._manager._update_info(uid=node.uid)
             return
 
-        local = provenance.full_data(*operations)
+        local = full_data(*operations)
         self._paste_detached_steps(
             node,
             local,
@@ -1028,20 +1079,20 @@ class _ProvenanceEditController:
     def _paste_detached_steps(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        local: provenance.ToolProvenanceSpec,
+        local: ToolProvenanceSpec,
         *,
         where: str,
     ) -> None:
         current_data = node.current_source_data()
         try:
             if local.kind == "script":
-                trusted_user_code = provenance.script_provenance_requires_trust(local)
+                trusted_user_code = script_provenance_requires_trust(local)
                 if trusted_user_code:
                     self._manager._ensure_script_provenance_trusted(
                         local,
                         reason="paste these provenance steps",
                     )
-                data = provenance.replay_script_provenance(
+                data = replay_script_provenance(
                     local,
                     {
                         "data": current_data,
@@ -1064,13 +1115,13 @@ class _ProvenanceEditController:
             ) from exc
 
         if local.kind == "script":
-            spec = provenance.compose_full_provenance(
+            spec = compose_full_provenance(
                 node.displayed_provenance_spec,
                 local,
                 script_context_names=("data", "derived"),
             )
         else:
-            spec = provenance.compose_full_provenance(
+            spec = compose_full_provenance(
                 node.displayed_provenance_spec,
                 local,
             )
@@ -1081,7 +1132,7 @@ class _ProvenanceEditController:
 
     def can_delete_row(
         self,
-        row: provenance._ProvenanceDisplayRow | None,
+        row: _ProvenanceDisplayRow | None,
     ) -> tuple[bool, str]:
         node = self._metadata_node()
         if row is None or row.replay_ref is None:
@@ -1113,8 +1164,8 @@ class _ProvenanceEditController:
             except (IndexError, ValueError):
                 return False, "This script row is not a replayable step."
             if not (
-                provenance.script_provenance_replayable(candidate)
-                or provenance.script_provenance_requires_trust(candidate)
+                script_provenance_replayable(candidate)
+                or script_provenance_requires_trust(candidate)
             ):
                 return False, "Deleting this script step would make replay invalid."
         if spec.kind in {"full_data", "public_data", "selection"}:
@@ -1125,7 +1176,7 @@ class _ProvenanceEditController:
 
     def can_edit_row(
         self,
-        row: provenance._ProvenanceDisplayRow | None,
+        row: _ProvenanceDisplayRow | None,
     ) -> tuple[bool, str]:
         node = self._metadata_node()
         if row is None or row.edit_ref is None:
@@ -1149,7 +1200,12 @@ class _ProvenanceEditController:
         if operation is None:
             return False, "This operation is not available."
         script_operation = (
-            operation if isinstance(operation, provenance.ScriptCodeOperation) else None
+            operation
+            if isinstance(
+                operation,
+                ScriptCodeOperation,
+            )
+            else None
         )
         if script_operation is not None:
             if script_operation.code is None or not script_operation.copyable:
@@ -1159,8 +1215,8 @@ class _ProvenanceEditController:
         if spec.kind == "script":
             input_spec = spec._prefix_before_ref(row.edit_ref)
             if not (
-                provenance.script_provenance_replayable(input_spec)
-                or provenance.script_provenance_requires_trust(input_spec)
+                script_provenance_replayable(input_spec)
+                or script_provenance_requires_trust(input_spec)
             ):
                 return False, "This script step cannot be replayed."
         active_filter_ref = self._active_filter_ref(node, spec)
@@ -1183,7 +1239,7 @@ class _ProvenanceEditController:
 
     def can_revert_row(
         self,
-        row: provenance._ProvenanceDisplayRow | None,
+        row: _ProvenanceDisplayRow | None,
     ) -> tuple[bool, str]:
         node = self._metadata_node()
         if row is None or row.replay_ref is None:
@@ -1215,8 +1271,8 @@ class _ProvenanceEditController:
             return False, "Already at this provenance step."
         if spec.kind == "script":
             if not (
-                provenance.script_provenance_replayable(candidate)
-                or provenance.script_provenance_requires_trust(candidate)
+                script_provenance_replayable(candidate)
+                or script_provenance_requires_trust(candidate)
             ):
                 return False, "This script step cannot be replayed."
             if not all(
@@ -1234,7 +1290,10 @@ class _ProvenanceEditController:
             return False, "This live row needs a parent source to replay."
         return True, ""
 
-    def edit_row(self, row: provenance._ProvenanceDisplayRow | None) -> None:
+    def edit_row(
+        self,
+        row: _ProvenanceDisplayRow | None,
+    ) -> None:
         editable, reason = self.can_edit_row(row)
         if not editable:
             self._show_unavailable(reason)
@@ -1243,8 +1302,11 @@ class _ProvenanceEditController:
             "_ImageToolWrapper | _ManagedWindowNode",
             self._metadata_node(),
         )
-        row = typing.cast("provenance._ProvenanceDisplayRow", row)
-        ref = typing.cast("provenance._ProvenanceStepRef", row.edit_ref)
+        row = typing.cast("_ProvenanceDisplayRow", row)
+        ref = typing.cast(
+            "_ProvenanceStepRef",
+            row.edit_ref,
+        )
         try:
             if ref.kind == "file_load":
                 self._edit_file_load_row(node, row)
@@ -1262,7 +1324,10 @@ class _ProvenanceEditController:
                 return
             self._show_failed("Could Not Apply Provenance Edit", exc)
 
-    def revert_row(self, row: provenance._ProvenanceDisplayRow | None) -> None:
+    def revert_row(
+        self,
+        row: _ProvenanceDisplayRow | None,
+    ) -> None:
         revertible, reason = self.can_revert_row(row)
         if not revertible:
             self._show_unavailable(reason)
@@ -1274,8 +1339,11 @@ class _ProvenanceEditController:
             "_ImageToolWrapper | _ManagedWindowNode",
             self._metadata_node(),
         )
-        row = typing.cast("provenance._ProvenanceDisplayRow", row)
-        ref = typing.cast("provenance._ProvenanceStepRef", row.replay_ref)
+        row = typing.cast("_ProvenanceDisplayRow", row)
+        ref = typing.cast(
+            "_ProvenanceStepRef",
+            row.replay_ref,
+        )
         spec = self._display_spec_for_row(node, row)
         if spec is None:
             self._show_failed(
@@ -1283,7 +1351,7 @@ class _ProvenanceEditController:
                 RuntimeError("No provenance spec is available"),
             )
             return
-        repair_root_candidate: provenance.ToolProvenanceSpec | None = None
+        repair_root_candidate: ToolProvenanceSpec | None = None
         try:
             candidate = spec._prefix_through_ref(ref)
             repair_root_candidate = self._root_candidate_for_row(node, row, candidate)
@@ -1306,7 +1374,10 @@ class _ProvenanceEditController:
                 return
             self._show_failed("Could Not Revert Provenance Step", exc)
 
-    def delete_row(self, row: provenance._ProvenanceDisplayRow | None) -> None:
+    def delete_row(
+        self,
+        row: _ProvenanceDisplayRow | None,
+    ) -> None:
         deletable, reason = self.can_delete_row(row)
         if not deletable:
             self._show_unavailable(reason)
@@ -1315,8 +1386,11 @@ class _ProvenanceEditController:
             "_ImageToolWrapper | _ManagedWindowNode",
             self._metadata_node(),
         )
-        row = typing.cast("provenance._ProvenanceDisplayRow", row)
-        ref = typing.cast("provenance._ProvenanceStepRef", row.replay_ref)
+        row = typing.cast("_ProvenanceDisplayRow", row)
+        ref = typing.cast(
+            "_ProvenanceStepRef",
+            row.replay_ref,
+        )
         spec = self._display_spec_for_row(node, row)
         if spec is None:
             self._show_failed(
@@ -1324,7 +1398,7 @@ class _ProvenanceEditController:
                 RuntimeError("No provenance spec is available"),
             )
             return
-        repair_root_candidate: provenance.ToolProvenanceSpec | None = None
+        repair_root_candidate: ToolProvenanceSpec | None = None
         try:
             group = _editable_group_range_for_ref(spec, ref)
             if group is None:
@@ -1409,7 +1483,7 @@ class _ProvenanceEditController:
     @staticmethod
     def _source_child_parent_row(
         node: _ImageToolWrapper | _ManagedWindowNode | None,
-        row: provenance._ProvenanceDisplayRow,
+        row: _ProvenanceDisplayRow,
     ) -> bool:
         return (
             node is not None
@@ -1421,8 +1495,8 @@ class _ProvenanceEditController:
     def _root_display_spec_for_row(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        row: provenance._ProvenanceDisplayRow,
-    ) -> provenance.ToolProvenanceSpec | None:
+        row: _ProvenanceDisplayRow,
+    ) -> ToolProvenanceSpec | None:
         if row.scope == "source":
             return node.displayed_source_spec
         return node.displayed_provenance_spec
@@ -1430,8 +1504,8 @@ class _ProvenanceEditController:
     def _display_spec_for_row(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        row: provenance._ProvenanceDisplayRow,
-    ) -> provenance.ToolProvenanceSpec | None:
+        row: _ProvenanceDisplayRow,
+    ) -> ToolProvenanceSpec | None:
         spec = self._root_display_spec_for_row(node, row)
         if spec is None or not row.script_input_path:
             return spec
@@ -1439,9 +1513,9 @@ class _ProvenanceEditController:
 
     @staticmethod
     def _script_input_path_spec(
-        spec: provenance.ToolProvenanceSpec,
+        spec: ToolProvenanceSpec,
         path: tuple[int, ...],
-    ) -> provenance.ToolProvenanceSpec | None:
+    ) -> ToolProvenanceSpec | None:
         current = spec
         for index in path:
             if index < 0 or index >= len(current.script_inputs):
@@ -1455,9 +1529,9 @@ class _ProvenanceEditController:
     def _root_candidate_for_row(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        row: provenance._ProvenanceDisplayRow,
-        candidate: provenance.ToolProvenanceSpec,
-    ) -> provenance.ToolProvenanceSpec:
+        row: _ProvenanceDisplayRow,
+        candidate: ToolProvenanceSpec,
+    ) -> ToolProvenanceSpec:
         if not row.script_input_path:
             return candidate
         root = self._root_display_spec_for_row(node, row)
@@ -1471,10 +1545,10 @@ class _ProvenanceEditController:
 
     def _replace_script_input_path_spec(
         self,
-        spec: provenance.ToolProvenanceSpec,
+        spec: ToolProvenanceSpec,
         path: tuple[int, ...],
-        replacement: provenance.ToolProvenanceSpec,
-    ) -> provenance.ToolProvenanceSpec:
+        replacement: ToolProvenanceSpec,
+    ) -> ToolProvenanceSpec:
         if not path:
             return replacement
         index = path[0]
@@ -1501,10 +1575,10 @@ class _ProvenanceEditController:
 
     def _replace_file_load_target_spec(
         self,
-        root: provenance.ToolProvenanceSpec,
+        root: ToolProvenanceSpec,
         target: _FileLoadBatchPeer,
-        replacement: provenance.ToolProvenanceSpec,
-    ) -> provenance.ToolProvenanceSpec:
+        replacement: ToolProvenanceSpec,
+    ) -> ToolProvenanceSpec:
         if target.spec.kind == "script" and replacement.kind != "script":
             replacement = _replace_file_load_fields(target.spec, replacement)
         if not target.script_input_path:
@@ -1519,7 +1593,7 @@ class _ProvenanceEditController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
-        spec: provenance.ToolProvenanceSpec | None,
+        spec: ToolProvenanceSpec | None,
     ) -> tuple[_FileLoadBatchPeer, ...]:
         targets: list[_FileLoadBatchPeer] = []
         self._append_file_load_targets(
@@ -1537,7 +1611,7 @@ class _ProvenanceEditController:
         targets: list[_FileLoadBatchPeer],
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
-        spec: provenance.ToolProvenanceSpec | None,
+        spec: ToolProvenanceSpec | None,
         *,
         script_input_path: tuple[int, ...],
         display_label: str,
@@ -1576,7 +1650,7 @@ class _ProvenanceEditController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
-        spec: provenance.ToolProvenanceSpec | None,
+        spec: ToolProvenanceSpec | None,
         path: pathlib.Path,
     ) -> _FileLoadBatchPeer | None:
         target_path = _normalized_path(path)
@@ -1589,7 +1663,7 @@ class _ProvenanceEditController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
-        root_spec: provenance.ToolProvenanceSpec | None,
+        root_spec: ToolProvenanceSpec | None,
         focused: _FileLoadBatchPeer,
     ) -> tuple[_FileLoadBatchPeer, ...]:
         peers: list[_FileLoadBatchPeer] = []
@@ -1608,7 +1682,7 @@ class _ProvenanceEditController:
     @staticmethod
     def _root_spec_for_batch_peer(
         peer: _FileLoadBatchPeer,
-    ) -> provenance.ToolProvenanceSpec:
+    ) -> ToolProvenanceSpec:
         root = (
             peer.node.displayed_source_spec
             if peer.scope == "source"
@@ -1632,7 +1706,7 @@ class _ProvenanceEditController:
         candidates: tuple[
             tuple[
                 typing.Literal["display", "source"],
-                provenance.ToolProvenanceSpec | None,
+                ToolProvenanceSpec | None,
             ],
             ...,
         ] = (
@@ -1699,8 +1773,8 @@ class _ProvenanceEditController:
         row = (
             None
             if not target.script_input_path
-            else provenance._ProvenanceDisplayRow(
-                provenance.DerivationEntry("File load", None),
+            else _ProvenanceDisplayRow(
+                DerivationEntry("File load", None),
                 scope=scope,
                 script_input_path=target.script_input_path,
             )
@@ -1736,7 +1810,7 @@ class _ProvenanceEditController:
     def _edit_file_load_row(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        row: provenance._ProvenanceDisplayRow,
+        row: _ProvenanceDisplayRow,
     ) -> None:
         spec = self._display_spec_for_row(node, row)
         if (
@@ -1762,14 +1836,14 @@ class _ProvenanceEditController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
-        spec: provenance.ToolProvenanceSpec,
+        spec: ToolProvenanceSpec,
         *,
         where: str,
-        row: provenance._ProvenanceDisplayRow | None = None,
+        row: _ProvenanceDisplayRow | None = None,
         batch_peers: Sequence[_FileLoadBatchPeer] = (),
         batch_apply_default: bool = False,
         checked_batch_peer_ids: frozenset[str] | None = None,
-        root_spec: provenance.ToolProvenanceSpec | None = None,
+        root_spec: ToolProvenanceSpec | None = None,
     ) -> None:
         if spec.kind not in {"file", "script"} or spec.file_load_source is None:
             raise RuntimeError("Selected provenance does not have a file load step")
@@ -1803,7 +1877,10 @@ class _ProvenanceEditController:
             for peer in dialog.selected_batch_peers()
         ]
         deferred_peer_edits: list[
-            tuple[_FileLoadBatchPeer, provenance.ToolProvenanceSpec]
+            tuple[
+                _FileLoadBatchPeer,
+                ToolProvenanceSpec,
+            ]
         ] = []
         for peer, peer_candidate in peer_edits:
             if peer.node.uid == node.uid and peer.scope == scope:
@@ -1851,16 +1928,22 @@ class _ProvenanceEditController:
     def _edit_operation_row(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        row: provenance._ProvenanceDisplayRow,
+        row: _ProvenanceDisplayRow,
     ) -> None:
-        ref = typing.cast("provenance._ProvenanceStepRef", row.edit_ref)
+        ref = typing.cast(
+            "_ProvenanceStepRef",
+            row.edit_ref,
+        )
         spec = self._display_spec_for_row(node, row)
         if spec is None:
             raise RuntimeError("No provenance spec is available")
         operation = spec._operation_for_ref(ref)
         if operation is None:
             raise RuntimeError("Selected operation is not available")
-        if isinstance(operation, provenance.ScriptCodeOperation):
+        if isinstance(
+            operation,
+            ScriptCodeOperation,
+        ):
             self._edit_script_code_operation_row(node, row, spec, ref, operation)
             return
         dialog_match = _dialog_match_for_operation_ref(spec, ref)
@@ -1896,10 +1979,10 @@ class _ProvenanceEditController:
     def _edit_script_code_operation_row(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        row: provenance._ProvenanceDisplayRow,
-        spec: provenance.ToolProvenanceSpec,
-        ref: provenance._ProvenanceStepRef,
-        operation: provenance.ScriptCodeOperation,
+        row: _ProvenanceDisplayRow,
+        spec: ToolProvenanceSpec,
+        ref: _ProvenanceStepRef,
+        operation: ScriptCodeOperation,
     ) -> None:
         dialog = _ScriptCodeEditDialog(operation, self._manager)
         if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
@@ -1917,17 +2000,17 @@ class _ProvenanceEditController:
     def _edited_native_operations(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        row: provenance._ProvenanceDisplayRow,
-        spec: provenance.ToolProvenanceSpec,
-        ref: provenance._ProvenanceStepRef,
+        row: _ProvenanceDisplayRow,
+        spec: ToolProvenanceSpec,
+        ref: _ProvenanceStepRef,
         dialog_match: _OperationDialogMatch,
-    ) -> list[provenance.ToolProvenanceOperation] | None:
+    ) -> list[ToolProvenanceOperation] | None:
         operations = tuple(
             _operations_for_ref(spec, ref)[dialog_match.start : dialog_match.stop]
         )
         if not operations:
             raise ValueError("No provenance operations were provided for editing")
-        start_ref = provenance._ProvenanceStepRef(
+        start_ref = _ProvenanceStepRef(
             "operation",
             operation_index=dialog_match.start,
             stage_index=ref.stage_index,
@@ -1985,10 +2068,10 @@ class _ProvenanceEditController:
     def _native_edit_seed_data_without_replay(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        spec: provenance.ToolProvenanceSpec,
-        ref: provenance._ProvenanceStepRef,
+        spec: ToolProvenanceSpec,
+        ref: _ProvenanceStepRef,
         dialog_match: _OperationDialogMatch,
-        operations: Sequence[provenance.ToolProvenanceOperation],
+        operations: Sequence[ToolProvenanceOperation],
     ) -> xr.DataArray | None:
         for seed_builder in (
             self._terminal_current_data_edit_seed,
@@ -2002,10 +2085,10 @@ class _ProvenanceEditController:
     def _terminal_current_data_edit_seed(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        spec: provenance.ToolProvenanceSpec,
-        ref: provenance._ProvenanceStepRef,
+        spec: ToolProvenanceSpec,
+        ref: _ProvenanceStepRef,
         dialog_match: _OperationDialogMatch,
-        operations: Sequence[provenance.ToolProvenanceOperation],
+        operations: Sequence[ToolProvenanceOperation],
     ) -> xr.DataArray | None:
         if len(operations) != 1:
             return None
@@ -2022,11 +2105,15 @@ class _ProvenanceEditController:
             data = node.current_source_data().copy(deep=False)
         except Exception:
             return None
-        if isinstance(operation, provenance.NormalizeOperation) and not set(
-            operation.dims
-        ).issubset(data.dims):
+        if isinstance(
+            operation,
+            NormalizeOperation,
+        ) and not set(operation.dims).issubset(data.dims):
             return None
-        if isinstance(operation, provenance.GaussianFilterOperation):
+        if isinstance(
+            operation,
+            GaussianFilterOperation,
+        ):
             if not set(operation.sigma).issubset(data.dims):
                 return None
             try:
@@ -2040,7 +2127,10 @@ class _ProvenanceEditController:
                         return None
             except Exception:
                 return None
-        if isinstance(operation, provenance.DivideByCoordOperation):
+        if isinstance(
+            operation,
+            DivideByCoordOperation,
+        ):
             if operation.coord_name not in data.coords:
                 return None
             coord = data.coords[operation.coord_name]
@@ -2050,7 +2140,10 @@ class _ProvenanceEditController:
                 or np.issubdtype(coord.dtype, np.complexfloating)
             ):
                 return None
-        if isinstance(operation, provenance.SortByOperation):
+        if isinstance(
+            operation,
+            SortByOperation,
+        ):
             sort_keys = set(data.dims)
             for name, coord in data.coords.items():
                 if (
@@ -2066,17 +2159,20 @@ class _ProvenanceEditController:
     def _terminal_affine_coord_edit_seed(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        spec: provenance.ToolProvenanceSpec,
-        ref: provenance._ProvenanceStepRef,
+        spec: ToolProvenanceSpec,
+        ref: _ProvenanceStepRef,
         dialog_match: _OperationDialogMatch,
-        operations: Sequence[provenance.ToolProvenanceOperation],
+        operations: Sequence[ToolProvenanceOperation],
     ) -> xr.DataArray | None:
         if not issubclass(dialog_match.dialog_cls, dialogs.AssignCoordsDialog):
             return None
         if len(operations) != 1:
             return None
         operation = operations[0]
-        if not isinstance(operation, provenance.AffineCoordOperation):
+        if not isinstance(
+            operation,
+            AffineCoordOperation,
+        ):
             return None
         if operation.scale == 0.0:
             return None
@@ -2105,7 +2201,7 @@ class _ProvenanceEditController:
     @staticmethod
     def _restore_native_edit_dialog(
         dialog: dialogs._DataManipulationDialog,
-        operations: Sequence[provenance.ToolProvenanceOperation],
+        operations: Sequence[ToolProvenanceOperation],
         focus: str | None,
     ) -> None:
         if isinstance(dialog, dialogs.DataTransformDialog):
@@ -2122,7 +2218,7 @@ class _ProvenanceEditController:
     def _edit_active_filter(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        operation: provenance.ToolProvenanceOperation,
+        operation: ToolProvenanceOperation,
         dialog_cls: type[dialogs._DataManipulationDialog],
     ) -> None:
         if not node.materialize_pending_workspace_payload():
@@ -2143,7 +2239,7 @@ class _ProvenanceEditController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
-        candidate: provenance.ToolProvenanceSpec,
+        candidate: ToolProvenanceSpec,
         *,
         where: str = "validating the provenance change",
     ) -> None:
@@ -2155,7 +2251,7 @@ class _ProvenanceEditController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
-        candidate: provenance.ToolProvenanceSpec,
+        candidate: ToolProvenanceSpec,
         *,
         where: str,
     ) -> _ValidatedProvenanceEdit:
@@ -2197,7 +2293,7 @@ class _ProvenanceEditController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         data: xr.DataArray,
-        operation: provenance.ToolProvenanceOperation,
+        operation: ToolProvenanceOperation,
         *,
         where: str,
     ) -> None:
@@ -2231,9 +2327,9 @@ class _ProvenanceEditController:
     def _file_load_batch_peers(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        spec: provenance.ToolProvenanceSpec,
+        spec: ToolProvenanceSpec,
         *,
-        row: provenance._ProvenanceDisplayRow | None = None,
+        row: _ProvenanceDisplayRow | None = None,
     ) -> tuple[_FileLoadBatchPeer, ...]:
         load_source = spec.file_load_source
         replay_call = None if load_source is None else load_source.replay_call
@@ -2302,7 +2398,7 @@ class _ProvenanceEditController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
-        spec: provenance.ToolProvenanceSpec,
+        spec: ToolProvenanceSpec,
     ) -> xr.DataArray:
         data, _spec = self._replay_candidate_result(node, scope, spec)
         return data
@@ -2311,13 +2407,16 @@ class _ProvenanceEditController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
-        spec: provenance.ToolProvenanceSpec,
-    ) -> tuple[xr.DataArray, provenance.ToolProvenanceSpec]:
+        spec: ToolProvenanceSpec,
+    ) -> tuple[xr.DataArray, ToolProvenanceSpec]:
         if spec.kind == "file":
             return self._replay_file_candidate(spec), spec
         if spec.kind in {"full_data", "public_data", "selection"}:
             if any(
-                isinstance(operation, provenance.ScriptCodeOperation)
+                isinstance(
+                    operation,
+                    ScriptCodeOperation,
+                )
                 for operation in spec.operations
             ):
                 return self._replay_live_script_candidate(node, scope, spec), spec
@@ -2340,7 +2439,7 @@ class _ProvenanceEditController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
-        spec: provenance.ToolProvenanceSpec,
+        spec: ToolProvenanceSpec,
     ) -> xr.DataArray:
         if scope == "source" and node.parent_uid is not None:
             parent = self._manager._parent_node(node)
@@ -2349,7 +2448,7 @@ class _ProvenanceEditController:
             parent_data = node.detached_live_parent_data
             if parent_data is None:
                 raise RuntimeError("Live provenance needs a parent source to replay")
-        data = provenance.ToolProvenanceSpec._starting_data_for_kind(
+        data = ToolProvenanceSpec._starting_data_for_kind(
             typing.cast(
                 "typing.Literal['full_data', 'public_data', 'selection']",
                 spec.kind,
@@ -2357,10 +2456,13 @@ class _ProvenanceEditController:
             parent_data,
         )
         for operation in spec.operations:
-            if not isinstance(operation, provenance.ScriptCodeOperation):
+            if not isinstance(
+                operation,
+                ScriptCodeOperation,
+            ):
                 data = operation.apply(data, parent_data=parent_data)
                 continue
-            step_spec = provenance.script(
+            step_spec = script(
                 operation,
                 start_label=operation.label,
                 seed_code="derived = data",
@@ -2371,7 +2473,7 @@ class _ProvenanceEditController:
                 "derived": data,
                 "parent_data": parent_data,
             }
-            trusted_user_code = provenance.script_provenance_requires_trust(
+            trusted_user_code = script_provenance_requires_trust(
                 step_spec,
                 external_input_names=set(replay_inputs),
             )
@@ -2381,7 +2483,7 @@ class _ProvenanceEditController:
                     reason="apply this provenance step",
                     external_input_names=set(replay_inputs),
                 )
-            data = provenance.replay_script_provenance(
+            data = replay_script_provenance(
                 step_spec,
                 replay_inputs,
                 trusted_user_code=trusted_user_code,
@@ -2390,7 +2492,7 @@ class _ProvenanceEditController:
 
     def _replay_file_candidate(
         self,
-        spec: provenance.ToolProvenanceSpec,
+        spec: ToolProvenanceSpec,
     ) -> xr.DataArray:
         load_source = spec.file_load_source
         if load_source is not None:
@@ -2400,7 +2502,7 @@ class _ProvenanceEditController:
         with warnings.catch_warnings(record=True) as replay_warnings:
             warnings.simplefilter("always")
             try:
-                return provenance.replay_file_provenance(spec)
+                return replay_file_provenance(spec)
             except Exception as exc:
                 if warning_details := _replay_warning_details(replay_warnings):
                     exc.add_note(
@@ -2414,8 +2516,8 @@ class _ProvenanceEditController:
         node: _ImageToolWrapper | _ManagedWindowNode,
         scope: typing.Literal["display", "source"],
         data: xr.DataArray,
-        spec: provenance.ToolProvenanceSpec,
-        filter_operation: provenance.ToolProvenanceOperation | None,
+        spec: ToolProvenanceSpec,
+        filter_operation: ToolProvenanceOperation | None,
     ) -> None:
         if not node.materialize_pending_workspace_payload():
             raise RuntimeError(
@@ -2425,12 +2527,12 @@ class _ProvenanceEditController:
             raise RuntimeError("ImageTool is not available for editing")
         preserve_filter = filter_operation is not None
         if scope == "source":
-            live_spec = provenance.require_live_source_spec(spec)
+            live_spec = require_live_source_spec(spec)
             if live_spec is None or node.parent_uid is None:
                 raise RuntimeError("Source-bound edits need live source provenance")
             parent = self._manager._parent_node(node)
             parent_data = parent.current_source_data()
-            displayed = provenance.compose_display_provenance(
+            displayed = compose_display_provenance(
                 parent.displayed_provenance_spec,
                 live_spec,
                 parent_data=parent_data,
@@ -2461,14 +2563,14 @@ class _ProvenanceEditController:
     def _active_filter_ref(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        spec: provenance.ToolProvenanceSpec,
-    ) -> provenance._ProvenanceStepRef | None:
+        spec: ToolProvenanceSpec,
+    ) -> _ProvenanceStepRef | None:
         if node.imagetool is None:
             return None
         active = node.slicer_area._accepted_filter_provenance_operation
         if active is None:
             return None
-        for ref, operation in reversed(tuple(provenance.iter_operation_refs(spec))):
+        for ref, operation in reversed(tuple(iter_operation_refs(spec))):
             if operation == active:
                 return ref
         return None
@@ -2476,10 +2578,10 @@ class _ProvenanceEditController:
     def _split_active_filter(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        spec: provenance.ToolProvenanceSpec,
+        spec: ToolProvenanceSpec,
     ) -> tuple[
-        provenance.ToolProvenanceSpec,
-        provenance.ToolProvenanceOperation | None,
+        ToolProvenanceSpec,
+        ToolProvenanceOperation | None,
     ]:
         active_ref = self._active_filter_ref(node, spec)
         if active_ref is None:
@@ -2577,11 +2679,11 @@ class _ProvenanceEditController:
     def _handle_missing_source_file(
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
-        row: provenance._ProvenanceDisplayRow,
+        row: _ProvenanceDisplayRow,
         *,
         title: str,
         exc: Exception,
-        repair_spec: provenance.ToolProvenanceSpec | None = None,
+        repair_spec: ToolProvenanceSpec | None = None,
     ) -> bool:
         root_spec = repair_spec
         if (
@@ -2639,8 +2741,8 @@ class _ProvenanceEditController:
                 repair_row = (
                     None
                     if not target.script_input_path
-                    else provenance._ProvenanceDisplayRow(
-                        provenance.DerivationEntry("File load", None),
+                    else _ProvenanceDisplayRow(
+                        DerivationEntry("File load", None),
                         scope=row.scope,
                         script_input_path=target.script_input_path,
                     )
@@ -2809,18 +2911,20 @@ def _normalized_path(path: pathlib.Path) -> pathlib.Path:
 
 
 def _same_replay_loader(
-    left: provenance.FileReplayCall,
-    right: provenance.FileReplayCall,
+    left: FileReplayCall,
+    right: FileReplayCall,
 ) -> bool:
     return (
         left.kind == right.kind
         and left.target == right.target
-        and provenance.encode_provenance_value(left.kwargs)
-        == provenance.encode_provenance_value(right.kwargs)
+        and encode_provenance_value(left.kwargs)
+        == encode_provenance_value(right.kwargs)
     )
 
 
-def _file_load_edit_active_name(spec: provenance.ToolProvenanceSpec) -> str:
+def _file_load_edit_active_name(
+    spec: ToolProvenanceSpec,
+) -> str:
     if spec.kind == "script":
         seed_output = spec._script_seed_output_name()
         if seed_output is not None:
@@ -2829,9 +2933,9 @@ def _file_load_edit_active_name(spec: provenance.ToolProvenanceSpec) -> str:
 
 
 def _replace_file_load_fields(
-    spec: provenance.ToolProvenanceSpec,
-    replacement: provenance.ToolProvenanceSpec,
-) -> provenance.ToolProvenanceSpec:
+    spec: ToolProvenanceSpec,
+    replacement: ToolProvenanceSpec,
+) -> ToolProvenanceSpec:
     if replacement.kind != "file" or replacement.file_load_source is None:
         raise RuntimeError("Replacement is not a file load provenance spec")
     return spec.model_copy(
@@ -2857,9 +2961,9 @@ def _replace_recorded_path_text(
 
 
 def _relinked_file_load_spec(
-    spec: provenance.ToolProvenanceSpec,
+    spec: ToolProvenanceSpec,
     path: pathlib.Path,
-) -> provenance.ToolProvenanceSpec:
+) -> ToolProvenanceSpec:
     load_source = spec.file_load_source
     if load_source is None or load_source.replay_call is None:
         raise RuntimeError("Matching file load is no longer replayable")
@@ -2886,7 +2990,9 @@ def _relinked_file_load_spec(
     )
 
 
-def _loader_summary(load_source: provenance.FileLoadSource) -> str:
+def _loader_summary(
+    load_source: FileLoadSource,
+) -> str:
     if not load_source.kwargs_text or load_source.kwargs_text == "(none)":
         return load_source.loader_text
     return f"{load_source.loader_text} ({load_source.kwargs_text})"

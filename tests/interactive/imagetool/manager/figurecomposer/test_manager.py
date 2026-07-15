@@ -10,6 +10,7 @@ from erlab.interactive._figurecomposer._exceptions import FigureComposerInputErr
 from erlab.interactive.imagetool._figurecomposer_adapter import (
     build_figure_composer_operation,
 )
+from erlab.interactive.imagetool._provenance._model import FileDataSelection
 from erlab.interactive.imagetool.manager import _figure_dialogs
 
 from ._common import *
@@ -1286,13 +1287,21 @@ def test_manager_copy_full_code_for_file_backed_figure_composer_sources(
             first,
             manager=True,
             file_path=first_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         itool(
             second,
             manager=True,
             file_path=second_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 

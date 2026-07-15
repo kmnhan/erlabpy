@@ -64,7 +64,7 @@ from erlab.interactive.imagetool.manager._registry import (
 
 if typing.TYPE_CHECKING:
     import types
-    from collections.abc import Collection, Iterable, Iterator
+    from collections.abc import Collection, Iterable, Iterator, Sequence
 
     import numpy.typing as npt
 
@@ -1104,7 +1104,7 @@ def _load_in_manager_startup(
 
 
 def show_in_manager(
-    data: Collection[xr.DataArray | npt.NDArray]
+    data: Sequence[xr.DataArray | npt.NDArray]
     | xr.DataArray
     | npt.NDArray
     | xr.Dataset
@@ -1182,6 +1182,12 @@ def show_in_manager(
             "preparation_operations",
             tuple(prepared.operations for prepared in prepared_data),
         )
+        load_func = kwargs.get("load_func")
+        if isinstance(load_func, tuple | list) and len(load_func) == 2:
+            kwargs.setdefault(
+                "load_selections",
+                tuple(prepared.selection for prepared in prepared_data),
+            )
 
     if direct_manager is not None:
         # If the manager is running in the same process, directly pass the data
@@ -1197,7 +1203,7 @@ def show_in_manager(
 
 def replace_data(
     index: int | str | Collection[int | str],
-    data: Collection[xr.DataArray | npt.NDArray]
+    data: Sequence[xr.DataArray | npt.NDArray]
     | xr.DataArray
     | npt.NDArray
     | xr.Dataset

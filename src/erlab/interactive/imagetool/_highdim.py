@@ -8,7 +8,16 @@ import typing
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool._provenance._model import (
+    ToolProvenanceOperation,
+    operations_expression_code,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    IselOperation,
+    QSelAggregationOperation,
+    QSelOperation,
+    SelOperation,
+)
 from erlab.interactive.imagetool.dialogs import (
     _current_reducer,
     _populate_reducer_combo,
@@ -112,10 +121,12 @@ class _ReduceDimensionRow:
             return None
         return self.scalar_controls.qsel_width_indexer()
 
-    def aggregate_operation(self) -> provenance.QSelAggregationOperation | None:
+    def aggregate_operation(
+        self,
+    ) -> QSelAggregationOperation | None:
         if self.action != "aggregate":
             return None
-        return provenance.QSelAggregationOperation(
+        return QSelAggregationOperation(
             dims=(self.dim,),
             func=_current_reducer(self.reducer_combo),
         )
@@ -207,11 +218,13 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
             raise RuntimeError("No reduced data is available")
         return self._result_data
 
-    def source_operations(self) -> list[provenance.ToolProvenanceOperation]:
+    def source_operations(
+        self,
+    ) -> list[ToolProvenanceOperation]:
         isel_kwargs: dict[Hashable, typing.Any] = {}
         sel_kwargs: dict[Hashable, typing.Any] = {}
         qsel_kwargs: dict[Hashable, typing.Any] = {}
-        aggregate_operations: list[provenance.ToolProvenanceOperation] = []
+        aggregate_operations: list[ToolProvenanceOperation] = []
         selection_target = {
             "isel": isel_kwargs,
             "sel": sel_kwargs,
@@ -232,13 +245,13 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
             if aggregate_operation is not None:
                 aggregate_operations.append(aggregate_operation)
 
-        operations: list[provenance.ToolProvenanceOperation] = []
+        operations: list[ToolProvenanceOperation] = []
         if isel_kwargs:
-            operations.append(provenance.IselOperation(kwargs=isel_kwargs))
+            operations.append(IselOperation(kwargs=isel_kwargs))
         if sel_kwargs:
-            operations.append(provenance.SelOperation(kwargs=sel_kwargs))
+            operations.append(SelOperation(kwargs=sel_kwargs))
         if qsel_kwargs:
-            operations.append(provenance.QSelOperation(kwargs=qsel_kwargs))
+            operations.append(QSelOperation(kwargs=qsel_kwargs))
         operations.extend(aggregate_operations)
         return operations
 
@@ -249,7 +262,7 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
 
     def make_code(self) -> str:
         try:
-            return provenance.operations_expression_code(
+            return operations_expression_code(
                 self.source_operations(),
                 "data",
             )

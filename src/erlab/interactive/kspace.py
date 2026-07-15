@@ -39,6 +39,7 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive._options.schema import AppOptions
+    from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
 else:
     import lazy_loader as _lazy
 
@@ -1461,7 +1462,7 @@ class KspaceTool(KspaceToolGUI):
         *,
         input_name: str | None = None,
         data: xr.DataArray | None = None,
-    ) -> tuple[erlab.interactive.imagetool.provenance.ToolProvenanceOperation, ...]:
+    ) -> tuple[ToolProvenanceOperation, ...]:
         alpha_normal, beta_normal = self._current_normal_emission_angles()
         return _kspace_conversion.kspace_conversion_operations(
             self.data,

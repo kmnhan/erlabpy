@@ -36,7 +36,7 @@ from erlab.interactive._figurecomposer._exceptions import (
 )
 from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
-from erlab.interactive.imagetool import ImageTool, itool, provenance
+from erlab.interactive.imagetool import ImageTool, itool
 from erlab.interactive.imagetool._figurecomposer_adapter import (
     _multicursor_variable_key,
     _norm_updates,
@@ -44,6 +44,46 @@ from erlab.interactive.imagetool._figurecomposer_adapter import (
     _plain_value,
     _PlotOperationBuilder,
     build_figure_composer_operation,
+)
+from erlab.interactive.imagetool._provenance._execution import replay_file_provenance
+from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
+    FileLoadSource,
+    FileReplayCall,
+    ReplayStage,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    file_load,
+    full_data,
+    script,
+    selection,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    AffineCoordOperation,
+    AssignAttrsOperation,
+    AssignCoord1DOperation,
+    AssignCoordsOperation,
+    AssignScalarCoordOperation,
+    AverageOperation,
+    CoarsenOperation,
+    DivideByCoordOperation,
+    GaussianFilterOperation,
+    InterpolationOperation,
+    IselOperation,
+    LeadingEdgeOperation,
+    NormalizeOperation,
+    QSelAggregationOperation,
+    QSelOperation,
+    RenameDimsCoordsOperation,
+    RotateOperation,
+    ScriptCodeOperation,
+    SelOperation,
+    SortByOperation,
+    SqueezeOperation,
+    SwapDimsOperation,
+    SymmetrizeNfoldOperation,
+    SymmetrizeOperation,
+    ThinOperation,
 )
 from erlab.interactive.imagetool._viewer_dialogs import (
     _AssociatedCoordsDialog,
@@ -259,7 +299,7 @@ def test_operation_backed_dialog_empty_operation_edges(qtbot, monkeypatch) -> No
         raise RuntimeError("cannot emit")
 
     monkeypatch.setattr(
-        erlab.interactive.imagetool.provenance,
+        imagetool_dialogs,
         "operations_expression_code",
         _raise_expression_code,
     )
@@ -810,13 +850,17 @@ def test_itool_dataset_metadata_fields_roundtrip(qtbot, tmp_path: pathlib.Path) 
     )
     data.to_netcdf(file_path, engine="h5netcdf")
 
-    operation = provenance.NormalizeOperation(dims=("alpha",), mode="min")
+    operation = NormalizeOperation(dims=("alpha",), mode="min")
     expected_display = operation.apply(data, parent_data=data)
-    provenance_spec = provenance.full_data()
+    provenance_spec = full_data()
     win = ImageTool(
         data,
         file_path=file_path,
-        load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        load_func=(
+            xr.load_dataarray,
+            {"engine": "h5netcdf"},
+            FileDataSelection(kind="dataarray"),
+        ),
     )
     qtbot.addWidget(win)
     win.setWindowTitle("saved scan")
@@ -940,7 +984,10 @@ def test_itool_dataset_metadata_fields_roundtrip(qtbot, tmp_path: pathlib.Path) 
     assert saved_state["splitter_sizes"] == area.splitter_sizes
     assert saved_state["file_path"] == str(file_path)
     assert saved_state["load_func"][0].endswith(":load_dataarray")
-    assert saved_state["load_func"][1:] == [{"engine": "h5netcdf"}, 0]
+    assert saved_state["load_func"][1:] == [
+        {"engine": "h5netcdf"},
+        {"kind": "dataarray", "value": None},
+    ]
     assert len(saved_state["cursor_colors"]) == 3
     assert len(set(saved_state["cursor_colors"])) > 1
     assert saved_state["controls_visible"] is True
@@ -1030,7 +1077,7 @@ def test_itool_dataset_metadata_fields_roundtrip(qtbot, tmp_path: pathlib.Path) 
     loader, kwargs, selection = restored_area._load_func
     assert loader is xr.load_dataarray
     assert kwargs == {"engine": "h5netcdf"}
-    assert selection == 0
+    assert selection == FileDataSelection(kind="dataarray")
     assert restored_area.reloadable
     assert restored_area.state["filter_operation"] == operation.model_dump(mode="json")
     _assert_guideline_state(
@@ -1148,7 +1195,7 @@ def test_itool_state_loader_string_selection_roundtrip_and_reload(
         name="signal",
     )
     data.to_dataset().to_netcdf(file_path, engine="h5netcdf")
-    selection = provenance.FileDataSelection(
+    selection = FileDataSelection(
         kind="dataset_variable",
         value="signal",
     )
@@ -1174,7 +1221,7 @@ def test_itool_state_loader_string_selection_roundtrip_and_reload(
     assert restored.slicer_area._load_func == (
         loader_name,
         {"engine": "h5netcdf"},
-        {"kind": "dataset_variable", "value": "signal"},
+        FileDataSelection(kind="dataset_variable", value="signal"),
     )
     assert restored.slicer_area.reloadable
 
@@ -2464,7 +2511,7 @@ def test_profile_menu_opens_associated_coord_targets(
     captured: list[
         tuple[
             xr.DataArray,
-            erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+            ToolProvenanceSpec,
             bool,
         ]
     ] = []
@@ -2931,7 +2978,7 @@ def test_prepare_high_dimensional_data_dialog_branches(
     dialog_result: bool,
 ) -> None:
     data = _high_dimensional_data()
-    operation = provenance.IselOperation(kwargs={"x": 2})
+    operation = IselOperation(kwargs={"x": 2})
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)
 
@@ -2947,7 +2994,7 @@ def test_prepare_high_dimensional_data_dialog_branches(
         def result_data(self) -> xr.DataArray:
             return operation.apply(data, parent_data=data)
 
-        def source_operations(self) -> list[provenance.ToolProvenanceOperation]:
+        def source_operations(self) -> list[ToolProvenanceOperation]:
             return [operation]
 
     monkeypatch.setattr(
@@ -2977,7 +3024,7 @@ def test_itool_high_dimensional_data_dialog_branches(
     dialog_result: bool,
 ) -> None:
     data = _high_dimensional_data()
-    operation = provenance.IselOperation(kwargs={"x": 2})
+    operation = IselOperation(kwargs={"x": 2})
 
     class _Dialog:
         def __init__(self, _parent, dialog_data) -> None:
@@ -2990,7 +3037,7 @@ def test_itool_high_dimensional_data_dialog_branches(
         def result_data(self) -> xr.DataArray:
             return operation.apply(data, parent_data=data)
 
-        def source_operations(self) -> list[provenance.ToolProvenanceOperation]:
+        def source_operations(self) -> list[ToolProvenanceOperation]:
             return [operation]
 
     monkeypatch.setattr(
@@ -3019,7 +3066,7 @@ def test_show_in_manager_high_dimensional_data_dialog_branches(
     dialog_result: bool,
 ) -> None:
     data = _high_dimensional_data()
-    operation = provenance.IselOperation(kwargs={"x": 2})
+    operation = IselOperation(kwargs={"x": 2})
     received: list[tuple[list[xr.DataArray], dict[str, typing.Any]]] = []
 
     class _Manager(QtWidgets.QWidget):
@@ -3041,7 +3088,7 @@ def test_show_in_manager_high_dimensional_data_dialog_branches(
         def result_data(self) -> xr.DataArray:
             return operation.apply(data, parent_data=data)
 
-        def source_operations(self) -> list[provenance.ToolProvenanceOperation]:
+        def source_operations(self) -> list[ToolProvenanceOperation]:
             return [operation]
 
     monkeypatch.setattr(
@@ -3068,6 +3115,35 @@ def test_show_in_manager_high_dimensional_data_dialog_branches(
     assert kwargs["source_input_ndims"] == (data.ndim,)
     assert kwargs["source_input_dtypes"] == (np.dtype(data.dtype),)
     assert kwargs["preparation_operations"] == ((operation,),)
+
+
+def test_show_in_manager_supplies_semantic_file_load_selections(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = xr.DataArray(np.ones((2, 3)), dims=("x", "y"))
+    received: list[tuple[list[xr.DataArray], dict[str, typing.Any]]] = []
+
+    class _Manager(QtWidgets.QWidget):
+        def _data_recv(self, input_data, kwargs) -> None:
+            received.append((input_data, kwargs))
+
+    manager = _Manager()
+    qtbot.addWidget(manager)
+    monkeypatch.setattr(
+        imagetool_manager_server,
+        "_direct_manager_for_target",
+        lambda _target: manager,
+    )
+
+    response = erlab.interactive.imagetool.manager.show_in_manager(
+        data,
+        load_func=(xr.load_dataarray, {}),
+    )
+
+    assert response is None
+    assert len(received) == 1
+    assert received[0][1]["load_selections"] == (FileDataSelection(kind="dataarray"),)
 
 
 def test_itool_load(qtbot, monkeypatch, move_and_compare_values, accept_dialog) -> None:
@@ -3161,7 +3237,7 @@ def test_itool_file_open_uses_selected_dataset_variable(
         name="second",
     )
     updated_second = second + 2.0
-    selection = erlab.interactive.imagetool.provenance.FileDataSelection(
+    selection = FileDataSelection(
         kind="dataset_variable",
         value="second",
     )
@@ -3233,7 +3309,7 @@ def test_itool_file_open_reduces_high_dimensional_data_with_provenance(
     tmp_path: pathlib.Path,
 ) -> None:
     data = _high_dimensional_data(np.int64)
-    operation = provenance.IselOperation(kwargs={"x": 2})
+    operation = IselOperation(kwargs={"x": 2})
     expected = data.astype(np.float64).isel(x=2)
     file_path = tmp_path / "high_dimensional.h5"
     data.to_netcdf(file_path, engine="h5netcdf")
@@ -3251,7 +3327,7 @@ def test_itool_file_open_reduces_high_dimensional_data_with_provenance(
         def result_data(self) -> xr.DataArray:
             return operation.apply(self._data, parent_data=self._data)
 
-        def source_operations(self) -> list[provenance.ToolProvenanceOperation]:
+        def source_operations(self) -> list[ToolProvenanceOperation]:
             return [operation]
 
     monkeypatch.setattr(
@@ -3288,7 +3364,7 @@ def test_itool_file_open_reduces_high_dimensional_data_with_provenance(
         for replay_operation in stage.operations
     ] == [operation]
 
-    replayed = provenance.replay_file_provenance(win.provenance_spec)
+    replayed = replay_file_provenance(win.provenance_spec)
     xarray.testing.assert_identical(replayed, expected)
     display_code = win.provenance_spec.display_code()
     assert display_code is not None
@@ -3331,13 +3407,13 @@ def test_itool_file_open_selection_branches(
         return (
             imagetool_viewer_state._PreparedInputData(
                 data=data["first"],
-                selection=0,
+                selection=FileDataSelection(kind="dataset_variable", value="first"),
                 source_ndim=data["first"].ndim,
                 source_dtype=np.dtype(data["first"].dtype),
             ),
             imagetool_viewer_state._PreparedInputData(
                 data=data["second"],
-                selection=1,
+                selection=FileDataSelection(kind="dataset_variable", value="second"),
                 source_ndim=data["second"].ndim,
                 source_dtype=np.dtype(data["second"].dtype),
             ),
@@ -3390,13 +3466,13 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
     with pytest.raises(RuntimeError, match="cannot be reloaded"):
         win.slicer_area._fetch_for_provenance_reload()
 
-    def _file_source(path: pathlib.Path) -> provenance.FileLoadSource:
-        return provenance.FileLoadSource(
+    def _file_source(path: pathlib.Path) -> FileLoadSource:
+        return FileLoadSource(
             path=path,
             loader_label="Loader",
             loader_text="xarray.load_dataarray",
             kwargs_text="(none)",
-            replay_call=provenance.FileReplayCall(
+            replay_call=FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 kwargs={},
@@ -3407,7 +3483,7 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
 
     missing_file = tmp_path / "missing.h5"
     win.set_provenance_spec(
-        provenance.file_load(
+        file_load(
             start_label="Load missing file",
             seed_code="derived = xr.DataArray([1.0])",
             file_load_source=_file_source(missing_file),
@@ -3426,14 +3502,14 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
     )
     missing_loader = "definitely-missing-erlab-loader"
     win.set_provenance_spec(
-        provenance.file_load(
+        file_load(
             start_label="Load with missing loader",
             seed_code="derived = erlab.io.load(source_file)",
             file_load_source=_file_source(source_file).model_copy(
                 update={
                     "loader_label": "Loader",
                     "loader_text": missing_loader,
-                    "replay_call": provenance.FileReplayCall(
+                    "replay_call": FileReplayCall(
                         kind="erlab_loader",
                         target=missing_loader,
                         kwargs={},
@@ -3449,7 +3525,7 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
     assert missing_loader in unavailable_reasons[-1]
 
     win.set_provenance_spec(
-        provenance.script(
+        script(
             start_label="Needs external data",
             seed_code="derived = data",
             active_name="derived",
@@ -3468,7 +3544,7 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
         update={
             "kwargs_text": 'engine="h5netcdf"',
             "load_code": safe_seed,
-            "replay_call": provenance.FileReplayCall(
+            "replay_call": FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 kwargs={"engine": "h5netcdf"},
@@ -3476,14 +3552,12 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
             ),
         }
     )
-    safe_script_spec = provenance.script(
+    safe_script_spec = script(
         start_label="Load script-backed file",
         seed_code=safe_seed,
         active_name="derived",
         file_load_source=safe_load_source,
-    ).append_replay_stage(
-        provenance.full_data(provenance.AverageOperation(dims=("x",)))
-    )
+    ).append_replay_stage(full_data(AverageOperation(dims=("x",))))
     win.set_provenance_spec(safe_script_spec)
     assert win.slicer_area.reloadable
     assert win.slicer_area._provenance_reload_unavailable_reason() is None
@@ -3513,7 +3587,7 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
         win.slicer_area._fetch_for_provenance_reload()
 
     trusted_script_spec = safe_script_spec.append_operations(
-        provenance.ScriptCodeOperation(
+        ScriptCodeOperation(
             label="Trusted code",
             code="derived = globals()['derived']",
         )
@@ -3525,12 +3599,12 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
     assert "trust" in reason.lower()
 
     win.set_provenance_spec(
-        provenance.file_load(
+        file_load(
             start_label="Bad selected index",
             seed_code="derived = xr.load_dataarray(source_file)",
             file_load_source=_file_source(source_file).model_copy(
                 update={
-                    "replay_call": provenance.FileReplayCall(
+                    "replay_call": FileReplayCall(
                         kind="callable",
                         target="xarray.load_dataarray",
                         kwargs={},
@@ -3538,22 +3612,22 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
                     )
                 }
             ),
-        ).append_replay_stage(provenance.full_data())
+        ).append_replay_stage(full_data())
     )
     assert win.slicer_area.reloadable
     with pytest.raises(IndexError, match="out of range"):
         win.slicer_area._fetch_for_provenance_reload()
 
     with pytest.raises(TypeError, match="script-only operations"):
-        provenance.file_load(
+        file_load(
             start_label="Bad replay operation",
             seed_code="derived = xr.load_dataarray(source_file)",
             file_load_source=_file_source(source_file),
             replay_stages=[
-                provenance.ReplayStage(
+                ReplayStage(
                     source_kind="full_data",
                     operations=[
-                        provenance.ScriptCodeOperation(
+                        ScriptCodeOperation(
                             label="Generated code",
                             code="derived = derived + 1",
                         )
@@ -3593,7 +3667,11 @@ def test_itool_reload_reports_failure_and_nonreloadable_noop(
 
     missing_file = tmp_path / "missing.h5"
     win.slicer_area._file_path = missing_file
-    win.slicer_area._load_func = (xr.load_dataarray, {"engine": "h5netcdf"}, 0)
+    win.slicer_area._load_func = (
+        xr.load_dataarray,
+        {"engine": "h5netcdf"},
+        FileDataSelection(kind="dataarray"),
+    )
     unavailable_reasons.clear()
     win.slicer_area.reload()
     assert str(missing_file) in unavailable_reasons[-1]
@@ -3601,18 +3679,30 @@ def test_itool_reload_reports_failure_and_nonreloadable_noop(
     existing_file = tmp_path / "data.h5"
     win.slicer_area.data.to_netcdf(existing_file, engine="h5netcdf")
     win.slicer_area._file_path = None
-    win.slicer_area._load_func = (xr.load_dataarray, {"engine": "h5netcdf"}, 0)
+    win.slicer_area._load_func = (
+        xr.load_dataarray,
+        {"engine": "h5netcdf"},
+        FileDataSelection(kind="dataarray"),
+    )
     assert win.slicer_area._direct_reload_unavailable_reason() is not None
 
     win.slicer_area._file_path = existing_file
     win.slicer_area._load_func = None
     assert win.slicer_area._direct_reload_unavailable_reason() is not None
 
-    win.slicer_area._load_func = ("missing-loader", {}, 0)
+    win.slicer_area._load_func = (
+        "missing-loader",
+        {},
+        FileDataSelection(kind="dataarray"),
+    )
     unavailable_reasons.clear()
     win.slicer_area.reload()
     assert "missing-loader" in unavailable_reasons[-1]
-    win.slicer_area._load_func = (xr.load_dataarray, {"engine": "h5netcdf"}, 0)
+    win.slicer_area._load_func = (
+        xr.load_dataarray,
+        {"engine": "h5netcdf"},
+        FileDataSelection(kind="dataarray"),
+    )
     assert win.slicer_area._direct_reload_unavailable_reason() is None
     assert win.slicer_area._local_reload_unavailable_reason() is None
 
@@ -3647,19 +3737,19 @@ def test_itool_reload_unavailable_reason_metadata_branches(
 
     source_file = tmp_path / "source.h5"
     win.slicer_area.data.to_netcdf(source_file, engine="h5netcdf")
-    load_source = provenance.FileLoadSource(
+    load_source = FileLoadSource(
         path=str(source_file),
         loader_label="xarray.load_dataarray",
         loader_text="xarray.load_dataarray",
         kwargs_text="",
-        replay_call=provenance.FileReplayCall(
+        replay_call=FileReplayCall(
             kind="callable",
             target="xarray.load_dataarray",
             selected_index=0,
         ),
     )
 
-    valid_file_spec = provenance.file_load(
+    valid_file_spec = file_load(
         start_label="Load valid file",
         seed_code="derived = xr.load_dataarray(path)",
         file_load_source=load_source,
@@ -3682,12 +3772,12 @@ def test_itool_reload_unavailable_reason_metadata_branches(
 
     win.set_provenance_spec(valid_file_spec)
     assert win.slicer_area._provenance_reload_unavailable_reason() is None
-    win.set_provenance_spec(provenance.full_data())
+    win.set_provenance_spec(full_data())
     assert win.slicer_area._provenance_reload_unavailable_reason() is None
 
     win.set_provenance_spec(
-        provenance.script(
-            provenance.ScriptCodeOperation(label="Use input", code="derived = data"),
+        script(
+            ScriptCodeOperation(label="Use input", code="derived = data"),
             start_label="Run script",
             active_name="derived",
         )
@@ -3741,7 +3831,7 @@ def test_itool_save_preserves_filter_state_and_exports_displayed_data(
         coords={"x": np.arange(5), "y": np.arange(5)},
         name="scan",
     )
-    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+    operation = NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -3761,9 +3851,7 @@ def test_itool_save_preserves_filter_state_and_exports_displayed_data(
     qtbot.addWidget(restored)
     xarray.testing.assert_identical(restored.slicer_area.data, expected)
     xarray.testing.assert_identical(restored.slicer_area._data, data)
-    display_spec = restored.slicer_area.displayed_provenance_spec(
-        erlab.interactive.imagetool.provenance.full_data()
-    )
+    display_spec = restored.slicer_area.displayed_provenance_spec(full_data())
     assert display_spec is not None
     code = display_spec.display_code()
     assert code is not None
@@ -3802,14 +3890,16 @@ def test_saved_filtered_file_data_reloads_by_reapplying_filter(
     )
     updated = data + 100.0
     data.to_netcdf(file_path, engine="h5netcdf")
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 1.0}
-    )
+    operation = GaussianFilterOperation(sigma={"x": 1.0})
 
     win = ImageTool(
         data,
         file_path=file_path,
-        load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        load_func=(
+            xr.load_dataarray,
+            {"engine": "h5netcdf"},
+            FileDataSelection(kind="dataarray"),
+        ),
     )
     qtbot.addWidget(win)
     win.slicer_area.apply_filter_operation(operation)
@@ -3834,9 +3924,7 @@ def test_filter_state_restore_does_not_emit_edit_signals(qtbot) -> None:
         dims=["x", "y"],
         coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 1.0}
-    )
+    operation = GaussianFilterOperation(sigma={"x": 1.0})
     expected = operation.apply(data, parent_data=data)
     source = itool(data, execute=False)
     target = itool(data.copy(deep=True), execute=False)
@@ -4193,7 +4281,7 @@ def test_itool_child_tool_source_specs_and_non_source_updates(qtbot) -> None:
     win.slicer_area.open_in_meshtool()
     qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
     child = next(iter(win.slicer_area._associated_tools.values()))
-    assert child.source_spec == erlab.interactive.imagetool.provenance.full_data()
+    assert child.source_spec == full_data()
     assert child.source_state == "fresh"
 
     new_data = data.copy(deep=True)
@@ -4210,9 +4298,7 @@ def test_child_tool_from_gaussian_filtered_itool_keeps_display_provenance(
         dims=["alpha", "eV"],
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"alpha": 1.0}
-    )
+    operation = GaussianFilterOperation(sigma={"alpha": 1.0})
     expected = operation.apply(data, parent_data=data)
 
     win = itool(data, execute=False)
@@ -4242,9 +4328,7 @@ def test_image_child_from_gaussian_filtered_itool_keeps_display_provenance(
         dims=["alpha", "eV"],
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"alpha": 1.0}
-    )
+    operation = GaussianFilterOperation(sigma={"alpha": 1.0})
     expected = operation.apply(data, parent_data=data)
 
     win = itool(data, execute=False)
@@ -4386,9 +4470,7 @@ def test_child_tool_copy_code_streamlines_noop_source_steps(qtbot) -> None:
     )
     qtbot.addWidget(squeezed_child)
     squeezed_child.set_source_parent_fetcher(lambda: _TEST_DATA["2D"].copy())
-    squeezed_child.set_source_binding(
-        provenance.selection(provenance.SqueezeOperation())
-    )
+    squeezed_child.set_source_binding(selection(SqueezeOperation()))
 
     squeezed_code = squeezed_child.copy_code()
     assert ".isel()" not in squeezed_code
@@ -4567,8 +4649,8 @@ def test_select_dataarrays_dialog_preserves_tree_source_paths(qtbot) -> None:
     selected_data = dialog.selected_dataarrays()
 
     assert [prepared.selection for prepared in selected_data] == [
-        provenance.FileDataSelection(kind="datatree_path", value="/branch_a/signal"),
-        provenance.FileDataSelection(kind="datatree_path", value="/branch_b/signal"),
+        FileDataSelection(kind="datatree_variable", value=("/branch_a", "signal")),
+        FileDataSelection(kind="datatree_variable", value=("/branch_b", "signal")),
     ]
     assert dialog._tree_widget.topLevelItem(0).text(1) == "branch_a"
     assert dialog._tree_widget.topLevelItem(0).text(2) == "signal"
@@ -4597,7 +4679,7 @@ def test_select_dataarrays_dialog_includes_high_dimensional_variables(qtbot) -> 
     selected_data = dialog.selected_dataarrays()
     assert len(selected_data) == 1
     xr.testing.assert_identical(selected_data[0].data, high.rename("high"))
-    assert selected_data[0].selection == provenance.FileDataSelection(
+    assert selected_data[0].selection == FileDataSelection(
         kind="dataset_variable",
         value="high",
     )
@@ -4662,7 +4744,7 @@ def test_select_dataarrays_dialog_formats_selected_dataarray(
 
     selected_data = dialog.selected_dataarrays()
     assert [prepared.selection for prepared in selected_data] == [
-        erlab.interactive.imagetool.provenance.FileDataSelection(
+        FileDataSelection(
             kind="dataset_variable",
             value="second",
         )
@@ -4767,9 +4849,9 @@ def test_select_dataarrays_dialog_nests_datatree_paths(qtbot) -> None:
     dialog._item_checkbox(signal_item).setChecked(False)
 
     assert [prepared.selection for prepared in dialog.selected_dataarrays()] == [
-        erlab.interactive.imagetool.provenance.FileDataSelection(
-            kind="datatree_path",
-            value="/branch_a/sweep_0/signal",
+        FileDataSelection(
+            kind="datatree_variable",
+            value=("/branch_a/sweep_0", "signal"),
         )
     ]
 
@@ -4819,20 +4901,34 @@ def test_select_dataarrays_dialog_collapses_single_child_datatree_paths(qtbot) -
 @pytest.mark.parametrize(
     ("dialog_result", "selected", "expected"),
     [
-        (False, ((xr.DataArray(np.ones((2, 2)), dims=("x", "y")), 0),), None),
+        (
+            False,
+            (
+                (
+                    xr.DataArray(np.ones((2, 2)), dims=("x", "y")),
+                    FileDataSelection(kind="dataset_variable", value="first"),
+                ),
+            ),
+            None,
+        ),
         (True, (), None),
         (
             True,
-            ((xr.DataArray(np.ones((3, 4)), dims=("u", "v")), 1),),
-            (1,),
+            (
+                (
+                    xr.DataArray(np.ones((3, 4)), dims=("u", "v")),
+                    FileDataSelection(kind="dataset_variable", value="second"),
+                ),
+            ),
+            (FileDataSelection(kind="dataset_variable", value="second"),),
         ),
     ],
 )
 def test_select_input_dataarrays_dialog_branches(
     monkeypatch,
     dialog_result: bool,
-    selected: tuple[tuple[xr.DataArray, int], ...],
-    expected: tuple[int, ...] | None,
+    selected: tuple[tuple[xr.DataArray, FileDataSelection], ...],
+    expected: tuple[FileDataSelection, ...] | None,
 ) -> None:
     ds = xr.Dataset(
         {
@@ -4855,11 +4951,11 @@ def test_select_input_dataarrays_dialog_branches(
             return tuple(
                 imagetool_viewer_state._PreparedInputData(
                     data=darr,
-                    selection=source_index,
+                    selection=source_selection,
                     source_ndim=darr.ndim,
                     source_dtype=np.dtype(darr.dtype),
                 )
-                for darr, source_index in selected
+                for darr, source_selection in selected
             )
 
     monkeypatch.setattr(imagetool_viewer_state, "_SelectDataArraysDialog", _Dialog)
@@ -4881,11 +4977,17 @@ def test_parse_input_data_records_dataset_and_datatree_selectors() -> None:
     dataset_parsed = imagetool_viewer_state._parse_input_data(ds)
     datatree_parsed = imagetool_viewer_state._parse_input_data(tree)
 
-    assert dataset_parsed[0].selection == provenance.FileDataSelection(
+    assert dataset_parsed[0].selection == FileDataSelection(
         kind="dataset_variable", value="image"
     )
-    assert datatree_parsed[0].selection == provenance.FileDataSelection(
-        kind="datatree_path", value="/diag/image"
+    assert datatree_parsed[0].selection == FileDataSelection(
+        kind="datatree_variable", value=("/diag", "image")
+    )
+
+    keyed_tree = xr.DataTree.from_dict({"diag": xr.Dataset({1: image.rename(1)})})
+    keyed_parsed = imagetool_viewer_state._parse_input_data(keyed_tree)
+    assert keyed_parsed[0].selection == FileDataSelection(
+        kind="datatree_variable", value=("/diag", 1)
     )
 
 
@@ -4906,7 +5008,7 @@ def test_itool_dataset_selection_returns_selected_variable(qtbot, monkeypatch) -
         lambda _data: (
             imagetool_viewer_state._PreparedInputData(
                 data=ds["second"],
-                selection=1,
+                selection=FileDataSelection(kind="dataset_variable", value="second"),
                 source_ndim=ds["second"].ndim,
                 source_dtype=np.dtype(ds["second"].dtype),
             ),
@@ -6162,9 +6264,7 @@ def test_apply_func_rejects_operation_backed_filters(qtbot) -> None:
         dims=["x", "y"],
         coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 1.0}
-    )
+    operation = GaussianFilterOperation(sigma={"x": 1.0})
 
     win = ImageTool(data)
     qtbot.addWidget(win)
@@ -6177,7 +6277,7 @@ def test_apply_func_rejects_operation_backed_filters(qtbot) -> None:
     with pytest.raises(ValueError, match="apply_filter_operation"):
         win.slicer_area.apply_func(
             lambda darr: darr + 1,
-            operation=erlab.interactive.imagetool.provenance.NormalizeOperation(
+            operation=NormalizeOperation(
                 dims=("x",),
                 mode="area",
             ),
@@ -6830,7 +6930,7 @@ def test_itool_open_in_ktool_sets_full_data_source_binding(qtbot, monkeypatch) -
 
     win.slicer_area.open_in_ktool()
 
-    assert child.source_spec == erlab.interactive.imagetool.provenance.full_data()
+    assert child.source_spec == full_data()
     assert child.source_state == "fresh"
 
     win.close()
@@ -6927,7 +7027,7 @@ def test_profile_open_in_ftool_omits_noop_squeeze_source_binding(
 
     assert child.source_spec is not None
     assert not any(
-        isinstance(operation, provenance.SqueezeOperation)
+        isinstance(operation, SqueezeOperation)
         for operation in child.source_spec.operations
     )
 
@@ -7622,7 +7722,7 @@ def test_itool_transform_after_filter_uses_displayed_data_and_provenance(
         coords={"x": np.arange(3), "y": np.arange(4), "z": np.arange(5)},
         name="scan",
     )
-    filter_operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+    filter_operation = NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -7687,7 +7787,7 @@ def test_itool_aggregate_sum(qtbot, accept_dialog) -> None:
     aggregate_op = win.provenance_spec.operations[0]
     assert isinstance(
         aggregate_op,
-        erlab.interactive.imagetool.provenance.QSelAggregationOperation,
+        QSelAggregationOperation,
     )
     assert aggregate_op.func == "sum"
 
@@ -7917,7 +8017,7 @@ def test_high_dimensional_reduction_dialog_selects_scalar(qtbot) -> None:
 
     expected = data.isel(x=2)
     assert open_button.isEnabled()
-    assert dialog.source_operations() == [provenance.IselOperation(kwargs={"x": 2})]
+    assert dialog.source_operations() == [IselOperation(kwargs={"x": 2})]
     with pytest.raises(RuntimeError, match="No reduced data"):
         _ = dialog.result_data
     xarray.testing.assert_identical(
@@ -7955,7 +8055,7 @@ def test_high_dimensional_reduction_dialog_qsel_width(qtbot) -> None:
     assert row.scalar_controls.width_spin.isEnabled()
     row.scalar_controls.width_spin.setValue(2.0)
 
-    operation = provenance.QSelOperation(kwargs={"x": 2.0, "x_width": 2.0})
+    operation = QSelOperation(kwargs={"x": 2.0, "x_width": 2.0})
     expected = data.qsel(x=2.0, x_width=2.0)
     assert open_button.isEnabled()
     assert dialog.source_operations() == [operation]
@@ -7979,17 +8079,17 @@ def test_high_dimensional_reduction_dialog_qsel_width_omission(qtbot) -> None:
 
     assert row.scalar_controls.width_widget.isEnabled()
     assert not row.scalar_controls.width_spin.isEnabled()
-    assert dialog.source_operations() == [provenance.QSelOperation(kwargs={"x": 2.0})]
+    assert dialog.source_operations() == [QSelOperation(kwargs={"x": 2.0})]
 
     row.scalar_controls.width_check.setChecked(True)
     row.scalar_controls.width_spin.setValue(0.0)
-    assert dialog.source_operations() == [provenance.QSelOperation(kwargs={"x": 2.0})]
+    assert dialog.source_operations() == [QSelOperation(kwargs={"x": 2.0})]
 
     row.scalar_controls.width_spin.setValue(1.0)
     _set_combo_data(row.scalar_controls.method_combo, "sel")
     assert not row.scalar_controls.width_widget.isEnabled()
     assert not row.scalar_controls.width_spin.isEnabled()
-    assert dialog.source_operations() == [provenance.SelOperation(kwargs={"x": 2.0})]
+    assert dialog.source_operations() == [SelOperation(kwargs={"x": 2.0})]
 
     _set_combo_data(row.scalar_controls.method_combo, "qsel")
     _set_combo_data(row.action_combo, "keep")
@@ -8002,7 +8102,7 @@ def test_high_dimensional_reduction_dialog_qsel_width_omission(qtbot) -> None:
     assert not row.scalar_controls.width_widget.isEnabled()
     assert not row.scalar_controls.width_spin.isEnabled()
     assert dialog.source_operations() == [
-        provenance.QSelAggregationOperation(dims=("x",), func="mean")
+        QSelAggregationOperation(dims=("x",), func="mean")
     ]
 
 
@@ -8018,7 +8118,7 @@ def test_high_dimensional_reduction_dialog_aggregates_dimension(qtbot) -> None:
     _set_combo_data(row.action_combo, "aggregate")
     _set_combo_data(row.reducer_combo, "sum")
 
-    operation = provenance.QSelAggregationOperation(dims=("x",), func="sum")
+    operation = QSelAggregationOperation(dims=("x",), func="sum")
     expected = data.qsel.sum(("x",))
     assert open_button.isEnabled()
     assert dialog.source_operations() == [operation]
@@ -8053,8 +8153,8 @@ def test_high_dimensional_reduction_dialog_scalar_methods_and_parent(qtbot) -> N
 
     expected = data.sel(x=2.0).qsel(scan=1.0)
     assert dialog.source_operations() == [
-        provenance.SelOperation(kwargs={"x": 2.0}),
-        provenance.QSelOperation(kwargs={"scan": 1.0}),
+        SelOperation(kwargs={"x": 2.0}),
+        QSelOperation(kwargs={"scan": 1.0}),
     ]
     xarray.testing.assert_identical(
         _exec_data_fragment(data, dialog.make_code()), expected
@@ -8076,10 +8176,10 @@ def test_high_dimensional_reduction_dialog_preview_does_not_apply_operations(
     open_button = dialog.button_box.button(
         QtWidgets.QDialogButtonBox.StandardButton.Open
     )
-    calls: list[provenance.QSelAggregationOperation] = []
+    calls: list[QSelAggregationOperation] = []
 
     def _fail_apply(
-        self: provenance.QSelAggregationOperation,
+        self: QSelAggregationOperation,
         _data: xr.DataArray,
         *,
         parent_data: xr.DataArray,
@@ -8087,7 +8187,7 @@ def test_high_dimensional_reduction_dialog_preview_does_not_apply_operations(
         calls.append(self)
         raise AssertionError("preview must not apply aggregation")
 
-    monkeypatch.setattr(provenance.QSelAggregationOperation, "apply", _fail_apply)
+    monkeypatch.setattr(QSelAggregationOperation, "apply", _fail_apply)
 
     row = dialog.rows[-1]
     _set_combo_data(row.action_combo, "aggregate")
@@ -8107,11 +8207,11 @@ def test_high_dimensional_reduction_dialog_accept_applies_once(
     data = _high_dimensional_data()
     dialog = imagetool_highdim._HighDimensionalReductionDialog(None, data)
     qtbot.addWidget(dialog)
-    calls: list[provenance.QSelAggregationOperation] = []
-    original_apply = provenance.QSelAggregationOperation.apply
+    calls: list[QSelAggregationOperation] = []
+    original_apply = QSelAggregationOperation.apply
 
     def _count_apply(
-        self: provenance.QSelAggregationOperation,
+        self: QSelAggregationOperation,
         data_array: xr.DataArray,
         *,
         parent_data: xr.DataArray,
@@ -8119,7 +8219,7 @@ def test_high_dimensional_reduction_dialog_accept_applies_once(
         calls.append(self)
         return original_apply(self, data_array, parent_data=parent_data)
 
-    monkeypatch.setattr(provenance.QSelAggregationOperation, "apply", _count_apply)
+    monkeypatch.setattr(QSelAggregationOperation, "apply", _count_apply)
     monkeypatch.setattr(
         QtWidgets.QApplication,
         "setOverrideCursor",
@@ -8139,7 +8239,7 @@ def test_high_dimensional_reduction_dialog_accept_applies_once(
 
     assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
     assert len(calls) == 1
-    assert calls[0] == provenance.QSelAggregationOperation(dims=("x",), func="sum")
+    assert calls[0] == QSelAggregationOperation(dims=("x",), func="sum")
     xarray.testing.assert_identical(dialog.result_data, data.qsel.sum(("x",)))
 
 
@@ -8203,7 +8303,7 @@ def test_high_dimensional_reduction_dialog_metadata_and_warning_paths(
     assert dialog.result() != QtWidgets.QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(
-        provenance,
+        imagetool_highdim,
         "operations_expression_code",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("no code")),
     )
@@ -8432,7 +8532,7 @@ def test_selection_dialog_isel_range_step_executes_code(qtbot) -> None:
 
     expected = data.isel(alpha=slice(0, 3, 2))
     assert dialog.source_operations() == [
-        provenance.IselOperation(kwargs={"alpha": slice(0, 3, 2)})
+        IselOperation(kwargs={"alpha": slice(0, 3, 2)})
     ]
     xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
     xarray.testing.assert_identical(
@@ -8458,9 +8558,7 @@ def test_selection_dialog_isel_negative_point_executes_code(qtbot) -> None:
     row.index_start_spin.setValue(-1)
 
     expected = data.isel(alpha=-1)
-    assert dialog.source_operations() == [
-        provenance.IselOperation(kwargs={"alpha": -1})
-    ]
+    assert dialog.source_operations() == [IselOperation(kwargs={"alpha": -1})]
     xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
     xarray.testing.assert_identical(
         _exec_data_fragment(data, dialog.make_code()), expected
@@ -8497,7 +8595,7 @@ def test_selection_dialog_isel_negative_range_executes_code(
 
     expected = data.isel(beta=expected_slice)
     assert dialog.source_operations() == [
-        provenance.IselOperation(kwargs={"beta": expected_slice})
+        IselOperation(kwargs={"beta": expected_slice})
     ]
     xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
     xarray.testing.assert_identical(
@@ -8659,7 +8757,7 @@ def test_selection_dialog_restore_stepped_selection_operation(qtbot) -> None:
     dialog = SelectionDialog(win.slicer_area)
     _clear_selection_dialog(dialog)
 
-    operation = provenance.IselOperation(kwargs={"alpha": slice(0, 3, 2)})
+    operation = IselOperation(kwargs={"alpha": slice(0, 3, 2)})
     dialog.restore_transform_operation(operation)
 
     row = dialog.rows[0]
@@ -8681,7 +8779,7 @@ def test_selection_dialog_restore_negative_isel_indexers(qtbot) -> None:
     dialog = SelectionDialog(win.slicer_area)
     _clear_selection_dialog(dialog)
 
-    point_operation = provenance.IselOperation(kwargs={"alpha": -1})
+    point_operation = IselOperation(kwargs={"alpha": -1})
     dialog.restore_transform_operation(point_operation)
     alpha_row = dialog.rows[0]
     assert alpha_row.use_check.isChecked()
@@ -8692,7 +8790,7 @@ def test_selection_dialog_restore_negative_isel_indexers(qtbot) -> None:
         dialog.process_data(dialog.public_data), data.isel(alpha=-1)
     )
 
-    range_operation = provenance.IselOperation(kwargs={"beta": slice(-4, -1)})
+    range_operation = IselOperation(kwargs={"beta": slice(-4, -1)})
     dialog.restore_transform_operation(range_operation)
     beta_row = dialog.rows[2]
     assert beta_row.use_check.isChecked()
@@ -8717,11 +8815,11 @@ def test_selection_dialog_restore_selection_variants_and_rejects_invalid_steps(
     dialog = SelectionDialog(win.slicer_area)
     _clear_selection_dialog(dialog)
 
-    sel_operation = provenance.SelOperation(kwargs={"eV": slice(1.0, 3.0)})
+    sel_operation = SelOperation(kwargs={"eV": slice(1.0, 3.0)})
     dialog.restore_transform_operation(sel_operation)
     assert dialog.source_operations() == [sel_operation]
 
-    qsel_operation = provenance.QSelOperation(kwargs={"beta": 2.0, "beta_width": 1.5})
+    qsel_operation = QSelOperation(kwargs={"beta": 2.0, "beta_width": 1.5})
     dialog.restore_transform_operation(qsel_operation)
     beta_row = next(row for row in dialog.rows if row.dim == "beta")
     assert beta_row.width_check.isChecked()
@@ -8730,21 +8828,21 @@ def test_selection_dialog_restore_selection_variants_and_rejects_invalid_steps(
 
     for operation, dim, start_none, stop_none, expected in (
         (
-            provenance.IselOperation(kwargs={"alpha": slice(None, 3)}),
+            IselOperation(kwargs={"alpha": slice(None, 3)}),
             "alpha",
             True,
             False,
             data.isel(alpha=slice(None, 3)),
         ),
         (
-            provenance.SelOperation(kwargs={"eV": slice(1.0, None)}),
+            SelOperation(kwargs={"eV": slice(1.0, None)}),
             "eV",
             False,
             True,
             data.sel(eV=slice(1.0, None)),
         ),
         (
-            provenance.QSelOperation(kwargs={"beta": slice(None, None, 2)}),
+            QSelOperation(kwargs={"beta": slice(None, None, 2)}),
             "beta",
             True,
             True,
@@ -8766,16 +8864,14 @@ def test_selection_dialog_restore_selection_variants_and_rejects_invalid_steps(
 
     with pytest.raises(ValueError, match="integer strides"):
         dialog.restore_transform_operation(
-            provenance.IselOperation(kwargs={"alpha": slice(0, 3, 1.5)})
+            IselOperation(kwargs={"alpha": slice(0, 3, 1.5)})
         )
     with pytest.raises(ValueError, match="Reverse or zero-step"):
         dialog.restore_transform_operation(
-            provenance.IselOperation(kwargs={"alpha": slice(0, 3, 0)})
+            IselOperation(kwargs={"alpha": slice(0, 3, 0)})
         )
     with pytest.raises(ValueError, match="not available"):
-        dialog.restore_transform_operation(
-            provenance.SelOperation(kwargs={"missing": 1.0})
-        )
+        dialog.restore_transform_operation(SelOperation(kwargs={"missing": 1.0}))
 
     dialog.close()
     win.close()
@@ -8828,22 +8924,22 @@ def _restore_dialog_data() -> xr.DataArray:
     [
         (
             AggregateDialog,
-            provenance.AverageOperation(dims=("x",)),
-            provenance.QSelAggregationOperation(dims=("x",), func="mean"),
+            AverageOperation(dims=("x",)),
+            QSelAggregationOperation(dims=("x",), func="mean"),
         ),
         (
             AggregateDialog,
-            provenance.QSelAggregationOperation(dims=("y",), func="sum"),
-            provenance.QSelAggregationOperation(dims=("y",), func="sum"),
+            QSelAggregationOperation(dims=("y",), func="sum"),
+            QSelAggregationOperation(dims=("y",), func="sum"),
         ),
         (
             InterpolationDialog,
-            provenance.InterpolationOperation(
+            InterpolationOperation(
                 dim="x",
                 values=[0.0, 1.5, 3.0],
                 method="linear",
             ),
-            provenance.InterpolationOperation(
+            InterpolationOperation(
                 dim="x",
                 values=[0.0, 1.5, 3.0],
                 method="linear",
@@ -8851,12 +8947,12 @@ def _restore_dialog_data() -> xr.DataArray:
         ),
         (
             LeadingEdgeDialog,
-            provenance.LeadingEdgeOperation(
+            LeadingEdgeOperation(
                 dim="x",
                 fraction=0.4,
                 direction="positive",
             ),
-            provenance.LeadingEdgeOperation(
+            LeadingEdgeOperation(
                 dim="x",
                 fraction=0.4,
                 direction="positive",
@@ -8864,14 +8960,14 @@ def _restore_dialog_data() -> xr.DataArray:
         ),
         (
             CoarsenDialog,
-            provenance.CoarsenOperation(
+            CoarsenOperation(
                 dim={"x": 2},
                 boundary="trim",
                 side="left",
                 coord_func="mean",
                 reducer="sum",
             ),
-            provenance.CoarsenOperation(
+            CoarsenOperation(
                 dim={"x": 2},
                 boundary="trim",
                 side="left",
@@ -8881,24 +8977,24 @@ def _restore_dialog_data() -> xr.DataArray:
         ),
         (
             ThinDialog,
-            provenance.ThinOperation(mode="global", factor=2),
-            provenance.ThinOperation(mode="global", factor=2),
+            ThinOperation(mode="global", factor=2),
+            ThinOperation(mode="global", factor=2),
         ),
         (
             ThinDialog,
-            provenance.ThinOperation(mode="per_dim", factors={"x": 2}),
-            provenance.ThinOperation(mode="per_dim", factors={"x": 2}),
+            ThinOperation(mode="per_dim", factors={"x": 2}),
+            ThinOperation(mode="per_dim", factors={"x": 2}),
         ),
         (
             SymmetrizeDialog,
-            provenance.SymmetrizeOperation(
+            SymmetrizeOperation(
                 dim="x",
                 center=1.0,
                 part="below",
                 mode="full",
                 subtract=True,
             ),
-            provenance.SymmetrizeOperation(
+            SymmetrizeOperation(
                 dim="x",
                 center=1.0,
                 part="below",
@@ -8908,14 +9004,14 @@ def _restore_dialog_data() -> xr.DataArray:
         ),
         (
             SymmetrizeNfoldDialog,
-            provenance.SymmetrizeNfoldOperation(
+            SymmetrizeNfoldOperation(
                 fold=4,
                 axes=("x", "y"),
                 center={"x": 1.0, "y": 2.0},
                 reshape=False,
                 order=2,
             ),
-            provenance.SymmetrizeNfoldOperation(
+            SymmetrizeNfoldOperation(
                 fold=4,
                 axes=("x", "y"),
                 center={"x": 1.0, "y": 2.0},
@@ -8925,46 +9021,42 @@ def _restore_dialog_data() -> xr.DataArray:
         ),
         (
             DivideByCoordDialog,
-            provenance.DivideByCoordOperation(coord_name="temperature"),
-            provenance.DivideByCoordOperation(coord_name="temperature"),
+            DivideByCoordOperation(coord_name="temperature"),
+            DivideByCoordOperation(coord_name="temperature"),
         ),
         (
             SwapDimsDialog,
-            provenance.SwapDimsOperation(mapping={"x": "kx"}),
-            provenance.SwapDimsOperation(mapping={"x": "kx"}),
+            SwapDimsOperation(mapping={"x": "kx"}),
+            SwapDimsOperation(mapping={"x": "kx"}),
         ),
         (
             RenameDimsCoordsDialog,
-            provenance.RenameDimsCoordsOperation(mapping={"x": "x_new"}),
-            provenance.RenameDimsCoordsOperation(mapping={"x": "x_new"}),
+            RenameDimsCoordsOperation(mapping={"x": "x_new"}),
+            RenameDimsCoordsOperation(mapping={"x": "x_new"}),
         ),
         (
             AssignCoordsDialog,
-            provenance.AffineCoordOperation(coord_name="x", scale=2.0, offset=1.0),
-            provenance.AffineCoordOperation(coord_name="x", scale=2.0, offset=1.0),
+            AffineCoordOperation(coord_name="x", scale=2.0, offset=1.0),
+            AffineCoordOperation(coord_name="x", scale=2.0, offset=1.0),
         ),
         (
             AssignCoordsDialog,
-            provenance.AssignCoordsOperation(
-                coord_name="x", values=[0.0, 1.0, 2.0, 3.0]
-            ),
-            provenance.AssignCoordsOperation(
-                coord_name="x", values=[0.0, 1.0, 2.0, 3.0]
-            ),
+            AssignCoordsOperation(coord_name="x", values=[0.0, 1.0, 2.0, 3.0]),
+            AssignCoordsOperation(coord_name="x", values=[0.0, 1.0, 2.0, 3.0]),
         ),
         (
             AssignCoordsDialog,
-            provenance.AssignScalarCoordOperation(coord_name="sample_temp", value=20.0),
-            provenance.AssignScalarCoordOperation(coord_name="sample_temp", value=20.0),
+            AssignScalarCoordOperation(coord_name="sample_temp", value=20.0),
+            AssignScalarCoordOperation(coord_name="sample_temp", value=20.0),
         ),
         (
             AssignCoordsDialog,
-            provenance.AssignCoord1DOperation(
+            AssignCoord1DOperation(
                 coord_name="kx_new",
                 dim="x",
                 values=[0.0, 0.1, 0.2, 0.3],
             ),
-            provenance.AssignCoord1DOperation(
+            AssignCoord1DOperation(
                 coord_name="kx_new",
                 dim="x",
                 values=[0.0, 0.1, 0.2, 0.3],
@@ -8972,20 +9064,16 @@ def _restore_dialog_data() -> xr.DataArray:
         ),
         (
             AssignAttrsDialog,
-            provenance.AssignAttrsOperation(
-                attrs={"note": "edited", "temperature": 20.0}
-            ),
-            provenance.AssignAttrsOperation(
-                attrs={"note": "edited", "temperature": 20.0}
-            ),
+            AssignAttrsOperation(attrs={"note": "edited", "temperature": 20.0}),
+            AssignAttrsOperation(attrs={"note": "edited", "temperature": 20.0}),
         ),
     ],
 )
 def test_transform_dialog_restore_operation_roundtrip(
     qtbot,
     dialog_cls: type[imagetool_dialogs.DataTransformDialog],
-    operation: provenance.ToolProvenanceOperation,
-    expected: provenance.ToolProvenanceOperation,
+    operation: ToolProvenanceOperation,
+    expected: ToolProvenanceOperation,
 ) -> None:
     win = itool(_restore_dialog_data(), execute=False)
     qtbot.addWidget(win)
@@ -9016,18 +9104,18 @@ def test_squeeze_dialog_restore_operation_roundtrip(qtbot) -> None:
     dialog = SqueezeDialog(win.slicer_area)
     qtbot.addWidget(dialog)
 
-    dialog.restore_transform_operation(provenance.SqueezeOperation(drop=True))
-    assert dialog.source_transform_operation() == provenance.SqueezeOperation(
+    dialog.restore_transform_operation(SqueezeOperation(drop=True))
+    assert dialog.source_transform_operation() == SqueezeOperation(
         dims=("scan", "delay"),
         drop=True,
     )
 
-    operation = provenance.SqueezeOperation(dims=("scan",), drop=True)
+    operation = SqueezeOperation(dims=("scan",), drop=True)
     dialog.restore_transform_operation(operation)
 
     assert dialog.source_transform_operation() == operation
     with pytest.raises(ValueError, match="not available"):
-        dialog.restore_transform_operation(provenance.SqueezeOperation(dims=("pol",)))
+        dialog.restore_transform_operation(SqueezeOperation(dims=("pol",)))
 
     dialog.close()
     win.close()
@@ -9093,7 +9181,7 @@ def test_rotation_dialog_restore_operation_roundtrip_and_rejects_wrong_axes(
     dialog = RotationDialog(win.slicer_area)
     qtbot.addWidget(dialog)
     axes = tuple(win.slicer_area.main_image.axis_dims_uniform)
-    operation = provenance.RotateOperation(
+    operation = RotateOperation(
         angle=12.5,
         axes=axes,
         center=(1.0, 2.0),
@@ -9106,7 +9194,7 @@ def test_rotation_dialog_restore_operation_roundtrip_and_rejects_wrong_axes(
     assert dialog.source_transform_operation() == operation
     with pytest.raises(ValueError, match="not currently visible"):
         dialog.restore_transform_operation(
-            provenance.RotateOperation(angle=0.0, axes=("x", "z"), center=(0.0, 0.0))
+            RotateOperation(angle=0.0, axes=("x", "z"), center=(0.0, 0.0))
         )
 
     dialog.close()
@@ -9120,7 +9208,7 @@ def test_symmetrize_nfold_restore_accepts_mapping_center(qtbot) -> None:
     qtbot.addWidget(dialog)
 
     dialog.restore_transform_operation(
-        provenance.SymmetrizeNfoldOperation(
+        SymmetrizeNfoldOperation(
             fold=3,
             axes=("x", "y"),
             center={"x": 1.0, "y": 2.0},
@@ -9130,7 +9218,7 @@ def test_symmetrize_nfold_restore_accepts_mapping_center(qtbot) -> None:
     assert [spin.value() for spin in dialog.center_spins] == [1.0, 2.0]
     with pytest.raises(ValueError, match="not currently visible"):
         dialog.restore_transform_operation(
-            provenance.SymmetrizeNfoldOperation(fold=3, axes=("x", "z"))
+            SymmetrizeNfoldOperation(fold=3, axes=("x", "z"))
         )
 
     dialog.close()
@@ -9161,7 +9249,7 @@ def test_restore_transform_operation_ignores_unrelated_operations(qtbot) -> None
     for dialog in dialogs:
         qtbot.addWidget(dialog)
 
-    unrelated = provenance.ScriptCodeOperation(label="script", code="derived = data")
+    unrelated = ScriptCodeOperation(label="script", code="derived = data")
     for dialog in dialogs:
         dialog.restore_transform_operation(unrelated)
 
@@ -9362,9 +9450,7 @@ def test_transform_dialog_restores_filter_after_processing_error(
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
-    filter_operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 1.0}
-    )
+    filter_operation = GaussianFilterOperation(sigma={"x": 1.0})
     win.slicer_area.apply_filter_operation(filter_operation)
 
     errors: list[tuple[str, str]] = []
@@ -9402,8 +9488,8 @@ def test_transform_replace_composes_after_script_active_name(qtbot) -> None:
     qtbot.addWidget(win)
 
     win.set_provenance_spec(
-        erlab.interactive.imagetool.provenance.script(
-            erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+        script(
+            ScriptCodeOperation(
                 label="Compute intermediate result",
                 code="result = data + 1",
             ),
@@ -9818,7 +9904,7 @@ def test_sortby_dialog_key_table_order_and_empty_items(qtbot) -> None:
     operation = dialog.source_transform_operation()
     assert operation.variables == ("temperature", "y")
 
-    restored_operation = provenance.SortByOperation(
+    restored_operation = SortByOperation(
         variables=("pressure", "temperature"),
         ascending=False,
     )
@@ -10368,7 +10454,7 @@ def test_itool_squeeze_dialog(qtbot, accept_dialog) -> None:
     def _set_dialog_params(dialog: SqueezeDialog) -> None:
         assert tuple(dialog.dim_checks) == ("scan", "delay")
         dialog.drop_check.setChecked(True)
-        assert dialog.source_transform_operation() == provenance.SqueezeOperation(
+        assert dialog.source_transform_operation() == SqueezeOperation(
             dims=("scan", "delay"),
             drop=True,
         )
@@ -11882,9 +11968,7 @@ def test_itool_filter_dialog_reopens_with_current_settings(
     )
     first_sigma = 0.015
     second_sigma = 0.02
-    first_operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": first_sigma}
-    )
+    first_operation = GaussianFilterOperation(sigma={"x": first_sigma})
     win = itool(data, execute=False)
     qtbot.addWidget(win)
     win.slicer_area.apply_filter_operation(first_operation)
@@ -11911,7 +11995,7 @@ def test_normalize_filter_dialog_reopens_with_current_settings(qtbot) -> None:
         dims=["x", "y"],
         coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+    operation = NormalizeOperation(
         dims=("x",),
         mode="min_area",
         denominator_rtol=1e-9,
@@ -11931,9 +12015,7 @@ def test_normalize_filter_dialog_reopens_with_current_settings(qtbot) -> None:
     assert dialog.opts[3].isChecked()
     assert dialog.denominator_rtol == pytest.approx(1e-9)
 
-    dialog.restore_filter_operation(
-        erlab.interactive.imagetool.provenance.GaussianFilterOperation(sigma={"x": 1.0})
-    )
+    dialog.restore_filter_operation(GaussianFilterOperation(sigma={"x": 1.0}))
     assert dialog.dim_checks["x"].isChecked()
     assert dialog.opts[3].isChecked()
 
@@ -11954,9 +12036,7 @@ def test_gaussian_filter_restore_skips_unknown_dimensions(qtbot) -> None:
     qtbot.addWidget(dialog)
 
     dialog.restore_filter_operation(
-        erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-            sigma={"missing": 1.0, "x": 2.0}
-        )
+        GaussianFilterOperation(sigma={"missing": 1.0, "x": 2.0})
     )
 
     assert dialog.dim_checks["x"].isChecked()
@@ -11973,12 +12053,8 @@ def test_itool_filter_preview_reject_restores_active_filter(qtbot) -> None:
         dims=["x", "y"],
         coords={"x": np.linspace(0.0, 0.04, 5), "y": np.arange(5, dtype=float)},
     )
-    first_operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 0.015}
-    )
-    second_operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 0.02}
-    )
+    first_operation = GaussianFilterOperation(sigma={"x": 0.015})
+    second_operation = GaussianFilterOperation(sigma={"x": 0.02})
     first_expected = first_operation.apply(data, parent_data=data)
     second_expected = second_operation.apply(data, parent_data=data)
     win = itool(data, execute=False)
@@ -12012,7 +12088,7 @@ def test_accepted_filter_displayed_data_uses_materialized_filter(qtbot) -> None:
         dims=["x", "y"],
         coords={"x": np.arange(3, dtype=float), "y": np.arange(3, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+    operation = NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -12043,7 +12119,7 @@ def test_filter_helpers_reject_invalid_normalized_results(qtbot, monkeypatch) ->
         dims=["x", "y"],
         coords={"x": np.arange(3, dtype=float), "y": np.arange(3, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+    operation = NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -12076,7 +12152,7 @@ def test_apply_filter_operation_caches_dask_accepted_filter_lazily(qtbot) -> Non
         dims=["x", "y"],
         coords={"x": np.arange(3, dtype=float), "y": np.arange(4, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+    operation = NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -12116,7 +12192,7 @@ def test_compute_chunked_preserves_accepted_filter(qtbot) -> None:
         dims=["x", "y"],
         coords={"x": np.arange(3, dtype=float), "y": np.arange(4, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+    operation = NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -12150,13 +12226,11 @@ def test_itool_reload_reapplies_accepted_filter(qtbot, tmp_path: pathlib.Path) -
     def _load_current(_path: str) -> xr.DataArray:
         return current["data"]
 
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 0.015}
-    )
+    operation = GaussianFilterOperation(sigma={"x": 0.015})
     win = ImageTool(
         data,
         file_path=file_path,
-        load_func=(_load_current, {}, 0),
+        load_func=(_load_current, {}, FileDataSelection(kind="dataarray")),
     )
     qtbot.addWidget(win)
     win.slicer_area.apply_filter_operation(operation)
@@ -12200,13 +12274,11 @@ def test_itool_reload_filter_failure_keeps_existing_filtered_data(
     def _load_current(_path: str) -> xr.DataArray:
         return current["data"]
 
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 0.015}
-    )
+    operation = GaussianFilterOperation(sigma={"x": 0.015})
     win = ImageTool(
         data,
         file_path=file_path,
-        load_func=(_load_current, {}, 0),
+        load_func=(_load_current, {}, FileDataSelection(kind="dataarray")),
     )
     qtbot.addWidget(win)
     win.slicer_area.apply_filter_operation(operation)
@@ -12237,9 +12309,7 @@ def test_itool_empty_filter_accept_clears_active_filter(qtbot) -> None:
         dims=["x", "y"],
         coords={"x": np.linspace(0.0, 0.04, 5), "y": np.arange(5, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 0.015}
-    )
+    operation = GaussianFilterOperation(sigma={"x": 0.015})
     win = itool(data, execute=False)
     qtbot.addWidget(win)
     win.slicer_area.apply_filter_operation(operation)
@@ -12262,9 +12332,7 @@ def test_itool_filter_accept_and_reset_are_undoable(qtbot, accept_dialog) -> Non
         coords={"x": np.linspace(0.0, 0.04, 5), "y": np.arange(5, dtype=float)},
     )
     sigma = 0.015
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": sigma}
-    )
+    operation = GaussianFilterOperation(sigma={"x": sigma})
     expected = operation.apply(data, parent_data=data)
     win = itool(data, execute=False)
     qtbot.addWidget(win)

@@ -1,5 +1,4 @@
 # ruff: noqa: F403, F405
-
 import erlab.interactive.imagetool._figurecomposer_adapter as figurecomposer_adapter
 from erlab.interactive._figurecomposer._model._document import FigureDocument
 from erlab.interactive._figurecomposer._operations._method._catalog import _method_spec
@@ -24,6 +23,10 @@ from erlab.interactive._figurecomposer._operations._plot_slices import (
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _spec as plot_slices_spec,
 )
+from erlab.interactive.imagetool._provenance._code import (
+    _SCRIPT_REPLAY_ALLOWED_BUILTINS,
+)
+from erlab.interactive.imagetool._provenance._graph import _validate_script_code_names
 
 from ._common import *
 
@@ -3085,10 +3088,10 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants(qtbot) -> Non
     ]
     for code in (by_slice, by_source, grid, fortran_grid):
         available_names = {
-            *_provenance_framework._SCRIPT_REPLAY_ALLOWED_BUILTINS,
+            *_SCRIPT_REPLAY_ALLOWED_BUILTINS,
             "slice_values",
         }
-        _replay_graph._validate_script_code_names(
+        _validate_script_code_names(
             f"line_kw = {code}",
             available_names,
             {},

@@ -1,5 +1,4 @@
 # ruff: noqa: F401
-
 import ast
 import builtins
 import contextlib
@@ -122,11 +121,18 @@ from erlab.interactive._figurecomposer._ui._toolbar_dialogs import (
 )
 from erlab.interactive._options import options
 from erlab.interactive._options.schema import AppOptions, FigureOptions
-from erlab.interactive.imagetool import (
-    _provenance_framework,
-    _replay_graph,
-    itool,
-    provenance,
+from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._provenance._graph import (
+    ReplayGraphError,
+    compile_replay_graph,
+    emit_replay_code,
+)
+from erlab.interactive.imagetool._provenance._model import (
+    FileLoadSource,
+    FileReplayCall,
+    ToolProvenanceSpec,
+    file_load,
+    script,
 )
 from erlab.io.exampledata import generate_hvdep_cuts
 from tests.interactive.imagetool.manager.helpers import (
@@ -285,16 +291,16 @@ def _set_unsupported_plot_slices_cursor_state(
     tool.slicer_area.set_value(axis=3, value=1.0, cursor=1)
 
 
-def _file_load_provenance(path: Path) -> provenance.ToolProvenanceSpec:
-    return provenance.file_load(
+def _file_load_provenance(path: Path) -> ToolProvenanceSpec:
+    return file_load(
         start_label=f"Load data from file '{path.name}'",
         seed_code=f"import xarray\n\nderived = xarray.load_dataarray({str(path)!r})",
-        file_load_source=provenance.FileLoadSource(
+        file_load_source=FileLoadSource(
             path=str(path),
             loader_label="xarray.load_dataarray",
             loader_text="xarray.load_dataarray",
             kwargs_text="",
-            replay_call=provenance.FileReplayCall(
+            replay_call=FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 selected_index=0,
@@ -585,7 +591,7 @@ def _figure_composer_replay_source_state(
     name: str,
     label: str | None = None,
 ) -> FigureSourceState:
-    source_spec = provenance.script(
+    source_spec = script(
         start_label=f"Build {label or name}",
         seed_code="derived = xr.DataArray([0.0], dims=('x',))",
         active_name="derived",
@@ -605,9 +611,9 @@ def _assert_figure_composer_provenance_replayable(
     spec = tool.current_provenance_spec()
     assert spec is not None
     try:
-        graph = _replay_graph.compile_replay_graph(spec, display=True)
-        return _replay_graph.emit_replay_code(graph, output_name="fig")
-    except _replay_graph.ReplayGraphError as exc:
+        graph = compile_replay_graph(spec, display=True)
+        return emit_replay_code(graph, output_name="fig")
+    except ReplayGraphError as exc:
         pytest.fail(
             f"{case_label} generated Figure Composer provenance is not replayable: "
             f"{exc}\n\nGenerated code:\n{tool.generated_code()}"

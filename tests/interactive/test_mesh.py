@@ -7,6 +7,7 @@ from qtpy import QtWidgets
 
 import erlab
 from erlab.interactive._mesh import MeshTool, meshtool
+from erlab.interactive.imagetool._provenance._model import parse_tool_provenance_spec
 
 
 @pytest.fixture
@@ -113,9 +114,7 @@ def test_meshtool_output_provenance_roundtrip_uses_tuple_assignment(
         payload = spec.model_dump(mode="json")
         assert payload["active_name"] == expected_name
 
-        reparsed = erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
-            payload
-        )
+        reparsed = parse_tool_provenance_spec(payload)
         assert reparsed is not None
         code = reparsed.display_code()
         assert code is not None

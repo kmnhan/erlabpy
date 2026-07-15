@@ -17,7 +17,7 @@ from erlab.interactive._figurecomposer._defaults import (
     _default_figure_dpi,
     _default_layout,
 )
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool._provenance._model import ScriptInput
 
 if typing.TYPE_CHECKING:
     from collections.abc import Sequence
@@ -213,9 +213,7 @@ class FigureSourceState(pydantic.BaseModel):
         return _jsonable_slice_mapping(value)
 
     @classmethod
-    def from_script_input(
-        cls, script_input: provenance.ScriptInput
-    ) -> FigureSourceState:
+    def from_script_input(cls, script_input: ScriptInput) -> FigureSourceState:
         return cls(
             name=script_input.name,
             label=script_input.label,
@@ -224,10 +222,12 @@ class FigureSourceState(pydantic.BaseModel):
             provenance_spec=script_input.provenance_spec,
         )
 
-    def to_script_input(self) -> provenance.ScriptInput | None:
+    def to_script_input(
+        self,
+    ) -> ScriptInput | None:
         if self.node_uid is None and self.provenance_spec is None:
             return None
-        return provenance.ScriptInput(
+        return ScriptInput(
             name=self.name,
             label=self.label,
             node_uid=self.node_uid,

@@ -1,7 +1,7 @@
 __all__ = ["itool"]
 
 import operator
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 
 import numpy.typing as npt
 import xarray as xr
@@ -15,7 +15,7 @@ from erlab.interactive.imagetool.viewer_state import (
 
 
 def itool(
-    data: Collection[xr.DataArray | npt.NDArray]
+    data: Sequence[xr.DataArray | npt.NDArray]
     | xr.DataArray
     | npt.NDArray
     | xr.Dataset

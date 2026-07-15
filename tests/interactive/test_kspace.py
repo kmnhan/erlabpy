@@ -10,8 +10,25 @@ import xarray as xr
 import erlab
 from erlab.accessors.kspace import IncompleteDataError, MomentumAccessor
 from erlab.constants import AxesConfiguration
-from erlab.interactive.imagetool import _kspace_conversion, provenance
+from erlab.interactive.imagetool import _kspace_conversion
 from erlab.interactive.imagetool import dialogs as imagetool_dialogs
+from erlab.interactive.imagetool._provenance._model import (
+    full_data,
+    operation_group_range,
+    script,
+    selection,
+    stamp_operation_group,
+    strip_operation_groups,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    AverageOperation,
+    IselOperation,
+    KspaceConfigurationOperation,
+    KspaceConvertOperation,
+    KspaceInnerPotentialOperation,
+    KspaceSetNormalOperation,
+    KspaceWorkFunctionOperation,
+)
 from erlab.interactive.imagetool.dialogs import KspaceConversionDialog
 from erlab.interactive.kspace import KspaceTool, ktool
 from erlab.io.exampledata import generate_hvdep_cuts
@@ -320,7 +337,7 @@ def test_kspace_conversion_operations_include_nondefault_angle_scales(
     )
 
     set_normal = operations[0]
-    assert isinstance(set_normal, provenance.KspaceSetNormalOperation)
+    assert isinstance(set_normal, KspaceSetNormalOperation)
     assert set_normal.alpha_scale == pytest.approx(1.2)
     assert set_normal.beta_scale == pytest.approx(0.8)
     code = set_normal.statement_code("data", output_name="data")
@@ -493,11 +510,11 @@ def test_kspace_conversion_estimate_uses_explicit_grid_directly(
 
 def test_kspace_conversion_console_group_stamping_focuses_rows() -> None:
     operations = (
-        provenance.KspaceConfigurationOperation(configuration=AxesConfiguration.Type2),
-        provenance.KspaceInnerPotentialOperation(inner_potential=12.0),
-        provenance.KspaceWorkFunctionOperation(work_function=4.2),
-        provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
-        provenance.KspaceConvertOperation(bounds=None, resolution=None),
+        KspaceConfigurationOperation(configuration=AxesConfiguration.Type2),
+        KspaceInnerPotentialOperation(inner_potential=12.0),
+        KspaceWorkFunctionOperation(work_function=4.2),
+        KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
+        KspaceConvertOperation(bounds=None, resolution=None),
     )
 
     stamped = _kspace_conversion.stamp_kspace_conversion_groups(operations)
@@ -513,18 +530,15 @@ def test_kspace_conversion_console_group_stamping_focuses_rows() -> None:
         "bounds_resolution",
     ]
     assert (
-        _kspace_conversion._focus_for_operation(
-            provenance.AverageOperation(dims=("x",))
-        )
-        is None
+        _kspace_conversion._focus_for_operation(AverageOperation(dims=("x",))) is None
     )
     assert (
         _kspace_conversion.stamp_kspace_conversion_groups(
             (
-                provenance.KspaceWorkFunctionOperation(work_function=4.2),
-                provenance.KspaceWorkFunctionOperation(work_function=4.3),
-                provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0),
-                provenance.KspaceConvertOperation(bounds=None, resolution=None),
+                KspaceWorkFunctionOperation(work_function=4.2),
+                KspaceWorkFunctionOperation(work_function=4.3),
+                KspaceSetNormalOperation(alpha=1.0, beta=2.0),
+                KspaceConvertOperation(bounds=None, resolution=None),
             )
         )[0].group
         is None
@@ -1262,8 +1276,8 @@ def test_kspace_conversion_dialog_code_and_result(qtbot, anglemap, kind) -> None
     assert ("V0" in dialog._offset_spins) is data.kspace._has_hv
 
     operations = dialog.source_operations()
-    assert isinstance(operations[-1], provenance.KspaceConvertOperation)
-    assert any(isinstance(op, provenance.KspaceSetNormalOperation) for op in operations)
+    assert isinstance(operations[-1], KspaceConvertOperation)
+    assert any(isinstance(op, KspaceSetNormalOperation) for op in operations)
     assert all(
         operation.group is not None
         and operation.group.kind == _kspace_conversion.KSPACE_CONVERSION_GROUP_KIND
@@ -1273,16 +1287,13 @@ def test_kspace_conversion_dialog_code_and_result(qtbot, anglemap, kind) -> None
         operations[0].group.id
     }
     for index in range(len(operations)):
-        assert provenance.operation_group_range(
+        assert operation_group_range(
             operations,
             index,
             kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
         ) == (0, len(operations))
     assert (
-        any(
-            isinstance(op, provenance.KspaceInnerPotentialOperation)
-            for op in operations
-        )
+        any(isinstance(op, KspaceInnerPotentialOperation) for op in operations)
         is data.kspace._has_hv
     )
 
@@ -1422,7 +1433,7 @@ def test_kspace_conversion_dialog_seeds_from_newest_ktool(qtbot, anglemap) -> No
     set_normal = next(
         operation
         for operation in dialog.source_operations()
-        if isinstance(operation, provenance.KspaceSetNormalOperation)
+        if isinstance(operation, KspaceSetNormalOperation)
     )
     assert set_normal.alpha_scale == pytest.approx(1.2)
     assert set_normal.beta_scale == pytest.approx(0.8)
@@ -1492,17 +1503,17 @@ def test_kspace_conversion_dialog_seeds_hv_inner_potential_from_ktool(
     assert dialog._newest_child_ktool() is child
     dialog.focus_operation_group_control("inner_potential")
 
-    operations = provenance.stamp_operation_group(
+    operations = stamp_operation_group(
         (
-            provenance.KspaceInnerPotentialOperation(inner_potential=13.0),
-            provenance.KspaceSetNormalOperation(
+            KspaceInnerPotentialOperation(inner_potential=13.0),
+            KspaceSetNormalOperation(
                 alpha=1.0,
                 beta=2.0,
                 delta=3.0,
                 alpha_scale=1.1,
                 beta_scale=0.9,
             ),
-            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+            KspaceConvertOperation(bounds=None, resolution=None),
         ),
         kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
     )
@@ -1522,16 +1533,16 @@ def test_kspace_conversion_dialog_restore_scales_recalculates_auto_bounds(
     _add_hidden_tool(qtbot, win)
     dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
 
-    operations = provenance.stamp_operation_group(
+    operations = stamp_operation_group(
         (
-            provenance.KspaceSetNormalOperation(
+            KspaceSetNormalOperation(
                 alpha=1.0,
                 beta=2.0,
                 delta=3.0,
                 alpha_scale=1.6,
                 beta_scale=0.7,
             ),
-            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+            KspaceConvertOperation(bounds=None, resolution=None),
         ),
         kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
     )
@@ -1565,18 +1576,16 @@ def test_kspace_conversion_dialog_restores_unordered_setup_group(
     axes = tuple(dialog._control_data.kspace.momentum_axes)
     bounds = dict.fromkeys(axes, (-0.03, 0.04))
     resolution = dict.fromkeys(axes, 0.02)
-    operations = provenance.stamp_operation_group(
+    operations = stamp_operation_group(
         (
-            provenance.KspaceWorkFunctionOperation(work_function=4.2),
-            provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
-            provenance.KspaceConfigurationOperation(
-                configuration=AxesConfiguration.Type1
-            ),
-            provenance.KspaceConvertOperation(bounds=bounds, resolution=resolution),
+            KspaceWorkFunctionOperation(work_function=4.2),
+            KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
+            KspaceConfigurationOperation(configuration=AxesConfiguration.Type1),
+            KspaceConvertOperation(bounds=bounds, resolution=resolution),
         ),
         kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
     )
-    unmarked = provenance.strip_operation_groups(operations)
+    unmarked = strip_operation_groups(operations)
 
     with pytest.raises(ValueError, match="can only restore one"):
         imagetool_dialogs.DataTransformDialog.restore_transform_operations(
@@ -1593,20 +1602,20 @@ def test_kspace_conversion_dialog_restores_unordered_setup_group(
     assert dialog.current_configuration == AxesConfiguration.Type1
 
     assert KspaceConversionDialog.operation_group_for_edit(unmarked, 0) is None
-    duplicate_normal = provenance.stamp_operation_group(
+    duplicate_normal = stamp_operation_group(
         (
-            provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0),
-            provenance.KspaceSetNormalOperation(alpha=3.0, beta=4.0),
-            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+            KspaceSetNormalOperation(alpha=1.0, beta=2.0),
+            KspaceSetNormalOperation(alpha=3.0, beta=4.0),
+            KspaceConvertOperation(bounds=None, resolution=None),
         ),
         kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
     )
     assert KspaceConversionDialog.operation_group_for_edit(duplicate_normal, 0) is None
-    extra_convert = provenance.stamp_operation_group(
+    extra_convert = stamp_operation_group(
         (
-            provenance.KspaceSetNormalOperation(alpha=1.0, beta=2.0),
-            provenance.KspaceConvertOperation(bounds=None, resolution=None),
-            provenance.KspaceConvertOperation(bounds=None, resolution=None),
+            KspaceSetNormalOperation(alpha=1.0, beta=2.0),
+            KspaceConvertOperation(bounds=None, resolution=None),
+            KspaceConvertOperation(bounds=None, resolution=None),
         ),
         kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
     )
@@ -1653,7 +1662,7 @@ def test_kspace_conversion_dialog_restores_unordered_setup_group(
         dialog.process_data(data.copy(deep=True)),
     )
 
-    spec = provenance.full_data(*operations)
+    spec = full_data(*operations)
     display_code = spec.display_code(parent_data=data)
     assert display_code is not None
     namespace = {"data": data.copy(deep=True)}
@@ -1913,7 +1922,7 @@ def test_ktool_angle_scales_are_set_normal_provenance_kwargs(qtbot, anglemap) ->
     set_normal = next(
         operation
         for operation in spec.operations
-        if isinstance(operation, provenance.KspaceSetNormalOperation)
+        if isinstance(operation, KspaceSetNormalOperation)
     )
     assert set_normal.alpha_scale == pytest.approx(1.25)
     assert set_normal.beta_scale == pytest.approx(0.75)
@@ -1945,7 +1954,7 @@ def test_ktool_copy_code_aliases_expression_input_names(qtbot) -> None:
     win = ktool(data, execute=False)
     _add_hidden_tool(qtbot, win)
     win.set_input_provenance_spec(
-        erlab.interactive.imagetool.provenance.script(
+        script(
             start_label="Start from watched variable 'my_data'",
             seed_code="derived = my_data.astype(np.float64)",
             active_name="derived",
@@ -1966,12 +1975,8 @@ def test_ktool_copy_code_aliases_expression_input_names(qtbot) -> None:
 
 def test_ktool_copy_code_ignores_parent_provenance_but_keeps_source(qtbot) -> None:
     data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
-    source = provenance.selection(
-        provenance.IselOperation(kwargs={"alpha": slice(2, 24)})
-    )
-    parent_provenance = provenance.selection(
-        provenance.IselOperation(kwargs={"hv": slice(0, 5)})
-    )
+    source = selection(IselOperation(kwargs={"alpha": slice(2, 24)}))
+    parent_provenance = selection(IselOperation(kwargs={"hv": slice(0, 5)}))
     source_data = source.apply(data)
     win = ktool(source_data, execute=False)
     _add_hidden_tool(qtbot, win)
