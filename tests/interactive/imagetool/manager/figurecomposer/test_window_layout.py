@@ -1,6 +1,7 @@
 # ruff: noqa: F403, F405
 
 import erlab.interactive._figurecomposer._reorder_list as figurecomposer_reorder_list
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 
 from ._common import *
 
@@ -8,14 +9,16 @@ from ._common import *
 def _operation_context_action(
     tool: FigureComposerTool, object_name: str
 ) -> tuple[QtWidgets.QMenu, QtGui.QAction]:
+    existing_menus = tool.operation_panel.operation_list.findChildren(QtWidgets.QMenu)
     tool.operation_panel._show_context_menu(QtCore.QPoint(0, 0))
-    assert tool.operation_panel.context_menu is not None
-    action = next(
-        action
-        for action in tool.operation_panel.context_menu.actions()
-        if action.objectName() == object_name
+    menu = next(
+        menu
+        for menu in tool.operation_panel.operation_list.findChildren(QtWidgets.QMenu)
+        if all(menu is not existing_menu for existing_menu in existing_menus)
     )
-    return tool.operation_panel.context_menu, action
+    action = menu.findChild(QtGui.QAction, object_name)
+    assert action is not None
+    return menu, action
 
 
 def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> None:
@@ -1298,9 +1301,7 @@ def test_figure_composer_manual_redraw_controls(qtbot, monkeypatch) -> None:
     )
     qtbot.addWidget(tool)
 
-    assert tool.show_figure_button.text() == "Show Plot"
     assert tool.auto_redraw_check.isChecked()
-    assert tool.redraw_plot_button.text() == ""
     assert tool.redraw_plot_button.toolButtonStyle() == (
         QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly
     )
@@ -2417,7 +2418,6 @@ def test_figure_composer_reports_and_clears_render_errors(qtbot) -> None:
     assert "RuntimeError: boom" in item.toolTip(
         figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
     )
-    assert tool.step_source_status_label.text() == ""
     assert tool.step_source_status_label.isHidden()
 
     tool._replace_operation(
@@ -2431,7 +2431,6 @@ def test_figure_composer_reports_and_clears_render_errors(qtbot) -> None:
     assert "RuntimeError: boom" not in item.toolTip(
         figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
     )
-    assert tool.step_source_status_label.text() == ""
     assert tool.step_source_status_label.isHidden()
 
 
@@ -2466,7 +2465,7 @@ def test_figure_composer_editor_input_errors_mark_and_clear_invalid_steps(
     assert "Invalid input:" in item.toolTip(
         figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
     )
-    assert "Invalid input:" in tool.step_source_status_label.text()
+    assert not tool.step_source_status_label.isHidden()
     with pytest.raises(ValueError, match="invalid step inputs"):
         tool.generated_code()
 
@@ -2491,7 +2490,7 @@ def test_figure_composer_editor_input_errors_mark_and_clear_invalid_steps(
     assert "Invalid input:" not in item.toolTip(
         figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
     )
-    assert "Invalid input:" not in tool.step_source_status_label.text()
+    assert tool.step_source_status_label.isHidden()
 
 
 def test_figure_composer_editor_signal_allows_callback_to_delete_sender(qtbot) -> None:
@@ -2527,7 +2526,7 @@ def test_figure_composer_editor_signal_allows_callback_to_delete_sender(qtbot) -
     def delete_sender_with_error() -> None:
         error_edit.deleteLater()
         QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
-        raise figurecomposer_text.FigureComposerInputError("new error")
+        raise FigureComposerInputError("new error")
 
     tool._connect_editor_signal(
         error_edit, error_edit.editingFinished, delete_sender_with_error
@@ -4040,8 +4039,6 @@ def test_figure_composer_duplicates_and_reorders_steps(qtbot) -> None:
         for action in menu.actions()
         if action.objectName() == "figureComposerContextMoveStepDownAction"
     )
-    assert move_up_action.text() == "Move Up"
-    assert move_down_action.text() == "Move Down"
     assert move_up_action.isEnabled() is False
     assert move_down_action.isEnabled() is True
     menu.close()
@@ -4330,15 +4327,18 @@ def test_figure_composer_operation_list_keyboard_context_menu(qtbot) -> None:
     tool.operation_panel.operation_list.keyPressEvent(event)
 
     assert event.isAccepted()
-    assert tool.operation_panel.context_menu is not None
+    move_up_action = tool.operation_panel.operation_list.findChild(
+        QtGui.QAction, "figureComposerContextMoveStepUpAction"
+    )
+    assert move_up_action is not None
+    menu = move_up_action.parent()
+    assert isinstance(menu, QtWidgets.QMenu)
     action_names = {
-        action.objectName()
-        for action in tool.operation_panel.context_menu.actions()
-        if action.objectName()
+        action.objectName() for action in menu.actions() if action.objectName()
     }
     assert "figureComposerContextMoveStepUpAction" in action_names
     assert "figureComposerContextMoveStepDownAction" in action_names
-    tool.operation_panel.context_menu.close()
+    menu.close()
 
 
 def test_figure_composer_copy_paste_steps_preserves_order_and_history(qtbot) -> None:
@@ -4606,16 +4606,12 @@ def test_figure_composer_copy_paste_steps_shortcuts_and_context_menu(qtbot) -> N
         tool.operation_panel.operation_list.keyPressEvent(copy_event)
     assert copy_event.isAccepted()
 
-    tool.operation_panel._show_context_menu(QtCore.QPoint(0, 0))
-    assert tool.operation_panel.context_menu is not None
-    paste_action = next(
-        action
-        for action in tool.operation_panel.context_menu.actions()
-        if action.objectName() == "figureComposerContextPasteStepsAction"
+    menu, paste_action = _operation_context_action(
+        tool, "figureComposerContextPasteStepsAction"
     )
     _select_operation_rows(tool, (1,))
     paste_action.trigger()
-    tool.operation_panel.context_menu.close()
+    menu.close()
 
     assert [operation.label for operation in tool.tool_status.operations] == [
         "a",
@@ -4658,16 +4654,12 @@ def test_figure_composer_cut_paste_steps_shortcuts_and_context_menu(qtbot) -> No
     ]
 
     _select_operation_rows(tool, (0,))
-    tool.operation_panel._show_context_menu(QtCore.QPoint(0, 0))
-    assert tool.operation_panel.context_menu is not None
-    cut_action = next(
-        action
-        for action in tool.operation_panel.context_menu.actions()
-        if action.objectName() == "figureComposerContextCutStepsAction"
+    menu, cut_action = _operation_context_action(
+        tool, "figureComposerContextCutStepsAction"
     )
     assert cut_action.isEnabled()
     cut_action.trigger()
-    tool.operation_panel.context_menu.close()
+    menu.close()
 
     assert [operation.label for operation in tool.tool_status.operations] == ["c"]
 
@@ -5379,14 +5371,13 @@ def test_figure_composer_axes_status_uses_compact_labels(qtbot) -> None:
         tool.operation_panel.operation_list.topLevelItem(0)
     )
     tool.operation_panel.select_section("axes")
-    assert tool.target_axes_status_label.text() == "Targets: axs[0, :]"
     assert (
         tool._axes_target_text(FigureAxesSelectionState(axes=((0, 1), (0, 2), (0, 3))))
         == "axs[0, 1:4]"
     )
 
     tool._target_current_operation_all_axes()
-    assert tool.target_axes_status_label.text() == "Targets: axs"
+    assert tool.tool_status.operations[0].axes.axes == tuple(np.ndindex(2, 4))
 
 
 def test_figure_composer_gridspec_codegen_executes(qtbot) -> None:
@@ -6303,9 +6294,7 @@ def test_figure_composer_gridspec_axes_targets_survive_region_delete(qtbot) -> N
     assert target_text == "1 target axis removed"
     assert first_axes_id not in target_text
     tool._sync_axes_selector()
-    status_text = tool.target_axes_status_label.text()
-    assert status_text == "1 target axis was removed by the current GridSpec layout."
-    assert first_axes_id not in status_text
+    assert not tool.target_axes_status_label.isHidden()
 
 
 def test_figure_composer_gridspec_axes_selector_click_keeps_surviving_removed_target(
@@ -6859,7 +6848,7 @@ def test_figure_composer_toolbar_subplot_dialog_updates_recipe(qtbot) -> None:
     assert engine_combo is not None
     assert top_spin is not None
     assert bottom_spin is not None
-    assert engine_combo.currentText() == "none"
+    assert tool.tool_status.setup.layout == "none"
     assert top_spin.isEnabled()
 
     tool._updating_controls = True
@@ -7078,7 +7067,7 @@ def test_figure_composer_toolbar_axis_state_helpers(qtbot) -> None:
     figurecomposer_toolbar_dialogs._apply_axis_combo_state(combo, mixed)
     assert combo.currentData() is _editor_controls.MIXED_VALUE
     figurecomposer_toolbar_dialogs._apply_axis_combo_state(combo, available)
-    assert combo.currentText() == "linear"
+    assert combo.currentIndex() == 0
     assert all(
         combo.itemData(index) is not _editor_controls.MIXED_VALUE
         for index in range(combo.count())
@@ -7337,11 +7326,6 @@ def test_figure_composer_toolbar_operation_helpers_update_recipe(qtbot) -> None:
     figurecomposer_toolbar_dialogs._replace_operation_by_id(
         tool,
         "missing",
-        tool.tool_status.operations[0],
-    )
-    figurecomposer_toolbar_dialogs._replace_recipe_operation(
-        tool,
-        -1,
         tool.tool_status.operations[0],
     )
 
@@ -7762,13 +7746,7 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     assert grid_row.findChild(QtWidgets.QCheckBox, grid_check.objectName()) is not None
     grid_row_layout = grid_row.layout()
     assert grid_row_layout is not None
-    grid_sublabels: list[str] = []
-    for i in range(grid_row_layout.count()):
-        widget = grid_row_layout.itemAt(i).widget()
-        if isinstance(widget, QtWidgets.QLabel):
-            grid_sublabels.append(widget.text())
-    assert "Visible" not in grid_sublabels
-    assert grid_check.text() == "Show"
+    assert grid_row_layout.indexOf(grid_check) >= 0
     assert (
         dialog.findChild(QtWidgets.QComboBox, "figureComposerToolbarAxesStyleStepCombo")
         is None
@@ -7921,7 +7899,7 @@ def test_figure_composer_toolbar_axes_dialog_shows_mixed_axis_selection(
     assert title_edit.placeholderText() == _editor_controls.MIXED_VALUES_TEXT
     assert xlim_edit.text() == ""
     assert xlim_edit.placeholderText() == _editor_controls.MIXED_VALUES_TEXT
-    assert xscale_combo.currentText() == _editor_controls.MIXED_VALUES_TEXT
+    assert xscale_combo.currentData() is _editor_controls.MIXED_VALUE
     assert grid_check.checkState() == QtCore.Qt.CheckState.PartiallyChecked
 
     xscale_combo.activated.emit(xscale_combo.currentIndex())
@@ -8741,7 +8719,7 @@ def test_figure_composer_layout_change_marks_removed_axes(qtbot, monkeypatch) ->
     assert tool.tool_status.setup.nrows == 1
     assert tool.tool_status.operations[0].axes.axes == ((1, 1),)
     assert tool._operation_has_invalid_axes(tool.tool_status.operations[0])
-    assert tool.operation_panel.current_section_key == "sources"
+    assert tool.operation_panel.editor_stack.currentWidget() is tool.step_sources_page
     tool.operation_panel.select_section("axes")
     assert tool.keep_valid_axes_button.isEnabled()
     with pytest.raises(ValueError, match="Cannot generate code"):

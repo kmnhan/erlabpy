@@ -286,9 +286,7 @@ def _selected_source_data(
     data: xr.DataArray, source: FigureSourceState
 ) -> xr.DataArray:
     selected = _selected_data({source.name: data}, _source_selection(source))
-    if selected is None:  # pragma: no cover
-        raise KeyError(source.name)
-    return selected
+    return typing.cast("xr.DataArray", selected)
 
 
 def _middle_coord_value(data: xr.DataArray, dim: str) -> float | None:

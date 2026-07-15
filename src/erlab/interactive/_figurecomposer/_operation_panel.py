@@ -70,9 +70,8 @@ class _FigureComposerStepEditorScroll(QtWidgets.QScrollArea):
             self.verticalScrollBarPolicy()
             != QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         ):
-            scrollbar = self.verticalScrollBar()
-            if scrollbar is not None:  # pragma: no branch
-                width += scrollbar.sizeHint().width()
+            scrollbar = typing.cast("QtWidgets.QScrollBar", self.verticalScrollBar())
+            width += scrollbar.sizeHint().width()
         return QtCore.QSize(max(hint.width(), width), hint.height())
 
 
@@ -223,11 +222,6 @@ class FigureOperationPanel(QtWidgets.QWidget):
         self._closing = False
         self._build_ui(add_actions)
 
-    @property
-    def context_menu(self) -> QtWidgets.QMenu | None:
-        """Currently open operation context menu, if any."""
-        return self._context_menu
-
     def _build_ui(self, add_actions: Sequence[FigureOperationAction]) -> None:
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -317,24 +311,23 @@ class FigureOperationPanel(QtWidgets.QWidget):
         self.operation_list.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
-        header = self.operation_list.header()
-        if header is not None:  # pragma: no branch
-            header.setStretchLastSection(False)
-            header.setMinimumSectionSize(48)
-            header.setSectionResizeMode(
-                _OPERATION_LIST_STEP_COLUMN,
-                QtWidgets.QHeaderView.ResizeMode.Stretch,
-            )
-            header.setSectionResizeMode(
-                _OPERATION_LIST_TARGET_COLUMN,
-                QtWidgets.QHeaderView.ResizeMode.Interactive,
-            )
-            header.setSectionResizeMode(
-                _OPERATION_LIST_STATUS_COLUMN,
-                QtWidgets.QHeaderView.ResizeMode.Interactive,
-            )
-            header.resizeSection(_OPERATION_LIST_TARGET_COLUMN, 72)
-            header.resizeSection(_OPERATION_LIST_STATUS_COLUMN, 88)
+        header = typing.cast("QtWidgets.QHeaderView", self.operation_list.header())
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(48)
+        header.setSectionResizeMode(
+            _OPERATION_LIST_STEP_COLUMN,
+            QtWidgets.QHeaderView.ResizeMode.Stretch,
+        )
+        header.setSectionResizeMode(
+            _OPERATION_LIST_TARGET_COLUMN,
+            QtWidgets.QHeaderView.ResizeMode.Interactive,
+        )
+        header.setSectionResizeMode(
+            _OPERATION_LIST_STATUS_COLUMN,
+            QtWidgets.QHeaderView.ResizeMode.Interactive,
+        )
+        header.resizeSection(_OPERATION_LIST_TARGET_COLUMN, 72)
+        header.resizeSection(_OPERATION_LIST_STATUS_COLUMN, 88)
         self.splitter.addWidget(self.operation_list)
 
         self.inspector = QtWidgets.QWidget(self)
@@ -368,10 +361,9 @@ class FigureOperationPanel(QtWidgets.QWidget):
             QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         self.editor_scroll.setAutoFillBackground(False)
-        viewport = self.editor_scroll.viewport()
-        if viewport is not None:  # pragma: no branch
-            viewport.setObjectName("figureComposerStepEditorViewport")
-            viewport.setAutoFillBackground(False)
+        viewport = typing.cast("QtWidgets.QWidget", self.editor_scroll.viewport())
+        viewport.setObjectName("figureComposerStepEditorViewport")
+        viewport.setAutoFillBackground(False)
         inspector_layout.addWidget(self.editor_scroll, 1)
 
         self.editor_stack = QtWidgets.QStackedWidget()
@@ -379,10 +371,11 @@ class FigureOperationPanel(QtWidgets.QWidget):
         self.editor_stack.setAutoFillBackground(False)
         self.editor_scroll.setWidget(self.editor_stack)
 
-        operation_viewport = self.operation_list.viewport()
+        operation_viewport = typing.cast(
+            "QtWidgets.QWidget", self.operation_list.viewport()
+        )
         self._operation_viewport = operation_viewport
-        if operation_viewport is not None:  # pragma: no branch
-            operation_viewport.installEventFilter(self)
+        operation_viewport.installEventFilter(self)
 
     def create_editor_page(
         self, object_name: str, *, transient: bool = False
@@ -397,11 +390,6 @@ class FigureOperationPanel(QtWidgets.QWidget):
         if transient:
             self._transient_editor_pages.append(page)
         return page
-
-    @property
-    def current_section_key(self) -> str:
-        """Key of the editor section currently shown."""
-        return self._current_section_key
 
     @property
     def section_keys(self) -> tuple[str, ...]:
@@ -421,9 +409,7 @@ class FigureOperationPanel(QtWidgets.QWidget):
         """Unmount the current editor and safely retire transient pages."""
         self._section_tab_stop_refs.clear()
         while self.editor_stack.count():
-            page = self.editor_stack.widget(0)
-            if page is None:  # pragma: no cover - guarded by count()
-                break
+            page = typing.cast("QtWidgets.QWidget", self.editor_stack.widget(0))
             page.hide()
             self.editor_stack.removeWidget(page)
         pages = self._transient_editor_pages
@@ -836,9 +822,11 @@ class FigureOperationPanel(QtWidgets.QWidget):
                     [QtWidgets.QTreeWidgetItem() for _row in rows]
                 )
             for index, row in enumerate(rows):
-                item = self.operation_list.topLevelItem(index)
-                if item is not None:  # pragma: no branch
-                    self._set_item(item, row)
+                item = typing.cast(
+                    "QtWidgets.QTreeWidgetItem",
+                    self.operation_list.topLevelItem(index),
+                )
+                self._set_item(item, row)
             if not reuse_items:
                 self._apply_selected_ids(selected_ids)
                 if current_id is None:
@@ -1008,9 +996,8 @@ class FigureOperationPanel(QtWidgets.QWidget):
         delete_action.setEnabled(self.delete_button.isEnabled())
         delete_action.triggered.connect(self.delete_requested)
         menu.addAction(delete_action)
-        viewport = self.operation_list.viewport()
-        if viewport is not None:  # pragma: no branch
-            menu.popup(viewport.mapToGlobal(position))
+        viewport = typing.cast("QtWidgets.QWidget", self.operation_list.viewport())
+        menu.popup(viewport.mapToGlobal(position))
 
     @QtCore.Slot(QtWidgets.QTreeWidgetItem, QtWidgets.QTreeWidgetItem)
     def _current_item_changed(

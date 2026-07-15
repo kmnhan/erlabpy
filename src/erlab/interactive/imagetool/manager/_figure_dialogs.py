@@ -176,15 +176,6 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         action = self.action_combo.currentData()
         return action if isinstance(action, str) else _FIGURE_DIALOG_ADD_STEP
 
-    def is_new_figure(self) -> bool:
-        return self.selected_action() == _FIGURE_DIALOG_NEW
-
-    def is_add_source_only(self) -> bool:
-        return self.selected_action() == _FIGURE_DIALOG_ADD_SOURCE
-
-    def is_replace_source(self) -> bool:
-        return self.selected_action() == _FIGURE_DIALOG_REPLACE_SOURCE
-
     def selected_source_alias(self) -> str | None:
         alias = self.source_combo.currentData()
         return alias if isinstance(alias, str) else None

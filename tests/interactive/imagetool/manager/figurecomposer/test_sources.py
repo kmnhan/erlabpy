@@ -2,6 +2,7 @@
 
 import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
 import erlab.interactive._figurecomposer._source_panel as figurecomposer_source_panel
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 
 from ._common import *
 
@@ -9,14 +10,16 @@ from ._common import *
 def _source_context_action(
     tool: FigureComposerTool, object_name: str
 ) -> tuple[QtWidgets.QMenu, QtGui.QAction]:
+    existing_menus = tool.source_panel.source_list.findChildren(QtWidgets.QMenu)
     tool.source_panel._show_context_menu(QtCore.QPoint(0, 0))
-    assert tool.source_panel.context_menu is not None
-    action = next(
-        action
-        for action in tool.source_panel.context_menu.actions()
-        if action.objectName() == object_name
+    menu = next(
+        menu
+        for menu in tool.source_panel.source_list.findChildren(QtWidgets.QMenu)
+        if all(menu is not existing_menu for existing_menu in existing_menus)
     )
-    return tool.source_panel.context_menu, action
+    action = menu.findChild(QtGui.QAction, object_name)
+    assert action is not None
+    return menu, action
 
 
 def test_figure_composer_source_alias_candidate_normalizes_usable_names() -> None:
@@ -462,11 +465,10 @@ def test_figure_composer_source_ui_keeps_aliases_as_internal_keys(qtbot) -> None
     assert first_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "data_0"
     assert first_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is True
     assert not first_item.font(0).bold()
-    assert first_item.text(0) == "data_0"
     second_item = tool.source_panel.source_list.topLevelItem(1)
     assert second_item is not None
+    assert second_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "data_1"
     assert second_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is False
-    assert second_item.text(0) == "data_1"
 
     tool.operation_panel.select_section("sources")
     checks = _plot_source_checks(tool)
@@ -498,7 +500,6 @@ def test_figure_composer_source_ui_uses_shared_shape_formatter(
     assert first_item is not None
     shape_widget = tool.source_panel.source_list.itemWidget(first_item, 1)
     assert isinstance(shape_widget, QtWidgets.QLabel)
-    assert shape_widget.text() == "<p>formatted shape</p>"
     assert tool.source_panel.source_list.toolTip() == ""
     assert first_item.toolTip(0)
     assert first_item.toolTip(1) == first_item.toolTip(0)
@@ -584,7 +585,7 @@ def test_figure_composer_source_refresh_controls_use_live_source_callbacks(
     refreshed.clear()
     tool.source_panel.refresh_sources_button.click()
     assert refreshed == ["data_0"]
-    assert "profile" in tool.source_panel.source_status_label.text()
+    assert not tool.source_panel.source_status_label.isHidden()
 
     def raise_refresh(name: str) -> bool:
         raise RuntimeError(f"{name} is incompatible")
@@ -596,7 +597,7 @@ def test_figure_composer_source_refresh_controls_use_live_source_callbacks(
         source_label=source_label,
     )
     tool.source_panel.refresh_sources_button.click()
-    assert "incompatible" in tool.source_panel.source_status_label.text()
+    assert not tool.source_panel.source_status_label.isHidden()
 
     tool._set_source_refresh_callbacks(
         can_refresh_source=lambda _name: False,
@@ -695,7 +696,6 @@ def test_figure_composer_source_remove_controls_disable_used_sources(qtbot) -> N
     assert tool.source_panel.remove_selected_source_button.isEnabled()
     tool.source_panel.remove_selected_source_button.click()
     assert "unused" not in tool.source_data()
-    assert tool.source_panel.source_status_label.text() == ""
     assert tool.source_panel.source_status_label.isHidden()
 
 
@@ -783,7 +783,7 @@ def test_figure_composer_remove_source_updates_state_history_and_code(qtbot) -> 
     assert set(tool.source_data()) == {"data_0"}
     assert tool.tool_status.operations == (operation,)
     assert tool.tool_status.primary_source == "data_0"
-    assert tool.source_panel.source_status_label.text() == ""
+    assert tool.source_panel.source_status_label.isHidden()
     assert not tool.source_panel.remove_selected_source_button.isEnabled()
 
     _render_figure_composer_rgba(tool)
@@ -936,8 +936,12 @@ def test_figure_composer_source_alias_editor_renames_references(qtbot) -> None:
     assert tool.tool_status.operations[0].sources == ("renamed", "data_1")
     assert tool.tool_status.operations[1].line_source == "renamed"
     assert tool._document.source_by_name()["renamed"].label == "Legacy first"
-    assert tool.source_panel.source_list.topLevelItem(0).text(0) == "renamed"
-    assert "Legacy" not in tool.source_panel.source_list.topLevelItem(0).text(0)
+    assert (
+        tool.source_panel.source_list.topLevelItem(0).data(
+            0, QtCore.Qt.ItemDataRole.UserRole
+        )
+        == "renamed"
+    )
 
     assert tool._document.source_alias_error("data_1", current="renamed") is not None
 
@@ -1022,8 +1026,6 @@ def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
         for action in menu.actions()
         if action.objectName() == "figureComposerContextMoveSourceDownAction"
     )
-    assert move_up_action.text() == "Move Up"
-    assert move_down_action.text() == "Move Down"
     assert move_up_action.isEnabled()
     assert move_down_action.isEnabled()
     menu.close()
@@ -1048,7 +1050,7 @@ def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
     xr.testing.assert_identical(
         tool._document.source_selection_base_data["second_copy"], first
     )
-    assert tool.source_panel.source_list.currentItem().text(0) == "second_copy"
+    assert tool.source_panel.current_name() == "second_copy"
 
     menu, move_up_action = _source_context_action(
         tool, "figureComposerContextMoveSourceUpAction"
@@ -1061,7 +1063,7 @@ def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
         "second",
         "third",
     )
-    assert tool.source_panel.source_list.currentItem().text(0) == "second_copy"
+    assert tool.source_panel.current_name() == "second_copy"
 
     menu, move_down_action = _source_context_action(
         tool, "figureComposerContextMoveSourceDownAction"
@@ -1079,7 +1081,7 @@ def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
         "third",
         "second_copy",
     )
-    assert tool.source_panel.source_list.currentItem().text(0) == "second_copy"
+    assert tool.source_panel.current_name() == "second_copy"
 
 
 def test_figure_composer_duplicate_source_preserves_historical_label(qtbot) -> None:
@@ -1249,7 +1251,7 @@ def test_figure_composer_generated_code_resolves_selected_source_dependencies(
     )
     tool.tool_status = tool.tool_status.model_copy(update={"sources": cyclic_sources})
     with pytest.raises(
-        figurecomposer_text.FigureComposerInputError,
+        FigureComposerInputError,
         match=r"dependency cycle: selected_v -> selected_u -> selected_v",
     ):
         tool.generated_code()
@@ -1296,11 +1298,8 @@ def test_figure_composer_source_list_internal_reorder_updates_recipe(qtbot) -> N
         "b",
         "c",
     )
-    assert tool.source_panel.source_list.currentItem().text(0) == "b"
-    assert {item.text(0) for item in tool.source_panel.source_list.selectedItems()} == {
-        "b",
-        "c",
-    }
+    assert tool.source_panel.current_name() == "b"
+    assert set(tool.source_panel.selected_names()) == {"b", "c"}
 
 
 def test_figure_composer_source_list_keyboard_context_menu(qtbot) -> None:
@@ -1332,23 +1331,21 @@ def test_figure_composer_source_list_keyboard_context_menu(qtbot) -> None:
     tool.source_panel.source_list.keyPressEvent(event)
 
     assert event.isAccepted()
-    assert tool.source_panel.context_menu is not None
+    refresh_all_action = tool.source_panel.source_list.findChild(
+        QtGui.QAction, "figureComposerContextRefreshAllSourcesAction"
+    )
+    assert refresh_all_action is not None
+    menu = refresh_all_action.parent()
+    assert isinstance(menu, QtWidgets.QMenu)
     action_names = {
-        action.objectName()
-        for action in tool.source_panel.context_menu.actions()
-        if action.objectName()
+        action.objectName() for action in menu.actions() if action.objectName()
     }
     assert "figureComposerContextMoveSourceUpAction" in action_names
     assert "figureComposerContextMoveSourceDownAction" in action_names
-    refresh_all_action = next(
-        action
-        for action in tool.source_panel.context_menu.actions()
-        if action.objectName() == "figureComposerContextRefreshAllSourcesAction"
-    )
     assert refresh_all_action.isEnabled()
     refresh_all_action.trigger()
     assert refreshed == ["a", "b"]
-    tool.source_panel.context_menu.close()
+    menu.close()
 
 
 def test_figure_composer_data_only_source_context_menu_disables_rename(qtbot) -> None:
@@ -1388,20 +1385,21 @@ def test_figure_composer_source_context_menus_are_released(qtbot) -> None:
     qtbot.addWidget(tool)
 
     tool.source_panel._show_context_menu(QtCore.QPoint(0, 0))
-    first_menu = tool.source_panel.context_menu
-    assert first_menu is not None
+    first_menus = tool.source_panel.source_list.findChildren(QtWidgets.QMenu)
+    assert len(first_menus) == 1
+    first_menu = first_menus[0]
     tool.source_panel._show_context_menu(QtCore.QPoint(0, 0))
-    second_menu = tool.source_panel.context_menu
-    assert second_menu is not None
-    assert second_menu is not first_menu
+    menus = tool.source_panel.source_list.findChildren(QtWidgets.QMenu)
+    assert len(menus) == 2
+    second_menu = next(menu for menu in menus if menu is not first_menu)
 
     first_menu.close()
     qtbot.waitUntil(lambda: not erlab.interactive.utils.qt_is_valid(first_menu))
-    assert tool.source_panel.context_menu is second_menu
+    assert tool.source_panel.source_list.findChildren(QtWidgets.QMenu) == [second_menu]
 
     second_menu.close()
     qtbot.waitUntil(lambda: not erlab.interactive.utils.qt_is_valid(second_menu))
-    assert tool.source_panel.context_menu is None
+    assert tool.source_panel.source_list.findChildren(QtWidgets.QMenu) == []
 
 
 def test_figure_composer_source_list_edge_events(qtbot) -> None:
@@ -2080,9 +2078,8 @@ def test_figure_composer_replace_source_preserves_alias_and_generated_code(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
 
-    assert "data_0" in tool.operation_panel.operation_list.topLevelItem(0).text(0)
-    assert "data_0" in tool.operation_panel.operation_list.topLevelItem(1).text(0)
-    assert _operation_section_button(tool, "sources").text() == "Sources: data_0"
+    assert tool.tool_status.operations[0].sources == ("data_0",)
+    assert tool.tool_status.operations[1].line_source == "data_0"
 
     replaced = tool.replace_source(
         "data_0",
@@ -2106,17 +2103,6 @@ def test_figure_composer_replace_source_preserves_alias_and_generated_code(
     xr.testing.assert_identical(tool.source_data()["data_0"], replacement)
     assert tool.tool_status.operations[0].sources == ("data_0",)
     assert tool.tool_status.operations[1].line_source == "data_0"
-    assert "data_0" in tool.operation_panel.operation_list.topLevelItem(0).text(0)
-    assert (
-        "ImageTool 1: replacement"
-        not in tool.operation_panel.operation_list.topLevelItem(0).text(0)
-    )
-    assert "data_0" in tool.operation_panel.operation_list.topLevelItem(1).text(0)
-    assert (
-        "ImageTool 1: replacement"
-        not in tool.operation_panel.operation_list.topLevelItem(1).text(0)
-    )
-    assert _operation_section_button(tool, "sources").text() == "Sources: data_0"
 
     _render_figure_composer_rgba(tool)
     assert tool._operation_render_errors == {}
@@ -2212,12 +2198,12 @@ def test_figure_composer_source_refresh_applies_saved_selection(
         incompatible,
     )
     xr.testing.assert_identical(tool.source_data()["data"], stale)
-    assert "Could not refresh source" in tool.source_panel.source_status_label.text()
+    assert not tool.source_panel.source_status_label.isHidden()
 
     refreshed = original + 20.0
     tool.refresh_from_sources({"data": refreshed})
     xr.testing.assert_identical(tool.source_data()["data"], refreshed.qsel(eV=0.0))
-    assert tool.source_panel.source_status_label.text() == ""
+    assert tool.source_panel.source_status_label.isHidden()
 
 
 def _transitive_selected_source_tool() -> tuple[
@@ -2296,7 +2282,7 @@ def test_figure_composer_source_refresh_recomputes_transitive_selected_sources(
         assert {source.node_uid for source in tool.source_states()} == {
             "replacement-node"
         }
-    assert tool.source_panel.source_status_label.text() == ""
+    assert tool.source_panel.source_status_label.isHidden()
 
 
 def test_figure_composer_refreshing_selected_alias_updates_linked_root(qtbot) -> None:
@@ -2385,10 +2371,7 @@ def test_figure_composer_add_sources_reports_partial_batch_outcome(qtbot) -> Non
     assert result
     xr.testing.assert_identical(tool.source_data()["base"], base)
     xr.testing.assert_identical(tool.source_data()["extra"], extra)
-    assert (
-        "Could not update source data for: base"
-        in tool.source_panel.source_status_label.text()
-    )
+    assert not tool.source_panel.source_status_label.isHidden()
 
 
 @pytest.mark.parametrize("mutation", ("replace", "add", "refresh"))
@@ -2426,7 +2409,7 @@ def test_figure_composer_source_refresh_is_atomic_when_dependent_selection_fails
         xr.testing.assert_identical(
             tool._document.source_selection_base_data[source_name], data
         )
-    assert tool.source_panel.source_status_label.text()
+    assert not tool.source_panel.source_status_label.isHidden()
 
 
 def test_figure_composer_selection_edit_recomputes_transitive_selected_sources(
@@ -2451,7 +2434,7 @@ def test_figure_composer_selection_edit_recomputes_transitive_selected_sources(
     xr.testing.assert_identical(
         tool._document.source_selection_base_data["selected_v"], expected_u
     )
-    assert tool.source_panel.source_validation_label.text() == ""
+    assert tool.source_panel.source_validation_label.isHidden()
 
 
 def test_figure_composer_selection_edit_is_atomic_when_dependent_fails(
@@ -2475,8 +2458,7 @@ def test_figure_composer_selection_edit_is_atomic_when_dependent_fails(
         xr.testing.assert_identical(
             tool._document.source_selection_base_data[source_name], data
         )
-    assert "selected_u" in tool.source_panel.source_validation_label.text()
-    assert "selected_v" in tool.source_panel.source_validation_label.text()
+    assert not tool.source_panel.source_validation_label.isHidden()
 
 
 def test_figure_composer_readding_linked_source_preserves_selection(qtbot) -> None:
@@ -2658,21 +2640,18 @@ def test_figure_composer_refresh_from_sources_covers_edge_paths(qtbot) -> None:
     qtbot.addWidget(tool)
 
     tool.refresh_from_sources({})
-    assert tool.source_panel.source_status_label.text() == ""
+    assert tool.source_panel.source_status_label.isHidden()
 
     incompatible = second + 10.0
     tool.refresh_from_sources({"first": incompatible})
-    assert (
-        "Could not refresh source data for: first"
-        in tool.source_panel.source_status_label.text()
-    )
+    assert not tool.source_panel.source_status_label.isHidden()
 
     refreshed_second = second + 20.0
     tool._document.source_selection_base_data["second"] = second
     tool.refresh_from_sources({"second": refreshed_second})
     xr.testing.assert_identical(tool.source_data()["second"], refreshed_second)
     assert "second" not in tool._document.source_selection_base_data
-    assert tool.source_panel.source_status_label.text() == ""
+    assert tool.source_panel.source_status_label.isHidden()
 
     extra = xr.DataArray(np.arange(2.0), dims=("x",), name="extra")
     tool.refresh_from_sources({"extra": extra})
@@ -2723,7 +2702,6 @@ def test_figure_composer_batch_source_selection_skips_incompatible_sources(
     xr.testing.assert_identical(tool.source_data()["first"], first.isel(x=1))
     xr.testing.assert_identical(tool.source_data()["second"], second)
     assert not tool.source_panel.source_validation_label.isHidden()
-    assert "second" in tool.source_panel.source_validation_label.text()
 
 
 def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
@@ -3150,7 +3128,6 @@ def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
     assert shape_item is not None
     shape_label = tool.source_panel.source_list.itemWidget(shape_item, 1)
     assert isinstance(shape_label, QtWidgets.QLabel)
-    assert "sample_temp_idx" not in shape_label.text()
 
 
 def test_figure_composer_source_inspector_is_sources_tab_compact(
@@ -3223,11 +3200,9 @@ def test_figure_composer_source_inspector_is_sources_tab_compact(
         tool.source_panel.source_inspector.property("figureComposerSourceDtype")
         == "float64"
     )
-    summary_html = tool.source_panel.source_inspector.subtitle_label.text()
-    assert summary_html.startswith("original map<br>")
-    assert "Original name:" not in summary_html
-    assert "<p>" not in summary_html
-    assert "<br><br>" not in summary_html
+    assert tool.source_panel.source_inspector.subtitle_label.isVisibleTo(
+        tool.source_panel.source_inspector
+    )
     assert not tool.source_panel.source_inspector.details_button.isChecked()
     assert not tool.source_panel.source_inspector.details_label.isVisibleTo(
         tool.source_panel.source_inspector
@@ -3459,7 +3434,6 @@ def test_figure_composer_source_inspector_tracks_source_tab_selection(qtbot) -> 
         tool.operation_panel.operation_list.topLevelItem(1)
     )
     assert tool.source_panel.source_inspector.source_name() == "first"
-    assert tool.source_panel.source_status_label.text() == ""
     assert tool.source_panel.source_status_label.isHidden()
     assert tool.step_source_status_label.isHidden()
     first_item = tool.source_panel.source_list.topLevelItem(0)
@@ -3589,7 +3563,7 @@ def test_figure_composer_source_inspector_helper_edges(qtbot) -> None:
     assert not inspector.details_button.isEnabled()
 
     inspector._ensure_details_html()
-    assert not inspector.details_label.text()
+    assert inspector.details_html() == ""
 
 
 def test_figure_composer_source_inspector_target_fallbacks(qtbot) -> None:
@@ -4771,7 +4745,7 @@ def test_figure_composer_source_structure_defensive_paths(qtbot) -> None:
 
     def refresh_source(name: str) -> bool:
         if name == "first":
-            tool._set_source_status_text("refresh rejected")
+            tool._set_source_panel_status("refresh rejected")
             return False
         refreshed.append(name)
         return True

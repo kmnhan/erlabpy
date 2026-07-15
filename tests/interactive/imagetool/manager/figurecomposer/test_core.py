@@ -5,9 +5,6 @@ import textwrap
 
 from erlab.interactive._figurecomposer._document import FigureDocument
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
-from erlab.interactive._figurecomposer._operations import (
-    _registry as figurecomposer_operation_registry,
-)
 
 from ._common import *
 
@@ -161,62 +158,6 @@ def test_figure_document_converts_nested_gridspec_targets_to_root_spans() -> Non
     assert document.convert_layout_mode("subplots")
     assert document.recipe.operations[0].axes.axes == ((0, 0), (0, 1))
     assert document.recipe.operations[0].axes.expression == ""
-
-
-@pytest.mark.parametrize(
-    ("name", "target_domain", "call_policy"),
-    (
-        (
-            "figure_target_test",
-            figurecomposer_method.MethodTargetDomain.FIGURE,
-            figurecomposer_method.MethodCallPolicy.FIG_KEYWORD,
-        ),
-        (
-            "no_target_test",
-            figurecomposer_method.MethodTargetDomain.NONE,
-            figurecomposer_method.MethodCallPolicy.PLAIN_CALL,
-        ),
-    ),
-)
-def test_figure_document_preserves_dynamic_non_axes_method_targets(
-    monkeypatch,
-    name: str,
-    target_domain: figurecomposer_method.MethodTargetDomain,
-    call_policy: figurecomposer_method.MethodCallPolicy,
-) -> None:
-    spec = figurecomposer_method.MethodSpec(
-        family=FigureMethodFamily.ERLAB,
-        name=name,
-        label=name,
-        tooltip="test method target",
-        target_domain=target_domain,
-        call_policy=call_policy,
-    )
-    operation = FigureOperationState.method(
-        family=FigureMethodFamily.ERLAB,
-        name=name,
-        axes=FigureAxesSelectionState(
-            axes=((0, 0),), expression="preserved_expression"
-        ),
-    )
-    with pytest.raises(ValueError, match="Unsupported erlab method"):
-        figurecomposer_operation_metadata.operation_uses_axes(operation)
-
-    with monkeypatch.context() as context:
-        context.setitem(figurecomposer_method.ERLAB_METHODS, name, spec)
-        operation_spec = figurecomposer_operation_registry.spec_for(
-            FigureOperationKind.METHOD
-        )
-        assert not operation_spec.uses_axes(operation)
-        document = FigureDocument(FigureRecipeState(operations=(operation,)))
-
-        assert document.convert_layout_mode("gridspec")
-        assert document.recipe.operations[0] == operation
-        assert document.convert_layout_mode("subplots")
-        assert document.recipe.operations[0] == operation
-
-    with pytest.raises(ValueError, match="Unsupported erlab method"):
-        figurecomposer_operation_metadata.operation_uses_axes(operation)
 
 
 def test_figure_document_renames_source_references_atomically() -> None:
@@ -815,6 +756,11 @@ def test_operation_metadata_covers_every_operation_kind() -> None:
     assert not figurecomposer_operation_metadata.operation_uses_axes(
         FigureOperationState.method(family=FigureMethodFamily.FIGURE, name="supxlabel")
     )
+    assert figurecomposer_operation_metadata.operation_uses_axes(
+        FigureOperationState.method(
+            family=FigureMethodFamily.ERLAB, name="clean_labels"
+        )
+    )
     assert {
         operation.kind: (
             figurecomposer_operation_metadata.declared_operation_source_names(operation)
@@ -890,9 +836,9 @@ def test_figure_composer_operation_modules_use_editor_signal_contract() -> None:
 def test_figure_composer_text_helpers_parse_user_inputs() -> None:
     assert figurecomposer_text._float_pair_from_text("") is None
     assert figurecomposer_text._float_pair_from_text("1, 2.5") == (1.0, 2.5)
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="two"):
+    with pytest.raises(FigureComposerInputError, match="two"):
         figurecomposer_text._float_pair_from_text("1")
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="two"):
+    with pytest.raises(FigureComposerInputError, match="two"):
         figurecomposer_text._float_pair_from_text("1, bad")
 
     assert figurecomposer_text._plot_limit_from_text("") is None
@@ -905,19 +851,19 @@ def test_figure_composer_text_helpers_parse_user_inputs() -> None:
     assert figurecomposer_text._limit_pair_from_text("0, None") == (0.0, None)
     assert figurecomposer_text._limit_pair_from_text("") is None
     assert figurecomposer_text._format_plot_limit((0.0, None)) == "0, None"
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="one"):
+    with pytest.raises(FigureComposerInputError, match="one"):
         figurecomposer_text._plot_limit_from_text("(1, 2, 3)")
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="one"):
+    with pytest.raises(FigureComposerInputError, match="one"):
         figurecomposer_text._plot_limit_from_text("(1, 'bad')")
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="two"):
+    with pytest.raises(FigureComposerInputError, match="two"):
         figurecomposer_text._limit_pair_from_text("1")
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="two"):
+    with pytest.raises(FigureComposerInputError, match="two"):
         figurecomposer_text._limit_pair_from_text("(1,)")
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="two"):
+    with pytest.raises(FigureComposerInputError, match="two"):
         figurecomposer_text._limit_pair_from_text("(1, 'bad')")
 
     assert figurecomposer_text._float_tuple_from_text("1, 2") == (1.0, 2.0)
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="numbers"):
+    with pytest.raises(FigureComposerInputError, match="numbers"):
         figurecomposer_text._float_tuple_from_text("1, bad")
     assert figurecomposer_text._literal_sequence_from_text("") == ()
     assert figurecomposer_text._literal_sequence_from_text("[1, 2]") == (1, 2)
@@ -935,7 +881,7 @@ def test_figure_composer_text_helpers_parse_user_inputs() -> None:
         "alpha",
         "2",
     )
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="text"):
+    with pytest.raises(FigureComposerInputError, match="text"):
         figurecomposer_text._string_tuple_from_text("(1)")
     assert figurecomposer_text._text_tuple_from_text("a\n\nb") == ("a", "b")
     assert figurecomposer_text._text_tuple_from_text("a\n\nb", preserve_empty=True) == (
@@ -952,19 +898,19 @@ def test_figure_composer_text_helpers_parse_user_inputs() -> None:
         "b": slice(0, 2),
     }
     assert figurecomposer_text._dict_from_text("{'a': 1}") == {"a": 1}
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="keyword"):
+    with pytest.raises(FigureComposerInputError, match="keyword"):
         figurecomposer_text._dict_from_text("a=")
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="keyword"):
+    with pytest.raises(FigureComposerInputError, match="keyword"):
         figurecomposer_text._dict_from_text("a=object()")
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="keyword"):
+    with pytest.raises(FigureComposerInputError, match="keyword"):
         figurecomposer_text._dict_from_text("1")
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="keyword"):
+    with pytest.raises(FigureComposerInputError, match="keyword"):
         figurecomposer_text._dict_from_text("{1, 2}")
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="explicit"):
+    with pytest.raises(FigureComposerInputError, match="explicit"):
         figurecomposer_text._dict_from_text("**{'a': 1}")
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="explicit"):
+    with pytest.raises(FigureComposerInputError, match="explicit"):
         figurecomposer_text._dict_from_text("{**{'a': 1}}")
-    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="keyword"):
+    with pytest.raises(FigureComposerInputError, match="keyword"):
         figurecomposer_text._dict_from_text("{alpha: 1}")
 
     assert figurecomposer_text._format_pair(None) == ""
@@ -1204,11 +1150,7 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     )
 
     _select_operation_rows(tool, (3,))
-    assert (
-        tool.operation_panel.operation_list.topLevelItem(3).text(0)
-        == "eplt.clean_labels"
-    )
-    assert _operation_section_button(tool, "method").text() == "eplt.clean_labels"
+    assert tool.tool_status.operations[3].method_name == "clean_labels"
     tool.operation_panel.select_section("method")
     erlab_method_page = tool.operation_panel.editor_stack.currentWidget()
     assert all(

@@ -1729,7 +1729,12 @@ class ImageToolManager(_ImageToolManagerBase):
             return False
         tool = node.tool_window if node is not None else None
         if isinstance(tool, FigureComposerTool):
-            source_error = tool.source_status_text if result.skipped else ""
+            source_error = (
+                "Could not update source data for: "
+                + ", ".join(detail for _name, detail in result.skipped)
+                if result.skipped
+                else ""
+            )
             added = len(result.added)
             updated = len(result.updated)
             parts: list[str] = []
@@ -1749,7 +1754,7 @@ class ImageToolManager(_ImageToolManagerBase):
             status = "; ".join(parts) + "."
             if source_error:
                 status = f"{status} {source_error}"
-            tool._set_source_status_text(status)
+            tool._set_source_panel_status(status)
         return True
 
     def _replace_figure_source(

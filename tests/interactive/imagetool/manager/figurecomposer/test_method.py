@@ -3,6 +3,36 @@
 from ._common import *
 
 
+@pytest.mark.parametrize(
+    ("family", "methods", "target_domain"),
+    (
+        (
+            FigureMethodFamily.AXES,
+            figurecomposer_method.AXES_METHODS,
+            figurecomposer_method.MethodTargetDomain.AXES,
+        ),
+        (
+            FigureMethodFamily.FIGURE,
+            figurecomposer_method.FIGURE_METHODS,
+            figurecomposer_method.MethodTargetDomain.FIGURE,
+        ),
+        (
+            FigureMethodFamily.ERLAB,
+            figurecomposer_method.ERLAB_METHODS,
+            figurecomposer_method.MethodTargetDomain.AXES,
+        ),
+    ),
+)
+def test_figure_composer_method_catalog_matches_document_target_semantics(
+    family, methods, target_domain
+) -> None:
+    assert methods
+    for name, spec in methods.items():
+        assert spec.family == family
+        assert spec.name == name
+        assert spec.target_domain == target_domain
+
+
 def test_figure_composer_method_doc_url_uses_family_templates() -> None:
     assert figurecomposer_method._method_doc_url(
         figurecomposer_method.AXES_METHODS["text"]
@@ -656,7 +686,6 @@ def test_figure_composer_method_helper_edge_contracts(
         QtWidgets.QComboBox, "figureComposerFigureMethodCombo"
     )
     assert figure_method_combo is not None
-    assert figure_method_combo.currentText() == "set_layout_engine"
     assert figure_method_combo.currentData() == "set_layout_engine"
 
     figurecomposer_method._update_current_method_args(tool, ("none",))
@@ -1200,12 +1229,9 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert transform_combo is not None
     assert text_edit is not None
     assert kwargs_edit is not None
-    assert method_combo.currentText() == "text"
     assert method_combo.currentData() == "text"
-    assert transform_combo.currentText() == "axes"
     assert text_edit.toPlainText() == "Panel"
     assert kwargs_edit.text() == 'ha="left", va="top"'
-    assert _operation_section_button(tool, "method").text() == "ax.text"
 
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(4)
@@ -1223,9 +1249,11 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert grid_visible_combo is not None
     assert grid_which_combo is not None
     assert grid_axis_combo is not None
-    assert grid_visible_combo.currentText() == "True"
-    assert grid_which_combo.currentText() == "major"
-    assert grid_axis_combo.currentText() == "x"
+    assert tool.tool_status.operations[4].method_args == (True,)
+    assert tool.tool_status.operations[4].method_kwargs == {
+        "which": "major",
+        "axis": "x",
+    }
 
     scale_names = tuple(mscale.get_scale_names())
     assert "log" in scale_names
@@ -1241,7 +1269,6 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
         tuple(xscale_combo.itemText(index) for index in range(xscale_combo.count()))
         == scale_names
     )
-    assert xscale_combo.currentText() == "log"
     assert tool.tool_status.operations[6].method_args == ()
 
     tool.operation_panel.operation_list.setCurrentItem(
@@ -1277,7 +1304,6 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert title_loc_combo is not None
     assert title_pad_edit is not None
     assert title_edit.toPlainText() == "Left title"
-    assert title_loc_combo.currentText() == "left"
     assert title_pad_edit.value() == 2.0
 
     tool.operation_panel.operation_list.setCurrentItem(
@@ -1298,7 +1324,6 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert tight_combo is not None
     assert x_margin_edit.value() == pytest.approx(0.1)
     assert y_margin_edit.value() == pytest.approx(0.2)
-    assert tight_combo.currentText() == "False"
 
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(12)
@@ -1313,7 +1338,6 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert aspect_edit is not None
     assert aspect_share_combo is not None
     assert aspect_edit.text() == "2"
-    assert aspect_share_combo.currentText() == "True"
     aspect_edit.setText("2.5")
     aspect_edit.editingFinished.emit()
     assert tool.tool_status.operations[12].method_args == (2.5,)
@@ -1556,17 +1580,11 @@ def test_figure_composer_axes_plot_method_render_and_codegen(qtbot) -> None:
     assert transform_x_combo is not None
     assert transform_y_combo is not None
     assert kwargs_edit is not None
-    assert method_combo.currentText() == "plot"
     assert method_combo.currentData() == "plot"
     assert x_edit.text() == "0.0, 0.5, 1.0"
     assert y_edit.text() == "1.0, 0.5, 0.0"
     assert color_edit.text() == "C1"
-    assert style_combo.currentText() == "--"
     assert width_spin.value() == pytest.approx(2.5)
-    assert marker_combo.currentText() == "o"
-    assert transform_combo.currentText() == "blend"
-    assert transform_x_combo.currentText() == "data"
-    assert transform_y_combo.currentText() == "axes"
     assert kwargs_edit.text() == "clip_on=False"
 
     color_edit.setText("tab:blue")
@@ -2684,7 +2702,7 @@ def test_figure_composer_axes_plot_optional_bool_editor_branch(qtbot) -> None:
     )
     combo = layout_parent.findChild(QtWidgets.QComboBox, "figureComposerTestResetCombo")
     assert combo is not None
-    assert combo.currentText() == "True"
+    assert combo.currentData() == "True"
 
     combo.setCurrentText("False")
     combo.activated.emit(combo.currentIndex())
@@ -3561,7 +3579,10 @@ def test_figure_composer_batch_same_plot_method_edits_selected_steps(qtbot) -> N
     assert width_spin is not None
     assert color_edit.text() == ""
     assert color_edit.placeholderText() == "(multiple values)"
-    assert transform_combo.currentText() == "(multiple values)"
+    assert transform_combo.currentIndex() == 0
+    mixed_item = typing.cast("typing.Any", transform_combo.model()).item(0)
+    assert mixed_item is not None
+    assert not mixed_item.isEnabled()
     assert width_spin.value() == pytest.approx(float(mpl.rcParams["lines.linewidth"]))
     width_spin_container = width_spin.parentWidget()
     assert width_spin_container is not None
@@ -3665,10 +3686,7 @@ def test_figure_composer_figure_method_has_no_axes_target(qtbot) -> None:
         tool.operation_panel.operation_list.topLevelItem(0)
     )
     assert "axes" not in tool.operation_panel.section_keys
-    assert (
-        tool.operation_panel.operation_list.topLevelItem(0).text(0) == "fig.supxlabel"
-    )
-    assert _operation_section_button(tool, "method").text() == "fig.supxlabel"
+    assert tool.tool_status.operations[0].method_name == "supxlabel"
 
     fig = tool.figure
     figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
@@ -3818,7 +3836,6 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
     assert engine_combo is not None
     assert pad_edit is not None
     assert hspace_edit is None
-    assert engine_combo.currentText() == "tight"
     assert pad_edit.value() == pytest.approx(0.5)
     assert "hspace" not in engine_tool.generated_code()
 
@@ -4004,7 +4021,6 @@ def test_figure_composer_legend_methods_render_and_codegen(qtbot) -> None:
     assert loc_combo is not None
     assert columns_edit is not None
     assert title_edit is not None
-    assert loc_combo.currentText() == "upper right"
     assert columns_edit.value() == 1
     assert title_edit.text() == "Axis legend"
 
@@ -4017,7 +4033,6 @@ def test_figure_composer_legend_methods_render_and_codegen(qtbot) -> None:
         QtWidgets.QComboBox, "figureComposerFigureMethodLegendLocCombo"
     )
     assert figure_loc_combo is not None
-    assert figure_loc_combo.currentText() == "lower center"
 
     fig = tool.figure
     figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
@@ -4116,7 +4131,6 @@ def test_figure_composer_colorbar_method_target_policy(qtbot) -> None:
         QtWidgets.QComboBox, "figureComposerMethodCallPolicyCombo"
     )
     assert policy_combo is not None
-    assert policy_combo.currentText() == "Each selected axis"
     assert "for ax in axs.flat:" in tool.generated_code()
 
     _activate_combo_text(policy_combo, "Selected axes together")

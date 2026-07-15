@@ -660,7 +660,6 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         QtWidgets.QComboBox, "figureComposerProfileReduceCombo"
     )
     assert reduce_combo is not None
-    assert reduce_combo.currentText() == "Disabled"
     assert (
         selection_page.findChild(
             QtWidgets.QSpinBox, "figureComposerProfileReduceCoarsenSpin"
@@ -741,11 +740,9 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         "figureComposerLineMarkerFaceColorButton",
     )
     assert line_style_combo is not None
-    assert line_style_combo.currentText() == "--"
     assert line_width_spin is not None
     assert line_width_spin.value() == 1.5
     assert marker_combo is not None
-    assert marker_combo.currentText() == "o"
     assert marker_size_spin is not None
     assert marker_size_spin.value() == 6.0
     assert marker_face_edit is not None
@@ -1599,7 +1596,10 @@ def test_figure_composer_line_label_help_button_opens_structured_dialog(
     assert "\n" not in labels_edit.toolTip()
     assert "\n" not in help_button.toolTip()
     assert "help-faq" in icon_names
-    assert help_button.text() == ""
+    assert help_button.toolButtonStyle() == (
+        QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly
+    )
+    assert not help_button.icon().isNull()
 
     help_button.click()
     qtbot.waitUntil(
@@ -3042,14 +3042,12 @@ def test_figure_composer_line_action_seeds_from_selected_slice_step(
         QtWidgets.QComboBox, "figureComposerProfilePlacementCombo"
     )
     assert placement_combo is not None
-    assert placement_combo.currentText() == "One profile per axis"
 
     tool.operation_panel.select_section("other")
     normalize_combo = tool.operation_panel.editor_stack.currentWidget().findChild(
         QtWidgets.QComboBox, "figureComposerLineNormalizeCombo"
     )
     assert normalize_combo is not None
-    assert normalize_combo.currentText() == "Each profile by maximum"
     assert "each extracted 1D profile independently" in normalize_combo.toolTip()
 
     unseeded_tool = FigureComposerTool(

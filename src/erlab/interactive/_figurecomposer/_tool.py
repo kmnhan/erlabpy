@@ -1493,13 +1493,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_source_controls()
         self._refresh_source_detail_panel()
 
-    def _set_source_status_text(self, text: str | None) -> None:
+    def _set_source_panel_status(self, text: str | None) -> None:
         self.source_panel.set_status(text)
-
-    @property
-    def source_status_text(self) -> str:
-        """Return the current source update status without exposing panel widgets."""
-        return self.source_panel.source_status_label.text()
 
     def _set_source_validation_text(self, text: str | None) -> None:
         self.source_panel.set_validation(text)
@@ -1537,7 +1532,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         unavailable = tuple(name for name in requested if name not in refreshable)
         if callback is None or not refreshable:
             if unavailable:
-                self._set_source_status_text(
+                self._set_source_panel_status(
                     "Unavailable: " + ", ".join(unavailable) + "."
                 )
             self._refresh_source_controls()
@@ -1546,9 +1541,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         refreshed: list[str] = []
         failed: list[str] = []
         failure_messages: list[str] = []
-        self._set_source_status_text(None)
+        self._set_source_panel_status(None)
         for name in refreshable:
-            self._set_source_status_text(None)
+            self._set_source_panel_status(None)
             try:
                 refreshed_source = callback(name)
             except Exception as exc:
@@ -1583,7 +1578,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if unavailable:
                 parts.append("Unavailable: " + ", ".join(unavailable) + ".")
             status = " ".join(parts)
-        self._set_source_status_text(status or None)
+        self._set_source_panel_status(status or None)
         self._refresh_source_controls()
         self._refresh_source_detail_panel()
 
@@ -1643,7 +1638,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_source_selection_editor()
         self._update_source_section()
         self._maybe_redraw_plot()
-        self._set_source_status_text(None)
+        self._set_source_panel_status(None)
         self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
@@ -3819,7 +3814,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         skipped_details = tuple(detail for _name, detail in result.skipped)
         if not result:
             if result.skipped:
-                self._set_source_status_text(
+                self._set_source_panel_status(
                     "Could not update source data for: " + ", ".join(skipped_details)
                 )
             return result
@@ -3830,7 +3825,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
-        self._set_source_status_text(
+        self._set_source_panel_status(
             "Could not update source data for: " + ", ".join(skipped_details)
             if result.skipped
             else None
@@ -3852,7 +3847,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         result = self._document.replace_source(alias, source, data)
         if not result:
             detail = result.skipped[0][1] if result.skipped else "source unavailable"
-            self._set_source_status_text(
+            self._set_source_panel_status(
                 f"Could not refresh source “{alias}”: {detail}"
             )
             return False
@@ -3864,7 +3859,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
-        self._set_source_status_text(None)
+        self._set_source_panel_status(None)
         return True
 
     def remove_source(self, name: str) -> bool:
@@ -5088,7 +5083,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._preview_pixmap_stale = False
         return preview
 
-    def preview_thumbnail_pixmap(self, size: QtCore.QSize) -> QtGui.QPixmap | None:
+    def _preview_thumbnail_pixmap(self, size: QtCore.QSize) -> QtGui.QPixmap | None:
         if self._closing or not erlab.interactive.utils.qt_is_valid(self):
             return None
         preview = self._preview_pixmap_cache
@@ -5390,12 +5385,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def refresh_from_sources(self, source_data: Mapping[str, xr.DataArray]) -> None:
         result = self._document.refresh_sources(source_data)
         if result.skipped:
-            self._set_source_status_text(
+            self._set_source_panel_status(
                 "Could not refresh source data for: "
                 + ", ".join(f"{name} ({detail})" for name, detail in result.skipped)
             )
         elif result:
-            self._set_source_status_text(None)
+            self._set_source_panel_status(None)
         if not result:
             self._refresh_source_controls()
             return

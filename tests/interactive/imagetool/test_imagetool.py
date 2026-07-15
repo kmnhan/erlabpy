@@ -562,6 +562,10 @@ def test_empty_selection_code_placeholder_returns_suffix(
     selection_code = win.slicer_area.main_image.get_selection_code(placeholder="")
 
     assert selection_code == expected
+    xr.testing.assert_identical(
+        _exec_data_fragment(data, selection_code),
+        data.isel(x=1),
+    )
 
 
 def test_selection_code_merges_cursor_and_crop_on_alt(qtbot, monkeypatch) -> None:

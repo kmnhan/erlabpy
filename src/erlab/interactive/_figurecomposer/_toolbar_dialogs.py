@@ -1880,14 +1880,11 @@ def _replace_operation_by_id(
     *,
     rebuild_editor: bool = False,
 ) -> None:
-    index = tool._document.operation_index(operation_id)
-    if index is not None:
-        _replace_recipe_operation(
-            tool,
-            index,
-            updated,
-            rebuild_editor=rebuild_editor,
-        )
+    tool._update_operations_by_ids(
+        (operation_id,),
+        lambda _index, _operation: updated,
+        rebuild_editor=rebuild_editor,
+    )
 
 
 def _is_single_image_plot_slices_target(
@@ -1943,23 +1940,6 @@ def _update_plot_slices_panel_styles(
         rebuild_editor=_current_operation_id(tool) == operation_id,
     )
     return updated
-
-
-def _replace_recipe_operation(
-    tool: FigureComposerTool,
-    index: int,
-    operation: FigureOperationState,
-    *,
-    rebuild_editor: bool = False,
-) -> None:
-    if index < 0 or index >= len(tool._document.recipe.operations):
-        return
-    operation_id = tool._document.recipe.operations[index].operation_id
-    tool._update_operations_by_ids(
-        (operation_id,),
-        lambda _index, _operation: operation,
-        rebuild_editor=rebuild_editor,
-    )
 
 
 def _current_operation_id(tool: FigureComposerTool) -> str | None:

@@ -25,6 +25,8 @@ from erlab.interactive._figurecomposer._widgets import _ColorListEditorWidget
 from erlab.plotting.colors import close_to_white
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from matplotlib.figure import Figure
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
@@ -159,9 +161,8 @@ class _PaletteSwatch(QtWidgets.QFrame):
         event.accept()
 
     def copy_hex_to_clipboard(self) -> None:
-        clipboard = QtWidgets.QApplication.clipboard()
-        if clipboard is not None:  # pragma: no branch
-            clipboard.setText(self._hex_color)
+        clipboard = typing.cast("QtGui.QClipboard", QtWidgets.QApplication.clipboard())
+        clipboard.setText(self._hex_color)
 
 
 class _PalettePreviewWidget(QtWidgets.QWidget):
@@ -175,11 +176,8 @@ class _PalettePreviewWidget(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(3)
 
-    def set_colors(self, colors: typing.Sequence[typing.Any]) -> None:
-        base_layout = self.layout()
-        if base_layout is None:  # pragma: no cover
-            return
-        layout = typing.cast("QtWidgets.QHBoxLayout", base_layout)
+    def set_colors(self, colors: Sequence[typing.Any]) -> None:
+        layout = typing.cast("QtWidgets.QHBoxLayout", self.layout())
         while layout.count():
             item = layout.takeAt(0)
             if item is not None and (widget := item.widget()) is not None:
@@ -279,7 +277,7 @@ def _palette_colors(
         return ()
 
 
-def _palette_hex_colors(colors: typing.Sequence[typing.Any]) -> tuple[str, ...]:
+def _palette_hex_colors(colors: Sequence[typing.Any]) -> tuple[str, ...]:
     return tuple(_qt_color(color).name() for color in colors)
 
 

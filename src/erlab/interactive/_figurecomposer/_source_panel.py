@@ -130,11 +130,6 @@ class FigureSourcePanel(QtWidgets.QWidget):
             if target is not self:
                 self.install_drop_target(target)
 
-    @property
-    def context_menu(self) -> QtWidgets.QMenu | None:
-        """Currently open source context menu, if any."""
-        return self._context_menu
-
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -232,17 +227,16 @@ class FigureSourcePanel(QtWidgets.QWidget):
         self.source_list.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
-        header = self.source_list.header()
-        if header is not None:  # pragma: no branch
-            header.setStretchLastSection(False)
-            header.setMinimumSectionSize(80)
-            header.setSectionResizeMode(
-                _SOURCE_COLUMN, QtWidgets.QHeaderView.ResizeMode.Stretch
-            )
-            header.setSectionResizeMode(
-                _SHAPE_COLUMN, QtWidgets.QHeaderView.ResizeMode.Interactive
-            )
-            header.resizeSection(_SHAPE_COLUMN, 150)
+        header = typing.cast("QtWidgets.QHeaderView", self.source_list.header())
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(80)
+        header.setSectionResizeMode(
+            _SOURCE_COLUMN, QtWidgets.QHeaderView.ResizeMode.Stretch
+        )
+        header.setSectionResizeMode(
+            _SHAPE_COLUMN, QtWidgets.QHeaderView.ResizeMode.Interactive
+        )
+        header.resizeSection(_SHAPE_COLUMN, 150)
         self.source_splitter.addWidget(self.source_list)
 
         self.source_detail_scroll = QtWidgets.QScrollArea(self.source_splitter)
@@ -311,9 +305,10 @@ class FigureSourcePanel(QtWidgets.QWidget):
         detail_layout.addStretch(1)
         self.source_detail_scroll.setWidget(self.source_detail_content)
         self.source_detail_content.setAutoFillBackground(False)
-        viewport = self.source_detail_scroll.viewport()
-        if viewport is not None:  # pragma: no branch
-            viewport.setAutoFillBackground(False)
+        viewport = typing.cast(
+            "QtWidgets.QWidget", self.source_detail_scroll.viewport()
+        )
+        viewport.setAutoFillBackground(False)
         self.source_splitter.addWidget(self.source_detail_scroll)
         self.source_splitter.setStretchFactor(0, 2)
         self.source_splitter.setStretchFactor(1, 3)
@@ -710,9 +705,9 @@ class FigureSourcePanel(QtWidgets.QWidget):
 
     def _clear_rows(self) -> None:
         for row in range(self.source_list.topLevelItemCount()):
-            item = self.source_list.topLevelItem(row)
-            if item is None:  # pragma: no cover
-                continue
+            item = typing.cast(
+                "QtWidgets.QTreeWidgetItem", self.source_list.topLevelItem(row)
+            )
             for column in range(self.source_list.columnCount()):
                 widget = self.source_list.itemWidget(item, column)
                 if widget is None:
@@ -805,17 +800,18 @@ class FigureSourcePanel(QtWidgets.QWidget):
                 self.source_list.setCurrentIndex(QtCore.QModelIndex())
             current_item: QtWidgets.QTreeWidgetItem | None = None
             for row in range(self.source_list.topLevelItemCount()):
-                item = self.source_list.topLevelItem(row)
-                if item is None:  # pragma: no cover
-                    continue
+                item = typing.cast(
+                    "QtWidgets.QTreeWidgetItem", self.source_list.topLevelItem(row)
+                )
                 if self.source_name_from_item(item) == current_name:
                     current_item = item
             if current_item is not None:
                 self.source_list.setCurrentItem(current_item)
             for row in range(self.source_list.topLevelItemCount()):
-                item = self.source_list.topLevelItem(row)
-                if item is not None:
-                    item.setSelected(self.source_name_from_item(item) in selected)
+                item = typing.cast(
+                    "QtWidgets.QTreeWidgetItem", self.source_list.topLevelItem(row)
+                )
+                item.setSelected(self.source_name_from_item(item) in selected)
         finally:
             self._synchronizing_selection = False
 
@@ -1000,6 +996,5 @@ class FigureSourcePanel(QtWidgets.QWidget):
             lambda: self.remove_requested.emit(self.selected_names())
         )
         menu.addAction(remove_action)
-        viewport = self.source_list.viewport()
-        if viewport is not None:  # pragma: no branch
-            menu.popup(viewport.mapToGlobal(position))
+        viewport = typing.cast("QtWidgets.QWidget", self.source_list.viewport())
+        menu.popup(viewport.mapToGlobal(position))

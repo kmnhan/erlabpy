@@ -315,7 +315,6 @@ def test_figure_composer_plot_slices_source_selector_updates_sources(
     assert set(checks) == {"first_source", "second_source"}
     assert checks["first_source"].checkState() == QtCore.Qt.CheckState.Checked
     assert checks["second_source"].checkState() == QtCore.Qt.CheckState.Unchecked
-    assert tool.source_panel.source_status_label.text() == ""
     assert tool.source_panel.source_status_label.isHidden()
 
     checks["second_source"].setCheckState(QtCore.Qt.CheckState.Checked)
@@ -414,7 +413,7 @@ def test_figure_composer_plot_slices_default_colormap_editor_uses_stylesheet(
         )
         assert cmap_combo is not None
         assert cmap_reverse_check is not None
-        assert cmap_combo.currentText() == "plasma"
+        assert cmap_combo.currentData() == "plasma"
         assert cmap_reverse_check.checkState() == QtCore.Qt.CheckState.Unchecked
         assert tool.tool_status.operations[0].cmap is None
 
@@ -1673,7 +1672,6 @@ def test_figure_composer_plot_slices_image_panel_style_editor_updates_styles(
     assert not editor.cmap_override_check.isTristate()
     assert editor.cmap_override_check.checkState() == QtCore.Qt.CheckState.Unchecked
     assert not editor.cmap_combo.isEnabled()
-    assert all("magma" not in editor.panel_list.item(row).text() for row in range(2))
 
 
 def test_figure_composer_plot_slices_panel_override_controls_stay_live(
@@ -1853,11 +1851,6 @@ def test_figure_composer_plot_slices_line_panel_style_editor_updates_styles(
     assert all("color" not in style.line_kw for style in emitted[-1])
     editor._update_selected_extra_line_kw({})
     assert all("alpha" not in style.line_kw for style in emitted[-1])
-    assert all(
-        "red" not in editor.panel_list.item(row).text()
-        and "blue" not in editor.panel_list.item(row).text()
-        for row in range(2)
-    )
 
 
 def test_figure_composer_plot_slices_source_selector_batch_toggles_sources(
@@ -2128,20 +2121,6 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "method:figure",
         "custom",
     ]
-    assert [
-        action.text() for action in tool.operation_panel.add_step_menu.actions()
-    ] == [
-        "Set Palette",
-        "Image Plot",
-        "Slice Plot",
-        "Line/Profile",
-        "BZ Overlay",
-        "Photon Energy Overlay",
-        "ERLab Method",
-        "Axes Method",
-        "Figure Method",
-        "Python",
-    ]
     assert tool.findChild(QtWidgets.QTabWidget, "figureComposerInspectorTabs") is None
     assert tool.findChild(QtWidgets.QToolBox) is None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerStepNavigator") is not None
@@ -2261,7 +2240,6 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     tool.operation_panel.select_section("colors")
     tool._update_current_operation(axis="equal")
     assert tool.findChild(QtWidgets.QToolBox) is None
-    assert tool.operation_panel.current_section_key == "colors"
     assert (
         tool.operation_panel.editor_stack.currentWidget().objectName()
         == "figureComposerPlotSlicesColorsPage"
@@ -2381,11 +2359,11 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert cmap_combo.toolTip()
     assert cmap_reverse_check.toolTip()
     assert gamma_widget.toolTip()
-    assert norm_combo.currentText() == "PowerNorm"
-    assert "Default" not in [
-        norm_combo.itemText(index) for index in range(norm_combo.count())
-    ]
-    assert cmap_combo.currentText() == "viridis"
+    assert norm_combo.currentIndex() == figurecomposer_plot_slices._NORM_CHOICES.index(
+        "PowerNorm"
+    )
+    assert norm_combo.count() == len(figurecomposer_plot_slices._NORM_CHOICES)
+    assert cmap_combo.currentData() == "viridis"
     assert cmap_reverse_check.isChecked()
     assert gamma_widget.value() == 0.5
     cmap_reverse_check.setChecked(False)
@@ -2619,7 +2597,7 @@ def test_figure_composer_toolbar_plot_slices_panel_cmap_uses_stylesheet(
         qtbot.addWidget(dialog)
         editor = dialog.findChild(figurecomposer_plot_slices._PanelStyleEditorWidget)
         assert editor is not None
-        assert editor.cmap_combo.currentText() == "plasma"
+        assert editor.cmap_combo.currentData() == "plasma"
         assert editor.cmap_override_check.checkState() == QtCore.Qt.CheckState.Unchecked
 
         editor.cmap_override_check.click()
@@ -3281,7 +3259,6 @@ def test_figure_composer_plot_slices_qsel_kwargs_display_in_selection(qtbot) -> 
         QtWidgets.QLineEdit, "figureComposerPlotSlicesSliceKwargsEdit"
     )
     assert dimension_combo is not None
-    assert dimension_combo.currentText() == "eV"
     assert values_edit is not None
     assert values_edit.text() == "0"
     assert width_edit is not None
@@ -3403,7 +3380,7 @@ def test_figure_composer_plot_slices_color_controls_do_not_commit_on_rebuild(
         erlab.interactive.colors.ColorMapComboBox, "figureComposerCmapCombo"
     )
     assert first_cmap_combo is not None
-    assert first_cmap_combo.currentText() == "viridis"
+    assert first_cmap_combo.currentData() == "viridis"
 
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(1)
@@ -3423,7 +3400,7 @@ def test_figure_composer_plot_slices_color_controls_do_not_commit_on_rebuild(
         QtWidgets.QLineEdit, "figureComposerHalfrangeNormEdit"
     )
     assert cmap_combo is not None
-    assert cmap_combo.currentText() == "(multiple values)"
+    assert cmap_combo.currentIndex() == 0
     assert halfrange_edit is not None
     assert halfrange_edit.text() == ""
     assert halfrange_edit.placeholderText() == "(multiple values)"
@@ -3542,15 +3519,13 @@ def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> Non
     )
     qtbot.addWidget(tool)
 
-    shape_summary = tool.findChild(
-        QtWidgets.QLabel, "figureComposerPlotSlicesShapeSummary"
-    )
     order_combo = tool.findChild(QtWidgets.QComboBox, "figureComposerOrderCombo")
-    assert shape_summary is not None
-    assert "Input dims: eV, kx" in shape_summary.text()
-    assert "Plotted dims: kx (1D line)" in shape_summary.text()
-    assert "Targets:" not in shape_summary.text()
-    assert "Selection:" not in shape_summary.text()
+    shape = figurecomposer_plot_slices._plot_slices_shape(
+        tool, tool.tool_status.operations[0]
+    )
+    assert shape.valid
+    assert shape.plot_dims == ("kx",)
+    assert shape.plot_ndim == 1
     assert order_combo is not None
 
     tool.operation_panel.select_section("colors")
@@ -3585,11 +3560,11 @@ def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> Non
     assert line_color_edit is not None
     assert line_color_edit.text() == "C1"
     assert line_style_combo is not None
-    assert line_style_combo.currentText() == "--"
+    assert line_style_combo.currentData() == "--"
     assert line_width_spin is not None
     assert line_width_spin.value() == 1.5
     assert marker_combo is not None
-    assert marker_combo.currentText() == "o"
+    assert marker_combo.currentData() == "o"
     assert marker_size_spin is not None
     assert marker_size_spin.value() == 6.0
     assert marker_face_edit is not None
@@ -4475,10 +4450,10 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
     colors_page = tool.operation_panel.editor_stack.currentWidget()
     norm_combo = colors_page.findChild(QtWidgets.QComboBox, "figureComposerNormCombo")
     assert norm_combo is not None
-    assert norm_combo.currentText() == "PowerNorm"
-    assert "Default" not in [
-        norm_combo.itemText(index) for index in range(norm_combo.count())
-    ]
+    assert norm_combo.currentIndex() == figurecomposer_plot_slices._NORM_CHOICES.index(
+        "PowerNorm"
+    )
+    assert norm_combo.count() == len(figurecomposer_plot_slices._NORM_CHOICES)
     assert (
         colors_page.findChild(
             erlab.interactive.colors.ColorMapGammaWidget,

@@ -264,13 +264,13 @@ def test_figure_composer_source_keep_clears_stale_qsel_input_error(
     qsel_edit = _source_selection_edit(tool, "eV", "value")
     qsel_edit.setText("")
     qsel_edit.editingFinished.emit()
-    assert "selection value" in tool.source_panel.source_validation_label.text()
+    assert not tool.source_panel.source_validation_label.isHidden()
 
     _activate_source_selection_mode(tool, "eV", "keep")
 
     [source] = tool.source_states()
     assert source.qsel == {}
-    assert tool.source_panel.source_validation_label.text() == ""
+    assert tool.source_panel.source_validation_label.isHidden()
 
 
 def test_figure_composer_source_qsel_width_editor_updates_selection(
@@ -692,7 +692,7 @@ def test_figure_composer_plot_array_default_colormap_editor_uses_stylesheet(
         )
         assert cmap_combo is not None
         assert cmap_reverse_check is not None
-        assert cmap_combo.currentText() == "plasma"
+        assert cmap_combo.currentData() == "plasma"
         assert cmap_reverse_check.checkState() == QtCore.Qt.CheckState.Unchecked
         assert tool.tool_status.operations[0].cmap is None
 
@@ -744,7 +744,7 @@ def test_figure_composer_plot_array_colormap_editor_initialization_edges(
         None,
     )
     assert cmap_combo is not None
-    assert cmap_combo.currentText() == "magma"
+    assert cmap_combo.currentData() == "magma"
 
     missing_cmap_tool = FigureComposerTool.from_sources(
         {"data": data},

@@ -22,7 +22,7 @@ from erlab.interactive._figurecomposer._text import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
     import xarray as xr
 
@@ -405,7 +405,7 @@ def _iter_label_chunks(
     *,
     available_fields: set[str] | None = None,
     item_name: str = "profile",
-) -> typing.Iterator[str | _ParsedLabelField]:
+) -> Iterator[str | _ParsedLabelField]:
     literal_parts: list[str] = []
     index = 0
     length = len(text)
@@ -610,7 +610,7 @@ def _format_label_field(
     _validate_label_expression(field.expression, item_name=item_name)
     value = _evaluate_label_expression(field.expression, context)
     if field.conversion != -1:
-        converters: dict[int, typing.Callable[[typing.Any], str]] = {
+        converters: dict[int, Callable[[typing.Any], str]] = {
             ord("a"): ascii,
             ord("r"): repr,
             ord("s"): str,

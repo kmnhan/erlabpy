@@ -763,10 +763,6 @@ class FigureDocument:
             for source_name in self.operation_source_names(operation)
         }
 
-    def source_used_by_operation(self, name: str) -> bool:
-        """Return whether any operation depends on *name*."""
-        return self._source_used_by_operation(name, self.recipe.sources)
-
     def _source_used_by_operation(
         self, name: str, sources: Sequence[FigureSourceState]
     ) -> bool:
@@ -1370,8 +1366,6 @@ class FigureDocument:
             return FigureSourceUpdateResult(
                 skipped=((alias, str(exc) or exc.__class__.__name__),)
             )
-        if existing_index is None:  # pragma: no cover
-            raise RuntimeError("source replacement index was not resolved")
         source_list[existing_index] = replacement
         source_list = list(self.normalized_source_states(source_list))
 

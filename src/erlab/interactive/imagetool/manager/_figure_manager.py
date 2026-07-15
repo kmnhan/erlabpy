@@ -255,14 +255,6 @@ class _FigureManagerController(QtCore.QObject):
     def pane(self) -> _FigureManagerPane | None:
         return self._pane
 
-    @property
-    def view_mode(self) -> str:
-        return self._view_mode
-
-    @property
-    def gallery_size_name(self) -> str:
-        return self._gallery_size_name
-
     @staticmethod
     def _settings_string(key: str, default: str) -> str:
         value = _manager_settings().value(key, default)
@@ -577,7 +569,7 @@ class _FigureManagerController(QtCore.QObject):
     ) -> QtGui.QPixmap | None:
         if not erlab.interactive.utils.qt_is_valid(tool_window):
             return None
-        thumbnail = tool_window.preview_thumbnail_pixmap(
+        thumbnail = tool_window._preview_thumbnail_pixmap(
             _FigureManagerPane.thumbnail_size(self._gallery_size_name)
         )
         if thumbnail is not None and not thumbnail.isNull():

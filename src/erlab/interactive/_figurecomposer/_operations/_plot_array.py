@@ -58,6 +58,8 @@ from erlab.interactive._figurecomposer._text import (
 )
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Callable
+
     import matplotlib.axes
     import xarray as xr
 
@@ -329,13 +331,13 @@ def _required_imports(
 
 def _operation_field_getter(
     attr: str,
-) -> typing.Callable[[FigureOperationState], object]:
+) -> Callable[[FigureOperationState], object]:
     return lambda operation: getattr(operation, attr)
 
 
 def _plot_limit_update_callback(
     tool: FigureComposerTool, attr: str
-) -> typing.Callable[[str], None]:
+) -> Callable[[str], None]:
     return lambda text: tool._update_current_operation(
         **{attr: _plot_limit_from_text(text)}
     )
@@ -410,7 +412,7 @@ def _norm_clip_from_text(text: str) -> bool | None:
 
 def _norm_number_update_callback(
     tool: FigureComposerTool, attr: str
-) -> typing.Callable[[str], None]:
+) -> Callable[[str], None]:
     def update(text: str) -> None:
         stripped = text.strip()
         tool._update_current_operation(

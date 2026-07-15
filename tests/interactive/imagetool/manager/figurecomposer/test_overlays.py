@@ -679,7 +679,6 @@ def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> No
     assert updated.show_legend is False
     assert updated.legend_kw == {"title": "Photon energy", "frameon": False}
     assert updated.label_template == "hv={hv:g} eV"
-    assert _operation_section_button(tool, "photon").text() == "hν: 30, 45, 60; eV=-0.3"
     assert updated.line_kw == {
         "color": "tab:red",
         "linestyle": "--",

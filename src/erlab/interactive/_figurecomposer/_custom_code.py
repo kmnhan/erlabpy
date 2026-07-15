@@ -7,6 +7,7 @@ import collections
 import io
 import symtable
 import tokenize
+import typing
 
 
 def _custom_code_names(code: str) -> frozenset[str]:
@@ -620,10 +621,10 @@ def _renamed_source_loads(code: str, replacements: dict[str, str]) -> str:
 
     edits: list[tuple[int, int, bytes]] = []
     for node in load_nodes:
-        if node.end_lineno is None or node.end_col_offset is None:  # pragma: no cover
-            raise RuntimeError("parsed source name is missing location information")
+        end_lineno = typing.cast("int", node.end_lineno)
+        end_col_offset = typing.cast("int", node.end_col_offset)
         start = line_offsets[node.lineno - 1] + node.col_offset
-        end = line_offsets[node.end_lineno - 1] + node.end_col_offset
+        end = line_offsets[end_lineno - 1] + end_col_offset
         edits.append((start, end, replacements[node.id].encode("utf-8")))
     for start, end, replacement in sorted(edits, reverse=True):
         encoded = encoded[:start] + replacement + encoded[end:]

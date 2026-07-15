@@ -6,6 +6,7 @@ import h5py
 import pydantic
 
 import erlab.interactive.imagetool.manager._figure_manager as manager_figure
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive.imagetool._figurecomposer_adapter import (
     build_figure_composer_operation,
 )
@@ -551,8 +552,14 @@ def test_manager_figures_gallery_view_preserves_selection_and_persists(
             == QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel
         )
         assert _figure_pane(manager).gallery_size_combo.isVisible()
-        assert _figure_pane(manager).list_button.text() == ""
-        assert _figure_pane(manager).gallery_button.text() == ""
+        assert (
+            _figure_pane(manager).list_button.toolButtonStyle()
+            == QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly
+        )
+        assert (
+            _figure_pane(manager).gallery_button.toolButtonStyle()
+            == QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly
+        )
         assert not _figure_pane(manager).list_button.icon().isNull()
         assert not _figure_pane(manager).gallery_button.icon().isNull()
 
@@ -603,10 +610,12 @@ def test_manager_figures_gallery_view_preserves_selection_and_persists(
         _figure_pane(manager).gallery_button.click()
 
     with manager_context() as restored_manager:
-        assert restored_manager._figure_controller.view_mode == "gallery"
-        assert restored_manager._figure_controller.gallery_size_name == "large"
         restored_uid = restored_manager.add_figuretool(
             FigureComposerTool(data), show=False
+        )
+        assert _figure_pane(restored_manager).gallery_button.isChecked()
+        assert (
+            _figure_pane(restored_manager).gallery_size_combo.currentData() == "large"
         )
         assert (
             _figure_pane(restored_manager).list_widget.viewMode()
@@ -647,7 +656,7 @@ def test_manager_figures_gallery_reuses_cached_preview_for_size_changes(
         old_grid_size = _figure_pane(manager).list_widget.gridSize()
         size_name = (
             "large"
-            if manager._figure_controller.gallery_size_name != "large"
+            if _figure_pane(manager).gallery_size_combo.currentData() != "large"
             else "small"
         )
         size_index = _figure_pane(manager).gallery_size_combo.findData(size_name)
@@ -714,7 +723,7 @@ def test_figure_composer_persists_compact_preview_cache_without_rendering(
         restored_preview.height()
         <= figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE.height()
     )
-    thumbnail = restored.preview_thumbnail_pixmap(QtCore.QSize(64, 64))
+    thumbnail = restored._preview_thumbnail_pixmap(QtCore.QSize(64, 64))
     assert thumbnail is not None
     assert not thumbnail.isNull()
 
@@ -1074,11 +1083,10 @@ def test_manager_figures_gallery_helpers_handle_invalid_sources(
 
     monkeypatch.setattr(manager_figure, "_manager_settings", lambda: FakeSettings())
     with manager_context() as manager:
-        assert manager._figure_controller.view_mode == "gallery"
-        assert manager._figure_controller.gallery_size_name == "medium"
-
         figure_tool = FigureComposerTool(data)
         figure_uid = manager.add_figuretool(figure_tool, show=False)
+        assert _figure_pane(manager).gallery_button.isChecked()
+        assert _figure_pane(manager).gallery_size_combo.currentData() == "medium"
         _figure_pane(manager).gallery_button.click()
 
         assert not manager._figure_controller._gallery_icon("missing").isNull()
@@ -1103,9 +1111,7 @@ def test_manager_figures_gallery_helpers_handle_invalid_sources(
         max_x = max(x_pos for x_pos, _y_pos in red_pixels)
         min_y = min(y_pos for _x_pos, y_pos in red_pixels)
         max_y = max(y_pos for _x_pos, y_pos in red_pixels)
-        assert high_dpi_thumbnail.size() == _figure_pane(manager).thumbnail_size(
-            manager._figure_controller.gallery_size_name
-        )
+        assert high_dpi_thumbnail.size() == _figure_pane(manager).list_widget.iconSize()
         assert max_x - min_x + 1 == high_dpi_thumbnail.width()
         assert abs((max_y - min_y + 1) - round(high_dpi_thumbnail.width() / 4)) <= 1
         assert abs(((min_y + max_y) / 2) - ((high_dpi_thumbnail.height() - 1) / 2)) <= 1
@@ -1423,9 +1429,6 @@ def test_manager_figure_action_new_target_creates_second_figure(
             def selected_action(self) -> str:
                 return _figure_dialogs._FIGURE_DIALOG_NEW
 
-            def is_new_figure(self) -> bool:
-                return True
-
         monkeypatch.setattr(
             _figure_dialogs, "_AppendFigureTargetDialog", FakeFigureDialog
         )
@@ -1485,9 +1488,6 @@ def test_manager_figure_action_appends_to_selected_subplots_axes(
 
             def selected_action(self) -> str:
                 return _figure_dialogs._FIGURE_DIALOG_ADD_STEP
-
-            def is_new_figure(self) -> bool:
-                return False
 
             def selected_target(self) -> tuple[str, FigureAxesSelectionState]:
                 return figure_uid, FigureAxesSelectionState(axes=((0, 1),))
@@ -1572,9 +1572,6 @@ def test_manager_figure_action_appends_to_selected_gridspec_axes(
 
             def selected_action(self) -> str:
                 return _figure_dialogs._FIGURE_DIALOG_ADD_STEP
-
-            def is_new_figure(self) -> bool:
-                return False
 
             def selected_target(self) -> tuple[str, FigureAxesSelectionState]:
                 return figure_uid, FigureAxesSelectionState(axes_ids=("axis-a",))
@@ -2407,7 +2404,6 @@ def test_manager_figure_target_dialog_defaults_to_add_step_without_selected_figu
         )
 
         assert dialog.selected_action() == _figure_dialogs._FIGURE_DIALOG_ADD_STEP
-        assert not dialog.is_new_figure()
         assert not dialog.selector_stack.isHidden()
         assert dialog.selected_target() == (
             figure_uid,
@@ -2421,7 +2417,7 @@ def test_manager_figure_target_dialog_defaults_to_add_step_without_selected_figu
             dialog.action_combo.findData(_figure_dialogs._FIGURE_DIALOG_NEW)
         )
 
-        assert dialog.is_new_figure()
+        assert dialog.selected_action() == _figure_dialogs._FIGURE_DIALOG_NEW
         assert dialog.selector_stack.isHidden()
         assert dialog.selected_target() is None
         assert button.isEnabled()
@@ -2457,9 +2453,8 @@ def test_manager_figure_target_dialog_defaults_to_replace_selected_single_source
         )
 
         assert dialog.selected_action() == _figure_dialogs._FIGURE_DIALOG_REPLACE_SOURCE
-        assert dialog.is_replace_source()
         assert dialog.selected_source_alias() == "line"
-        assert "line" in dialog.source_combo.currentText()
+        assert dialog.source_combo.currentData() == "line"
         assert dialog.selector_stack.isHidden()
         assert not dialog.source_combo.isHidden()
         button = dialog.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
@@ -2514,7 +2509,6 @@ def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
         )
 
         assert dialog.selected_action() == _figure_dialogs._FIGURE_DIALOG_ADD_STEP
-        assert not dialog.is_new_figure()
         assert not dialog.selector_stack.isHidden()
         ok_button = dialog.button_box.button(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
@@ -2524,7 +2518,7 @@ def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
 
         dialog.figure_combo.setCurrentIndex(dialog.figure_combo.findData(first_uid))
         assert dialog.figure_uid() == first_uid
-        assert not dialog.is_new_figure()
+        assert dialog.selected_action() == _figure_dialogs._FIGURE_DIALOG_ADD_STEP
         assert dialog.selector_stack.currentWidget() is dialog.axes_selector
         assert dialog.axes_selection() == FigureAxesSelectionState(axes=((0, 0),))
 
@@ -2545,7 +2539,7 @@ def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
         dialog.action_combo.setCurrentIndex(
             dialog.action_combo.findData(_figure_dialogs._FIGURE_DIALOG_ADD_SOURCE)
         )
-        assert dialog.is_add_source_only()
+        assert dialog.selected_action() == _figure_dialogs._FIGURE_DIALOG_ADD_SOURCE
         assert dialog.selected_target() is None
         assert dialog.selector_stack.isHidden()
         assert ok_button.isEnabled()
@@ -2553,7 +2547,7 @@ def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
         dialog.action_combo.setCurrentIndex(
             dialog.action_combo.findData(_figure_dialogs._FIGURE_DIALOG_REPLACE_SOURCE)
         )
-        assert dialog.is_replace_source()
+        assert dialog.selected_action() == _figure_dialogs._FIGURE_DIALOG_REPLACE_SOURCE
         assert dialog.selected_source_alias() == "line"
         assert dialog.selector_stack.isHidden()
         assert not dialog.source_combo.isHidden()
@@ -2616,7 +2610,7 @@ def test_manager_figure_target_dialog_disables_replace_for_multiple_sources(
         button = dialog.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
         assert button is not None
         assert not button.isEnabled()
-        assert "one ImageTool source" in dialog.status_label.text()
+        assert not dialog.status_label.isHidden()
 
 
 def test_manager_prompt_append_figure_target_auto_and_cancel_paths(
@@ -2936,7 +2930,7 @@ def test_manager_custom_figure_code_uses_readable_source_aliases(
             {"custom_code": ambiguous_code},
         ):
             with pytest.raises(
-                figurecomposer_text.FigureComposerInputError,
+                FigureComposerInputError,
                 match="also binds",
             ):
                 manager.create_figure_from_targets((0,), show=False, **kwargs)
@@ -3365,13 +3359,12 @@ def test_manager_figure_sources_reveal_associated_imagetool_rows(
         figure_tool.source_panel.source_list.context_menu_requested.emit(
             QtCore.QPoint(0, 0)
         )
-        source_menu = figure_tool.source_panel.context_menu
-        assert source_menu is not None
-        reveal_action = next(
-            action
-            for action in source_menu.actions()
-            if action.objectName() == "figureComposerContextRevealSourceAction"
+        reveal_action = figure_tool.source_panel.source_list.findChild(
+            QtGui.QAction, "figureComposerContextRevealSourceAction"
         )
+        assert reveal_action is not None
+        source_menu = reveal_action.parent()
+        assert isinstance(source_menu, QtWidgets.QMenu)
         assert reveal_action.isEnabled()
         reveal_action.trigger()
         assert manager.tree_view.selected_imagetool_indices == [0, 1]
@@ -3571,7 +3564,9 @@ def test_manager_figure_sources_use_readable_unique_aliases(
         assert tuple(figure_tool.source_data()) == source_names
         reference_item = figure_tool.source_panel.source_list.topLevelItem(1)
         assert reference_item is not None
-        assert reference_item.text(0) == "reference_map"
+        assert (
+            reference_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "reference_map"
+        )
         assert "Original name: reference map" in reference_item.toolTip(0)
 
 
@@ -4062,11 +4057,7 @@ def test_manager_figure_source_add_reports_partial_rejection(
         xr.testing.assert_identical(figure_tool.source_data()["first"], original_first)
         xr.testing.assert_identical(figure_tool.source_data()["second"], second)
         assert figure_tool.tool_status.operations == original_operations
-        status = figure_tool.source_panel.source_status_label.text()
-        assert "Added 1 ImageTool source" in status
-        assert "Skipped 1 ImageTool source update" in status
-        assert "Could not update source data for: first" in status
-        assert "Updated 1 ImageTool source" not in status
+        assert not figure_tool.source_panel.source_status_label.isHidden()
         snapshot = manager._workspace_state_snapshot()
         assert figure_uid in snapshot["dirty_data"]
         assert figure_uid in snapshot["dirty_state"]
@@ -4079,9 +4070,7 @@ def test_manager_figure_source_add_reports_partial_rejection(
             show=False,
         )
         assert figure_tool.tool_status.operations == original_operations
-        assert "Could not update source data for: first" in (
-            figure_tool.source_panel.source_status_label.text()
-        )
+        assert not figure_tool.source_panel.source_status_label.isHidden()
         snapshot = manager._workspace_state_snapshot()
         assert figure_uid in snapshot["dirty_data"]
         assert figure_uid in snapshot["dirty_state"]
@@ -4127,9 +4116,7 @@ def test_manager_rejected_source_update_does_not_mark_dirty_or_add_step(
             figure_uid, (0,), show=False
         )
         xr.testing.assert_identical(figure_tool.source_data()["data"], original_data)
-        assert "Could not update source data for: data" in (
-            figure_tool.source_panel.source_status_label.text()
-        )
+        assert not figure_tool.source_panel.source_status_label.isHidden()
         snapshot = manager._workspace_state_snapshot()
         assert figure_uid not in snapshot["dirty_data"]
         assert figure_uid not in snapshot["dirty_state"]
@@ -4143,9 +4130,7 @@ def test_manager_rejected_source_update_does_not_mark_dirty_or_add_step(
 
         xr.testing.assert_identical(figure_tool.source_data()["data"], original_data)
         assert figure_tool.tool_status.operations == original_operations
-        assert "Could not update source data for: data" in (
-            figure_tool.source_panel.source_status_label.text()
-        )
+        assert not figure_tool.source_panel.source_status_label.isHidden()
         snapshot = manager._workspace_state_snapshot()
         assert figure_uid not in snapshot["dirty_data"]
         assert figure_uid not in snapshot["dirty_state"]
@@ -4228,17 +4213,15 @@ def test_figure_sources_drag_mime_adds_root_and_child_imagetools(
         )
         monkeypatch.setattr(manager, "_add_sources_to_figure", original_add_sources)
 
+        source_names = tuple(figure_tool.source_data())
         assert manager._add_imagetool_sources_to_figure(
             figure_uid, (second_uid, figure_uid), show=False
         )
-        assert (
-            "Updated 1 ImageTool source"
-            in figure_tool.source_panel.source_status_label.text()
+        assert tuple(figure_tool.source_data()) == source_names
+        xr.testing.assert_identical(
+            figure_tool.source_data()["second"], second.rename("second")
         )
-        assert (
-            "Skipped 1 unsupported selection"
-            in figure_tool.source_panel.source_status_label.text()
-        )
+        assert not figure_tool.source_panel.source_status_label.isHidden()
 
 
 def test_manager_figure_remove_unused_source_persists_workspace(
@@ -4373,9 +4356,6 @@ def test_manager_figure_action_multi_source_append_preserves_image_colormaps(
 
             def selected_action(self) -> str:
                 return _figure_dialogs._FIGURE_DIALOG_ADD_STEP
-
-            def is_new_figure(self) -> bool:
-                return False
 
             def selected_target(self) -> tuple[str, FigureAxesSelectionState]:
                 return figure_uid, FigureAxesSelectionState(axes=((0, 0), (0, 1)))

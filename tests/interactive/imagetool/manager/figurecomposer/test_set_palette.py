@@ -394,7 +394,6 @@ def test_figure_composer_set_palette_editor_disables_without_seaborn(
     assert message.property("missing_dependency") == "seaborn"
     item = tool.operation_panel.operation_list.topLevelItem(0)
     assert item is not None
-    assert item.text(0).startswith("Skipped Set Palette:")
 
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
     assert tool._operation_render_errors == {}

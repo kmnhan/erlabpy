@@ -59,7 +59,7 @@ def test_layout_panel_projects_setup_without_emitting_user_intent(qtbot) -> None
 
     assert requests == []
     assert modes == []
-    assert panel.layout_mode_combo.currentText() == "gridspec"
+    assert not panel.gridspec_editor_container.isHidden()
     assert panel.nrows_spin.value() == 2
     assert panel.ncols_spin.value() == 2
     assert panel.width_spin.value() == 6.0
