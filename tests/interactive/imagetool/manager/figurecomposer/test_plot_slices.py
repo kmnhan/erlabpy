@@ -414,8 +414,7 @@ def test_figure_composer_plot_slices_default_colormap_editor_uses_stylesheet(
                     erlab.interactive.colors.ColorMapComboBox,
                     "figureComposerCmapCombo",
                 )
-                if candidate.property("figure_composer_editor_generation")
-                == tool.operation_editor.generation
+                if tool.operation_editor.control_signal_allowed(candidate)
             ),
             None,
         )
@@ -425,8 +424,7 @@ def test_figure_composer_plot_slices_default_colormap_editor_uses_stylesheet(
                 for candidate in tool.findChildren(
                     QtWidgets.QCheckBox, "figureComposerCmapReverseCheck"
                 )
-                if candidate.property("figure_composer_editor_generation")
-                == tool.operation_editor.generation
+                if tool.operation_editor.control_signal_allowed(candidate)
             ),
             None,
         )
@@ -2874,7 +2872,6 @@ def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
         FigureRecipeState(),
         source_data={"data": data},
     )
-    tool = types.SimpleNamespace(_document=context)
     operation = FigureOperationState.plot_slices(
         label="slices",
         sources=("data",),
@@ -2997,13 +2994,13 @@ def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
     )
     assert (
         plot_slices_codegen._plot_slices_slice_values_code(
-            tool, operation.model_copy(update={"slice_values_mode": "manual"})
+            context, operation.model_copy(update={"slice_values_mode": "manual"})
         )
         == "[None]"
     )
     assert (
         plot_slices_codegen._plot_slices_slice_values_code(
-            tool,
+            context,
             operation.model_copy(
                 update={
                     "slice_values_mode": "manual",
@@ -3022,7 +3019,7 @@ def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
     ) == {"eV": 0.1, "eV_width": 0.2}
 
 
-def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
+def test_figure_composer_plot_slices_label_codegen_helper_variants(qtbot) -> None:
     operation = FigureOperationState.plot_slices(
         label="slices",
         sources=("a", "b"),
@@ -3129,11 +3126,6 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
         coords={"eV": [0.1, 0.2], "kx": [-1.0, 0.0, 1.0]},
         name="data",
     )
-    tool = types.SimpleNamespace(
-        _document=types.SimpleNamespace(source_data={"a": data}),
-        _source_display_name=lambda name: name,
-        _editable_operations=lambda: (),
-    )
     styled_operation = operation.model_copy(
         update={
             "sources": ("a",),
@@ -3145,6 +3137,16 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
             ),
         }
     )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="a", label="a"),),
+            operations=(styled_operation,),
+            primary_source="a",
+        ),
+        source_data={"a": data},
+    )
+    qtbot.addWidget(tool)
     styled_line_kw = plot_slices_codegen._plot_slices_label_line_kw_code(
         tool, styled_operation
     )

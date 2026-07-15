@@ -7,16 +7,14 @@ import typing
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive._figurecomposer._ui._axes_widgets import _AxesTargetItemDelegate
 from erlab.interactive._figurecomposer._ui._operation_editor import (
     FigureOperationEditor,
 )
+from erlab.interactive._figurecomposer._ui._panel_controls import _step_toolbar_button
 from erlab.interactive._figurecomposer._ui._reorder_list import (
     ReorderList,
     event_requests_context_menu,
-)
-from erlab.interactive._figurecomposer._ui._widgets import (
-    _AxesTargetItemDelegate,
-    _step_toolbar_button,
 )
 
 if typing.TYPE_CHECKING:

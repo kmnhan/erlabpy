@@ -51,7 +51,7 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         source_count: int = 1,
         selected_figure_uid: str | None = None,
     ) -> None:
-        from erlab.interactive._figurecomposer._ui._widgets import (
+        from erlab.interactive._figurecomposer._ui._axes_widgets import (
             _AxesSelectorWidget,
             _GridSpecViewWidget,
         )

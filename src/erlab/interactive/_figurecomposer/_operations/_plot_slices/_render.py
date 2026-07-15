@@ -30,6 +30,7 @@ if typing.TYPE_CHECKING:
 
     import matplotlib.axes
     import xarray as xr
+    from matplotlib.figure import Figure
 
     from erlab.interactive._figurecomposer._model._state import FigureOperationState
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
@@ -40,7 +41,10 @@ _PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR = "_figure_composer_panel_key"
 
 
 def _render_plot_slices(
-    tool: FigureComposerTool, operation: FigureOperationState, axs: typing.Any
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    _figure: Figure,
+    axs: typing.Any,
 ) -> None:
     operation = _normalized_selection_operation(tool._document, operation)
     maps = _operation_maps(tool._document, operation)
@@ -50,7 +54,7 @@ def _render_plot_slices(
     if _plot_slices_uses_transformed_line_maps(tool, operation):
         maps = _plot_slices_transformed_maps(tool, operation, maps)
         kwargs = _plot_slices_transformed_kwargs(tool, operation)
-    selection_cache = getattr(tool, "_plot_slices_selection_cache", None)
+    selection_cache = tool._plot_slices_selection_cache
     if selection_cache is not None:
         kwargs["_selection_cache"] = selection_cache
         kwargs["_selection_cache_key"] = _plot_slices_selection_cache_key(

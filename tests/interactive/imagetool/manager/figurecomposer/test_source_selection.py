@@ -5,7 +5,7 @@ import pytest
 from qtpy import QtCore, QtGui
 
 import erlab.interactive._figurecomposer._model._sources as figurecomposer_sources
-import erlab.interactive._figurecomposer._ui._widgets as figurecomposer_widgets
+import erlab.interactive._figurecomposer._ui._figure_window as figure_window_ui
 from erlab.interactive._figurecomposer import (
     FigureDataSelectionState,
     FigureOperationState,
@@ -172,10 +172,10 @@ def test_figure_composer_state_serializes_slice_values() -> None:
 
 
 def test_figure_display_window_source_drop_event_branches(qtbot) -> None:
-    window = figurecomposer_widgets._FigureComposerDisplayWindow(FigureSubplotsState())
+    window = figure_window_ui._FigureComposerDisplayWindow(FigureSubplotsState())
     qtbot.addWidget(window)
     mime = QtCore.QMimeData()
-    assert figurecomposer_widgets._false_mime_state(mime) is False
+    assert figure_window_ui._false_mime_state(mime) is False
     assert window._handle_source_drag_event(None) is False
     assert (
         window._handle_source_drag_event(QtCore.QEvent(QtCore.QEvent.Type.DragEnter))

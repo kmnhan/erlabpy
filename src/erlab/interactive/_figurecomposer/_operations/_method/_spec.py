@@ -1,4 +1,4 @@
-"""Operation registry integration for curated method calls."""
+"""Operation registration for curated method calls."""
 
 from __future__ import annotations
 

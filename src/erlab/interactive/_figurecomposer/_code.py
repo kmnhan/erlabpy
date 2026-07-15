@@ -5,6 +5,7 @@ from __future__ import annotations
 import typing
 
 import erlab
+import erlab.utils._code
 from erlab.interactive._figurecomposer._model._axes import (
     _compact_axes_code,
     _compact_axes_iterable_code,
@@ -136,9 +137,9 @@ def _selection_code(selection: FigureDataSelectionState) -> str:
         code += f".qsel({_code_kwargs(selection.qsel)})"
     if selection.mean_dims:
         if len(selection.mean_dims) == 1:
-            mean_arg = erlab.interactive.utils._parse_single_arg(selection.mean_dims[0])
+            mean_arg = erlab.utils._code._parse_single_arg(selection.mean_dims[0])
         else:
-            mean_arg = erlab.interactive.utils._parse_single_arg(selection.mean_dims)
+            mean_arg = erlab.utils._code._parse_single_arg(selection.mean_dims)
         code += f".qsel.mean({mean_arg})"
     return code
 

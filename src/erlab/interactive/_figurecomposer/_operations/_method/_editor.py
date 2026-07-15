@@ -89,9 +89,9 @@ from erlab.interactive._figurecomposer._text import (
     _string_tuple_from_text,
     _text_tuple_from_text,
 )
+from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
 from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
 from erlab.interactive._figurecomposer._ui._tick_params import TickParamsEditorWidget
-from erlab.interactive._figurecomposer._ui._widgets import _ColorLineEditWidget
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence

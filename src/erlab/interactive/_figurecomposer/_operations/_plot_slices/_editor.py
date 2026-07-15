@@ -29,13 +29,6 @@ from erlab.interactive._figurecomposer._line_style import (
     line_kw_float,
     line_kw_style_value,
     line_kw_text,
-    optional_positive_spinbox,
-    optional_positive_spinbox_value,
-    update_current_extra_line_kw,
-    update_current_line_kw,
-)
-from erlab.interactive._figurecomposer._line_transform import (
-    add_line_transform_controls,
 )
 from erlab.interactive._figurecomposer._model._sources import _available_source_dims
 from erlab.interactive._figurecomposer._model._state import (
@@ -93,8 +86,17 @@ from erlab.interactive._figurecomposer._text import (
     _format_tuple,
     _plot_limit_from_text,
 )
+from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
 from erlab.interactive._figurecomposer._ui._label_help import legend_label_input_widget
-from erlab.interactive._figurecomposer._ui._widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._line_style import (
+    optional_positive_spinbox,
+    optional_positive_spinbox_value,
+    update_current_extra_line_kw,
+    update_current_line_kw,
+)
+from erlab.interactive._figurecomposer._ui._line_transform import (
+    add_line_transform_controls,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence

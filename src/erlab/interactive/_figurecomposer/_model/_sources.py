@@ -12,6 +12,7 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
 import erlab
+import erlab.utils._code
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._model._axes import _all_axes
 from erlab.interactive._figurecomposer._model._state import (
@@ -269,16 +270,16 @@ def selection_dim_mode(selection: FigureDataSelectionState, dim: str) -> str:
 
 def selection_dim_value_text(selection: FigureDataSelectionState, dim: str) -> str:
     if dim in selection.isel:
-        return erlab.interactive.utils._parse_single_arg(selection.isel[dim])
+        return erlab.utils._code._parse_single_arg(selection.isel[dim])
     if dim in selection.qsel:
-        return erlab.interactive.utils._parse_single_arg(selection.qsel[dim])
+        return erlab.utils._code._parse_single_arg(selection.qsel[dim])
     return ""
 
 
 def selection_dim_width_text(selection: FigureDataSelectionState, dim: str) -> str:
     width_key = selection_width_key(dim)
     if width_key in selection.qsel:
-        return erlab.interactive.utils._parse_single_arg(selection.qsel[width_key])
+        return erlab.utils._code._parse_single_arg(selection.qsel[width_key])
     return ""
 
 

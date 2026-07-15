@@ -16,6 +16,7 @@ import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._defaults import (
     _apply_figure_dpi,
     _figure_style_context,
+    _tool_figure_options_context,
 )
 from erlab.interactive._figurecomposer._model._axes import _axes_expression_value
 from erlab.interactive._figurecomposer._model._gridspec import (
@@ -188,15 +189,6 @@ def _new_offscreen_figure(tool: FigureComposerTool) -> Figure:
             dpi=setup.dpi,
             layout=typing.cast("typing.Any", setup.layout),
         )
-
-
-def _tool_figure_options_context(
-    tool: FigureComposerTool,
-) -> contextlib.AbstractContextManager[None]:
-    options_context = getattr(tool, "_figure_options_context", None)
-    if callable(options_context):
-        return options_context()
-    return contextlib.nullcontext()
 
 
 def _valid_figure_window(tool: FigureComposerTool) -> typing.Any | None:

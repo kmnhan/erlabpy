@@ -36,11 +36,11 @@ from erlab.interactive._figurecomposer._text import (
     _format_tuple,
     _literal_sequence_from_text,
 )
-from erlab.interactive._figurecomposer._ui._widgets import (
+from erlab.interactive._figurecomposer._ui._axes_widgets import (
     _GridSpecRegionInfo,
     _GridSpecViewWidget,
-    _step_toolbar_button,
 )
+from erlab.interactive._figurecomposer._ui._panel_controls import _step_toolbar_button
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable

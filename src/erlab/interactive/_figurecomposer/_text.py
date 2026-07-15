@@ -7,7 +7,7 @@ import typing
 
 import numpy as np
 
-import erlab.interactive.utils
+import erlab.utils._code
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._model._axes import _compact_axes_code
 
@@ -142,7 +142,7 @@ def _literal_sequence_from_text(text: str) -> tuple[typing.Any, ...]:
 
 
 def _format_literal_sequence(value: Sequence[typing.Any]) -> str:
-    return ", ".join(erlab.interactive.utils._parse_single_arg(item) for item in value)
+    return ", ".join(erlab.utils._code._parse_single_arg(item) for item in value)
 
 
 def _string_tuple_from_text(text: str) -> tuple[str, ...]:
@@ -281,7 +281,7 @@ def _format_axes_tuple(
 def _format_dict(value: dict[str, typing.Any]) -> str:
     if not value:
         return ""
-    return erlab.interactive.utils.format_kwargs(value)
+    return erlab.utils._code.format_kwargs(value)
 
 
 def _format_dim_sizes(data: xr.DataArray) -> str:
@@ -301,11 +301,11 @@ def _selection_value_count(value: typing.Any) -> int | None:
 def _code_kwargs(kwargs: dict[str, typing.Any]) -> str:
     if not kwargs:
         return ""
-    return erlab.interactive.utils.format_call_kwargs(kwargs)
+    return erlab.utils._code.format_call_kwargs(kwargs)
 
 
 def _code_args(args: Sequence[typing.Any]) -> str:
-    return ", ".join(erlab.interactive.utils._parse_single_arg(arg) for arg in args)
+    return ", ".join(erlab.utils._code._parse_single_arg(arg) for arg in args)
 
 
 class _RawCode:

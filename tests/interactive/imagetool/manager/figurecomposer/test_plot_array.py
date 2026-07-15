@@ -82,8 +82,7 @@ def test_figure_composer_plot_array_source_selector_clears_legacy_selection(
             for candidate in tool.findChildren(
                 QtWidgets.QComboBox, "figureComposerPlotArraySourceCombo"
             )
-            if candidate.property("figure_composer_editor_generation")
-            == tool.operation_editor.generation
+            if tool.operation_editor.control_signal_allowed(candidate)
         ),
         None,
     )
@@ -563,8 +562,7 @@ def test_figure_composer_plot_array_colormap_activation_updates_recipe(
                 erlab.interactive.colors.ColorMapComboBox,
                 "figureComposerPlotArrayCmapCombo",
             )
-            if candidate.property("figure_composer_editor_generation")
-            == tool.operation_editor.generation
+            if tool.operation_editor.control_signal_allowed(candidate)
         ),
         None,
     )
@@ -610,8 +608,7 @@ def test_figure_composer_plot_array_colorcet_selection_uses_matplotlib_name(
                 erlab.interactive.colors.ColorMapComboBox,
                 "figureComposerPlotArrayCmapCombo",
             )
-            if candidate.property("figure_composer_editor_generation")
-            == tool.operation_editor.generation
+            if tool.operation_editor.control_signal_allowed(candidate)
         ),
         None,
     )
@@ -674,8 +671,7 @@ def test_figure_composer_plot_array_default_colormap_editor_uses_stylesheet(
                     erlab.interactive.colors.ColorMapComboBox,
                     "figureComposerPlotArrayCmapCombo",
                 )
-                if candidate.property("figure_composer_editor_generation")
-                == tool.operation_editor.generation
+                if tool.operation_editor.control_signal_allowed(candidate)
             ),
             None,
         )
@@ -685,8 +681,7 @@ def test_figure_composer_plot_array_default_colormap_editor_uses_stylesheet(
                 for candidate in tool.findChildren(
                     QtWidgets.QCheckBox, "figureComposerPlotArrayCmapReverseCheck"
                 )
-                if candidate.property("figure_composer_editor_generation")
-                == tool.operation_editor.generation
+                if tool.operation_editor.control_signal_allowed(candidate)
             ),
             None,
         )
@@ -738,8 +733,7 @@ def test_figure_composer_plot_array_colormap_editor_initialization_edges(
                 erlab.interactive.colors.ColorMapComboBox,
                 "figureComposerPlotArrayCmapCombo",
             )
-            if candidate.property("figure_composer_editor_generation")
-            == tool.operation_editor.generation
+            if tool.operation_editor.control_signal_allowed(candidate)
         ),
         None,
     )
@@ -786,8 +780,7 @@ def test_figure_composer_plot_array_colormap_editor_initialization_edges(
                 erlab.interactive.colors.ColorMapComboBox,
                 "figureComposerPlotArrayCmapCombo",
             )
-            if candidate.property("figure_composer_editor_generation")
-            == mixed_tool.operation_editor.generation
+            if mixed_tool.operation_editor.control_signal_allowed(candidate)
         ),
         None,
     )
@@ -948,8 +941,7 @@ def test_figure_composer_plot_array_aspect_control_updates_recipe(qtbot) -> None
                 QtWidgets.QComboBox,
                 "figureComposerPlotArrayAspectCombo",
             )
-            if candidate.property("figure_composer_editor_generation")
-            == tool.operation_editor.generation
+            if tool.operation_editor.control_signal_allowed(candidate)
         ),
         None,
     )
@@ -1013,8 +1005,7 @@ def test_figure_composer_plot_array_aspect_control_preserves_saved_custom_value(
                 QtWidgets.QComboBox,
                 "figureComposerPlotArrayAspectCombo",
             )
-            if candidate.property("figure_composer_editor_generation")
-            == tool.operation_editor.generation
+            if tool.operation_editor.control_signal_allowed(candidate)
         ),
         None,
     )

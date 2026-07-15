@@ -1,6 +1,8 @@
 # ruff: noqa: F403, F405
 
 import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
+import erlab.interactive._figurecomposer._ui._axes_widgets as axes_widgets
+import erlab.interactive._figurecomposer._ui._figure_window as figure_window_ui
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _editor as plot_slices_editor,
@@ -1582,9 +1584,7 @@ def test_figure_composer_source_add_callbacks_handle_unavailable_paths(
     data = _figure_composer_profile_source("data")
     tool = FigureComposerTool(data)
     qtbot.addWidget(tool)
-    figure_window = figurecomposer_widgets._FigureComposerDisplayWindow(
-        FigureSubplotsState()
-    )
+    figure_window = figure_window_ui._FigureComposerDisplayWindow(FigureSubplotsState())
     qtbot.addWidget(figure_window)
     tool._figure_window = figure_window
     mime = QtCore.QMimeData()
@@ -3497,7 +3497,7 @@ def test_figure_composer_source_inspector_tracks_source_tab_selection(qtbot) -> 
     )
     assert tool.source_panel.source_inspector.source_name() == "first"
     assert tool.source_panel.source_status_label.isHidden()
-    assert tool.operation_editor.source_status_label.isHidden()
+    assert _operation_source_status_label(tool).isHidden()
     first_item = tool.source_panel.source_list.topLevelItem(0)
     assert first_item is not None
     tool.source_panel.source_list.setCurrentItem(first_item)
@@ -3683,8 +3683,7 @@ def test_figure_composer_line_source_combo_uses_alias_data_and_updates_recipe(
         (
             combo
             for combo in source_combos
-            if combo.property("figure_composer_editor_generation")
-            == tool.operation_editor.generation
+            if tool.operation_editor.control_signal_allowed(combo)
         ),
         None,
     )
@@ -4645,7 +4644,7 @@ def test_figure_composer_toolbar_image_target_combo_elides_long_sources(qtbot) -
     tool._show_axes_customize_dialog()
     dialog = tool._axes_customize_dialog
     assert isinstance(dialog, QtWidgets.QDialog)
-    selector = dialog.findChild(figurecomposer_widgets._AxesSelectorWidget)
+    selector = dialog.findChild(axes_widgets._AxesSelectorWidget)
     target_combo = dialog.findChild(
         QtWidgets.QComboBox, "figureComposerToolbarImageTargetCombo"
     )

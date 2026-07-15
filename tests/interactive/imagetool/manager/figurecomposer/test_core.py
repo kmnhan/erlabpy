@@ -1,8 +1,5 @@
 # ruff: noqa: F403, F405
 
-import subprocess
-import textwrap
-
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._model._document import FigureDocument
 from erlab.interactive._figurecomposer._operations._method import (
@@ -15,14 +12,12 @@ from erlab.interactive._figurecomposer._operations._method import (
     _execution as method_execution,
 )
 from erlab.interactive._figurecomposer._operations._method import (
-    _operation as method_operation,
-)
-from erlab.interactive._figurecomposer._operations._method import (
     _plot_data as method_plot_data,
 )
 from erlab.interactive._figurecomposer._operations._method import (
     _plot_editor as method_plot_editor,
 )
+from erlab.interactive._figurecomposer._operations._method import _spec as method_spec
 from erlab.interactive._figurecomposer._operations._method import _state as method_state
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _codegen as plot_slices_codegen,
@@ -91,39 +86,6 @@ def test_figure_document_replaces_source_payloads_together() -> None:
 
     assert document.source_data["data"] is data
     assert document.source_selection_base_data == {}
-
-
-def test_figure_document_sources_import_without_qt_widgets() -> None:
-    code = textwrap.dedent(
-        """
-        import sys
-
-        from erlab.interactive._figurecomposer._model._document import FigureDocument
-        from erlab.interactive._figurecomposer._model._sources import (
-            _source_alias_error,
-        )
-        from erlab.interactive._figurecomposer._model._state import (
-            FigureExportState,
-            FigureRecipeState,
-            FigureSubplotsState,
-        )
-
-        recipe = FigureRecipeState(
-            setup=FigureSubplotsState(
-                figsize=(6.4, 4.8), dpi=100.0, layout=None
-            ),
-            export=FigureExportState(
-                dpi="figure", transparent=False, bbox_inches="tight"
-            ),
-        )
-        assert FigureDocument(recipe)
-        assert _source_alias_error("data") is None
-        assert "erlab.interactive._figurecomposer._ui._widgets" not in sys.modules
-        assert "erlab.interactive._stylesheets" not in sys.modules
-        assert "erlab.interactive._figurecomposer._tool" not in sys.modules
-        """
-    )
-    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_figure_document_replaces_only_valid_layout_setup() -> None:
@@ -875,7 +837,7 @@ def test_figure_composer_operation_modules_use_editor_signal_contract() -> None:
         method_catalog,
         method_editor,
         method_execution,
-        method_operation,
+        method_spec,
         method_plot_data,
         method_plot_editor,
         method_state,

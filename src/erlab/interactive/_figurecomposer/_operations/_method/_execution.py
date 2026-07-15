@@ -5,7 +5,9 @@ from __future__ import annotations
 import typing
 
 import matplotlib.transforms as mtransforms
+from matplotlib.figure import Figure
 
+import erlab.interactive.utils
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._code import _axes_code, _axes_sequence_code
 from erlab.interactive._figurecomposer._model._gridspec import (
@@ -43,7 +45,6 @@ from erlab.interactive._figurecomposer._operations._method._state import (
     _method_args,
     _method_has_transform_control,
     _subplots_adjust_values,
-    _tool_subplots_adjust_defaults,
 )
 from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
@@ -59,7 +60,6 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from matplotlib.axes import Axes
-    from matplotlib.figure import Figure
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
@@ -97,7 +97,7 @@ def _method_call_args(
     default_axis: Axes | None = None,
 ) -> tuple[typing.Any, ...]:
     if _is_axes_plot_method(spec) and operation.method_plot_data_mode == "from_data":
-        return _picked_plot_args(tool, operation, spec)
+        return _picked_plot_args(tool._document.source_data, operation, spec)
     if (
         default_axis is None
         and spec.family == FigureMethodFamily.AXES
@@ -120,7 +120,7 @@ def _method_code_call_args(
     spec: MethodSpec,
 ) -> tuple[typing.Any, ...]:
     if _is_axes_plot_method(spec) and operation.method_plot_data_mode == "from_data":
-        return _picked_plot_code_args(tool, operation, spec)
+        return _picked_plot_code_args(tool._document.source_data, operation, spec)
     default_axis = None
     if spec.family == FigureMethodFamily.AXES and spec.name in {"set_xlim", "set_ylim"}:
         default_axis = _first_live_axis(tool, operation.axes)
@@ -266,7 +266,7 @@ def _render_args_kwargs(
     ):
         kwargs.pop("xerr", None)
         kwargs.pop("yerr", None)
-        kwargs.update(_picked_plot_error_kwargs(tool, operation))
+        kwargs.update(_picked_plot_error_kwargs(tool._document.source_data, operation))
     if _method_has_transform_control(spec):
         kwargs.pop("transform", None)
     if spec.text_values_policy == MethodTextValuesPolicy.POSITIONAL:
@@ -308,7 +308,9 @@ def _code_args_kwargs(
     ):
         kwargs.pop("xerr", None)
         kwargs.pop("yerr", None)
-        kwargs.update(_picked_plot_error_code_kwargs(tool, operation))
+        kwargs.update(
+            _picked_plot_error_code_kwargs(tool._document.source_data, operation)
+        )
     if _method_has_transform_control(spec):
         kwargs.pop("transform", None)
     if spec.text_values_policy == MethodTextValuesPolicy.POSITIONAL:
@@ -337,6 +339,25 @@ def _code_args_kwargs(
 
 def _erlab_callable(spec: MethodSpec) -> Callable[..., typing.Any]:
     return typing.cast("Callable[..., typing.Any]", getattr(eplt, spec.call_name))
+
+
+def _tool_subplots_adjust_defaults(
+    tool: FigureComposerTool,
+) -> dict[str, float]:
+    figure_window = tool._figure_window
+    if figure_window is not None and erlab.interactive.utils.qt_is_valid(figure_window):
+        subplotpars = figure_window.figure.subplotpars
+    else:
+        figure = Figure(
+            figsize=tool.tool_status.setup.figsize,
+            dpi=tool.tool_status.setup.dpi,
+            layout=typing.cast("typing.Any", tool.tool_status.setup.layout),
+        )
+        subplotpars = figure.subplotpars
+    return {
+        key: float(getattr(subplotpars, key))
+        for key in ("left", "bottom", "right", "top", "wspace", "hspace")
+    }
 
 
 def _render_method(

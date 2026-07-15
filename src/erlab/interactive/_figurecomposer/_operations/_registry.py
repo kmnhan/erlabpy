@@ -12,7 +12,7 @@ from erlab.interactive._figurecomposer._operations import (
     _plot_array,
     _set_palette,
 )
-from erlab.interactive._figurecomposer._operations._method._operation import (
+from erlab.interactive._figurecomposer._operations._method._spec import (
     SPEC as _METHOD_SPEC,
 )
 from erlab.interactive._figurecomposer._operations._plot_slices._spec import (

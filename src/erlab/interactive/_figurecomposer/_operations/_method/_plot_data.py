@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import typing
 
-import erlab.interactive.utils
+import erlab.utils._code
 from erlab.interactive._figurecomposer._code import _needs_squeeze_drop
 from erlab.interactive._figurecomposer._model._sources import (
     _public_source_data,
@@ -27,7 +27,6 @@ if typing.TYPE_CHECKING:
     from erlab.interactive._figurecomposer._operations._method._catalog import (
         MethodSpec,
     )
-    from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
 _PLOT_DATA_VALUE: tuple[str, str | None] = ("data", None)
@@ -126,18 +125,12 @@ def _default_plot_value_state(
     return FigureMethodPlotValueState(source=source, kind="data")
 
 
-def _plot_source_label(tool: FigureComposerTool, source: str) -> str:
-    return tool._source_display_name(source)
-
-
 def _plot_value_data(
-    tool: FigureComposerTool, state: FigureMethodPlotValueState
+    source_data: Mapping[str, xr.DataArray], state: FigureMethodPlotValueState
 ) -> xr.DataArray:
-    source = tool._document.source_data.get(state.source)
+    source = source_data.get(state.source)
     if source is None:
-        raise ValueError(
-            f"DataArray {_plot_source_label(tool, state.source)!r} is not available"
-        )
+        raise ValueError(f"DataArray {state.source!r} is not available")
     data = _public_source_data(source)
     if state.kind == "data":
         value = data.squeeze(drop=True)
@@ -149,8 +142,7 @@ def _plot_value_data(
     coord = _plot_coord_by_name(data, state.name)
     if coord is None:
         raise ValueError(
-            f"Coordinate {state.name!r} is not available in "
-            f"DataArray {_plot_source_label(tool, state.source)!r}"
+            f"Coordinate {state.name!r} is not available in DataArray {state.source!r}"
         )
     _coord_key, coord_data = coord
     value = coord_data.squeeze(drop=True)
@@ -160,13 +152,11 @@ def _plot_value_data(
 
 
 def _plot_value_code_and_data(
-    tool: FigureComposerTool, state: FigureMethodPlotValueState
+    source_data: Mapping[str, xr.DataArray], state: FigureMethodPlotValueState
 ) -> tuple[_RawCode, xr.DataArray]:
-    source = tool._document.source_data.get(state.source)
+    source = source_data.get(state.source)
     if source is None:
-        raise ValueError(
-            f"DataArray {_plot_source_label(tool, state.source)!r} is not available"
-        )
+        raise ValueError(f"DataArray {state.source!r} is not available")
     data = _public_source_data(source)
     source_code = _valid_source_variable(state.source)
     if state.kind == "data":
@@ -182,16 +172,13 @@ def _plot_value_code_and_data(
     coord = _plot_coord_by_name(data, state.name)
     if coord is None:
         raise ValueError(
-            f"Coordinate {state.name!r} is not available in "
-            f"DataArray {_plot_source_label(tool, state.source)!r}"
+            f"Coordinate {state.name!r} is not available in DataArray {state.source!r}"
         )
     coord_key, coord_data = coord
     value = coord_data.squeeze(drop=True)
     if value.ndim != 1:
         raise ValueError("Picked plot coordinates must be one-dimensional")
-    code = (
-        f"{source_code}.coords[{erlab.interactive.utils._parse_single_arg(coord_key)}]"
-    )
+    code = f"{source_code}.coords[{erlab.utils._code._parse_single_arg(coord_key)}]"
     if _needs_squeeze_drop(coord_data):
         code = f"{code}.squeeze(drop=True)"
     return _RawCode(f"{code}.values"), value
@@ -212,15 +199,17 @@ def _validate_plot_value_lengths(
 
 
 def _picked_plot_args(
-    tool: FigureComposerTool, operation: FigureOperationState, spec: MethodSpec
+    source_data: Mapping[str, xr.DataArray],
+    operation: FigureOperationState,
+    spec: MethodSpec,
 ) -> tuple[typing.Any, ...]:
     if operation.method_plot_y is None:
         raise ValueError(f"Choose Y values for {_plot_method_call_name(spec)}")
-    y_value = _plot_value_data(tool, operation.method_plot_y)
+    y_value = _plot_value_data(source_data, operation.method_plot_y)
     x_value = (
         None
         if operation.method_plot_x is None
-        else _plot_value_data(tool, operation.method_plot_x)
+        else _plot_value_data(source_data, operation.method_plot_x)
     )
     if x_value is None and _plot_axis_required(spec, "x"):
         raise ValueError(f"Choose X values for {_plot_method_call_name(spec)}")
@@ -231,16 +220,18 @@ def _picked_plot_args(
 
 
 def _picked_plot_code_args(
-    tool: FigureComposerTool, operation: FigureOperationState, spec: MethodSpec
+    source_data: Mapping[str, xr.DataArray],
+    operation: FigureOperationState,
+    spec: MethodSpec,
 ) -> tuple[typing.Any, ...]:
     if operation.method_plot_y is None:
         raise ValueError(f"Choose Y values for {_plot_method_call_name(spec)}")
-    y_code, y_value = _plot_value_code_and_data(tool, operation.method_plot_y)
+    y_code, y_value = _plot_value_code_and_data(source_data, operation.method_plot_y)
     if operation.method_plot_x is None:
         if _plot_axis_required(spec, "x"):
             raise ValueError(f"Choose X values for {_plot_method_call_name(spec)}")
         return (y_code,)
-    x_code, x_value = _plot_value_code_and_data(tool, operation.method_plot_x)
+    x_code, x_value = _plot_value_code_and_data(source_data, operation.method_plot_x)
     _validate_plot_value_lengths(x_value, y_value)
     return x_code, y_code
 
@@ -254,18 +245,18 @@ def _validate_entered_errorbar_args(args: tuple[typing.Any, ...]) -> None:
 
 
 def _picked_plot_error_kwargs(
-    tool: FigureComposerTool, operation: FigureOperationState
+    source_data: Mapping[str, xr.DataArray], operation: FigureOperationState
 ) -> dict[str, typing.Any]:
     if operation.method_plot_y is None:
         return {}
-    y_value = _plot_value_data(tool, operation.method_plot_y)
+    y_value = _plot_value_data(source_data, operation.method_plot_y)
     kwargs: dict[str, typing.Any] = {}
     error_values = []
     for axis in ("xerr", "yerr"):
         state = _plot_axis_value_state(operation, axis)
         if state is None:
             continue
-        value = _plot_value_data(tool, state)
+        value = _plot_value_data(source_data, state)
         error_values.append((_plot_axis_label(axis), value))
         kwargs[axis] = value.values
     _validate_plot_value_lengths(None, y_value, *error_values)
@@ -273,18 +264,18 @@ def _picked_plot_error_kwargs(
 
 
 def _picked_plot_error_code_kwargs(
-    tool: FigureComposerTool, operation: FigureOperationState
+    source_data: Mapping[str, xr.DataArray], operation: FigureOperationState
 ) -> dict[str, typing.Any]:
     if operation.method_plot_y is None:
         return {}
-    _y_code, y_value = _plot_value_code_and_data(tool, operation.method_plot_y)
+    _y_code, y_value = _plot_value_code_and_data(source_data, operation.method_plot_y)
     kwargs: dict[str, typing.Any] = {}
     error_values = []
     for axis in ("xerr", "yerr"):
         state = _plot_axis_value_state(operation, axis)
         if state is None:
             continue
-        code, value = _plot_value_code_and_data(tool, state)
+        code, value = _plot_value_code_and_data(source_data, state)
         error_values.append((_plot_axis_label(axis), value))
         kwargs[axis] = code
     _validate_plot_value_lengths(None, y_value, *error_values)

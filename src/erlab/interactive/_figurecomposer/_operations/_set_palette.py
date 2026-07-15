@@ -20,8 +20,8 @@ from erlab.interactive._figurecomposer._operations._base import (
     _no_invalid_target,
     _uses_no_source_section,
 )
+from erlab.interactive._figurecomposer._ui._color_widgets import _ColorListEditorWidget
 from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
-from erlab.interactive._figurecomposer._ui._widgets import _ColorListEditorWidget
 from erlab.plotting.colors import close_to_white
 
 if typing.TYPE_CHECKING:

@@ -10,6 +10,7 @@ import xarray as xr
 from erlab.interactive._figurecomposer._defaults import (
     _current_options,
     _styled_rcparams_value,
+    _tool_figure_options_context,
 )
 from erlab.interactive._figurecomposer._labels import label_context, labels_from_text
 from erlab.interactive._figurecomposer._line_colormap import (
@@ -41,7 +42,6 @@ from erlab.interactive._figurecomposer._norms import (
     _norm_object,
     _use_powernorm_plot_kwargs,
 )
-from erlab.interactive._figurecomposer._rendering import _tool_figure_options_context
 from erlab.interactive._figurecomposer._text import _selection_value_count
 
 if typing.TYPE_CHECKING:

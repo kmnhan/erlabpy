@@ -23,14 +23,10 @@ from erlab.interactive._figurecomposer._line_style import (
     LINE_MARKER_OPTIONS,
     LINE_STYLE_OPTIONS,
     color_kw_value_from_text,
-    configure_style_combo,
     extra_line_kw,
     line_kw_float,
     line_kw_style_value,
     line_kw_text,
-    optional_positive_spinbox,
-    optional_positive_spinbox_value,
-    style_combo_value,
 )
 from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_all_axes_ids,
@@ -97,17 +93,25 @@ from erlab.interactive._figurecomposer._text import (
     _format_dict,
     _limit_pair_from_text,
 )
+from erlab.interactive._figurecomposer._ui._axes_widgets import (
+    _AxesSelectorWidget,
+    _GridSpecViewWidget,
+)
+from erlab.interactive._figurecomposer._ui._color_widgets import (
+    _ColorLineEditWidget,
+    _ColorListEditorWidget,
+)
 from erlab.interactive._figurecomposer._ui._editor_controls import (
     MIXED_VALUE,
     MIXED_VALUES_TEXT,
 )
-from erlab.interactive._figurecomposer._ui._tick_params import TickParamsEditorWidget
-from erlab.interactive._figurecomposer._ui._widgets import (
-    _AxesSelectorWidget,
-    _ColorLineEditWidget,
-    _ColorListEditorWidget,
-    _GridSpecViewWidget,
+from erlab.interactive._figurecomposer._ui._line_style import (
+    configure_style_combo,
+    optional_positive_spinbox,
+    optional_positive_spinbox_value,
+    style_combo_value,
 )
+from erlab.interactive._figurecomposer._ui._tick_params import TickParamsEditorWidget
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence

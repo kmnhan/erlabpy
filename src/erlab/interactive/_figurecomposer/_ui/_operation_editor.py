@@ -227,10 +227,6 @@ class FigureOperationEditor(QtWidgets.QWidget):
     def active_signal_widget(self) -> QtWidgets.QWidget | None:
         return self._active_signal_widget
 
-    @property
-    def generation(self) -> int:
-        return self._generation
-
     def _build_ui(self) -> None:
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -293,11 +289,6 @@ class FigureOperationEditor(QtWidgets.QWidget):
     def source_controls(self) -> QtWidgets.QWidget:
         """Parent widget for controls contributed by an operation source editor."""
         return self._source_controls
-
-    @property
-    def source_status_label(self) -> QtWidgets.QLabel:
-        """Status label displayed below operation-specific source controls."""
-        return self._source_status_label
 
     def clear_source_controls(self) -> None:
         """Retire controls contributed by the previously selected operation."""
@@ -805,9 +796,6 @@ class FigureOperationEditor(QtWidgets.QWidget):
 
     def source_display_name(self, name: str) -> str:
         return self.binding.source_display_name(name)
-
-    def source_display_names(self, names: Sequence[str]) -> tuple[str, ...]:
-        return tuple(self.source_display_name(name) for name in names)
 
     def source_tooltip(self, name: str) -> str:
         return self.binding.source_tooltip(name)

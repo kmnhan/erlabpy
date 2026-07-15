@@ -1248,7 +1248,7 @@ def test_figure_composer_untrusted_custom_code_reports_render_error(qtbot) -> No
     assert "Custom code is not trusted" in item.toolTip(
         figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
     )
-    assert tool.operation_editor.source_status_label.isHidden()
+    assert _operation_source_status_label(tool).isHidden()
 
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
@@ -1270,4 +1270,4 @@ def test_figure_composer_untrusted_custom_code_reports_render_error(qtbot) -> No
     assert "Custom code is not trusted" not in item.toolTip(
         figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
     )
-    assert tool.operation_editor.source_status_label.isHidden()
+    assert _operation_source_status_label(tool).isHidden()

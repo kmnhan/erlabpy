@@ -9,15 +9,17 @@ from qtpy import QtCore, QtWidgets
 from erlab.interactive._figurecomposer._line_style import (
     LINE_STYLE_OPTIONS,
     color_kw_value_from_text,
-    configure_style_combo,
-    style_combo_value,
 )
 from erlab.interactive._figurecomposer._operations._method._catalog import (
     TICK_PARAMS_CONTROLLED_KWARGS,
     TICK_PARAMS_DEFAULT_KWARGS,
 )
 from erlab.interactive._figurecomposer._text import _code_args, _literal_from_text
-from erlab.interactive._figurecomposer._ui._widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._line_style import (
+    configure_style_combo,
+    style_combo_value,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping, Sequence

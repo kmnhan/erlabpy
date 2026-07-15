@@ -1,5 +1,7 @@
 # ruff: noqa: F403, F405
 
+import erlab.interactive._figurecomposer._ui._color_widgets as color_widgets
+
 from ._common import *
 
 
@@ -146,7 +148,7 @@ def test_figure_composer_set_palette_custom_colors_editor_and_codegen(
         page.findChild(QtWidgets.QComboBox, "figureComposerSetPaletteNameCombo") is None
     )
     colors_widget = page.findChild(
-        figurecomposer_widgets._ColorListEditorWidget,
+        color_widgets._ColorListEditorWidget,
         "figureComposerSetPaletteColorsWidget",
     )
     assert colors_widget is not None
@@ -226,7 +228,7 @@ def test_figure_composer_set_palette_mode_switch_seeds_custom_colors(qtbot) -> N
         lambda: (
             tool.operation_editor.stack.currentWidget() is not None
             and tool.operation_editor.stack.currentWidget().findChild(
-                figurecomposer_widgets._ColorListEditorWidget,
+                color_widgets._ColorListEditorWidget,
                 "figureComposerSetPaletteColorsWidget",
             )
             is not None
@@ -236,7 +238,7 @@ def test_figure_composer_set_palette_mode_switch_seeds_custom_colors(qtbot) -> N
     page = tool.operation_editor.stack.currentWidget()
     assert page is not None
     colors_widget = page.findChild(
-        figurecomposer_widgets._ColorListEditorWidget,
+        color_widgets._ColorListEditorWidget,
         "figureComposerSetPaletteColorsWidget",
     )
     assert colors_widget is not None

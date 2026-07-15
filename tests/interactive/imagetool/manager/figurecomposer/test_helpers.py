@@ -28,31 +28,33 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)
     combo = QtWidgets.QComboBox(parent)
-    figurecomposer_line_style.configure_style_combo(
+    figurecomposer_line_style_ui.configure_style_combo(
         combo,
         figurecomposer_line_style.LINE_STYLE_OPTIONS,
         None,
     )
     assert combo.itemData(0) is None
-    assert figurecomposer_line_style.style_combo_value(combo) is None
-    figurecomposer_line_style.set_style_combo_value(combo, "")
-    assert figurecomposer_line_style.style_combo_value(combo) == "none"
-    figurecomposer_line_style.set_style_combo_value(combo, " ")
-    assert figurecomposer_line_style.style_combo_value(combo) == "none"
-    figurecomposer_line_style.set_style_combo_value(combo, "None")
-    assert figurecomposer_line_style.style_combo_value(combo) == "none"
-    figurecomposer_line_style.set_style_combo_value(combo, "custom-dash")
-    assert figurecomposer_line_style.style_combo_value(combo) == "custom-dash"
+    assert figurecomposer_line_style_ui.style_combo_value(combo) is None
+    figurecomposer_line_style_ui.set_style_combo_value(combo, "")
+    assert figurecomposer_line_style_ui.style_combo_value(combo) == "none"
+    figurecomposer_line_style_ui.set_style_combo_value(combo, " ")
+    assert figurecomposer_line_style_ui.style_combo_value(combo) == "none"
+    figurecomposer_line_style_ui.set_style_combo_value(combo, "None")
+    assert figurecomposer_line_style_ui.style_combo_value(combo) == "none"
+    figurecomposer_line_style_ui.set_style_combo_value(combo, "custom-dash")
+    assert figurecomposer_line_style_ui.style_combo_value(combo) == "custom-dash"
     assert combo.itemText(combo.count() - 1) == "custom-dash"
 
-    spinbox = figurecomposer_line_style.optional_positive_spinbox(None, parent=parent)
+    spinbox = figurecomposer_line_style_ui.optional_positive_spinbox(
+        None, parent=parent
+    )
     assert (
-        figurecomposer_line_style.optional_positive_spinbox_value(spinbox.value())
+        figurecomposer_line_style_ui.optional_positive_spinbox_value(spinbox.value())
         is None
     )
     spinbox.setValue(2.5)
     assert (
-        figurecomposer_line_style.optional_positive_spinbox_value(spinbox.value())
+        figurecomposer_line_style_ui.optional_positive_spinbox_value(spinbox.value())
         == 2.5
     )
 
@@ -81,13 +83,13 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
     )
 
     tool._updating_controls = True
-    figurecomposer_line_style.update_current_line_kw(
+    figurecomposer_line_style_ui.update_current_line_kw(
         tool.operation_editor, "color", "red", clear_stale_cmap=True
     )
     tool._updating_controls = False
     assert tool.tool_status.operations[0].cmap == "magma"
 
-    figurecomposer_line_style.update_current_line_kw(
+    figurecomposer_line_style_ui.update_current_line_kw(
         tool.operation_editor,
         "color",
         "red",
@@ -100,13 +102,13 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
     assert updated.cmap is None
 
     tool._updating_controls = True
-    figurecomposer_line_style.update_current_extra_line_kw(
+    figurecomposer_line_style_ui.update_current_extra_line_kw(
         tool.operation_editor, {"zorder": 5}
     )
     tool._updating_controls = False
     assert "zorder" not in tool.tool_status.operations[0].line_kw
 
-    figurecomposer_line_style.update_current_extra_line_kw(
+    figurecomposer_line_style_ui.update_current_extra_line_kw(
         tool.operation_editor, {"zorder": 5}
     )
     assert tool.tool_status.operations[0].line_kw == {

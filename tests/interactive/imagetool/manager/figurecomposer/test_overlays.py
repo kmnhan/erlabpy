@@ -609,8 +609,7 @@ def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> No
             for combo in tool.operation_editor.source_controls.findChildren(
                 QtWidgets.QComboBox, "figureComposerPhotonEnergySourceCombo"
             )
-            if combo.property("figure_composer_editor_generation")
-            == tool.operation_editor.generation
+            if tool.operation_editor.control_signal_allowed(combo)
         ),
         None,
     )

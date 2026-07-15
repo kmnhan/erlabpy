@@ -214,9 +214,7 @@ SPEC = OperationSpec(
     build_source_editor=_build_source_editor,
     build_editor_sections=_editor_sections,
     section_summary=_section_summary,
-    render=lambda tool, operation, _figure, axs: _render_plot_slices(
-        tool, operation, axs
-    ),
+    render=_render_plot_slices,
     code_lines=_plot_slices_code_lines,
     required_imports=_required_imports,
 )

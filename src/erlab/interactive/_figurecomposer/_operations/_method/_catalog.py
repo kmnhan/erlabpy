@@ -1,9 +1,9 @@
-"""Generic curated function/method call operation for Figure Composer.
+"""Catalog and control schemas for curated Figure Composer method calls.
 
-This module owns the "method" recipe step: direct Matplotlib ``ax.*`` calls,
-direct Matplotlib ``fig.*`` calls, and curated ``erlab.plotting`` helpers. New
-method support should usually be added by editing the spec tables in this file,
-not by adding operation-specific branches elsewhere in Figure Composer.
+The method operation package renders direct Matplotlib ``ax.*`` and ``fig.*`` calls
+alongside curated ``erlab.plotting`` helpers. This module owns their declarative
+catalog and editor control schemas. New method support should usually be added by
+editing the spec tables here, not by adding operation-specific branches elsewhere.
 
 How to add a method
 -------------------

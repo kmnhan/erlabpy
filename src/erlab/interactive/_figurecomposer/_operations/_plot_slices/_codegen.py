@@ -5,6 +5,7 @@ from __future__ import annotations
 import typing
 
 import erlab
+import erlab.utils._code
 from erlab.interactive._figurecomposer._code import _axes_code, _maybe_squeeze_drop_code
 from erlab.interactive._figurecomposer._labels import (
     label_coord_placeholder_name,
@@ -66,6 +67,7 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
+    from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
@@ -83,7 +85,7 @@ def _all_coordinate_slice_values_code(
     source_code = _first_plot_slices_source_code(operation)
     if source_code is None:
         return None
-    dim_code = erlab.interactive.utils._parse_single_arg(operation.slice_dim)
+    dim_code = erlab.utils._code._parse_single_arg(operation.slice_dim)
     if operation.slice_values_thin == 1:
         return f"{source_code}.coords[{dim_code}].values"
     return (
@@ -107,7 +109,7 @@ def _plot_slices_label_line_kw_code(
     source_labels = _plot_slices_source_labels(
         tool._document, tool._source_display_name, operation
     )
-    slice_values_code = _plot_slices_slice_values_code(tool, operation)
+    slice_values_code = _plot_slices_slice_values_code(tool._document, operation)
     styles = _panel_style_map_for_keys(operation, keys)
     has_style_overrides = operation.panel_styles_enabled and any(
         _panel_style_has_line_override(style) for style in styles.values()
@@ -149,7 +151,7 @@ def _plot_slices_line_kw_code(
     source_labels = _plot_slices_source_labels(
         tool._document, tool._source_display_name, operation
     )
-    slice_values_code = _plot_slices_slice_values_code(tool, operation)
+    slice_values_code = _plot_slices_slice_values_code(tool._document, operation)
     styles = _panel_style_map_for_keys(operation, keys)
     panel_index = {
         (key.map_index, key.slice_index): index for index, key in enumerate(keys)
@@ -195,13 +197,13 @@ def _plot_slices_line_kw_code(
 
 
 def _plot_slices_slice_values_code(
-    tool: FigureComposerTool, operation: FigureOperationState
+    context: FigureRecipeContext, operation: FigureOperationState
 ) -> str:
     if operation.slice_dim:
         all_values_code = _all_coordinate_slice_values_code(operation)
         if all_values_code is not None:
             return all_values_code
-        slice_values = _effective_slice_values(tool._document, operation)
+        slice_values = _effective_slice_values(context, operation)
         if slice_values:
             return repr(list(slice_values))
     return "[None]"
@@ -221,7 +223,7 @@ def _plot_slices_line_color_code_lines(
     keys = _plot_slices_panel_keys(tool._document, tool._source_display_name, operation)
     if not keys:
         return []
-    slice_values_code = _plot_slices_slice_values_code(tool, operation)
+    slice_values_code = _plot_slices_slice_values_code(tool._document, operation)
     map_count, slice_count = _style_sequence_shape(keys)
     if map_count == 1:
         values_code = f"[float(slice_value) for slice_value in {slice_values_code}]"
@@ -538,9 +540,9 @@ def _plot_slices_transformed_maps_code(
 
     map_count = max((key.map_index for key in keys), default=-1) + 1
     slice_values = list(slice_values)
-    dim_code = erlab.interactive.utils._parse_single_arg(operation.slice_dim)
+    dim_code = erlab.utils._code._parse_single_arg(operation.slice_dim)
     if slice_values_code is None:
-        coords_code = erlab.interactive.utils._parse_single_arg(
+        coords_code = erlab.utils._code._parse_single_arg(
             {operation.slice_dim: slice_values}
         )
     else:

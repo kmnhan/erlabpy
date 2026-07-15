@@ -1,6 +1,9 @@
 # ruff: noqa: F403, F405
 
+import erlab.interactive._figurecomposer._labels as figurecomposer_labels
+import erlab.interactive._figurecomposer._ui._color_widgets as color_widgets
 import erlab.interactive.imagetool._figurecomposer_adapter as figurecomposer_adapter
+from erlab.interactive._figurecomposer._model._document import FigureDocument
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _codegen as plot_slices_codegen,
 )
@@ -750,7 +753,7 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         QtWidgets.QCheckBox, "figureComposerLineGradientCheck"
     )
     marker_face_button = style_page.findChild(
-        figurecomposer_widgets._ColorPickerButton,
+        color_widgets._ColorPickerButton,
         "figureComposerLineMarkerFaceColorButton",
     )
     assert line_style_combo is not None
@@ -1392,7 +1395,7 @@ def test_figure_composer_line_profile_helper_edges(qtbot) -> None:
         },
         name="data",
     )
-    context = types.SimpleNamespace(source_data={"data": data})
+    context = FigureDocument(FigureRecipeState(), source_data={"data": data})
     operation = FigureOperationState.line(label="profiles", source="data").model_copy(
         update={"line_iter_dim": "eV", "line_x": "kx"}
     )
@@ -1535,8 +1538,6 @@ def test_figure_composer_line_profile_style_codegen_helper_edges() -> None:
 
 
 def test_figure_composer_default_line_labels_use_property_labels() -> None:
-    from erlab.interactive._figurecomposer import _labels as figurecomposer_labels
-
     assert (
         figurecomposer_labels.default_label_text(
             "sample_temp", (20.0,), fallback="profile {number}"
@@ -1743,24 +1744,27 @@ def test_figure_composer_plot_slices_line_label_placeholders_accept_spaced_dim(
     ] == expected_labels
 
 
-def test_figure_composer_plot_slices_line_color_codegen_helper_variants() -> None:
+def test_figure_composer_plot_slices_line_color_codegen_helper_variants(qtbot) -> None:
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
         dims=("eV", "kx"),
         coords={"eV": [0.1, 0.2], "kx": [-1.0, 0.0, 1.0]},
         name="data",
     )
-    tool = types.SimpleNamespace(
-        _document=types.SimpleNamespace(
-            source_data={
-                "a": data,
-                "b": data + 10.0,
-                "line": xr.DataArray([1.0, 2.0], dims=("kx",), name="line"),
-            }
+    line = xr.DataArray([1.0, 2.0], dims=("kx",), name="line")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=tuple(
+                FigureSourceState(name=name, label=name.upper())
+                for name in ("a", "b", "line")
+            ),
+            operations=(),
+            primary_source="a",
         ),
-        _source_display_name=lambda name: name.upper(),
-        _editable_operations=lambda: (),
+        source_data={"a": data, "b": data + 10.0, "line": line},
     )
+    qtbot.addWidget(tool)
 
     assert (
         plot_slices_codegen._plot_slices_line_color_code_lines(
@@ -2698,8 +2702,6 @@ def test_figure_composer_line_normalization_reports_zero_scale(
 
 
 def test_figure_composer_label_helper_edges() -> None:
-    from erlab.interactive._figurecomposer import _labels as figurecomposer_labels
-
     assert figurecomposer_labels.label_coord_placeholder_name("") == "field"
     assert figurecomposer_labels.label_coord_placeholder_name("1 eV") == "_1_eV"
     assert figurecomposer_labels.label_coord_placeholder_name("class") == "class_"

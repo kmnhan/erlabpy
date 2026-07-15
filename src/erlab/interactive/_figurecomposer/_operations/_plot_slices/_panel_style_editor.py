@@ -12,11 +12,8 @@ from erlab.interactive._figurecomposer._line_style import (
     LINE_MARKER_OPTIONS,
     LINE_STYLE_OPTIONS,
     color_kw_value_from_text,
-    configure_style_combo,
     line_kw_style_value,
     line_kw_text,
-    set_style_combo_value,
-    style_combo_value,
 )
 from erlab.interactive._figurecomposer._model._state import (
     _POWER_NORM_NAME,
@@ -43,7 +40,12 @@ from erlab.interactive._figurecomposer._operations._plot_slices._model import (
     _PlotSlicesPanelKey,
 )
 from erlab.interactive._figurecomposer._text import _dict_from_text, _format_dict
-from erlab.interactive._figurecomposer._ui._widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._line_style import (
+    configure_style_combo,
+    set_style_combo_value,
+    style_combo_value,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable

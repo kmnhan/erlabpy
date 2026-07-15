@@ -33,6 +33,7 @@ import erlab.interactive._figurecomposer._code as figurecomposer_code
 import erlab.interactive._figurecomposer._defaults as figurecomposer_defaults
 import erlab.interactive._figurecomposer._line_colormap as figurecomposer_line_colormap
 import erlab.interactive._figurecomposer._line_style as figurecomposer_line_style
+import erlab.interactive._figurecomposer._line_transform as _line_transform
 import erlab.interactive._figurecomposer._model._axes as figurecomposer_axes
 import erlab.interactive._figurecomposer._model._gridspec as figurecomposer_gridspec
 import erlab.interactive._figurecomposer._model._sources as figurecomposer_sources
@@ -43,8 +44,8 @@ import erlab.interactive._figurecomposer._seeding as figurecomposer_seeding
 import erlab.interactive._figurecomposer._text as figurecomposer_text
 import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
 import erlab.interactive._figurecomposer._ui._editor_controls as _editor_controls
+import erlab.interactive._figurecomposer._ui._line_style as figurecomposer_line_style_ui
 import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
-import erlab.interactive._figurecomposer._ui._widgets as figurecomposer_widgets
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._workspace as manager_workspace
@@ -68,7 +69,6 @@ from erlab.interactive._figurecomposer import (
     FigureRecipeState,
     FigureSourceState,
     FigureSubplotsState,
-    _line_transform,
 )
 from erlab.interactive._figurecomposer import (
     _subplot_adjust as figurecomposer_subplot_adjust,
@@ -362,6 +362,14 @@ def _method_operations(
         and operation.method_family == family
         and operation.method_name == name
     )
+
+
+def _operation_source_status_label(tool: FigureComposerTool) -> QtWidgets.QLabel:
+    label = tool.operation_editor.findChild(
+        QtWidgets.QLabel, "figureComposerStepSourceStatus"
+    )
+    assert label is not None
+    return label
 
 
 def _activate_combo_text(combo: QtWidgets.QComboBox, text: str) -> None:

@@ -118,6 +118,15 @@ from erlab.interactive._figurecomposer._rendering import (
     _rendered_output_figure,
 )
 from erlab.interactive._figurecomposer._text import _format_axes_tuple
+from erlab.interactive._figurecomposer._ui._axes_widgets import (
+    _AxesSelectorWidget,
+    _gridspec_target_preview_descriptor,
+    _GridSpecViewWidget,
+    _subplot_target_preview_descriptor,
+)
+from erlab.interactive._figurecomposer._ui._figure_window import (
+    _FigureComposerDisplayWindow,
+)
 from erlab.interactive._figurecomposer._ui._layout_panel import FigureLayoutPanel
 from erlab.interactive._figurecomposer._ui._operation_editor import (
     COMMON_AXES_SECTION_TOOLTIP,
@@ -141,13 +150,6 @@ from erlab.interactive._figurecomposer._ui._source_panel import (
     FigureSourcePanel,
     FigureSourceRow,
     FigureSourceSelectionRow,
-)
-from erlab.interactive._figurecomposer._ui._widgets import (
-    _AxesSelectorWidget,
-    _FigureComposerDisplayWindow,
-    _gridspec_target_preview_descriptor,
-    _GridSpecViewWidget,
-    _subplot_target_preview_descriptor,
 )
 from erlab.interactive.imagetool import provenance
 

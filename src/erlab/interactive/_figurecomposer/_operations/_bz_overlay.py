@@ -17,9 +17,6 @@ from erlab.interactive._figurecomposer._line_style import (
     line_kw_float,
     line_kw_style_value,
     line_kw_text,
-    optional_positive_spinbox,
-    optional_positive_spinbox_value,
-    update_current_line_kw,
 )
 from erlab.interactive._figurecomposer._model._gridspec import _gridspec_valid_axes_ids
 from erlab.interactive._figurecomposer._model._state import (
@@ -44,8 +41,13 @@ from erlab.interactive._figurecomposer._text import (
     _literal_from_text,
     _RawCode,
 )
+from erlab.interactive._figurecomposer._ui._color_widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._line_style import (
+    optional_positive_spinbox,
+    optional_positive_spinbox_value,
+    update_current_line_kw,
+)
 from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
-from erlab.interactive._figurecomposer._ui._widgets import _ColorLineEditWidget
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable

@@ -1,5 +1,8 @@
 # ruff: noqa: F403, F405
 
+import erlab.interactive._figurecomposer._ui._axes_widgets as axes_widgets
+import erlab.interactive._figurecomposer._ui._color_widgets as color_widgets
+import erlab.interactive._figurecomposer._ui._figure_window as figure_window_ui
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _render as plot_slices_render,
@@ -33,59 +36,55 @@ def _operation_context_action(
 def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> None:
     opaque = QtGui.QColor(1, 2, 3)
     translucent = QtGui.QColor(1, 2, 3, 4)
-    grayscale = figurecomposer_widgets._qcolor_from_mpl_color_text("0.5")
+    grayscale = color_widgets._qcolor_from_mpl_color_text("0.5")
     assert grayscale is not None
     assert grayscale.getRgb() == (128, 128, 128, 255)
-    cycle_color = figurecomposer_widgets._qcolor_from_mpl_color_text("C1")
+    cycle_color = color_widgets._qcolor_from_mpl_color_text("C1")
     assert cycle_color is not None
     assert (
         cycle_color.getRgb()
         == QtGui.QColor.fromRgbF(*mpl.colors.to_rgba("C1")).getRgb()
     )
-    tuple_alpha = figurecomposer_widgets._qcolor_from_mpl_color_text("(1, 0, 0, 0.5)")
+    tuple_alpha = color_widgets._qcolor_from_mpl_color_text("(1, 0, 0, 0.5)")
     assert tuple_alpha is not None
     assert tuple_alpha.getRgb() == (255, 0, 0, 128)
-    hex_alpha = figurecomposer_widgets._qcolor_from_mpl_color_text("#01020304")
+    hex_alpha = color_widgets._qcolor_from_mpl_color_text("#01020304")
     assert hex_alpha is not None
     assert hex_alpha.getRgb() == (1, 2, 3, 4)
-    assert figurecomposer_widgets._qcolor_to_mpl_color_text(opaque) == "#010203"
-    assert figurecomposer_widgets._qcolor_to_mpl_color_text(translucent) == "#01020304"
-    assert (
-        figurecomposer_widgets._qcolor_from_mpl_color_text("(1.0, 0.0, 0.0)")
-        is not None
-    )
-    assert (
-        figurecomposer_widgets._qcolor_from_mpl_color_text("[1.0, 0.0, 0.0]")
-        is not None
-    )
-    assert figurecomposer_widgets._qcolor_from_mpl_color_text("") is None
-    assert figurecomposer_widgets._qcolor_from_mpl_color_text("[bad") is None
-    assert figurecomposer_widgets._top_level_comma_parts(
+    assert color_widgets._qcolor_to_mpl_color_text(opaque) == "#010203"
+    assert color_widgets._qcolor_to_mpl_color_text(translucent) == "#01020304"
+    assert color_widgets._qcolor_from_mpl_color_text("(1.0, 0.0, 0.0)") is not None
+    assert color_widgets._qcolor_from_mpl_color_text("[1.0, 0.0, 0.0]") is not None
+    assert color_widgets._qcolor_from_mpl_color_text("") is None
+    assert color_widgets._qcolor_from_mpl_color_text("[bad") is None
+    assert color_widgets._top_level_comma_parts(
         "red, (0, 1, 0), 'blue, still blue', [0, 0, 1]"
     ) == ("red", "(0, 1, 0)", "'blue, still blue'", "[0, 0, 1]")
-    assert figurecomposer_widgets._top_level_comma_parts(r"'red\', blue', green") == (
+    assert color_widgets._top_level_comma_parts(r"'red\', blue', green") == (
         r"'red\', blue'",
         "green",
     )
-    assert figurecomposer_widgets._color_tuple_from_text("") == ()
-    assert figurecomposer_widgets._color_tuple_from_text("['red', 'blue']") == (
+    assert color_widgets._color_tuple_from_text("") == ()
+    assert color_widgets._color_tuple_from_text("['red', 'blue']") == (
         "red",
         "blue",
     )
-    assert figurecomposer_widgets._color_tuple_from_text("[bad") == ("[bad",)
-    assert figurecomposer_widgets._color_tuple_from_text("[1]") == ("1",)
+    assert color_widgets._color_tuple_from_text("[bad") == ("[bad",)
+    assert color_widgets._color_tuple_from_text("[1]") == ("1",)
     with monkeypatch.context() as context:
         context.setattr(
-            figurecomposer_widgets, "_qcolor_from_mpl_color_value", lambda _value: None
+            color_widgets,
+            "_qcolor_from_mpl_color_value",
+            lambda _value: None,
         )
-        assert figurecomposer_widgets._default_mpl_line_color().getRgb() == (
+        assert color_widgets._default_mpl_line_color().getRgb() == (
             0,
             0,
             0,
             255,
         )
 
-    inherited_edit = figurecomposer_widgets._ColorLineEditWidget(
+    inherited_edit = color_widgets._ColorLineEditWidget(
         "",
         inherited_color="C1",
     )
@@ -104,7 +103,7 @@ def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> Non
     inherited_edit.setInheritedColor("#01020304")
     assert inherited_edit.color_button.color().getRgb() == (1, 2, 3, 4)
 
-    color_edit = figurecomposer_widgets._ColorLineEditWidget("tab:blue")
+    color_edit = color_widgets._ColorLineEditWidget("tab:blue")
     qtbot.addWidget(color_edit)
     color_edit.setPlaceholderText("pick one")
     color_edit.setToolTip("Line color")
@@ -148,7 +147,7 @@ def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> Non
     button_pixmap.fill(QtCore.Qt.GlobalColor.transparent)
     color_edit.color_button.render(button_pixmap)
 
-    deleted_edit = figurecomposer_widgets._ColorLineEditWidget("tab:red")
+    deleted_edit = color_widgets._ColorLineEditWidget("tab:red")
     qtbot.addWidget(deleted_edit)
     deleted_button = deleted_edit.color_button
 
@@ -161,7 +160,7 @@ def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> Non
         context.setattr(QtWidgets.QColorDialog, "getColor", delete_during_dialog)
         deleted_button._choose_color()
 
-    color_list = figurecomposer_widgets._ColorListEditorWidget(("red", "blue"))
+    color_list = color_widgets._ColorListEditorWidget(("red", "blue"))
     qtbot.addWidget(color_list)
     changed: list[tuple[str, ...]] = []
     color_list.colorsChanged.connect(changed.append)
@@ -217,7 +216,7 @@ def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> Non
 
 
 def test_figure_composer_axes_selector_widget_mouse_selection(qtbot) -> None:
-    selector = figurecomposer_widgets._AxesSelectorWidget()
+    selector = axes_widgets._AxesSelectorWidget()
     qtbot.addWidget(selector)
     selector.set_grid(
         2,
@@ -305,7 +304,7 @@ def test_figure_composer_axes_selector_widget_mouse_selection(qtbot) -> None:
 
 
 def test_figure_composer_selector_colors_use_widget_palette_group(qtbot) -> None:
-    selector = figurecomposer_widgets._AxesSelectorWidget()
+    selector = axes_widgets._AxesSelectorWidget()
     qtbot.addWidget(selector)
     palette = selector.palette()
     palette.setColor(
@@ -325,22 +324,18 @@ def test_figure_composer_selector_colors_use_widget_palette_group(qtbot) -> None
     )
     selector.setPalette(palette)
 
-    assert figurecomposer_widgets._selector_colors(selector).selection == QtGui.QColor(
-        "blue"
-    )
+    assert axes_widgets._selector_colors(selector).selection == QtGui.QColor("blue")
     selector.setEnabled(False)
-    assert figurecomposer_widgets._selector_colors(selector).selection == QtGui.QColor(
-        "green"
-    )
+    assert axes_widgets._selector_colors(selector).selection == QtGui.QColor("green")
 
 
 def test_figure_composer_axes_selector_add_pills_use_selector_color_roles(
     qtbot, monkeypatch
 ) -> None:
-    selector = figurecomposer_widgets._AxesSelectorWidget()
+    selector = axes_widgets._AxesSelectorWidget()
     qtbot.addWidget(selector)
     selector.resize(selector.sizeHint())
-    colors = figurecomposer_widgets._selector_colors(selector)
+    colors = axes_widgets._selector_colors(selector)
 
     captured_rects: list[tuple[QtGui.QColor, QtGui.QColor]] = []
 
@@ -356,9 +351,7 @@ def test_figure_composer_axes_selector_add_pills_use_selector_color_roles(
         del linewidth, radius
         captured_rects.append((QtGui.QColor(facecolor), QtGui.QColor(edgecolor)))
 
-    monkeypatch.setattr(
-        figurecomposer_widgets, "_draw_selector_rect", record_selector_rect
-    )
+    monkeypatch.setattr(axes_widgets, "_draw_selector_rect", record_selector_rect)
     pixmap = QtGui.QPixmap(selector.size())
     pixmap.fill(QtCore.Qt.GlobalColor.transparent)
     painter = QtGui.QPainter(pixmap)
@@ -429,7 +422,7 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
             ),
         ),
     )
-    selector = figurecomposer_widgets._GridSpecViewWidget(mode="select")
+    selector = axes_widgets._GridSpecViewWidget(mode="select")
     qtbot.addWidget(selector)
     selector.set_layout(root, labels={"main-axis": "Main", "child-axis": "Child"})
     selector.resize(selector.sizeHint())
@@ -438,7 +431,7 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
     assert not selector.axis_rect("main-axis").isNull()
     assert selector.axis_rect("missing").isNull()
     assert selector._range_axes_ids("missing", "child-axis") == ("child-axis",)
-    assert figurecomposer_widgets._ratio_edges(0, 100, 2, ()) == (
+    assert axes_widgets._ratio_edges(0, 100, 2, ()) == (
         0.0,
         50.0,
         100.0,
@@ -488,7 +481,7 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
     selector.mouseMoveEvent(None)
     selector.leaveEvent(None)
 
-    class _RecordingGridSpecViewWidget(figurecomposer_widgets._GridSpecViewWidget):
+    class _RecordingGridSpecViewWidget(axes_widgets._GridSpecViewWidget):
         def __init__(self) -> None:
             super().__init__(mode="edit")
             self.cursor_shapes: list[QtCore.Qt.CursorShape] = []
@@ -505,13 +498,13 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
 
     editor = _RecordingGridSpecViewWidget()
     qtbot.addWidget(editor)
-    region = figurecomposer_widgets._GridSpecRegionInfo(
+    region = axes_widgets._GridSpecRegionInfo(
         region_id="main-axis",
         kind="axes",
         span=main_span,
         label="main",
     )
-    child_region = figurecomposer_widgets._GridSpecRegionInfo(
+    child_region = axes_widgets._GridSpecRegionInfo(
         region_id="child-grid",
         kind="grid",
         span=child_span,
@@ -529,8 +522,8 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
     assert editor._cell_at(QtCore.QPoint(-100, -100), clamp_to_grid=True) is not None
     assert editor._cell_at(QtCore.QPoint(-100, -100), clamp_to_grid=False) is None
     assert editor._occupied_grid_cells(root) >= {(0, 0), (0, 1), (1, 1)}
-    assert figurecomposer_widgets._ratio_edges(0, 100, 0, ()) == (0.0,)
-    assert figurecomposer_widgets._ratio_edges(0, 100, 2, (2.0, 1.0)) == (
+    assert axes_widgets._ratio_edges(0, 100, 0, ()) == (0.0,)
+    assert axes_widgets._ratio_edges(0, 100, 2, (2.0, 1.0)) == (
         0.0,
         200.0 / 3.0,
         100.0,
@@ -1001,7 +994,7 @@ def test_figure_composer_generated_provenance_covers_operation_kinds(qtbot) -> N
 
 
 def test_axes_selector_size_hint_tracks_grid(qtbot):
-    selector = figurecomposer_widgets._AxesSelectorWidget()
+    selector = axes_widgets._AxesSelectorWidget()
     qtbot.addWidget(selector)
 
     selector.set_grid(1, 4)
@@ -1082,7 +1075,7 @@ def test_figure_display_window_uses_safe_resize_callbacks(qtbot, monkeypatch) ->
         calls.append((receiver, msec, callback_name, guards))
 
     monkeypatch.setattr(erlab.interactive.utils, "single_shot", record_single_shot)
-    window = figurecomposer_widgets._FigureComposerDisplayWindow(FigureSubplotsState())
+    window = figure_window_ui._FigureComposerDisplayWindow(FigureSubplotsState())
 
     window.resize_to_setup(FigureSubplotsState())
     window._suppress_resize_signal = False
@@ -1095,7 +1088,7 @@ def test_figure_display_window_uses_safe_resize_callbacks(qtbot, monkeypatch) ->
 
 
 def test_figure_display_window_skips_stale_resize_callbacks(qtbot) -> None:
-    window = figurecomposer_widgets._FigureComposerDisplayWindow(
+    window = figure_window_ui._FigureComposerDisplayWindow(
         FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0)
     )
     emitted_sizes: list[tuple[float, float]] = []
@@ -1117,7 +1110,7 @@ def test_figure_display_window_skips_stale_resize_callbacks(qtbot) -> None:
 
 
 def test_figure_display_window_close_and_canvas_size_contracts(qtbot) -> None:
-    window = figurecomposer_widgets._FigureComposerDisplayWindow(
+    window = figure_window_ui._FigureComposerDisplayWindow(
         FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0)
     )
 
@@ -1163,7 +1156,7 @@ def test_figure_display_window_close_and_canvas_size_contracts(qtbot) -> None:
     assert not window.isVisible()
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
 
-    app_quit_window = figurecomposer_widgets._FigureComposerDisplayWindow(
+    app_quit_window = figure_window_ui._FigureComposerDisplayWindow(
         FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0)
     )
     app_quit_window.show()
@@ -1178,7 +1171,7 @@ def test_figure_display_window_close_and_canvas_size_contracts(qtbot) -> None:
 
 
 def test_figure_display_window_event_filter_accepts_source_drag(qtbot) -> None:
-    window = figurecomposer_widgets._FigureComposerDisplayWindow(FigureSubplotsState())
+    window = figure_window_ui._FigureComposerDisplayWindow(FigureSubplotsState())
     qtbot.addWidget(window)
     mime = QtCore.QMimeData()
     window.set_source_drop_callbacks(can_drop=lambda data: data is mime)
@@ -1216,7 +1209,7 @@ def test_figure_display_window_show_for_setup_recalls_hidden_states(
         def availableGeometry(self) -> QtCore.QRect:
             return QtCore.QRect(0, 0, 800, 600)
 
-    class _MovedDisplayWindow(figurecomposer_widgets._FigureComposerDisplayWindow):
+    class _MovedDisplayWindow(figure_window_ui._FigureComposerDisplayWindow):
         def __init__(self) -> None:
             super().__init__(FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0))
             self._test_frame = QtCore.QRect(5000, 5000, 120, 120)
@@ -1232,7 +1225,7 @@ def test_figure_display_window_show_for_setup_recalls_hidden_states(
         def screen(self) -> _FakeScreen:
             return _FakeScreen()
 
-    minimized = figurecomposer_widgets._FigureComposerDisplayWindow(
+    minimized = figure_window_ui._FigureComposerDisplayWindow(
         FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0)
     )
     show_calls: list[str] = []
@@ -1398,9 +1391,7 @@ def test_figure_composer_canvas_resize_defers_draw(qtbot, monkeypatch) -> None:
     def record_draw_idle(canvas) -> None:
         draw_idle_calls.append(canvas)
 
-    monkeypatch.setattr(
-        figurecomposer_widgets.FigureCanvas, "draw_idle", record_draw_idle
-    )
+    monkeypatch.setattr(figure_window_ui.FigureCanvas, "draw_idle", record_draw_idle)
     tool.sigInfoChanged.connect(
         lambda: info_changes.append(tool.tool_status.setup.figsize)
     )
@@ -1652,7 +1643,9 @@ def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
     qtbot.addWidget(tool)
 
     assert tool._document.source_names() == ("known", "missing")
-    assert tool.operation_editor.source_display_names(("known", "missing"))
+    assert tuple(
+        tool.operation_editor.source_display_name(name) for name in ("known", "missing")
+    ) == ("known", "missing")
     assert tool.operation_editor.source_tooltip("known")
     tool._refresh_source_list()
     source_names = {
@@ -2427,7 +2420,7 @@ def test_figure_composer_reports_and_clears_render_errors(qtbot) -> None:
     assert "RuntimeError: boom" in item.toolTip(
         figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
     )
-    assert tool.operation_editor.source_status_label.isHidden()
+    assert _operation_source_status_label(tool).isHidden()
 
     tool._replace_operation(
         0,
@@ -2440,7 +2433,7 @@ def test_figure_composer_reports_and_clears_render_errors(qtbot) -> None:
     assert "RuntimeError: boom" not in item.toolTip(
         figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
     )
-    assert tool.operation_editor.source_status_label.isHidden()
+    assert _operation_source_status_label(tool).isHidden()
 
 
 def test_figure_composer_editor_input_errors_mark_and_clear_invalid_steps(
@@ -2474,7 +2467,7 @@ def test_figure_composer_editor_input_errors_mark_and_clear_invalid_steps(
     assert "Invalid input:" in item.toolTip(
         figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
     )
-    assert not tool.operation_editor.source_status_label.isHidden()
+    assert not _operation_source_status_label(tool).isHidden()
     with pytest.raises(ValueError, match="invalid step inputs"):
         tool.generated_code()
 
@@ -2499,7 +2492,7 @@ def test_figure_composer_editor_input_errors_mark_and_clear_invalid_steps(
     assert "Invalid input:" not in item.toolTip(
         figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
     )
-    assert tool.operation_editor.source_status_label.isHidden()
+    assert _operation_source_status_label(tool).isHidden()
 
 
 def test_figure_composer_editor_signal_allows_callback_to_delete_sender(qtbot) -> None:
@@ -3213,12 +3206,10 @@ def test_figure_composer_canvas_draw_and_print_use_style_context(
         )
 
     monkeypatch.setattr(figurecomposer_defaults, "_figure_style_context", style_context)
-    monkeypatch.setattr(figurecomposer_widgets.FigureCanvas, "draw", draw)
-    monkeypatch.setattr(
-        figurecomposer_widgets.FigureCanvas, "print_figure", print_figure
-    )
+    monkeypatch.setattr(figure_window_ui.FigureCanvas, "draw", draw)
+    monkeypatch.setattr(figure_window_ui.FigureCanvas, "print_figure", print_figure)
 
-    canvas = figurecomposer_widgets._StyledFigureCanvas(figurecomposer_widgets.Figure())
+    canvas = figure_window_ui._StyledFigureCanvas(figure_window_ui.Figure())
     canvas.draw()
     canvas.print_figure("unused.png")
 
@@ -3280,13 +3271,13 @@ def test_figure_composer_preview_suppresses_collapsed_layout_warning(
     tool = FigureComposerTool(data)
     qtbot.addWidget(tool)
     figurecomposer_rendering._render_preview(tool, show_window=False)
-    original_draw = figurecomposer_widgets.FigureCanvas.draw
+    original_draw = figure_window_ui.FigureCanvas.draw
 
     def draw_with_warning(self, *args, **kwargs):
         warnings.warn(_COLLAPSED_LAYOUT_WARNING, UserWarning, stacklevel=2)
         return original_draw(self, *args, **kwargs)
 
-    monkeypatch.setattr(figurecomposer_widgets.FigureCanvas, "draw", draw_with_warning)
+    monkeypatch.setattr(figure_window_ui.FigureCanvas, "draw", draw_with_warning)
 
     assert tool.preview_pixmap is None
     assert tool.refresh_preview_pixmap() is None
@@ -3338,7 +3329,7 @@ def test_figure_composer_operation_table_presents_targets_and_selects_rows(
         operation_list.itemDelegateForColumn(
             figurecomposer_operation_panel._OPERATION_LIST_TARGET_COLUMN
         ),
-        figurecomposer_widgets._AxesTargetItemDelegate,
+        axes_widgets._AxesTargetItemDelegate,
     )
     header = operation_list.header()
     assert (
@@ -3432,7 +3423,13 @@ def test_figure_composer_operation_table_presents_targets_and_selects_rows(
     )
     target_rect = operation_list.visualRect(target_index)
     assert not target_rect.isEmpty()
-    editor_generation = tool.operation_editor.generation
+    current_page = tool.operation_editor.stack.currentWidget()
+    assert current_page is not None
+    current_control = next(
+        widget
+        for widget in current_page.findChildren(QtWidgets.QWidget)
+        if tool.operation_editor.control_signal_allowed(widget)
+    )
     qtbot.mouseClick(
         operation_list.viewport(),
         QtCore.Qt.MouseButton.LeftButton,
@@ -3440,9 +3437,9 @@ def test_figure_composer_operation_table_presents_targets_and_selects_rows(
     )
     assert operation_list.indexOfTopLevelItem(operation_list.currentItem()) == 2
     assert expression_item.isSelected()
-    assert tool.operation_editor.generation == editor_generation
+    assert tool.operation_editor.control_signal_allowed(current_control)
     qtbot.waitUntil(
-        lambda: tool.operation_editor.generation == editor_generation + 1,
+        lambda: not tool.operation_editor.control_signal_allowed(current_control),
         timeout=1000,
     )
     assert operation_list.height() == initial_list_height
@@ -3566,12 +3563,10 @@ def test_figure_composer_operation_table_uses_text_for_single_axes(qtbot) -> Non
             ),
         ),
     )
-    assert figurecomposer_widgets._gridspec_target_preview_descriptor(
-        root, ("only-axis",)
-    ) == ("single_axes",)
-    assert figurecomposer_widgets._gridspec_target_preview_descriptor(root, ())[0] == (
-        "layout"
+    assert axes_widgets._gridspec_target_preview_descriptor(root, ("only-axis",)) == (
+        "single_axes",
     )
+    assert axes_widgets._gridspec_target_preview_descriptor(root, ())[0] == ("layout")
 
     thin_child = FigureGridSpecGridState(
         grid_id="thin-child",
@@ -3598,7 +3593,7 @@ def test_figure_composer_operation_table_uses_text_for_single_axes(qtbot) -> Non
         ncols=400,
         child_grids=(thin_child,),
     )
-    thin_descriptor = figurecomposer_widgets._gridspec_target_preview_descriptor(
+    thin_descriptor = axes_widgets._gridspec_target_preview_descriptor(
         thin_root, ("thin-axis",)
     )
     assert [entry[0] for entry in thin_descriptor[2]].count("grid") == 1
@@ -3708,15 +3703,15 @@ def test_figure_composer_operation_target_preview_uses_axes_selector_palette(
         item, figurecomposer_operation_panel._OPERATION_LIST_TARGET_COLUMN
     )
     observed_sources: list[QtWidgets.QWidget] = []
-    selector_colors = figurecomposer_widgets._selector_colors
+    selector_colors = axes_widgets._selector_colors
 
     def record_color_source(
         widget: QtWidgets.QWidget,
-    ) -> figurecomposer_widgets._SelectorColors:
+    ) -> axes_widgets._SelectorColors:
         observed_sources.append(widget)
         return selector_colors(widget)
 
-    monkeypatch.setattr(figurecomposer_widgets, "_selector_colors", record_color_source)
+    monkeypatch.setattr(axes_widgets, "_selector_colors", record_color_source)
     option = QtWidgets.QStyleOptionViewItem()
     option.initFrom(tool.operation_panel.operation_list)
     option.widget = tool.operation_panel.operation_list
@@ -3724,9 +3719,7 @@ def test_figure_composer_operation_target_preview_uses_axes_selector_palette(
     pixmap = QtGui.QPixmap(option.rect.size())
     pixmap.fill(QtCore.Qt.GlobalColor.transparent)
     painter = QtGui.QPainter(pixmap)
-    delegate = tool.operation_panel.findChild(
-        figurecomposer_widgets._AxesTargetItemDelegate
-    )
+    delegate = tool.operation_panel.findChild(axes_widgets._AxesTargetItemDelegate)
     assert delegate is not None
     try:
         delegate.paint(painter, option, index)
@@ -3746,15 +3739,13 @@ def test_figure_composer_operation_target_delegate_handles_empty_previews(
     qtbot.addWidget(color_source)
     item = QtWidgets.QTreeWidgetItem(view)
     descriptor_role = int(QtCore.Qt.ItemDataRole.UserRole) + 77
-    delegate = figurecomposer_widgets._AxesTargetItemDelegate(
-        descriptor_role, color_source, view
-    )
+    delegate = axes_widgets._AxesTargetItemDelegate(descriptor_role, color_source, view)
     index = view.indexFromItem(item, 0)
     option = QtWidgets.QStyleOptionViewItem()
     option.initFrom(view)
     option.widget = view
     draw_calls: list[QtCore.QRectF] = []
-    draw_selector_rect = figurecomposer_widgets._draw_selector_rect
+    draw_selector_rect = axes_widgets._draw_selector_rect
 
     def record_selector_rect(
         painter: QtGui.QPainter,
@@ -3764,9 +3755,7 @@ def test_figure_composer_operation_target_delegate_handles_empty_previews(
         draw_calls.append(QtCore.QRectF(rect))
         draw_selector_rect(painter, rect, **kwargs)
 
-    monkeypatch.setattr(
-        figurecomposer_widgets, "_draw_selector_rect", record_selector_rect
-    )
+    monkeypatch.setattr(axes_widgets, "_draw_selector_rect", record_selector_rect)
 
     def paint(descriptor: object, rect: QtCore.QRect) -> None:
         item.setData(0, descriptor_role, descriptor)
@@ -3803,15 +3792,15 @@ def test_figure_composer_operation_target_delegate_handles_empty_previews(
     assert len(draw_calls) == 1
 
     observed_sources: list[QtWidgets.QWidget] = []
-    selector_colors = figurecomposer_widgets._selector_colors
+    selector_colors = axes_widgets._selector_colors
 
     def record_color_source(
         widget: QtWidgets.QWidget,
-    ) -> figurecomposer_widgets._SelectorColors:
+    ) -> axes_widgets._SelectorColors:
         observed_sources.append(widget)
         return selector_colors(widget)
 
-    monkeypatch.setattr(figurecomposer_widgets, "_selector_colors", record_color_source)
+    monkeypatch.setattr(axes_widgets, "_selector_colors", record_color_source)
     monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", lambda *_args: False)
     draw_calls.clear()
     paint(descriptor, QtCore.QRect(0, 0, 80, 24))
@@ -6188,7 +6177,7 @@ def test_figure_composer_gridspec_widget_hides_handles_after_outside_click(
 
 
 def test_figure_composer_gridspec_occupied_cells_cover_spans(qtbot) -> None:
-    widget = figurecomposer_widgets._GridSpecViewWidget(mode="edit")
+    widget = axes_widgets._GridSpecViewWidget(mode="edit")
     qtbot.addWidget(widget)
     axes = (
         FigureGridSpecAxesState(
@@ -6532,7 +6521,7 @@ def test_figure_composer_toolbar_uses_composer_actions(qtbot, monkeypatch) -> No
     toolbar._actions["edit_parameters"].trigger()
 
     assert calls == ["composer", "export", "subplots", "axes"]
-    assert figurecomposer_widgets._noop_toolbar_callback() is None
+    assert figure_window_ui._noop_toolbar_callback() is None
     toolbar.changeEvent(QtCore.QEvent(QtCore.QEvent.Type.PaletteChange))
     for action_id in ("show_composer", "pan", "zoom", "copy_figure_to_clipboard"):
         assert not toolbar._actions[action_id].icon().isNull()
@@ -6579,29 +6568,24 @@ def test_figure_composer_toolbar_navigation_helper_edges(qtbot, monkeypatch) -> 
 
     limited_toolitems = [
         item
-        for item in figurecomposer_widgets._FigureComposerNavigationToolbar.toolitems
+        for item in figure_window_ui._FigureComposerNavigationToolbar.toolitems
         if item[3] not in {"back", "forward"}
     ]
     with monkeypatch.context() as context:
         context.setattr(
-            figurecomposer_widgets._FigureComposerNavigationToolbar,
+            figure_window_ui._FigureComposerNavigationToolbar,
             "toolitems",
             limited_toolitems,
         )
-        limited_window = figurecomposer_widgets._FigureComposerDisplayWindow(
+        limited_window = figure_window_ui._FigureComposerDisplayWindow(
             FigureSubplotsState()
         )
         qtbot.addWidget(limited_window)
     assert "back" not in limited_window.toolbar._actions
     assert "forward" not in limited_window.toolbar._actions
 
-    assert (
-        figurecomposer_widgets._noop_navigation_callback({object(): (True, False)})
-        is None
-    )
-    assert (
-        figurecomposer_widgets._noop_colorbar_callback({object(): (0.0, 1.0)}) is None
-    )
+    assert figure_window_ui._noop_navigation_callback({object(): (True, False)}) is None
+    assert figure_window_ui._noop_colorbar_callback({object(): (0.0, 1.0)}) is None
 
     class Axis:
         def __init__(
@@ -6637,11 +6621,11 @@ def test_figure_composer_toolbar_navigation_helper_edges(qtbot, monkeypatch) -> 
             raise ValueError
 
     axis = Axis()
-    assert figurecomposer_widgets._axis_limit_pair(axis, "get_xlim") == (0.0, 1.0)
-    assert figurecomposer_widgets._axis_limit_pair(object(), "get_xlim") is None
-    assert figurecomposer_widgets._axis_limit_pair(RaisingAxis(), "get_xlim") is None
-    assert figurecomposer_widgets._axis_view(axis) == ((0.0, 1.0), (0.0, 1.0))
-    assert figurecomposer_widgets._axis_view(object()) is None
+    assert figure_window_ui._axis_limit_pair(axis, "get_xlim") == (0.0, 1.0)
+    assert figure_window_ui._axis_limit_pair(object(), "get_xlim") is None
+    assert figure_window_ui._axis_limit_pair(RaisingAxis(), "get_xlim") is None
+    assert figure_window_ui._axis_view(axis) == ((0.0, 1.0), (0.0, 1.0))
+    assert figure_window_ui._axis_view(object()) is None
 
     mappable = Mappable((0.0, 1.0))
     colorbar_axis = Axis()
@@ -6655,15 +6639,15 @@ def test_figure_composer_toolbar_navigation_helper_edges(qtbot, monkeypatch) -> 
         {"mappable": Mappable((None, 1.0))},
     )()
 
-    assert figurecomposer_widgets._is_colorbar_axis(colorbar_axis)
-    assert not figurecomposer_widgets._is_colorbar_axis(axis)
-    assert figurecomposer_widgets._colorbar_mappable(colorbar_axis) is mappable
-    assert figurecomposer_widgets._colorbar_mappable(colorbar_without_mappable) is None
-    assert figurecomposer_widgets._mappable_clim(mappable) == (0.0, 1.0)
-    assert figurecomposer_widgets._mappable_clim(object()) is None
-    assert figurecomposer_widgets._mappable_clim(RaisingMappable()) is None
-    assert figurecomposer_widgets._mappable_clim(Mappable((None, 1.0))) is None
-    assert figurecomposer_widgets._mappable_clim(Mappable(("bad", 1.0))) is None
+    assert figure_window_ui._is_colorbar_axis(colorbar_axis)
+    assert not figure_window_ui._is_colorbar_axis(axis)
+    assert figure_window_ui._colorbar_mappable(colorbar_axis) is mappable
+    assert figure_window_ui._colorbar_mappable(colorbar_without_mappable) is None
+    assert figure_window_ui._mappable_clim(mappable) == (0.0, 1.0)
+    assert figure_window_ui._mappable_clim(object()) is None
+    assert figure_window_ui._mappable_clim(RaisingMappable()) is None
+    assert figure_window_ui._mappable_clim(Mappable((None, 1.0))) is None
+    assert figure_window_ui._mappable_clim(Mappable(("bad", 1.0))) is None
 
     navigation_views = toolbar._capture_navigation_views(
         (axis, colorbar_axis, object(), RaisingAxis())
@@ -6725,21 +6709,19 @@ def test_figure_composer_toolbar_navigation_helper_edges(qtbot, monkeypatch) -> 
     def fake_press_zoom(self, _event):
         self._zoom_info = ToolbarInfo((zoom_axis, colorbar_axis))
 
+    monkeypatch.setattr(figure_window_ui.NavigationToolbar, "press_pan", fake_press_pan)
     monkeypatch.setattr(
-        figurecomposer_widgets.NavigationToolbar, "press_pan", fake_press_pan
-    )
-    monkeypatch.setattr(
-        figurecomposer_widgets.NavigationToolbar,
+        figure_window_ui.NavigationToolbar,
         "release_pan",
         lambda *_args: None,
     )
     monkeypatch.setattr(
-        figurecomposer_widgets.NavigationToolbar,
+        figure_window_ui.NavigationToolbar,
         "press_zoom",
         fake_press_zoom,
     )
     monkeypatch.setattr(
-        figurecomposer_widgets.NavigationToolbar,
+        figure_window_ui.NavigationToolbar,
         "release_zoom",
         lambda *_args: None,
     )
@@ -7354,7 +7336,7 @@ def test_figure_composer_toolbar_selector_helpers_default_to_available_axes(
     )
     qtbot.addWidget(tool)
     selector = figurecomposer_toolbar_dialogs._selector_widget(tool, tool)
-    assert isinstance(selector, figurecomposer_widgets._AxesSelectorWidget)
+    assert isinstance(selector, axes_widgets._AxesSelectorWidget)
     assert selector.selected_axes() == ((0, 0),)
     selector.set_selected_axes((), emit=False)
     assert figurecomposer_toolbar_dialogs._selector_selection(tool, selector).axes == (
@@ -7402,7 +7384,7 @@ def test_figure_composer_toolbar_selector_helpers_default_to_available_axes(
         grid_tool,
         grid_tool,
     )
-    assert isinstance(grid_selector, figurecomposer_widgets._GridSpecViewWidget)
+    assert isinstance(grid_selector, axes_widgets._GridSpecViewWidget)
     assert grid_selector.selected_axes_ids() == ("main",)
     grid_selector.set_selected_axes_ids(())
     assert figurecomposer_toolbar_dialogs._selector_selection(
@@ -7857,7 +7839,7 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     assert tick_ops[0].axes.axes == ((0, 0),)
     assert tick_ops[0].method_kwargs == {"axis": "y", "length": 5.0}
 
-    selector = dialog.findChild(figurecomposer_widgets._AxesSelectorWidget)
+    selector = dialog.findChild(axes_widgets._AxesSelectorWidget)
     assert selector is not None
     selector.set_selected_axes(((0, 1),), emit=True)
 
@@ -8181,7 +8163,7 @@ def test_figure_composer_toolbar_axes_dialog_updates_image_style(qtbot) -> None:
     tool._show_axes_customize_dialog()
     dialog = tool._axes_customize_dialog
     assert isinstance(dialog, QtWidgets.QDialog)
-    selector = dialog.findChild(figurecomposer_widgets._AxesSelectorWidget)
+    selector = dialog.findChild(axes_widgets._AxesSelectorWidget)
     assert selector is not None
     selector.set_selected_axes(((0, 0), (0, 1)), emit=True)
     target_combo = dialog.findChild(
@@ -8360,7 +8342,7 @@ def test_figure_composer_toolbar_axes_dialog_keeps_cleared_image_styles_on_close
     tool._show_axes_customize_dialog()
     dialog = tool._axes_customize_dialog
     assert isinstance(dialog, QtWidgets.QDialog)
-    selector = dialog.findChild(figurecomposer_widgets._AxesSelectorWidget)
+    selector = dialog.findChild(axes_widgets._AxesSelectorWidget)
     assert selector is not None
     selector.set_selected_axes(((0, 0), (0, 1)), emit=True)
 
@@ -8427,7 +8409,7 @@ def test_figure_composer_toolbar_axes_dialog_uses_gridspec_selector(qtbot) -> No
     tool._show_axes_customize_dialog()
     dialog = tool._axes_customize_dialog
     assert isinstance(dialog, QtWidgets.QDialog)
-    selector = dialog.findChild(figurecomposer_widgets._GridSpecViewWidget)
+    selector = dialog.findChild(axes_widgets._GridSpecViewWidget)
     title_edit = dialog.findChild(
         QtWidgets.QPlainTextEdit, "figureComposerToolbarAxesTitleEdit"
     )
@@ -8685,11 +8667,9 @@ def test_figure_composer_retired_editor_control_signal_is_ignored(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
     )
     assert old_values_edit is not None
-    generation = tool.operation_editor.generation
-
     tool.operation_editor.request_update_rebuild(slice_values=(0.0, 1.0))
     qtbot.waitUntil(
-        lambda: tool.operation_editor.generation == generation + 1,
+        lambda: not tool.operation_editor.control_signal_allowed(old_values_edit),
         timeout=1000,
     )
     assert old_page.isHidden()

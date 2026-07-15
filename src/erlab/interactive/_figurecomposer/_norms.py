@@ -7,9 +7,9 @@ import typing
 import matplotlib.colors as mcolors
 
 import erlab
-import erlab.interactive.colors
-import erlab.interactive.utils
 import erlab.plotting as eplt
+import erlab.utils._code
+from erlab.interactive._colormap import matplotlib_colormap_name
 from erlab.interactive._figurecomposer._defaults import _current_options
 from erlab.interactive._figurecomposer._model._state import (
     _POWER_NORM_NAME,
@@ -135,20 +135,18 @@ def _norm_updates_from_kwargs(
 def _cmap_base_and_reverse(cmap: str | None) -> tuple[str, bool]:
     if cmap is None:
         return (
-            erlab.interactive.colors.matplotlib_colormap_name(
-                _current_options().colors.cmap.name
-            ),
+            matplotlib_colormap_name(_current_options().colors.cmap.name),
             False,
         )
     if cmap.endswith("_r"):
-        return erlab.interactive.colors.matplotlib_colormap_name(cmap[:-2]), True
-    return erlab.interactive.colors.matplotlib_colormap_name(cmap), False
+        return matplotlib_colormap_name(cmap[:-2]), True
+    return matplotlib_colormap_name(cmap), False
 
 
 def _cmap_with_reverse(base: str, reverse: bool) -> str | None:
     if not base:
         return None
-    base = erlab.interactive.colors.matplotlib_colormap_name(base.removesuffix("_r"))
+    base = matplotlib_colormap_name(base.removesuffix("_r"))
     if reverse:
         return f"{base}_r"
     return base
@@ -218,7 +216,7 @@ def _norm_code(operation: FigureOperationState) -> str:
     if effective_name not in _NORM_KWARG_FIELDS:
         args = ""
         if operation.norm_gamma is not None:
-            args = erlab.interactive.utils._parse_single_arg(operation.norm_gamma)
+            args = erlab.utils._code._parse_single_arg(operation.norm_gamma)
         kwargs = _code_kwargs(operation.norm_kwargs)
         if args and kwargs:
             args += f", {kwargs}"

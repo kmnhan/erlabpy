@@ -15,6 +15,7 @@ if typing.TYPE_CHECKING:
 
     from matplotlib.figure import Figure
 
+    from erlab.interactive._figurecomposer._tool import FigureComposerTool
     from erlab.interactive._options.schema import AppOptions
 
 _MM_PER_INCH = 25.4
@@ -49,6 +50,16 @@ def figure_options_context(options_model: AppOptions | None) -> Iterator[None]:
         yield
     finally:
         _OPTIONS_MODEL_CONTEXT.reset(token)
+
+
+def _tool_figure_options_context(
+    tool: FigureComposerTool,
+) -> contextlib.AbstractContextManager[None]:
+    """Return the options context supplied by a live composer tool, if any."""
+    options_context = getattr(tool, "_figure_options_context", None)
+    if callable(options_context):
+        return options_context()
+    return contextlib.nullcontext()
 
 
 def _configured_stylesheets() -> tuple[str, ...]:

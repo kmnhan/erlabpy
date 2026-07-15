@@ -47,7 +47,7 @@ def test_figure_composer_facade_loads_state_without_loading_tool() -> None:
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
-def test_figure_composer_document_metadata_does_not_load_qt_widgets() -> None:
+def test_figure_composer_semantics_do_not_load_qt_widgets() -> None:
     code = textwrap.dedent(
         """
         import sys
@@ -59,6 +59,15 @@ def test_figure_composer_document_metadata_does_not_load_qt_widgets() -> None:
             FigureRecipeState,
             FigureSourceState,
             FigureSubplotsState,
+        )
+        from erlab.interactive._figurecomposer._operations._method._catalog import (
+            AXES_METHODS,
+        )
+        from erlab.interactive._figurecomposer._operations._method._state import (
+            _default_method_args,
+        )
+        from erlab.interactive._figurecomposer._operations._plot_slices._model import (
+            _slice_values_mode_text,
         )
 
         assert "erlab.interactive._stylesheets" not in sys.modules
@@ -83,8 +92,23 @@ def test_figure_composer_document_metadata_does_not_load_qt_widgets() -> None:
 
         assert document.operation_source_names(plot_operation) == ("data",)
         assert document.operation_source_names(custom_operation) == ("data",)
+        assert isinstance(_default_method_args(AXES_METHODS["plot"], None), tuple)
+        assert _slice_values_mode_text("all")
+        assert "qtpy.QtWidgets" not in sys.modules
+        assert "pyqtgraph" not in sys.modules
         assert "erlab.interactive._stylesheets" not in sys.modules
-        assert "erlab.interactive._figurecomposer._ui._widgets" not in sys.modules
+        assert (
+            "erlab.interactive._figurecomposer._ui._axes_widgets"
+            not in sys.modules
+        )
+        assert (
+            "erlab.interactive._figurecomposer._ui._color_widgets"
+            not in sys.modules
+        )
+        assert (
+            "erlab.interactive._figurecomposer._ui._figure_window"
+            not in sys.modules
+        )
         assert "erlab.interactive._figurecomposer._tool" not in sys.modules
         assert (
             "erlab.interactive._figurecomposer._operations._registry"
@@ -106,7 +130,7 @@ def test_manager_import_does_not_load_figure_dialog_widgets() -> None:
         "import erlab.interactive.imagetool.manager._mainwindow\n"
         "assert 'erlab.interactive.imagetool.manager._figure_dialogs' "
         "not in sys.modules\n"
-        "assert 'erlab.interactive._figurecomposer._ui._widgets' "
+        "assert 'erlab.interactive._figurecomposer._ui._axes_widgets' "
         "not in sys.modules\n"
         "assert 'matplotlib.backends.backend_qtagg' not in sys.modules\n"
     )

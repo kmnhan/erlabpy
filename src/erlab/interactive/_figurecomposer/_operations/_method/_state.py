@@ -5,9 +5,6 @@ from __future__ import annotations
 import contextlib
 import typing
 
-from matplotlib.figure import Figure
-
-import erlab.interactive.utils
 from erlab.interactive._figurecomposer._model._operation_metadata import (
     is_axes_errorbar_data_method,
     is_axes_plot_data_method,
@@ -40,8 +37,6 @@ if typing.TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from matplotlib.axes import Axes
-
-    from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
 def _limit_method_default_args(
@@ -93,25 +88,6 @@ def _is_axes_plot_method(spec: MethodSpec) -> bool:
 
 def _is_axes_errorbar_method(spec: MethodSpec) -> bool:
     return is_axes_errorbar_data_method(spec.family, spec.name)
-
-
-def _tool_subplots_adjust_defaults(
-    tool: FigureComposerTool,
-) -> dict[str, float]:
-    figure_window = tool._figure_window
-    if figure_window is not None and erlab.interactive.utils.qt_is_valid(figure_window):
-        subplotpars = figure_window.figure.subplotpars
-    else:
-        figure = Figure(
-            figsize=tool.tool_status.setup.figsize,
-            dpi=tool.tool_status.setup.dpi,
-            layout=typing.cast("typing.Any", tool.tool_status.setup.layout),
-        )
-        subplotpars = figure.subplotpars
-    return {
-        key: float(getattr(subplotpars, key))
-        for key in ("left", "bottom", "right", "top", "wspace", "hspace")
-    }
 
 
 def _subplots_adjust_values(
