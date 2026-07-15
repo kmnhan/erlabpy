@@ -1298,18 +1298,20 @@ def test_kspace_conversion_dialog_code_and_result(qtbot, anglemap, kind) -> None
     )
 
     code = dialog.make_code()
-    assert ".copy(deep=False)" not in code
+    assert code.count(".copy(deep=False)") == 1
     assert "psutil" not in code
     assert "KspaceConversionMemory" not in code
     if not data.kspace._has_hv:
         assert ".kspace.inner_potential =" not in code
 
-    namespace = {"data": data.copy(deep=True)}
+    source = data.copy(deep=True)
+    namespace = {"data": source}
     exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
     xr.testing.assert_allclose(
         dialog.process_data(data.copy(deep=True)),
         namespace["data_kconv"],
     )
+    xr.testing.assert_identical(namespace["data"], data)
 
 
 def test_kspace_conversion_dialog_unsafe_accept_shows_error(
@@ -1653,14 +1655,16 @@ def test_kspace_conversion_dialog_restores_unordered_setup_group(
         dialog.focus_operation_group_control(focus)
 
     monkeypatch.setattr(dialog, "_copy_data_name", lambda: "not a valid name")
-    namespace = {"data": data.copy(deep=True)}
+    source = data.copy(deep=True)
+    namespace = {"data": source}
     code = dialog.make_code()
-    assert code.splitlines()[-1].startswith("data_kconv = data.kspace.convert(")
+    assert code.splitlines()[-1].startswith("data_kconv = data_kconv.kspace.convert(")
     exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
     xr.testing.assert_allclose(
         namespace["data_kconv"],
         dialog.process_data(data.copy(deep=True)),
     )
+    xr.testing.assert_identical(namespace["data"], data)
 
     spec = full_data(*operations)
     display_code = spec.display_code(parent_data=data)
@@ -1724,11 +1728,15 @@ def test_ktool_copy_code_uses_set_normal(
     input_name = str(win._argnames["data"])
     if not erlab.utils.misc._is_valid_identifier(input_name):
         input_name = "data"
-    assert ".copy(deep=False)" not in code
-    assert code.splitlines()[0].startswith(f"{input_name}.kspace.set_normal(")
-    assert f"{input_name}_kconv = {input_name}.kspace.convert(" in code
+    assert code.count(".copy(deep=False)") == 1
+    assert code.splitlines()[0] == (
+        f"{input_name}_kconv = {input_name}.copy(deep=False)"
+    )
+    assert code.splitlines()[1].startswith(f"{input_name}_kconv.kspace.set_normal(")
+    assert f"{input_name}_kconv = {input_name}_kconv.kspace.convert(" in code
 
-    namespace = {input_name: data.copy(deep=True)}
+    source = data.copy(deep=True)
+    namespace = {input_name: source}
     exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
 
     expected_setup = win._assign_params(data.copy(deep=True))
@@ -1738,11 +1746,7 @@ def test_ktool_copy_code_uses_set_normal(
     )
 
     xr.testing.assert_allclose(expected, namespace[f"{input_name}_kconv"])
-    for key, value in expected_setup.kspace.offsets.items():
-        assert namespace[input_name].kspace.offsets[key] == pytest.approx(
-            value,
-            abs=1e-5,
-        )
+    xr.testing.assert_identical(namespace[input_name], data)
 
 
 @pytest.mark.parametrize(
@@ -1783,16 +1787,14 @@ def test_ktool_configuration_combo_rebuilds_controls_and_code(
 
     code = win.copy_code()
     assert f".kspace.as_configuration({int(target_configuration)})" in code
-    assert code.count(".copy(deep=False)") == 0
+    assert code.count(".copy(deep=False)") == 1
     assert ".kspace.set_normal(" in code
     assert ".kspace.convert(" in code
-    assert code.splitlines()[0] == (
-        f"scan_kconv = scan.kspace.as_configuration({int(target_configuration)})"
-    )
+    assert code.splitlines()[0] == "scan_kconv = scan.copy(deep=False)"
     namespace = {"scan": data.copy(deep=True)}
     exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
     xr.testing.assert_allclose(namespace["scan_kconv"], win._converted_output())
-    assert namespace["scan"].kspace.configuration == AxesConfiguration.Type1DA
+    xr.testing.assert_identical(namespace["scan"], data)
 
 
 def test_ktool_configuration_state_edges(qtbot, anglemap) -> None:

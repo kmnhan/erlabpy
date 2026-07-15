@@ -632,8 +632,6 @@ def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None)
             if not isinstance(target_expr, ast.Name):
                 continue
             target = target_expr.id
-            if inline_targets is not None and target not in inline_targets:
-                continue
             later_loads = [
                 later_idx
                 for later_idx, later in enumerate(body[idx + 1 :], start=idx + 1)
@@ -644,7 +642,22 @@ def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None)
 
             next_idx = later_loads[0]
             next_stmt = body[next_idx]
-            if not isinstance(next_stmt, ast.Assign):
+            if (
+                next_idx != idx + 1
+                or not isinstance(next_stmt, ast.Assign)
+                or not _expression_starts_with_name(next_stmt.value, target)
+            ):
+                continue
+            reassigns_target_immediately = (
+                len(next_stmt.targets) == 1
+                and isinstance(next_stmt.targets[0], ast.Name)
+                and next_stmt.targets[0].id == target
+            )
+            if (
+                inline_targets is not None
+                and target not in inline_targets
+                and not reassigns_target_immediately
+            ):
                 continue
             replacement_load_names = {
                 node.id
@@ -686,6 +699,40 @@ def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None)
     if not changed:
         return code
     return ast.unparse(ast.fix_missing_locations(module))
+
+
+def _expression_starts_with_name(expression: ast.expr, name: str) -> bool:
+    """Return whether evaluating an expression starts by loading ``name``.
+
+    Generated-code cleanup may inline an adjacent assignment only at this position.
+    That preserves evaluation order even when either expression has side effects.
+    """
+    while True:
+        if isinstance(expression, ast.Name):
+            return expression.id == name
+        if isinstance(expression, ast.Attribute | ast.Subscript):
+            expression = expression.value
+            continue
+        if isinstance(expression, ast.Call):
+            expression = expression.func
+            continue
+        if isinstance(expression, ast.BinOp):
+            expression = expression.left
+            continue
+        if isinstance(expression, ast.BoolOp):
+            expression = expression.values[0]
+            continue
+        if isinstance(expression, ast.Compare):
+            expression = expression.left
+            continue
+        if isinstance(expression, ast.UnaryOp | ast.NamedExpr):
+            expression = (
+                expression.operand
+                if isinstance(expression, ast.UnaryOp)
+                else expression.value
+            )
+            continue
+        return False
 
 
 def _code_uses_name(code: str, name: str) -> bool:

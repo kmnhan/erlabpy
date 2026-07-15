@@ -854,8 +854,8 @@ class DataTransformDialog(_DataManipulationDialog):
             if not erlab.utils.misc._is_valid_identifier(input_name):
                 input_name = "data"
             output_name = f"{input_name}{self.copy_output_suffix}"
-            current_name = input_name
-            lines: list[str] = []
+            current_name = output_name
+            lines = [f"{output_name} = {input_name}.copy(deep=False)"]
             for index, operation in enumerate(operations):
                 if operation.statement_mutates_input:
                     lines.append(

@@ -2809,7 +2809,9 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             prefix = _default_seed_code_for_operations(self.operations)
         if prefix is None and not step_codes:
             return None
-        return "\n".join(part for part in (prefix, *step_codes) if part)
+        return _simplify_display_code(
+            "\n".join(part for part in (prefix, *step_codes) if part)
+        )
 
     def display_rows(
         self,
@@ -2992,11 +2994,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if self.kind == "script" and (
             graph_code := self._script_graph_code(display=True)
         ):
-            inline_targets = {"derived"} if self.active_name != "derived" else None
-            return _simplify_display_code(
-                graph_code,
-                inline_targets=inline_targets,
-            )
+            return graph_code
         if self.kind in {"script", "file"}:
             prefix = self.seed_code
 

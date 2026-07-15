@@ -38,7 +38,7 @@ from erlab.interactive.imagetool._provenance._graph import (
     _file_seed_code_parts,
     _group_framework_imports,
     _import_binding_targets,
-    _inline_single_use_replay_expressions,
+    _inline_single_use_replay_names,
     _is_future_import,
     _leading_top_level_imports,
     _operation_replay_code,
@@ -852,6 +852,191 @@ def test_replay_graph_emits_shared_file_and_operation_prefix(
     xr.testing.assert_identical(namespace["derived"], expected)
 
 
+@pytest.mark.parametrize(
+    "input_names",
+    [("source_a", "source_b"), ("data_0", "data_1")],
+)
+def test_replay_graph_emits_one_readable_binding_for_shared_inputs(
+    tmp_path: pathlib.Path,
+    input_names: tuple[str, str],
+) -> None:
+    path = tmp_path / "shared.nc"
+    source = xr.DataArray(np.arange(4.0), dims="x")
+    source.to_netcdf(path)
+    source_spec = _file_spec(path)
+    first_name, second_name = input_names
+    spec = script(
+        ScriptCodeOperation(
+            label="Add selected values",
+            code=(f"result = {first_name}.isel(x=0) + {second_name}.isel(x=1)"),
+        ),
+        start_label="Run script",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(
+                name=first_name,
+                label="First",
+                provenance_spec=source_spec,
+            ),
+            ScriptInput(
+                name=second_name,
+                label="Second",
+                provenance_spec=source_spec,
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.display_code())
+
+    assert code.count("xr.load_dataarray") == 1
+    assert code.count(".copy(deep=True)") == 2
+    assert "_itool_replay_" not in code
+    assert not any(
+        isinstance(statement, ast.Assign) and isinstance(statement.value, ast.Name)
+        for statement in ast.parse(code).body
+    )
+    namespace = _exec_generated_code(code)
+    xr.testing.assert_identical(
+        namespace["result"], source.isel(x=0) + source.isel(x=1)
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation_code",
+    [
+        "source_a = source_a + 10.0",
+        "source_a.values[:] += 10.0",
+        "alias = source_a\nalias.values[:] += 10.0",
+        "source_a.copy(deep=False).values[:] += 10.0",
+        ("alias = source_a if True else source_b\nalias.values[:] += 10.0"),
+    ],
+)
+def test_replay_graph_preserves_shared_script_input_ownership(
+    tmp_path: pathlib.Path,
+    mutation_code: str,
+) -> None:
+    path = tmp_path / "shared.nc"
+    source = xr.DataArray(np.arange(4.0), dims="x")
+    source.to_netcdf(path)
+    source_spec = _file_spec(path)
+    spec = script(
+        ScriptCodeOperation(
+            label="Change one input",
+            code=f"{mutation_code}\nresult = source_a + source_b",
+        ),
+        start_label="Run script",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(
+                name="source_a",
+                label="First",
+                provenance_spec=source_spec,
+            ),
+            ScriptInput(
+                name="source_b",
+                label="Second",
+                provenance_spec=source_spec,
+            ),
+        ),
+    )
+
+    expected = replay_script_provenance(spec, {}, trusted_user_code=True)
+    code = typing.cast("str", spec.display_code())
+
+    assert code.count("xr.load_dataarray") == 1
+    assert code.count(".copy(deep=True)") == 2
+    assert "_itool_replay_" not in code
+    namespace = _exec_generated_code(code)
+    xr.testing.assert_identical(namespace["result"], expected)
+    xr.testing.assert_identical(expected, source * 2.0 + 10.0)
+
+
+def test_replay_graph_isolates_mutation_across_shared_source_views(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "shared.nc"
+    source = xr.DataArray(np.arange(4.0), dims="x")
+    source.to_netcdf(path)
+    source_spec = _file_spec(path)
+    first_view = compose_full_provenance(
+        source_spec,
+        full_data(IselOperation(kwargs={"x": slice(None)})),
+    )
+    second_view = compose_full_provenance(
+        source_spec,
+        full_data(IselOperation(kwargs={"x": slice(0, None)})),
+    )
+    assert first_view is not None
+    assert second_view is not None
+    spec = script(
+        ScriptCodeOperation(
+            label="Change one view",
+            code="source_a.values[:] += 10.0\nresult = source_a + source_b",
+        ),
+        start_label="Run script",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(
+                name="source_a",
+                label="First view",
+                provenance_spec=first_view,
+            ),
+            ScriptInput(
+                name="source_b",
+                label="Second view",
+                provenance_spec=second_view,
+            ),
+        ),
+    )
+
+    expected = replay_script_provenance(spec, {}, trusted_user_code=True)
+    code = typing.cast("str", spec.display_code())
+
+    assert code.count("xr.load_dataarray") == 1
+    assert code.count(".copy(deep=True)") == 2
+    namespace = _exec_generated_code(code)
+    xr.testing.assert_identical(namespace["result"], expected)
+    xr.testing.assert_identical(expected, source * 2.0 + 10.0)
+
+
+def test_replay_graph_preserves_shared_script_input_identity(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "shared.nc"
+    source = xr.DataArray(np.arange(4.0), dims="x")
+    source.to_netcdf(path)
+    source_spec = _file_spec(path)
+    spec = script(
+        ScriptCodeOperation(
+            label="Observe input identity",
+            code=("result = source_a + (100.0 if source_a is source_b else 0.0)"),
+        ),
+        start_label="Run script",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(
+                name="source_a",
+                label="First",
+                provenance_spec=source_spec,
+            ),
+            ScriptInput(
+                name="source_b",
+                label="Second",
+                provenance_spec=source_spec,
+            ),
+        ),
+    )
+
+    expected = replay_script_provenance(spec, {}, trusted_user_code=True)
+    code = typing.cast("str", spec.display_code())
+
+    assert code.count("xr.load_dataarray") == 1
+    assert code.count(".copy(deep=True)") == 2
+    namespace = _exec_generated_code(code)
+    xr.testing.assert_identical(namespace["result"], expected)
+    xr.testing.assert_identical(expected, source)
+
+
 def test_replay_graph_replays_script_with_preserved_file_stage(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1432,7 +1617,7 @@ def test_replay_graph_shares_structured_console_alias_prefixes(
 
     assert code.count("xr.load_dataarray") == 1
     assert code.count(".qsel.mean") == 1
-    assert ".copy(" not in code
+    assert code.count(".copy(deep=True)") == 2
     assert (
         sum(
             node.kind == "operation" and node.payload["operation"].op == "average"
@@ -1554,55 +1739,31 @@ def test_replay_graph_display_normalizes_nested_derived_console_code(
     assert "restore_nonuniform_dims" not in code
     assert len(re.findall(r"^rc =", code, flags=re.MULTILINE)) == 1
     assert len(re.findall(r"^lc =", code, flags=re.MULTILINE)) == 1
-    assert "data_1 =" not in code
-    assert "data_2 =" not in code
+    assert len(re.findall(r"^data_1 =", code, flags=re.MULTILINE)) == 1
+    assert len(re.findall(r"^data_2 =", code, flags=re.MULTILINE)) == 1
     assert "derived" not in code
-    assert "ncd = (rc - lc) / (rc + lc)" in code
+    assert "ncd = data_1 / data_2" in code
+    assigned_names = [
+        statement.targets[0].id
+        for statement in ast.parse(code).body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+    ]
+    assert len(assigned_names) == len(set(assigned_names))
     _assert_dense_replay_temps(code)
     xr.testing.assert_identical(namespace["ncd"], expected)
 
 
 def test_replay_graph_cleanup_helpers_cover_edge_cases() -> None:
-    assert _inline_single_use_replay_expressions("bad =") == "bad ="
     assert _compact_replay_temp_names("bad =") == "bad ="
     assert _code_has_scoped_definition("bad =")
-
-    assert (
-        _inline_single_use_replay_expressions(
-            "_itool_replay_1 = source.attr\nresult = _itool_replay_1 + 1"
-        )
-        == "result = source.attr + 1"
+    effectful_attributes = (
+        "_itool_replay_0 = source.first\n"
+        "other = source.second\n"
+        "result = _itool_replay_0 + other"
     )
-    assert (
-        _inline_single_use_replay_expressions("_itool_replay_1 = source\nresult = 0")
-        == "_itool_replay_1 = source\nresult = 0"
-    )
-    assert (
-        _inline_single_use_replay_expressions(
-            "_itool_replay_1 = source\nresult = _itool_replay_1 + _itool_replay_1"
-        )
-        == "_itool_replay_1 = source\nresult = _itool_replay_1 + _itool_replay_1"
-    )
-    assert (
-        _inline_single_use_replay_expressions(
-            "_itool_replay_1 = source\n"
-            "_itool_replay_1 = other\n"
-            "result = _itool_replay_1"
-        )
-        == "_itool_replay_1 = source\nresult = other"
-    )
-    assert (
-        _inline_single_use_replay_expressions(
-            "_itool_replay_1 = source\nsource = other\nresult = _itool_replay_1"
-        )
-        == "_itool_replay_1 = source\nsource = other\nresult = _itool_replay_1"
-    )
-    assert (
-        _inline_single_use_replay_expressions(
-            "_itool_replay_1 = source.method()\nresult = _itool_replay_1"
-        )
-        == "_itool_replay_1 = source.method()\nresult = _itool_replay_1"
-    )
+    assert _inline_single_use_replay_names(effectful_attributes) == effectful_attributes
 
     assert (
         _compact_replay_temp_names(
@@ -2059,7 +2220,7 @@ def test_generated_nonuniform_restore_matches_runtime(source: xr.DataArray) -> N
     )
 
 
-def test_replay_graph_display_keeps_bindings_for_scoped_or_rebound_inputs(
+def test_replay_graph_display_keeps_scoped_bindings_and_inlines_rebound_inputs(
     tmp_path: pathlib.Path,
 ) -> None:
     path = tmp_path / "scan.nc"
@@ -2093,7 +2254,7 @@ def test_replay_graph_display_keeps_bindings_for_scoped_or_rebound_inputs(
     rebound_code = typing.cast("str", rebound_spec.display_code())
 
     assert len(re.findall(r"^data_0 =", helper_code, flags=re.MULTILINE)) == 1
-    assert len(re.findall(r"^data_0 =", rebound_code, flags=re.MULTILINE)) == 2
+    assert not re.search(r"^data_0 =", rebound_code, flags=re.MULTILINE)
     xr.testing.assert_identical(_exec_generated_code(helper_code)["result"], source + 1)
     xr.testing.assert_identical(
         _exec_generated_code(rebound_code)["result"],

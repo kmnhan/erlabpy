@@ -14,6 +14,7 @@ import json
 import keyword
 import symtable
 import typing
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 
 import xarray as xr
@@ -22,6 +23,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _NONUNIFORM_RESTORE_FUNCTION_NAME,
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _code_stores_name,
+    _expression_starts_with_name,
     _nonuniform_restore_support_code,
     _replace_code_identifiers,
     _script_codes_output_name,
@@ -1302,15 +1304,38 @@ def _node_names(
             node = node_by_key[key]
         return key
 
+    copied_script_bindings = _copied_script_bindings(graph)
+    copied_names_by_key: dict[str, set[str]] = {}
+    for _node_key, input_name, input_key in copied_script_bindings:
+        copied_names_by_key.setdefault(emitted_key(input_key), set()).add(input_name)
     preferred_names: dict[str, str] = {}
     for public_name, key in graph.aliases:
-        preferred_names[emitted_key(key)] = public_name
+        emitted_alias_key = emitted_key(key)
+        if public_name not in copied_names_by_key.get(emitted_alias_key, set()):
+            preferred_names.setdefault(emitted_alias_key, public_name)
     if output_name is not None:
         if graph.output_key is None:
             raise ReplayGraphError("Replay graph has no output")
         preferred_names[emitted_key(graph.output_key)] = output_name
 
     reserved_names = graph.reserved_names
+    if graph.display:
+        for node in graph.nodes:
+            code_fragments = [
+                value
+                for field in ("code", "load_code")
+                if isinstance((value := node.payload.get(field)), str)
+            ]
+            code_fragments.extend(
+                code for code in node.payload.get("codes", ()) if isinstance(code, str)
+            )
+            operation_code = getattr(node.payload.get("operation"), "code", None)
+            if isinstance(operation_code, str):
+                code_fragments.append(operation_code)
+            for code in code_fragments:
+                accesses, rebindings = _code_name_accesses(code)
+                reserved_names.update(accesses)
+                reserved_names.update(rebindings)
     for node in graph.nodes:
         if node.kind != "operation" or not node.parents:
             continue
@@ -1358,6 +1383,51 @@ def _node_names(
     return names
 
 
+def _copied_script_bindings(graph: ReplayGraph) -> set[tuple[str, str, str]]:
+    """Return shared bindings that need independent script-owned arrays.
+
+    Runtime replay gives every script binding its own deep copy. Emitted code preserves
+    that ownership wherever bindings share the same value or a common graph ancestor.
+    """
+    binding_counts = Counter(
+        input_key
+        for node in graph.nodes
+        if node.kind == "script"
+        for _input_name, input_key in typing.cast(
+            "tuple[tuple[str, str], ...]", node.payload["bindings"]
+        )
+    )
+    consumers: dict[str, set[str]] = {}
+    for node in graph.nodes:
+        for parent_key in set(node.parents):
+            consumers.setdefault(parent_key, set()).add(node.key)
+    node_by_key = {node.key: node for node in graph.nodes}
+    shared_ancestry: dict[str, bool] = {}
+
+    def has_shared_ancestry(key: str) -> bool:
+        if key not in shared_ancestry:
+            shared_ancestry[key] = (
+                binding_counts[key] > 1 or len(consumers.get(key, ())) > 1
+            )
+            if not shared_ancestry[key]:
+                shared_ancestry[key] = any(
+                    has_shared_ancestry(parent_key)
+                    for parent_key in node_by_key[key].parents
+                )
+        return shared_ancestry[key]
+
+    copied: set[tuple[str, str, str]] = set()
+    for node in graph.nodes:
+        if node.kind != "script":
+            continue
+        for input_name, input_key in typing.cast(
+            "tuple[tuple[str, str], ...]", node.payload["bindings"]
+        ):
+            if has_shared_ancestry(input_key):
+                copied.add((node.key, input_name, input_key))
+    return copied
+
+
 def _inline_adjacent_replay_assignments(code: str) -> str:
     try:
         module = ast.parse(code, mode="exec")
@@ -1373,12 +1443,12 @@ def _inline_adjacent_replay_assignments(code: str) -> str:
             if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
                 continue
             target = stmt.targets[0]
-            if not isinstance(target, ast.Name) or not target.id.startswith(
-                _REPLAY_TEMP_PREFIX
-            ):
+            if not isinstance(target, ast.Name):
                 continue
             next_stmt = module.body[idx + 1]
-            if not isinstance(next_stmt, ast.Assign):
+            if not isinstance(
+                next_stmt, ast.Assign
+            ) or not _expression_starts_with_name(next_stmt.value, target.id):
                 continue
             if _statement_load_count(next_stmt, target.id) != 1:
                 continue
@@ -1418,79 +1488,68 @@ def _inline_adjacent_replay_assignments(code: str) -> str:
     return ast.unparse(ast.fix_missing_locations(module))
 
 
-def _inline_single_use_replay_expressions(code: str) -> str:
+def _inline_single_use_replay_names(code: str) -> str:
+    """Inline one-use replay temporaries bound to side-effect-free names."""
     try:
         module = ast.parse(code, mode="exec")
     except SyntaxError:
         return code
     changed = False
 
-    def clone_expr(expr: ast.expr) -> ast.expr:
-        return ast.parse(ast.unparse(expr), mode="eval").body
+    class ReplayNameInliner(ast.NodeTransformer):
+        def __init__(self, target_name: str, source_name: str) -> None:
+            self.target_name = target_name
+            self.source_name = source_name
 
-    def has_call(expr: ast.expr) -> bool:
-        return any(isinstance(node, ast.Call) for node in ast.walk(expr))
+        def visit_Name(self, node: ast.Name) -> ast.Name:
+            if node.id == self.target_name and isinstance(node.ctx, ast.Load):
+                return ast.copy_location(
+                    ast.Name(self.source_name, ctx=ast.Load()),
+                    node,
+                )
+            return node
 
     while True:
-        for idx, stmt in enumerate(module.body[:-1]):
-            if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
-                continue
-            target = stmt.targets[0]
-            if not isinstance(target, ast.Name) or not target.id.startswith(
-                _REPLAY_TEMP_PREFIX
+        for idx, statement in enumerate(module.body[:-1]):
+            if (
+                not isinstance(statement, ast.Assign)
+                or len(statement.targets) != 1
+                or not isinstance(statement.targets[0], ast.Name)
+                or not statement.targets[0].id.startswith(_REPLAY_TEMP_PREFIX)
+                or not isinstance(statement.value, ast.Name)
             ):
                 continue
-            if has_call(stmt.value):
-                continue
-
+            target_name = statement.targets[0].id
+            source_name = statement.value.id
             later_loads = [
                 later_idx
                 for later_idx, later in enumerate(module.body[idx + 1 :], start=idx + 1)
-                if _statement_load_count(later, target.id) > 0
+                if _statement_load_count(later, target_name)
             ]
             if len(later_loads) != 1:
                 continue
             use_idx = later_loads[0]
-            use_stmt = module.body[use_idx]
-            if not isinstance(use_stmt, ast.Assign):
-                continue
-            if _statement_load_count(use_stmt, target.id) != 1:
-                continue
-
-            replacement_load_names = {
-                node.id
-                for node in ast.walk(stmt.value)
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-            }
+            use_statement = module.body[use_idx]
             intervening = module.body[idx + 1 : use_idx]
-            if any(_statement_store_count(item, target.id) for item in intervening):
-                continue
-            if any(
-                _statement_store_count(item, name)
-                for item in intervening
-                for name in replacement_load_names
+            if (
+                not isinstance(use_statement, ast.Assign)
+                or _statement_load_count(use_statement, target_name) != 1
+                or any(
+                    not isinstance(item, ast.Assign)
+                    or len(item.targets) != 1
+                    or not isinstance(item.targets[0], ast.Name)
+                    or not isinstance(item.value, ast.Name)
+                    for item in intervening
+                )
+                or any(
+                    _statement_store_count(item, source_name) for item in intervening
+                )
             ):
                 continue
-
-            inline_target = target.id
-            inline_value = clone_expr(stmt.value)
-
-            class ReplayExpressionInliner(ast.NodeTransformer):
-                def __init__(self, target_name: str, value: ast.expr) -> None:
-                    self.target_name = target_name
-                    self.value = value
-
-                def visit_Name(self, node: ast.Name) -> ast.expr:
-                    if node.id == self.target_name and isinstance(node.ctx, ast.Load):
-                        return ast.copy_location(clone_expr(self.value), node)
-                    return node
-
             module.body[use_idx] = ast.fix_missing_locations(
                 typing.cast(
                     "ast.stmt",
-                    ReplayExpressionInliner(inline_target, inline_value).visit(
-                        use_stmt
-                    ),
+                    ReplayNameInliner(target_name, source_name).visit(use_statement),
                 )
             )
             del module.body[idx]
@@ -1609,7 +1668,7 @@ def _inline_simple_name_aliases(code: str) -> str:
                 else:
                     can_rewrite = False
                 break
-            if rewrite_end is None or not can_rewrite:
+            if rewrite_end != idx + 1 or not can_rewrite:
                 continue
             if any(
                 _statement_store_count(
@@ -1744,7 +1803,8 @@ def _cleanup_emitted_replay_code(code: str) -> str:
     code = _remove_noop_assignments(code)
     code = _inline_simple_name_aliases(code)
     code = _inline_adjacent_replay_assignments(code)
-    code = _inline_single_use_replay_expressions(code)
+    code = _inline_single_use_replay_names(code)
+    code = _inline_adjacent_replay_assignments(code)
     code = _remove_noop_assignments(code)
     return _compact_replay_temp_names(code)
 
@@ -2060,14 +2120,104 @@ def _dynamic_nonuniform_restore_name(
     return function_name
 
 
-def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> str:
+def _rename_display_replay_temps(
+    graph: ReplayGraph,
+    names: Mapping[str, str],
+    code: str,
+) -> str:
+    """Replace surviving graph temporaries with collision-safe semantic names."""
+    if not graph.display or _REPLAY_TEMP_PREFIX not in code:
+        return code
+
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:  # pragma: no cover - emitted code is validated upstream.
+        return code
+    surviving_temps = {
+        node.id
+        for node in ast.walk(module)
+        if isinstance(node, ast.Name) and node.id.startswith(_REPLAY_TEMP_PREFIX)
+    }
+    if not surviving_temps:
+        return code
+
+    accessed, rebound = _code_name_accesses(code)
+    used_names = {
+        name
+        for name in graph.reserved_names | accessed | rebound
+        if not name.startswith(_REPLAY_TEMP_PREFIX)
+    }
+    replacements: dict[str, str] = {}
+    for node in graph.nodes:
+        temporary_name = names.get(node.key)
+        if temporary_name not in surviving_temps or temporary_name in replacements:
+            continue
+        if node.kind == "file_load":
+            base_name = "loaded_data"
+        elif node.kind == "source_view":
+            base_name = "source_data"
+        elif node.kind == "operation":
+            preferred_output_method = getattr(
+                node.payload["operation"],
+                "preferred_replay_output_name",
+                None,
+            )
+            preferred_output = (
+                preferred_output_method() if callable(preferred_output_method) else None
+            )
+            base_name = preferred_output or "processed_data"
+        else:
+            base_name = "script_result"
+
+        candidate = base_name
+        suffix = 2
+        while candidate in used_names:
+            candidate = f"{base_name}_{suffix}"
+            suffix += 1
+        replacements[temporary_name] = candidate
+        used_names.add(candidate)
+
+    return _replace_code_identifiers(code, replacements)
+
+
+def emit_replay_code(
+    graph: ReplayGraph,
+    *,
+    output_name: str | None = None,
+    include_all_aliases: bool = False,
+) -> str:
     names = _node_names(graph, output_name=output_name)
     node_by_key = {node.key: node for node in graph.nodes}
+    copied_script_bindings = _copied_script_bindings(graph)
     chunks: list[tuple[str, bool]] = []
+    materialized_aliases: dict[str, str] = {}
+    materialized_binding_names = set(names.values())
+    reserved_binding_names: set[str] = set()
+    for replay_node in graph.nodes:
+        for code in replay_node.payload.get("codes", ()):
+            if isinstance(code, str):
+                accesses, rebindings = _code_name_accesses(code)
+                reserved_binding_names.update(accesses)
+                reserved_binding_names.update(rebindings)
     active_setup_key: str | None = None
 
     def append_code(code: str, *, group_imports: bool = False) -> None:
         chunks.append((code, graph.display and group_imports))
+
+    def copied_binding_name(input_name: str) -> str:
+        if input_name not in materialized_binding_names:
+            materialized_binding_names.add(input_name)
+            return input_name
+        suffix = 2
+        while True:
+            candidate = f"{input_name}_{suffix}"
+            if (
+                candidate not in materialized_binding_names
+                and candidate not in reserved_binding_names
+            ):
+                materialized_binding_names.add(candidate)
+                return candidate
+            suffix += 1
 
     dynamic_restore_needed = any(
         (node.kind == "source_view" and _source_view_emits_code(graph, node))
@@ -2161,17 +2311,26 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
             ):
                 input_names.add(input_name)
                 input_value_name = names[input_key]
+                if (node.key, input_name, input_key) in copied_script_bindings:
+                    generated_input_name = copied_binding_name(input_name)
+                    append_code(
+                        f"{generated_input_name} = {input_value_name}.copy(deep=True)"
+                    )
+                    if generated_input_name != input_name:
+                        input_replacements[input_name] = generated_input_name
+                    materialized_aliases[input_name] = input_value_name
+                    continue
                 if input_name == input_value_name:
                     continue
                 if (
                     graph.display
-                    and not _is_semantic_replay_name(input_name)
                     and not any(_code_has_scoped_definition(code) for code in codes)
                     and not any(_code_stores_name(code, input_name) for code in codes)
                 ):
                     input_replacements[input_name] = input_value_name
                 else:
                     append_code(f"{input_name} = {input_value_name}")
+                    materialized_aliases[input_name] = input_value_name
             if input_replacements:
                 try:
                     codes = [
@@ -2182,6 +2341,7 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
                     raise ReplayGraphError(
                         "Script replay code is not valid Python"
                     ) from exc
+                active_name = input_replacements.get(active_name, active_name)
             if (
                 graph.display
                 and active_name != name
@@ -2218,7 +2378,7 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
         else:
             raise ReplayGraphError(f"Unknown replay graph node kind {node.kind!r}")
 
-    aliases = graph.aliases
+    aliases = list(graph.aliases) if include_all_aliases else []
     if output_name is not None:
         if graph.output_key is None:
             raise ReplayGraphError("Replay graph has no output")
@@ -2227,15 +2387,26 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
             aliases = [*aliases, output_alias]
     for public_name, key in aliases:
         planned_name = names[key]
-        if public_name != planned_name:
+        if (
+            public_name != planned_name
+            and materialized_aliases.get(public_name) != planned_name
+        ):
             append_code(f"{public_name} = {planned_name}")
     code = _group_framework_imports(chunks)
     if dynamic_restore_support is None:
-        return _cleanup_emitted_replay_code(code)
+        return _rename_display_replay_temps(
+            graph,
+            names,
+            _cleanup_emitted_replay_code(code),
+        )
 
     module_prologue, code = _split_module_prologue(code)
     leading_imports, body = _leading_top_level_imports(code)
-    cleaned_body = _cleanup_emitted_replay_code(body)
+    cleaned_body = _rename_display_replay_temps(
+        graph,
+        names,
+        _cleanup_emitted_replay_code(body),
+    )
     import_prefix = "\n".join(source for _canonical, source in leading_imports)
     return "\n\n\n".join(
         part
@@ -2273,4 +2444,4 @@ def script_inputs_code(script_inputs: Sequence[typing.Any], *, display: bool) ->
             live_input_resolver=None,
         )
         graph.add_alias(script_input.name, input_key)
-    return emit_replay_code(graph)
+    return emit_replay_code(graph, include_all_aliases=True)

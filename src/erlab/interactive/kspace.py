@@ -1452,10 +1452,10 @@ class KspaceTool(KspaceToolGUI):
         input_name: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
-        return (
-            f"{self._copy_assign_target(input_name)} = "
-            f"{self._copy_input_reference(input_name)}"
-        )
+        input_reference = self._copy_input_reference(input_name)
+        if erlab.utils.misc._is_valid_identifier(input_reference):
+            input_reference = f"{input_reference}.copy(deep=False)"
+        return f"{self._copy_assign_target(input_name)} = {input_reference}"
 
     def _copy_operations(
         self,

@@ -1,4 +1,5 @@
 import ast
+import itertools
 import json
 import pathlib
 import subprocess
@@ -180,6 +181,34 @@ def _generated_call_names(code: str) -> tuple[str, ...]:
         for name in [_call_name(node.func)]
         if name is not None
     )
+
+
+def _assert_no_meaningless_reassignments(code: str) -> None:
+    statements = ast.parse(code).body
+    for statement in statements:
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and isinstance(statement.value, ast.Name)
+        ):
+            assert statement.targets[0].id != statement.value.id
+
+    for statement, next_statement in itertools.pairwise(statements):
+        if (
+            not isinstance(statement, ast.Assign)
+            or len(statement.targets) != 1
+            or not isinstance(statement.targets[0], ast.Name)
+            or not isinstance(next_statement, ast.Assign)
+            or len(next_statement.targets) != 1
+            or not isinstance(next_statement.targets[0], ast.Name)
+        ):
+            continue
+        target = statement.targets[0].id
+        assert not (
+            next_statement.targets[0].id == target
+            and _statement_load_count(next_statement, target) == 1
+        )
 
 
 def _base_data() -> xr.DataArray:
@@ -698,7 +727,7 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
         "Start from current parent ImageTool data",
         'Average(dims=("x",))',
     ]
-    assert spec.derivation_code() == 'derived = data\nderived = derived.qsel.mean("x")'
+    assert spec.derivation_code() == "derived = data.qsel.mean('x')"
     display_code = typing.cast("str", spec.display_code())
     assert ".rename(" not in display_code
     namespace = _exec_generated_code(display_code, {"data": _base_data()})
@@ -1015,6 +1044,78 @@ def test_operations_expression_code_chains_without_relay_assignments() -> None:
         parent_data=data,
     )
     xr.testing.assert_identical(namespace["result"].rename(None), expected.rename(None))
+
+
+def test_generated_provenance_code_elides_meaningless_reassignments() -> None:
+    data = _base_data()
+    parent = script(
+        ScriptCodeOperation(
+            label="Compute intermediate result",
+            code="result = data + 1",
+        ),
+        start_label="Start from current tool input data",
+        active_name="result",
+    )
+    structured = compose_full_provenance(
+        parent,
+        full_data(AverageOperation(dims=("x",))),
+    )
+    scripted = compose_full_provenance(
+        parent,
+        script(
+            ScriptCodeOperation(label="Mean", code="result = derived.mean()"),
+            start_label="Use parent result",
+            active_name="derived",
+        ),
+    )
+    assert structured is not None
+    assert scripted is not None
+
+    cases = (
+        (full_data(AverageOperation(dims=("x",))), "derived", data.qsel.mean("x")),
+        (structured, "derived", (data + 1).qsel.mean("x")),
+        (scripted, "result", (data + 1).mean()),
+    )
+    for spec, output_name, expected in cases:
+        for code in (spec.derivation_code(), spec.display_code()):
+            assert code is not None
+            _assert_no_meaningless_reassignments(code)
+            assert "erlab.interactive.imagetool" not in code
+            namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+            xr.testing.assert_identical(namespace[output_name], expected)
+
+
+def test_generated_provenance_code_preserves_effect_order_across_aliases() -> None:
+    spec = script(
+        ScriptCodeOperation(
+            label="Read NumPy error state",
+            code=("derived = xr.DataArray([numpy.geterr()['divide'] == 'warn'])"),
+        ),
+        ScriptCodeOperation(
+            label="Change NumPy error state",
+            code="np.seterr(divide='ignore')",
+        ),
+        ScriptCodeOperation(
+            label="Copy result",
+            code="derived = derived.copy()",
+        ),
+        start_label="Run script",
+        active_name="derived",
+    )
+    previous_error_state = np.seterr(divide="warn")
+    try:
+        expected = replay_script_provenance(spec, {}, trusted_user_code=True)
+        for code in (spec.derivation_code(), spec.display_code()):
+            assert code is not None
+            np.seterr(divide="warn")
+            namespace = _exec_generated_code(
+                code,
+                {"np": np, "numpy": np, "xr": xr},
+            )
+            xr.testing.assert_identical(namespace["derived"], expected)
+            assert code.index("numpy.geterr") < code.index("np.seterr")
+    finally:
+        np.seterr(**previous_error_state)
 
 
 @pytest.mark.parametrize("record_mapping", [False, True])
@@ -2005,7 +2106,7 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
 
     qsel_spec = full_data(QSelOperation(kwargs={"k-space": 1.0, "k-space_width": 1.0}))
     assert qsel_spec.derivation_code() == (
-        'derived = data\nderived = derived.qsel({"k-space": 1.0, "k-space_width": 1.0})'
+        "derived = data.qsel({'k-space': 1.0, 'k-space_width': 1.0})"
     )
     xr.testing.assert_identical(
         qsel_spec.apply(string_key_data),
@@ -2013,41 +2114,30 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
     )
 
     isel_spec = full_data(IselOperation(kwargs={1: slice(1, 3)}))
-    assert (
-        isel_spec.derivation_code()
-        == "derived = data\nderived = derived.isel({1: slice(1, 3)})"
-    )
+    assert isel_spec.derivation_code() == "derived = data.isel({1: slice(1, 3)})"
     xr.testing.assert_identical(isel_spec.apply(data), data.isel({1: slice(1, 3)}))
 
     transpose_spec = full_data(TransposeOperation(dims=(("beta", 0), 1)))
-    assert (
-        transpose_spec.derivation_code()
-        == 'derived = data\nderived = derived.transpose(*(("beta", 0), 1))'
+    assert transpose_spec.derivation_code() == (
+        "derived = data.transpose(*(('beta', 0), 1))"
     )
     xr.testing.assert_identical(
         transpose_spec.apply(data), data.transpose(("beta", 0), 1)
     )
 
     average_spec = full_data(AverageOperation(dims=("k-space",)))
-    assert (
-        average_spec.derivation_code()
-        == 'derived = data\nderived = derived.qsel.mean("k-space")'
-    )
+    assert average_spec.derivation_code() == "derived = data.qsel.mean('k-space')"
     xr.testing.assert_identical(
         average_spec.apply(string_key_data), string_key_data.qsel.mean("k-space")
     )
 
     tuple_average_spec = full_data(AverageOperation(dims=(("beta", 0),)))
-    assert (
-        tuple_average_spec.derivation_code()
-        == 'derived = data\nderived = derived.qsel.mean((("beta", 0),))'
+    assert tuple_average_spec.derivation_code() == (
+        "derived = data.qsel.mean((('beta', 0),))"
     )
 
     aggregate_spec = full_data(QSelAggregationOperation(dims=("k-space",), func="sum"))
-    assert (
-        aggregate_spec.derivation_code()
-        == 'derived = data\nderived = derived.qsel.sum("k-space")'
-    )
+    assert aggregate_spec.derivation_code() == "derived = data.qsel.sum('k-space')"
     xr.testing.assert_identical(
         aggregate_spec.apply(string_key_data), string_key_data.qsel.sum("k-space")
     )
@@ -2056,7 +2146,7 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
         QSelAggregationOperation(dims=(("beta", 0),), func="mean")
     )
     assert mean_aggregate_spec.derivation_code() == (
-        'derived = data\nderived = derived.qsel.mean((("beta", 0),))'
+        "derived = data.qsel.mean((('beta', 0),))"
     )
 
     dumped = aggregate_spec.model_dump(mode="json")
@@ -2078,7 +2168,7 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
         )
     )
     assert coarsen_spec.derivation_code() == (
-        'derived = data\nderived = derived.coarsen(dim={1: 2}, boundary="trim").mean()'
+        "derived = data.coarsen(dim={1: 2}, boundary='trim').mean()"
     )
     xr.testing.assert_identical(
         coarsen_spec.apply(data),
@@ -2088,16 +2178,11 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
     )
 
     thin_spec = full_data(ThinOperation(mode="per_dim", factors={1: 2}))
-    assert (
-        thin_spec.derivation_code() == "derived = data\nderived = derived.thin({1: 2})"
-    )
+    assert thin_spec.derivation_code() == "derived = data.thin({1: 2})"
     xr.testing.assert_identical(thin_spec.apply(data), data.thin({1: 2}))
 
     swap_spec = full_data(SwapDimsOperation(mapping={1: "coord_1"}))
-    assert (
-        swap_spec.derivation_code()
-        == 'derived = data\nderived = derived.swap_dims({1: "coord_1"})'
-    )
+    assert swap_spec.derivation_code() == "derived = data.swap_dims({1: 'coord_1'})"
     xr.testing.assert_identical(swap_spec.apply(data), data.swap_dims({1: "coord_1"}))
 
     dumped = tuple_average_spec.model_dump(mode="json")
@@ -2565,7 +2650,7 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
     )
     simplified_namespace = _exec_generated_code(simplified, {"data": 3})
     assert simplified_namespace["result"] == 5
-    assert "derived" not in simplified_namespace
+    assert simplified_namespace["derived"] == 3
     assert (
         _simplify_display_code(
             "derived = data\nscale = 2\nleft, right = (data * scale, data + 1)",
@@ -2596,7 +2681,7 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
     )
     rebased_namespace = _exec_generated_code(rebased, {"source_data": 3})
     assert rebased_namespace["result"] == 5
-    assert "derived" not in rebased_namespace
+    assert rebased_namespace["derived"] == 3
     assert uses_default_replay_input("result = data + 1")
     assert not uses_default_replay_input("result = source_data + 1")
     helper_code = (
@@ -3426,9 +3511,7 @@ def test_tool_provenance_compose_full_uses_parent_active_name_for_live_local() -
 
     assert composed is not None
     code = composed.derivation_code()
-    assert code == (
-        'result = data + 1\nderived = result\nderived = derived.qsel.mean("x")'
-    )
+    assert code == "derived = (data + 1).qsel.mean('x')"
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
     derived = namespace["derived"]
     assert isinstance(derived, xr.DataArray)
@@ -4332,9 +4415,7 @@ def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
     assert file_with_script.kind == "script"
     assert file_with_script.file_load_source == file_spec.file_load_source
     assert file_with_script.derivation_code() == (
-        "import xarray\n\n"
-        "derived = xarray.load_dataarray('scan.h5')\n"
-        "result = derived + 1"
+        "import xarray\nresult = xarray.load_dataarray('scan.h5') + 1"
     )
 
     file_with_stage = file_spec.append_replay_stage(
@@ -4442,9 +4523,7 @@ def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
     )
     watched_composed = compose_full_provenance(watched_parent, default_seed_local)
     assert watched_composed is not None
-    assert watched_composed.derivation_code() == (
-        "derived = watched_data\nresult = derived.mean()"
-    )
+    assert watched_composed.derivation_code() == "result = watched_data.mean()"
     assert watched_composed.display_code() == "result = watched_data.mean()"
 
     result_parent = script(
@@ -4462,9 +4541,7 @@ def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
     )
     result_composed = compose_full_provenance(result_parent, no_seed_local)
     assert result_composed is not None
-    assert result_composed.derivation_code() == (
-        "result = data + 1\nderived = result\nresult = derived.mean()"
-    )
+    assert result_composed.derivation_code() == "result = (data + 1).mean()"
     assert all(
         row.entry.label != "Use parent result" for row in result_composed.display_rows()
     )
@@ -4629,8 +4706,9 @@ def test_script_input_code_reuses_shared_file_replay_prefix(
 
     assert code.count("xarray.load_dataarray") == 1
     assert code.count(".qsel.mean") == 1
-    assert "data_0 =" not in code
-    assert "data_1 =" not in code
+    assert sum(line.startswith("data_0 =") for line in code.splitlines()) == 1
+    assert sum(line.startswith("data_1 =") for line in code.splitlines()) == 1
+    assert code.count(".copy(deep=True)") == 2
     assert "restore_nonuniform_dims" not in code
     namespace = _exec_generated_code(code, {})
     expected = left_stage.apply(shared_stage.apply(source)) - right_stage.apply(
