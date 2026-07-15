@@ -336,7 +336,7 @@ def _render_into_figure(
                 spec = _registry.spec_for(operation.kind)
                 if spec.has_invalid_target(
                     tool._document, operation
-                ) or tool._operation_has_invalid_input(operation):
+                ) or tool.operation_editor.has_input_error(operation):
                     continue
                 try:
                     spec.render(tool, operation, figure, axs)

@@ -9,7 +9,6 @@ from qtpy import QtCore, QtWidgets
 import erlab
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._code import _axes_code, _maybe_squeeze_drop_code
-from erlab.interactive._figurecomposer._defaults import _styled_rcparams_value
 from erlab.interactive._figurecomposer._model._gridspec import _gridspec_valid_axes_ids
 from erlab.interactive._figurecomposer._model._sources import (
     _public_source_data,
@@ -37,12 +36,8 @@ from erlab.interactive._figurecomposer._norms import (
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
-    StepSection,
 )
-from erlab.interactive._figurecomposer._rendering import (
-    _axes_from_selection,
-    _tool_figure_options_context,
-)
+from erlab.interactive._figurecomposer._rendering import _axes_from_selection
 from erlab.interactive._figurecomposer._text import (
     _code_kwargs,
     _dict_from_text,
@@ -56,6 +51,7 @@ from erlab.interactive._figurecomposer._ui._editor_controls import (
     MIXED_VALUES_TEXT,
     ComboBoxDataControlAdapter,
 )
+from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
@@ -65,6 +61,9 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
+    from erlab.interactive._figurecomposer._ui._operation_editor import (
+        FigureOperationEditor,
+    )
 
 
 def _create_plot_array_operation(tool: FigureComposerTool) -> FigureOperationState:
@@ -86,35 +85,35 @@ def _primary_source(operation: FigureOperationState) -> str | None:
 
 
 def _selected_plot_array_data(
-    tool: FigureComposerTool,
+    context: FigureRecipeContext,
     operation: FigureOperationState,
     *,
     squeeze: bool = True,
 ) -> xr.DataArray | None:
     source_name = _primary_source(operation)
-    if source_name is None or source_name not in tool._document.source_data:
+    if source_name is None or source_name not in context.source_data:
         return None
-    data = _public_source_data(tool._document.source_data[source_name])
+    data = _public_source_data(context.source_data[source_name])
     return data.squeeze(drop=True) if squeeze else data
 
 
 def _safe_selected_plot_array_data(
-    tool: FigureComposerTool,
+    context: FigureRecipeContext,
     operation: FigureOperationState,
     *,
     squeeze: bool = True,
 ) -> xr.DataArray | None:
     try:
-        return _selected_plot_array_data(tool, operation, squeeze=squeeze)
+        return _selected_plot_array_data(context, operation, squeeze=squeeze)
     except (IndexError, KeyError, TypeError, ValueError):
         return None
 
 
 def _plot_array_selection_error(
-    tool: FigureComposerTool, operation: FigureOperationState
+    context: FigureRecipeContext, operation: FigureOperationState
 ) -> str | None:
     try:
-        _selected_plot_array_data(tool, operation)
+        _selected_plot_array_data(context, operation)
     except (IndexError, KeyError, TypeError, ValueError) as exc:
         return str(exc) or exc.__class__.__name__
     return None
@@ -123,7 +122,7 @@ def _plot_array_selection_error(
 def _plot_array_source_code(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> str | None:
-    data = _selected_plot_array_data(tool, operation, squeeze=False)
+    data = _selected_plot_array_data(tool._document, operation, squeeze=False)
     if data is None:
         return None
     source_name = _primary_source(operation)
@@ -161,10 +160,10 @@ def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> 
         if source_name is not None
         else "missing source"
     )
-    if _plot_array_selection_error(tool, operation) is not None:
+    if _plot_array_selection_error(tool._document, operation) is not None:
         shape = "invalid selection"
     else:
-        data = _safe_selected_plot_array_data(tool, operation)
+        data = _safe_selected_plot_array_data(tool._document, operation)
         if data is None:
             shape = "missing"
         elif data.ndim == 2:
@@ -181,7 +180,7 @@ def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:
     )
 
 
-def _update_current_source(tool: FigureComposerTool, source: str | None) -> None:
+def _update_current_source(editor: FigureOperationEditor, source: str | None) -> None:
     if source is None:
         return
 
@@ -190,23 +189,24 @@ def _update_current_source(tool: FigureComposerTool, source: str | None) -> None
     ) -> FigureOperationState:
         return target.model_copy(update={"sources": (source,), "map_selections": ()})
 
-    tool._update_operations(update_operation, rebuild_editor=True)
+    editor.request_transform(
+        update_operation, rebuild_editor=True, defer_editor_rebuild=True
+    )
 
 
 def _build_source_editor(
-    tool: FigureComposerTool, operation: FigureOperationState
+    editor: FigureOperationEditor, operation: FigureOperationState
 ) -> None:
-    source_mixed = tool._batch_is_mixed(operation, _primary_source)
-    source_combo = tool._source_combo(
-        tool._document.source_names(),
+    source_mixed = editor.batch_is_mixed(operation, _primary_source)
+    source_combo = editor.source_combo(
+        editor.context.source_names(),
         None if source_mixed else _primary_source(operation),
-        lambda source: _update_current_source(tool, source),
-        parent=tool.step_source_controls,
+        lambda source: _update_current_source(editor, source),
+        parent=editor.source_controls,
         mixed=source_mixed,
     )
     source_combo.setObjectName("figureComposerPlotArraySourceCombo")
-    tool._add_form_row(
-        tool.step_source_controls_layout,
+    editor.add_source_row(
         "Image data",
         source_combo,
         "Data array plotted by this Image Plot step.",
@@ -248,7 +248,7 @@ def _plot_array_kwargs(operation: FigureOperationState) -> dict[str, typing.Any]
 def _render_plot_array(
     tool: FigureComposerTool, operation: FigureOperationState, axs: typing.Any
 ) -> None:
-    data = _selected_plot_array_data(tool, operation)
+    data = _selected_plot_array_data(tool._document, operation)
     if data is None:
         return
     if operation.transpose:
@@ -336,11 +336,9 @@ def _operation_field_getter(
 
 
 def _plot_limit_update_callback(
-    tool: FigureComposerTool, attr: str
+    editor: FigureOperationEditor, attr: str
 ) -> Callable[[str], None]:
-    return lambda text: tool._update_current_operation(
-        **{attr: _plot_limit_from_text(text)}
-    )
+    return lambda text: editor.request_update(**{attr: _plot_limit_from_text(text)})
 
 
 def _format_aspect_value(value: typing.Any) -> str:
@@ -354,7 +352,7 @@ def _format_aspect_value(value: typing.Any) -> str:
 
 
 def _plot_array_aspect_combo(
-    tool: FigureComposerTool,
+    editor: FigureOperationEditor,
     operation: FigureOperationState,
     *,
     parent: QtWidgets.QWidget,
@@ -364,9 +362,9 @@ def _plot_array_aspect_combo(
         ("auto", "auto"),
         ("equal", "equal"),
     )
-    aspect_mixed = tool._batch_is_mixed(operation, lambda target: target.aspect)
+    aspect_mixed = editor.batch_is_mixed(operation, lambda target: target.aspect)
     combo = QtWidgets.QComboBox(parent)
-    tool._mark_editor_control(combo)
+    editor.mark_control(combo)
     if aspect_mixed:
         combo.addItem(MIXED_VALUES_TEXT, MIXED_VALUE)
     elif operation.aspect not in {None, "auto", "equal"}:
@@ -382,8 +380,8 @@ def _plot_array_aspect_combo(
         typing.cast("typing.Any", combo.model()).item(0).setEnabled(False)
 
     ComboBoxDataControlAdapter(combo).connect_commit(
-        tool._connect_editor_signal,
-        lambda value: tool._update_current_operation(aspect=value),
+        editor.connect_signal,
+        lambda value: editor.request_update(aspect=value),
     )
     return combo
 
@@ -411,76 +409,73 @@ def _norm_clip_from_text(text: str) -> bool | None:
 
 
 def _norm_number_update_callback(
-    tool: FigureComposerTool, attr: str
+    editor: FigureOperationEditor, attr: str
 ) -> Callable[[str], None]:
     def update(text: str) -> None:
         stripped = text.strip()
-        tool._update_current_operation(
-            **{attr: None if not stripped else float(stripped)}
-        )
+        editor.request_update(**{attr: None if not stripped else float(stripped)})
 
     return update
 
 
-def _update_current_norm_name(tool: FigureComposerTool, name: str) -> None:
+def _update_current_norm_name(editor: FigureOperationEditor, name: str) -> None:
     updates = {"norm_name": name, "gamma": None}
     if name != "PowerNorm":
         updates["norm_gamma"] = None
-    tool._update_current_operation_rebuild(**updates)
+    editor.request_update_rebuild(**updates)
 
 
-def _update_current_norm_gamma(tool: FigureComposerTool, value: float) -> None:
-    tool._update_current_operation(norm_gamma=float(value), gamma=None)
+def _update_current_norm_gamma(editor: FigureOperationEditor, value: float) -> None:
+    editor.request_update(norm_gamma=float(value), gamma=None)
 
 
-def _update_current_norm_kwargs(tool: FigureComposerTool, text: str) -> None:
+def _update_current_norm_kwargs(editor: FigureOperationEditor, text: str) -> None:
     kwargs = _dict_from_text(text)
     updates = _norm_updates_from_kwargs(kwargs)
-    tool._update_current_operation_rebuild(**updates)
+    editor.request_update_rebuild(**updates)
 
 
-def _plot_array_default_cmap(tool: FigureComposerTool) -> str:
-    with _tool_figure_options_context(tool):
-        return str(_styled_rcparams_value("image.cmap"))
+def _plot_array_default_cmap(editor: FigureOperationEditor) -> str:
+    return str(editor.styled_rcparams_value("image.cmap"))
 
 
 def _plot_array_cmap_base_and_reverse(
-    tool: FigureComposerTool, operation: FigureOperationState
+    editor: FigureOperationEditor, operation: FigureOperationState
 ) -> tuple[str, bool]:
     if operation.cmap is None:
-        return _cmap_base_and_reverse(_plot_array_default_cmap(tool))
+        return _cmap_base_and_reverse(_plot_array_default_cmap(editor))
     return _cmap_base_and_reverse(operation.cmap)
 
 
 def _update_current_cmap(
-    tool: FigureComposerTool,
+    editor: FigureOperationEditor,
     *,
     base: str | None = None,
     reverse: bool | None = None,
 ) -> None:
-    current = tool._current_operation()
+    current = editor.current_operation()
     if current is None:
         return
     _index, operation = current
-    old_base, old_reverse = _plot_array_cmap_base_and_reverse(tool, operation)
+    old_base, old_reverse = _plot_array_cmap_base_and_reverse(editor, operation)
     if base is None:
         base = old_base
     if reverse is None:
         reverse = old_reverse
-    tool._update_current_operation(cmap=_cmap_with_reverse(base, reverse))
+    editor.request_update(cmap=_cmap_with_reverse(base, reverse))
 
 
 def _build_plot_array_view_page(
-    tool: FigureComposerTool, operation: FigureOperationState
+    editor: FigureOperationEditor, operation: FigureOperationState
 ) -> QtWidgets.QWidget:
-    page, layout = tool._new_step_form_page("figureComposerPlotArrayViewPage")
+    page, layout = editor.new_form_page("figureComposerPlotArrayViewPage")
 
-    tool._add_form_section(
+    editor.add_form_section(
         layout,
         "Image",
         object_name="figureComposerPlotArrayViewImageSection",
     )
-    data = _safe_selected_plot_array_data(tool, operation)
+    data = _safe_selected_plot_array_data(editor.context, operation)
     summary = QtWidgets.QLabel(
         "No source data is available."
         if data is None
@@ -489,54 +484,56 @@ def _build_plot_array_view_page(
     )
     summary.setObjectName("figureComposerPlotArrayShapeSummary")
     summary.setWordWrap(True)
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Summary",
         summary,
         "Shows the dimensions plotted by this Image Plot step.",
     )
 
-    transpose_mixed = tool._batch_is_mixed(operation, lambda target: target.transpose)
-    transpose_check = tool._check_box(
+    transpose_mixed = editor.batch_is_mixed(operation, lambda target: target.transpose)
+    transpose_check = editor.check_box(
         operation.transpose,
-        lambda checked: tool._update_current_operation(transpose=checked),
+        lambda checked: editor.request_update(transpose=checked),
         parent=page,
         mixed=transpose_mixed,
     )
     transpose_check.setObjectName("figureComposerPlotArrayTransposeCheck")
     transpose_check.setText("")
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Transpose",
         transpose_check,
         "Swap the x/y orientation before calling plot_array.",
     )
 
-    aspect_combo = _plot_array_aspect_combo(tool, operation, parent=page)
+    aspect_combo = _plot_array_aspect_combo(editor, operation, parent=page)
     aspect_combo.setObjectName("figureComposerPlotArrayAspectCombo")
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Aspect",
         aspect_combo,
         "Aspect argument passed through to imshow.",
     )
 
-    tool._add_form_section(
+    editor.add_form_section(
         layout,
         "Axes",
         object_name="figureComposerPlotArrayViewAxesSection",
     )
     limit_controls: list[tuple[str, QtWidgets.QWidget, str]] = []
     for label, attr in (("x", "xlim"), ("y", "ylim")):
-        text, mixed = tool._batch_text(
+        text, mixed = editor.batch_text(
             operation,
             _operation_field_getter(attr),
             _format_plot_limit,
         )
-        edit = tool._line_edit(text, parent=page)
+        edit = editor.line_edit(text, parent=page)
         edit.setObjectName(f"figureComposerPlotArray{label.upper()}LimEdit")
-        tool._apply_mixed_line_edit(edit, mixed)
-        tool._connect_line_edit_finished(edit, _plot_limit_update_callback(tool, attr))
+        editor.apply_mixed_line_edit(edit, mixed)
+        editor.connect_line_edit_finished(
+            edit, _plot_limit_update_callback(editor, attr)
+        )
         limit_controls.append(
             (
                 label,
@@ -545,23 +542,23 @@ def _build_plot_array_view_page(
                 "or two comma-separated numbers for lower and upper limits.",
             )
         )
-    tool._add_compound_form_row(
+    editor.add_compound_form_row(
         layout,
         "Limits",
         limit_controls,
         "Optional x/y plot limits for this image.",
     )
 
-    crop_mixed = tool._batch_is_mixed(operation, lambda target: target.crop)
-    crop_check = tool._check_box(
+    crop_mixed = editor.batch_is_mixed(operation, lambda target: target.crop)
+    crop_check = editor.check_box(
         operation.crop,
-        lambda checked: tool._update_current_operation(crop=checked),
+        lambda checked: editor.request_update(crop=checked),
         parent=page,
         mixed=crop_mixed,
     )
     crop_check.setObjectName("figureComposerPlotArrayCropCheck")
     crop_check.setText("")
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Crop",
         crop_check,
@@ -571,11 +568,11 @@ def _build_plot_array_view_page(
 
 
 def _build_plot_array_colors_page(
-    tool: FigureComposerTool, operation: FigureOperationState
+    editor: FigureOperationEditor, operation: FigureOperationState
 ) -> QtWidgets.QWidget:
-    page, layout = tool._new_step_form_page("figureComposerPlotArrayColorsPage")
+    page, layout = editor.new_form_page("figureComposerPlotArrayColorsPage")
 
-    tool._add_form_section(
+    editor.add_form_section(
         layout,
         "Image color",
         object_name="figureComposerPlotArrayColorsImageColorSection",
@@ -584,70 +581,72 @@ def _build_plot_array_colors_page(
     cmap_layout = QtWidgets.QHBoxLayout(cmap_widget)
     cmap_layout.setContentsMargins(0, 0, 0, 0)
     cmap_layout.setSpacing(4)
-    cmap_base, cmap_reversed = _plot_array_cmap_base_and_reverse(tool, operation)
-    cmap_mixed = tool._batch_is_mixed(
-        operation, lambda target: _plot_array_cmap_base_and_reverse(tool, target)[0]
+    cmap_base, cmap_reversed = _plot_array_cmap_base_and_reverse(editor, operation)
+    cmap_mixed = editor.batch_is_mixed(
+        operation, lambda target: _plot_array_cmap_base_and_reverse(editor, target)[0]
     )
-    reverse_mixed = tool._batch_is_mixed(
-        operation, lambda target: _plot_array_cmap_base_and_reverse(tool, target)[1]
+    reverse_mixed = editor.batch_is_mixed(
+        operation, lambda target: _plot_array_cmap_base_and_reverse(editor, target)[1]
     )
     cmap_combo = erlab.interactive.colors.ColorMapComboBox(cmap_widget)
-    tool._mark_editor_control(cmap_combo)
+    editor.mark_control(cmap_combo)
     cmap_combo.setObjectName("figureComposerPlotArrayCmapCombo")
     cmap_combo.default_cmap = None if cmap_mixed else cmap_base
     cmap_combo.ensure_populated()
     if cmap_mixed:
         with QtCore.QSignalBlocker(cmap_combo):
-            tool._set_combo_mixed_placeholder(cmap_combo)
+            editor.set_combo_mixed_placeholder(cmap_combo)
     elif cmap_combo.currentText() != cmap_base:
         with QtCore.QSignalBlocker(cmap_combo):
             cmap_combo.setCurrentText(cmap_base)
-    cmap_reverse_check = tool._check_box(
+    cmap_reverse_check = editor.check_box(
         cmap_reversed,
-        lambda checked: _update_current_cmap(tool, reverse=checked),
+        lambda checked: _update_current_cmap(editor, reverse=checked),
         parent=cmap_widget,
         mixed=reverse_mixed,
     )
     cmap_reverse_check.setText("Reverse")
     cmap_reverse_check.setObjectName("figureComposerPlotArrayCmapReverseCheck")
-    tool._connect_editor_signal(
+    editor.connect_signal(
         cmap_combo,
         cmap_combo.activated,
         lambda _index, combo=cmap_combo: (
             None
-            if tool._mixed_combo_text(combo.currentText())
-            else _update_current_cmap(tool, base=combo.current_matplotlib_name())
+            if editor.mixed_combo_text(combo.currentText())
+            else _update_current_cmap(editor, base=combo.current_matplotlib_name())
         ),
     )
     cmap_combo.blockSignals(False)
     cmap_layout.addWidget(cmap_combo, 1)
     cmap_layout.addWidget(cmap_reverse_check)
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Colormap",
         cmap_widget,
         "Colormap and reverse-colormap controls.",
     )
 
-    norm_combo = tool._combo(
+    norm_combo = editor.combo(
         _norm_combo_choices(operation.norm_name),
-        tool._batch_combo_text(
+        editor.batch_combo_text(
             operation,
             lambda target: target.norm_name,
             _norm_combo_text,
         ),
-        lambda text: _update_current_norm_name(tool, _norm_name_from_combo_text(text)),
+        lambda text: _update_current_norm_name(
+            editor, _norm_name_from_combo_text(text)
+        ),
         parent=page,
-        mixed=tool._batch_is_mixed(
+        mixed=editor.batch_is_mixed(
             operation, lambda target: _norm_combo_text(target.norm_name)
         ),
     )
     norm_combo.setObjectName("figureComposerPlotArrayNormCombo")
-    tool._add_form_row(layout, "Norm", norm_combo, "Color normalization.")
+    editor.add_form_row(layout, "Norm", norm_combo, "Color normalization.")
 
     norm_fields = _norm_kwarg_fields(operation.norm_name)
     if "gamma" in norm_fields:
-        gamma_mixed = tool._batch_is_mixed(
+        gamma_mixed = editor.batch_is_mixed(
             operation, lambda target: _norm_gamma_value(target)
         )
         gamma_widget = erlab.interactive.colors.ColorMapGammaWidget(
@@ -656,15 +655,15 @@ def _build_plot_array_colors_page(
             spin_cls=erlab.interactive.utils.BetterSpinBox,
         )
         gamma_widget.setObjectName("figureComposerPlotArrayGammaWidget")
-        tool._connect_editor_signal(
+        editor.connect_signal(
             gamma_widget,
             gamma_widget.valueChanged,
-            lambda value: _update_current_norm_gamma(tool, value),
+            lambda value: _update_current_norm_gamma(editor, value),
         )
-        tool._add_form_row(
+        editor.add_form_row(
             layout,
             "Gamma",
-            tool._mixed_value_widget(gamma_widget, mixed=gamma_mixed, parent=page),
+            editor.mixed_value_widget(gamma_widget, mixed=gamma_mixed, parent=page),
             "Gamma value for the selected normalization.",
         )
 
@@ -681,22 +680,22 @@ def _build_plot_array_colors_page(
     for attr, (label, tooltip) in norm_number_fields.items():
         if attr not in norm_fields:
             continue
-        text, mixed = tool._batch_text(
+        text, mixed = editor.batch_text(
             operation,
             _operation_field_getter(attr),
             lambda value: "" if value is None else str(value),
         )
-        edit = tool._line_edit(text, parent=page)
-        tool._apply_mixed_line_edit(edit, mixed)
+        edit = editor.line_edit(text, parent=page)
+        editor.apply_mixed_line_edit(edit, mixed)
         edit.setObjectName(f"figureComposerPlotArray{attr[0].upper()}{attr[1:]}Edit")
-        tool._connect_line_edit_finished(
+        editor.connect_line_edit_finished(
             edit,
-            _norm_number_update_callback(tool, attr),
+            _norm_number_update_callback(editor, attr),
         )
         norm_number_widgets[attr] = (label, edit, tooltip)
 
     if "vmin" in norm_number_widgets and "vmax" in norm_number_widgets:
-        tool._add_compound_form_row(
+        editor.add_compound_form_row(
             layout,
             "Color limits",
             (
@@ -706,7 +705,7 @@ def _build_plot_array_colors_page(
             "Lower and upper color-normalization bounds.",
         )
     if "vcenter" in norm_number_widgets and "halfrange" in norm_number_widgets:
-        tool._add_compound_form_row(
+        editor.add_compound_form_row(
             layout,
             "Center/range",
             (
@@ -716,76 +715,74 @@ def _build_plot_array_colors_page(
             "Center and half-range for centered color normalization.",
         )
     for label, edit, tooltip in norm_number_widgets.values():
-        tool._add_form_row(layout, label, edit, tooltip)
+        editor.add_form_row(layout, label, edit, tooltip)
 
     if "clip" in norm_fields:
-        clip_mixed = tool._batch_is_mixed(operation, lambda target: target.norm_clip)
-        clip_combo = tool._combo(
+        clip_mixed = editor.batch_is_mixed(operation, lambda target: target.norm_clip)
+        clip_combo = editor.combo(
             ["default", "False", "True"],
             None if clip_mixed else _norm_clip_text(operation.norm_clip),
-            lambda text: tool._update_current_operation(
-                norm_clip=_norm_clip_from_text(text)
-            ),
+            lambda text: editor.request_update(norm_clip=_norm_clip_from_text(text)),
             parent=page,
             mixed=clip_mixed,
         )
         clip_combo.setObjectName("figureComposerPlotArrayNormClipCombo")
-        tool._add_form_row(
+        editor.add_form_row(
             layout,
             "Clip",
             clip_combo,
             "clip argument for the selected normalization object.",
         )
 
-    norm_kwargs_text, norm_kwargs_mixed = tool._batch_text(
+    norm_kwargs_text, norm_kwargs_mixed = editor.batch_text(
         operation, lambda target: target.norm_kwargs, _format_dict
     )
-    norm_kwargs_edit = tool._line_edit(norm_kwargs_text, parent=page)
-    tool._apply_mixed_line_edit(norm_kwargs_edit, norm_kwargs_mixed)
+    norm_kwargs_edit = editor.line_edit(norm_kwargs_text, parent=page)
+    editor.apply_mixed_line_edit(norm_kwargs_edit, norm_kwargs_mixed)
     norm_kwargs_edit.setObjectName("figureComposerPlotArrayNormKwargsEdit")
-    tool._connect_line_edit_finished(
+    editor.connect_line_edit_finished(
         norm_kwargs_edit,
-        lambda text: _update_current_norm_kwargs(tool, text),
+        lambda text: _update_current_norm_kwargs(editor, text),
     )
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Norm kwargs",
         norm_kwargs_edit,
         "Extra dict literal or keyword arguments for the norm constructor.",
     )
 
-    tool._add_form_section(
+    editor.add_form_section(
         layout,
         "Colorbar",
         object_name="figureComposerPlotArrayColorsColorbarSection",
     )
-    colorbar_mixed = tool._batch_is_mixed(operation, lambda target: target.colorbar)
-    colorbar_combo = tool._combo(
+    colorbar_mixed = editor.batch_is_mixed(operation, lambda target: target.colorbar)
+    colorbar_combo = editor.combo(
         ["none", "right"],
         None if colorbar_mixed else operation.colorbar,
-        lambda text: tool._update_current_operation(colorbar=text),
+        lambda text: editor.request_update(colorbar=text),
         parent=page,
         mixed=colorbar_mixed,
     )
     colorbar_combo.setObjectName("figureComposerPlotArrayColorbarCombo")
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Colorbar",
         colorbar_combo,
         "Whether plot_array should draw a colorbar.",
     )
 
-    colorbar_kwargs_text, colorbar_kwargs_mixed = tool._batch_text(
+    colorbar_kwargs_text, colorbar_kwargs_mixed = editor.batch_text(
         operation, lambda target: target.colorbar_kw, _format_dict
     )
-    colorbar_kwargs_edit = tool._line_edit(colorbar_kwargs_text, parent=page)
-    tool._apply_mixed_line_edit(colorbar_kwargs_edit, colorbar_kwargs_mixed)
+    colorbar_kwargs_edit = editor.line_edit(colorbar_kwargs_text, parent=page)
+    editor.apply_mixed_line_edit(colorbar_kwargs_edit, colorbar_kwargs_mixed)
     colorbar_kwargs_edit.setObjectName("figureComposerPlotArrayColorbarKwEdit")
-    tool._connect_line_edit_finished(
+    editor.connect_line_edit_finished(
         colorbar_kwargs_edit,
-        lambda text: tool._update_current_operation(colorbar_kw=_dict_from_text(text)),
+        lambda text: editor.request_update(colorbar_kw=_dict_from_text(text)),
     )
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Colorbar kwargs",
         colorbar_kwargs_edit,
@@ -795,20 +792,20 @@ def _build_plot_array_colors_page(
 
 
 def _build_plot_array_advanced_page(
-    tool: FigureComposerTool, operation: FigureOperationState
+    editor: FigureOperationEditor, operation: FigureOperationState
 ) -> QtWidgets.QWidget:
-    page, layout = tool._new_step_form_page("figureComposerPlotArrayAdvancedPage")
-    extra_text, extra_mixed = tool._batch_text(
+    page, layout = editor.new_form_page("figureComposerPlotArrayAdvancedPage")
+    extra_text, extra_mixed = editor.batch_text(
         operation, lambda target: target.extra_kwargs, _format_dict
     )
-    extra_edit = tool._line_edit(extra_text, parent=page)
-    tool._apply_mixed_line_edit(extra_edit, extra_mixed)
+    extra_edit = editor.line_edit(extra_text, parent=page)
+    editor.apply_mixed_line_edit(extra_edit, extra_mixed)
     extra_edit.setObjectName("figureComposerPlotArrayExtraKwEdit")
-    tool._connect_line_edit_finished(
+    editor.connect_line_edit_finished(
         extra_edit,
-        lambda text: tool._update_current_operation(extra_kwargs=_dict_from_text(text)),
+        lambda text: editor.request_update(extra_kwargs=_dict_from_text(text)),
     )
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Extra kwargs",
         extra_edit,
@@ -818,25 +815,25 @@ def _build_plot_array_advanced_page(
 
 
 def _editor_sections(
-    tool: FigureComposerTool, operation: FigureOperationState
+    editor: FigureOperationEditor, operation: FigureOperationState
 ) -> tuple[StepSection, ...]:
     return (
         StepSection(
             "view",
             "View",
-            _build_plot_array_view_page(tool, operation),
+            _build_plot_array_view_page(editor, operation),
             "Choose image orientation, limits, and cropping.",
         ),
         StepSection(
             "colors",
             "Colors",
-            _build_plot_array_colors_page(tool, operation),
+            _build_plot_array_colors_page(editor, operation),
             "Set colormap, normalization, and colorbar options.",
         ),
         StepSection(
             "advanced",
             "Other",
-            _build_plot_array_advanced_page(tool, operation),
+            _build_plot_array_advanced_page(editor, operation),
             "Pass advanced keyword arguments to plot_array.",
         ),
     )

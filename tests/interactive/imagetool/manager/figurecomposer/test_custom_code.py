@@ -553,9 +553,9 @@ def test_figure_composer_custom_code_editor_is_multiline_and_debounced(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("code")
+    tool.operation_editor.select_section("code")
 
-    current_page = tool.operation_panel.editor_stack.currentWidget()
+    current_page = tool.operation_editor.stack.currentWidget()
     assert current_page is not None
     code_edit = current_page.findChild(
         erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
@@ -613,9 +613,9 @@ def test_figure_composer_custom_code_editor_skips_render_until_valid_python(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("code")
+    tool.operation_editor.select_section("code")
 
-    current_page = tool.operation_panel.editor_stack.currentWidget()
+    current_page = tool.operation_editor.stack.currentWidget()
     assert current_page is not None
     code_edit = current_page.findChild(
         erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
@@ -679,9 +679,9 @@ def test_figure_composer_custom_code_pending_edit_survives_step_switch(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("code")
+    tool.operation_editor.select_section("code")
 
-    current_page = tool.operation_panel.editor_stack.currentWidget()
+    current_page = tool.operation_editor.stack.currentWidget()
     assert current_page is not None
     code_edit = current_page.findChild(
         erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
@@ -720,9 +720,9 @@ def test_figure_composer_custom_code_pending_edit_flushes_on_close(qtbot) -> Non
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("code")
+    tool.operation_editor.select_section("code")
 
-    current_page = tool.operation_panel.editor_stack.currentWidget()
+    current_page = tool.operation_editor.stack.currentWidget()
     assert current_page is not None
     code_edit = current_page.findChild(
         erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
@@ -1248,13 +1248,13 @@ def test_figure_composer_untrusted_custom_code_reports_render_error(qtbot) -> No
     assert "Custom code is not trusted" in item.toolTip(
         figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
     )
-    assert tool.step_source_status_label.isHidden()
+    assert tool.operation_editor.source_status_label.isHidden()
 
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("code")
-    trusted_check = tool.operation_panel.editor_stack.currentWidget().findChild(
+    tool.operation_editor.select_section("code")
+    trusted_check = tool.operation_editor.stack.currentWidget().findChild(
         QtWidgets.QCheckBox, "figureComposerCustomCodeTrustedCheck"
     )
     assert trusted_check is not None
@@ -1270,4 +1270,4 @@ def test_figure_composer_untrusted_custom_code_reports_render_error(qtbot) -> No
     assert "Custom code is not trusted" not in item.toolTip(
         figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
     )
-    assert tool.step_source_status_label.isHidden()
+    assert tool.operation_editor.source_status_label.isHidden()

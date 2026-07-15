@@ -1,8 +1,8 @@
 """Operation spec interfaces shared by Figure Composer step modules.
 
 Editor controls that mutate recipe state must use
-``FigureComposerTool._connect_editor_signal`` or a tool factory such as
-``_combo``/``_check_box``. Direct signal connections can fire during widget
+``FigureOperationEditor.connect_signal`` or an editor factory such as
+``combo``/``check_box``. Direct signal connections can fire during widget
 population, after a section rebuild, or from a retired Qt wrapper; those signals
 must not write recipe state.
 
@@ -14,7 +14,7 @@ Batch-editable controls must also declare a mixed-value presentation:
   only when the user activates a real item;
 - check boxes use Qt's partially checked state;
 - widgets without native placeholder support, such as spinboxes, sliders, and
-  picker buttons, are wrapped with ``FigureComposerTool._mixed_value_widget`` and
+  picker buttons, are wrapped with ``FigureOperationEditor.mixed_value_widget`` and
   still connect through the guarded signal helper.
 
 When adding a new operation or method control, implement one of these patterns
@@ -34,7 +34,6 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from matplotlib.figure import Figure
-    from qtpy import QtWidgets
 
     from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._model._state import (
@@ -42,14 +41,10 @@ if typing.TYPE_CHECKING:
         FigureOperationState,
     )
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
-
-
-@dataclasses.dataclass(frozen=True)
-class StepSection:
-    key: str
-    title: str
-    page: QtWidgets.QWidget
-    tooltip: str
+    from erlab.interactive._figurecomposer._ui._operation_editor import (
+        FigureOperationEditor,
+        StepSection,
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -69,9 +64,9 @@ class OperationSpec:
     target_text: Callable[[FigureComposerTool, FigureOperationState], str]
     has_invalid_target: Callable[[FigureRecipeContext, FigureOperationState], bool]
     uses_source_section: Callable[[FigureOperationState], bool]
-    build_source_editor: Callable[[FigureComposerTool, FigureOperationState], None]
+    build_source_editor: Callable[[FigureOperationEditor, FigureOperationState], None]
     build_editor_sections: Callable[
-        [FigureComposerTool, FigureOperationState], Sequence[StepSection]
+        [FigureOperationEditor, FigureOperationState], Sequence[StepSection]
     ]
     section_summary: Callable[[FigureComposerTool, str, FigureOperationState], str]
     render: Callable[
@@ -90,7 +85,7 @@ class OperationSpec:
 
 
 def _empty_source_editor(
-    _tool: FigureComposerTool, _operation: FigureOperationState
+    _editor: FigureOperationEditor, _operation: FigureOperationState
 ) -> None:
     return
 
@@ -115,7 +110,3 @@ def _empty_section_summary(
     _tool: FigureComposerTool, _key: str, _operation: FigureOperationState
 ) -> str:
     return ""
-
-
-COMMON_SOURCE_SECTION_TOOLTIP = "Choose which data this step uses."
-COMMON_AXES_SECTION_TOOLTIP = "Choose which subplot axes this step draws into."

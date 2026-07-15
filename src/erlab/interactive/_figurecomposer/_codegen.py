@@ -35,7 +35,9 @@ def generated_code(
     invalid_indices = tool._invalid_operation_indices()
     if invalid_indices:
         if any(
-            tool._operation_has_invalid_input(tool._document.recipe.operations[index])
+            tool.operation_editor.has_input_error(
+                tool._document.recipe.operations[index]
+            )
             for index in invalid_indices
         ):
             raise ValueError(

@@ -74,7 +74,7 @@ def test_figure_composer_plot_array_source_selector_clears_legacy_selection(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("sources")
+    tool.operation_editor.select_section("sources")
 
     combo = next(
         (
@@ -83,7 +83,7 @@ def test_figure_composer_plot_array_source_selector_clears_legacy_selection(
                 QtWidgets.QComboBox, "figureComposerPlotArraySourceCombo"
             )
             if candidate.property("figure_composer_editor_generation")
-            == tool._operation_editor_generation
+            == tool.operation_editor.generation
         ),
         None,
     )
@@ -304,7 +304,7 @@ def test_figure_composer_source_qsel_width_editor_updates_selection(
     assert selected_source.qsel == {"eV": 0.0, "eV_width": 0.2}
     assert selected_source.selection_source == "data"
     selected = figurecomposer_plot_array._safe_selected_plot_array_data(
-        tool, normalized_operation
+        tool._document, normalized_operation
     )
     assert selected is not None
     xr.testing.assert_identical(selected, data.qsel(eV=0.0, eV_width=0.2))
@@ -483,7 +483,7 @@ def test_figure_composer_plot_array_selection_error_is_visible(qtbot) -> None:
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    assert "selection" not in tool.operation_panel.section_keys
+    assert "selection" not in tool.operation_editor.section_keys
 
 
 def test_figure_composer_plot_array_has_no_operation_selection_page(qtbot) -> None:
@@ -505,7 +505,7 @@ def test_figure_composer_plot_array_has_no_operation_selection_page(qtbot) -> No
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    assert tool.operation_panel.section_keys == (
+    assert tool.operation_editor.section_keys == (
         "sources",
         "axes",
         "view",
@@ -530,7 +530,7 @@ def test_figure_composer_plot_array_has_no_operation_selection_page(qtbot) -> No
     )
     qtbot.addWidget(mixed_tool)
     _select_operation_rows(mixed_tool, (0, 1))
-    assert mixed_tool.operation_panel.section_keys == (
+    assert mixed_tool.operation_editor.section_keys == (
         "sources",
         "axes",
         "view",
@@ -554,7 +554,7 @@ def test_figure_composer_plot_array_colormap_activation_updates_recipe(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("colors")
+    tool.operation_editor.select_section("colors")
 
     cmap_combo = next(
         (
@@ -564,7 +564,7 @@ def test_figure_composer_plot_array_colormap_activation_updates_recipe(
                 "figureComposerPlotArrayCmapCombo",
             )
             if candidate.property("figure_composer_editor_generation")
-            == tool._operation_editor_generation
+            == tool.operation_editor.generation
         ),
         None,
     )
@@ -601,7 +601,7 @@ def test_figure_composer_plot_array_colorcet_selection_uses_matplotlib_name(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("colors")
+    tool.operation_editor.select_section("colors")
 
     cmap_combo = next(
         (
@@ -611,7 +611,7 @@ def test_figure_composer_plot_array_colorcet_selection_uses_matplotlib_name(
                 "figureComposerPlotArrayCmapCombo",
             )
             if candidate.property("figure_composer_editor_generation")
-            == tool._operation_editor_generation
+            == tool.operation_editor.generation
         ),
         None,
     )
@@ -665,7 +665,7 @@ def test_figure_composer_plot_array_default_colormap_editor_uses_stylesheet(
         tool.operation_panel.operation_list.setCurrentItem(
             tool.operation_panel.operation_list.topLevelItem(0)
         )
-        tool.operation_panel.select_section("colors")
+        tool.operation_editor.select_section("colors")
 
         cmap_combo = next(
             (
@@ -675,7 +675,7 @@ def test_figure_composer_plot_array_default_colormap_editor_uses_stylesheet(
                     "figureComposerPlotArrayCmapCombo",
                 )
                 if candidate.property("figure_composer_editor_generation")
-                == tool._operation_editor_generation
+                == tool.operation_editor.generation
             ),
             None,
         )
@@ -686,7 +686,7 @@ def test_figure_composer_plot_array_default_colormap_editor_uses_stylesheet(
                     QtWidgets.QCheckBox, "figureComposerPlotArrayCmapReverseCheck"
                 )
                 if candidate.property("figure_composer_editor_generation")
-                == tool._operation_editor_generation
+                == tool.operation_editor.generation
             ),
             None,
         )
@@ -730,7 +730,7 @@ def test_figure_composer_plot_array_colormap_editor_initialization_edges(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("colors")
+    tool.operation_editor.select_section("colors")
     cmap_combo = next(
         (
             candidate
@@ -739,7 +739,7 @@ def test_figure_composer_plot_array_colormap_editor_initialization_edges(
                 "figureComposerPlotArrayCmapCombo",
             )
             if candidate.property("figure_composer_editor_generation")
-            == tool._operation_editor_generation
+            == tool.operation_editor.generation
         ),
         None,
     )
@@ -756,7 +756,7 @@ def test_figure_composer_plot_array_colormap_editor_initialization_edges(
     missing_cmap_tool.operation_panel.operation_list.setCurrentItem(
         missing_cmap_tool.operation_panel.operation_list.topLevelItem(0)
     )
-    missing_cmap_tool.operation_panel.select_section("colors")
+    missing_cmap_tool.operation_editor.select_section("colors")
     assert (
         missing_cmap_tool.findChild(
             erlab.interactive.colors.ColorMapComboBox,
@@ -778,7 +778,7 @@ def test_figure_composer_plot_array_colormap_editor_initialization_edges(
     )
     qtbot.addWidget(mixed_tool)
     _select_operation_rows(mixed_tool, (0, 1))
-    mixed_tool.operation_panel.select_section("colors")
+    mixed_tool.operation_editor.select_section("colors")
     mixed_cmap_combo = next(
         (
             candidate
@@ -787,7 +787,7 @@ def test_figure_composer_plot_array_colormap_editor_initialization_edges(
                 "figureComposerPlotArrayCmapCombo",
             )
             if candidate.property("figure_composer_editor_generation")
-            == mixed_tool._operation_editor_generation
+            == mixed_tool.operation_editor.generation
         ),
         None,
     )
@@ -939,7 +939,7 @@ def test_figure_composer_plot_array_aspect_control_updates_recipe(qtbot) -> None
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("view")
+    tool.operation_editor.select_section("view")
 
     aspect_combo = next(
         (
@@ -949,7 +949,7 @@ def test_figure_composer_plot_array_aspect_control_updates_recipe(qtbot) -> None
                 "figureComposerPlotArrayAspectCombo",
             )
             if candidate.property("figure_composer_editor_generation")
-            == tool._operation_editor_generation
+            == tool.operation_editor.generation
         ),
         None,
     )
@@ -1004,7 +1004,7 @@ def test_figure_composer_plot_array_aspect_control_preserves_saved_custom_value(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("view")
+    tool.operation_editor.select_section("view")
 
     aspect_combo = next(
         (
@@ -1014,7 +1014,7 @@ def test_figure_composer_plot_array_aspect_control_preserves_saved_custom_value(
                 "figureComposerPlotArrayAspectCombo",
             )
             if candidate.property("figure_composer_editor_generation")
-            == tool._operation_editor_generation
+            == tool.operation_editor.generation
         ),
         None,
     )
@@ -1031,40 +1031,25 @@ def test_figure_composer_plot_array_aspect_control_preserves_saved_custom_value(
 def test_figure_composer_plot_array_aspect_control_shows_mixed_batch_value(
     qtbot,
 ) -> None:
-    parent = QtWidgets.QWidget()
-    qtbot.addWidget(parent)
-    operation = FigureOperationState.plot_array(
-        label="plot_array",
-        source="data",
+    data = _figure_composer_image_source("data").isel(eV=0)
+    first = FigureOperationState.plot_array(label="first", source="data")
+    second = FigureOperationState.plot_array(label="second", source="data").model_copy(
+        update={"aspect": "equal"}
     )
-
-    class _BatchTool:
-        def _batch_is_mixed(
-            self,
-            _operation: FigureOperationState,
-            _value: Callable[[FigureOperationState], object],
-        ) -> bool:
-            return True
-
-        def _mark_editor_control(self, _widget: QtWidgets.QWidget) -> None:
-            return
-
-        def _connect_editor_signal(
-            self,
-            _owner: QtWidgets.QWidget,
-            signal: object,
-            slot: Callable[..., None],
-        ) -> None:
-            signal.connect(slot)
-
-        def _update_current_operation(self, **_updates: object) -> None:
-            return
-
-    combo = figurecomposer_plot_array._plot_array_aspect_combo(
-        typing.cast("FigureComposerTool", _BatchTool()),
-        operation,
-        parent=parent,
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(first, second),
+        primary_source="data",
     )
+    qtbot.addWidget(tool)
+
+    _select_operation_rows(tool, (0, 1))
+    tool.operation_editor.select_section("view")
+    combo = tool.operation_editor.stack.currentWidget().findChild(
+        QtWidgets.QComboBox, "figureComposerPlotArrayAspectCombo"
+    )
+    assert combo is not None
 
     item = typing.cast("typing.Any", combo.model()).item(0)
     assert combo.currentData() is _editor_controls.MIXED_VALUE
@@ -1232,7 +1217,7 @@ def test_figure_composer_plot_array_helper_edges(qtbot, monkeypatch) -> None:
     )
     assert (
         figurecomposer_plot_array._selected_plot_array_data(
-            base_tool, missing_selection
+            base_tool._document, missing_selection
         )
         is None
     )
@@ -1293,14 +1278,9 @@ def test_figure_composer_plot_array_helper_edges(qtbot, monkeypatch) -> None:
         figurecomposer_plot_array._axes_count(grid_tool._document, grid_operation) == 1
     )
 
-    no_update_tool = types.SimpleNamespace(
-        _update_operations=lambda *_args, **_kwargs: pytest.fail(
-            "None source should not update"
-        )
-    )
-    figurecomposer_plot_array._update_current_source(
-        typing.cast("FigureComposerTool", no_update_tool), None
-    )
+    initial_recipe = base_tool.tool_status
+    figurecomposer_plot_array._update_current_source(base_tool.operation_editor, None)
+    assert base_tool.tool_status == initial_recipe
 
     rendered: list[tuple[xr.DataArray, dict[str, typing.Any]]] = []
     monkeypatch.setattr(
@@ -1328,7 +1308,7 @@ def test_figure_composer_plot_array_helper_edges(qtbot, monkeypatch) -> None:
         )
 
 
-def test_figure_composer_plot_array_norm_and_callback_helpers() -> None:
+def test_figure_composer_plot_array_norm_and_callback_helpers(qtbot) -> None:
     power_operation = FigureOperationState.plot_array(
         label="power",
         source="image",
@@ -1395,63 +1375,67 @@ def test_figure_composer_plot_array_norm_and_callback_helpers() -> None:
     assert figurecomposer_plot_array._norm_clip_from_text("False") is False
     assert figurecomposer_plot_array._norm_clip_from_text("default") is None
 
-    class _FakeTool:
-        def __init__(self) -> None:
-            self.operation = FigureOperationState.plot_array(
+    image = _figure_composer_image_source("image").isel(eV=0)
+    editor_tool = FigureComposerTool.from_sources(
+        {"image": image},
+        sources=(FigureSourceState(name="image", label="image"),),
+        operations=(
+            FigureOperationState.plot_array(
                 label="fake",
                 source="image",
-            ).model_copy(update={"cmap": "viridis_r"})
-            self.updates: list[dict[str, typing.Any]] = []
-            self.rebuild_updates: list[dict[str, typing.Any]] = []
-
-        def _update_current_operation(self, **updates: typing.Any) -> None:
-            self.updates.append(updates)
-            self.operation = self.operation.model_copy(update=updates)
-
-        def _update_current_operation_rebuild(self, **updates: typing.Any) -> None:
-            self.rebuild_updates.append(updates)
-            self.operation = self.operation.model_copy(update=updates)
-
-        def _current_operation(self) -> tuple[int, FigureOperationState] | None:
-            return 0, self.operation
-
-    fake_tool = _FakeTool()
-    cast_tool = typing.cast("FigureComposerTool", fake_tool)
-    update_vmin = figurecomposer_plot_array._norm_number_update_callback(
-        cast_tool, "vmin"
+            ).model_copy(update={"cmap": "viridis_r"}),
+        ),
+        primary_source="image",
     )
+    qtbot.addWidget(editor_tool)
+    editor = editor_tool.operation_editor
+
+    update_vmin = figurecomposer_plot_array._norm_number_update_callback(editor, "vmin")
     update_vmin("  ")
+    assert editor_tool.tool_status.operations[0].vmin is None
     update_vmin("1.5")
-    figurecomposer_plot_array._update_current_norm_name(cast_tool, "Normalize")
-    figurecomposer_plot_array._update_current_norm_gamma(cast_tool, 0.5)
-    figurecomposer_plot_array._update_current_norm_kwargs(
-        cast_tool, "gamma=2.0, clip=False, custom='value'"
-    )
-    figurecomposer_plot_array._update_current_cmap(cast_tool, reverse=False)
-    figurecomposer_plot_array._update_current_cmap(cast_tool, base="plasma")
-    assert fake_tool.updates[:2] == [{"vmin": None}, {"vmin": 1.5}]
-    assert {"norm_gamma": 0.5, "gamma": None} in fake_tool.updates
-    assert fake_tool.updates[-2:] == [{"cmap": "viridis"}, {"cmap": "plasma"}]
-    assert fake_tool.rebuild_updates[0] == {
-        "norm_name": "Normalize",
-        "gamma": None,
-        "norm_gamma": None,
-    }
-    assert fake_tool.rebuild_updates[-1] == {
-        "norm_gamma": 2.0,
-        "norm_clip": False,
-        "norm_kwargs": {"custom": "value"},
-    }
+    assert editor_tool.tool_status.operations[0].vmin == 1.5
 
-    none_tool = types.SimpleNamespace(_current_operation=lambda: None)
+    figurecomposer_plot_array._update_current_norm_name(editor, "Normalize")
+    operation = editor_tool.tool_status.operations[0]
+    assert operation.norm_name == "Normalize"
+    assert operation.gamma is None
+    assert operation.norm_gamma is None
+
+    figurecomposer_plot_array._update_current_norm_gamma(editor, 0.5)
+    operation = editor_tool.tool_status.operations[0]
+    assert operation.norm_gamma == 0.5
+    assert operation.gamma is None
+
+    figurecomposer_plot_array._update_current_norm_kwargs(
+        editor, "gamma=2.0, clip=False, custom='value'"
+    )
+    operation = editor_tool.tool_status.operations[0]
+    assert operation.norm_gamma == 2.0
+    assert operation.norm_clip is False
+    assert operation.norm_kwargs == {"custom": "value"}
+
+    figurecomposer_plot_array._update_current_cmap(editor, reverse=False)
+    assert editor_tool.tool_status.operations[0].cmap == "viridis"
+    figurecomposer_plot_array._update_current_cmap(editor, base="plasma")
+    assert editor_tool.tool_status.operations[0].cmap == "plasma"
+
+    empty_editor_tool = FigureComposerTool.from_sources(
+        {"image": image},
+        sources=(FigureSourceState(name="image", label="image"),),
+        operations=(),
+        primary_source="image",
+    )
+    qtbot.addWidget(empty_editor_tool)
     figurecomposer_plot_array._update_current_cmap(
-        typing.cast("FigureComposerTool", none_tool),
+        empty_editor_tool.operation_editor,
         base="magma",
     )
+    assert empty_editor_tool.tool_status.operations == ()
 
     assert (
         figurecomposer_plot_array._section_summary(
-            typing.cast("FigureComposerTool", none_tool), "unknown", power_operation
+            editor_tool, "unknown", power_operation
         )
         == ""
     )

@@ -1,13 +1,15 @@
-"""Operation-list and generic editor presentation for Figure Composer."""
+"""Recipe-step list and actions for Figure Composer."""
 
 from __future__ import annotations
 
 import typing
-import weakref
 
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive._figurecomposer._ui._operation_editor import (
+    FigureOperationEditor,
+)
 from erlab.interactive._figurecomposer._ui._reorder_list import (
     ReorderList,
     event_requests_context_menu,
@@ -18,9 +20,7 @@ from erlab.interactive._figurecomposer._ui._widgets import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Collection, Mapping, Sequence
-
-    from erlab.interactive._figurecomposer._operations._base import StepSection
+    from collections.abc import Collection, Sequence
 
 
 _OPERATION_LIST_STEP_COLUMN = 0
@@ -28,11 +28,6 @@ _OPERATION_LIST_TARGET_COLUMN = 1
 _OPERATION_LIST_STATUS_COLUMN = 2
 _OPERATION_LIST_TARGET_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
 _OPERATION_LIST_STATUS_ROLE = QtCore.Qt.ItemDataRole.UserRole + 2
-_RETIRED_EDITOR_DRAIN_DELAY_MS = 100
-_COMBO_POPUP_REBUILD_GRACE_MS = 150
-_COMBO_INTERACTION_REBUILD_GRACE_MS = 250
-_COMBO_TRACKED_PROPERTY = "figure_composer_combo_tracked"
-_COMBO_POPUP_GUARD_ID_PROPERTY = "figure_composer_combo_popup_guard_id"
 
 
 class FigureOperationAction(typing.NamedTuple):
@@ -55,76 +50,6 @@ class FigureOperationRow(typing.NamedTuple):
     status: str
     status_codes: tuple[str, ...]
     status_tooltip: str
-
-
-class _FigureComposerStepEditorScroll(QtWidgets.QScrollArea):
-    """Scroll vertically without allowing editor content to clip horizontally."""
-
-    def minimumSizeHint(self) -> QtCore.QSize:
-        hint = super().minimumSizeHint()
-        content = self.widget()
-        if content is None:
-            return hint
-        width = content.minimumSizeHint().width() + 2 * self.frameWidth()
-        if (
-            self.verticalScrollBarPolicy()
-            != QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        ):
-            scrollbar = typing.cast("QtWidgets.QScrollBar", self.verticalScrollBar())
-            width += scrollbar.sizeHint().width()
-        return QtCore.QSize(max(hint.width(), width), hint.height())
-
-
-class _FigureComposerStepEditorPage(QtWidgets.QWidget):
-    """Editor page that clears itself with the enclosing tab pane background."""
-
-    def __init__(
-        self,
-        editor_tabs: QtWidgets.QTabWidget,
-        parent: QtWidgets.QWidget,
-    ) -> None:
-        super().__init__(parent)
-        self._editor_tabs = editor_tabs
-        self._background_color = self.palette().color(QtGui.QPalette.ColorRole.Window)
-        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
-
-    def refresh_background(self) -> None:
-        source = self._editor_tabs
-        sample_point = source.rect().center()
-        background = QtGui.QPixmap(1, 1)
-        background.fill(self._background_color)
-        source.render(
-            background,
-            QtCore.QPoint(),
-            QtGui.QRegion(QtCore.QRect(sample_point, QtCore.QSize(1, 1))),
-            QtWidgets.QWidget.RenderFlag.DrawWindowBackground,
-        )
-        color = background.toImage().pixelColor(0, 0)
-        if color.isValid() and color.alpha() != 0:
-            self._background_color = color
-            self.update()
-
-    def paintEvent(self, event: QtGui.QPaintEvent | None) -> None:
-        painter = QtGui.QPainter(self)
-        try:
-            painter.fillRect(self.rect(), self._background_color)
-        finally:
-            painter.end()
-        if event is not None:
-            super().paintEvent(event)
-
-    def changeEvent(self, event: QtCore.QEvent | None) -> None:
-        if event is not None:
-            super().changeEvent(event)
-        if event is not None and event.type() in {
-            QtCore.QEvent.Type.ApplicationPaletteChange,
-            QtCore.QEvent.Type.PaletteChange,
-            QtCore.QEvent.Type.StyleChange,
-        }:
-            self._background_color = self.palette().color(
-                QtGui.QPalette.ColorRole.Window
-            )
-            erlab.interactive.utils.single_shot(self, 0, self.refresh_background)
 
 
 class _FigureComposerOperationList(ReorderList):
@@ -196,7 +121,6 @@ class FigureOperationPanel(QtWidgets.QWidget):
         super().__init__(editor_tabs)
         self._operation_viewport: QtWidgets.QWidget | None = None
         self.setObjectName("figureComposerRecipePage")
-        self._editor_tabs = editor_tabs
         self._selection_input_event = False
         self._multi_select_event = False
         self._emitted_selection_state: tuple[str | None, frozenset[str]] | None = None
@@ -206,23 +130,14 @@ class FigureOperationPanel(QtWidgets.QWidget):
         self._can_move_up = False
         self._can_move_down = False
         self._target_delegate: _AxesTargetItemDelegate | None = None
-        self._sections: tuple[StepSection, ...] = ()
-        self._section_buttons: dict[str, QtWidgets.QToolButton] = {}
-        self._current_section_key = "sources"
-        self._section_tab_stop_refs: dict[
-            str, weakref.ReferenceType[QtWidgets.QWidget]
-        ] = {}
-        self._step_tab_order_update_pending = False
-        self._transient_editor_pages: list[QtWidgets.QWidget] = []
-        self._retired_editor_widgets: list[QtWidgets.QWidget] = []
-        self._retired_editor_drain_pending = False
-        self._combo_popup_guard_tokens: set[int] = set()
-        self._next_combo_popup_guard_token = 0
-        self._tracked_combo_refs: list[weakref.ReferenceType[QtWidgets.QComboBox]] = []
         self._closing = False
-        self._build_ui(add_actions)
+        self._build_ui(editor_tabs, add_actions)
 
-    def _build_ui(self, add_actions: Sequence[FigureOperationAction]) -> None:
+    def _build_ui(
+        self,
+        editor_tabs: QtWidgets.QTabWidget,
+        add_actions: Sequence[FigureOperationAction],
+    ) -> None:
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(4)
@@ -330,402 +245,28 @@ class FigureOperationPanel(QtWidgets.QWidget):
         header.resizeSection(_OPERATION_LIST_STATUS_COLUMN, 88)
         self.splitter.addWidget(self.operation_list)
 
-        self.inspector = QtWidgets.QWidget(self)
-        self.inspector.setObjectName("figureComposerStepInspector")
-        self.inspector.setAutoFillBackground(False)
-        inspector_layout = QtWidgets.QHBoxLayout(self.inspector)
-        inspector_layout.setContentsMargins(0, 0, 0, 0)
-        inspector_layout.setSpacing(6)
-        self.splitter.addWidget(self.inspector)
+        self.editor = FigureOperationEditor(
+            editor_tabs,
+            (
+                self.add_step_button,
+                self.copy_button,
+                self.cut_button,
+                self.paste_button,
+                self.delete_button,
+                self.operation_list,
+            ),
+            self,
+        )
+        self.splitter.addWidget(self.editor)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes((140, 410))
-
-        self.navigator = QtWidgets.QWidget(self.inspector)
-        self.navigator.setObjectName("figureComposerStepNavigator")
-        self.navigator.setFixedWidth(150)
-        self.navigator_layout = QtWidgets.QVBoxLayout(self.navigator)
-        self.navigator_layout.setContentsMargins(0, 0, 0, 0)
-        self.navigator_layout.setSpacing(3)
-        self.navigator_layout.addStretch(1)
-        inspector_layout.addWidget(self.navigator)
-
-        self.editor_scroll = _FigureComposerStepEditorScroll(self.inspector)
-        self.editor_scroll.setObjectName("figureComposerStepEditorScroll")
-        self.editor_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        self.editor_scroll.setWidgetResizable(True)
-        self.editor_scroll.setHorizontalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.editor_scroll.setVerticalScrollBarPolicy(
-            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
-        self.editor_scroll.setAutoFillBackground(False)
-        viewport = typing.cast("QtWidgets.QWidget", self.editor_scroll.viewport())
-        viewport.setObjectName("figureComposerStepEditorViewport")
-        viewport.setAutoFillBackground(False)
-        inspector_layout.addWidget(self.editor_scroll, 1)
-
-        self.editor_stack = QtWidgets.QStackedWidget()
-        self.editor_stack.setObjectName("figureComposerStepSectionStack")
-        self.editor_stack.setAutoFillBackground(False)
-        self.editor_scroll.setWidget(self.editor_stack)
 
         operation_viewport = typing.cast(
             "QtWidgets.QWidget", self.operation_list.viewport()
         )
         self._operation_viewport = operation_viewport
         operation_viewport.installEventFilter(self)
-
-    def create_editor_page(
-        self, object_name: str, *, transient: bool = False
-    ) -> _FigureComposerStepEditorPage:
-        """Create an editor page owned by this panel.
-
-        Transient pages are retired safely when the next editor is prepared;
-        persistent pages can be reused across operation selections.
-        """
-        page = _FigureComposerStepEditorPage(self._editor_tabs, self.editor_stack)
-        page.setObjectName(object_name)
-        if transient:
-            self._transient_editor_pages.append(page)
-        return page
-
-    @property
-    def section_keys(self) -> tuple[str, ...]:
-        """Keys of the currently mounted editor sections."""
-        return tuple(section.key for section in self._sections)
-
-    def _current_editor_page(self) -> QtWidgets.QWidget | None:
-        return self.editor_stack.currentWidget()
-
-    def refresh_current_editor_background(self) -> None:
-        """Refresh the current editor page after a palette or window change."""
-        current_page = self._current_editor_page()
-        if isinstance(current_page, _FigureComposerStepEditorPage):
-            current_page.refresh_background()
-
-    def prepare_editor_rebuild(self) -> None:
-        """Unmount the current editor and safely retire transient pages."""
-        self._section_tab_stop_refs.clear()
-        while self.editor_stack.count():
-            page = typing.cast("QtWidgets.QWidget", self.editor_stack.widget(0))
-            page.hide()
-            self.editor_stack.removeWidget(page)
-        pages = self._transient_editor_pages
-        self._transient_editor_pages = []
-        for page in pages:
-            self._retire_editor_widget(page)
-
-    def replace_sections(
-        self,
-        sections: Sequence[StepSection],
-        *,
-        summaries: Mapping[str, str],
-    ) -> None:
-        """Mount a complete editor-section presentation atomically."""
-        for button in self._section_buttons.values():
-            button.setObjectName("")
-            self._retire_editor_widget(button)
-        self._section_buttons.clear()
-        self._sections = tuple(sections)
-
-        for index, section in enumerate(self._sections):
-            self.editor_stack.addWidget(section.page)
-            button = QtWidgets.QToolButton(self.navigator)
-            button.setText(self._section_button_text(section, summaries))
-            button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
-            button.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
-            button.setSizePolicy(
-                QtWidgets.QSizePolicy.Policy.Expanding,
-                QtWidgets.QSizePolicy.Policy.Fixed,
-            )
-            button.setObjectName(f"figureComposerSection_{section.key}")
-            button.setProperty("section_title", section.title)
-            button.setProperty("section_tooltip", section.tooltip)
-            button.setToolTip(section.tooltip)
-            button.clicked.connect(
-                lambda _checked=False, key=section.key: self.select_section(key)
-            )
-            self.navigator_layout.insertWidget(index, button)
-            self._section_buttons[section.key] = button
-
-        existing_key = self._current_section_key
-        keys = self.section_keys
-        key = existing_key if existing_key in keys else keys[0] if keys else ""
-        if key:
-            self.select_section(key)
-        self.editor_scroll.updateGeometry()
-        self.inspector.updateGeometry()
-
-    def select_section(self, key: str) -> None:
-        """Show one mounted editor section by semantic key."""
-        keys = self.section_keys
-        if key not in keys:
-            return
-        self._current_section_key = key
-        self.editor_stack.setCurrentIndex(keys.index(key))
-        for button_key, button in self._section_buttons.items():
-            selected = button_key == key
-            font = button.font()
-            if font.bold() != selected:
-                font.setBold(selected)
-                button.setFont(font)
-        self.refresh_current_editor_background()
-        self._queue_step_tab_order_refresh()
-
-    def set_section_summaries(self, summaries: Mapping[str, str]) -> None:
-        """Refresh navigation labels without rebuilding editor pages."""
-        for section in self._sections:
-            button = self._section_buttons.get(section.key)
-            if button is not None:
-                button.setText(self._section_button_text(section, summaries))
-
-    @staticmethod
-    def _section_button_text(section: StepSection, summaries: Mapping[str, str]) -> str:
-        summary = summaries.get(section.key, "")
-        return f"{section.title}: {summary}" if summary else section.title
-
-    @staticmethod
-    def _remove_posted_events_recursive(widget: QtWidgets.QWidget) -> None:
-        for child in widget.findChildren(QtCore.QObject):
-            QtCore.QCoreApplication.removePostedEvents(child)
-        QtCore.QCoreApplication.removePostedEvents(widget)
-
-    @staticmethod
-    def _block_signals_recursive(widget: QtWidgets.QWidget) -> None:
-        widget.blockSignals(True)
-        for child in widget.findChildren(QtCore.QObject):
-            if erlab.interactive.utils.qt_is_valid(child):
-                child.blockSignals(True)
-
-    def _retire_editor_widget(self, widget: QtWidgets.QWidget) -> None:
-        """Disable and defer deletion of a replaced editor widget safely."""
-        if not erlab.interactive.utils.qt_is_valid(widget):
-            return
-        self._block_signals_recursive(widget)
-        widget.setEnabled(False)
-        widget.hide()
-        if widget not in self._retired_editor_widgets:
-            self._retired_editor_widgets.append(widget)
-        self._queue_retired_editor_drain()
-
-    def retire_form_controls(self, layout: QtWidgets.QFormLayout) -> None:
-        """Retire every widget currently owned by a dynamic form layout."""
-        while layout.count():
-            item = layout.takeAt(0)
-            if item is None:
-                continue
-            widget = item.widget()
-            if widget is not None:
-                self._retire_editor_widget(widget)
-
-    def _queue_retired_editor_drain(self) -> None:
-        if self._retired_editor_drain_pending or self._closing:
-            return
-        self._retired_editor_drain_pending = True
-        erlab.interactive.utils.single_shot(
-            self,
-            _RETIRED_EDITOR_DRAIN_DELAY_MS,
-            self._drain_retired_editor_widgets,
-        )
-
-    def _drain_retired_editor_widgets(self) -> None:
-        self._retired_editor_drain_pending = False
-        if not erlab.interactive.utils.qt_is_valid(self) or self._closing:
-            return
-        if (
-            not self._retired_editor_widgets
-            or self.editor_rebuild_must_wait()
-            or self._retired_editor_has_focus()
-        ):
-            if self._retired_editor_widgets:
-                self._queue_retired_editor_drain()
-            return
-
-        retired_widgets = self._retired_editor_widgets
-        self._retired_editor_widgets = []
-        for widget in retired_widgets:
-            if not erlab.interactive.utils.qt_is_valid(widget):
-                continue
-            self._remove_posted_events_recursive(widget)
-            widget.setParent(None)
-            widget.deleteLater()
-
-    def _retired_editor_has_focus(self) -> bool:
-        focus_widget = QtWidgets.QApplication.focusWidget()
-        return (
-            focus_widget is not None
-            and erlab.interactive.utils.qt_is_valid(focus_widget)
-            and any(
-                widget is focus_widget or widget.isAncestorOf(focus_widget)
-                for widget in self._retired_editor_widgets
-                if erlab.interactive.utils.qt_is_valid(widget)
-            )
-        )
-
-    def track_editor_controls(self, widget: QtWidgets.QWidget) -> None:
-        """Track combo popups that can make an editor rebuild unsafe."""
-        if isinstance(widget, QtWidgets.QComboBox):
-            self._track_combo_interaction(widget)
-        for combo in widget.findChildren(QtWidgets.QComboBox):
-            self._track_combo_interaction(combo)
-
-    def _track_combo_interaction(self, combo: QtWidgets.QComboBox) -> None:
-        if combo.property(_COMBO_TRACKED_PROPERTY):
-            return
-        combo.setProperty(_COMBO_TRACKED_PROPERTY, True)
-        combo.installEventFilter(self)
-        view = combo.view()
-        if view is not None and erlab.interactive.utils.qt_is_valid(view):
-            view.installEventFilter(self)
-        self._tracked_combo_refs.append(weakref.ref(combo))
-
-    def _combo_for_popup_view(
-        self, view: QtWidgets.QAbstractItemView
-    ) -> QtWidgets.QComboBox | None:
-        matched_combo: QtWidgets.QComboBox | None = None
-        for combo in self._live_tracked_combos():
-            combo_view = combo.view()
-            if combo_view is not None and combo_view is view:
-                matched_combo = combo
-        return matched_combo
-
-    def _live_tracked_combos(self) -> tuple[QtWidgets.QComboBox, ...]:
-        live_refs: list[weakref.ReferenceType[QtWidgets.QComboBox]] = []
-        live_combos: list[QtWidgets.QComboBox] = []
-        for combo_ref in self._tracked_combo_refs:
-            combo = combo_ref()
-            if combo is None or not erlab.interactive.utils.qt_is_valid(combo):
-                continue
-            live_refs.append(combo_ref)
-            live_combos.append(combo)
-        self._tracked_combo_refs = live_refs
-        return tuple(live_combos)
-
-    def _tracked_combo_popup_is_visible(self) -> bool:
-        for combo in self._live_tracked_combos():
-            view = combo.view()
-            if view is not None and view.isVisible():
-                return True
-        return False
-
-    def _begin_transient_combo_popup_guard(self) -> None:
-        token = self._begin_combo_popup_guard()
-        self._schedule_combo_popup_guard_end(token, _COMBO_INTERACTION_REBUILD_GRACE_MS)
-
-    def _begin_combo_popup_view_guard(self, view: QtWidgets.QAbstractItemView) -> None:
-        if isinstance(view.property(_COMBO_POPUP_GUARD_ID_PROPERTY), int):
-            return
-        view.setProperty(
-            _COMBO_POPUP_GUARD_ID_PROPERTY,
-            self._begin_combo_popup_guard(),
-        )
-
-    def _end_combo_popup_view_guard(self, view: QtWidgets.QAbstractItemView) -> None:
-        token = view.property(_COMBO_POPUP_GUARD_ID_PROPERTY)
-        if not isinstance(token, int):
-            return
-        view.setProperty(_COMBO_POPUP_GUARD_ID_PROPERTY, None)
-        self._schedule_combo_popup_guard_end(token, _COMBO_POPUP_REBUILD_GRACE_MS)
-
-    def _begin_combo_popup_guard(self) -> int:
-        token = self._next_combo_popup_guard_token
-        self._next_combo_popup_guard_token += 1
-        self._combo_popup_guard_tokens.add(token)
-        return token
-
-    def _schedule_combo_popup_guard_end(self, token: int, delay_ms: int) -> None:
-        def discard_guard() -> None:
-            self._combo_popup_guard_tokens.discard(token)
-
-        erlab.interactive.utils.single_shot(self, delay_ms, discard_guard)
-
-    def editor_rebuild_must_wait(self) -> bool:
-        """Return whether a live popup or interaction makes rebuilding unsafe."""
-        if self._combo_popup_guard_tokens or self._tracked_combo_popup_is_visible():
-            return True
-        popup = QtWidgets.QApplication.activePopupWidget()
-        return popup is not None and erlab.interactive.utils.qt_is_valid(popup)
-
-    def contains_editor_widget(self, widget: QtWidgets.QWidget) -> bool:
-        """Return whether a widget belongs to the mounted operation editor."""
-        roots = (self.editor_stack, self.navigator)
-        return any(root is widget or root.isAncestorOf(widget) for root in roots)
-
-    @staticmethod
-    def _accepts_tab_focus(widget: QtWidgets.QWidget) -> bool:
-        return bool(widget.focusPolicy() & QtCore.Qt.FocusPolicy.TabFocus)
-
-    def _first_editor_tab_stop(self) -> QtWidgets.QWidget | None:
-        current_page = self._current_editor_page()
-        if current_page is None:
-            return None
-        cache_key = self._current_section_key
-        cached_ref = self._section_tab_stop_refs.get(cache_key)
-        if cached_ref is not None:
-            cached_widget = cached_ref()
-            if (
-                cached_widget is not None
-                and erlab.interactive.utils.qt_is_valid(cached_widget)
-                and cached_widget.isEnabled()
-                and self._accepts_tab_focus(cached_widget)
-                and (
-                    cached_widget is current_page
-                    or current_page.isAncestorOf(cached_widget)
-                )
-            ):
-                return cached_widget
-            self._section_tab_stop_refs.pop(cache_key, None)
-        if (
-            erlab.interactive.utils.qt_is_valid(current_page)
-            and current_page.isEnabled()
-            and self._accepts_tab_focus(current_page)
-        ):
-            self._section_tab_stop_refs[cache_key] = weakref.ref(current_page)
-            return current_page
-        for widget in current_page.findChildren(QtWidgets.QWidget):
-            if (
-                erlab.interactive.utils.qt_is_valid(widget)
-                and widget.isEnabled()
-                and self._accepts_tab_focus(widget)
-            ):
-                self._section_tab_stop_refs[cache_key] = weakref.ref(widget)
-                return widget
-        return None
-
-    def _refresh_step_tab_order(self) -> None:
-        buttons = list(self._section_buttons.values())
-        if not buttons:
-            return
-        tab_chain = [
-            self.add_step_button,
-            self.copy_button,
-            self.cut_button,
-            self.paste_button,
-            self.delete_button,
-            self.operation_list,
-            *buttons,
-        ]
-        next_widget = self._first_editor_tab_stop()
-        if next_widget is not None:
-            tab_chain.append(next_widget)
-        for index, widget in enumerate(tab_chain[:-1]):
-            QtWidgets.QWidget.setTabOrder(widget, tab_chain[index + 1])
-
-    def _queue_step_tab_order_refresh(self) -> None:
-        if self._step_tab_order_update_pending or self._closing:
-            return
-        self._step_tab_order_update_pending = True
-        erlab.interactive.utils.single_shot(
-            self, 0, self._run_queued_step_tab_order_refresh
-        )
-
-    def _run_queued_step_tab_order_refresh(self) -> None:
-        if not erlab.interactive.utils.qt_is_valid(self):
-            return
-        self._step_tab_order_update_pending = False
-        self._refresh_step_tab_order()
 
     @staticmethod
     def _operation_id_for_item(
@@ -1073,7 +614,6 @@ class FigureOperationPanel(QtWidgets.QWidget):
     def eventFilter(
         self, watched: QtCore.QObject | None, event: QtCore.QEvent | None
     ) -> bool:
-        self._handle_combo_interaction_event(watched, event)
         if (
             self._operation_viewport is not None
             and watched is self._operation_viewport
@@ -1095,33 +635,6 @@ class FigureOperationPanel(QtWidgets.QWidget):
             )
         return super().eventFilter(watched, event)
 
-    def _handle_combo_interaction_event(
-        self, watched: QtCore.QObject | None, event: QtCore.QEvent | None
-    ) -> None:
-        if event is None or watched is None:
-            return
-        event_type = event.type()
-        if isinstance(watched, QtWidgets.QComboBox):
-            if event_type in {
-                QtCore.QEvent.Type.MouseButtonPress,
-                QtCore.QEvent.Type.KeyPress,
-                QtCore.QEvent.Type.Wheel,
-            }:
-                self._begin_transient_combo_popup_guard()
-            return
-        if not isinstance(watched, QtWidgets.QAbstractItemView):
-            return
-        if self._combo_for_popup_view(watched) is None:
-            return
-        if event_type in {QtCore.QEvent.Type.Show, QtCore.QEvent.Type.ShowToParent}:
-            self._begin_combo_popup_view_guard(watched)
-        elif event_type in {
-            QtCore.QEvent.Type.Hide,
-            QtCore.QEvent.Type.HideToParent,
-            QtCore.QEvent.Type.Close,
-        }:
-            self._end_combo_popup_view_guard(watched)
-
     def release(self) -> None:
         """Detach event filters before tool teardown."""
         self._closing = True
@@ -1132,15 +645,7 @@ class FigureOperationPanel(QtWidgets.QWidget):
         self._selection_notification_pending = False
         if viewport is not None and erlab.interactive.utils.qt_is_valid(self, viewport):
             viewport.removeEventFilter(self)
-        for combo in self._live_tracked_combos():
-            combo.removeEventFilter(self)
-            combo_view = combo.view()
-            if combo_view is not None and erlab.interactive.utils.qt_is_valid(
-                combo_view
-            ):
-                combo_view.removeEventFilter(self)
-        self._tracked_combo_refs.clear()
-        self._combo_popup_guard_tokens.clear()
+        self.editor.release()
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         self.release()

@@ -29,7 +29,6 @@ from erlab.interactive._figurecomposer._model._state import (
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
-    StepSection,
 )
 from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
@@ -44,6 +43,7 @@ from erlab.interactive._figurecomposer._text import (
     _input_error,
     _RawCode,
 )
+from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
 from erlab.interactive._figurecomposer._ui._widgets import _ColorLineEditWidget
 
 if typing.TYPE_CHECKING:
@@ -52,6 +52,9 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
+    from erlab.interactive._figurecomposer._ui._operation_editor import (
+        FigureOperationEditor,
+    )
 
 
 _DEFAULT_LABEL_TEMPLATE = r"$h\nu = {hv:g}$ eV"
@@ -250,44 +253,44 @@ def _photon_energy_code_lines(
 
 
 def _build_photon_editor(
-    tool: FigureComposerTool,
+    editor: FigureOperationEditor,
     operation: FigureOperationState,
     page: QtWidgets.QWidget,
     layout: QtWidgets.QFormLayout,
 ) -> None:
-    photon_text, photon_mixed = tool._batch_text(
+    photon_text, photon_mixed = editor.batch_text(
         operation, lambda target: target.photon_energies, _format_tuple
     )
-    photon_edit = tool._line_edit(photon_text, parent=page)
+    photon_edit = editor.line_edit(photon_text, parent=page)
     photon_edit.setObjectName("figureComposerPhotonEnergyValuesEdit")
     photon_edit.setPlaceholderText("Enter photon energies")
-    tool._apply_mixed_line_edit(photon_edit, photon_mixed)
-    tool._connect_line_edit_finished(
+    editor.apply_mixed_line_edit(photon_edit, photon_mixed)
+    editor.connect_line_edit_finished(
         photon_edit,
-        lambda text: tool._update_current_operation(
+        lambda text: editor.request_update(
             photon_energies=_photon_energies_from_text(text)
         ),
     )
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "hν",
         photon_edit,
         "Photon energies in eV, entered as comma-separated numbers.",
     )
 
-    binding_text, binding_mixed = tool._batch_text(
+    binding_text, binding_mixed = editor.batch_text(
         operation, lambda target: target.binding_energy, _format_optional_float
     )
-    binding_edit = tool._line_edit(binding_text, parent=page)
+    binding_edit = editor.line_edit(binding_text, parent=page)
     binding_edit.setObjectName("figureComposerPhotonEnergyBindingEnergyEdit")
-    tool._apply_mixed_line_edit(binding_edit, binding_mixed)
-    tool._connect_line_edit_finished(
+    editor.apply_mixed_line_edit(binding_edit, binding_mixed)
+    editor.connect_line_edit_finished(
         binding_edit,
-        lambda text: tool._update_current_operation(
+        lambda text: editor.request_update(
             binding_energy=_optional_float_from_text(text)
         ),
     )
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Binding energy",
         binding_edit,
@@ -297,12 +300,12 @@ def _build_photon_editor(
 
 
 def _build_style_editor(
-    tool: FigureComposerTool,
+    editor: FigureOperationEditor,
     operation: FigureOperationState,
     page: QtWidgets.QWidget,
     layout: QtWidgets.QFormLayout,
 ) -> None:
-    color_text, color_mixed = tool._batch_text(
+    color_text, color_mixed = editor.batch_text(
         operation,
         lambda target: line_kw_text(target, "color", "c") or "",
         str,
@@ -310,37 +313,37 @@ def _build_style_editor(
     color_edit = _ColorLineEditWidget(color_text, parent=page)
     color_edit.setLineEditObjectName("figureComposerPhotonEnergyColorEdit")
     color_edit.setColorButtonObjectName("figureComposerPhotonEnergyColorButton")
-    tool._apply_mixed_line_edit(color_edit.line_edit, color_mixed)
-    tool._connect_value_signal(
+    editor.apply_mixed_line_edit(color_edit.line_edit, color_mixed)
+    editor.connect_value_signal(
         color_edit,
         color_edit.editingFinished,
         color_edit.text,
         lambda text: update_current_line_kw(
-            tool, "color", color_kw_value_from_text(text), aliases=("c",)
+            editor, "color", color_kw_value_from_text(text), aliases=("c",)
         ),
-        unchanged_mixed=lambda: tool._line_edit_batch_unchanged(color_edit.line_edit),
+        unchanged_mixed=lambda: editor.line_edit_batch_unchanged(color_edit.line_edit),
     )
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Line color",
         color_edit,
         "Matplotlib color for photon-energy annotation curves.",
     )
 
-    line_style_mixed = tool._batch_is_mixed(
+    line_style_mixed = editor.batch_is_mixed(
         operation, lambda target: line_kw_style_value(target, "linestyle", "ls")
     )
-    line_style_combo = tool._optional_name_combo(
+    line_style_combo = editor.optional_name_combo(
         LINE_STYLE_OPTIONS,
         None if line_style_mixed else line_kw_style_value(operation, "linestyle", "ls"),
         LINE_STYLE_DEFAULT_LABEL,
-        lambda text: update_current_line_kw(tool, "linestyle", text, aliases=("ls",)),
+        lambda text: update_current_line_kw(editor, "linestyle", text, aliases=("ls",)),
         parent=page,
         mixed=line_style_mixed,
     )
     line_style_combo.setObjectName("figureComposerPhotonEnergyLineStyleCombo")
 
-    line_width_mixed = tool._batch_is_mixed(
+    line_width_mixed = editor.batch_is_mixed(
         operation, lambda target: line_kw_text(target, "linewidth", "lw")
     )
     line_width_spin = optional_positive_spinbox(
@@ -348,17 +351,17 @@ def _build_style_editor(
         parent=page,
     )
     line_width_spin.setObjectName("figureComposerPhotonEnergyLineWidthSpin")
-    tool._connect_editor_signal(
+    editor.connect_signal(
         line_width_spin,
         line_width_spin.valueChanged,
         lambda value: update_current_line_kw(
-            tool,
+            editor,
             "linewidth",
             optional_positive_spinbox_value(value),
             aliases=("lw",),
         ),
     )
-    tool._add_compound_form_row(
+    editor.add_compound_form_row(
         layout,
         "Line",
         (
@@ -369,7 +372,7 @@ def _build_style_editor(
             ),
             (
                 "Width",
-                tool._mixed_value_widget(
+                editor.mixed_value_widget(
                     line_width_spin, mixed=line_width_mixed, parent=page
                 ),
                 "Matplotlib linewidth for photon-energy annotation curves.",
@@ -378,50 +381,50 @@ def _build_style_editor(
         "Line style controls for photon-energy annotation curves.",
     )
 
-    legend_mixed = tool._batch_is_mixed(operation, lambda target: target.show_legend)
-    legend_check = tool._check_box(
+    legend_mixed = editor.batch_is_mixed(operation, lambda target: target.show_legend)
+    legend_check = editor.check_box(
         operation.show_legend,
-        lambda checked: tool._update_current_operation(show_legend=checked),
+        lambda checked: editor.request_update(show_legend=checked),
         parent=page,
         mixed=legend_mixed,
     )
     legend_check.setObjectName("figureComposerPhotonEnergyLegendCheck")
     legend_check.setText("")
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Legend",
         legend_check,
         "Add or update the axes legend after plotting the photon-energy curves.",
     )
 
-    legend_kw_text, legend_kw_mixed = tool._batch_text(
+    legend_kw_text, legend_kw_mixed = editor.batch_text(
         operation, lambda target: target.legend_kw, _format_dict
     )
-    legend_kw_edit = tool._line_edit(legend_kw_text, parent=page)
+    legend_kw_edit = editor.line_edit(legend_kw_text, parent=page)
     legend_kw_edit.setObjectName("figureComposerPhotonEnergyLegendKwEdit")
-    tool._apply_mixed_line_edit(legend_kw_edit, legend_kw_mixed)
-    tool._connect_line_edit_finished(
+    editor.apply_mixed_line_edit(legend_kw_edit, legend_kw_mixed)
+    editor.connect_line_edit_finished(
         legend_kw_edit,
-        lambda text: tool._update_current_operation(legend_kw=_dict_from_text(text)),
+        lambda text: editor.request_update(legend_kw=_dict_from_text(text)),
     )
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Legend kwargs",
         legend_kw_edit,
         "Keyword arguments forwarded to the Matplotlib legend.",
     )
 
-    label_text, label_mixed = tool._batch_text(
+    label_text, label_mixed = editor.batch_text(
         operation, lambda target: target.label_template, str
     )
-    label_edit = tool._line_edit(label_text, parent=page)
+    label_edit = editor.line_edit(label_text, parent=page)
     label_edit.setObjectName("figureComposerPhotonEnergyLabelTemplateEdit")
-    tool._apply_mixed_line_edit(label_edit, label_mixed)
-    tool._connect_line_edit_finished(
+    editor.apply_mixed_line_edit(label_edit, label_mixed)
+    editor.connect_line_edit_finished(
         label_edit,
-        lambda text: tool._update_current_operation(label_template=text),
+        lambda text: editor.request_update(label_template=text),
     )
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Label",
         label_edit,
@@ -430,19 +433,14 @@ def _build_style_editor(
 
 
 def _build_editor(
-    tool: FigureComposerTool, operation: FigureOperationState
+    editor: FigureOperationEditor, operation: FigureOperationState
 ) -> list[tuple[str, str, QtWidgets.QWidget]]:
-    photon_page, photon_layout = tool._new_step_form_page(
-        "figureComposerPhotonEnergyPage"
-    )
-    style_page, style_layout = tool._new_step_form_page(
+    photon_page, photon_layout = editor.new_form_page("figureComposerPhotonEnergyPage")
+    style_page, style_layout = editor.new_form_page(
         "figureComposerPhotonEnergyStylePage"
     )
-    tool.operation_editor = photon_page
-    tool.operation_editor_layout = photon_layout
-
-    _build_photon_editor(tool, operation, photon_page, photon_layout)
-    _build_style_editor(tool, operation, style_page, style_layout)
+    _build_photon_editor(editor, operation, photon_page, photon_layout)
+    _build_style_editor(editor, operation, style_page, style_layout)
 
     return [
         ("photon", "hν", photon_page),
@@ -451,11 +449,11 @@ def _build_editor(
 
 
 def _editor_sections(
-    tool: FigureComposerTool, operation: FigureOperationState
+    editor: FigureOperationEditor, operation: FigureOperationState
 ) -> tuple[StepSection, ...]:
     return tuple(
         StepSection(key, title, page, _SECTION_TOOLTIPS[key])
-        for key, title, page in _build_editor(tool, operation)
+        for key, title, page in _build_editor(editor, operation)
     )
 
 
@@ -516,21 +514,20 @@ def _has_invalid_target(
 
 
 def _build_source_editor(
-    tool: FigureComposerTool, operation: FigureOperationState
+    editor: FigureOperationEditor, operation: FigureOperationState
 ) -> None:
-    source_mixed = tool._batch_is_mixed(
+    source_mixed = editor.batch_is_mixed(
         operation, lambda target: target.hv_overlay_source
     )
-    source_combo = tool._source_combo(
-        tool._document.source_names(),
+    source_combo = editor.source_combo(
+        editor.context.source_names(),
         None if source_mixed else operation.hv_overlay_source,
-        lambda source: tool._update_current_operation_rebuild(hv_overlay_source=source),
-        parent=tool.step_source_controls,
+        lambda source: editor.request_update_rebuild(hv_overlay_source=source),
+        parent=editor.source_controls,
         mixed=source_mixed,
     )
     source_combo.setObjectName("figureComposerPhotonEnergySourceCombo")
-    tool._add_form_row(
-        tool.step_source_controls_layout,
+    editor.add_source_row(
         "Overlay data",
         source_combo,
         "Data array used to compute the photon-energy annotation curves.",

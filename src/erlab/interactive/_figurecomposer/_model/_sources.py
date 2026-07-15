@@ -22,6 +22,7 @@ from erlab.interactive._figurecomposer._model._state import (
     FigureSubplotsState,
     _restore_slice_mapping,
 )
+from erlab.interactive._figurecomposer._text import _dict_from_text
 
 # Keep every binding emitted by Figure Composer code generation here. Source aliases
 # share the generated module namespace, so missing one can silently replace source data.
@@ -79,6 +80,9 @@ _FIGURE_CODE_RESERVED_NAMES = (
     | _FIGURE_CODE_OPERATION_BINDINGS
     | _FIGURE_CODE_BUILTIN_BINDINGS
 )
+
+_SELECTION_VALUE_MESSAGE = "Enter a selection value, such as 0 or slice(0, 2)."
+_SELECTION_WIDTH_MESSAGE = "Enter a qsel width, such as 0.1."
 _FIGURE_CODE_RESERVED_NAME_PATTERN = re.compile(
     r"(?:ax\d+|gs\d+(?:_\d+)*|_line(?:_\d+)?)"
 )
@@ -228,6 +232,77 @@ def selection_has_effect(selection: FigureDataSelectionState) -> bool:
 
 def selection_width_key(dim: str) -> str:
     return f"{dim}_width"
+
+
+def selection_content_equal(
+    first: FigureDataSelectionState, second: FigureDataSelectionState
+) -> bool:
+    """Return whether two selections apply the same operations."""
+    return (
+        first.isel == second.isel
+        and first.qsel == second.qsel
+        and first.mean_dims == second.mean_dims
+    )
+
+
+def shared_selection(
+    selections: Sequence[FigureDataSelectionState],
+) -> FigureDataSelectionState | None:
+    """Return the source-neutral selection shared by every input."""
+    if not selections:
+        return FigureDataSelectionState(source="")
+    first = selections[0].model_copy(update={"source": ""})
+    if all(selection_content_equal(first, selection) for selection in selections[1:]):
+        return first
+    return None
+
+
+def selection_dim_mode(selection: FigureDataSelectionState, dim: str) -> str:
+    if dim in selection.isel:
+        return "isel"
+    if dim in selection.qsel or selection_width_key(dim) in selection.qsel:
+        return "qsel"
+    if dim in selection.mean_dims:
+        return "mean"
+    return "keep"
+
+
+def selection_dim_value_text(selection: FigureDataSelectionState, dim: str) -> str:
+    if dim in selection.isel:
+        return erlab.interactive.utils._parse_single_arg(selection.isel[dim])
+    if dim in selection.qsel:
+        return erlab.interactive.utils._parse_single_arg(selection.qsel[dim])
+    return ""
+
+
+def selection_dim_width_text(selection: FigureDataSelectionState, dim: str) -> str:
+    width_key = selection_width_key(dim)
+    if width_key in selection.qsel:
+        return erlab.interactive.utils._parse_single_arg(selection.qsel[width_key])
+    return ""
+
+
+def selection_value_from_text(text: str) -> typing.Any:
+    stripped = text.strip()
+    if not stripped:
+        raise FigureComposerInputError(_SELECTION_VALUE_MESSAGE)
+    try:
+        return _dict_from_text(f"value={stripped}", allow_slice=True)["value"]
+    except FigureComposerInputError as exc:
+        raise FigureComposerInputError(_SELECTION_VALUE_MESSAGE) from exc
+
+
+def selection_width_from_text(text: str) -> typing.Any:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        value = _dict_from_text(f"value={stripped}", allow_slice=True)["value"]
+    except FigureComposerInputError as exc:
+        raise FigureComposerInputError(_SELECTION_WIDTH_MESSAGE) from exc
+    if isinstance(value, slice):
+        raise FigureComposerInputError(_SELECTION_WIDTH_MESSAGE)
+    return value
 
 
 def selection_with_dimension(

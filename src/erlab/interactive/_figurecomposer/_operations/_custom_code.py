@@ -20,23 +20,27 @@ from erlab.interactive._figurecomposer._model._state import (
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
-    StepSection,
     _empty_source_editor,
     _no_invalid_target,
     _uses_no_source_section,
 )
 from erlab.interactive._figurecomposer._rendering import _source_namespace
+from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
 
 if typing.TYPE_CHECKING:
     from matplotlib.figure import Figure
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
+    from erlab.interactive._figurecomposer._ui._operation_editor import (
+        FigureOperationEditor,
+    )
 
 _CUSTOM_CODE_SETTLE_DELAY_MS = 900
 
 
 def _connect_custom_code_editor(
-    tool: FigureComposerTool, code_edit: erlab.interactive.utils.PythonCodeEditor
+    editor: FigureOperationEditor,
+    code_edit: erlab.interactive.utils.PythonCodeEditor,
 ) -> None:
     code_edit.set_text_editing_settle_delay(_CUSTOM_CODE_SETTLE_DELAY_MS)
     code_edit.reset_text_editing_activity()
@@ -50,12 +54,12 @@ def _connect_custom_code_editor(
         if refresh_operation_ids:
             pending_operation_ids[0] = tuple(
                 operation.operation_id
-                for _index, operation in tool._editable_operations()
+                for _index, operation in editor.editable_operations()
             )
         pending_dirty[0] = True
 
     def queue_commit() -> None:
-        if tool._editor_control_signal_allowed(code_edit):
+        if editor.control_signal_allowed(code_edit):
             capture_pending_code(refresh_operation_ids=True)
 
     def queue_contents_change(
@@ -67,15 +71,13 @@ def _connect_custom_code_editor(
     def commit_code(*, render: bool) -> None:
         if not pending_dirty[0]:
             return
-        if tool._closing or not erlab.interactive.utils.qt_is_valid(tool):
-            return
         operation_ids = pending_operation_ids[0]
         if not operation_ids:
             return
         pending_dirty[0] = False
         code = pending_code[0]
         render_valid_code = render and code_edit.has_valid_python_syntax(code)
-        tool._update_operations_by_ids(
+        editor.request_transform_by_ids(
             operation_ids,
             lambda _index, target: target.model_copy(update={"code": code}),
             render=render_valid_code,
@@ -91,14 +93,12 @@ def _connect_custom_code_editor(
                 pending_code[0] = code_edit.toPlainText()
         commit_code(render=render)
 
-    tool._mark_editor_control(code_edit)
+    editor.mark_control(code_edit)
     document = code_edit.document()
     if document is None:
         raise RuntimeError("Custom code editor has no text document")
-    tool._connect_editor_signal(
-        code_edit, document.contentsChange, queue_contents_change
-    )
-    tool._connect_editor_signal(
+    editor.connect_signal(code_edit, document.contentsChange, queue_contents_change)
+    editor.connect_signal(
         code_edit, code_edit.sigTextEditingSettled, commit_settled_code
     )
     code_edit_any._figure_composer_custom_code_commit_handlers = (
@@ -112,24 +112,23 @@ def _connect_custom_code_editor(
 
 
 def _build_custom_code_editor(
-    tool: FigureComposerTool, operation: FigureOperationState
+    editor: FigureOperationEditor, operation: FigureOperationState
 ) -> list[tuple[str, str, QtWidgets.QWidget]]:
-    page, layout = tool._new_step_form_page("figureComposerCodePage")
-    tool.operation_editor = page
-    tool.operation_editor_layout = layout
-    trust = tool._check_box(
+    page, layout = editor.new_form_page("figureComposerCodePage")
+    trust = editor.check_box(
         operation.trusted,
-        lambda checked: tool._update_current_operation(trusted=checked),
+        lambda checked: editor.request_update(trusted=checked),
+        parent=page,
     )
     trust.setObjectName("figureComposerCustomCodeTrustedCheck")
-    tool._add_form_row(
-        tool.operation_editor_layout,
+    editor.add_form_row(
+        layout,
         "Trusted",
         trust,
         "Allow this custom Python step to execute during rendering.",
     )
 
-    code_edit = erlab.interactive.utils.PythonCodeEditor(tool.operation_editor)
+    code_edit = erlab.interactive.utils.PythonCodeEditor(page)
     code_edit.setObjectName("figureComposerCustomCodeEdit")
     code_edit.setPlainText(operation.code)
     code_edit.setPlaceholderText("# Write Python code here")
@@ -141,9 +140,9 @@ def _build_custom_code_editor(
     )
     code_edit.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     code_edit.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-    _connect_custom_code_editor(tool, code_edit)
-    tool._add_form_row(
-        tool.operation_editor_layout,
+    _connect_custom_code_editor(editor, code_edit)
+    editor.add_form_row(
+        layout,
         "Code",
         code_edit,
         "Python code executed with fig, axs, ax, plt, eplt, np, xr, and source "
@@ -181,7 +180,7 @@ def _tooltip(_tool: FigureComposerTool, _operation: FigureOperationState) -> str
 
 
 def _editor_sections(
-    tool: FigureComposerTool, operation: FigureOperationState
+    editor: FigureOperationEditor, operation: FigureOperationState
 ) -> tuple[StepSection, ...]:
     return tuple(
         StepSection(
@@ -190,7 +189,7 @@ def _editor_sections(
             page,
             "Edit the trusted custom Python code for this step.",
         )
-        for key, title, page in _build_custom_code_editor(tool, operation)
+        for key, title, page in _build_custom_code_editor(editor, operation)
     )
 
 

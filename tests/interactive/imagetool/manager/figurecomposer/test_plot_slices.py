@@ -1,6 +1,29 @@
 # ruff: noqa: F403, F405
 
 import erlab.interactive.imagetool._figurecomposer_adapter as figurecomposer_adapter
+from erlab.interactive._figurecomposer._model._document import FigureDocument
+from erlab.interactive._figurecomposer._operations._method._catalog import _method_spec
+from erlab.interactive._figurecomposer._operations._method._editor import (
+    _method_float_pair_args,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _codegen as plot_slices_codegen,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _editor as plot_slices_editor,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _model as plot_slices_model,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _panel_style_editor as plot_slices_panel_style_editor,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _render as plot_slices_render,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _spec as plot_slices_spec,
+)
 
 from ._common import *
 
@@ -38,12 +61,12 @@ def test_figure_composer_plot_slices_migrates_shared_map_selection_to_slice_stat
     assert loaded_operation.slice_dim == "y"
     assert loaded_operation.slice_values == (0.0,)
     assert loaded_operation.slice_kwargs == {}
-    assert figurecomposer_plot_slices._plot_slices_shape(tool, loaded_operation).valid
+    assert plot_slices_model._plot_slices_shape(tool._document, loaded_operation).valid
 
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("selection")
+    tool.operation_editor.select_section("selection")
     assert (
         tool.findChild(
             QtWidgets.QWidget,
@@ -86,7 +109,7 @@ def test_figure_composer_plot_slices_migrates_shared_multi_map_selection_to_slic
     assert loaded_operation.slice_dim == "y"
     assert loaded_operation.slice_values == (0.0,)
     assert loaded_operation.slice_kwargs == {}
-    shape = figurecomposer_plot_slices._plot_slices_shape(tool, loaded_operation)
+    shape = plot_slices_model._plot_slices_shape(tool._document, loaded_operation)
     assert shape.valid
     assert shape.plot_ndim == 2
 
@@ -126,7 +149,7 @@ def test_figure_composer_plot_slices_migrates_shared_selection_before_sources_re
     assert loaded_operation.slice_dim == "y"
     assert loaded_operation.slice_values == (0.0,)
     tool.set_source_data({"primary": primary, "first": first, "second": second})
-    shape = figurecomposer_plot_slices._plot_slices_shape(tool, loaded_operation)
+    shape = plot_slices_model._plot_slices_shape(tool._document, loaded_operation)
     assert shape.valid
     assert shape.plot_ndim == 2
 
@@ -217,7 +240,7 @@ def test_figure_composer_plot_slices_restores_deferred_source_alias_data(
     xr.testing.assert_identical(
         tool.source_data()["second_selected"], second.qsel(y=2.0)
     )
-    shape = figurecomposer_plot_slices._plot_slices_shape(tool, loaded_operation)
+    shape = plot_slices_model._plot_slices_shape(tool._document, loaded_operation)
     assert shape.valid
     assert shape.plot_ndim == 2
 
@@ -248,7 +271,7 @@ def test_figure_composer_plot_slices_source_selector_updates_sliced_sources(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("sources")
+    tool.operation_editor.select_section("sources")
 
     checks = _plot_source_checks(tool)
     checks["second"].setCheckState(QtCore.Qt.CheckState.Checked)
@@ -304,13 +327,9 @@ def test_figure_composer_plot_slices_source_selector_updates_sources(
         source_data={"first_source": first, "second_source": second},
     )
     qtbot.addWidget(tool)
-    tool.operation_panel.select_section("sources")
+    tool.operation_editor.select_section("sources")
 
-    selector = tool.step_source_controls.findChild(
-        QtWidgets.QWidget, "figureComposerPlotSlicesSourceSelector"
-    )
-    assert selector is not None
-    assert not tool.step_source_controls.findChildren(QtWidgets.QLineEdit)
+    assert not tool.operation_editor.source_controls.findChildren(QtWidgets.QLineEdit)
     checks = _plot_source_checks(tool)
     assert set(checks) == {"first_source", "second_source"}
     assert checks["first_source"].checkState() == QtCore.Qt.CheckState.Checked
@@ -386,7 +405,7 @@ def test_figure_composer_plot_slices_default_colormap_editor_uses_stylesheet(
         tool.operation_panel.operation_list.setCurrentItem(
             tool.operation_panel.operation_list.topLevelItem(0)
         )
-        tool.operation_panel.select_section("colors")
+        tool.operation_editor.select_section("colors")
 
         cmap_combo = next(
             (
@@ -396,7 +415,7 @@ def test_figure_composer_plot_slices_default_colormap_editor_uses_stylesheet(
                     "figureComposerCmapCombo",
                 )
                 if candidate.property("figure_composer_editor_generation")
-                == tool._operation_editor_generation
+                == tool.operation_editor.generation
             ),
             None,
         )
@@ -407,7 +426,7 @@ def test_figure_composer_plot_slices_default_colormap_editor_uses_stylesheet(
                     QtWidgets.QCheckBox, "figureComposerCmapReverseCheck"
                 )
                 if candidate.property("figure_composer_editor_generation")
-                == tool._operation_editor_generation
+                == tool.operation_editor.generation
             ),
             None,
         )
@@ -417,7 +436,7 @@ def test_figure_composer_plot_slices_default_colormap_editor_uses_stylesheet(
         assert cmap_reverse_check.checkState() == QtCore.Qt.CheckState.Unchecked
         assert tool.tool_status.operations[0].cmap is None
 
-        kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
+        kwargs = plot_slices_model._plot_slices_kwargs(
             tool, tool.tool_status.operations[0]
         )
         assert "cmap" not in kwargs
@@ -657,7 +676,7 @@ def test_figure_composer_plot_slices_kwargs_normalize_colorcet_colormaps(
     )
     qtbot.addWidget(tool)
 
-    assert figurecomposer_plot_slices._plot_slices_kwargs(tool, operation)["cmap"] == (
+    assert plot_slices_model._plot_slices_kwargs(tool, operation)["cmap"] == (
         "cet_CET_C1"
     )
 
@@ -675,7 +694,7 @@ def test_figure_composer_plot_slices_kwargs_normalize_colorcet_colormaps(
     )
 
     assert (
-        figurecomposer_plot_slices._plot_slices_kwargs(tool, panel_operation)["cmap"]
+        plot_slices_model._plot_slices_kwargs(tool, panel_operation)["cmap"]
         == "cet_fire"
     )
 
@@ -737,37 +756,36 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
         }
     )
 
-    keys = figurecomposer_plot_slices._plot_slices_panel_keys(tool, operation)
+    keys = plot_slices_model._plot_slices_panel_keys(
+        tool._document, tool._source_display_name, operation
+    )
     assert [(key.map_index, key.slice_index) for key in keys] == [(0, 0), (0, 1)]
-    assert figurecomposer_plot_slices._plot_slices_slice_count(tool, operation) == 2
-    assert figurecomposer_plot_slices._plot_slices_slice_labels(operation, 2) == (
+    assert plot_slices_model._plot_slices_slice_count(tool._document, operation) == 2
+    assert plot_slices_model._plot_slices_slice_labels(operation, 2) == (
         "eV=0",
         "eV=1",
     )
-    assert figurecomposer_plot_slices._panel_cmap_argument(tool, operation) == [
+    assert plot_slices_model._panel_cmap_argument(tool, operation) == [
         ["magma", "plasma"]
     ]
-    assert figurecomposer_plot_slices._effective_panel_cmap(
+    assert plot_slices_model._effective_panel_cmap(
         FigureOperationState.plot_slices(label="default", sources=("data",)),
         FigurePlotSlicesPanelStyleState(map_index=0, slice_index=0),
-    ) == figurecomposer_plot_slices._matplotlib_cmap_name(
-        options.model.colors.cmap.name
-    )
-    assert figurecomposer_plot_slices._panel_line_kw_argument(tool, operation) == [
+    ) == figurecomposer_norms._matplotlib_cmap_name(options.model.colors.cmap.name)
+    assert plot_slices_model._panel_line_kw_argument(tool, operation) == [
         [{"linewidth": 1.5, "color": "red"}, {"linewidth": 1.5, "color": "blue"}]
     ]
-    assert figurecomposer_plot_slices._has_panel_line_kw_overrides(tool, operation)
-    norm_argument = figurecomposer_plot_slices._panel_norm_argument(tool, operation)
+    assert plot_slices_model._has_panel_line_kw_overrides(tool, operation)
+    norm_argument = plot_slices_model._panel_norm_argument(tool, operation)
     assert isinstance(norm_argument, list)
-    assert figurecomposer_plot_slices._panel_norm_uses_matplotlib_colors(
-        tool, operation
-    )
+    assert plot_slices_codegen._panel_norm_uses_matplotlib_colors(tool, operation)
     assert "mcolors.Normalize" in (
-        figurecomposer_plot_slices._panel_norm_code(tool, operation) or ""
+        plot_slices_codegen._panel_norm_code(tool, operation) or ""
     )
 
-    profiles, profile_keys = figurecomposer_plot_slices._plot_slices_line_profiles(
-        tool,
+    profiles, profile_keys = plot_slices_model._plot_slices_line_profiles(
+        tool._document,
+        tool._source_display_name,
         operation,
         maps=(source,),
     )
@@ -776,16 +794,14 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
         (0, 0),
         (0, 1),
     ]
-    assert figurecomposer_plot_slices._plot_slices_uses_transformed_line_maps(
-        tool, operation
-    )
+    assert plot_slices_model._plot_slices_uses_transformed_line_maps(tool, operation)
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "error",
             message="In a future version of xarray the default value for .*",
             category=FutureWarning,
         )
-        transformed_maps = figurecomposer_plot_slices._plot_slices_transformed_maps(
+        transformed_maps = plot_slices_model._plot_slices_transformed_maps(
             tool,
             operation,
             (source,),
@@ -793,7 +809,9 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
     assert len(transformed_maps) == 1
     assert transformed_maps[0].dims == ("eV", "kx")
     assert set(
-        figurecomposer_plot_slices._available_plot_slices_offset_coords(tool, operation)
+        plot_slices_editor._available_plot_slices_offset_coords(
+            tool.operation_editor, operation
+        )
     ) >= {"eV", "temperature"}
 
     code_operation = operation.model_copy(
@@ -814,7 +832,7 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
         )
         exec(  # noqa: S102
             "\n".join(
-                figurecomposer_plot_slices._plot_slices_transformed_code_lines(
+                plot_slices_codegen._plot_slices_transformed_code_lines(
                     tool, code_operation
                 )
             ),
@@ -826,30 +844,23 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
 
     single_panel_operation = operation.model_copy(update={"slice_values": (0.0,)})
     assert (
-        figurecomposer_plot_slices._panel_cmap_argument(tool, single_panel_operation)
-        == "magma"
+        plot_slices_model._panel_cmap_argument(tool, single_panel_operation) == "magma"
     )
-    single_norm = figurecomposer_plot_slices._panel_norm_argument(
-        tool, single_panel_operation
-    )
+    single_norm = plot_slices_model._panel_norm_argument(tool, single_panel_operation)
     assert isinstance(single_norm, mpl.colors.Normalize)
-    assert figurecomposer_plot_slices._panel_line_kw_argument(
-        tool, single_panel_operation
-    ) == {"linewidth": 1.5, "color": "red"}
+    assert plot_slices_model._panel_line_kw_argument(tool, single_panel_operation) == {
+        "linewidth": 1.5,
+        "color": "red",
+    }
 
     no_override_operation = operation.model_copy(
         update={"panel_styles_enabled": False, "panel_styles": ()}
     )
-    assert (
-        figurecomposer_plot_slices._panel_norm_argument(tool, no_override_operation)
-        is None
-    )
-    assert (
-        figurecomposer_plot_slices._panel_norm_code(tool, no_override_operation) is None
-    )
-    assert figurecomposer_plot_slices._panel_line_kw_argument(
-        tool, no_override_operation
-    ) == {"linewidth": 1.5}
+    assert plot_slices_model._panel_norm_argument(tool, no_override_operation) is None
+    assert plot_slices_codegen._panel_norm_code(tool, no_override_operation) is None
+    assert plot_slices_model._panel_line_kw_argument(tool, no_override_operation) == {
+        "linewidth": 1.5
+    }
 
     same_cmap_operation = operation.model_copy(
         update={
@@ -863,10 +874,7 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
             )
         }
     )
-    assert (
-        figurecomposer_plot_slices._panel_cmap_argument(tool, same_cmap_operation)
-        == "magma"
-    )
+    assert plot_slices_model._panel_cmap_argument(tool, same_cmap_operation) == "magma"
     same_line_operation = operation.model_copy(
         update={
             "panel_styles": (
@@ -879,9 +887,10 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
             )
         }
     )
-    assert figurecomposer_plot_slices._panel_line_kw_argument(
-        tool, same_line_operation
-    ) == {"linewidth": 1.5, "color": "red"}
+    assert plot_slices_model._panel_line_kw_argument(tool, same_line_operation) == {
+        "linewidth": 1.5,
+        "color": "red",
+    }
 
     selection_operation = operation.model_copy(
         update={
@@ -890,9 +899,10 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
             "slice_kwargs": {"kx": [-1.0, 0.0], "kx_width": 0.1},
         }
     )
-    assert figurecomposer_plot_slices._plot_slices_slice_labels(
-        selection_operation, 2
-    ) == ("kx[0]", "kx[1]")
+    assert plot_slices_model._plot_slices_slice_labels(selection_operation, 2) == (
+        "kx[0]",
+        "kx[1]",
+    )
 
     no_override_operation = operation.model_copy(
         update={
@@ -903,22 +913,16 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
         }
     )
     assert (
-        figurecomposer_plot_slices._panel_cmap_argument(tool, no_override_operation)
-        == "viridis"
+        plot_slices_model._panel_cmap_argument(tool, no_override_operation) == "viridis"
     )
-    assert (
-        figurecomposer_plot_slices._panel_norm_argument(tool, no_override_operation)
-        is None
-    )
-    assert (
-        figurecomposer_plot_slices._panel_norm_code(tool, no_override_operation) is None
-    )
-    assert not figurecomposer_plot_slices._panel_norm_uses_matplotlib_colors(
+    assert plot_slices_model._panel_norm_argument(tool, no_override_operation) is None
+    assert plot_slices_codegen._panel_norm_code(tool, no_override_operation) is None
+    assert not plot_slices_codegen._panel_norm_uses_matplotlib_colors(
         tool, no_override_operation
     )
-    assert figurecomposer_plot_slices._panel_line_kw_argument(
-        tool, no_override_operation
-    ) == {"linewidth": 1.5}
+    assert plot_slices_model._panel_line_kw_argument(tool, no_override_operation) == {
+        "linewidth": 1.5
+    }
 
 
 def test_figure_composer_plot_slices_edge_helper_contracts(
@@ -1022,30 +1026,26 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     )
     qtbot.addWidget(tool)
 
-    with monkeypatch.context() as context:
-        context.setattr(
-            tool,
-            "_editable_operations",
-            lambda: ((0, line_operation), (1, image_operation)),
+    assert (
+        plot_slices_model._plot_slices_batch_panel_kind(
+            tool._document,
+            ((0, line_operation), (1, image_operation)),
+            line_operation,
         )
-        assert (
-            figurecomposer_plot_slices._plot_slices_batch_panel_kind(
-                tool, line_operation
-            )
-            == "mixed"
+        == "mixed"
+    )
+    assert (
+        plot_slices_model._plot_slices_batch_panel_kind(
+            tool._document, (), line_operation
         )
-    with monkeypatch.context() as context:
-        context.setattr(tool, "_editable_operations", lambda: ())
-        assert (
-            figurecomposer_plot_slices._plot_slices_batch_panel_kind(
-                tool, line_operation
-            )
-            == "line"
-        )
+        == "line"
+    )
 
-    keys = figurecomposer_plot_slices._plot_slices_panel_keys(tool, line_operation)
+    keys = plot_slices_model._plot_slices_panel_keys(
+        tool._document, tool._source_display_name, line_operation
+    )
     assert [(key.map_index, key.slice_index) for key in keys] == [(0, 0), (0, 1)]
-    assert figurecomposer_plot_slices._plot_slices_slice_labels(
+    assert plot_slices_model._plot_slices_slice_labels(
         line_operation.model_copy(update={"slice_values": ()}),
         2,
     ) == ("slice 1", "slice 2")
@@ -1057,14 +1057,16 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
         }
     )
     assert (
-        figurecomposer_plot_slices._plot_slices_slice_count(tool, slice_kwarg_operation)
+        plot_slices_model._plot_slices_slice_count(
+            tool._document, slice_kwarg_operation
+        )
         == 2
     )
-    shape = figurecomposer_plot_slices._plot_slices_shape(tool, slice_kwarg_operation)
+    shape = plot_slices_model._plot_slices_shape(tool._document, slice_kwarg_operation)
     assert shape.valid
     assert shape.panel_count == 2
-    range_shape = figurecomposer_plot_slices._plot_slices_shape(
-        tool,
+    range_shape = plot_slices_model._plot_slices_shape(
+        tool._document,
         line_operation.model_copy(
             update={
                 "slice_dim": None,
@@ -1075,28 +1077,28 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     )
     assert range_shape.valid
 
-    missing_shape = figurecomposer_plot_slices._plot_slices_shape(
-        tool,
+    missing_shape = plot_slices_model._plot_slices_shape(
+        tool._document,
         FigureOperationState.plot_slices(label="missing", sources=("missing",)),
     )
     assert not missing_shape.valid
-    mismatched_shape = figurecomposer_plot_slices._plot_slices_shape(
-        tool,
+    mismatched_shape = plot_slices_model._plot_slices_shape(
+        tool._document,
         FigureOperationState.plot_slices(label="mixed", sources=("line", "other")),
     )
     assert not mismatched_shape.valid
-    invalid_cut_shape = figurecomposer_plot_slices._plot_slices_shape(
-        tool,
+    invalid_cut_shape = plot_slices_model._plot_slices_shape(
+        tool._document,
         line_operation.model_copy(update={"slice_dim": "missing", "slice_values": ()}),
     )
     assert invalid_cut_shape.valid
-    incomplete_cut_shape = figurecomposer_plot_slices._plot_slices_shape(
-        tool,
+    incomplete_cut_shape = plot_slices_model._plot_slices_shape(
+        tool._document,
         line_operation.model_copy(update={"slice_values": ()}),
     )
     assert incomplete_cut_shape.valid
 
-    image_kwargs = figurecomposer_plot_slices._plot_slices_kwargs(tool, image_operation)
+    image_kwargs = plot_slices_model._plot_slices_kwargs(tool, image_operation)
     assert image_kwargs["transpose"] is True
     assert image_kwargs["xlim"] == (-1.0, None)
     assert image_kwargs["ylim"] == 0.5
@@ -1120,24 +1122,24 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
         name="set_xlim",
         args=(0.0, None),
     )
-    assert figurecomposer_method._method_float_pair_args(
-        tool,
+    assert _method_float_pair_args(
+        tool.operation_editor,
         set_xlim_operation,
-        figurecomposer_method._method_spec(set_xlim_operation),
+        _method_spec(set_xlim_operation),
     ) == (0.0, None)
     assert image_kwargs["subplot_kw"] == {"sharex": True}
     assert image_kwargs["annotate_kw"] == {"fontsize": 8}
     assert image_kwargs["colorbar_kw"] == {"ticks": [0.0, 1.0]}
     assert image_kwargs["alpha"] == 0.9
 
-    explicit_norm_kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
+    explicit_norm_kwargs = plot_slices_model._plot_slices_kwargs(
         tool,
         image_operation.model_copy(
             update={"norm_name": "Normalize", "norm_gamma": None}
         ),
     )
     assert "norm" in explicit_norm_kwargs
-    panel_norm_kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
+    panel_norm_kwargs = plot_slices_model._plot_slices_kwargs(
         tool,
         image_operation.model_copy(
             update={
@@ -1154,7 +1156,7 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     )
     assert "norm" in panel_norm_kwargs
 
-    line_kwargs = figurecomposer_plot_slices._plot_slices_kwargs(tool, line_operation)
+    line_kwargs = plot_slices_model._plot_slices_kwargs(tool, line_operation)
     assert line_kwargs["line_kw"] == [
         [{"linewidth": 1.5, "color": "red"}],
         [{"linewidth": 1.5, "color": "blue"}],
@@ -1162,7 +1164,7 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     assert line_kwargs["line_order"] == "F"
     assert line_kwargs["gradient"] is True
     assert line_kwargs["gradient_kw"] == {"alpha": 0.2}
-    transformed_kwargs = figurecomposer_plot_slices._plot_slices_transformed_kwargs(
+    transformed_kwargs = plot_slices_model._plot_slices_transformed_kwargs(
         tool,
         line_operation,
     )
@@ -1170,7 +1172,7 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     assert transformed_kwargs["eV"] == [0.0, 1.0]
 
     flat_axes = np.empty(4, dtype=object)
-    reshaped_axes = figurecomposer_plot_slices._plot_slices_axes(
+    reshaped_axes = plot_slices_render._plot_slices_axes(
         line_operation.model_copy(update={"sources": ("line", "other")}),
         (line, other),
         flat_axes,
@@ -1179,7 +1181,7 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     assert reshaped_axes.shape == (2, 2)
     mismatched_axes = np.empty(3, dtype=object)
     assert (
-        figurecomposer_plot_slices._plot_slices_axes(
+        plot_slices_render._plot_slices_axes(
             line_operation,
             (line,),
             mismatched_axes,
@@ -1187,7 +1189,7 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
         is mismatched_axes
     )
     assert (
-        figurecomposer_plot_slices._plot_slices_axes(line_operation, (line,), object())
+        plot_slices_render._plot_slices_axes(line_operation, (line,), object())
         is not flat_axes
     )
 
@@ -1200,9 +1202,9 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
         ),
     )
     assert (
-        len(figurecomposer_plot_slices._operation_maps(tool, selection_operation)) == 1
+        len(plot_slices_model._operation_maps(tool._document, selection_operation)) == 1
     )
-    selection_lines = figurecomposer_plot_slices._plot_slices_code_lines(
+    selection_lines = plot_slices_codegen._plot_slices_code_lines(
         tool,
         selection_operation,
     )
@@ -1213,7 +1215,7 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
         sources=("image",),
         map_selections=(FigureDataSelectionState(source="image", qsel={"eV": 1.0}),),
     )
-    single_selection_lines = figurecomposer_plot_slices._plot_slices_code_lines(
+    single_selection_lines = plot_slices_codegen._plot_slices_code_lines(
         tool,
         single_selection_operation,
     )
@@ -1221,21 +1223,21 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     assert "selected_maps" not in single_selection_lines[0]
     assert "eplt.plot_slices(image" in single_selection_lines[0]
     assert (
-        figurecomposer_plot_slices._plot_slices_code_lines(
+        plot_slices_codegen._plot_slices_code_lines(
             tool,
             FigureOperationState.plot_slices(label="empty", sources=()),
         )
         == []
     )
 
-    transform_lines = figurecomposer_plot_slices._plot_slices_transformed_code_lines(
+    transform_lines = plot_slices_codegen._plot_slices_transformed_code_lines(
         tool,
         line_operation,
     )
     assert transform_lines[0] == "profiles = ["
     assert any("eplt.plot_slices" in line for line in transform_lines)
     no_slice_map_lines, no_slice_maps_code = (
-        figurecomposer_plot_slices._plot_slices_transformed_maps_code(
+        plot_slices_codegen._plot_slices_transformed_maps_code(
             line_operation.model_copy(update={"slice_dim": None, "slice_values": ()}),
             keys[:1],
         )
@@ -1243,23 +1245,21 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     assert no_slice_map_lines == []
     assert no_slice_maps_code == "profiles[0]"
 
-    assert figurecomposer_plot_slices._bool_or_text("True") is True
-    assert figurecomposer_plot_slices._bool_or_text("False") is False
-    assert figurecomposer_plot_slices._bool_or_text("row") == "row"
-    assert figurecomposer_plot_slices._optional_number_or_text("vmin", "") is None
+    assert plot_slices_editor._bool_or_text("True") is True
+    assert plot_slices_editor._bool_or_text("False") is False
+    assert plot_slices_editor._bool_or_text("row") == "row"
+    assert plot_slices_editor._optional_number_or_text("vmin", "") is None
+    assert plot_slices_editor._optional_number_or_text("cmap", "magma") == "magma"
+    assert plot_slices_editor._optional_number_or_text("vmax", "1.5") == 1.5
     assert (
-        figurecomposer_plot_slices._optional_number_or_text("cmap", "magma") == "magma"
-    )
-    assert figurecomposer_plot_slices._optional_number_or_text("vmax", "1.5") == 1.5
-    assert (
-        figurecomposer_plot_slices._norm_field_placeholder(
+        plot_slices_editor._norm_field_placeholder(
             image_operation.model_copy(update={"norm_name": "CenteredPowerNorm"}),
             "vcenter",
         )
         == "0"
     )
     assert (
-        figurecomposer_plot_slices._norm_field_placeholder(
+        plot_slices_editor._norm_field_placeholder(
             image_operation.model_copy(update={"vcenter": 1.0}),
             "vcenter",
         )
@@ -1284,58 +1284,64 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     qtbot.addWidget(placeholder_tool)
     placeholder_tool.show_figure_window(activate=False)
     figurecomposer_rendering._render_preview(placeholder_tool, show_window=True)
-    assert figurecomposer_plot_slices._plot_slices_color_limit_placeholders(
-        placeholder_tool,
+    assert plot_slices_editor._plot_slices_color_limit_placeholders(
+        placeholder_tool.operation_editor,
         placeholder_operation,
     ) == {"vmin": "0", "vmax": "11"}
     assert (
-        figurecomposer_plot_slices._norm_gamma_value(
+        plot_slices_editor._norm_gamma_value(
             image_operation.model_copy(update={"norm_gamma": None, "gamma": None})
         )
         == 1.0
     )
-    assert figurecomposer_plot_slices._norm_clip_text(None) == "default"
-    assert figurecomposer_plot_slices._norm_clip_from_text("True") is True
-    assert figurecomposer_plot_slices._norm_clip_from_text("False") is False
-    assert figurecomposer_plot_slices._norm_clip_from_text("default") is None
+    assert plot_slices_model._norm_clip_text(None) == "default"
+    assert plot_slices_model._norm_clip_from_text("True") is True
+    assert plot_slices_model._norm_clip_from_text("False") is False
+    assert plot_slices_model._norm_clip_from_text("default") is None
 
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(1)
     )
-    figurecomposer_plot_slices._update_current_norm_name(tool, "CenteredPowerNorm")
+    plot_slices_editor._update_current_norm_name(
+        tool.operation_editor, "CenteredPowerNorm"
+    )
     assert tool.tool_status.operations[1].norm_name == "CenteredPowerNorm"
-    figurecomposer_plot_slices._update_current_norm_gamma(tool, 0.75)
+    plot_slices_editor._update_current_norm_gamma(tool.operation_editor, 0.75)
     assert tool.tool_status.operations[1].norm_gamma == 0.75
-    figurecomposer_plot_slices._update_current_norm_kwargs(
-        tool,
+    plot_slices_editor._update_current_norm_kwargs(
+        tool.operation_editor,
         "halfrange=2.0, clip=True, custom=1",
     )
     assert tool.tool_status.operations[1].halfrange == 2.0
     assert tool.tool_status.operations[1].norm_clip is True
     assert tool.tool_status.operations[1].norm_kwargs == {"custom": 1}
-    figurecomposer_plot_slices._update_current_slice_kwargs(
-        tool,
+    plot_slices_editor._update_current_slice_kwargs(
+        tool.operation_editor,
         "eV=[0, 1], eV_width=0.2",
     )
     assert tool.tool_status.operations[1].slice_dim == "eV"
     assert tool.tool_status.operations[1].slice_width == 0.2
-    figurecomposer_plot_slices._update_current_extra_kwargs(
-        tool,
+    plot_slices_editor._update_current_extra_kwargs(
+        tool.operation_editor,
         "kx=0.0, alpha=0.5",
     )
     assert tool.tool_status.operations[1].slice_kwargs["kx"] == 0.0
     assert tool.tool_status.operations[1].extra_kwargs == {"alpha": 0.5}
-    figurecomposer_plot_slices._update_current_cmap(tool, base="viridis", reverse=True)
+    plot_slices_editor._update_current_cmap(
+        tool.operation_editor, base="viridis", reverse=True
+    )
     assert tool.tool_status.operations[1].cmap == "viridis_r"
-    figurecomposer_plot_slices._update_current_panel_styles_enabled(tool, False)
+    plot_slices_editor._update_current_panel_styles_enabled(
+        tool.operation_editor, False
+    )
     assert not tool.tool_status.operations[1].panel_styles_enabled
-    figurecomposer_plot_slices._update_current_panel_styles(
-        tool,
+    plot_slices_editor._update_current_panel_styles(
+        tool.operation_editor,
         (FigurePlotSlicesPanelStyleState(map_index=0, slice_index=0, cmap="plasma"),),
     )
     assert tool.tool_status.operations[1].panel_styles_enabled
     assert tool.tool_status.operations[1].panel_styles[0].cmap == "plasma"
-    figurecomposer_plot_slices._update_current_panel_styles(tool, ())
+    plot_slices_editor._update_current_panel_styles(tool.operation_editor, ())
     assert not tool.tool_status.operations[1].panel_styles_enabled
     assert tool.tool_status.operations[1].panel_styles == ()
 
@@ -1378,13 +1384,13 @@ def test_figure_composer_plot_slices_all_coordinate_values_with_thin(
     qtbot.addWidget(tool)
 
     expected_values = data.thin({"eV": 2}).coords["eV"].values
-    kwargs = figurecomposer_plot_slices._plot_slices_kwargs(tool, operation)
+    kwargs = plot_slices_model._plot_slices_kwargs(tool, operation)
     np.testing.assert_allclose(kwargs["eV"], expected_values)
-    shape = figurecomposer_plot_slices._plot_slices_shape(tool, operation)
+    shape = plot_slices_model._plot_slices_shape(tool._document, operation)
     assert shape.panel_count == expected_values.size
     assert shape.plot_dims == ("kx", "ky")
 
-    code_kwargs = figurecomposer_plot_slices._plot_slices_code_kwargs(tool, operation)
+    code_kwargs = plot_slices_codegen._plot_slices_code_kwargs(tool, operation)
     assert isinstance(code_kwargs["eV"], figurecomposer_text._RawCode)
     captured: list[dict[str, typing.Any]] = []
 
@@ -1394,7 +1400,7 @@ def test_figure_composer_plot_slices_all_coordinate_values_with_thin(
             captured.append(plot_kwargs)
 
     exec(  # noqa: S102
-        "\n".join(figurecomposer_plot_slices._plot_slices_code_lines(tool, operation)),
+        "\n".join(plot_slices_codegen._plot_slices_code_lines(tool, operation)),
         {
             "data": data,
             "eplt": PlotSlicesCapture,
@@ -1405,7 +1411,7 @@ def test_figure_composer_plot_slices_all_coordinate_values_with_thin(
     np.testing.assert_allclose(captured[0]["eV"], expected_values)
 
     full_values_operation = operation.model_copy(update={"slice_values_thin": 1})
-    full_kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
+    full_kwargs = plot_slices_model._plot_slices_kwargs(
         tool,
         full_values_operation,
     )
@@ -1415,8 +1421,8 @@ def test_figure_composer_plot_slices_all_coordinate_values_with_thin(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
     tool._update_operation_editor()
-    tool.operation_panel.select_section("selection")
-    selection_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("selection")
+    selection_page = tool.operation_editor.stack.currentWidget()
     assert selection_page is not None
     values_edit = selection_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
@@ -1485,15 +1491,15 @@ def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
     )
     qtbot.addWidget(tool)
 
-    shape = figurecomposer_plot_slices._plot_slices_shape(tool, first_operation)
+    shape = plot_slices_model._plot_slices_shape(tool._document, first_operation)
     assert shape.source_text == "eV, kx, ky"
     assert shape.panel_text == "eV (1D line)"
     assert shape.selection_text == ""
     assert shape.plot_ndim == 1
     assert shape.panel_count == 2
     assert shape.valid
-    invalid_shape = figurecomposer_plot_slices._plot_slices_shape(
-        tool,
+    invalid_shape = plot_slices_model._plot_slices_shape(
+        tool._document,
         first_operation.model_copy(
             update={
                 "slice_kwargs": {"eV": 0.0, "kx": 1.0, "ky": 2.0},
@@ -1503,26 +1509,17 @@ def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
     assert invalid_shape.plot_ndim == 0
     assert not invalid_shape.valid
     assert (
-        figurecomposer_plot_slices._section_summary(tool, "selection", first_operation)
+        plot_slices_spec._section_summary(tool, "selection", first_operation)
         == "additional"
     )
-    assert (
-        figurecomposer_plot_slices._section_summary(tool, "view", first_operation)
-        == "auto"
-    )
-    assert (
-        figurecomposer_plot_slices._section_summary(tool, "advanced", first_operation)
-        == ""
-    )
-    assert (
-        figurecomposer_plot_slices._section_summary(tool, "unknown", first_operation)
-        == ""
-    )
+    assert plot_slices_spec._section_summary(tool, "view", first_operation) == "auto"
+    assert plot_slices_spec._section_summary(tool, "advanced", first_operation) == ""
+    assert plot_slices_spec._section_summary(tool, "unknown", first_operation) == ""
 
     mixed_operation = first_operation.model_copy(
         update={"sources": ("first", "second")}
     )
-    mixed_shape = figurecomposer_plot_slices._plot_slices_shape(tool, mixed_operation)
+    mixed_shape = plot_slices_model._plot_slices_shape(tool._document, mixed_operation)
     assert not mixed_shape.valid
     assert mixed_shape.plot_ndim is None
 
@@ -1540,8 +1537,8 @@ def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
     )
     qtbot.addWidget(empty_tool)
     empty_tool._document.replace_source_payloads({}, {})
-    empty_shape = figurecomposer_plot_slices._plot_slices_shape(
-        empty_tool, empty_tool.tool_status.operations[0]
+    empty_shape = plot_slices_model._plot_slices_shape(
+        empty_tool._document, empty_tool.tool_status.operations[0]
     )
     assert not empty_shape.valid
     assert empty_shape.panel_count == 0
@@ -1553,48 +1550,35 @@ def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
             lambda: ((0, first_operation), (1, second_operation)),
         )
         assert (
-            figurecomposer_plot_slices._plot_source_check_state(
-                tool, first_operation, "first"
+            plot_slices_editor._plot_source_check_state(
+                tool.operation_editor, first_operation, "first"
             )
             == QtCore.Qt.CheckState.PartiallyChecked
         )
 
-    tool._update_source_section()
-    selector = tool.step_source_controls.findChild(
-        QtWidgets.QWidget, "figureComposerPlotSlicesSourceSelector"
-    )
-    assert selector is not None
-    checks = selector.findChildren(QtWidgets.QCheckBox)
-    assert len(checks) == 2
-    first_check = next(
-        check for check in checks if check.property("figure_source_name") == "first"
-    )
-    second_check = next(
-        check for check in checks if check.property("figure_source_name") == "second"
-    )
-    assert first_check.checkState() == QtCore.Qt.CheckState.Checked
-    assert second_check.checkState() == QtCore.Qt.CheckState.Unchecked
+    checks = _plot_source_checks(tool)
+    assert set(checks) == {"first", "second"}
+    assert checks["first"].checkState() == QtCore.Qt.CheckState.Checked
+    assert checks["second"].checkState() == QtCore.Qt.CheckState.Unchecked
 
-    second_check.setCheckState(QtCore.Qt.CheckState.Checked)
-    figurecomposer_plot_slices._plot_source_check_changed(
-        tool, "second", second_check, ("first", "second")
-    )
+    checks["second"].setCheckState(QtCore.Qt.CheckState.Checked)
     assert tool.tool_status.operations[0].sources == ("first", "second")
 
-    first_check.setCheckState(QtCore.Qt.CheckState.Unchecked)
-    figurecomposer_plot_slices._plot_source_check_changed(
-        tool, "first", first_check, ("first", "second")
-    )
+    _plot_source_checks(tool)["first"].setCheckState(QtCore.Qt.CheckState.Unchecked)
     assert tool.tool_status.operations[0].sources == ("second",)
 
-    first_check.setCheckState(QtCore.Qt.CheckState.Checked)
-    figurecomposer_plot_slices._plot_source_check_changed(
-        tool, "first", first_check, ("first", "second")
-    )
+    _plot_source_checks(tool)["first"].setCheckState(QtCore.Qt.CheckState.Checked)
     assert tool.tool_status.operations[0].sources == ("first", "second")
 
-    figurecomposer_plot_slices._plot_source_move(tool, "first", 1)
-    assert tool.tool_status.operations[0].sources[:2] == ("second", "first")
+    qtbot.waitUntil(
+        lambda: _plot_source_move_buttons(tool)[("first", "down")].isEnabled(),
+        timeout=1000,
+    )
+    _plot_source_move_buttons(tool)[("first", "down")].click()
+    qtbot.waitUntil(
+        lambda: tool.tool_status.operations[0].sources[:2] == ("second", "first"),
+        timeout=1000,
+    )
 
 
 def test_figure_composer_plot_slices_image_panel_style_editor_updates_styles(
@@ -1629,10 +1613,10 @@ def test_figure_composer_plot_slices_image_panel_style_editor_updates_styles(
         }
     )
     keys = (
-        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 0, "panel 1"),
-        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 1, "panel 2"),
+        plot_slices_model._PlotSlicesPanelKey(0, 0, "panel 1"),
+        plot_slices_model._PlotSlicesPanelKey(0, 1, "panel 2"),
     )
-    editor = figurecomposer_plot_slices._PanelStyleEditorWidget(
+    editor = plot_slices_panel_style_editor._PanelStyleEditorWidget(
         operation,
         keys,
         lambda _owner, signal, slot: signal.connect(slot),
@@ -1649,10 +1633,10 @@ def test_figure_composer_plot_slices_image_panel_style_editor_updates_styles(
     editor._sync_controls()
     assert not editor.cmap_override_check.isTristate()
     assert editor.cmap_override_check.checkState() == QtCore.Qt.CheckState.Checked
-    assert editor.cmap_combo.currentData() is figurecomposer_plot_slices._MISSING
+    assert editor.cmap_combo.currentData() is plot_slices_model._MISSING
     assert not editor.norm_override_check.isTristate()
     assert editor.norm_override_check.checkState() == QtCore.Qt.CheckState.Checked
-    assert editor.norm_combo.currentData() is figurecomposer_plot_slices._MISSING
+    assert editor.norm_combo.currentData() is plot_slices_model._MISSING
     assert editor.norm_kwargs_edit.placeholderText() == "(multiple values)"
 
     editor.norm_kwargs_edit.editingFinished.emit()
@@ -1681,8 +1665,8 @@ def test_figure_composer_plot_slices_panel_override_controls_stay_live(
         label="image",
         sources=("data",),
     ).model_copy(update={"cmap": "viridis", "norm_name": "PowerNorm"})
-    keys = (figurecomposer_plot_slices._PlotSlicesPanelKey(0, 0, "panel 1"),)
-    editor = figurecomposer_plot_slices._PanelStyleEditorWidget(
+    keys = (plot_slices_model._PlotSlicesPanelKey(0, 0, "panel 1"),)
+    editor = plot_slices_panel_style_editor._PanelStyleEditorWidget(
         operation,
         keys,
         lambda _owner, signal, slot: signal.connect(slot),
@@ -1754,10 +1738,10 @@ def test_figure_composer_plot_slices_panel_style_editor_reverses_mixed_cmap(
         }
     )
     keys = (
-        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 0, "panel 1"),
-        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 1, "panel 2"),
+        plot_slices_model._PlotSlicesPanelKey(0, 0, "panel 1"),
+        plot_slices_model._PlotSlicesPanelKey(0, 1, "panel 2"),
     )
-    editor = figurecomposer_plot_slices._PanelStyleEditorWidget(
+    editor = plot_slices_panel_style_editor._PanelStyleEditorWidget(
         operation,
         keys,
         lambda _owner, signal, slot: signal.connect(slot),
@@ -1772,7 +1756,7 @@ def test_figure_composer_plot_slices_panel_style_editor_reverses_mixed_cmap(
         assert item is not None
         item.setSelected(True)
     editor._sync_controls()
-    assert editor.cmap_combo.currentData() is figurecomposer_plot_slices._MISSING
+    assert editor.cmap_combo.currentData() is plot_slices_model._MISSING
     with QtCore.QSignalBlocker(editor.cmap_override_check):
         editor.cmap_override_check.setCheckState(QtCore.Qt.CheckState.Checked)
 
@@ -1807,10 +1791,10 @@ def test_figure_composer_plot_slices_line_panel_style_editor_updates_styles(
         }
     )
     keys = (
-        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 0, "panel 1"),
-        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 1, "panel 2"),
+        plot_slices_model._PlotSlicesPanelKey(0, 0, "panel 1"),
+        plot_slices_model._PlotSlicesPanelKey(0, 1, "panel 2"),
     )
-    editor = figurecomposer_plot_slices._PanelLineStyleEditorWidget(
+    editor = plot_slices_panel_style_editor._PanelLineStyleEditorWidget(
         operation,
         keys,
         lambda _owner, signal, slot: signal.connect(slot),
@@ -1825,7 +1809,7 @@ def test_figure_composer_plot_slices_line_panel_style_editor_updates_styles(
         item.setSelected(True)
     editor._sync_controls()
     assert editor.color_edit.line_edit.placeholderText() == "(multiple values)"
-    assert editor.style_combo.currentData() is figurecomposer_plot_slices._MISSING
+    assert editor.style_combo.currentData() is plot_slices_model._MISSING
     assert editor.line_kwargs_edit.placeholderText() == "(multiple values)"
 
     editor.line_kwargs_edit.editingFinished.emit()
@@ -1887,7 +1871,7 @@ def test_figure_composer_plot_slices_source_selector_batch_toggles_sources(
     )
     qtbot.addWidget(tool)
     _select_operation_rows(tool, (0, 1))
-    tool.operation_panel.select_section("sources")
+    tool.operation_editor.select_section("sources")
 
     checks = _plot_source_checks(tool)
     assert checks["first_source"].checkState() == (
@@ -1908,26 +1892,26 @@ def test_figure_composer_plot_slices_source_selector_batch_toggles_sources(
 
 def test_figure_composer_plot_slices_mappable_tagging_edges() -> None:
     operation = FigureOperationState.plot_slices(label="data", sources=("data",))
-    key = figurecomposer_plot_slices._PlotSlicesPanelKey(0, 0, "panel")
+    key = plot_slices_model._PlotSlicesPanelKey(0, 0, "panel")
     figure = Figure()
     axis = figure.subplots()
     old_mappable = axis.imshow(np.arange(4.0).reshape(2, 2))
-    old_ids = figurecomposer_plot_slices._axis_mappable_ids((axis,))
+    old_ids = plot_slices_render._axis_mappable_ids((axis,))
 
-    figurecomposer_plot_slices._tag_plot_slices_mappables(
+    plot_slices_render._tag_plot_slices_mappables(
         operation,
         (axis,),
-        (key, figurecomposer_plot_slices._PlotSlicesPanelKey(0, 1, "extra")),
+        (key, plot_slices_model._PlotSlicesPanelKey(0, 1, "extra")),
         old_ids,
     )
 
     assert not hasattr(
         old_mappable,
-        figurecomposer_plot_slices._PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
+        plot_slices_render._PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
     )
 
     new_mappable = axis.imshow(np.arange(4.0).reshape(2, 2))
-    figurecomposer_plot_slices._tag_plot_slices_mappables(
+    plot_slices_render._tag_plot_slices_mappables(
         operation,
         (axis,),
         (key,),
@@ -1936,18 +1920,18 @@ def test_figure_composer_plot_slices_mappable_tagging_edges() -> None:
 
     assert not hasattr(
         old_mappable,
-        figurecomposer_plot_slices._PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
+        plot_slices_render._PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
     )
     assert (
         getattr(
             new_mappable,
-            figurecomposer_plot_slices._PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
+            plot_slices_render._PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
         )
         == operation.operation_id
     )
     assert getattr(
         new_mappable,
-        figurecomposer_plot_slices._PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR,
+        plot_slices_render._PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR,
     ) == (0, 0)
 
 
@@ -2002,12 +1986,10 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert (
         tool.operation_panel.splitter.widget(0) is tool.operation_panel.operation_list
     )
-    assert tool.operation_panel.splitter.widget(1) is tool.operation_panel.inspector
-    assert (
-        tool.operation_panel.editor_scroll.widget() is tool.operation_panel.editor_stack
-    )
-    assert not tool.operation_panel.editor_scroll.isAncestorOf(
-        tool.operation_panel.navigator
+    assert tool.operation_panel.splitter.widget(1) is tool.operation_editor
+    assert tool.operation_editor.scroll_area.widget() is tool.operation_editor.stack
+    assert not tool.operation_editor.scroll_area.isAncestorOf(
+        tool.operation_editor.navigator
     )
     editor_tabs = tool.findChild(QtWidgets.QTabWidget, "figureComposerEditorTabs")
     assert editor_tabs is tool.editor_tabs
@@ -2124,11 +2106,8 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert tool.findChild(QtWidgets.QTabWidget, "figureComposerInspectorTabs") is None
     assert tool.findChild(QtWidgets.QToolBox) is None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerStepNavigator") is not None
-    assert (
-        tool.operation_panel.editor_stack.objectName()
-        == "figureComposerStepSectionStack"
-    )
-    assert tool.operation_panel.section_keys == (
+    assert tool.operation_editor.stack.objectName() == "figureComposerStepSectionStack"
+    assert tool.operation_editor.section_keys == (
         "sources",
         "axes",
         "selection",
@@ -2137,8 +2116,8 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "advanced",
     )
     assert [
-        tool.operation_panel.editor_stack.widget(index).objectName()
-        for index in range(tool.operation_panel.editor_stack.count())
+        tool.operation_editor.stack.widget(index).objectName()
+        for index in range(tool.operation_editor.stack.count())
     ] == [
         "figureComposerStepSourcesPage",
         "figureComposerTargetAxesPage",
@@ -2237,15 +2216,15 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
             tool.layout_panel.dpi_spin,
         )
     )
-    tool.operation_panel.select_section("colors")
-    tool._update_current_operation(axis="equal")
+    tool.operation_editor.select_section("colors")
+    tool.operation_editor.request_update(axis="equal")
     assert tool.findChild(QtWidgets.QToolBox) is None
     assert (
-        tool.operation_panel.editor_stack.currentWidget().objectName()
+        tool.operation_editor.stack.currentWidget().objectName()
         == "figureComposerPlotSlicesColorsPage"
     )
-    tool.operation_panel.select_section("view")
-    view_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("view")
+    view_page = tool.operation_editor.stack.currentWidget()
     xlim_edit = view_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesXLimEdit"
     )
@@ -2270,37 +2249,37 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert restored_status.operations[0].ylim == 2.5
     assert "ylim=2.5" in tool.generated_code()
     assert (
-        tool.operation_panel.editor_stack.currentWidget().objectName()
+        tool.operation_editor.stack.currentWidget().objectName()
         == "figureComposerPlotSlicesViewPage"
     )
     qtbot.mouseClick(
         _operation_section_button(tool, "colors"), QtCore.Qt.MouseButton.LeftButton
     )
     assert (
-        tool.operation_panel.editor_stack.currentWidget().objectName()
+        tool.operation_editor.stack.currentWidget().objectName()
         == "figureComposerPlotSlicesColorsPage"
     )
     operation_item = tool.operation_panel.operation_list.topLevelItem(0)
     operation_item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
     assert tool.tool_status.operations[0].enabled is False
     assert (
-        tool.operation_panel.editor_stack.currentWidget().objectName()
+        tool.operation_editor.stack.currentWidget().objectName()
         == "figureComposerPlotSlicesColorsPage"
     )
     operation_item.setCheckState(0, QtCore.Qt.CheckState.Checked)
     assert tool.tool_status.operations[0].enabled is True
     assert (
-        tool.operation_panel.editor_stack.currentWidget().objectName()
+        tool.operation_editor.stack.currentWidget().objectName()
         == "figureComposerPlotSlicesColorsPage"
     )
-    tool.operation_panel.select_section("axes")
+    tool.operation_editor.select_section("axes")
     tool.axes_expression_edit.setFocus()
     tool.axes_expression_edit.setText("axs[:, 0]")
     tool.axes_expression_edit.editingFinished.emit()
     qtbot.wait(1)
     assert tool.tool_status.operations[0].axes.expression == "axs[:, 0]"
     assert (
-        tool.operation_panel.editor_stack.currentWidget().objectName()
+        tool.operation_editor.stack.currentWidget().objectName()
         == "figureComposerTargetAxesPage"
     )
     tool._target_current_operation_all_axes()
@@ -2337,11 +2316,11 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     qtbot.wait(1)
     assert tool.tool_status.operations[0].axes.axes == ((0, 0), (0, 1))
     assert (
-        tool.operation_panel.editor_stack.currentWidget().objectName()
+        tool.operation_editor.stack.currentWidget().objectName()
         == "figureComposerTargetAxesPage"
     )
     tool._target_current_operation_all_axes()
-    tool.operation_panel.select_section("colors")
+    tool.operation_editor.select_section("colors")
     cmap_combo = tool.findChild(
         erlab.interactive.colors.ColorMapComboBox, "figureComposerCmapCombo"
     )
@@ -2359,10 +2338,10 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert cmap_combo.toolTip()
     assert cmap_reverse_check.toolTip()
     assert gamma_widget.toolTip()
-    assert norm_combo.currentIndex() == figurecomposer_plot_slices._NORM_CHOICES.index(
+    assert norm_combo.currentIndex() == figurecomposer_norms._NORM_CHOICES.index(
         "PowerNorm"
     )
-    assert norm_combo.count() == len(figurecomposer_plot_slices._NORM_CHOICES)
+    assert norm_combo.count() == len(figurecomposer_norms._NORM_CHOICES)
     assert cmap_combo.currentData() == "viridis"
     assert cmap_reverse_check.isChecked()
     assert gamma_widget.value() == 0.5
@@ -2397,7 +2376,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert tool.tool_status.operations[0].gamma is None
     current_fig = plt.figure()
     try:
-        tool._update_current_operation(colorbar="right")
+        tool.operation_editor.request_update(colorbar="right")
     finally:
         plt.close(current_fig)
     assert tool.tool_status.operations[0].colorbar == "right"
@@ -2405,7 +2384,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "Adding colorbar to a different Figure" in str(warning.message)
         for warning in recwarn
     )
-    tool._update_current_operation(colorbar="none")
+    tool.operation_editor.request_update(colorbar="none")
     assert tool.tool_status.operations[0].colorbar == "none"
     assert not any(
         "constrained_layout not applied" in str(warning.message) for warning in recwarn
@@ -2462,7 +2441,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     qtbot.wait_until(lambda: tool.figure_window.isVisible(), timeout=5000)
     assert show_activations[-1] is False
     activation_count = len(show_activations)
-    tool._update_current_operation(axis="auto")
+    tool.operation_editor.request_update(axis="auto")
     assert len(show_activations) == activation_count
     figure_window = tool.figure_window
     figure_window.canvas.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
@@ -2595,7 +2574,9 @@ def test_figure_composer_toolbar_plot_slices_panel_cmap_uses_stylesheet(
         figurecomposer_toolbar_dialogs.show_axes_customize_dialog(tool)
         dialog = typing.cast("QtWidgets.QDialog", tool._axes_customize_dialog)
         qtbot.addWidget(dialog)
-        editor = dialog.findChild(figurecomposer_plot_slices._PanelStyleEditorWidget)
+        editor = dialog.findChild(
+            plot_slices_panel_style_editor._PanelStyleEditorWidget
+        )
         assert editor is not None
         assert editor.cmap_combo.currentData() == "plasma"
         assert editor.cmap_override_check.checkState() == QtCore.Qt.CheckState.Unchecked
@@ -2789,10 +2770,10 @@ def test_figure_composer_plot_slices_line_coordinate_colormap_codegen(
     qtbot.addWidget(tool)
 
     expected_colors = _expected_line_colormap_colors(eV, "viridis", trim=(0.1, 0.15))
-    assert figurecomposer_plot_slices._available_plot_slices_line_color_coords(
-        tool, operation
+    assert plot_slices_model._available_plot_slices_line_color_coords(
+        tool._document, tool._source_display_name, operation
     ) == ["eV"]
-    line_kw = figurecomposer_plot_slices._panel_line_kw_argument(tool, operation)
+    line_kw = plot_slices_model._panel_line_kw_argument(tool, operation)
     assert isinstance(line_kw, list)
     assert line_kw[0][0]["linestyle"] == "--"
     assert line_kw[0][1]["linewidth"] == 2.5
@@ -2811,8 +2792,8 @@ def test_figure_composer_plot_slices_line_coordinate_colormap_codegen(
     assert [line.get_linestyle() for line in rendered_lines] == ["--", "--"]
     assert rendered_lines[1].get_linewidth() == 2.5
 
-    tool.operation_panel.select_section("colors")
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("colors")
+    colors_page = tool.operation_editor.stack.currentWidget()
     assert (
         colors_page.findChild(
             QtWidgets.QComboBox, "figureComposerPlotSlicesLineColorModeCombo"
@@ -2889,24 +2870,20 @@ def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
         coords={"eV": np.linspace(-0.2, 0.2, 5), "kx": [-1.0, 0.0, 1.0]},
         name="data",
     )
-    tool = types.SimpleNamespace(
-        _document=types.SimpleNamespace(source_data={"data": data}),
-        _source_display_name=lambda name: name,
-        _editable_operations=lambda: (),
+    context = FigureDocument(
+        FigureRecipeState(),
+        source_data={"data": data},
     )
+    tool = types.SimpleNamespace(_document=context)
     operation = FigureOperationState.plot_slices(
         label="slices",
         sources=("data",),
     ).model_copy(update={"slice_values_mode": "all"})
 
+    assert plot_slices_model._all_coordinate_slice_values(context, operation) == ()
+    assert plot_slices_codegen._all_coordinate_slice_values_code(operation) is None
     assert (
-        figurecomposer_plot_slices._all_coordinate_slice_values(tool, operation) == ()
-    )
-    assert (
-        figurecomposer_plot_slices._all_coordinate_slice_values_code(operation) is None
-    )
-    assert (
-        figurecomposer_plot_slices._first_plot_slices_source_code(
+        plot_slices_codegen._first_plot_slices_source_code(
             operation.model_copy(update={"sources": ()})
         )
         is None
@@ -2919,64 +2896,51 @@ def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
         }
     )
     assert (
-        figurecomposer_plot_slices._first_plot_slices_source_code(selection_operation)
+        plot_slices_codegen._first_plot_slices_source_code(selection_operation)
         == "data"
     )
     assert (
-        figurecomposer_plot_slices._all_coordinate_slice_values_code(
+        plot_slices_codegen._all_coordinate_slice_values_code(
             operation.model_copy(update={"sources": (), "slice_dim": "eV"})
         )
         is None
     )
+    assert plot_slices_model._slice_values_mode_from_text("not a mode") == "manual"
+    assert plot_slices_model._line_color_mode_from_text("By coordinate") == "coordinate"
+    assert plot_slices_model._line_color_mode_from_text("Manual") == "manual"
     assert (
-        figurecomposer_plot_slices._slice_values_mode_from_text("not a mode")
-        == "manual"
-    )
-    assert (
-        figurecomposer_plot_slices._line_color_mode_from_text("By coordinate")
-        == "coordinate"
-    )
-    assert figurecomposer_plot_slices._line_color_mode_from_text("Manual") == "manual"
-    assert (
-        figurecomposer_plot_slices._all_coordinate_slice_values_error(
-            tool, operation, data.dims
+        plot_slices_model._all_coordinate_slice_values_error(
+            context, operation, data.dims
         )
         == "Choose a dimension before using all coordinate values."
     )
     assert (
-        figurecomposer_plot_slices._all_coordinate_slice_values_summary(tool, operation)
+        plot_slices_model._all_coordinate_slice_values_summary(context, operation)
         == "Choose a dimension."
     )
 
     missing_dim = operation.model_copy(update={"slice_dim": "missing"})
-    assert (
-        figurecomposer_plot_slices._all_coordinate_slice_values(tool, missing_dim) == ()
-    )
+    assert plot_slices_model._all_coordinate_slice_values(context, missing_dim) == ()
     assert "'missing' is not an input dimension" in (
-        figurecomposer_plot_slices._all_coordinate_slice_values_error(
-            tool, missing_dim, data.dims
+        plot_slices_model._all_coordinate_slice_values_error(
+            context, missing_dim, data.dims
         )
     )
     assert "'missing' is not an input dimension" in (
-        figurecomposer_plot_slices._all_coordinate_slice_values_summary(
-            tool, missing_dim
-        )
+        plot_slices_model._all_coordinate_slice_values_summary(context, missing_dim)
     )
 
-    missing_source_tool = types.SimpleNamespace(
-        _document=types.SimpleNamespace(source_data={}),
-        _source_display_name=lambda name: name,
-        _editable_operations=lambda: (),
-    )
+    missing_source_context = FigureDocument(FigureRecipeState())
     assert (
-        figurecomposer_plot_slices._all_coordinate_slice_values(
-            missing_source_tool, operation.model_copy(update={"slice_dim": "eV"})
+        plot_slices_model._all_coordinate_slice_values(
+            missing_source_context,
+            operation.model_copy(update={"slice_dim": "eV"}),
         )
         == ()
     )
     assert (
-        figurecomposer_plot_slices._all_coordinate_slice_values_summary(
-            missing_source_tool, missing_dim
+        plot_slices_model._all_coordinate_slice_values_summary(
+            missing_source_context, missing_dim
         )
         == "Select at least one valid source."
     )
@@ -2987,61 +2951,58 @@ def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
         coords={"label": ["a", "b"], "kx": [-1.0, 0.0, 1.0]},
         name="string_coord",
     )
-    string_tool = types.SimpleNamespace(
-        _document=types.SimpleNamespace(source_data={"data": string_coord}),
-        _source_display_name=lambda name: name,
-        _editable_operations=lambda: (),
+    string_context = FigureDocument(
+        FigureRecipeState(),
+        source_data={"data": string_coord},
     )
     string_operation = operation.model_copy(update={"slice_dim": "label"})
     assert (
-        figurecomposer_plot_slices._all_coordinate_slice_values(
-            string_tool, string_operation
-        )
+        plot_slices_model._all_coordinate_slice_values(string_context, string_operation)
         == ()
     )
     assert "numeric and non-empty" in (
-        figurecomposer_plot_slices._all_coordinate_slice_values_error(
-            string_tool, string_operation, string_coord.dims
+        plot_slices_model._all_coordinate_slice_values_error(
+            string_context, string_operation, string_coord.dims
         )
     )
     assert "numeric and non-empty" in (
-        figurecomposer_plot_slices._all_coordinate_slice_values_summary(
-            string_tool, string_operation
+        plot_slices_model._all_coordinate_slice_values_summary(
+            string_context, string_operation
         )
     )
 
     thinned = operation.model_copy(update={"slice_dim": "eV", "slice_values_thin": 2})
-    assert figurecomposer_plot_slices._all_coordinate_slice_values(
-        tool, thinned
+    assert plot_slices_model._all_coordinate_slice_values(
+        context, thinned
     ) == pytest.approx(tuple(data.thin({"eV": 2}).coords["eV"].values))
     assert (
-        figurecomposer_plot_slices._all_coordinate_slice_values_summary(tool, thinned)
+        plot_slices_model._all_coordinate_slice_values_summary(context, thinned)
         == "eV: 5 values, 3 plotted"
     )
     assert (
-        figurecomposer_plot_slices._all_coordinate_slice_values_code(thinned)
+        plot_slices_codegen._all_coordinate_slice_values_code(thinned)
         == 'data.thin({"eV": 2}).coords["eV"].values'
     )
     assert (
-        figurecomposer_plot_slices._all_coordinate_slice_values_code(
+        plot_slices_codegen._all_coordinate_slice_values_code(
             thinned.model_copy(update={"slice_values_thin": 1})
         )
         == 'data.coords["eV"].values'
     )
     assert (
-        figurecomposer_plot_slices._all_coordinate_slice_values_summary(
-            tool, thinned.model_copy(update={"slice_values_thin": 1})
+        plot_slices_model._all_coordinate_slice_values_summary(
+            context, thinned.model_copy(update={"slice_values_thin": 1})
         )
         == "eV: 5 values"
     )
     assert (
-        figurecomposer_plot_slices._plot_slices_slice_values_code(
+        plot_slices_codegen._plot_slices_slice_values_code(
             tool, operation.model_copy(update={"slice_values_mode": "manual"})
         )
         == "[None]"
     )
     assert (
-        figurecomposer_plot_slices._plot_slices_slice_values_code(
+        plot_slices_codegen._plot_slices_slice_values_code(
             tool,
             operation.model_copy(
                 update={
@@ -3053,11 +3014,11 @@ def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
         )
         == "[0.1]"
     )
-    assert figurecomposer_plot_slices._plot_slices_panel_qsel_kwargs(
+    assert plot_slices_model._plot_slices_panel_qsel_kwargs(
         operation.model_copy(
             update={"slice_dim": "eV", "slice_values": (0.1,), "slice_width": 0.2}
         ),
-        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 0, ""),
+        plot_slices_model._PlotSlicesPanelKey(0, 0, ""),
     ) == {"eV": 0.1, "eV_width": 0.2}
 
 
@@ -3069,28 +3030,28 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
         slice_values=(0.1, 0.2),
     ).model_copy(update={"line_label_text": "{source}:{number}:{eV:g}"})
     fields = {"source", "number", "eV"}
-    single_key = (figurecomposer_plot_slices._PlotSlicesPanelKey(0, 0, "A"),)
+    single_key = (plot_slices_model._PlotSlicesPanelKey(0, 0, "A"),)
     by_slice_keys = tuple(
-        figurecomposer_plot_slices._PlotSlicesPanelKey(0, index, f"A {index}")
+        plot_slices_model._PlotSlicesPanelKey(0, index, f"A {index}")
         for index in range(2)
     )
     by_source_keys = tuple(
-        figurecomposer_plot_slices._PlotSlicesPanelKey(index, 0, f"S {index}")
+        plot_slices_model._PlotSlicesPanelKey(index, 0, f"S {index}")
         for index in range(2)
     )
     grid_keys = tuple(
-        figurecomposer_plot_slices._PlotSlicesPanelKey(map_index, slice_index, "")
+        plot_slices_model._PlotSlicesPanelKey(map_index, slice_index, "")
         for map_index in range(2)
         for slice_index in range(2)
     )
     namespace = {"slice_values": [0.1, 0.2]}
 
-    single = figurecomposer_plot_slices._plot_slices_label_line_kw_comprehension_code(
+    single = plot_slices_codegen._plot_slices_label_line_kw_comprehension_code(
         operation, single_key, ("alpha",), "slice_values", fields
     )
     assert eval(single, namespace) == {"label": "alpha:1:0.1"}  # noqa: S307
 
-    by_slice = figurecomposer_plot_slices._plot_slices_label_line_kw_comprehension_code(
+    by_slice = plot_slices_codegen._plot_slices_label_line_kw_comprehension_code(
         operation, by_slice_keys, ("alpha",), "slice_values", fields
     )
     assert eval(by_slice, namespace) == [  # noqa: S307
@@ -3098,17 +3059,15 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
         {"label": "alpha:2:0.2"},
     ]
 
-    by_source = (
-        figurecomposer_plot_slices._plot_slices_label_line_kw_comprehension_code(
-            operation, by_source_keys, ("alpha", "beta"), "slice_values", fields
-        )
+    by_source = plot_slices_codegen._plot_slices_label_line_kw_comprehension_code(
+        operation, by_source_keys, ("alpha", "beta"), "slice_values", fields
     )
     assert eval(by_source, namespace) == [  # noqa: S307
         {"label": "alpha:1:0.1"},
         {"label": "beta:2:0.1"},
     ]
 
-    grid = figurecomposer_plot_slices._plot_slices_label_line_kw_comprehension_code(
+    grid = plot_slices_codegen._plot_slices_label_line_kw_comprehension_code(
         operation, grid_keys, ("alpha", "beta"), "slice_values", fields
     )
     assert eval(grid, namespace) == [  # noqa: S307
@@ -3116,14 +3075,12 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
         [{"label": "beta:3:0.1"}, {"label": "beta:4:0.2"}],
     ]
 
-    fortran_grid = (
-        figurecomposer_plot_slices._plot_slices_label_line_kw_comprehension_code(
-            operation.model_copy(update={"order": "F"}),
-            grid_keys,
-            ("alpha", "beta"),
-            "slice_values",
-            fields,
-        )
+    fortran_grid = plot_slices_codegen._plot_slices_label_line_kw_comprehension_code(
+        operation.model_copy(update={"order": "F"}),
+        grid_keys,
+        ("alpha", "beta"),
+        "slice_values",
+        fields,
     )
     assert eval(fortran_grid, namespace) == [  # noqa: S307
         [{"label": "alpha:1:0.1"}, {"label": "beta:2:0.1"}],
@@ -3140,7 +3097,7 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
             {},
         )
 
-    styled = figurecomposer_plot_slices._plot_slices_styled_label_line_kw_code(
+    styled = plot_slices_codegen._plot_slices_styled_label_line_kw_code(
         operation.model_copy(
             update={
                 "line_kw": {"linewidth": 1.5},
@@ -3188,7 +3145,7 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
             ),
         }
     )
-    styled_line_kw = figurecomposer_plot_slices._plot_slices_label_line_kw_code(
+    styled_line_kw = plot_slices_codegen._plot_slices_label_line_kw_code(
         tool, styled_operation
     )
     assert styled_line_kw is not None
@@ -3197,7 +3154,7 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
     assert styled_line_kw_value[0][1]["color"] == "blue"
 
     assert (
-        figurecomposer_plot_slices._plot_slices_panel_index_expr(
+        plot_slices_codegen._plot_slices_panel_index_expr(
             "F",
             map_count=2,
             slice_count=3,
@@ -3207,11 +3164,11 @@ def test_figure_composer_plot_slices_label_codegen_helper_variants() -> None:
         == "slice_index * 2 + map_index"
     )
     assert (
-        figurecomposer_plot_slices._line_kw_dict_code({"alpha": 0.5}, "label_code")
+        plot_slices_codegen._line_kw_dict_code({"alpha": 0.5}, "label_code")
         == "{**{'alpha': 0.5}, 'label': label_code}"
     )
     assert (
-        figurecomposer_plot_slices._line_kw_dict_code({}, "label_code")
+        plot_slices_codegen._line_kw_dict_code({}, "label_code")
         == "{'label': label_code}"
     )
 
@@ -3244,8 +3201,8 @@ def test_figure_composer_plot_slices_qsel_kwargs_display_in_selection(qtbot) -> 
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("selection")
-    selection_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("selection")
+    selection_page = tool.operation_editor.stack.currentWidget()
     dimension_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
     )
@@ -3266,8 +3223,8 @@ def test_figure_composer_plot_slices_qsel_kwargs_display_in_selection(qtbot) -> 
     assert slice_kwargs_edit is not None
     assert slice_kwargs_edit.text() == "beta=slice(-0.5, 0.5)"
 
-    tool.operation_panel.select_section("advanced")
-    extra_kwargs_edit = tool.operation_panel.editor_stack.currentWidget().findChild(
+    tool.operation_editor.select_section("advanced")
+    extra_kwargs_edit = tool.operation_editor.stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerExtraKwEdit"
     )
     assert extra_kwargs_edit is not None
@@ -3300,8 +3257,8 @@ def test_figure_composer_plot_slices_advanced_qsel_kwargs_move_to_selection(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("advanced")
-    extra_kwargs_edit = tool.operation_panel.editor_stack.currentWidget().findChild(
+    tool.operation_editor.select_section("advanced")
+    extra_kwargs_edit = tool.operation_editor.stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerExtraKwEdit"
     )
     assert extra_kwargs_edit is not None
@@ -3323,8 +3280,8 @@ def test_figure_composer_plot_slices_advanced_qsel_kwargs_move_to_selection(
         lambda: not tool._operation_editor_update_pending,
         timeout=1000,
     )
-    tool.operation_panel.select_section("selection")
-    slice_kwargs_edit = tool.operation_panel.editor_stack.currentWidget().findChild(
+    tool.operation_editor.select_section("selection")
+    slice_kwargs_edit = tool.operation_editor.stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesSliceKwargsEdit"
     )
     assert slice_kwargs_edit is not None
@@ -3374,8 +3331,8 @@ def test_figure_composer_plot_slices_color_controls_do_not_commit_on_rebuild(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("colors")
-    first_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("colors")
+    first_page = tool.operation_editor.stack.currentWidget()
     first_cmap_combo = first_page.findChild(
         erlab.interactive.colors.ColorMapComboBox, "figureComposerCmapCombo"
     )
@@ -3385,14 +3342,14 @@ def test_figure_composer_plot_slices_color_controls_do_not_commit_on_rebuild(
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(1)
     )
-    tool.operation_panel.select_section("colors")
+    tool.operation_editor.select_section("colors")
 
     assert tool.tool_status.operations[0].cmap == "viridis"
     assert tool.tool_status.operations[1].cmap == "magma_r"
 
     _select_operation_rows(tool, (0, 1))
-    tool.operation_panel.select_section("colors")
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("colors")
+    colors_page = tool.operation_editor.stack.currentWidget()
     cmap_combo = colors_page.findChild(
         erlab.interactive.colors.ColorMapComboBox, "figureComposerCmapCombo"
     )
@@ -3419,7 +3376,7 @@ def test_figure_composer_plot_slices_color_controls_do_not_commit_on_rebuild(
         "plasma",
         "plasma_r",
     ]
-    halfrange_edit = tool.operation_panel.editor_stack.currentWidget().findChild(
+    halfrange_edit = tool.operation_editor.stack.currentWidget().findChild(
         QtWidgets.QLineEdit, "figureComposerHalfrangeNormEdit"
     )
     assert halfrange_edit is not None
@@ -3460,13 +3417,13 @@ def test_figure_composer_plot_slices_gamma_queues_preview_render(
         lambda *args, **_kwargs: render_calls.append(args),
     )
 
-    figurecomposer_plot_slices._update_current_norm_gamma(tool, 0.75)
+    plot_slices_editor._update_current_norm_gamma(tool.operation_editor, 0.75)
 
     assert tool.tool_status.operations[0].norm_gamma == 0.75
     assert render_calls == []
     assert tool._preview_render_update_pending
 
-    figurecomposer_plot_slices._update_current_norm_gamma(tool, 0.5)
+    plot_slices_editor._update_current_norm_gamma(tool.operation_editor, 0.5)
 
     assert tool.tool_status.operations[0].norm_gamma == 0.5
     assert render_calls == []
@@ -3520,16 +3477,16 @@ def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> Non
     qtbot.addWidget(tool)
 
     order_combo = tool.findChild(QtWidgets.QComboBox, "figureComposerOrderCombo")
-    shape = figurecomposer_plot_slices._plot_slices_shape(
-        tool, tool.tool_status.operations[0]
+    shape = plot_slices_model._plot_slices_shape(
+        tool._document, tool.tool_status.operations[0]
     )
     assert shape.valid
     assert shape.plot_dims == ("kx",)
     assert shape.plot_ndim == 1
     assert order_combo is not None
 
-    tool.operation_panel.select_section("colors")
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("colors")
+    colors_page = tool.operation_editor.stack.currentWidget()
     line_color_edit = colors_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesLineColorEdit"
     )
@@ -3581,8 +3538,8 @@ def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> Non
         is None
     )
 
-    tool.operation_panel.select_section("colors")
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("colors")
+    colors_page = tool.operation_editor.stack.currentWidget()
     assert (
         colors_page.findChild(QtWidgets.QComboBox, "figureComposerSameLimitsCombo")
         is None
@@ -3648,9 +3605,9 @@ def test_figure_composer_plot_slices_line_transforms_codegen_executes(
     )
     qtbot.addWidget(tool)
 
-    assert "transform" in tool.operation_panel.section_keys
-    tool.operation_panel.select_section("transform")
-    transform_page = tool.operation_panel.editor_stack.currentWidget()
+    assert "transform" in tool.operation_editor.section_keys
+    tool.operation_editor.select_section("transform")
+    transform_page = tool.operation_editor.stack.currentWidget()
     assert transform_page.objectName() == "figureComposerPlotSlicesTransformPage"
     assert (
         transform_page.findChild(
@@ -3672,8 +3629,8 @@ def test_figure_composer_plot_slices_line_transforms_codegen_executes(
         is None
     )
 
-    tool.operation_panel.select_section("colors")
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("colors")
+    colors_page = tool.operation_editor.stack.currentWidget()
     assert (
         colors_page.findChild(
             QtWidgets.QComboBox, "figureComposerPlotSlicesLineNormalizeCombo"
@@ -3682,9 +3639,7 @@ def test_figure_composer_plot_slices_line_transforms_codegen_executes(
     )
     assert colors_page.findChild(QtWidgets.QCheckBox, "figureComposerGradientCheck")
 
-    kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
-        tool, tool.tool_status.operations[0]
-    )
+    kwargs = plot_slices_model._plot_slices_kwargs(tool, tool.tool_status.operations[0])
     assert "line_normalize" not in kwargs
     assert "line_scales" not in kwargs
     assert "line_offsets" not in kwargs
@@ -3771,16 +3726,14 @@ def test_figure_composer_plot_slices_line_panels_ignore_image_cmap(qtbot) -> Non
     )
     qtbot.addWidget(tool)
 
-    tool.operation_panel.select_section("colors")
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("colors")
+    colors_page = tool.operation_editor.stack.currentWidget()
     line_color_edit = colors_page.findChild(
         QtWidgets.QLineEdit, "figureComposerPlotSlicesLineColorEdit"
     )
     assert line_color_edit is not None
     assert line_color_edit.text() == ""
-    kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
-        tool, tool.tool_status.operations[0]
-    )
+    kwargs = plot_slices_model._plot_slices_kwargs(tool, tool.tool_status.operations[0])
     assert "cmap" not in kwargs
     assert "line_kw" not in kwargs
 
@@ -3828,8 +3781,8 @@ def test_figure_composer_plot_slices_mixed_image_line_batch_hides_color_controls
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (0, 1))
-    tool.operation_panel.select_section("colors")
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("colors")
+    colors_page = tool.operation_editor.stack.currentWidget()
 
     assert (
         colors_page.findChild(
@@ -3853,18 +3806,18 @@ def test_figure_composer_plot_slices_mixed_image_line_batch_hides_color_controls
     )
     assert mixed_label is not None
 
-    tool.operation_panel.select_section("view")
-    view_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("view")
+    view_page = tool.operation_editor.stack.currentWidget()
     assert view_page.findChild(QtWidgets.QComboBox, "figureComposerAxisCombo")
-    tool.operation_panel.select_section("colors")
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("colors")
+    colors_page = tool.operation_editor.stack.currentWidget()
     assert (
         colors_page.findChild(QtWidgets.QComboBox, "figureComposerSameLimitsCombo")
         is None
     )
 
-    tool.operation_panel.select_section("selection")
-    selection_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("selection")
+    selection_page = tool.operation_editor.stack.currentWidget()
     assert selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
     )
@@ -3902,9 +3855,9 @@ def test_figure_composer_plot_slices_image_panels_hide_line_transforms(
     )
     qtbot.addWidget(tool)
 
-    assert "transform" not in tool.operation_panel.section_keys
-    tool.operation_panel.select_section("colors")
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    assert "transform" not in tool.operation_editor.section_keys
+    tool.operation_editor.select_section("colors")
+    colors_page = tool.operation_editor.stack.currentWidget()
     assert (
         colors_page.findChild(
             QtWidgets.QComboBox, "figureComposerPlotSlicesLineNormalizeCombo"
@@ -3969,9 +3922,7 @@ def test_figure_composer_plot_slices_image_panel_styles_codegen_executes(
     )
     qtbot.addWidget(tool)
 
-    kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
-        tool, tool.tool_status.operations[0]
-    )
+    kwargs = plot_slices_model._plot_slices_kwargs(tool, tool.tool_status.operations[0])
     assert kwargs["cmap"] == [["viridis", "magma_r"]]
     assert isinstance(kwargs["norm"][0][0], mcolors.Normalize)
     assert isinstance(kwargs["norm"][0][1], eplt.CenteredPowerNorm)
@@ -4032,9 +3983,7 @@ def test_figure_composer_plot_slices_line_panel_styles_codegen_executes(
     )
     qtbot.addWidget(tool)
 
-    kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
-        tool, tool.tool_status.operations[0]
-    )
+    kwargs = plot_slices_model._plot_slices_kwargs(tool, tool.tool_status.operations[0])
     assert kwargs["line_kw"] == [
         [{"color": "red", "linestyle": "--"}],
         [{"color": "blue", "marker": "o", "linewidth": 2.0}],
@@ -4079,9 +4028,9 @@ def test_figure_composer_plot_slices_line_panel_style_editor_updates_recipe(
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_panel.select_section("colors")
+    tool.operation_editor.select_section("colors")
 
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    colors_page = tool.operation_editor.stack.currentWidget()
     panel_check = colors_page.findChild(
         QtWidgets.QCheckBox, "figureComposerPlotSlicesPanelStylesCheck"
     )
@@ -4089,14 +4038,14 @@ def test_figure_composer_plot_slices_line_panel_style_editor_updates_recipe(
     panel_check.setChecked(True)
     qtbot.waitUntil(
         lambda: (
-            tool.operation_panel.editor_stack.currentWidget().findChild(
+            tool.operation_editor.stack.currentWidget().findChild(
                 QtWidgets.QWidget, "figureComposerPlotSlicesPanelLineStyleEditor"
             )
             is not None
         ),
         timeout=1000,
     )
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    colors_page = tool.operation_editor.stack.currentWidget()
     panel_list = colors_page.findChild(
         QtWidgets.QListWidget, "figureComposerPlotSlicesPanelLineStyleList"
     )
@@ -4175,14 +4124,14 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
     )
-    tool.operation_panel.select_section("view")
+    tool.operation_editor.select_section("view")
     annotate_kwargs_edit = tool.findChild(
         QtWidgets.QLineEdit, "figureComposerAnnotateKwEdit"
     )
     assert annotate_kwargs_edit is not None
     assert annotate_kwargs_edit.text() == 'fontsize=8, color="black"'
 
-    tool.operation_panel.select_section("colors")
+    tool.operation_editor.select_section("colors")
     colorbar_kwargs_edit = tool.findChild(
         QtWidgets.QLineEdit, "figureComposerColorbarKwEdit"
     )
@@ -4194,13 +4143,13 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
     assert norm_kwargs_edit is not None
     assert norm_kwargs_edit.text() == 'custom="extra"'
 
-    tool.operation_panel.select_section("advanced")
+    tool.operation_editor.select_section("advanced")
     extra_kwargs_edit = tool.findChild(QtWidgets.QLineEdit, "figureComposerExtraKwEdit")
     assert extra_kwargs_edit is not None
     assert extra_kwargs_edit.text() == "alpha=0.5, zorder=2"
 
     _select_operation_rows(tool, (1,))
-    tool.operation_panel.select_section("colors")
+    tool.operation_editor.select_section("colors")
     gradient_kwargs_edit = tool.findChild(
         QtWidgets.QLineEdit, "figureComposerGradientKwEdit"
     )
@@ -4208,8 +4157,8 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
     assert gradient_kwargs_edit.text() == 'color="C0", alpha=0.25'
 
     _select_operation_rows(tool, (2,))
-    tool.operation_panel.select_section("selection")
-    selection_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("selection")
+    selection_page = tool.operation_editor.stack.currentWidget()
     assert (
         selection_page.findChild(
             QtWidgets.QComboBox, "figureComposerProfileReduceCombo"
@@ -4231,7 +4180,7 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(3)
     )
-    tool.operation_panel.select_section("method")
+    tool.operation_editor.select_section("method")
     erlab_method_kwargs_edit = tool.findChild(
         QtWidgets.QLineEdit, "figureComposerERLabMethodKwEdit"
     )
@@ -4445,15 +4394,15 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
     qtbot.addWidget(tool)
     tool.show_figure_window(activate=False)
     tool._update_operation_editor()
-    tool.operation_panel.select_section("colors")
+    tool.operation_editor.select_section("colors")
 
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    colors_page = tool.operation_editor.stack.currentWidget()
     norm_combo = colors_page.findChild(QtWidgets.QComboBox, "figureComposerNormCombo")
     assert norm_combo is not None
-    assert norm_combo.currentIndex() == figurecomposer_plot_slices._NORM_CHOICES.index(
+    assert norm_combo.currentIndex() == figurecomposer_norms._NORM_CHOICES.index(
         "PowerNorm"
     )
-    assert norm_combo.count() == len(figurecomposer_plot_slices._NORM_CHOICES)
+    assert norm_combo.count() == len(figurecomposer_norms._NORM_CHOICES)
     assert (
         colors_page.findChild(
             erlab.interactive.colors.ColorMapGammaWidget,
@@ -4478,14 +4427,14 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
     assert tool.tool_status.operations[0].norm_name == "CenteredInversePowerNorm"
     qtbot.waitUntil(
         lambda: (
-            tool.operation_panel.editor_stack.currentWidget().findChild(
+            tool.operation_editor.stack.currentWidget().findChild(
                 QtWidgets.QLineEdit, "figureComposerVcenterNormEdit"
             )
             is not None
         ),
         timeout=1000,
     )
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    colors_page = tool.operation_editor.stack.currentWidget()
     vcenter_edit = colors_page.findChild(
         QtWidgets.QLineEdit, "figureComposerVcenterNormEdit"
     )
@@ -4499,14 +4448,14 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
     assert tool.tool_status.operations[0].norm_name == "CenteredPowerNorm"
     qtbot.waitUntil(
         lambda: (
-            tool.operation_panel.editor_stack.currentWidget().findChild(
+            tool.operation_editor.stack.currentWidget().findChild(
                 QtWidgets.QLineEdit, "figureComposerHalfrangeNormEdit"
             )
             is not None
         ),
         timeout=1000,
     )
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    colors_page = tool.operation_editor.stack.currentWidget()
     assert (
         colors_page.findChild(
             erlab.interactive.colors.ColorMapGammaWidget,
@@ -4536,7 +4485,7 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
     assert tool.tool_status.operations[0].norm_kwargs == {"custom": "extra"}
 
     def norm_kwargs_text_updated() -> bool:
-        refreshed_edit = tool.operation_panel.editor_stack.currentWidget().findChild(
+        refreshed_edit = tool.operation_editor.stack.currentWidget().findChild(
             QtWidgets.QLineEdit, "figureComposerNormKwargsEdit"
         )
         return refreshed_edit is not None and refreshed_edit.text() == 'custom="extra"'
@@ -4545,32 +4494,32 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
         norm_kwargs_text_updated,
         timeout=1000,
     )
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    colors_page = tool.operation_editor.stack.currentWidget()
     norm_kwargs_edit = colors_page.findChild(
         QtWidgets.QLineEdit, "figureComposerNormKwargsEdit"
     )
     assert norm_kwargs_edit is not None
     assert norm_kwargs_edit.text() == 'custom="extra"'
 
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    colors_page = tool.operation_editor.stack.currentWidget()
     norm_combo = colors_page.findChild(QtWidgets.QComboBox, "figureComposerNormCombo")
     assert norm_combo is not None
     _activate_combo_text(norm_combo, "Normalize")
     assert tool.tool_status.operations[0].norm_name == "Normalize"
     qtbot.waitUntil(
         lambda: (
-            tool.operation_panel.editor_stack.currentWidget().findChild(
+            tool.operation_editor.stack.currentWidget().findChild(
                 QtWidgets.QLineEdit, "figureComposerVminNormEdit"
             )
             is not None
-            and tool.operation_panel.editor_stack.currentWidget().findChild(
+            and tool.operation_editor.stack.currentWidget().findChild(
                 QtWidgets.QLineEdit, "figureComposerHalfrangeNormEdit"
             )
             is None
         ),
         timeout=1000,
     )
-    colors_page = tool.operation_panel.editor_stack.currentWidget()
+    colors_page = tool.operation_editor.stack.currentWidget()
     assert (
         colors_page.findChild(
             erlab.interactive.colors.ColorMapGammaWidget,

@@ -92,16 +92,10 @@ from erlab.interactive._figurecomposer._operations import (
     _line_profile as figurecomposer_line_profile,
 )
 from erlab.interactive._figurecomposer._operations import (
-    _method as figurecomposer_method,
-)
-from erlab.interactive._figurecomposer._operations import (
     _photon_energy as figurecomposer_photon_energy,
 )
 from erlab.interactive._figurecomposer._operations import (
     _plot_array as figurecomposer_plot_array,
-)
-from erlab.interactive._figurecomposer._operations import (
-    _plot_slices as figurecomposer_plot_slices,
 )
 from erlab.interactive._figurecomposer._operations import (
     _set_palette as figurecomposer_set_palette,
@@ -162,7 +156,7 @@ def _operation_section_buttons(
 ) -> tuple[QtWidgets.QToolButton, ...]:
     return tuple(
         _operation_section_button(tool, key)
-        for key in tool.operation_panel.section_keys
+        for key in tool.operation_editor.section_keys
     )
 
 
@@ -426,7 +420,9 @@ def _finish_tick_params_edit(
 def _plot_source_checks(tool: FigureComposerTool) -> dict[str, QtWidgets.QCheckBox]:
     return {
         str(source_name): check
-        for check in tool.step_source_controls.findChildren(QtWidgets.QCheckBox)
+        for check in tool.operation_editor.source_controls.findChildren(
+            QtWidgets.QCheckBox
+        )
         if (source_name := check.property("figure_source_name")) is not None
     }
 
@@ -468,7 +464,9 @@ def _plot_source_move_buttons(
             str(source_name),
             str(direction),
         ): button
-        for button in tool.step_source_controls.findChildren(QtWidgets.QToolButton)
+        for button in tool.operation_editor.source_controls.findChildren(
+            QtWidgets.QToolButton
+        )
         if (source_name := button.property("figure_source_name")) is not None
         and (direction := button.property("figure_source_move")) is not None
     }

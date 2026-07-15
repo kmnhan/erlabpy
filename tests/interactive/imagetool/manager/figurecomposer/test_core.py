@@ -5,6 +5,43 @@ import textwrap
 
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._model._document import FigureDocument
+from erlab.interactive._figurecomposer._operations._method import (
+    _catalog as method_catalog,
+)
+from erlab.interactive._figurecomposer._operations._method import (
+    _editor as method_editor,
+)
+from erlab.interactive._figurecomposer._operations._method import (
+    _execution as method_execution,
+)
+from erlab.interactive._figurecomposer._operations._method import (
+    _operation as method_operation,
+)
+from erlab.interactive._figurecomposer._operations._method import (
+    _plot_data as method_plot_data,
+)
+from erlab.interactive._figurecomposer._operations._method import (
+    _plot_editor as method_plot_editor,
+)
+from erlab.interactive._figurecomposer._operations._method import _state as method_state
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _codegen as plot_slices_codegen,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _editor as plot_slices_editor,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _model as plot_slices_model,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _panel_style_editor as plot_slices_panel_style_editor,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _render as plot_slices_render,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _spec as plot_slices_spec,
+)
 
 from ._common import *
 
@@ -835,9 +872,20 @@ def test_figure_composer_operation_modules_use_editor_signal_contract() -> None:
     modules = (
         figurecomposer_custom_code_operation,
         figurecomposer_line_profile,
-        figurecomposer_method,
+        method_catalog,
+        method_editor,
+        method_execution,
+        method_operation,
+        method_plot_data,
+        method_plot_editor,
+        method_state,
         figurecomposer_photon_energy,
-        figurecomposer_plot_slices,
+        plot_slices_codegen,
+        plot_slices_editor,
+        plot_slices_model,
+        plot_slices_panel_style_editor,
+        plot_slices_render,
+        plot_slices_spec,
         figurecomposer_set_palette,
     )
     direct_connects: list[str] = []
@@ -1113,8 +1161,8 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (2,))
-    tool.operation_panel.select_section("selection")
-    selection_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("selection")
+    selection_page = tool.operation_editor.stack.currentWidget()
     profile_coordinate_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
     )
@@ -1135,14 +1183,14 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     assert tool.tool_status.operations[2].line_x is None
     _activate_combo_index(profile_values_combo, profile_values_combo.findData("kx"))
     assert tool.tool_status.operations[2].line_y == "kx"
-    selection_page = tool.operation_panel.editor_stack.currentWidget()
+    selection_page = tool.operation_editor.stack.currentWidget()
     profile_values_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileValuesCombo"
     )
     assert profile_values_combo is not None
     _activate_combo_index(profile_values_combo, 0)
     assert tool.tool_status.operations[2].line_y is None
-    selection_page = tool.operation_panel.editor_stack.currentWidget()
+    selection_page = tool.operation_editor.stack.currentWidget()
     profile_coordinate_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
     )
@@ -1159,8 +1207,8 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     assert all(
         widget.toolTip() for widget in selection_page.findChildren(QtWidgets.QCheckBox)
     )
-    tool.operation_panel.select_section("view")
-    view_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("view")
+    view_page = tool.operation_editor.stack.currentWidget()
     data_values_axis_combo = view_page.findChild(
         QtWidgets.QComboBox, "figureComposerDataValuesAxisCombo"
     )
@@ -1175,8 +1223,8 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
 
     _select_operation_rows(tool, (3,))
     assert tool.tool_status.operations[3].method_name == "clean_labels"
-    tool.operation_panel.select_section("method")
-    erlab_method_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("method")
+    erlab_method_page = tool.operation_editor.stack.currentWidget()
     assert all(
         widget.toolTip()
         for widget in erlab_method_page.findChildren(QtWidgets.QComboBox)

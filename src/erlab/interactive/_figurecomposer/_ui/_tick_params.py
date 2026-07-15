@@ -12,46 +12,15 @@ from erlab.interactive._figurecomposer._line_style import (
     configure_style_combo,
     style_combo_value,
 )
+from erlab.interactive._figurecomposer._operations._method._catalog import (
+    TICK_PARAMS_CONTROLLED_KWARGS,
+    TICK_PARAMS_DEFAULT_KWARGS,
+)
 from erlab.interactive._figurecomposer._text import _code_args, _literal_from_text
 from erlab.interactive._figurecomposer._ui._widgets import _ColorLineEditWidget
 
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
-
-TICK_PARAMS_DEFAULT_KWARGS: dict[str, typing.Any] = {
-    "axis": "both",
-    "which": "major",
-}
-TICK_PARAMS_CONTROLLED_KWARGS = frozenset(
-    (
-        "axis",
-        "which",
-        "direction",
-        "reset",
-        "bottom",
-        "top",
-        "left",
-        "right",
-        "labelbottom",
-        "labeltop",
-        "labelleft",
-        "labelright",
-        "length",
-        "width",
-        "pad",
-        "labelrotation",
-        "labelsize",
-        "labelfontfamily",
-        "colors",
-        "color",
-        "labelcolor",
-        "zorder",
-        "grid_color",
-        "grid_alpha",
-        "grid_linewidth",
-        "grid_linestyle",
-    )
-)
 
 _SIDE_ROWS = (
     ("Bottom", "bottom", "labelbottom"),

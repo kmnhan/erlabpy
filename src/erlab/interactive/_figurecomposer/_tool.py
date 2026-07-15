@@ -12,7 +12,6 @@ import keyword
 import logging
 import math
 import re
-import textwrap
 import traceback
 import typing
 import unicodedata
@@ -37,6 +36,7 @@ import erlab.interactive._qt_state as _qt_state
 from erlab.interactive._figurecomposer._defaults import (
     _figure_draw_context,
     _figure_style_context,
+    _styled_rcparams_value,
     figure_options_context,
 )
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
@@ -75,7 +75,13 @@ from erlab.interactive._figurecomposer._model._sources import (
     _source_selection,
     _source_unique_name,
     _source_with_selection,
+    selection_dim_mode,
+    selection_dim_value_text,
+    selection_dim_width_text,
     selection_has_effect,
+    selection_value_from_text,
+    selection_width_from_text,
+    shared_selection,
 )
 from erlab.interactive._figurecomposer._model._state import (
     FigureAxesSelectionState,
@@ -89,14 +95,7 @@ from erlab.interactive._figurecomposer._model._state import (
     FigureSubplotsState,
 )
 from erlab.interactive._figurecomposer._operations import _registry
-from erlab.interactive._figurecomposer._operations._base import (
-    COMMON_AXES_SECTION_TOOLTIP,
-    COMMON_SOURCE_SECTION_TOOLTIP,
-    StepSection,
-)
-from erlab.interactive._figurecomposer._operations._plot_slices import (
-    _PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
-    _PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR,
+from erlab.interactive._figurecomposer._operations._plot_slices._model import (
     _effective_extra_kwargs,
     _effective_slice_kwargs,
     _is_slice_kwarg_key,
@@ -106,36 +105,29 @@ from erlab.interactive._figurecomposer._operations._plot_slices import (
     _selection_values,
     _selection_width,
 )
-from erlab.interactive._figurecomposer._operations._source_selection import (
-    selection_dim_mode,
-    selection_dim_value_text,
-    selection_dim_width_text,
-    selection_value_from_text,
-    selection_width_from_text,
-    shared_selection,
+from erlab.interactive._figurecomposer._operations._plot_slices._render import (
+    _PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR,
+    _PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR,
 )
 from erlab.interactive._figurecomposer._rendering import (
+    _axes_from_selection,
+    _iter_axes,
     _live_layout_axes,
     _render_into_figure,
     _render_preview,
     _rendered_output_figure,
 )
 from erlab.interactive._figurecomposer._text import _format_axes_tuple
-from erlab.interactive._figurecomposer._ui._editor_controls import (
-    MIXED_VALUE as _MIXED_VALUE,
-)
-from erlab.interactive._figurecomposer._ui._editor_controls import (
-    MIXED_VALUES_TEXT as _MIXED_VALUES_TEXT,
-)
-from erlab.interactive._figurecomposer._ui._editor_controls import (
-    CheckBoxControlAdapter,
-    ComboBoxControlAdapter,
-    ComboBoxDataControlAdapter,
-    LineEditControlAdapter,
-    PlainTextControlAdapter,
-    SignalValueControlAdapter,
-)
 from erlab.interactive._figurecomposer._ui._layout_panel import FigureLayoutPanel
+from erlab.interactive._figurecomposer._ui._operation_editor import (
+    COMMON_AXES_SECTION_TOOLTIP,
+    COMMON_SOURCE_SECTION_TOOLTIP,
+    FigureOperationEditor,
+    OperationEditorBinding,
+    OperationEditRequest,
+    OperationRecipeEditRequest,
+    StepSection,
+)
 from erlab.interactive._figurecomposer._ui._operation_panel import (
     FigureOperationAction,
     FigureOperationPanel,
@@ -350,12 +342,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._preview_render_update_pending = False
         self._preview_render_update_generation = 0
         self._operation_render_errors: dict[str, str] = {}
-        self._operation_input_errors: dict[str, dict[str, str]] = {}
         self._plot_slices_selection_cache: (
             MutableMapping[Hashable, tuple[xr.DataArray, ...]] | None
         ) = None
-        self._operation_editor_generation = 0
-        self._active_editor_signal_widget: QtWidgets.QWidget | None = None
         self._figure_resize_render_generation = 0
         self._figure_resize_history_pending = False
         self._figure_resize_history_timer = QtCore.QTimer(self)
@@ -789,7 +778,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 return operation
             vmin, vmax = clim
             return operation.model_copy(update={"vmin": vmin, "vmax": vmax})
-        panel_keys = _plot_slices_panel_keys(self, operation)
+        panel_keys = _plot_slices_panel_keys(
+            self._document, self._source_display_name, operation
+        )
         valid_keys = {(key.map_index, key.slice_index) for key in panel_keys}
         if panel_key not in valid_keys:
             return operation
@@ -998,7 +989,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def showEvent(self, event: QtGui.QShowEvent | None) -> None:
         if event is not None:
             super().showEvent(event)
-        self.operation_panel.refresh_current_editor_background()
+        self.operation_editor.refresh_current_background()
         self._request_show_figure_window(activate=False)
 
     def hideEvent(self, event: QtGui.QHideEvent | None) -> None:
@@ -1007,19 +998,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if event is not None:
             super().hideEvent(event)
 
-    def _flush_pending_editor_commits(self, *, render: bool = False) -> None:
-        for widget in self.findChildren(QtWidgets.QWidget):
-            flush = getattr(
-                widget,
-                "_figure_composer_custom_code_flush_pending_commit",
-                None,
-            )
-            if callable(flush):
-                with contextlib.suppress(RuntimeError):
-                    flush(render=render)
-
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
-        self._flush_pending_editor_commits()
+        self.operation_editor.flush_pending_commits()
         self._flush_pending_figure_resize_history_write()
         self._closing = True
         self._cancel_queued_show_figure_window()
@@ -1057,6 +1037,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 for action_spec in _registry.add_step_actions()
             ),
         )
+        self.operation_editor: FigureOperationEditor = self.operation_panel.editor
         self.operation_panel.add_requested.connect(self._add_operation)
         self.operation_panel.copy_requested.connect(self._copy_selected_operations)
         self.operation_panel.cut_requested.connect(self._cut_selected_operations)
@@ -1119,28 +1100,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         root_layout.addLayout(action_layout)
         root_layout.addWidget(self.editor_tabs, 1)
 
-        self.step_sources_page = self.operation_panel.create_editor_page(
-            "figureComposerStepSourcesPage"
-        )
-        step_sources_layout = QtWidgets.QVBoxLayout(self.step_sources_page)
-        step_sources_layout.setContentsMargins(6, 6, 6, 6)
-        step_sources_layout.setSpacing(4)
-        self.step_source_controls = QtWidgets.QWidget(self.step_sources_page)
-        self.step_source_controls_layout = QtWidgets.QFormLayout(
-            self.step_source_controls
-        )
-        self.step_source_controls_layout.setContentsMargins(0, 0, 0, 0)
-        self.step_source_controls_layout.setSpacing(4)
-        self.step_source_controls_layout.setFieldGrowthPolicy(
-            QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
-        )
-        step_sources_layout.addWidget(self.step_source_controls)
-        self.step_source_status_label = QtWidgets.QLabel(self.step_sources_page)
-        self.step_source_status_label.setObjectName("figureComposerStepSourceStatus")
-        self.step_source_status_label.setWordWrap(True)
-        self.step_source_status_label.setVisible(False)
-        step_sources_layout.addWidget(self.step_source_status_label)
-
         self.source_panel = FigureSourcePanel(self.editor_tabs)
         self.source_panel.add_requested.connect(self._request_add_sources_from_button)
         self.source_panel.remove_requested.connect(self._remove_source_names)
@@ -1164,7 +1123,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self.source_panel.install_drop_target(self)
 
-        self.target_axes_page = self.operation_panel.create_editor_page(
+        self.target_axes_page = self.operation_editor.create_page(
             "figureComposerTargetAxesPage"
         )
         target_axes_layout = QtWidgets.QVBoxLayout(self.target_axes_page)
@@ -1216,13 +1175,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.axes_expression_edit.editingFinished.connect(self._axes_expression_changed)
         target_axes_layout.addWidget(self.axes_expression_edit)
         target_axes_layout.addStretch(1)
-        self.operation_editor: QtWidgets.QWidget = (
-            self.operation_panel.create_editor_page(
-                "figureComposerOperationEditor", transient=True
-            )
-        )
-        self.operation_editor_layout = QtWidgets.QFormLayout(self.operation_editor)
-
         self.layout_panel = FigureLayoutPanel(self.editor_tabs)
         self.layout_panel.setup_requested.connect(self._layout_setup_requested)
         self.layout_panel.layout_mode_requested.connect(self._layout_mode_requested)
@@ -1248,13 +1200,35 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self.editor_tabs.setCurrentWidget(self.operation_panel)
 
-        self.operation_panel.track_editor_controls(self.layout_panel)
+        self.operation_editor.track_controls(self.layout_panel)
         application = QtWidgets.QApplication.instance()
         if isinstance(application, QtWidgets.QApplication):
             clipboard = application.clipboard()
             if clipboard is not None:
                 clipboard.dataChanged.connect(self._update_step_action_buttons)
                 self._connected_step_clipboard = clipboard
+
+        self.operation_editor.bind(
+            OperationEditorBinding(
+                context=self._document,
+                current_operation_id=self._current_operation_id,
+                editable_operation_ids=self._editable_operation_ids,
+                updates_allowed=lambda: (
+                    not self._updating_controls and not self._closing
+                ),
+                selected_axes_state=self._selected_axes_state,
+                source_display_name=self._source_display_name,
+                source_tooltip=self._source_tooltip,
+                first_live_axis=self._editor_first_live_axis,
+                subplot_parameter_default=self._editor_subplot_parameter_default,
+                rendered_value=self._editor_rendered_value,
+                styled_rcparams_value=self._editor_styled_rcparams_value,
+            )
+        )
+        self.operation_editor.edit_requested.connect(self._apply_operation_edit_request)
+        self.operation_editor.validation_changed.connect(
+            self._operation_editor_validation_changed
+        )
 
         self.setCentralWidget(root)
         self.setWindowTitle("Figure Composer")
@@ -1505,10 +1479,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _set_source_validation_text(self, text: str | None) -> None:
         self.source_panel.set_validation(text)
 
-    def _set_step_source_status_text(self, text: str | None) -> None:
-        self.step_source_status_label.setText("" if text is None else text)
-        self.step_source_status_label.setVisible(bool(text))
-
     @QtCore.Slot(object)
     def _reveal_source_names(self, requested_names: object) -> None:
         if not isinstance(requested_names, tuple) or not all(
@@ -1614,7 +1584,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @QtCore.Slot(str, str)
     def _rename_source_requested(self, original: str, alias: str) -> None:
-        self._flush_pending_editor_commits()
+        self.operation_editor.flush_pending_commits()
         if error := self._document.source_alias_error(alias, current=original):
             self._set_source_validation_text(error)
             return
@@ -2062,7 +2032,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if selection.isel or selection.mean_dims:
             return None
 
-        dims = _operation_dim_names(self, operation)
+        dims = _operation_dim_names(self._document, operation)
         if not dims:
             return preserve_legacy_sources(
                 self._plot_slices_operation_with_legacy_qsel(operation, selection.qsel)
@@ -2070,10 +2040,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if any(not _is_slice_kwarg_key(key, dims) for key in selection.qsel):
             return None
         updates = _selection_updates_from_kwargs(
-            self,
+            self._document,
             operation,
-            {**_effective_slice_kwargs(self, operation), **selection.qsel},
-            _effective_extra_kwargs(self, operation),
+            {
+                **_effective_slice_kwargs(self._document, operation),
+                **selection.qsel,
+            },
+            _effective_extra_kwargs(self._document, operation),
         )
         updates["map_selections"] = ()
         return preserve_legacy_sources(operation.model_copy(update=updates))
@@ -2525,7 +2498,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     ", ".join(self._source_display_names(missing_sources)),
                 )
             )
-        input_error = self._operation_input_error_text(operation)
+        input_error = self.operation_editor.input_error_text(operation)
         if input_error is not None:
             issues.append(("invalid_input", input_error))
         render_error = self._operation_render_errors.get(operation.operation_id)
@@ -2551,113 +2524,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         current = self._current_operation()
         self._update_source_status(current[1] if current is not None else None)
 
-    def _set_operation_input_errors(
-        self, errors: Mapping[str, Mapping[str, str]]
-    ) -> None:
-        input_errors = {
-            operation_id: dict(operation_errors)
-            for operation_id, operation_errors in errors.items()
-            if operation_errors
-        }
-        if input_errors == self._operation_input_errors:
-            return
-        self._operation_input_errors = input_errors
+    @QtCore.Slot()
+    def _operation_editor_validation_changed(self) -> None:
         self._refresh_operation_list()
         self._refresh_step_section_button_texts()
         current = self._current_operation()
         self._update_source_status(current[1] if current is not None else None)
-
-    def _operation_has_invalid_input(self, operation: FigureOperationState) -> bool:
-        return operation.operation_id in self._operation_input_errors
-
-    def _operation_input_error_text(
-        self, operation: FigureOperationState
-    ) -> str | None:
-        operation_errors = self._operation_input_errors.get(operation.operation_id)
-        if not operation_errors:
-            return None
-        messages = tuple(dict.fromkeys(operation_errors.values()))
-        if len(messages) == 1:
-            return messages[0]
-        return f"{len(messages)} invalid inputs: " + "; ".join(messages)
-
-    def _record_editor_input_error(
-        self, widget: QtWidgets.QWidget, error: FigureComposerInputError
-    ) -> None:
-        operation_ids = self._editable_operation_ids_for_error()
-        if not operation_ids:
-            return
-        key = self._editor_input_error_key(widget)
-        self._record_editor_input_error_for_key(key, operation_ids, error)
-
-    def _record_editor_input_error_for_key(
-        self,
-        key: str,
-        operation_ids: Sequence[str],
-        error: FigureComposerInputError,
-    ) -> None:
-        if not operation_ids:
-            return
-        errors = {
-            operation_id: dict(operation_errors)
-            for operation_id, operation_errors in self._operation_input_errors.items()
-        }
-        for operation_id in operation_ids:
-            operation_errors = errors.setdefault(operation_id, {})
-            operation_errors[key] = str(error)
-        self._set_operation_input_errors(errors)
-
-    def _clear_editor_input_error(self, widget: QtWidgets.QWidget) -> None:
-        if not self._operation_input_errors:
-            return
-        operation_ids = self._editable_operation_ids_for_error()
-        if not operation_ids:
-            return
-        key = self._editor_input_error_key(widget)
-        self._clear_editor_input_error_for_key(key, operation_ids)
-
-    def _clear_editor_input_error_for_key(
-        self, key: str, operation_ids: Sequence[str]
-    ) -> None:
-        if not self._operation_input_errors or not operation_ids:
-            return
-        errors = {
-            operation_id: dict(operation_errors)
-            for operation_id, operation_errors in self._operation_input_errors.items()
-        }
-        changed = False
-        for operation_id in operation_ids:
-            operation_errors = errors.get(operation_id)
-            if operation_errors is None or key not in operation_errors:
-                continue
-            del operation_errors[key]
-            changed = True
-        if changed:
-            self._set_operation_input_errors(errors)
-
-    @staticmethod
-    def _editor_input_error_key(widget: QtWidgets.QWidget) -> str:
-        if not erlab.interactive.utils.qt_is_valid(widget):
-            return f"anonymous:{id(widget)}"
-        object_name = widget.objectName()
-        if object_name:
-            return object_name
-        return f"anonymous:{id(widget)}"
-
-    def _editable_operation_ids_for_error(self) -> tuple[str, ...]:
-        editable = self._editable_operations()
-        if editable:
-            return tuple(operation.operation_id for _index, operation in editable)
-        current = self._current_operation()
-        return () if current is None else (current[1].operation_id,)
-
-    def _clear_operation_input_errors(self, operation_ids: Sequence[str]) -> None:
-        if not operation_ids or not self._operation_input_errors:
-            return
-        errors = dict(self._operation_input_errors)
-        for operation_id in operation_ids:
-            errors.pop(operation_id, None)
-        self._set_operation_input_errors(errors)
 
     def _axes_target_text(self, selection: FigureAxesSelectionState) -> str:
         if selection.expression:
@@ -2704,7 +2576,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if operation.enabled
             and (
                 self._operation_has_invalid_axes(operation)
-                or self._operation_has_invalid_input(operation)
+                or self.operation_editor.has_input_error(operation)
             )
         )
 
@@ -2721,7 +2593,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return False
         self.editor_tabs.setCurrentWidget(self.operation_panel)
         self.operation_panel.select_row(indices[0])
-        self.operation_panel.select_section("axes")
+        self.operation_editor.select_section("axes")
         QtWidgets.QMessageBox.warning(
             self,
             "Retarget Figure Steps",
@@ -2736,6 +2608,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if row < 0 or row >= len(self._document.recipe.operations):
             return None
         return row, self._document.recipe.operations[row]
+
+    def _current_operation_id(self) -> str | None:
+        current = self._current_operation()
+        return None if current is None else current[1].operation_id
 
     def _current_operation_index(self) -> int:
         return self.operation_panel.current_index()
@@ -2791,106 +2667,78 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             for index in self._editable_operation_indices()
         )
 
-    def _batch_value(
-        self,
-        operation: FigureOperationState,
-        getter: Callable[[FigureOperationState], typing.Any],
-    ) -> typing.Any:
-        editable = self._editable_operations()
-        if len(editable) <= 1:
-            return getter(operation)
-        values = [getter(target) for _index, target in editable]
-        first = values[0]
-        if all(value == first for value in values[1:]):
-            return first
-        return _MIXED_VALUE
-
-    def _batch_is_mixed(
-        self,
-        operation: FigureOperationState,
-        getter: Callable[[FigureOperationState], typing.Any],
-    ) -> bool:
-        return self._batch_value(operation, getter) is _MIXED_VALUE
-
-    def _batch_text(
-        self,
-        operation: FigureOperationState,
-        getter: Callable[[FigureOperationState], typing.Any],
-        formatter: Callable[[typing.Any], str],
-    ) -> tuple[str, bool]:
-        value = self._batch_value(operation, getter)
-        if value is _MIXED_VALUE:
-            return "", True
-        return formatter(value), False
-
-    def _batch_combo_text(
-        self,
-        operation: FigureOperationState,
-        getter: Callable[[FigureOperationState], typing.Any],
-        formatter: Callable[[typing.Any], str] = str,
-    ) -> str | None:
-        value = self._batch_value(operation, getter)
-        if value is _MIXED_VALUE:
-            return None
-        return formatter(value)
-
-    def _batch_options_match(
-        self,
-        operation: FigureOperationState,
-        options_getter: Callable[[FigureOperationState], Sequence[typing.Any]],
-    ) -> bool:
-        editable = self._editable_operations()
-        if len(editable) <= 1:
-            return True
-        expected = tuple(options_getter(operation))
-        return all(
-            tuple(options_getter(target)) == expected for _index, target in editable
+    def _editable_operation_ids(self) -> tuple[str, ...]:
+        return tuple(
+            operation.operation_id for _index, operation in self._editable_operations()
         )
 
-    @staticmethod
-    def _line_edit_batch_unchanged(edit: QtWidgets.QLineEdit) -> bool:
-        return LineEditControlAdapter(edit).unchanged_mixed()
+    @QtCore.Slot(object)
+    def _apply_operation_edit_request(self, request_object: object) -> None:
+        if self._closing:
+            return
+        if isinstance(request_object, OperationEditRequest):
+            self._update_operations_by_ids(
+                request_object.operation_ids,
+                request_object.updater,
+                render=request_object.render,
+                defer_render=request_object.defer_render,
+                rebuild_editor=request_object.rebuild_editor,
+                defer_editor_rebuild=request_object.defer_editor_rebuild,
+                sync_axes=request_object.sync_axes,
+            )
+        elif isinstance(request_object, OperationRecipeEditRequest):
+            self._apply_operation_recipe_edit_request(request_object)
 
-    @staticmethod
-    def _apply_mixed_line_edit(edit: QtWidgets.QLineEdit, mixed: bool) -> None:
-        LineEditControlAdapter(edit).set_mixed(mixed)
-
-    @staticmethod
-    def _apply_mixed_plain_text_edit(
-        edit: QtWidgets.QPlainTextEdit, mixed: bool
-    ) -> None:
-        PlainTextControlAdapter(edit).set_mixed(mixed)
-
-    @staticmethod
-    def _set_combo_mixed_placeholder(combo: QtWidgets.QComboBox) -> None:
-        ComboBoxControlAdapter(combo).set_mixed(True)
-
-    @staticmethod
-    def _mixed_combo_text(text: str) -> bool:
-        return text == _MIXED_VALUES_TEXT
-
-    def _update_operations(
-        self,
-        updater: Callable[[int, FigureOperationState], FigureOperationState],
-        *,
-        render: bool = True,
-        defer_render: bool = False,
-        rebuild_editor: bool = False,
-        defer_editor_rebuild: bool = False,
-        sync_axes: bool = True,
+    def _apply_operation_recipe_edit_request(
+        self, request: OperationRecipeEditRequest
     ) -> bool:
-        editable = self._editable_operations()
-        if not editable:
+        previous_operations = self._document.recipe.operations
+        updated_operations = tuple(
+            request.updater(previous_operations, request.operation_ids)
+        )
+        if updated_operations == previous_operations:
             return False
-        return self._update_operations_by_ids(
-            (operation.operation_id for _index, operation in editable),
-            updater,
-            render=render,
-            defer_render=defer_render,
-            rebuild_editor=rebuild_editor,
-            defer_editor_rebuild=defer_editor_rebuild,
-            sync_axes=sync_axes,
+
+        previous_by_id = {
+            operation.operation_id: operation for operation in previous_operations
+        }
+        updated_by_id = {
+            operation.operation_id: operation for operation in updated_operations
+        }
+        operation_ids = previous_by_id.keys() | updated_by_id.keys()
+
+        def operation_affects_preview(operation_id: str) -> bool:
+            previous = previous_by_id.get(operation_id)
+            updated = updated_by_id.get(operation_id)
+            if previous is None:
+                return updated is not None and updated.enabled
+            if updated is None:
+                return previous.enabled
+            return previous != updated and self._operation_change_affects_preview(
+                previous, updated
+            )
+
+        preview_affected = any(map(operation_affects_preview, operation_ids))
+
+        self._document.replace_operations(updated_operations)
+        self._refresh_operation_list()
+        if request.sync_axes:
+            self._sync_axes_selector()
+        self._update_step_action_buttons()
+        self._refresh_step_section_button_texts()
+        current = self._current_operation()
+        self._update_source_status(current[1] if current is not None else None)
+        if request.rebuild_editor:
+            if request.defer_editor_rebuild:
+                self._queue_operation_editor_update()
+            else:
+                self._update_operation_editor_safely()
+        self._notify_operation_changed(
+            preview_affected=request.render and preview_affected,
+            defer_render=request.defer_render,
         )
+        self._write_state()
+        return True
 
     def _update_operations_by_ids(
         self,
@@ -2958,7 +2806,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     ) -> None:
         previous_operation = self._document.recipe.operations[index]
         self._document.replace_operation(index, operation)
-        self._clear_operation_input_errors(
+        self.operation_editor.clear_input_errors(
             (previous_operation.operation_id, operation.operation_id)
         )
         self._refresh_operation_list()
@@ -3003,10 +2851,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._mark_preview_pixmap_stale()
             self.sigInfoChanged.emit()
             return True
-        if defer or self._active_editor_signal_widget is not None:
+        active_editor_widget = self.operation_editor.active_signal_widget
+        if defer or active_editor_widget is not None:
             delay_ms = (
                 _EDITOR_CONTROL_RENDER_UPDATE_DELAY_MS
-                if self._active_editor_signal_widget is not None
+                if active_editor_widget is not None
                 else _PREVIEW_RENDER_UPDATE_DELAY_MS
             )
             self._queue_preview_render_update(delay_ms=delay_ms)
@@ -3015,21 +2864,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._redraw_plot()
         self.sigInfoChanged.emit()
         return True
-
-    def _update_current_operation(self, **updates: typing.Any) -> None:
-        if self._updating_controls:
-            return
-        self._update_operations(
-            lambda _index, operation: operation.model_copy(update=updates)
-        )
-
-    def _update_current_operation_rebuild(self, **updates: typing.Any) -> None:
-        if self._updating_controls:
-            return
-        self._update_operations(
-            lambda _index, operation: operation.model_copy(update=updates),
-            rebuild_editor=True,
-        )
 
     def _queue_preview_render_update(
         self, *, delay_ms: int = _PREVIEW_RENDER_UPDATE_DELAY_MS
@@ -3531,6 +3365,76 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             expression=self.axes_expression_edit.text().strip(),
         )
 
+    def _editor_first_live_axis(
+        self, selection: FigureAxesSelectionState
+    ) -> typing.Any:
+        layout_axes = _live_layout_axes(self, render_if_missing=True)
+        if layout_axes is None:
+            return None
+        if isinstance(layout_axes, dict) and not selection.axes_ids:
+            selection = selection.model_copy(
+                update={
+                    "axes_ids": _gridspec_valid_axes_ids(
+                        self._document.recipe.setup,
+                        _gridspec_all_axes_ids(self._document.recipe.setup),
+                    )[:1]
+                }
+            )
+        try:
+            axes = _iter_axes(
+                _axes_from_selection(
+                    self,
+                    selection,
+                    layout_axes,
+                    for_plot_slices=False,
+                )
+            )
+        except (IndexError, TypeError, ValueError):
+            return None
+        return axes[0] if axes else None
+
+    def _editor_subplot_parameter_default(self, key: str) -> float:
+        figure_window = self._figure_window
+        if figure_window is not None and erlab.interactive.utils.qt_is_valid(
+            figure_window
+        ):
+            return float(getattr(figure_window.figure.subplotpars, key))
+        figure = Figure(
+            figsize=self._document.recipe.setup.figsize,
+            dpi=self._document.recipe.setup.dpi,
+            layout=typing.cast("typing.Any", self._document.recipe.setup.layout),
+        )
+        return float(getattr(figure.subplotpars, key))
+
+    def _editor_rendered_value(
+        self,
+        operation: FigureOperationState,
+        reader: Callable[[Sequence[typing.Any]], typing.Any],
+    ) -> typing.Any:
+        if self._preview_render_update_pending or self._operation_has_invalid_axes(
+            operation
+        ):
+            return None
+        layout_axes = _live_layout_axes(self)
+        if layout_axes is None:
+            return None
+        try:
+            axes = _iter_axes(
+                _axes_from_selection(
+                    self,
+                    operation.axes,
+                    layout_axes,
+                    for_plot_slices=False,
+                )
+            )
+            return None if not axes else reader(axes)
+        except Exception:
+            return None
+
+    def _editor_styled_rcparams_value(self, key: str) -> typing.Any:
+        with self._figure_options_context(), _figure_style_context():
+            return _styled_rcparams_value(key)
+
     def _add_operation(self, action_id: str) -> None:
         operation = _registry.spec_for_action(action_id).create_operation(self)
         index = self._document.append_operation(operation)
@@ -3880,22 +3784,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._write_state()
         return True
 
-    def _clear_step_source_controls(self) -> None:
-        self.operation_panel.retire_form_controls(self.step_source_controls_layout)
-
-    def _new_step_form_page(
-        self, object_name: str
-    ) -> tuple[QtWidgets.QWidget, QtWidgets.QFormLayout]:
-        page = self.operation_panel.create_editor_page(object_name, transient=True)
-        layout = QtWidgets.QFormLayout(page)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setFieldGrowthPolicy(
-            QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
-        )
-        return page, layout
-
     def _set_step_sections(self, sections: Sequence[StepSection]) -> None:
-        self.operation_panel.replace_sections(
+        self.operation_editor.replace_sections(
             sections,
             summaries=self._step_section_summaries(
                 tuple(section.key for section in sections)
@@ -3903,8 +3793,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
 
     def _refresh_step_section_button_texts(self) -> None:
-        self.operation_panel.set_section_summaries(
-            self._step_section_summaries(self.operation_panel.section_keys)
+        self.operation_editor.set_section_summaries(
+            self._step_section_summaries(self.operation_editor.section_keys)
         )
 
     def _step_section_summaries(self, keys: Sequence[str]) -> dict[str, str]:
@@ -3928,18 +3818,22 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _update_source_status(self, operation: FigureOperationState | None) -> None:
         if operation is None:
-            self._set_step_source_status_text("Select a step to choose data sources.")
+            self.operation_editor.set_source_status(
+                "Select a step to choose data sources."
+            )
             return
         if not _registry.spec_for(operation.kind).uses_source_section(operation):
-            self._set_step_source_status_text(None)
+            self.operation_editor.set_source_status(None)
             return
-        if (input_error := self._operation_input_error_text(operation)) is not None:
-            self._set_step_source_status_text(f"Invalid input: {input_error}")
+        if (
+            input_error := self.operation_editor.input_error_text(operation)
+        ) is not None:
+            self.operation_editor.set_source_status(f"Invalid input: {input_error}")
             return
         if (
             render_error := self._operation_render_errors.get(operation.operation_id)
         ) is not None:
-            self._set_step_source_status_text(f"Render error: {render_error}")
+            self.operation_editor.set_source_status(f"Render error: {render_error}")
             return
         selected_sources = self._selected_sources_for_operation(operation)
         missing = [
@@ -3948,35 +3842,37 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if source not in self._document.source_data
         ]
         if missing:
-            self._set_step_source_status_text(
+            self.operation_editor.set_source_status(
                 "Missing sources: " + ", ".join(self._source_display_names(missing))
             )
         elif selected_sources:
-            self._set_step_source_status_text(None)
+            self.operation_editor.set_source_status(None)
         else:
-            self._set_step_source_status_text("This step does not read a data source.")
+            self.operation_editor.set_source_status(
+                "This step does not read a data source."
+            )
 
     def _update_source_section(self) -> None:
-        self._clear_step_source_controls()
+        self.operation_editor.clear_source_controls()
         current = self._current_operation()
         if current is None:
             self._update_source_status(None)
             return
         _index, operation = current
 
-        _registry.spec_for(operation.kind).build_source_editor(self, operation)
+        _registry.spec_for(operation.kind).build_source_editor(
+            self.operation_editor, operation
+        )
         self._update_source_status(operation)
 
     def _update_operation_editor(self) -> None:
-        self._operation_editor_generation += 1
-        self._flush_pending_editor_commits()
-        self.operation_panel.prepare_editor_rebuild()
+        self.operation_editor.prepare_rebuild()
         self._update_source_section()
         current = self._current_operation()
         self._update_step_action_buttons()
         selected_indices = self._selected_operation_indices()
         if len(selected_indices) > 1 and not self._selected_operations_are_compatible():
-            page, layout = self._new_step_form_page(
+            page, layout = self.operation_editor.new_form_page(
                 "figureComposerIncompatibleBatchPage"
             )
             label = QtWidgets.QLabel(
@@ -3998,7 +3894,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
             return
         if current is None:
-            page, layout = self._new_step_form_page("figureComposerNoStepPage")
+            page, layout = self.operation_editor.new_form_page(
+                "figureComposerNoStepPage"
+            )
             layout.addRow(QtWidgets.QLabel("Select a recipe step to edit.", page))
             self._set_step_sections(
                 (StepSection("empty", "Step", page, "Select a recipe step."),)
@@ -4013,7 +3911,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 StepSection(
                     "sources",
                     "Sources",
-                    self.step_sources_page,
+                    self.operation_editor.source_page,
                     COMMON_SOURCE_SECTION_TOOLTIP,
                 )
             )
@@ -4026,12 +3924,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     COMMON_AXES_SECTION_TOOLTIP,
                 )
             )
-        sections.extend(spec.build_editor_sections(self, operation))
+        sections.extend(spec.build_editor_sections(self.operation_editor, operation))
         self._set_step_sections(sections)
 
     def _update_operation_editor_safely(self) -> None:
         if (
-            self.operation_panel.editor_rebuild_must_wait()
+            self.operation_editor.rebuild_must_wait()
             or self._operation_editor_sender_requires_deferred_rebuild()
         ):
             self._queue_operation_editor_update()
@@ -4039,13 +3937,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._update_operation_editor()
 
     def _operation_editor_sender_requires_deferred_rebuild(self) -> bool:
-        sender = self._active_editor_signal_widget
+        sender = self.operation_editor.active_signal_widget
         if sender is None:
             qt_sender = self.sender()
             sender = qt_sender if isinstance(qt_sender, QtWidgets.QWidget) else None
         if sender is None or not erlab.interactive.utils.qt_is_valid(sender):
             return False
-        return self.operation_panel.contains_editor_widget(
+        return self.operation_editor.contains_widget(
             sender
         ) or self.source_panel.source_list.isAncestorOf(sender)
 
@@ -4068,338 +3966,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if self._closing:
             self._operation_editor_update_pending = False
             return
-        if self.operation_panel.editor_rebuild_must_wait():
+        if self.operation_editor.rebuild_must_wait():
             self._schedule_queued_operation_editor_update()
             return
         self._operation_editor_update_pending = False
         self._update_operation_editor()
 
-    def _line_edit(
-        self, text: str, *, parent: QtWidgets.QWidget | None = None
-    ) -> QtWidgets.QLineEdit:
-        edit = QtWidgets.QLineEdit(parent or self.operation_editor)
-        self._mark_editor_control(edit)
-        edit.setText(text)
-        return edit
-
-    def _mark_editor_control(self, widget: QtWidgets.QWidget) -> None:
-        widget.setProperty(
-            "figure_composer_editor_generation",
-            self._operation_editor_generation,
-        )
-        self.operation_panel.track_editor_controls(widget)
-
-    def _editor_control_signal_allowed(self, widget: QtWidgets.QWidget) -> bool:
-        return (
-            not self._updating_controls
-            and erlab.interactive.utils.qt_is_valid(widget)
-            and widget.property("figure_composer_editor_generation")
-            == self._operation_editor_generation
-        )
-
-    def _connect_editor_signal(
-        self,
-        widget: QtWidgets.QWidget,
-        signal: typing.Any,
-        callback: Callable[..., None],
-    ) -> None:
-        """Connect a recipe-editor signal with generation and lifetime guards."""
-        self._mark_editor_control(widget)
-        widget_ref = weakref.ref(widget)
-
-        def guarded_callback(*args: typing.Any) -> None:
-            guarded_widget = widget_ref()
-            if guarded_widget is None or not self._editor_control_signal_allowed(
-                guarded_widget
-            ):
-                return
-            input_error_key = self._editor_input_error_key(guarded_widget)
-            operation_ids = self._editable_operation_ids_for_error()
-            previous_widget = self._active_editor_signal_widget
-            self._active_editor_signal_widget = guarded_widget
-            try:
-                callback(*args)
-            except FigureComposerInputError as exc:
-                self._record_editor_input_error_for_key(
-                    input_error_key, operation_ids, exc
-                )
-            else:
-                self._clear_editor_input_error_for_key(input_error_key, operation_ids)
-            finally:
-                self._active_editor_signal_widget = previous_widget
-
-        signal.connect(guarded_callback)
-
-    def _connect_line_edit_finished(
-        self,
-        edit: QtWidgets.QLineEdit,
-        callback: Callable[[str], None],
-    ) -> None:
-        """Connect an editable text control with mixed-value protection."""
-        LineEditControlAdapter(edit).connect_commit(
-            self._connect_editor_signal,
-            callback,
-        )
-
-    def _connect_plain_text_changed(
-        self,
-        edit: QtWidgets.QPlainTextEdit,
-        callback: Callable[[str], None],
-    ) -> None:
-        """Connect an editable plain-text control with mixed-value protection."""
-        PlainTextControlAdapter(edit).connect_commit(
-            self._connect_editor_signal,
-            callback,
-        )
-
-    def _connect_value_signal(
-        self,
-        widget: QtWidgets.QWidget,
-        signal: typing.Any,
-        value_getter: Callable[..., typing.Any],
-        callback: Callable[[typing.Any], None],
-        *,
-        unchanged_mixed: Callable[[], bool] | None = None,
-    ) -> None:
-        """Connect a custom editor widget signal through the adapter contract."""
-        SignalValueControlAdapter(
-            widget,
-            signal,
-            value_getter,
-            unchanged_mixed=unchanged_mixed,
-        ).connect_commit(self._connect_editor_signal, callback)
-
-    def _mixed_value_widget(
-        self,
-        widget: QtWidgets.QWidget,
-        *,
-        mixed: bool,
-        parent: QtWidgets.QWidget | None = None,
-    ) -> QtWidgets.QWidget:
-        """Wrap non-placeholder controls with the standard mixed-value marker."""
-        if not mixed:
-            return widget
-        container = QtWidgets.QWidget(parent or widget.parentWidget())
-        layout = QtWidgets.QHBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        marker = QtWidgets.QLabel(_MIXED_VALUES_TEXT, container)
-        marker.setObjectName("figureComposerMixedValueMarker")
-        marker.setEnabled(False)
-        layout.addWidget(widget, 1)
-        layout.addWidget(marker)
-        return container
-
-    def _combo(
-        self,
-        values: Sequence[str],
-        current: str | None,
-        changed: Callable[[str], None],
-        *,
-        parent: QtWidgets.QWidget | None = None,
-        mixed: bool = False,
-        enabled: bool = True,
-    ) -> QtWidgets.QComboBox:
-        combo = QtWidgets.QComboBox(parent or self.operation_editor)
-        self._mark_editor_control(combo)
-        combo.addItems(list(values))
-        adapter = ComboBoxControlAdapter(combo)
-        if mixed:
-            adapter.set_mixed(True)
-        elif current is not None:
-            self._set_combo_value(combo, current)
-        combo.setEnabled(enabled)
-        adapter.connect_commit(
-            self._connect_editor_signal,
-            changed,
-        )
-        return combo
-
-    def _source_combo(
-        self,
-        values: Sequence[str],
-        current: str | None,
-        changed: Callable[[str | None], None],
-        *,
-        parent: QtWidgets.QWidget | None = None,
-        mixed: bool = False,
-        enabled: bool = True,
-    ) -> QtWidgets.QComboBox:
-        combo = QtWidgets.QComboBox(parent or self.operation_editor)
-        self._mark_editor_control(combo)
-        adapter = ComboBoxDataControlAdapter(combo)
-        if mixed:
-            combo.addItem(_MIXED_VALUES_TEXT, _MIXED_VALUE)
-        for value in values:
-            combo.addItem(self._source_display_name(value), value)
-            combo.setItemData(
-                combo.count() - 1,
-                self._source_tooltip(value),
-                QtCore.Qt.ItemDataRole.ToolTipRole,
-            )
-        if current is not None and current not in values and not mixed:
-            combo.addItem(self._source_display_name(current), current)
-            combo.setItemData(
-                combo.count() - 1,
-                self._source_tooltip(current),
-                QtCore.Qt.ItemDataRole.ToolTipRole,
-            )
-        if mixed:
-            item = typing.cast("typing.Any", combo.model()).item(0)
-            if item is not None:
-                item.setEnabled(False)
-            combo.setCurrentIndex(0)
-        elif current is not None:
-            for index in range(combo.count()):
-                if combo.itemData(index) == current:
-                    combo.setCurrentIndex(index)
-                    break
-        combo.setEnabled(enabled)
-        adapter.connect_commit(
-            self._connect_editor_signal,
-            lambda value: changed(typing.cast("str | None", value)),
-        )
-        return combo
-
-    def _optional_name_combo(
-        self,
-        values: Sequence[str],
-        current: str | None,
-        none_label: str,
-        changed: Callable[[str | None], None],
-        *,
-        parent: QtWidgets.QWidget | None = None,
-        mixed: bool = False,
-        enabled: bool = True,
-    ) -> QtWidgets.QComboBox:
-        combo = QtWidgets.QComboBox(parent or self.operation_editor)
-        self._mark_editor_control(combo)
-        adapter = ComboBoxDataControlAdapter(combo)
-        if mixed:
-            combo.addItem(_MIXED_VALUES_TEXT, _MIXED_VALUE)
-        combo.addItem(none_label, None)
-        for value in values:
-            combo.addItem(value, value)
-        if current is not None and current not in values and not mixed:
-            combo.addItem(current, current)
-        if mixed:
-            item = typing.cast("typing.Any", combo.model()).item(0)
-            if item is not None:
-                item.setEnabled(False)
-            combo.setCurrentIndex(0)
-        else:
-            for index in range(combo.count()):
-                if combo.itemData(index) == current:
-                    combo.setCurrentIndex(index)
-                    break
-        combo.setEnabled(enabled)
-        adapter.connect_commit(
-            self._connect_editor_signal,
-            lambda value: changed(typing.cast("str | None", value)),
-        )
-        return combo
-
-    def _check_box(
-        self,
-        checked: bool,
-        changed: Callable[[bool], None],
-        *,
-        parent: QtWidgets.QWidget | None = None,
-        mixed: bool = False,
-    ) -> QtWidgets.QCheckBox:
-        check = QtWidgets.QCheckBox(parent or self.operation_editor)
-        self._mark_editor_control(check)
-        adapter = CheckBoxControlAdapter(check)
-        if mixed:
-            adapter.set_mixed(True)
-            adapter.connect_commit(self._connect_editor_signal, changed)
-        else:
-            check.setChecked(checked)
-            adapter.connect_commit(self._connect_editor_signal, changed)
-        return check
-
-    @staticmethod
-    def _wrapped_tooltip(tooltip: str) -> str:
-        if "\n" in tooltip:
-            return tooltip
-        return "\n".join(textwrap.wrap(tooltip, width=58, break_long_words=False))
-
-    @staticmethod
-    def _add_form_section(
-        layout: QtWidgets.QFormLayout,
-        title: str,
-        *,
-        object_name: str | None = None,
-    ) -> QtWidgets.QWidget:
-        """Add a lightweight native section header to a form layout."""
-        section = QtWidgets.QWidget(layout.parentWidget())
-        if object_name:
-            section.setObjectName(object_name)
-        section.setProperty("figureComposerSectionHeader", True)
-        section_layout = QtWidgets.QHBoxLayout(section)
-        top_margin = 8 if layout.rowCount() else 0
-        section_layout.setContentsMargins(0, top_margin, 0, 2)
-        section_layout.setSpacing(6)
-
-        label = QtWidgets.QLabel(title, section)
-        label.setProperty("figureComposerSectionHeaderLabel", True)
-        label_font = label.font()
-        label_font.setBold(True)
-        label.setFont(label_font)
-        line = QtWidgets.QFrame(section)
-        line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
-        if object_name:
-            line.setObjectName(f"{object_name}Line")
-
-        section_layout.addWidget(label)
-        section_layout.addWidget(line, 1)
-        layout.addRow(section)
-        return section
-
-    @staticmethod
-    def _add_form_row(
-        layout: QtWidgets.QFormLayout,
-        label: str,
-        widget: QtWidgets.QWidget,
-        tooltip: str,
-    ) -> None:
-        tooltip = FigureComposerTool._wrapped_tooltip(tooltip)
-        widget.setToolTip(tooltip)
-        layout.addRow(label, widget)
-        label_widget = layout.labelForField(widget)
-        if label_widget is not None:
-            label_widget.setToolTip(tooltip)
-
-    @staticmethod
-    def _add_compound_form_row(
-        layout: QtWidgets.QFormLayout,
-        label: str,
-        controls: Sequence[tuple[str, QtWidgets.QWidget, str]],
-        tooltip: str,
-    ) -> QtWidgets.QWidget:
-        row_widget = QtWidgets.QWidget(layout.parentWidget())
-        row_layout = QtWidgets.QHBoxLayout(row_widget)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        for control_label, widget, control_tooltip in controls:
-            control_tooltip = FigureComposerTool._wrapped_tooltip(control_tooltip)
-            label_widget = QtWidgets.QLabel(control_label, row_widget)
-            label_widget.setBuddy(widget)
-            label_widget.setToolTip(control_tooltip)
-            widget.setToolTip(control_tooltip)
-            row_layout.addWidget(label_widget)
-            row_layout.addWidget(widget, 1)
-        row_tooltip = FigureComposerTool._wrapped_tooltip(tooltip)
-        row_widget.setToolTip(row_tooltip)
-        layout.addRow(label, row_widget)
-        label_widget = layout.labelForField(row_widget)
-        if label_widget is not None:
-            label_widget.setToolTip(row_tooltip)
-        return row_widget
-
     def generated_code(self) -> str:
         self._flush_restore_work()
-        self._flush_pending_editor_commits()
+        self.operation_editor.flush_pending_commits()
         with self._figure_options_context():
             return erlab.interactive._figurecomposer._codegen.generated_code(self)
 
@@ -4429,7 +4004,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._flush_restore_work()
         if self._warn_invalid_operation_targets():
             return
-        self._flush_pending_editor_commits()
+        self.operation_editor.flush_pending_commits()
         filename, _filter = QtWidgets.QFileDialog.getSaveFileName(
             self,
             "Export Figure",

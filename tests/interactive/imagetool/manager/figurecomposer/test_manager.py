@@ -947,7 +947,9 @@ def test_figure_composer_flushes_restore_work_before_user_outputs(
 
     monkeypatch.setattr(tool, "_flush_restore_work", lambda: calls.append("flush"))
     monkeypatch.setattr(
-        tool, "_flush_pending_editor_commits", lambda: calls.append("commit")
+        tool.operation_editor,
+        "flush_pending_commits",
+        lambda: calls.append("commit"),
     )
     monkeypatch.setattr(tool, "_warn_invalid_operation_targets", lambda: False)
     monkeypatch.setattr(

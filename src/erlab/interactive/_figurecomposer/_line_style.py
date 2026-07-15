@@ -13,7 +13,9 @@ if typing.TYPE_CHECKING:
     from collections.abc import Iterable
 
     from erlab.interactive._figurecomposer._model._state import FigureOperationState
-    from erlab.interactive._figurecomposer._tool import FigureComposerTool
+    from erlab.interactive._figurecomposer._ui._operation_editor import (
+        FigureOperationEditor,
+    )
 
 
 def _is_no_style_token(value: str) -> bool:
@@ -172,7 +174,7 @@ def extra_line_kw(operation: FigureOperationState) -> dict[str, typing.Any]:
 
 
 def update_current_line_kw(
-    tool: FigureComposerTool,
+    editor: FigureOperationEditor,
     key: str,
     value: typing.Any,
     *,
@@ -180,9 +182,6 @@ def update_current_line_kw(
     clear_stale_cmap: bool = False,
     clear_stale_line_colormap: bool = False,
 ) -> None:
-    if tool._updating_controls:
-        return
-
     def update_operation(
         _operation_index: int, operation: FigureOperationState
     ) -> FigureOperationState:
@@ -198,15 +197,12 @@ def update_current_line_kw(
             updates["line_color_mode"] = "manual"
         return operation.model_copy(update=updates)
 
-    tool._update_operations(update_operation)
+    editor.request_transform(update_operation)
 
 
 def update_current_extra_line_kw(
-    tool: FigureComposerTool, extra_line_kw: dict[str, typing.Any]
+    editor: FigureOperationEditor, extra_line_kw: dict[str, typing.Any]
 ) -> None:
-    if tool._updating_controls:
-        return
-
     def update_operation(
         _operation_index: int, operation: FigureOperationState
     ) -> FigureOperationState:
@@ -218,4 +214,4 @@ def update_current_extra_line_kw(
         line_kw.update(extra_line_kw)
         return operation.model_copy(update={"line_kw": line_kw})
 
-    tool._update_operations(update_operation)
+    editor.request_transform(update_operation)

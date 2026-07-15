@@ -94,6 +94,10 @@ class FigureRecipeContext(typing.Protocol):
 
     def source_by_name(self) -> dict[str, FigureSourceState]: ...
 
+    def operation_index(self, operation_id: str) -> int | None: ...
+
+    def operation_by_id(self, operation_id: str) -> FigureOperationState | None: ...
+
     def source_dependency_names(
         self,
         names: Iterable[str],

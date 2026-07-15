@@ -22,11 +22,9 @@ from erlab.interactive._figurecomposer._text import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
     import xarray as xr
-
-    from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
 _GENERIC_PLACEHOLDER_ORDER = ("value", "dim", "number", "index", "source")
@@ -879,23 +877,27 @@ def label_text_help_placeholder_rows(
     return tuple(rows)
 
 
-def update_current_line_label_text(tool: FigureComposerTool, text: str) -> None:
-    editable = tool._editable_operations()
-    if not editable:
-        return
-    selected_ids = {operation.operation_id for _index, operation in editable}
+def operations_with_line_label_text(
+    operations: Sequence[FigureOperationState],
+    operation_ids: Iterable[str],
+    text: str,
+) -> tuple[FigureOperationState, ...]:
+    """Update selected line labels and add one necessary legend per axes group."""
+    selected_ids = set(operation_ids)
+    if not selected_ids:
+        return tuple(operations)
     original_operations = {
-        operation.operation_id: operation for _index, operation in editable
+        operation.operation_id: operation
+        for operation in operations
+        if operation.operation_id in selected_ids
     }
-    operations = list(tool._document.recipe.operations)
+    updated_operations = list(operations)
     newly_labeled_groups: dict[
         tuple[tuple[tuple[int, int], ...], tuple[str, ...], str],
         tuple[int, FigureOperationState],
     ] = {}
-    changed = False
-    preview_affected = False
     labels_active = bool(text.strip())
-    for index, operation in enumerate(tuple(operations)):
+    for index, operation in enumerate(tuple(updated_operations)):
         if operation.operation_id not in selected_ids:
             continue
         if operation.kind not in {
@@ -906,13 +908,7 @@ def update_current_line_label_text(tool: FigureComposerTool, text: str) -> None:
         updated = operation.model_copy(
             update={"line_label_text": text, "line_labels": ()}
         )
-        operation_changed = updated != operation
-        changed = changed or operation_changed
-        if operation_changed and tool._operation_change_affects_preview(
-            operation, updated
-        ):
-            preview_affected = True
-        operations[index] = updated
+        updated_operations[index] = updated
         original_operation = original_operations.get(operation.operation_id)
         if (
             original_operation is None
@@ -936,21 +932,9 @@ def update_current_line_label_text(tool: FigureComposerTool, text: str) -> None:
             label="Legend",
             axes=operation.axes.model_copy(deep=True),
         )
-        if not _has_later_legend_step(operations, index, legend_operation):
-            operations.insert(index + 1, legend_operation)
-            changed = True
-            preview_affected = True
-    if not changed:
-        return
-    tool._document.replace_operations(operations)
-    tool._refresh_operation_list()
-    tool._sync_axes_selector()
-    tool._update_step_action_buttons()
-    tool._refresh_step_section_button_texts()
-    current = tool._current_operation()
-    tool._update_source_status(current[1] if current is not None else None)
-    tool._notify_operation_changed(preview_affected=preview_affected)
-    tool._write_state()
+        if not _has_later_legend_step(updated_operations, index, legend_operation):
+            updated_operations.insert(index + 1, legend_operation)
+    return tuple(updated_operations)
 
 
 def _line_axes_key(

@@ -2,6 +2,12 @@
 
 import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _editor as plot_slices_editor,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _model as plot_slices_model,
+)
 from erlab.interactive._figurecomposer._ui import (
     _source_panel as figurecomposer_source_panel,
 )
@@ -102,7 +108,7 @@ def test_figure_composer_plot_source_move_button_uses_disabled_icon_color(
     monkeypatch.setattr(erlab.interactive.utils.qtawesome, "icon", record_icon)
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)
-    button = figurecomposer_plot_slices._PlotSourceMoveButton("up", parent)
+    button = plot_slices_editor._PlotSourceMoveButton("up", parent)
     palette = button.palette()
     disabled_text = QtGui.QColor("#6f7782")
     palette.setColor(
@@ -478,7 +484,7 @@ def test_figure_composer_source_ui_keeps_aliases_as_internal_keys(qtbot) -> None
     assert second_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "data_1"
     assert second_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is False
 
-    tool.operation_panel.select_section("sources")
+    tool.operation_editor.select_section("sources")
     checks = _plot_source_checks(tool)
     assert checks["data_0"].property("figure_source_name") == "data_0"
 
@@ -3177,7 +3183,7 @@ def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    shape = figurecomposer_plot_slices._plot_slices_shape(tool, operation)
+    shape = plot_slices_model._plot_slices_shape(tool._document, operation)
     assert "sample_temp" in shape.source_text
     assert "sample_temp_idx" not in shape.source_text
     shape_item = tool.source_panel.source_list.topLevelItem(0)
@@ -3491,7 +3497,7 @@ def test_figure_composer_source_inspector_tracks_source_tab_selection(qtbot) -> 
     )
     assert tool.source_panel.source_inspector.source_name() == "first"
     assert tool.source_panel.source_status_label.isHidden()
-    assert tool.step_source_status_label.isHidden()
+    assert tool.operation_editor.source_status_label.isHidden()
     first_item = tool.source_panel.source_list.topLevelItem(0)
     assert first_item is not None
     tool.source_panel.source_list.setCurrentItem(first_item)
@@ -3668,9 +3674,9 @@ def test_figure_composer_line_source_combo_uses_alias_data_and_updates_recipe(
         source_data={"data_0": first, "data_1": second},
     )
     qtbot.addWidget(tool)
-    tool.operation_panel.select_section("sources")
+    tool.operation_editor.select_section("sources")
 
-    source_combos = tool.step_source_controls.findChildren(
+    source_combos = tool.operation_editor.source_controls.findChildren(
         QtWidgets.QComboBox, "figureComposerLineSourceCombo"
     )
     source_combo = next(
@@ -3678,7 +3684,7 @@ def test_figure_composer_line_source_combo_uses_alias_data_and_updates_recipe(
             combo
             for combo in source_combos
             if combo.property("figure_composer_editor_generation")
-            == tool._operation_editor_generation
+            == tool.operation_editor.generation
         ),
         None,
     )
@@ -4673,7 +4679,7 @@ def test_figure_composer_toolbar_image_target_combo_elides_long_sources(qtbot) -
     custom_label = figurecomposer_toolbar_dialogs._image_style_target_label(
         1,
         operation.model_copy(update={"label": "Custom image step"}),
-        (figurecomposer_plot_slices._PlotSlicesPanelKey(0, 1, "ignored"),),
+        (plot_slices_model._PlotSlicesPanelKey(0, 1, "ignored"),),
     )
     assert custom_label == "Step 2: Custom image step: panel 1.2"
 
@@ -4711,8 +4717,8 @@ def test_figure_composer_batch_line_source_dependent_combos_disable(
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (0, 1))
-    tool.operation_panel.select_section("selection")
-    selection_page = tool.operation_panel.editor_stack.currentWidget()
+    tool.operation_editor.select_section("selection")
+    selection_page = tool.operation_editor.stack.currentWidget()
     coordinate_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
     )

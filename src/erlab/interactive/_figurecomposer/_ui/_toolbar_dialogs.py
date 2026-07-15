@@ -56,24 +56,28 @@ from erlab.interactive._figurecomposer._operations._line_profile import (
     _line_color_mode_from_text,
     _line_color_mode_text,
 )
+from erlab.interactive._figurecomposer._operations._method._catalog import (
+    TICK_PARAMS_CONTROLLED_KWARGS,
+)
 from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _panel_style_editor,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices._model import (
     _PLOT_SLICES_PANEL_IMAGE,
     _PLOT_SLICES_PANEL_LINE,
     _available_plot_slices_line_color_coords,
     _norm_clip_from_text,
     _norm_clip_text,
-    _PanelLineStyleEditorWidget,
-    _PanelStyleEditorWidget,
     _plot_slices_default_cmap,
     _plot_slices_panel_keys,
     _plot_slices_panel_kind,
     _plot_slices_shape,
     _PlotSlicesPanelKey,
 )
-from erlab.interactive._figurecomposer._operations._plot_slices import (
+from erlab.interactive._figurecomposer._operations._plot_slices._model import (
     _line_color_mode_from_text as _plot_slices_line_color_mode_from_text,
 )
-from erlab.interactive._figurecomposer._operations._plot_slices import (
+from erlab.interactive._figurecomposer._operations._plot_slices._model import (
     _line_color_mode_text as _plot_slices_line_color_mode_text,
 )
 from erlab.interactive._figurecomposer._rendering import (
@@ -97,10 +101,7 @@ from erlab.interactive._figurecomposer._ui._editor_controls import (
     MIXED_VALUE,
     MIXED_VALUES_TEXT,
 )
-from erlab.interactive._figurecomposer._ui._tick_params import (
-    TICK_PARAMS_CONTROLLED_KWARGS,
-    TickParamsEditorWidget,
-)
+from erlab.interactive._figurecomposer._ui._tick_params import TickParamsEditorWidget
 from erlab.interactive._figurecomposer._ui._widgets import (
     _AxesSelectorWidget,
     _ColorLineEditWidget,
@@ -644,7 +645,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
             images_layout.addWidget(editor)
             return
 
-        editor = _PanelStyleEditorWidget(
+        editor = _panel_style_editor._PanelStyleEditorWidget(
             operation,
             target.panel_keys,
             _connect_panel_editor_signal,
@@ -1114,7 +1115,7 @@ class _PlotSlicesLineOperationStyleWidget(QtWidgets.QWidget):
             line_kind="plot_slices",
             parent=self,
         )
-        self.panel_editor = _PanelLineStyleEditorWidget(
+        self.panel_editor = _panel_style_editor._PanelLineStyleEditorWidget(
             operation,
             panel_keys,
             connect_signal,
@@ -1255,8 +1256,16 @@ class _LineColorModeWidget(QtWidgets.QWidget):
 
     def _available_coords(self) -> list[str]:
         if self._line_kind == "plot_slices":
-            return _available_plot_slices_line_color_coords(self._tool, self._operation)
-        return _available_line_color_coords(self._tool, self._operation)
+            return _available_plot_slices_line_color_coords(
+                self._tool._document,
+                self._tool._source_display_name,
+                self._operation,
+            )
+        return _available_line_color_coords(
+            self._tool._document,
+            self._tool._source_display_name,
+            self._operation,
+        )
 
     def _default_coord(self) -> str | None:
         if self._line_kind == "plot_slices":
@@ -1725,7 +1734,7 @@ def _curve_style_targets(
             continue
         if operation.kind != FigureOperationKind.PLOT_SLICES:
             continue
-        if _plot_slices_panel_kind(_plot_slices_shape(tool, operation)) != (
+        if _plot_slices_panel_kind(_plot_slices_shape(tool._document, operation)) != (
             _PLOT_SLICES_PANEL_LINE
         ):
             continue
@@ -1769,7 +1778,7 @@ def _image_style_targets(
         if (
             not operation.enabled
             or operation.kind != FigureOperationKind.PLOT_SLICES
-            or _plot_slices_panel_kind(_plot_slices_shape(tool, operation))
+            or _plot_slices_panel_kind(_plot_slices_shape(tool._document, operation))
             != _PLOT_SLICES_PANEL_IMAGE
         ):
             continue
@@ -1826,7 +1835,9 @@ def _selected_plot_slices_panel_keys(
     operation_axis_ids = {id(axis) for axis in operation_axes}
     if not (selected_axis_ids & operation_axis_ids):
         return ()
-    panel_keys = _plot_slices_panel_keys(tool, operation)
+    panel_keys = _plot_slices_panel_keys(
+        tool._document, tool._source_display_name, operation
+    )
     if len(operation_axes) != len(panel_keys):
         return panel_keys
     return tuple(
@@ -1894,12 +1905,17 @@ def _is_single_image_plot_slices_target(
 ) -> bool:
     if (
         operation.kind != FigureOperationKind.PLOT_SLICES
-        or _plot_slices_panel_kind(_plot_slices_shape(tool, operation))
+        or _plot_slices_panel_kind(_plot_slices_shape(tool._document, operation))
         != _PLOT_SLICES_PANEL_IMAGE
     ):
         return False
     return (
-        len(_plot_slices_panel_keys(tool, operation)) == 1
+        len(
+            _plot_slices_panel_keys(
+                tool._document, tool._source_display_name, operation
+            )
+        )
+        == 1
         and len(target.panel_keys) == 1
     )
 
