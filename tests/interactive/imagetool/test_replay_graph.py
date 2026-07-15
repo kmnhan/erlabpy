@@ -43,6 +43,7 @@ from erlab.interactive.imagetool._provenance._graph import (
     _leading_top_level_imports,
     _operation_replay_code,
     _remove_noop_assignments,
+    _replace_ast_names,
     _script_function_dependencies,
     _script_seed_file_load_parts,
     _simple_assignment_source_name,
@@ -706,6 +707,71 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
     xr.testing.assert_identical(live_rebuilt, data * 2.0)
     assert live_calls == 1
     assert live_rebuilt_spec.script_inputs[0].node_snapshot_token == current_marker
+
+    source_data = xr.full_like(data, 1.0)
+    displayed_data = xr.full_like(data, 10.0)
+    source_nested = script(
+        ScriptCodeOperation(label="Use source data", code="derived = data_0"),
+        start_label="Use nested source input",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="data_0",
+                label="Source role",
+                node_uid="shared-node",
+                data_role="source",
+            ),
+        ),
+    )
+    displayed_nested = script(
+        ScriptCodeOperation(label="Use displayed data", code="derived = data_0"),
+        start_label="Use nested displayed input",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="data_0",
+                label="Displayed role",
+                node_uid="shared-node",
+                data_role="displayed",
+            ),
+        ),
+    )
+    mixed_role_spec = script(
+        ScriptCodeOperation(label="Add inputs", code="derived = left + right"),
+        start_label="Combine nested inputs",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="left",
+                label="Source branch",
+                provenance_spec=source_nested,
+            ),
+            ScriptInput(
+                name="right",
+                label="Displayed branch",
+                provenance_spec=displayed_nested,
+            ),
+        ),
+    )
+
+    def resolve_role(script_input):
+        if script_input.node_uid != "shared-node":
+            return None
+        resolved_data = (
+            source_data if script_input.data_role == "source" else displayed_data
+        )
+        return resolved_data, script_input.model_copy(
+            update={"node_snapshot_token": f"current-{script_input.data_role}"}
+        )
+
+    mixed_role_result, mixed_role_rebuilt = rebuild_script_provenance(
+        mixed_role_spec,
+        live_input_resolver=resolve_role,
+    )
+    xr.testing.assert_identical(mixed_role_result, source_data + displayed_data)
+    rebuilt_displayed = mixed_role_rebuilt.script_inputs[1].parsed_provenance_spec()
+    assert rebuilt_displayed is not None
+    assert rebuilt_displayed.script_inputs[0].data_role == "displayed"
 
     miss_calls = 0
     duplicate_file_input = ScriptInput(
@@ -1863,6 +1929,103 @@ def test_replay_graph_cleanup_helpers_cover_edge_cases() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        (
+            "def  _itool_replay_1():\n    return 1\nresult = _itool_replay_1()",
+            1,
+        ),
+        (
+            "class   _itool_replay_1:\n    value = 1\nresult = _itool_replay_1.value",
+            1,
+        ),
+    ],
+)
+def test_replace_ast_names_preserves_definition_whitespace(
+    code: str,
+    expected: int,
+) -> None:
+    renamed = _replace_ast_names(
+        code,
+        ast.parse(code),
+        {"_itool_replay_1": "script_result"},
+    )
+    namespace = _exec_generated_code(renamed)
+
+    assert namespace["result"] == expected
+
+    async_code = "async  def _itool_replay_1():\n    return 1\nresult = _itool_replay_1"
+    renamed_async = _replace_ast_names(
+        async_code,
+        ast.parse(async_code),
+        {"_itool_replay_1": "script_result"},
+    )
+    async_namespace = _exec_generated_code(renamed_async)
+    assert async_namespace["result"].__name__ == "script_result"
+
+
+def test_replace_code_identifiers_keeps_required_dotted_import_relay() -> None:
+    code = (
+        "import numpy.random\n\n"
+        "def scalar():\n"
+        "    return numpy.float64(1)\n\n"
+        "numpy = scalar()"
+    )
+
+    renamed = _replace_code_identifiers(code, {"numpy": "result"})
+    namespace = _exec_generated_code(renamed)
+
+    assert namespace["result"] == np.float64(1)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "if False:\n    numpy = 0\nresult = numpy.float64(1)",
+        "numpy: object\nresult = numpy.float64(1)",
+        "del numpy\nresult = 1",
+    ],
+)
+def test_replace_code_identifiers_keeps_observable_dotted_import_relay(
+    body: str,
+) -> None:
+    renamed = _replace_code_identifiers(
+        f"import numpy.random\n{body}",
+        {"numpy": "script_result"},
+    )
+
+    namespace = _exec_generated_code(renamed)
+
+    assert namespace["result"] == 1
+
+
+def test_replace_code_identifiers_preserves_renamed_dotted_import_binding() -> None:
+    renamed = _replace_code_identifiers(
+        "import numpy.random",
+        {"numpy": "result"},
+    )
+
+    namespace = _exec_generated_code(renamed)
+
+    assert namespace["result"] is np
+
+
+def test_replace_code_identifiers_flattens_import_relay_in_function() -> None:
+    code = (
+        "def assign_result():\n"
+        "    global numpy\n"
+        "    import numpy.random\n"
+        "    numpy = numpy.float64(1)\n\n"
+        "assign_result()"
+    )
+
+    renamed = _replace_code_identifiers(code, {"numpy": "result"})
+    namespace = _exec_generated_code(renamed)
+
+    assert namespace["result"] == np.float64(1)
+
+
 def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> None:
 
     graph = ReplayGraph(display=True)
@@ -2339,6 +2502,163 @@ def test_replay_graph_display_keeps_scoped_bindings_and_inlines_rebound_inputs(
     xr.testing.assert_identical(
         _exec_generated_code(rebound_code)["result"],
         (source + 1) * 2,
+    )
+
+
+def test_replay_graph_display_keeps_alias_before_import_rebinding() -> None:
+    source = xr.DataArray(np.arange(3.0), dims=("x",))
+    spec = script(
+        ScriptCodeOperation(
+            label="Rebind source name",
+            code="import numpy as data\nresult = derived + 1",
+        ),
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="result",
+    )
+
+    replayed = replay_script_provenance(spec, {"data": source})
+    code = typing.cast("str", spec.display_code())
+    generated = _exec_generated_code(code, {"data": source})["result"]
+
+    xr.testing.assert_identical(replayed, source + 1)
+    xr.testing.assert_identical(generated, replayed)
+
+
+def test_replay_graph_display_renames_imports_and_free_helper_references(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "scan.nc"
+    source = xr.DataArray(np.arange(3.0), dims=("x",))
+    source.to_netcdf(path)
+
+    def branch(delta: int) -> ToolProvenanceSpec:
+        return script(
+            ScriptCodeOperation(
+                label="Transform branch",
+                code=(
+                    "import numpy as result\n\n"
+                    f"numeric = derived + result.float64({delta})\n\n"
+                    "def result(script_result):\n"
+                    "    return numeric + script_result\n\n"
+                    "result = result(1)\n\n"
+                    "def identity():\n"
+                    "    return result\n\n"
+                    "result = identity()"
+                ),
+            ),
+            start_label="Run branch",
+            seed_code="derived = data_0",
+            active_name="result",
+            script_inputs=(
+                ScriptInput(
+                    name="data_0",
+                    label="Source",
+                    provenance_spec=_file_spec(path),
+                ),
+            ),
+        )
+
+    spec = script(
+        ScriptCodeOperation(label="Add branches", code="total = left + right"),
+        start_label="Combine branches",
+        active_name="total",
+        script_inputs=(
+            ScriptInput(
+                name="left",
+                label="Left branch",
+                provenance_spec=branch(1),
+            ),
+            ScriptInput(
+                name="right",
+                label="Right branch",
+                provenance_spec=branch(2),
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(code)
+
+    xr.testing.assert_identical(namespace["total"], (source + 2) + (source + 3))
+    generated_copy_targets = {
+        statement.targets[0].id
+        for statement in ast.parse(code).body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and statement.targets[0].id.startswith("data_0")
+        and isinstance(statement.value, ast.Call)
+        and isinstance(statement.value.func, ast.Attribute)
+        and statement.value.func.attr == "copy"
+    }
+    assert not generated_copy_targets
+
+
+@pytest.mark.parametrize(
+    "import_code",
+    [
+        "import numpy.random, numpy.linalg",
+        "import numpy.random\nimport numpy.linalg",
+    ],
+)
+def test_replay_graph_display_renames_dotted_import_root(
+    tmp_path: pathlib.Path,
+    import_code: str,
+) -> None:
+    path = tmp_path / "scan.nc"
+    source = xr.DataArray(np.arange(3.0), dims=("x",))
+    source.to_netcdf(path)
+
+    def branch(delta: int) -> ToolProvenanceSpec:
+        return script(
+            ScriptCodeOperation(
+                label="Transform branch",
+                code=f"{import_code}\nnumpy = derived + numpy.float64({delta})",
+            ),
+            start_label="Run branch",
+            seed_code="derived = data_0",
+            active_name="numpy",
+            script_inputs=(
+                ScriptInput(
+                    name="data_0",
+                    label="Source",
+                    provenance_spec=_file_spec(path),
+                ),
+            ),
+        )
+
+    spec = script(
+        ScriptCodeOperation(label="Add branches", code="total = left + right"),
+        start_label="Combine branches",
+        active_name="total",
+        script_inputs=(
+            ScriptInput(
+                name="left",
+                label="Left branch",
+                provenance_spec=branch(1),
+            ),
+            ScriptInput(
+                name="right",
+                label="Right branch",
+                provenance_spec=branch(2),
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(code)
+
+    xr.testing.assert_identical(namespace["total"], (source + 1) + (source + 2))
+    assert not any(
+        isinstance(statement, ast.Assign)
+        and isinstance(statement.value, ast.Name)
+        and statement.value.id == "numpy"
+        and any(
+            isinstance(target, ast.Name) and target.id != "numpy"
+            for target in statement.targets
+        )
+        for statement in ast.parse(code).body
     )
 
 

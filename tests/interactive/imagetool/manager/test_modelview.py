@@ -2206,10 +2206,14 @@ def test_manager_child_imagetool_dask_badge(
                 QtCore.Qt.KeyboardModifier.NoModifier,
             )
 
-        delegate.eventFilter(view.viewport(), _mouse_move(dask_rect.center()))
-        assert (
-            view.viewport().cursor().shape() == QtCore.Qt.CursorShape.PointingHandCursor
+        requested_cursors: list[QtCore.Qt.CursorShape | None] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "set_widget_cursor",
+            lambda widget, shape: requested_cursors.append(shape),
         )
+        delegate.eventFilter(view.viewport(), _mouse_move(dask_rect.center()))
+        assert requested_cursors == [QtCore.Qt.CursorShape.PointingHandCursor]
 
         popup_positions: list[QtCore.QPoint] = []
         monkeypatch.setattr(child_tool._dask_menu, "popup", popup_positions.append)
@@ -2303,25 +2307,23 @@ def test_manager_badge_hit_testing_edge_paths(
                 QtCore.Qt.KeyboardModifier.NoModifier,
             )
 
-        delegate.eventFilter(view.viewport(), _mouse_move(dask_rect.center()))
-        assert (
-            view.viewport().cursor().shape() == QtCore.Qt.CursorShape.PointingHandCursor
+        requested_cursors: list[QtCore.Qt.CursorShape | None] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "set_widget_cursor",
+            lambda widget, shape: requested_cursors.append(shape),
         )
+        delegate.eventFilter(view.viewport(), _mouse_move(dask_rect.center()))
+        assert requested_cursors[-1] == QtCore.Qt.CursorShape.PointingHandCursor
 
         delegate.eventFilter(view.viewport(), _mouse_move(option.rect.center()))
-        assert (
-            view.viewport().cursor().shape() != QtCore.Qt.CursorShape.PointingHandCursor
-        )
+        assert requested_cursors[-1] is None
 
         delegate.eventFilter(view.viewport(), _mouse_move(QtCore.QPoint(-10, -10)))
-        assert (
-            view.viewport().cursor().shape() != QtCore.Qt.CursorShape.PointingHandCursor
-        )
+        assert requested_cursors[-1] is None
 
         delegate.eventFilter(view.viewport(), QtCore.QEvent(QtCore.QEvent.Type.Leave))
-        assert (
-            view.viewport().cursor().shape() != QtCore.Qt.CursorShape.PointingHandCursor
-        )
+        assert requested_cursors[-1] is None
         delegate.eventFilter(None, QtCore.QEvent(QtCore.QEvent.Type.Leave))
         delegate.eventFilter(None, _mouse_move(dask_rect.center()))
 

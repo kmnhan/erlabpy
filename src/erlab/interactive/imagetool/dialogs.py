@@ -4793,6 +4793,9 @@ class _BoxcarFilterDialog(DataFilterDialog):
     operation_types = (BoxcarFilterOperation,)
 
     def setup_widgets(self) -> None:
+        self._source_data = erlab.utils.array._restore_nonuniform_dims(
+            self.slicer_area.data
+        )
         self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
         self.size_spins: dict[Hashable, QtWidgets.QSpinBox] = {}
 
@@ -4800,7 +4803,7 @@ class _BoxcarFilterDialog(DataFilterDialog):
         dim_layout = QtWidgets.QGridLayout(dim_group)
         dim_layout.addWidget(QtWidgets.QLabel("Dimension"), 0, 0)
         dim_layout.addWidget(QtWidgets.QLabel("Window Size"), 0, 1)
-        for row, dim in enumerate(self.slicer_area.data.dims, start=1):
+        for row, dim in enumerate(self._source_data.dims, start=1):
             check = QtWidgets.QCheckBox(str(dim))
             size_spin = QtWidgets.QSpinBox()
             size_spin.setRange(1, 9999)

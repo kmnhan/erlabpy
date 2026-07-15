@@ -905,7 +905,6 @@ class RestoreNonuniformDimsOperation(ToolProvenanceOperation):
         *,
         output_name: str,
         source_name: str | None = None,
-        reserved_names: Collection[str] = (),
     ) -> str:
         if self.dimension_mapping is not None:
             return _known_nonuniform_restore_statement_code(
@@ -1519,8 +1518,59 @@ class RemoveMeshOperation(ToolProvenanceOperation):
     method: typing.Literal["constant", "gaussian", "circular"] = "constant"
     output: typing.Literal["corrected", "mesh"] = "corrected"
 
+    @pydantic.field_validator("order", "n_pad", "roi_hw", mode="before")
+    @classmethod
+    def _validate_integer_parameter(cls, value: typing.Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, Integral):
+            raise TypeError("mesh integer parameters must be integers")
+        return int(value)
+
+    @pydantic.field_validator("first_order_peaks", mode="before")
+    @classmethod
+    def _validate_peak_shape(
+        cls, value: typing.Any
+    ) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int]]:
+        if isinstance(value, str | bytes):
+            raise TypeError("first_order_peaks must contain three coordinate pairs")
+        try:
+            points = tuple(value)
+        except TypeError as exc:
+            raise TypeError(
+                "first_order_peaks must contain three coordinate pairs"
+            ) from exc
+        if len(points) != 3:
+            raise ValueError("first_order_peaks must contain exactly three points")
+        normalized: list[tuple[int, int]] = []
+        for point in points:
+            if isinstance(point, str | bytes):
+                raise TypeError("each first-order peak must be a coordinate pair")
+            try:
+                coordinates = tuple(point)
+            except TypeError as exc:
+                raise TypeError(
+                    "each first-order peak must be a coordinate pair"
+                ) from exc
+            if len(coordinates) != 2:
+                raise ValueError("each first-order peak must contain two coordinates")
+            if any(
+                isinstance(coordinate, bool) or not isinstance(coordinate, Integral)
+                for coordinate in coordinates
+            ):
+                raise TypeError("first-order peak coordinates must be integers")
+            normalized.append(
+                typing.cast("tuple[int, int]", tuple(map(int, coordinates)))
+            )
+        return typing.cast(
+            "tuple[tuple[int, int], tuple[int, int], tuple[int, int]]",
+            tuple(normalized),
+        )
+
     @pydantic.model_validator(mode="after")
     def _validate_remove_mesh(self) -> typing.Self:
+        if any(
+            coordinate < 0 for point in self.first_order_peaks for coordinate in point
+        ):
+            raise ValueError("first-order peak coordinates must be nonnegative")
         if not np.isfinite(self.k):
             raise ValueError("mesh threshold k must be finite")
         if not np.isfinite(self.feather):
@@ -1562,7 +1612,33 @@ class RemoveMeshOperation(ToolProvenanceOperation):
         *,
         output_name: str,
         source_name: str | None = None,
+    ) -> str:
+        return self._remove_mesh_statement_code(
+            input_name,
+            output_name=output_name,
+            reserved_names=(),
+        )
+
+    def _statement_replay_code(
+        self,
+        input_name: str,
+        *,
+        output_name: str,
+        source_name: str | None = None,
         reserved_names: Collection[str] = (),
+    ) -> str:
+        return self._remove_mesh_statement_code(
+            input_name,
+            output_name=output_name,
+            reserved_names=reserved_names,
+        )
+
+    def _remove_mesh_statement_code(
+        self,
+        input_name: str,
+        *,
+        output_name: str,
+        reserved_names: Collection[str],
     ) -> str:
         other_base = "mesh" if self.output == "corrected" else "corrected"
         unavailable = {input_name, output_name, *reserved_names}
@@ -2431,7 +2507,6 @@ class _MutatingKspaceOperation(ToolProvenanceOperation):
         *,
         output_name: str,
         source_name: str | None = None,
-        reserved_names: Collection[str] = (),
     ) -> str:
         if input_name == output_name:
             return self._kspace_statement_code(output_name)

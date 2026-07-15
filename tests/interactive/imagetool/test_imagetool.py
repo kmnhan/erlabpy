@@ -545,6 +545,33 @@ def test_uniform_interpolation_editor_uses_public_nonuniform_dimensions(qtbot) -
     )
 
 
+def test_boxcar_editor_uses_public_nonuniform_dimensions(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(6, dtype=float).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.4, 1.0], "y": [10.0, 20.0]},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    assert win.slicer_area.data.dims == ("x_idx", "y")
+
+    dialog = imagetool_dialogs._BoxcarFilterDialog(
+        win.slicer_area,
+        provenance_edit_mode=True,
+    )
+    qtbot.addWidget(dialog)
+    assert set(dialog.dim_checks) == {"x", "y"}
+
+    operation = BoxcarFilterOperation(size={"x": 3})
+    dialog.restore_filter_operation(operation)
+    assert dialog.filter_operation() == operation
+    public_data = erlab.utils.array._restore_nonuniform_dims(win.slicer_area.data)
+    xr.testing.assert_identical(
+        dialog.process_data(public_data),
+        operation.apply(public_data, parent_data=public_data),
+    )
+
+
 def _assert_guideline_state(
     plot_item,
     *,

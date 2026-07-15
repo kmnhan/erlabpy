@@ -592,15 +592,17 @@ def rebuild_script_provenance(
             "The recorded operation cannot be replayed automatically"
         )
 
-    live_results: dict[tuple[str, str | None], tuple[xr.DataArray, typing.Any]] = {}
-    live_misses: set[tuple[str, str | None]] = set()
+    live_results: dict[
+        tuple[str, str | None, str], tuple[xr.DataArray, typing.Any]
+    ] = {}
+    live_misses: set[tuple[str, str | None, str]] = set()
 
     def resolve_live(
         script_input: typing.Any,
     ) -> tuple[xr.DataArray, typing.Any] | None:
         if live_input_resolver is None:
             return None
-        key = (script_input.name, script_input.node_uid)
+        key = (script_input.name, script_input.node_uid, script_input.data_role)
         if key in live_results:
             return live_results[key]
         if key in live_misses:

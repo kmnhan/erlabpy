@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import ast
 import builtins
+import io
 import json
 import keyword
 import symtable
+import tokenize
 import typing
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -23,6 +25,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _NONUNIFORM_RESTORE_FUNCTION_NAME,
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _code_stores_name,
+    _code_uses_name,
     _expression_starts_with_name,
     _nonuniform_restore_support_code,
     _replace_code_identifiers,
@@ -1293,6 +1296,39 @@ def _source_view_emits_code(graph: ReplayGraph, node: ReplayNode) -> bool:
     )
 
 
+def _dotted_import_root_bindings(code: str) -> set[str]:
+    """Return module-scope roots bound by unaliased dotted imports."""
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return set()
+
+    roots: set[str] = set()
+
+    class ImportVisitor(ast.NodeVisitor):
+        def visit_Import(self, node: ast.Import) -> None:
+            roots.update(
+                alias.name.partition(".")[0]
+                for alias in node.names
+                if alias.asname is None and "." in alias.name
+            )
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+    ImportVisitor().visit(module)
+    return roots
+
+
 def _node_names(
     graph: ReplayGraph,
     *,
@@ -1330,6 +1366,7 @@ def _node_names(
         preferred_names[emitted_key(graph.output_key)] = output_name
 
     reserved_names = graph.reserved_names
+    dotted_import_roots: set[str] = set()
     if graph.display:
         for node in graph.nodes:
             code_fragments = [
@@ -1347,6 +1384,7 @@ def _node_names(
                 accesses, rebindings = _code_name_accesses(code)
                 reserved_names.update(accesses)
                 reserved_names.update(rebindings)
+                dotted_import_roots.update(_dotted_import_root_bindings(code))
     for node in graph.nodes:
         if node.kind != "operation" or not node.parents:
             continue
@@ -1380,7 +1418,11 @@ def _node_names(
         ):
             continue
         preferred_name = preferred_names.get(node.key)
-        if preferred_name is not None and preferred_name not in names.values():
+        if (
+            preferred_name is not None
+            and preferred_name not in names.values()
+            and preferred_name not in dotted_import_roots
+        ):
             names[node.key] = preferred_name
             used.add(preferred_name)
         else:
@@ -1652,10 +1694,11 @@ def _replace_ast_names(
 ) -> str:
     """Replace parsed name nodes without changing unrelated source formatting."""
     encoded = code.encode()
+    source_lines = code.splitlines(keepends=True)
     line_starts = [0]
     for line in encoded.splitlines(keepends=True):
         line_starts.append(line_starts[-1] + len(line))
-    spans = sorted(
+    spans = [
         (
             line_starts[node.lineno - 1] + node.col_offset,
             line_starts[node.end_lineno - 1] + node.end_col_offset,
@@ -1666,8 +1709,58 @@ def _replace_ast_names(
         and node.id in replacements
         and node.end_lineno is not None
         and node.end_col_offset is not None
-    )
-    for start, end, replacement in reversed(spans):
+    ]
+    tokens = iter(tokenize.generate_tokens(io.StringIO(code).readline))
+    for token in tokens:
+        if token.type != tokenize.NAME or token.string not in {"class", "def"}:
+            continue
+        for name_token in tokens:
+            if name_token.type != tokenize.NAME:
+                continue
+            replacement = replacements.get(name_token.string)
+            if replacement is not None:
+                line = source_lines[name_token.start[0] - 1]
+                name_start = line_starts[name_token.start[0] - 1] + len(
+                    line[: name_token.start[1]].encode()
+                )
+                spans.append(
+                    (
+                        name_start,
+                        name_start + len(name_token.string.encode()),
+                        replacement.encode(),
+                    )
+                )
+            break
+    for statement in ast.walk(module):
+        if not isinstance(statement, ast.Import | ast.ImportFrom):
+            continue
+        for alias in statement.names:
+            if (
+                alias.name == "*"
+                or alias.end_lineno is None
+                or alias.end_col_offset is None
+            ):
+                continue
+            bound_name = alias.asname or (
+                alias.name.partition(".")[0]
+                if isinstance(statement, ast.Import)
+                else alias.name
+            )
+            replacement = replacements.get(bound_name)
+            if replacement is None:
+                continue
+            alias_end = line_starts[alias.end_lineno - 1] + alias.end_col_offset
+            if alias.asname is not None:
+                spans.append(
+                    (
+                        alias_end - len(alias.asname.encode()),
+                        alias_end,
+                        replacement.encode(),
+                    )
+                )
+            elif not isinstance(statement, ast.Import) or "." not in alias.name:
+                spans.append((alias_end, alias_end, f" as {replacement}".encode()))
+    for start, end, replacement in sorted(spans, reverse=True):
         encoded = encoded[:start] + replacement + encoded[end:]
     return encoded.decode()
 
@@ -1999,13 +2092,51 @@ def _is_receiver_assignment_chain(codes: Sequence[str], active_name: str) -> boo
     return True
 
 
-def _cleanup_emitted_replay_code(code: str) -> str:
+def _remove_unused_generated_copies(code: str, names: set[str]) -> str:
+    if not names:
+        return code
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return code
+    retained: list[ast.stmt] = []
+    changed = False
+    for index, statement in enumerate(module.body):
+        target_name = (
+            statement.targets[0].id
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            else None
+        )
+        if target_name not in names:
+            retained.append(statement)
+            continue
+        later_code = ast.unparse(
+            ast.Module(body=module.body[index + 1 :], type_ignores=[])
+        )
+        if _code_uses_name(later_code, target_name):
+            retained.append(statement)
+            continue
+        changed = True
+    if not changed:
+        return code
+    module.body = retained
+    return ast.unparse(ast.fix_missing_locations(module))
+
+
+def _cleanup_emitted_replay_code(
+    code: str,
+    *,
+    generated_copy_names: set[str],
+) -> str:
     code = _remove_noop_assignments(code)
     code = _inline_simple_name_aliases(code)
     code = _inline_adjacent_replay_assignments(code)
     code = _inline_single_use_replay_names(code)
     code = _inline_adjacent_replay_assignments(code)
     code = _remove_noop_assignments(code)
+    code = _remove_unused_generated_copies(code, generated_copy_names)
     return _compact_replay_temp_names(code)
 
 
@@ -2153,6 +2284,9 @@ def _code_name_accesses(code: str) -> tuple[set[str], set[str]]:
             accessed.add(node.id)
             if isinstance(node.ctx, ast.Store | ast.Del):
                 rebound.add(node.id)
+        elif isinstance(node, ast.arg):
+            accessed.add(node.arg)
+            rebound.add(node.arg)
         elif isinstance(node, ast.AsyncFunctionDef | ast.ClassDef | ast.FunctionDef):
             accessed.add(node.name)
             rebound.add(node.name)
@@ -2392,6 +2526,7 @@ def emit_replay_code(
     copied_script_bindings = _copied_script_bindings(graph)
     chunks: list[tuple[str, bool]] = []
     materialized_aliases: dict[str, str] = {}
+    generated_copy_names: set[str] = set()
     materialized_binding_names = set(names.values())
     reserved_binding_names: set[str] = set()
     for replay_node in graph.nodes:
@@ -2522,6 +2657,7 @@ def emit_replay_code(
                     append_code(
                         f"{generated_input_name} = {input_value_name}.copy(deep=True)"
                     )
+                    generated_copy_names.add(generated_input_name)
                     if generated_input_name != input_name:
                         input_replacements[input_name] = generated_input_name
                     materialized_aliases[input_name] = input_value_name
@@ -2603,7 +2739,10 @@ def emit_replay_code(
         return _rename_display_replay_temps(
             graph,
             names,
-            _cleanup_emitted_replay_code(code),
+            _cleanup_emitted_replay_code(
+                code,
+                generated_copy_names=generated_copy_names,
+            ),
         )
 
     module_prologue, code = _split_module_prologue(code)
@@ -2611,7 +2750,10 @@ def emit_replay_code(
     cleaned_body = _rename_display_replay_temps(
         graph,
         names,
-        _cleanup_emitted_replay_code(body),
+        _cleanup_emitted_replay_code(
+            body,
+            generated_copy_names=generated_copy_names,
+        ),
     )
     import_prefix = "\n".join(source for _canonical, source in leading_imports)
     return "\n\n\n".join(

@@ -634,11 +634,46 @@ def test_structured_operations_generate_public_code(
             first_order_peaks=((5, 5), (5, 7), (5, 3)),
             feather=np.inf,
         ),
+        lambda: RemoveMeshOperation(
+            first_order_peaks=((-1, 5), (5, 7), (5, 3)),
+        ),
+        lambda: RemoveMeshOperation(
+            first_order_peaks=((5, 5), (5, 7), (5, 3)),
+            order=True,
+        ),
+        lambda: RemoveMeshOperation(
+            first_order_peaks=((5, 5), (5, 7), (5, 3)),
+            n_pad=1.5,
+        ),
+        lambda: RemoveMeshOperation(
+            first_order_peaks=((5, 5), (5, 7), (5, 3)),
+            roi_hw=False,
+        ),
+        lambda: RemoveMeshOperation(
+            first_order_peaks=((5, 5), (5, 7), (True, 3)),
+        ),
     ],
 )
 def test_tool_output_operations_reject_invalid_parameters(operation_factory) -> None:
     with pytest.raises((TypeError, ValidationError)):
         operation_factory()
+
+
+def test_remove_mesh_operation_defers_data_dependent_peak_validation() -> None:
+    operation = RemoveMeshOperation(
+        first_order_peaks=((5, 5), (5, 7), (5, 3)),
+    )
+    payload = operation.model_dump(mode="json")
+    payload["first_order_peaks"] = [[5, 5], [5, 5], [5, 3]]
+
+    parsed = parse_tool_provenance_operation(payload)
+
+    assert isinstance(parsed, RemoveMeshOperation)
+    with pytest.raises(ValueError, match="distinct"):
+        parsed.apply(
+            xr.DataArray(np.ones((11, 11)), dims=("alpha", "eV")),
+            parent_data=xr.DataArray(np.ones((11, 11)), dims=("alpha", "eV")),
+        )
 
 
 def test_uniform_interpolation_uses_current_coordinate_bounds() -> None:
@@ -1059,6 +1094,29 @@ def test_operation_replay_code_passes_source_context() -> None:
 
 
 def test_operation_code_base_edges() -> None:
+    class ExternalStatementOperation(ToolProvenanceOperation):
+        def apply(
+            self, data: xr.DataArray, *, parent_data: xr.DataArray
+        ) -> xr.DataArray:
+            return data + 1
+
+        def derivation_label(self) -> str:
+            return "External statement operation"
+
+        def expression_code(
+            self, input_name: str, *, source_name: str | None = None
+        ) -> str:
+            raise NotImplementedError
+
+        def statement_code(
+            self,
+            input_name: str,
+            *,
+            output_name: str,
+            source_name: str | None = None,
+        ) -> str:
+            return f"{output_name} = {input_name} + 1"
+
     data = xr.DataArray(np.arange(4.0), dims=("x",))
 
     with pytest.raises(NotImplementedError):
@@ -1073,6 +1131,14 @@ def test_operation_code_base_edges() -> None:
             "data",
             output_name=None,
         )
+    assert (
+        ExternalStatementOperation().replay_code(
+            "data",
+            output_name="result",
+            reserved_names={"external_helper"},
+        )
+        == "result = data + 1"
+    )
 
     assert (
         IselOperation(kwargs={"x": 0}).replay_code("data", output_name=None)
@@ -2811,12 +2877,41 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
     rebased_helper_code = rebase_default_replay_input(mixed_helper_code, "source_data")
     assert "def normalize(data):\n    return data / data.max()" in rebased_helper_code
     assert "derived = normalize(source_data)" in rebased_helper_code
+    free_input_helper_code = (
+        "def transform():\n    return data + 1\n\nderived = transform()"
+    )
+    assert uses_default_replay_input(free_input_helper_code)
+    rebased_free_helper_code = rebase_default_replay_input(
+        free_input_helper_code,
+        "source_data",
+    )
+    assert not uses_default_replay_input(rebased_free_helper_code)
+    free_helper_namespace = {"source_data": 3}
+    exec(  # noqa: S102
+        rebased_free_helper_code,
+        free_helper_namespace,
+        free_helper_namespace,
+    )
+    assert free_helper_namespace["derived"] == 4
+    same_line_lambdas = (
+        "first = lambda: data + 1; second = lambda: data + 2\n"
+        "derived = first() + second()"
+    )
+    rebased_lambdas = rebase_default_replay_input(same_line_lambdas, "source_data")
+    lambda_namespace = {"source_data": 1}
+    exec(rebased_lambdas, lambda_namespace, lambda_namespace)  # noqa: S102
+    assert lambda_namespace["derived"] == 5
     replaced_helper_code = _replace_code_identifiers(
         "def normalize(data):\n    return data / data.max()\n\nderived = data",
         {"data": "source_data", "derived": "result"},
     )
     assert "def normalize(data):\n    return data / data.max()" in replaced_helper_code
     assert "result = source_data" in replaced_helper_code
+    renamed_import_code = _replace_code_identifiers(
+        "import numpy as result\nresult = result.float64(2)",
+        {"result": "script_result"},
+    )
+    assert _exec_generated_code(renamed_import_code, {})["script_result"] == 2
 
     with pytest.raises(ValueError, match="Expected 2 items"):
         _ensure_float_tuple([1.0], expected_len=2)
@@ -2853,6 +2948,67 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
         ToolProvenanceSpec(kind="full_data", start_label="bad")
     with pytest.raises(TypeError, match="Script and file provenance use"):
         script(start_label="Start", active_name="derived")._display_operations()
+
+
+def test_rebase_default_replay_input_respects_lexical_scopes() -> None:
+    helper_code = (
+        "from __future__ import annotations\n\n"
+        "def transform(source):\n"
+        "    return data + source\n\n"
+        "derived = transform(1)"
+    )
+    rebased = rebase_default_replay_input(helper_code, "source")
+    namespace = {"source": 10}
+    exec(rebased, namespace, namespace)  # noqa: S102
+    assert namespace["derived"] == 11
+    assert not uses_default_replay_input(rebased)
+
+    if sys.version_info >= (3, 12):
+        class_comprehension = (
+            "class Container:\n"
+            "    data = 1\n"
+            "    values = [data for _ in range(1)]\n"
+            "    functions = [lambda: data for _ in range(1)]\n"
+            "derived = (Container.values, Container.functions[0]())"
+        )
+        rebased_comprehension = rebase_default_replay_input(
+            class_comprehension,
+            "source",
+        )
+        namespace = {"source": 10}
+        exec(rebased_comprehension, namespace, namespace)  # noqa: S102
+        assert namespace["derived"] == ([10], 10)
+
+        generic_code = (
+            "def transform[T](value: T) -> T:\n"
+            "    return data\n"
+            "\n"
+            "class Container[T]:\n"
+            "    value = data\n"
+            "\n"
+            "derived = transform(Container.value)"
+        )
+        rebased_generic = rebase_default_replay_input(generic_code, "source")
+        namespace = {"source": 10}
+        exec(rebased_generic, namespace, namespace)  # noqa: S102
+        assert namespace["derived"] == 10
+
+        type_alias_code = "type Payload[T] = tuple[T, type(data)]"
+        rebased_type_alias = rebase_default_replay_input(type_alias_code, "source")
+        namespace = {"source": 10}
+        exec(rebased_type_alias, namespace, namespace)  # noqa: S102
+        assert typing.get_args(namespace["Payload"].__value__)[1] is int
+        assert not uses_default_replay_input(rebased_type_alias)
+
+    if sys.version_info >= (3, 14):
+        annotation_code = (
+            "def transform(value: (lambda: data)()):\n"
+            "    return value\n"
+            "\n"
+            "derived = transform(1)"
+        )
+        rebased_annotation = rebase_default_replay_input(annotation_code, "source")
+        assert not uses_default_replay_input(rebased_annotation)
 
 
 def test_select_coord_operation_round_trips_and_applies() -> None:

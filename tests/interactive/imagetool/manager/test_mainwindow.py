@@ -49,12 +49,14 @@ from erlab.interactive.imagetool._provenance._model import (
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AssignAttrsOperation,
+    ImageDerivativeOperation,
     ImageToolSelectionSourceBinding,
     IselOperation,
     NormalizeOperation,
     RenameOperation,
     RestoreNonuniformDimsOperation,
     ScriptCodeOperation,
+    TransposeOperation,
 )
 from erlab.interactive.imagetool.manager import _figure_dialogs, fetch, replace_data
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
@@ -5169,12 +5171,14 @@ def test_manager_dtool_output_itool_nests_under_tool(
         manager.tree_view.clearSelection()
         select_child_tool(manager, output_uid)
         manager._update_info(uid=output_uid)
-        derivation = metadata_derivation_texts(manager)
-        assert derivation[0] == "Start from selected parent ImageTool data"
-        assert derivation[-2:] == [
-            "Compute derivative output",
-            "Transpose derivative output for ImageTool display",
-        ]
+        assert isinstance(
+            output_node.provenance_spec.operations[-2],
+            ImageDerivativeOperation,
+        )
+        assert isinstance(
+            output_node.provenance_spec.operations[-1],
+            TransposeOperation,
+        )
         copied = copy_full_code_for_uid(monkeypatch, manager, output_uid)
         namespace = _exec_generated_code(
             copied,

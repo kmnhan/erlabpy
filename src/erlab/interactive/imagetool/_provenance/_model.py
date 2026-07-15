@@ -1219,7 +1219,6 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         *,
         output_name: str,
         source_name: str | None = None,
-        reserved_names: Collection[str] = (),
     ) -> str:
         """Return Python statements applying this operation to an input name.
 
@@ -1229,6 +1228,21 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         to ``output_name``.
         """
         raise NotImplementedError
+
+    def _statement_replay_code(
+        self,
+        input_name: str,
+        *,
+        output_name: str,
+        source_name: str | None = None,
+        reserved_names: Collection[str] = (),
+    ) -> str:
+        """Call statement replay with internal graph-emission context."""
+        return self.statement_code(
+            input_name,
+            output_name=output_name,
+            source_name=source_name,
+        )
 
     def replay_code(
         self,
@@ -1270,7 +1284,7 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         except NotImplementedError:
             if output_name is None:
                 raise
-            return self.statement_code(
+            return self._statement_replay_code(
                 input_name,
                 output_name=output_name,
                 source_name=source_name,
@@ -1979,7 +1993,6 @@ class _SourceViewOperation(ToolProvenanceOperation):
         *,
         output_name: str,
         source_name: str | None = None,
-        reserved_names: Collection[str] = (),
     ) -> str:
         return _dynamic_nonuniform_restore_replay_code(
             input_name,

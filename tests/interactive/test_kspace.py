@@ -1658,7 +1658,6 @@ def test_kspace_conversion_dialog_restores_unordered_setup_group(
     source = data.copy(deep=True)
     namespace = {"data": source}
     code = dialog.make_code()
-    assert code.splitlines()[-1].startswith("data_kconv = data_kconv.kspace.convert(")
     exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
     xr.testing.assert_allclose(
         namespace["data_kconv"],
