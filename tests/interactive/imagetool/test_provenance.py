@@ -4781,6 +4781,7 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
                 label="ImageTool 0",
                 node_uid="old-left",
                 node_snapshot_token=left_snapshot_id,
+                data_role="source",
             ),
             ScriptInput(
                 name="data_1",
@@ -4815,11 +4816,18 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
 
     refs = script_input_dependency_refs(spec)
     assert [
-        (ref.name, ref.label, ref.node_uid, ref.node_snapshot_token) for ref in refs
+        (
+            ref.name,
+            ref.label,
+            ref.node_uid,
+            ref.node_snapshot_token,
+            ref.data_role,
+        )
+        for ref in refs
     ] == [
-        ("data_0", "ImageTool 0", "old-left", left_snapshot_id),
-        ("data_1", "ImageTool 1", "old-right", right_snapshot_id),
-        ("data_2", "ImageTool 2", "old-extra", extra_snapshot_id),
+        ("data_0", "ImageTool 0", "old-left", left_snapshot_id, "source"),
+        ("data_1", "ImageTool 1", "old-right", right_snapshot_id, "displayed"),
+        ("data_2", "ImageTool 2", "old-extra", extra_snapshot_id, "displayed"),
     ]
 
     rebased = rebase_script_input_node_uids(
@@ -4837,12 +4845,18 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
         "derived = diff + data_2"
     )
     assert [
-        (ref.name, ref.label, ref.node_uid, ref.node_snapshot_token)
+        (
+            ref.name,
+            ref.label,
+            ref.node_uid,
+            ref.node_snapshot_token,
+            ref.data_role,
+        )
         for ref in script_input_dependency_refs(rebased)
     ] == [
-        ("data_0", "ImageTool 0", "new-left", left_snapshot_id),
-        ("data_1", "ImageTool 1", "new-right", right_snapshot_id),
-        ("data_2", "ImageTool 2", "new-extra", extra_snapshot_id),
+        ("data_0", "ImageTool 0", "new-left", left_snapshot_id, "source"),
+        ("data_1", "ImageTool 1", "new-right", right_snapshot_id, "displayed"),
+        ("data_2", "ImageTool 2", "new-extra", extra_snapshot_id, "displayed"),
     ]
     assert script_input_dependency_refs(None) == ()
     assert rebase_script_input_node_uids(spec, {}) is spec
@@ -5030,6 +5044,9 @@ def test_script_input_label_is_preserved_and_defaults_to_name() -> None:
     assert script_input.model_dump()["label"] == "ImageTool 0: processed data"
     assert ScriptInput(name="data_0").label == "data_0"
     assert ScriptInput(name="data_0", label=None).label == "data_0"
+    assert ScriptInput(name="data_0").data_role == "displayed"
+    source_input = ScriptInput(name="data_0", data_role="source")
+    assert source_input.model_dump(mode="json")["data_role"] == "source"
 
     node_marker = "snapshot"
     assert ScriptInputDependencyRef(
@@ -5043,6 +5060,10 @@ def test_script_input_label_is_preserved_and_defaults_to_name() -> None:
     legacy_dependency = ScriptInputDependencyRef("data_0", "", "")
     assert legacy_dependency.label == ""
     assert legacy_dependency.node_uid == ""
+    assert legacy_dependency.data_role == "displayed"
+
+    with pytest.raises(ValidationError):
+        ScriptInput(name="data_0", data_role="invalid")
 
     with pytest.raises(TypeError, match="script input label"):
         ScriptInput(name="data_0", label=1)

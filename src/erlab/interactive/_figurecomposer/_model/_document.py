@@ -352,6 +352,7 @@ class FigureDocument:
                     for field in (
                         "node_uid",
                         "node_snapshot_token",
+                        "data_role",
                         "provenance_spec",
                     )
                     if getattr(source, field) != getattr(parent, field)

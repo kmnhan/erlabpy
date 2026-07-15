@@ -68,7 +68,8 @@ class _ManagerDependencyTracker:
                 return "missing"
             if (
                 ref.node_snapshot_token is not None
-                and parent.snapshot_token != ref.node_snapshot_token
+                and parent.snapshot_token_for_role(ref.data_role)
+                != ref.node_snapshot_token
             ):
                 changed = True
         return "changed" if changed else "current"

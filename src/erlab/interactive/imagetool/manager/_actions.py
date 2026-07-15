@@ -197,6 +197,7 @@ class _ActionsController:
         persistence = node.persistence_view()
         provenance_spec = persistence.provenance_spec
         snapshot_token = node.snapshot_token
+        source_snapshot_token = node.source_snapshot_token
         note = node.note
 
         self._manager.tree_view.childtool_removed(uid)
@@ -209,6 +210,7 @@ class _ActionsController:
                 uid=uid,
                 provenance_spec=provenance_spec,
                 snapshot_token=snapshot_token,
+                source_snapshot_token=source_snapshot_token,
                 created_time=created_time,
                 note=note,
             )
@@ -1519,6 +1521,7 @@ class _ActionsController:
         show: bool = True,
         uid: str | None = None,
         snapshot_token: str | None = None,
+        source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
@@ -1542,6 +1545,7 @@ class _ActionsController:
                 show=show,
                 uid=uid,
                 snapshot_token=snapshot_token,
+                source_snapshot_token=source_snapshot_token,
                 created_time=created_time,
                 note=note,
             )
@@ -1553,6 +1557,7 @@ class _ActionsController:
             parent.uid,
             tool,
             snapshot_token=snapshot_token,
+            source_snapshot_token=source_snapshot_token,
             created_time=created_time,
             note=note,
         )
@@ -1593,6 +1598,7 @@ class _ActionsController:
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
         snapshot_token: str | None = None,
+        source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
@@ -1622,6 +1628,7 @@ class _ActionsController:
             source_state=source_state,
             output_id=output_id,
             snapshot_token=snapshot_token,
+            source_snapshot_token=source_snapshot_token,
             created_time=created_time,
             note=note,
         )

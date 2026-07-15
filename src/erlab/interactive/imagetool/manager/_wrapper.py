@@ -5,6 +5,7 @@ from __future__ import annotations
 from erlab.interactive.imagetool._provenance._code import _replace_code_identifiers
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
+    ScriptInputDataRole,
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
     compose_display_provenance,
@@ -403,6 +404,7 @@ class _ManagedWindowNode(QtCore.QObject):
         source_state: _source_state_type = "fresh",
         output_id: str | None = None,
         snapshot_token: str | None = None,
+        source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> None:
@@ -471,6 +473,11 @@ class _ManagedWindowNode(QtCore.QObject):
         self._workspace_link_colors: bool = True
         self._snapshot_token = (
             str(snapshot_token) if snapshot_token else uuid.uuid4().hex
+        )
+        self._source_snapshot_token = (
+            str(source_snapshot_token)
+            if source_snapshot_token
+            else self._snapshot_token
         )
         self._note = _coerce_note(note)
         self._suspend_snapshot_token_updates = True
@@ -564,6 +571,9 @@ class _ManagedWindowNode(QtCore.QObject):
                 self._handle_imagetool_state_changed
             )
             value.slicer_area.sigDataEdited.connect(self._handle_imagetool_data_edited)
+            value.slicer_area.sigSourceDataChanged.connect(
+                self._handle_imagetool_source_data_changed
+            )
             value.slicer_area.sigDataBackingChanged.connect(
                 self._handle_imagetool_backing_changed
             )
@@ -705,6 +715,10 @@ class _ManagedWindowNode(QtCore.QObject):
             )
         with contextlib.suppress(TypeError, RuntimeError):
             old.slicer_area.sigDataEdited.disconnect(self._handle_imagetool_data_edited)
+        with contextlib.suppress(TypeError, RuntimeError):
+            old.slicer_area.sigSourceDataChanged.disconnect(
+                self._handle_imagetool_source_data_changed
+            )
         with contextlib.suppress(TypeError, RuntimeError):
             old.slicer_area.sigDataBackingChanged.disconnect(
                 self._handle_imagetool_backing_changed
@@ -1372,7 +1386,41 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @property
     def snapshot_token(self) -> str:
+        """Return the revision token for the displayed node data."""
         return self._snapshot_token
+
+    @property
+    def source_snapshot_token(self) -> str:
+        """Return the revision token for the durable source data."""
+        return self._source_snapshot_token
+
+    def snapshot_token_for_role(self, data_role: ScriptInputDataRole) -> str:
+        if data_role == "source":
+            return self.source_snapshot_token
+        return self.snapshot_token
+
+    def provenance_for_role(
+        self, data_role: ScriptInputDataRole
+    ) -> ToolProvenanceSpec | None:
+        if data_role == "source":
+            return self.provenance_spec
+        return self.displayed_provenance_spec
+
+    def data_for_role(self, data_role: ScriptInputDataRole) -> xr.DataArray:
+        """Return the live array represented by a script-input data role."""
+        if (
+            self.pending_workspace_payload is not None
+            and not self.materialize_pending_workspace_payload()
+        ):
+            raise ValueError(
+                "Could not read this node's saved data from the workspace file."
+            )
+        if self.imagetool is None:
+            return self.current_source_data()
+        if data_role == "source":
+            data, _state = self.slicer_area.persistence_data_and_state()
+            return data.copy(deep=False)
+        return self.slicer_area.displayed_data
 
     @staticmethod
     def _is_live_source_spec(
@@ -1399,7 +1447,24 @@ class _ManagedWindowNode(QtCore.QObject):
     def _advance_snapshot_token(self, *, defer_refresh: bool = False) -> None:
         if self._suspend_snapshot_token_updates:
             return
+        token = uuid.uuid4().hex
+        self._snapshot_token = token
+        self._source_snapshot_token = token
+        self._schedule_snapshot_token_refresh(defer_refresh=defer_refresh)
+
+    def _advance_displayed_snapshot_token(self, *, defer_refresh: bool = False) -> None:
+        if self._suspend_snapshot_token_updates:
+            return
         self._snapshot_token = uuid.uuid4().hex
+        self._schedule_snapshot_token_refresh(defer_refresh=defer_refresh)
+
+    def _advance_source_snapshot_token(self, *, defer_refresh: bool = False) -> None:
+        if self._suspend_snapshot_token_updates:
+            return
+        self._source_snapshot_token = uuid.uuid4().hex
+        self._schedule_snapshot_token_refresh(defer_refresh=defer_refresh)
+
+    def _schedule_snapshot_token_refresh(self, *, defer_refresh: bool) -> None:
         if defer_refresh:
             self.manager._queue_idle_work(
                 ("snapshot-token-refresh", self.uid),
@@ -1994,7 +2059,10 @@ class _ManagedWindowNode(QtCore.QObject):
     def _handle_imagetool_data_edited(self) -> None:
         self.manager._note_interaction_activity()
         self.manager._mark_node_data_dirty(self.uid)
-        self._advance_snapshot_token(defer_refresh=True)
+
+    @QtCore.Slot()
+    def _handle_imagetool_source_data_changed(self) -> None:
+        self._advance_source_snapshot_token(defer_refresh=True)
 
     @QtCore.Slot()
     def _handle_imagetool_backing_changed(self) -> None:
@@ -2140,7 +2208,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 return
             self.clear_pending_workspace_payload()
         self.manager._mark_node_data_dirty(self.uid)
-        self._advance_snapshot_token()
+        self._advance_displayed_snapshot_token(defer_refresh=True)
         if self._suspend_descendant_signal_propagation:
             return
         if not isinstance(parent_data, xr.DataArray):
@@ -2175,6 +2243,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         snapshot_token: str | None = None,
+        source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
         name: str | None = None,
@@ -2212,6 +2281,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
             source_auto_update=source_auto_update,
             source_state=source_state,
             snapshot_token=snapshot_token,
+            source_snapshot_token=source_snapshot_token,
             created_time=created_time,
             note=note,
         )

@@ -4150,6 +4150,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         }
         if source.node_snapshot_token is not None:
             payload["node_snapshot_token"] = source.node_snapshot_token
+        payload["data_role"] = source.data_role
         return payload
 
     def _tool_data_reference_payload(

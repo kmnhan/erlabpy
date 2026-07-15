@@ -524,7 +524,7 @@ class _ConcatDialog(QtWidgets.QDialog):
                         selected,
                         operation_label="Concatenate selected ImageTools",
                         operation_code=operation_code,
-                        use_displayed_provenance=False,
+                        data_role="source",
                     )
                 else:
                     replacement_node = manager._node_for_target(replacement_target)
@@ -535,7 +535,7 @@ class _ConcatDialog(QtWidgets.QDialog):
                             operation_label="Concatenate selected ImageTools",
                             operation_code=operation_code,
                             detached_input_uid=replacement_node.uid,
-                            use_displayed_provenance=False,
+                            data_role="source",
                         ),
                         propagate_descendants=True,
                         preserve_filter=False,

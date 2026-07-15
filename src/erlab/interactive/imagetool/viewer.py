@@ -209,6 +209,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigCursorColorsChanged = QtCore.Signal()  #: :meta private:
     sigDataEdited = QtCore.Signal()  #: :meta private:
     sigDataBackingChanged = QtCore.Signal()  #: :meta private:
+    sigSourceDataChanged = QtCore.Signal()  #: :meta private:
     sigSourceDataReplaced = QtCore.Signal(object)  #: :meta private:
     sigPointValueChanged = QtCore.Signal(float)  #: :meta private:
 
@@ -1302,6 +1303,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.refresh_all(only_plots=True)
             self.lock_levels(self.levels_locked)
             if updated and emit_signals:
+                self.sigSourceDataChanged.emit()
                 self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
                 self.sigDataEdited.emit()
 
@@ -2267,6 +2269,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         ):
             typing.cast("typing.Any", parent)._sync_file_load_provenance()
         if source_replaced:
+            self.sigSourceDataChanged.emit()
             self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
 
     def replace_source_data(

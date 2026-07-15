@@ -23,7 +23,8 @@ set of source forms:
    - Use :func:`script` for console-derived and other multi-input results. Script
      specs may reference any number of :class:`ScriptInput` records. Each input stores
      an immutable replay name, a historical display label, optional live manager node
-     identity and ``node_snapshot_token``, and an optional nested provenance snapshot.
+     identity and role-specific ``node_snapshot_token``, whether it represents source
+     or displayed data, and an optional nested provenance snapshot.
 
 Each transformation is represented by an immutable
 :class:`ToolProvenanceOperation` subclass whose serialized fields are safe to persist
@@ -145,6 +146,7 @@ if typing.TYPE_CHECKING:
     from collections.abc import Iterator
 
 _SourceKind: typing.TypeAlias = typing.Literal["full_data", "public_data", "selection"]
+ScriptInputDataRole: typing.TypeAlias = typing.Literal["source", "displayed"]
 FileLoadSourceStatus: typing.TypeAlias = typing.Literal[
     "loadable",
     "no-file-load-source",
@@ -340,6 +342,7 @@ class ScriptInputDependencyRef:
     label: str
     node_uid: str
     node_snapshot_token: str | None = None
+    data_role: ScriptInputDataRole = "displayed"
 
 
 class OperationGroupMarker(pydantic.BaseModel):
@@ -1967,14 +1970,19 @@ class ScriptInput(pydantic.BaseModel):
 
     ``name`` is the immutable replay variable, ``label`` is the historical display
     label, ``node_uid`` and ``node_snapshot_token`` identify the live manager input
-    that was used, and ``provenance_spec`` stores the historical replay source used
-    when that live input is unavailable. When omitted, ``label`` defaults to ``name``.
+    that was used, ``data_role`` selects its durable source or displayed view, and
+    ``provenance_spec`` stores the historical replay source used when that live input
+    is unavailable. When omitted, ``label`` defaults to ``name``.
     """
 
     name: str
     label: str = ""
     node_uid: str | None = None
     node_snapshot_token: str | None = None
+    data_role: ScriptInputDataRole = pydantic.Field(
+        default="displayed",
+        exclude_if=lambda value: value == "displayed",
+    )
     provenance_spec: dict[str, typing.Any] | None = None
 
     model_config = pydantic.ConfigDict(
@@ -3093,6 +3101,7 @@ def script_input_dependency_refs(
                         label=script_input.label,
                         node_uid=script_input.node_uid,
                         node_snapshot_token=script_input.node_snapshot_token,
+                        data_role=script_input.data_role,
                     )
                 )
             nested = script_input.parsed_provenance_spec()

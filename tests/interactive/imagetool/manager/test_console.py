@@ -2749,6 +2749,114 @@ def test_manager_concat_uses_unfiltered_source_data(
         provenance = manager._tool_graph.root_wrappers[2].provenance_spec
         assert provenance is not None
         assert provenance.script_inputs[0].parsed_provenance_spec() is None
+        assert {source.data_role for source in provenance.script_inputs} == {"source"}
+
+        source_wrapper = manager._tool_graph.root_wrappers[0]
+        concat_wrapper = manager._tool_graph.root_wrappers[2]
+        source_token = source_wrapper.source_snapshot_token
+        displayed_token = source_wrapper.snapshot_token
+        assert provenance.script_inputs[0].node_snapshot_token == source_token
+
+        manager.get_imagetool(0).slicer_area.apply_filter_operation(
+            None,
+            emit_edited=True,
+        )
+        qtbot.wait_until(
+            lambda: source_wrapper.snapshot_token != displayed_token,
+            timeout=5000,
+        )
+        assert source_wrapper.source_snapshot_token == source_token
+        assert manager.dependency_status_for_uid(concat_wrapper.uid) == "current"
+
+        manager.get_imagetool(0).slicer_area.apply_filter_operation(
+            operation,
+            emit_edited=True,
+        )
+        manager.get_imagetool(2).slicer_area.reload()
+        xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, expected)
+        assert manager.dependency_status_for_uid(concat_wrapper.uid) == "current"
+
+        updated_data0 = data0 + 20.0
+        manager.get_imagetool(0).slicer_area.replace_source_data(
+            updated_data0,
+            emit_edited=True,
+        )
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(concat_wrapper.uid) == "changed",
+            timeout=5000,
+        )
+        manager.get_imagetool(2).slicer_area.reload()
+        updated_expected = xr.concat(
+            [updated_data0, data1],
+            dim="concat_dim",
+            coords="minimal",
+            compat="override",
+            join="outer",
+            combine_attrs="override",
+        ).assign_coords(concat_dim=np.arange(2))
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data,
+            updated_expected,
+        )
+        assert manager.dependency_status_for_uid(concat_wrapper.uid) == "current"
+
+
+def test_manager_displayed_script_inputs_track_and_reload_filters(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+    )
+    data1 = data0 + 10.0
+    operation = NormalizeOperation(dims=("x",), mode="min")
+    filtered0 = operation.apply(data0, parent_data=data0)
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        manager.get_imagetool(0).slicer_area.apply_filter_operation(
+            operation,
+            emit_edited=True,
+        )
+        created_index = manager._show_multi_input_script_result(
+            filtered0 + data1,
+            (0, 1),
+            operation_label="Add displayed ImageTools",
+            operation_code="derived = data_0 + data_1",
+        )
+        assert created_index == 2
+        derived_wrapper = manager._tool_graph.root_wrappers[2]
+        provenance = derived_wrapper.provenance_spec
+        assert provenance is not None
+        assert {source.data_role for source in provenance.script_inputs} == {
+            "displayed"
+        }
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data,
+            filtered0 + data1,
+        )
+
+        manager.get_imagetool(0).slicer_area.apply_filter_operation(
+            None,
+            emit_edited=True,
+        )
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(derived_wrapper.uid) == "changed",
+            timeout=5000,
+        )
+        manager.get_imagetool(2).slicer_area.reload()
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data,
+            data0 + data1,
+        )
+        assert manager.dependency_status_for_uid(derived_wrapper.uid) == "current"
 
 
 def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(
@@ -3833,6 +3941,9 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             display_text="Child node",
             is_imagetool=False,
             snapshot_token=child_marker,
+            source_snapshot_token=child_marker,
+            snapshot_token_for_role=lambda _role: child_marker,
+            provenance_for_role=lambda _role: file_spec,
             type_badge_text="tool",
         )
         script_input = manager._script_input_for_node(fake_child)

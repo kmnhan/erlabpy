@@ -80,6 +80,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool._mainwindow import ImageTool
     from erlab.interactive.imagetool._provenance._model import (
         ScriptInput,
+        ScriptInputDataRole,
         ScriptInputDependencyRef,
         ToolProvenanceSpec,
         _ProvenanceDisplayRow,
@@ -3524,12 +3525,12 @@ class ImageToolManager(_ImageToolManagerBase):
         node: _ImageToolWrapper | _ManagedWindowNode,
         *,
         detached_input_uid: str | None = None,
-        use_displayed_provenance: bool = True,
+        data_role: ScriptInputDataRole = "displayed",
     ) -> ScriptInput:
         return self._lineage_controller._script_input_for_node(
             node,
             detached_input_uid=detached_input_uid,
-            use_displayed_provenance=use_displayed_provenance,
+            data_role=data_role,
         )
 
     def _multi_input_script_provenance(
@@ -3541,7 +3542,7 @@ class ImageToolManager(_ImageToolManagerBase):
         active_name: str = "derived",
         start_label: str = "Run ImageTool manager action",
         detached_input_uid: str | None = None,
-        use_displayed_provenance: bool = True,
+        data_role: ScriptInputDataRole = "displayed",
     ) -> ToolProvenanceSpec:
         return self._lineage_controller._multi_input_script_provenance(
             input_targets,
@@ -3550,7 +3551,7 @@ class ImageToolManager(_ImageToolManagerBase):
             active_name=active_name,
             start_label=start_label,
             detached_input_uid=detached_input_uid,
-            use_displayed_provenance=use_displayed_provenance,
+            data_role=data_role,
         )
 
     def _show_multi_input_script_result(
@@ -3560,14 +3561,14 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         operation_label: str,
         operation_code: str,
-        use_displayed_provenance: bool = True,
+        data_role: ScriptInputDataRole = "displayed",
     ) -> int | None:
         return self._lineage_controller._show_multi_input_script_result(
             data,
             input_targets,
             operation_label=operation_label,
             operation_code=operation_code,
-            use_displayed_provenance=use_displayed_provenance,
+            data_role=data_role,
         )
 
     def _script_provenance_inputs_current(self, spec: ToolProvenanceSpec) -> bool:
@@ -4032,6 +4033,7 @@ class ImageToolManager(_ImageToolManagerBase):
         show: bool = True,
         uid: str | None = None,
         snapshot_token: str | None = None,
+        source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
@@ -4041,6 +4043,7 @@ class ImageToolManager(_ImageToolManagerBase):
             show=show,
             uid=uid,
             snapshot_token=snapshot_token,
+            source_snapshot_token=source_snapshot_token,
             created_time=created_time,
             note=note,
         )
@@ -4052,6 +4055,7 @@ class ImageToolManager(_ImageToolManagerBase):
         show: bool = True,
         uid: str | None = None,
         snapshot_token: str | None = None,
+        source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
@@ -4061,6 +4065,7 @@ class ImageToolManager(_ImageToolManagerBase):
             None,
             tool,
             snapshot_token=snapshot_token,
+            source_snapshot_token=source_snapshot_token,
             created_time=created_time,
             note=note,
         )
@@ -4089,6 +4094,7 @@ class ImageToolManager(_ImageToolManagerBase):
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
         snapshot_token: str | None = None,
+        source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
@@ -4105,6 +4111,7 @@ class ImageToolManager(_ImageToolManagerBase):
             source_state=source_state,
             output_id=output_id,
             snapshot_token=snapshot_token,
+            source_snapshot_token=source_snapshot_token,
             created_time=created_time,
             note=note,
         )
@@ -4174,6 +4181,7 @@ class ImageToolManager(_ImageToolManagerBase):
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         index: int | None = None,
         snapshot_token: str | None = None,
+        source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> int:
@@ -4223,6 +4231,7 @@ class ImageToolManager(_ImageToolManagerBase):
             source_auto_update=source_auto_update,
             source_state=source_state,
             snapshot_token=snapshot_token,
+            source_snapshot_token=source_snapshot_token,
             created_time=created_time,
             note=note,
         )

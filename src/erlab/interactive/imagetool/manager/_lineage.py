@@ -22,6 +22,7 @@ from erlab.interactive.imagetool._provenance._execution import (
 from erlab.interactive.imagetool._provenance._graph import ReplayGraphError
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
+    ScriptInputDataRole,
     ScriptInputDependencyRef,
     ToolProvenanceSpec,
     has_file_load_source,
@@ -158,9 +159,14 @@ class _LineageController:
         node = self._manager._tool_graph.nodes.get(uid)
         spec = None if node is None else node.provenance_spec
         parts: list[str] = []
-        seen: set[tuple[str, str, str | None]] = set()
+        seen: set[tuple[str, str, str | None, str]] = set()
         for ref in refs:
-            key = (ref.name, ref.node_uid, ref.node_snapshot_token)
+            key = (
+                ref.name,
+                ref.node_uid,
+                ref.node_snapshot_token,
+                ref.data_role,
+            )
             if key in seen:
                 continue
             seen.add(key)
@@ -289,6 +295,7 @@ class _LineageController:
                 script_input.name == ref.name
                 and script_input.node_uid == ref.node_uid
                 and script_input.node_snapshot_token == ref.node_snapshot_token
+                and script_input.data_role == ref.data_role
                 and cls._script_input_has_recorded_file(script_input)
             ):
                 return True
@@ -340,13 +347,9 @@ class _LineageController:
         node: _ImageToolWrapper | _ManagedWindowNode,
         *,
         detached_input_uid: str | None = None,
-        use_displayed_provenance: bool = True,
+        data_role: ScriptInputDataRole = "displayed",
     ) -> ScriptInput:
-        input_provenance = (
-            node.displayed_provenance_spec
-            if use_displayed_provenance
-            else node.provenance_spec
-        )
+        input_provenance = node.provenance_for_role(data_role)
         provenance_spec = (
             input_provenance.model_dump(mode="json")
             if input_provenance is not None
@@ -367,13 +370,15 @@ class _LineageController:
             return ScriptInput(
                 name=self._manager._script_input_name_for_node(node),
                 label=label,
+                data_role=data_role,
                 provenance_spec=provenance_spec,
             )
         return ScriptInput(
             name=self._manager._script_input_name_for_node(node),
             label=label,
             node_uid=node.uid,
-            node_snapshot_token=node.snapshot_token,
+            node_snapshot_token=node.snapshot_token_for_role(data_role),
+            data_role=data_role,
             provenance_spec=provenance_spec,
         )
 
@@ -386,7 +391,7 @@ class _LineageController:
         active_name: str = "derived",
         start_label: str = "Run ImageTool manager action",
         detached_input_uid: str | None = None,
-        use_displayed_provenance: bool = True,
+        data_role: ScriptInputDataRole = "displayed",
     ) -> ToolProvenanceSpec:
         return script(
             ScriptCodeOperation(
@@ -399,7 +404,7 @@ class _LineageController:
                 self._manager._script_input_for_node(
                     self._manager._node_for_target(target),
                     detached_input_uid=detached_input_uid,
-                    use_displayed_provenance=use_displayed_provenance,
+                    data_role=data_role,
                 )
                 for target in input_targets
             ),
@@ -412,7 +417,7 @@ class _LineageController:
         *,
         operation_label: str,
         operation_code: str,
-        use_displayed_provenance: bool = True,
+        data_role: ScriptInputDataRole = "displayed",
     ) -> int | None:
         input_targets = tuple(input_targets)
         tool = erlab.interactive.itool(data, manager=False, execute=False)
@@ -426,7 +431,7 @@ class _LineageController:
                 input_targets,
                 operation_label=operation_label,
                 operation_code=operation_code,
-                use_displayed_provenance=use_displayed_provenance,
+                data_role=data_role,
             ),
         )
 
@@ -437,7 +442,8 @@ class _LineageController:
                 return False
             if (
                 ref.node_snapshot_token is not None
-                and parent.snapshot_token != ref.node_snapshot_token
+                and parent.snapshot_token_for_role(ref.data_role)
+                != ref.node_snapshot_token
             ):
                 return False
         return True
@@ -462,18 +468,13 @@ class _LineageController:
             and not self._manager._script_provenance_inputs_current(spec)
         ):
             return None
-        data = node.current_source_data()
-        if node.imagetool is not None:
-            # Console script inputs are captured from ToolNamespace.data, which is
-            # the public ImageTool view. Keep reload on the same public contract
-            # so internal layout dimensions such as promoted 1D stack_dim do not
-            # leak into replayed code.
-            data = node.imagetool.slicer_area.displayed_data
+        data = node.data_for_role(script_input.data_role)
         return (
             data,
-            self._manager._script_input_for_node(node).model_copy(
-                update={"name": script_input.name}
-            ),
+            self._manager._script_input_for_node(
+                node,
+                data_role=script_input.data_role,
+            ).model_copy(update={"name": script_input.name}),
         )
 
     def _script_input_can_reload(

@@ -1315,7 +1315,8 @@ class ToolNamespace(_ConsoleDataHandleBase):
             name=self._console_input_name,
             label=label,
             node_uid=self._wrapper.uid,
-            node_snapshot_token=self._wrapper.snapshot_token,
+            node_snapshot_token=self._wrapper.snapshot_token_for_role("displayed"),
+            data_role="displayed",
             provenance_spec=provenance_spec,
         )
 
@@ -1369,6 +1370,7 @@ class ToolNamespace(_ConsoleDataHandleBase):
             )
             self._wrapper.set_detached_provenance(provenance_spec)
             slicer_area = self.tool.slicer_area
+            slicer_area.sigSourceDataChanged.emit()
             slicer_area.sigSourceDataReplaced.emit(
                 slicer_area._tool_source_parent_data()
             )

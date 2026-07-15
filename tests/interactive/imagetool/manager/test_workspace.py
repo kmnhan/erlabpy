@@ -339,6 +339,7 @@ def _workspace_sweep_node_snapshot(
         "display_text": node.display_text,
         "created_time": node.added_time_iso,
         "snapshot_token": node.snapshot_token,
+        "source_snapshot_token": node.source_snapshot_token,
         "is_imagetool": bool(node.is_imagetool),
         "visible": bool(window.isVisible()),
         "window_state": _workspace_sweep_window_state(window),
@@ -1796,6 +1797,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
     child_tool_marker = "snapshot-child-tool"
     output_marker = "snapshot-output-image"
     figure_marker = "snapshot-figure-tool"
+    root_source_marker = "snapshot-root-source"
 
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
@@ -1809,6 +1811,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
             show=False,
             uid="root-watched",
             snapshot_token=root_marker,
+            source_snapshot_token=root_source_marker,
             created_time=root_created,
             watched_var=("root_data", "watch-root-uid"),
             watched_workspace_link_id=manager._workspace_state.link_id,
@@ -2073,6 +2076,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
             "manager_node_uid",
             "manager_node_kind",
             "manager_node_snapshot_token",
+            "manager_node_source_snapshot_token",
             "manager_node_added_at",
             "manager_node_provenance_spec",
             "manager_node_source_input_ndim",

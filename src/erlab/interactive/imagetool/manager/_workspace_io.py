@@ -31,6 +31,7 @@ from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
+    ScriptInputDataRole,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     mark_promoted_1d_source,
@@ -550,6 +551,7 @@ class _WorkspaceIOController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
         *,
+        data_role: ScriptInputDataRole = "displayed",
         owner_node: _ImageToolWrapper | _ManagedWindowNode | None = None,
         reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] | None = None,
     ) -> xr.DataArray:
@@ -568,20 +570,23 @@ class _WorkspaceIOController:
         if attrs is None:
             attrs = ds.attrs
         data = self._pending_workspace_data_with_saved_dim_order(data, attrs)
-        raw_state = attrs.get("itool_state")
-        if isinstance(raw_state, bytes):
-            with contextlib.suppress(UnicodeDecodeError):
-                raw_state = raw_state.decode()
-        if isinstance(raw_state, str):
-            try:
-                state = json.loads(raw_state)
-            except Exception:
-                logger.debug("Ignoring invalid pending ImageTool state", exc_info=True)
-            else:
-                if isinstance(state, collections.abc.Mapping):
-                    data = self._apply_pending_workspace_filter(
-                        data, state.get("filter_operation")
+        if data_role == "displayed":
+            raw_state = attrs.get("itool_state")
+            if isinstance(raw_state, bytes):
+                with contextlib.suppress(UnicodeDecodeError):
+                    raw_state = raw_state.decode()
+            if isinstance(raw_state, str):
+                try:
+                    state = json.loads(raw_state)
+                except Exception:
+                    logger.debug(
+                        "Ignoring invalid pending ImageTool state", exc_info=True
                     )
+                else:
+                    if isinstance(state, collections.abc.Mapping):
+                        data = self._apply_pending_workspace_filter(
+                            data, state.get("filter_operation")
+                        )
         if isinstance(node, _ImageToolWrapper) and node.source_input_ndim == 1:
             data = mark_promoted_1d_source(data)
         return data.copy(deep=False)
@@ -590,6 +595,7 @@ class _WorkspaceIOController:
         self,
         target: int | str,
         *,
+        data_role: ScriptInputDataRole = "displayed",
         owner_node: _ImageToolWrapper | _ManagedWindowNode | None = None,
         reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] | None = None,
     ) -> xr.DataArray:
@@ -597,10 +603,11 @@ class _WorkspaceIOController:
         if node.pending_workspace_memory_payload is not None:
             return self._pending_workspace_lazy_source_data(
                 node,
+                data_role=data_role,
                 owner_node=owner_node,
                 reference_datasets=reference_datasets,
             )
-        return node.current_source_data()
+        return node.data_for_role(data_role)
 
     def _workspace_tool_restore_references(
         self,
@@ -616,17 +623,22 @@ class _WorkspaceIOController:
         xr.DataArray | None,
         Callable[[Mapping[str, typing.Any]], xr.DataArray | None],
     ]:
-        reference_cache: dict[int | str, xr.DataArray] = {}
+        reference_cache: dict[tuple[int | str, ScriptInputDataRole], xr.DataArray] = {}
 
-        def _source_data_for_target(target: int | str) -> xr.DataArray:
-            if target in reference_cache:
-                return reference_cache[target]
+        def _source_data_for_target(
+            target: int | str,
+            data_role: ScriptInputDataRole = "displayed",
+        ) -> xr.DataArray:
+            cache_key = (target, data_role)
+            if cache_key in reference_cache:
+                return reference_cache[cache_key]
             data = self._workspace_tool_reference_source_data(
                 target,
+                data_role=data_role,
                 owner_node=owner_node,
                 reference_datasets=reference_datasets,
             )
-            reference_cache[target] = data
+            reference_cache[cache_key] = data
             return data
 
         tool_cls = erlab.interactive.utils.ToolWindow
@@ -650,8 +662,14 @@ class _WorkspaceIOController:
                     return None
             else:
                 target = loaded_targets_by_uid.get(node_uid, node_uid)
+            data_role = payload.get("data_role", "displayed")
+            if data_role not in {"source", "displayed"}:
+                return None
             try:
-                return _source_data_for_target(target)
+                return _source_data_for_target(
+                    target,
+                    typing.cast("ScriptInputDataRole", data_role),
+                )
             except resolver_error_types:
                 if log_resolver_errors:
                     logger.debug(
@@ -1297,6 +1315,7 @@ class _WorkspaceIOController:
                 ),
                 output_id=kwargs.get("output_id"),
                 snapshot_token=kwargs.get("snapshot_token"),
+                source_snapshot_token=kwargs.get("source_snapshot_token"),
                 created_time=kwargs.get("created_time"),
                 note=kwargs.get("note"),
             )
@@ -1351,6 +1370,7 @@ class _WorkspaceIOController:
                 root_kwargs.get("source_state", "fresh"),
             ),
             snapshot_token=root_kwargs.get("snapshot_token"),
+            source_snapshot_token=root_kwargs.get("source_snapshot_token"),
             created_time=root_kwargs.get("created_time"),
             note=root_kwargs.get("note"),
             name=name,
@@ -3047,6 +3067,7 @@ class _WorkspaceIOController:
         ds.attrs["manager_node_uid"] = node.uid
         ds.attrs["manager_node_kind"] = kind
         ds.attrs["manager_node_snapshot_token"] = node.snapshot_token
+        ds.attrs["manager_node_source_snapshot_token"] = node.source_snapshot_token
         ds.attrs["manager_node_added_at"] = node.added_time_iso
         if node.note:
             ds.attrs["manager_node_note"] = node.note
@@ -3243,6 +3264,9 @@ class _WorkspaceIOController:
             kwargs: dict[str, typing.Any] = {
                 "uid": uid,
                 "snapshot_token": ds.attrs.get("manager_node_snapshot_token"),
+                "source_snapshot_token": ds.attrs.get(
+                    "manager_node_source_snapshot_token"
+                ),
                 "created_time": ds.attrs.get("manager_node_added_at"),
                 "note": ds.attrs.get("manager_node_note"),
                 "provenance_spec": parsed_provenance_spec,
@@ -3352,6 +3376,7 @@ class _WorkspaceIOController:
                 window_kind="tool",
                 name=name,
                 snapshot_token=attrs.get("manager_node_snapshot_token"),
+                source_snapshot_token=attrs.get("manager_node_source_snapshot_token"),
                 created_time=attrs.get("manager_node_added_at"),
                 note=attrs.get("manager_node_note"),
             )
@@ -3367,6 +3392,7 @@ class _WorkspaceIOController:
                 window_kind="tool",
                 name=name,
                 snapshot_token=attrs.get("manager_node_snapshot_token"),
+                source_snapshot_token=attrs.get("manager_node_source_snapshot_token"),
                 created_time=attrs.get("manager_node_added_at"),
                 note=attrs.get("manager_node_note"),
             )
@@ -3456,6 +3482,9 @@ class _WorkspaceIOController:
                         show=_workspace_dataset_window_visible(ds, "tool"),
                         uid=ds.attrs.get("manager_node_uid"),
                         snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
+                        source_snapshot_token=ds.attrs.get(
+                            "manager_node_source_snapshot_token"
+                        ),
                         created_time=ds.attrs.get("manager_node_added_at"),
                         note=ds.attrs.get("manager_node_note"),
                     )
@@ -3466,6 +3495,9 @@ class _WorkspaceIOController:
                         show=_workspace_dataset_window_visible(ds, "tool"),
                         uid=ds.attrs.get("manager_node_uid"),
                         snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
+                        source_snapshot_token=ds.attrs.get(
+                            "manager_node_source_snapshot_token"
+                        ),
                         created_time=ds.attrs.get("manager_node_added_at"),
                         note=ds.attrs.get("manager_node_note"),
                     )
@@ -5800,6 +5832,7 @@ class _WorkspaceIOController:
         attrs["manager_node_uid"] = node.uid
         attrs["manager_node_kind"] = kind
         attrs["manager_node_snapshot_token"] = node.snapshot_token
+        attrs["manager_node_source_snapshot_token"] = node.source_snapshot_token
         attrs["manager_node_added_at"] = node.added_time_iso
         if node.note:
             attrs["manager_node_note"] = node.note
