@@ -110,7 +110,9 @@ class ColorMapComboBox(QtWidgets.QComboBox):
 
     @QtCore.Slot()
     def _populate(self) -> None:
-        if not erlab.interactive.utils.qt_is_valid(self):  # pragma: no cover
+        if self._populated or not erlab.interactive.utils.qt_is_valid(
+            self
+        ):  # pragma: no cover
             return
         self._populated = True
         with QtCore.QSignalBlocker(self):
@@ -118,7 +120,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
                 self._add_colormap_item(name)
             if self.default_cmap is not None:
                 self.setCurrentText(self.default_cmap)
-                self.load_thumbnail(self.currentIndex())
+            self.load_thumbnail(self.currentIndex())
         self.blockSignals(False)
 
     def ensure_populated(self) -> None:
@@ -129,13 +131,14 @@ class ColorMapComboBox(QtWidgets.QComboBox):
     def clear(self) -> None:
         with QtCore.QSignalBlocker(self):
             super().clear()
+        self.thumbnails_loaded = False
 
     def showEvent(self, event: QtGui.QShowEvent | None) -> None:
         super().showEvent(event)
         if not self._populated:
             erlab.interactive.utils.single_shot(self, 0, self._populate)
 
-    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:  # pragma: no cover
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         self.blockSignals(True)
         super().closeEvent(event)
 
@@ -145,12 +148,13 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             self._menu.popup(self.mapToGlobal(position))
 
     def load_thumbnail(self, index: int) -> None:
-        if not self.thumbnails_loaded and 0 <= index < self.count():
+        if 0 <= index < self.count() and self.itemIcon(index).isNull():
             text = self.itemText(index)
             with contextlib.suppress(RuntimeError):
                 self.setItemIcon(index, QtGui.QIcon(pg_colormap_to_QPixmap(text)))
 
     def load_all(self) -> None:
+        self.ensure_populated()
         current_data = self.currentData()
         current_colormap = (
             current_data if isinstance(current_data, str) else self.currentText()
@@ -162,7 +166,6 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             self.clear()
             for name in pg_colormap_names("all", exclude_local=True):
                 self._add_colormap_item(name)
-            self.thumbnails_loaded = False
             if current_colormap:
                 restored_current = self._set_current_text_if_available(current_colormap)
             if not restored_current:
@@ -173,6 +176,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
     def _add_colormap_item(self, name: str, icon: QtGui.QIcon | None = None) -> None:
         matplotlib_name = matplotlib_colormap_name(name)
         if icon is None:
+            self.thumbnails_loaded = False
             self.addItem(name, matplotlib_name)
         else:
             self.addItem(icon, name, matplotlib_name)
@@ -197,6 +201,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
 
     # https://forum.qt.io/topic/105012/qcombobox-specify-width-less-than-content/11
     def showPopup(self) -> None:
+        self.ensure_populated()
         maxWidth = self.maximumWidth()
         if maxWidth and maxWidth < 16777215:  # default maxwidth of QWidgets
             self.setPopupMinimumWidthForItems()
@@ -264,6 +269,11 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             return
         if self.count():
             self.setCurrentIndex(0)
+
+    def setCurrentIndex(self, index: int) -> None:
+        """Set the current index and ensure its thumbnail is available."""
+        super().setCurrentIndex(index)
+        self.load_thumbnail(self.currentIndex())
 
     def current_matplotlib_name(self) -> str:
         """Return the selected colormap name as registered by Matplotlib."""
