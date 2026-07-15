@@ -192,6 +192,12 @@ def itool(
                     index=replace, data=data_parsed, target=manager_target
                 )
             else:
+                load_func = kwargs.get("load_func")
+                if isinstance(load_func, tuple | list) and len(load_func) == 2:
+                    kwargs.setdefault(
+                        "load_selections",
+                        tuple(prepared.selection for prepared in selected_data),
+                    )
                 erlab.interactive.imagetool.manager.show_in_manager(
                     data_parsed,
                     link=link,

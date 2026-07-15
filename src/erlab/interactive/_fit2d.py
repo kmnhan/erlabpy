@@ -2625,12 +2625,16 @@ class Fit2DTool(Fit1DTool):
             local_spec = script(
                 *operations,
                 start_label="Start from current fit-tool input data",
-                seed_code="derived = data",
+                seed_code=(
+                    "derived = data"
+                    if input_provenance is not None
+                    else f"derived = {self._data_name_full}"
+                ),
                 active_name=assign,
             )
             return compose_full_provenance(input_provenance, local_spec)
 
-        input_name = replay_input_name(input_provenance)
+        input_name = replay_input_name(input_provenance) or self._data_name_full
         fallback = self._parameter_output_script_operation(
             param_name,
             stderr=stderr,

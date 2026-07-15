@@ -1235,6 +1235,169 @@ def test_itool_state_loader_string_selection_roundtrip_and_reload(
     win.close()
 
 
+@pytest.mark.parametrize(
+    ("loader", "saved_data", "selection", "expected_selection"),
+    [
+        (
+            xr.load_dataarray,
+            xr.DataArray(
+                np.arange(6, dtype=float).reshape(2, 3),
+                dims=("x", "y"),
+                name="signal",
+            ),
+            FileDataSelection(kind="dataarray"),
+            FileDataSelection(kind="dataarray"),
+        ),
+    ],
+)
+@pytest.mark.parametrize("with_saved_provenance", [False, True])
+def test_itool_legacy_file_selection_restore_recovers_provenance(
+    qtbot,
+    tmp_path: pathlib.Path,
+    loader,
+    saved_data: xr.DataArray | xr.Dataset,
+    selection: FileDataSelection,
+    expected_selection: FileDataSelection,
+    with_saved_provenance: bool,
+) -> None:
+    file_path = tmp_path / "legacy-selection.h5"
+    saved_data.to_netcdf(file_path, engine="h5netcdf")
+    displayed = (
+        saved_data
+        if isinstance(saved_data, xr.DataArray)
+        else saved_data[selection.value]
+    )
+    win = ImageTool(
+        displayed,
+        file_path=file_path,
+        load_func=(loader, {"engine": "h5netcdf"}, selection),
+    )
+    qtbot.addWidget(win)
+    serialized = win.to_dataset()
+    state = json.loads(serialized.attrs["itool_state"])
+    state["load_func"][2] = 0
+    serialized.attrs["itool_state"] = json.dumps(state)
+    if with_saved_provenance:
+        provenance_payload = json.loads(serialized.attrs["itool_provenance_spec"])
+        provenance_payload["file_load_source"]["replay_call"]["selection"] = {
+            "kind": "parsed_index",
+            "value": 0,
+        }
+        provenance_payload["seed_code"] = (
+            "derived = erlab.interactive.imagetool.viewer_state._parse_input("
+            f"{loader.__module__}.{loader.__name__}({str(file_path)!r}))[0]"
+        )
+        provenance_payload["file_load_source"]["load_code"] = provenance_payload[
+            "seed_code"
+        ].replace("derived = ", "data = ")
+        serialized.attrs["itool_provenance_spec"] = json.dumps(provenance_payload)
+    else:
+        serialized.attrs.pop("itool_provenance_spec")
+
+    restored = ImageTool.from_dataset(serialized)
+    qtbot.addWidget(restored)
+
+    assert restored.slicer_area._load_func is not None
+    assert restored.slicer_area._load_func[2] == expected_selection
+    assert restored.provenance_spec is not None
+    assert restored.provenance_spec.file_load_source is not None
+    assert restored.provenance_spec.file_load_source.replay_call is not None
+    assert (
+        restored.provenance_spec.file_load_source.replay_call.selection
+        == expected_selection
+    )
+    code = restored.provenance_spec.display_code()
+    assert code is not None
+    assert "imagetool" not in code
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+    xarray.testing.assert_identical(
+        namespace[restored.provenance_spec.active_name],
+        displayed,
+    )
+
+    restored.close()
+    win.close()
+
+
+def test_itool_restore_does_not_invoke_persisted_legacy_loader(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    win = ImageTool(_TEST_DATA["2D"])
+    qtbot.addWidget(win)
+    serialized = win.to_dataset()
+    victim = tmp_path / "must-not-be-removed.txt"
+    victim.write_text("preserve me")
+    state = json.loads(serialized.attrs["itool_state"])
+    state["file_path"] = str(victim)
+    state["load_func"] = ["os:remove", {}, 0]
+    serialized.attrs["itool_state"] = json.dumps(state)
+    serialized.attrs.pop("itool_provenance_spec", None)
+
+    restored = ImageTool.from_dataset(serialized)
+    qtbot.addWidget(restored)
+
+    assert victim.read_text() == "preserve me"
+    restored.close()
+    win.close()
+
+
+def test_itool_legacy_dataset_selection_migrates_on_explicit_reload(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    source = xr.DataArray(
+        np.arange(6, dtype=float).reshape(2, 3),
+        dims=("x", "y"),
+        name="signal",
+    )
+    file_path = tmp_path / "legacy-dataset-selection.h5"
+    source.to_dataset().to_netcdf(file_path, engine="h5netcdf")
+    displayed = source.rename("renamed")
+    win = ImageTool(
+        displayed,
+        file_path=file_path,
+        load_func=(
+            xr.load_dataset,
+            {"engine": "h5netcdf"},
+            FileDataSelection(kind="dataset_variable", value="signal"),
+        ),
+    )
+    qtbot.addWidget(win)
+    serialized = win.to_dataset()
+    state = json.loads(serialized.attrs["itool_state"])
+    state["load_func"][2] = 0
+    serialized.attrs["itool_state"] = json.dumps(state)
+    serialized.attrs.pop("itool_provenance_spec", None)
+
+    restored = ImageTool.from_dataset(serialized)
+    qtbot.addWidget(restored)
+    assert restored.slicer_area._load_func is not None
+    assert restored.slicer_area._load_func[2] == FileDataSelection(
+        kind="parsed_index",
+        value=0,
+    )
+
+    assert restored.slicer_area._reload()
+    assert restored.slicer_area._load_func is not None
+    assert restored.slicer_area._load_func[2] == FileDataSelection(
+        kind="dataset_variable",
+        value="signal",
+    )
+    expected = xr.load_dataset(file_path, engine="h5netcdf")["signal"]
+    assert restored.slicer_area.data.dims == expected.dims
+    assert restored.slicer_area.data.name == expected.name
+    np.testing.assert_array_equal(restored.slicer_area.data.values, expected.values)
+    assert restored.provenance_spec is not None
+    code = restored.provenance_spec.display_code()
+    assert code is not None
+    assert "imagetool" not in code
+
+    restored.close()
+    win.close()
+
+
 def test_itool_state_optional_metadata_fields_restore_defaults(qtbot) -> None:
     win = itool(_TEST_DATA["2D"], execute=False)
     qtbot.addWidget(win)
@@ -3144,6 +3307,45 @@ def test_show_in_manager_supplies_semantic_file_load_selections(
     assert response is None
     assert len(received) == 1
     assert received[0][1]["load_selections"] == (FileDataSelection(kind="dataarray"),)
+
+
+def test_itool_manager_preserves_semantic_file_load_selections(monkeypatch) -> None:
+    dataarray = xr.DataArray(np.ones((2, 3)), dims=("x", "y"), name="signal")
+    dataset = dataarray.to_dataset()
+    received: list[tuple[list[xr.DataArray], dict[str, typing.Any]]] = []
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "is_running",
+        lambda *, target=None: True,
+    )
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "show_in_manager",
+        lambda data, **kwargs: received.append((data, kwargs)),
+    )
+
+    assert (
+        itool(
+            dataarray,
+            manager=True,
+            load_func=(xr.load_dataarray, {}),
+        )
+        is None
+    )
+    assert (
+        itool(
+            dataset,
+            manager=True,
+            load_func=(xr.load_dataset, {}),
+        )
+        is None
+    )
+
+    assert [kwargs["load_selections"] for _, kwargs in received] == [
+        (FileDataSelection(kind="dataarray"),),
+        (FileDataSelection(kind="dataset_variable", value="signal"),),
+    ]
 
 
 def test_itool_load(qtbot, monkeypatch, move_and_compare_values, accept_dialog) -> None:

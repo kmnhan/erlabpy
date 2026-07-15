@@ -8,6 +8,7 @@ functionality of the ImageTool window, including GUI controls and keyboard short
 from __future__ import annotations
 
 from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
     ReplayStage,
     ToolProvenanceSpec,
     parse_tool_provenance_spec,
@@ -200,6 +201,24 @@ class BaseImageTool(QtWidgets.QMainWindow):
         )
         self.set_provenance_spec(provenance_spec)
 
+    def _migrate_legacy_file_load_selection(self) -> bool:
+        """Migrate known loader selections without invoking persisted callables."""
+        file_path = self.slicer_area._file_path
+        load_func = self.slicer_area._load_func
+        if (
+            file_path is None
+            or load_func is None
+            or load_func[2].kind != "parsed_index"
+        ):
+            return False
+        loader = load_func[0]
+        if loader is xr.load_dataarray or loader is xr.open_dataarray:
+            selection = FileDataSelection(kind="dataarray")
+        else:
+            return False
+        self.slicer_area._load_func = (load_func[0], load_func[1], selection)
+        return True
+
     def to_dataset(self) -> xr.Dataset:
         data, state = self.slicer_area.persistence_data_and_state()
         name = data.name
@@ -262,12 +281,36 @@ class BaseImageTool(QtWidgets.QMainWindow):
             state=json.loads(ds.attrs["itool_state"]),
             **kwargs,
         )
+        migrated_file_selection = tool._migrate_legacy_file_load_selection()
+        if migrated_file_selection:
+            tool._sync_file_load_provenance()
+        migrated_file_provenance = tool.provenance_spec
+
         provenance_spec = ds.attrs.get("itool_provenance_spec")
         if provenance_spec is not None:
             try:
-                tool.set_provenance_spec(
+                saved_provenance = parse_tool_provenance_spec(
                     typing.cast("Mapping[str, typing.Any]", json.loads(provenance_spec))
                 )
+                if (
+                    migrated_file_selection
+                    and saved_provenance is not None
+                    and saved_provenance.file_load_source is not None
+                    and saved_provenance.file_load_source.replay_call is not None
+                    and saved_provenance.file_load_source.replay_call.selection.kind
+                    == "parsed_index"
+                    and migrated_file_provenance is not None
+                    and migrated_file_provenance.file_load_source is not None
+                ):
+                    saved_provenance = saved_provenance.model_copy(
+                        update={
+                            "seed_code": migrated_file_provenance.seed_code,
+                            "file_load_source": (
+                                migrated_file_provenance.file_load_source
+                            ),
+                        }
+                    )
+                tool.set_provenance_spec(saved_provenance)
             except Exception:
                 erlab.utils.misc.emit_user_level_warning(
                     "Ignoring invalid saved ImageTool provenance metadata.",

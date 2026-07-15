@@ -895,6 +895,29 @@ def test_replay_graph_replays_script_with_preserved_file_stage(
     xr.testing.assert_identical(_exec_generated_code(code)["result"], replayed)
 
 
+def test_replay_graph_display_code_preserves_script_mutation_order() -> None:
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    spec = script(
+        ScriptCodeOperation(label="Copy input", code="derived = data.copy()"),
+        ScriptCodeOperation(
+            label="Mutate input",
+            code="data.values[:] = 10.0",
+        ),
+        ScriptCodeOperation(
+            label="Combine arrays",
+            code="derived = derived + data",
+        ),
+        start_label="Run script",
+        active_name="derived",
+    )
+
+    replayed = replay_script_provenance(spec, {"data": data})
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+
+    xr.testing.assert_identical(namespace["derived"], replayed)
+
+
 def test_replay_graph_composes_local_script_stage_after_script_parent() -> None:
     source = xr.DataArray(
         np.arange(12.0).reshape(3, 4),

@@ -18,6 +18,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _code_uses_name_any_scope,
     _compile_untrusted_script_replay_code,
+    _script_replay_import_names,
 )
 from erlab.interactive.imagetool._provenance._graph import (
     _REPLAY_ALIASES,
@@ -337,6 +338,12 @@ def _execute_replay_graph(
                 "__erlab_replay_import_numpy": np,
                 "__erlab_replay_import_xarray": xr,
             }
+            if not graph.trusted_user_code and any(
+                "lmfit" in _script_replay_import_names(code) for code in codes
+            ):
+                namespace["__erlab_replay_import_lmfit"] = importlib.import_module(
+                    "lmfit"
+                )
             for alias, target in _REPLAY_ALIASES.items():
                 if not any(_code_uses_name_any_scope(code, alias) for code in codes):
                     continue

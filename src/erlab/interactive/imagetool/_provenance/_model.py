@@ -141,6 +141,9 @@ from erlab.interactive.imagetool._provenance._code import (
     _validate_active_name,
 )
 
+if typing.TYPE_CHECKING:
+    from collections.abc import Iterator
+
 _SourceKind: typing.TypeAlias = typing.Literal["full_data", "public_data", "selection"]
 FileLoadSourceStatus: typing.TypeAlias = typing.Literal[
     "loadable",
@@ -1230,6 +1233,15 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         ``None``. Operations that produce a categorically different result may provide
         a name which the replay graph uses when it matches the enclosing script's
         active output.
+        """
+        return None
+
+    def preferred_replay_input_name(self) -> str | None:
+        """Return a semantic name for an input reused by generated code.
+
+        Most operations use their input once and should return ``None``. Operations
+        that refer to the same intermediate several times may provide a descriptive
+        name so replay code does not expose an internal graph temporary.
         """
         return None
 
@@ -3040,7 +3052,7 @@ def has_file_load_source(
 
 def iter_operation_refs(
     value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
-) -> typing.Iterator[tuple[_ProvenanceStepRef, ToolProvenanceOperation]]:
+) -> Iterator[tuple[_ProvenanceStepRef, ToolProvenanceOperation]]:
     """Yield operation references in replay order across all operation stores."""
     spec = parse_tool_provenance_spec(value)
     if spec is None:

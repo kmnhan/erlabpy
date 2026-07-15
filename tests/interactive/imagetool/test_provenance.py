@@ -1150,19 +1150,26 @@ def test_tool_provenance_mixed_statement_and_expression_display_code() -> None:
     assert namespace["data"].kspace.work_function == pytest.approx(4.5)
 
 
-def test_tool_provenance_parse_legacy_file_script_metadata() -> None:
+def test_tool_provenance_parse_legacy_file_script_metadata(
+    tmp_path: pathlib.Path,
+) -> None:
+    data = xr.DataArray([1.0, 2.0, 3.0], dims="x")
+    path = tmp_path / "scan.h5"
+    data.to_netcdf(path, engine="h5netcdf")
     payload = {
         "schema_version": 1,
         "kind": "script",
         "start_label": "Load data from file 'scan.h5'",
-        "seed_code": "import xarray\n\nderived = xarray.load_dataarray('scan.h5')",
+        "seed_code": f"import xarray\n\nderived = xarray.load_dataarray({str(path)!r})",
         "active_name": "derived",
         "file_load_source": {
-            "path": "scan.h5",
+            "path": str(path),
             "loader_label": "Load Function",
             "loader_text": "xarray.load_dataarray",
             "kwargs_text": "(none)",
-            "load_code": "import xarray\n\ndata = xarray.load_dataarray('scan.h5')",
+            "load_code": (
+                f"import xarray\n\ndata = xarray.load_dataarray({str(path)!r})"
+            ),
         },
         "operations": [
             {
@@ -1180,18 +1187,19 @@ def test_tool_provenance_parse_legacy_file_script_metadata() -> None:
     assert spec.schema_version == 2
     assert spec.kind == "script"
     assert spec.file_load_source is not None
-    assert spec.file_load_source.path == "scan.h5"
+    assert spec.file_load_source.path == str(path)
     assert spec.file_load_source.replay_call is None
     assert [operation.op for operation in spec.operations] == ["average"]
     assert spec.display_rows()[1].edit_ref == _ProvenanceStepRef(
         "operation",
         operation_index=0,
     )
-    assert spec.derivation_code() == (
-        "import xarray\n\n"
-        "derived = xarray.load_dataarray('scan.h5')\n"
-        'derived = derived.qsel.mean("x")'
-    )
+    code = spec.derivation_code()
+    assert code is not None
+    assert ".qsel.mean(" in code
+    assert "_itool_replay_" not in code
+    namespace = _exec_generated_code(code, {})
+    xr.testing.assert_identical(namespace["derived"], data.qsel.mean("x"))
 
 
 def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
@@ -2565,6 +2573,10 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
         )
         == "scale = 2\nleft, right = (data * scale, data + 1)"
     )
+    assert "record()" in _simplify_display_code(
+        "derived = record()\nresult = data",
+        inline_targets={"derived"},
+    )
     assert (
         _simplify_display_code(
             "left, right = (data - 1, data + 1)\n"
@@ -3388,7 +3400,7 @@ def test_tool_replay_provenance_helpers_compose_parent_provenance() -> None:
     assert composed.derivation_entries()[-1].label == "Compute tool output"
     code = composed.derivation_code()
     assert code is not None
-    assert code.count("derived =") == 1
+    assert "_itool_replay_" not in code
     data = xr.DataArray([1.0, 2.0, 3.0], dims="x")
     namespace = _exec_generated_code(code, {"data": data})
     xr.testing.assert_identical(namespace["result"], data.isel(x=slice(0, 2)).mean())
@@ -5013,6 +5025,9 @@ def test_untrusted_script_replay_imports_use_executor_owned_modules() -> None:
         script_inputs=(ScriptInput(name="data_0", label="ImageTool 0"),),
     )
     safe_erlab_import = script_with_code("import erlab\nderived = data_0.copy()")
+    safe_lmfit_import = script_with_code(
+        "import lmfit\nderived = data_0 + lmfit.Parameter('value', value=1.0).value"
+    )
     optional_approved_import = script_with_code(
         "try:\n"
         "    import xarray as xr\n"
@@ -5062,6 +5077,12 @@ def test_untrusted_script_replay_imports_use_executor_owned_modules() -> None:
     xr.testing.assert_identical(
         replay_script_provenance(safe_erlab_import, {"data_0": data}),
         data,
+    )
+    assert script_provenance_replayable(safe_lmfit_import)
+    assert not script_provenance_requires_trust(safe_lmfit_import)
+    xr.testing.assert_identical(
+        replay_script_provenance(safe_lmfit_import, {"data_0": data}),
+        data + 1.0,
     )
     assert script_provenance_replayable(optional_approved_import)
     assert not script_provenance_requires_trust(optional_approved_import)

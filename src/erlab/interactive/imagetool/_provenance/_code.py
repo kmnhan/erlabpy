@@ -604,6 +604,7 @@ def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None)
             if (
                 isinstance(target_expr, ast.Name)
                 and target_expr.id in inline_targets
+                and isinstance(stmt.value, ast.Name)
                 and not any(
                     _statement_load_count(later, target_expr.id) > 0
                     for later in body[idx + 1 :]
@@ -660,6 +661,7 @@ def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None)
                 )
                 or any(
                     _statement_store_count(intervening, name)
+                    or _statement_load_count(intervening, name)
                     for intervening in body[idx + 1 : next_idx]
                     for name in replacement_load_names
                 )
@@ -807,7 +809,7 @@ def _parse_validated_script_replay_code(code: str) -> ast.Module:
         if isinstance(node, ast.ImportFrom):
             raise TypeError("Script replay code contains unsupported ImportFrom")
         if any(
-            alias.name not in ("erlab", "numpy", "xarray")
+            alias.name not in ("erlab", "lmfit", "numpy", "xarray")
             or (alias.asname is not None and alias.asname.startswith("__"))
             for alias in node.names
         ):
@@ -902,6 +904,17 @@ def _validate_script_replay_code(code: str) -> None:
     _parse_validated_script_replay_code(code)
 
 
+def _script_replay_import_names(code: str) -> frozenset[str]:
+    """Return top-level modules imported by validated replay code."""
+    module = _parse_validated_script_replay_code(code)
+    return frozenset(
+        alias.name
+        for node in ast.walk(module)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    )
+
+
 class _ScriptReplayImportLowerer(ast.NodeTransformer):
     """Replace approved imports with assignments to executor-owned bindings."""
 
@@ -910,6 +923,8 @@ class _ScriptReplayImportLowerer(ast.NodeTransformer):
         for alias in node.names:
             if alias.name == "erlab":
                 binding_name = "__erlab_replay_import_erlab"
+            elif alias.name == "lmfit":
+                binding_name = "__erlab_replay_import_lmfit"
             elif alias.name == "numpy":
                 binding_name = "__erlab_replay_import_numpy"
             elif alias.name == "xarray":

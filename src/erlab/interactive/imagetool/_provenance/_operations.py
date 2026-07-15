@@ -235,11 +235,15 @@ def _model_fit_value_code(
         raise ValueError("array-valued parameters require a broadcast dimension")
     broadcast_dim_code = _provenance_value_code(broadcast_dim)
     values_code = _provenance_value_code(list(value))
-    return (
-        f"xr.DataArray({values_code}, "
-        f"coords={{{broadcast_dim_code}: "
-        f"{input_name}.get_index({broadcast_dim_code})}}, "
-        f"dims=({broadcast_dim_code},))"
+    return "\n".join(
+        (
+            "xr.DataArray(",
+            f"    {values_code},",
+            f"    coords={{{broadcast_dim_code}: "
+            f"{input_name}.get_index({broadcast_dim_code})}},",
+            f"    dims=({broadcast_dim_code},),",
+            ")",
+        )
     )
 
 
@@ -260,7 +264,7 @@ def _model_fit_parameter_entry_code(
         broadcast_dim=broadcast_dim,
     )
     if parameter.minimum is None and parameter.maximum is None and parameter.vary:
-        return [value_code]
+        return value_code.splitlines()
 
     fields = [("value", value_code)]
     if parameter.minimum is not None:
@@ -287,13 +291,17 @@ def _model_fit_parameter_entry_code(
         )
     if not parameter.vary:
         fields.append(("vary", "False"))
-    if len(fields) == 1:
-        return [f"{{{fields[0][0]!r}: {fields[0][1]}}}"]
-    return [
-        "{",
-        *(f"    {name!r}: {value}," for name, value in fields),
-        "}",
-    ]
+    lines = ["{"]
+    for name, value in fields:
+        value_lines = value.splitlines()
+        if len(value_lines) == 1:
+            lines.append(f"    {name!r}: {value},")
+            continue
+        lines.append(f"    {name!r}: {value_lines[0]}")
+        lines.extend(f"    {line}" for line in value_lines[1:-1])
+        lines.append(f"    {value_lines[-1]},")
+    lines.append("}")
+    return lines
 
 
 def _model_fit_parameters_code(
@@ -441,6 +449,9 @@ class ModelFitOperation(ToolProvenanceOperation):
     def preferred_replay_output_name(self) -> str:
         return "parameter_stderr" if self.output == "stderr" else "parameter_values"
 
+    def preferred_replay_input_name(self) -> str:
+        return "fit_data"
+
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         if self.fit_dim not in data.dims:
             raise ValueError(
@@ -469,9 +480,10 @@ class ModelFitOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        model_kwargs = erlab.interactive.utils.format_call_kwargs(
-            typing.cast("dict[typing.Hashable, typing.Any]", dict(self.model_kwargs))
+        model_kwargs_values = typing.cast(
+            "dict[typing.Hashable, typing.Any]", dict(self.model_kwargs)
         )
+        model_kwargs = erlab.interactive.utils.format_call_kwargs(model_kwargs_values)
         model_code = f"era.fit.models.{self.model}({model_kwargs})"
         parameters_code = _model_fit_parameters_code(
             self.parameters,
@@ -487,8 +499,19 @@ class ModelFitOperation(ToolProvenanceOperation):
         lines = [
             f"{fit_input}.xlm.modelfit(",
             f"    {_provenance_value_code(self.fit_dim)},",
-            f"    model={model_code},",
         ]
+        model_line = f"    model={model_code},"
+        if len(model_line) <= 88:
+            lines.append(model_line)
+        else:
+            lines.append(f"    model=era.fit.models.{self.model}(")
+            lines.extend(
+                "        "
+                + erlab.interactive.utils.format_call_kwargs({key: value})
+                + ","
+                for key, value in model_kwargs_values.items()
+            )
+            lines.append("    ),")
         parameter_lines = parameters_code.splitlines()
         lines.append(f"    params={parameter_lines[0]}")
         lines.extend(f"    {line}" for line in parameter_lines[1:-1])
@@ -497,7 +520,8 @@ class ModelFitOperation(ToolProvenanceOperation):
         result_variable = (
             "modelfit_stderr" if self.output == "stderr" else "modelfit_coefficients"
         )
-        lines[-1] += f".{result_variable}.sel(param={self.parameter!r}, drop=True)"
+        lines[-1] += f".{result_variable}.sel("
+        lines.extend((f"    param={self.parameter!r},", "    drop=True,", ")"))
         if self.output == "stderr":
             lines[-1] += ".fillna(0.0)"
         lines[-1] += f".rename({self.output_name!r})"

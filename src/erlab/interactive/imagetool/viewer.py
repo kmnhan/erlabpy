@@ -34,6 +34,7 @@ from erlab.interactive.imagetool._load_source import (
 )
 from erlab.interactive.imagetool._provenance._execution import (
     _select_replay_input,
+    _semantic_file_data_selection,
     can_reload_without_trust,
     file_load_source_status,
     replay_file_provenance,
@@ -2484,9 +2485,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "xr.DataArray | xr.Dataset | xr.DataTree",
             func(file_path, **load_func[1]),
         )
+        selection = _semantic_file_data_selection(reloaded, load_func[2])
+        if selection != load_func[2]:
+            self._load_func = (load_func[0], load_func[1], selection)
         return _select_replay_input(
             reloaded,
-            load_func[2],
+            selection,
         )
 
     def _fetch_for_provenance_reload(self) -> xr.DataArray:

@@ -25,6 +25,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _nonuniform_restore_support_code,
     _replace_code_identifiers,
     _script_codes_output_name,
+    _simplify_display_code,
     _statement_load_count,
     _statement_store_count,
     _validate_script_replay_code,
@@ -1309,8 +1310,21 @@ def _node_names(
             raise ReplayGraphError("Replay graph has no output")
         preferred_names[emitted_key(graph.output_key)] = output_name
 
+    reserved_names = graph.reserved_names
+    for node in graph.nodes:
+        if node.kind != "operation" or not node.parents:
+            continue
+        preferred_input_name = node.payload["operation"].preferred_replay_input_name()
+        parent_key = emitted_key(node.parents[0])
+        if (
+            preferred_input_name is not None
+            and preferred_input_name not in reserved_names
+            and preferred_input_name not in preferred_names.values()
+        ):
+            preferred_names.setdefault(parent_key, preferred_input_name)
+
     names: dict[str, str] = {}
-    used = graph.reserved_names
+    used = reserved_names
     counter = 0
 
     def next_temp() -> str:
@@ -1688,6 +1702,42 @@ def _code_has_scoped_definition(code: str) -> bool:
         )
         for node in ast.walk(module)
     )
+
+
+def _is_receiver_assignment_chain(codes: Sequence[str], active_name: str) -> bool:
+    """Return whether code chunks are a side-effect-free receiver transform chain."""
+
+    def receiver_root_name(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Call):
+            return receiver_root_name(node.func)
+        if isinstance(node, ast.Attribute | ast.Subscript):
+            return receiver_root_name(node.value)
+        return None
+
+    if len(codes) < 2:
+        return False
+    for index, code in enumerate(codes):
+        try:
+            module = ast.parse(code, mode="exec")
+        except SyntaxError:
+            return False
+        if len(module.body) != 1 or not isinstance(module.body[0], ast.Assign):
+            return False
+        statement = module.body[0]
+        if (
+            len(statement.targets) != 1
+            or not isinstance(statement.targets[0], ast.Name)
+            or statement.targets[0].id != active_name
+        ):
+            return False
+        if index and (
+            receiver_root_name(statement.value) != active_name
+            or _statement_load_count(statement, active_name) != 1
+        ):
+            return False
+    return True
 
 
 def _cleanup_emitted_replay_code(code: str) -> str:
@@ -2148,6 +2198,18 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
                         "Script replay code is not valid Python"
                     ) from exc
                 active_name = name
+            if (
+                graph.display
+                and not any(hoist_imports)
+                and _is_receiver_assignment_chain(codes, active_name)
+            ):
+                codes = [
+                    _simplify_display_code(
+                        "\n".join(codes),
+                        inline_targets={active_name},
+                    )
+                ]
+                hoist_imports = [False]
             for code, group_imports in zip(codes, hoist_imports, strict=True):
                 append_code(code, group_imports=group_imports)
             if active_name != name:
