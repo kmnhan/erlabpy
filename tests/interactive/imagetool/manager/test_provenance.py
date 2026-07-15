@@ -13690,6 +13690,7 @@ def test_manager_dependency_summary_coalesces_matching_input_name_and_label() ->
         label="data",
         node_uid="closed-parent",
         node_snapshot_token=None,
+        data_role="displayed",
     )
     manager = types.SimpleNamespace(
         _dependency_refs_for_uid=lambda _uid: (ref,),
