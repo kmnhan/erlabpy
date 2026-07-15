@@ -233,6 +233,33 @@ def _gridspec_replace_grid(
     )
 
 
+def _gridspec_update_grid_settings(
+    setup: FigureSubplotsState,
+    grid_id: str,
+    *,
+    nrows: int,
+    ncols: int,
+    width_ratios: Iterable[float] = (),
+    height_ratios: Iterable[float] = (),
+) -> FigureSubplotsState:
+    """Return *setup* with validated dimensions for one existing grid."""
+    grid = _gridspec_grid_by_id(setup, grid_id)
+    if grid is None:
+        return setup
+    updated = FigureGridSpecGridState.model_validate(
+        {
+            **grid.model_dump(mode="python"),
+            "nrows": nrows,
+            "ncols": ncols,
+            "width_ratios": tuple(width_ratios),
+            "height_ratios": tuple(height_ratios),
+        }
+    )
+    if updated == grid:
+        return setup
+    return _gridspec_replace_grid(setup, grid_id, lambda _grid: updated)
+
+
 def _gridspec_region_overlaps(
     grid: FigureGridSpecGridState,
     span: FigureGridSpecSpanState,
@@ -253,6 +280,78 @@ def _gridspec_region_overlaps(
     return False
 
 
+def _gridspec_add_region(
+    setup: FigureSubplotsState,
+    grid_id: str,
+    span: FigureGridSpecSpanState,
+    kind: typing.Literal["axes", "grid"],
+) -> tuple[FigureSubplotsState, str]:
+    """Add one non-overlapping region, returning its stable identifier."""
+    grid = _gridspec_grid_by_id(setup, grid_id)
+    if grid is None:
+        return setup, ""
+    _validate_gridspec_region_edit(grid, span)
+    if kind == "axes":
+        region = FigureGridSpecAxesState(span=span)
+        updated = grid.model_copy(update={"axes": (*grid.axes, region)})
+        region_id = region.axes_id
+    elif kind == "grid":
+        region = FigureGridSpecGridState(span=span)
+        updated = grid.model_copy(update={"child_grids": (*grid.child_grids, region)})
+        region_id = region.grid_id
+    else:
+        raise ValueError(f"unknown GridSpec region kind {kind!r}")
+    return (
+        _gridspec_replace_grid(setup, grid_id, lambda _grid: updated),
+        region_id,
+    )
+
+
+def _gridspec_update_region_span(
+    setup: FigureSubplotsState,
+    grid_id: str,
+    region_id: str,
+    span: FigureGridSpecSpanState,
+) -> FigureSubplotsState:
+    """Move or resize one direct child of a grid without allowing overlap."""
+    grid = _gridspec_grid_by_id(setup, grid_id)
+    if grid is None:
+        return setup
+    axis = next((axis for axis in grid.axes if axis.axes_id == region_id), None)
+    child = next(
+        (child for child in grid.child_grids if child.grid_id == region_id), None
+    )
+    if axis is None and child is None:
+        return setup
+    _validate_gridspec_region_edit(
+        grid,
+        span,
+        ignore_axes_id=region_id,
+        ignore_grid_id=region_id,
+    )
+    if (axis is not None and axis.span == span) or (
+        child is not None and child.span == span
+    ):
+        return setup
+    updated = grid.model_copy(
+        update={
+            "axes": tuple(
+                item.model_copy(update={"span": span})
+                if item.axes_id == region_id
+                else item
+                for item in grid.axes
+            ),
+            "child_grids": tuple(
+                item.model_copy(update={"span": span})
+                if item.grid_id == region_id
+                else item
+                for item in grid.child_grids
+            ),
+        }
+    )
+    return _gridspec_replace_grid(setup, grid_id, lambda _grid: updated)
+
+
 def _gridspec_region_valid(
     grid: FigureGridSpecGridState, span: FigureGridSpecSpanState
 ) -> bool:
@@ -260,6 +359,24 @@ def _gridspec_region_valid(
         0 <= span.row_start < span.row_stop <= grid.nrows
         and 0 <= span.col_start < span.col_stop <= grid.ncols
     )
+
+
+def _validate_gridspec_region_edit(
+    grid: FigureGridSpecGridState,
+    span: FigureGridSpecSpanState,
+    *,
+    ignore_axes_id: str | None = None,
+    ignore_grid_id: str | None = None,
+) -> None:
+    if not _gridspec_region_valid(grid, span):
+        raise ValueError("Region is outside the active grid.")
+    if _gridspec_region_overlaps(
+        grid,
+        span,
+        ignore_axes_id=ignore_axes_id,
+        ignore_grid_id=ignore_grid_id,
+    ):
+        raise ValueError("Regions cannot overlap.")
 
 
 def _gridspec_has_invalid_regions(grid: FigureGridSpecGridState) -> bool:
@@ -337,6 +454,51 @@ def _gridspec_remove_region(
         )
 
     return _gridspec_replace_grid(setup, grid_id, updater)
+
+
+def _gridspec_nearest_axes_after_region_delete(
+    setup: FigureSubplotsState, grid_id: str, region_id: str
+) -> str:
+    """Return the nearest surviving axes in the edited grid, if one exists."""
+    grid = _gridspec_grid_by_id(setup, grid_id)
+    if grid is None:
+        return ""
+    deleted_span = next(
+        (axis.span for axis in grid.axes if axis.axes_id == region_id), None
+    )
+    if deleted_span is None:
+        deleted_span = next(
+            (child.span for child in grid.child_grids if child.grid_id == region_id),
+            None,
+        )
+    if deleted_span is None:
+        return ""
+    candidates = tuple(axis for axis in grid.axes if axis.axes_id != region_id)
+    if not candidates:
+        return ""
+
+    def center(region_span: FigureGridSpecSpanState) -> tuple[float, float]:
+        return (
+            (region_span.row_start + region_span.row_stop - 1) / 2.0,
+            (region_span.col_start + region_span.col_stop - 1) / 2.0,
+        )
+
+    deleted_center = center(deleted_span)
+
+    def sort_key(
+        axis: FigureGridSpecAxesState,
+    ) -> tuple[float, int, int, int, int]:
+        axis_center = center(axis.span)
+        return (
+            abs(axis_center[0] - deleted_center[0])
+            + abs(axis_center[1] - deleted_center[1]),
+            axis.span.row_start,
+            axis.span.col_start,
+            axis.span.row_stop,
+            axis.span.col_stop,
+        )
+
+    return min(candidates, key=sort_key).axes_id
 
 
 def _gridspec_update_axis_variable_name(

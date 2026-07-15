@@ -2026,8 +2026,8 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "figureComposerRecipePage",
     ]
     assert editor_tabs.currentWidget() is tool.operation_panel
-    assert isinstance(tool.layout_page.layout(), QtWidgets.QGridLayout)
-    layout_grid = typing.cast("QtWidgets.QGridLayout", tool.layout_page.layout())
+    assert isinstance(tool.layout_panel.layout(), QtWidgets.QGridLayout)
+    layout_grid = typing.cast("QtWidgets.QGridLayout", tool.layout_panel.layout())
     assert layout_grid.rowCount() == 10
     assert layout_grid.columnCount() == 5
     assert (
@@ -2039,7 +2039,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert tool.findChild(QtWidgets.QWidget, "figureComposerSizeMmControls") is not None
     dpi_label = tool.findChild(QtWidgets.QLabel, "figureComposerDpiControls")
     assert dpi_label is not None
-    assert dpi_label.buddy() is tool.dpi_spin
+    assert dpi_label.buddy() is tool.layout_panel.dpi_spin
     assert tool.findChild(QtWidgets.QWidget, "figureComposerShareControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerRatioControls") is not None
     assert layout_grid.getItemPosition(layout_grid.indexOf(dpi_label)) == (
@@ -2048,17 +2048,19 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         1,
         2,
     )
-    assert layout_grid.getItemPosition(layout_grid.indexOf(tool.dpi_spin)) == (
+    assert layout_grid.getItemPosition(
+        layout_grid.indexOf(tool.layout_panel.dpi_spin)
+    ) == (
         5,
         2,
         1,
         3,
     )
-    assert tool.gridspec_editor_widget.isHidden()
+    assert tool.layout_panel.gridspec_editor_widget.isHidden()
     gridspec_container = tool.findChild(
         QtWidgets.QWidget, "figureComposerGridSpecEditorContainer"
     )
-    assert gridspec_container is tool.gridspec_editor_container
+    assert gridspec_container is tool.layout_panel.gridspec_editor_container
     assert tool.findChild(QtWidgets.QFrame, "figureComposerGridSpecEditorTopLine")
     assert tool.findChild(QtWidgets.QFrame, "figureComposerGridSpecEditorBottomLine")
     assert layout_grid.getItemPosition(layout_grid.indexOf(gridspec_container)) == (
@@ -2075,7 +2077,9 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         1,
         2,
     )
-    assert layout_grid.getItemPosition(layout_grid.indexOf(tool.layout_combo)) == (
+    assert layout_grid.getItemPosition(
+        layout_grid.indexOf(tool.layout_panel.layout_combo)
+    ) == (
         6,
         2,
         1,
@@ -2228,8 +2232,8 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     }
     if tool._preview_render_update_pending:
         qtbot.waitUntil(lambda: not tool._preview_render_update_pending, timeout=1000)
-    tool.dpi_spin.setValue(180.0)
-    tool._setup_controls_changed()
+    tool.layout_panel.dpi_spin.setValue(180.0)
+    tool.layout_panel.dpi_spin.editingFinished.emit()
     assert tool.tool_status.setup.dpi == 180.0
     tool._update_operation_editor()
     annotate_kwargs_edit = tool.findChild(
@@ -2245,13 +2249,13 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert not any(
         spinbox.keyboardTracking()
         for spinbox in (
-            tool.nrows_spin,
-            tool.ncols_spin,
-            tool.width_spin,
-            tool.height_spin,
-            tool.width_mm_spin,
-            tool.height_mm_spin,
-            tool.dpi_spin,
+            tool.layout_panel.nrows_spin,
+            tool.layout_panel.ncols_spin,
+            tool.layout_panel.width_spin,
+            tool.layout_panel.height_spin,
+            tool.layout_panel.width_mm_spin,
+            tool.layout_panel.height_mm_spin,
+            tool.layout_panel.dpi_spin,
         )
     )
     tool.operation_panel.select_section("colors")
@@ -2498,9 +2502,9 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     qtbot.wait_until(lambda: len(show_activations) > activation_count, timeout=5000)
     assert True in show_activations[activation_count:]
     activation_count = len(show_activations)
-    tool.width_spin.setValue(7.0)
-    tool.height_spin.setValue(5.0)
-    tool._setup_controls_changed()
+    tool.layout_panel.width_spin.setValue(7.0)
+    tool.layout_panel.height_spin.setValue(5.0)
+    tool.layout_panel.height_spin.editingFinished.emit()
     assert len(show_activations) == activation_count
     base_dpi = float(figure_window.figure._original_dpi)
     qtbot.wait_until(
@@ -2511,15 +2515,15 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         timeout=5000,
     )
     assert tool.tool_status.setup.figsize == (7.0, 5.0)
-    assert np.isclose(tool.width_mm_spin.value(), 7.0 * 25.4, atol=0.01)
-    assert np.isclose(tool.height_mm_spin.value(), 5.0 * 25.4, atol=0.01)
+    assert np.isclose(tool.layout_panel.width_mm_spin.value(), 7.0 * 25.4, atol=0.01)
+    assert np.isclose(tool.layout_panel.height_mm_spin.value(), 5.0 * 25.4, atol=0.01)
 
-    tool.width_mm_spin.setValue(127.0)
-    tool.height_mm_spin.setValue(76.2)
-    tool._size_mm_controls_changed()
+    tool.layout_panel.width_mm_spin.setValue(127.0)
+    tool.layout_panel.height_mm_spin.setValue(76.2)
+    tool.layout_panel.height_mm_spin.editingFinished.emit()
     assert tool.tool_status.setup.figsize == (5.0, 3.0)
-    assert np.isclose(tool.width_spin.value(), 5.0)
-    assert np.isclose(tool.height_spin.value(), 3.0)
+    assert np.isclose(tool.layout_panel.width_spin.value(), 5.0)
+    assert np.isclose(tool.layout_panel.height_spin.value(), 3.0)
 
     size_delta = figure_window.size() - figure_window.canvas.size()
     target_width = 6.25
@@ -2535,10 +2539,14 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         ),
         timeout=5000,
     )
-    assert np.isclose(tool.width_spin.value(), target_width, atol=0.03)
-    assert np.isclose(tool.height_spin.value(), target_height, atol=0.03)
-    assert np.isclose(tool.width_mm_spin.value(), target_width * 25.4, atol=0.8)
-    assert np.isclose(tool.height_mm_spin.value(), target_height * 25.4, atol=0.8)
+    assert np.isclose(tool.layout_panel.width_spin.value(), target_width, atol=0.03)
+    assert np.isclose(tool.layout_panel.height_spin.value(), target_height, atol=0.03)
+    assert np.isclose(
+        tool.layout_panel.width_mm_spin.value(), target_width * 25.4, atol=0.8
+    )
+    assert np.isclose(
+        tool.layout_panel.height_mm_spin.value(), target_height * 25.4, atol=0.8
+    )
     typing.cast("typing.Any", figure_window.canvas)._set_device_pixel_ratio(2.0)
     assert float(figure_window.figure.dpi) == base_dpi * 2.0
     tool._sync_recipe_figsize_to_canvas(draw=False, emit_info=False)

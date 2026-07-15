@@ -2126,6 +2126,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         self._region_handles_visible = False
         self._application: QtWidgets.QApplication | None = None
         self._application_event_filter_installed = False
+        self._released = False
         self._outside_click_filter = (
             _GridSpecOutsideClickFilter(self) if mode == "edit" else None
         )
@@ -2209,6 +2210,20 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         self._set_region_handles_visible(False)
         erlab.interactive.utils.set_widget_cursor(self, None)
         super().hideEvent(event)
+
+    def release(self) -> None:
+        """Detach application-wide event handling before owner teardown."""
+        if self._released:
+            return
+        self._released = True
+        self._remove_application_event_filter()
+        self._set_region_handles_visible(False)
+        erlab.interactive.utils.set_widget_cursor(self, None)
+
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        self.release()
+        if event is not None:
+            super().closeEvent(event)
 
     def set_creation_kind(self, kind: typing.Literal["axes", "grid"]) -> None:
         self._creation_kind = kind
@@ -2742,7 +2757,8 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
 
     def _install_application_event_filter(self) -> None:
         if (
-            self._mode != "edit"
+            self._released
+            or self._mode != "edit"
             or self._application_event_filter_installed
             or self._outside_click_filter is None
         ):

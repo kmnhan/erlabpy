@@ -59,6 +59,7 @@ or inspect generated code when the call form itself is product behavior.
 
 from __future__ import annotations
 
+import collections.abc
 import contextlib
 import dataclasses
 import enum
@@ -95,8 +96,13 @@ from erlab.interactive._figurecomposer._line_style import (
     normalize_style_value,
 )
 from erlab.interactive._figurecomposer._operation_metadata import (
+    MethodTargetDomain,
     is_axes_errorbar_data_method,
     is_axes_plot_data_method,
+    operation_uses_axes,
+    register_method_target_domain,
+    unregister_method_target_domain,
+    validate_builtin_method_target_domains,
 )
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
@@ -161,12 +167,6 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive._figurecomposer._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
-
-
-class MethodTargetDomain(enum.StrEnum):
-    AXES = "axes"
-    FIGURE = "figure"
-    NONE = "none"
 
 
 class MethodCallPolicy(enum.StrEnum):
@@ -258,6 +258,47 @@ class MethodSpec:
         if self.allowed_call_policies:
             return self.allowed_call_policies
         return (self.call_policy,)
+
+
+class _MethodCatalog(collections.abc.MutableMapping[str, MethodSpec]):
+    """Own method specs and their matching Qt-free target metadata."""
+
+    def __init__(
+        self,
+        family: FigureMethodFamily,
+        specs: collections.abc.Mapping[str, MethodSpec],
+    ) -> None:
+        self._family = family
+        self._specs: dict[str, MethodSpec] = {}
+        self.update(specs)
+
+    def __getitem__(self, name: str) -> MethodSpec:
+        return self._specs[name]
+
+    def __setitem__(self, name: str, spec: MethodSpec) -> None:
+        if spec.family != self._family or spec.name != name:
+            raise ValueError(
+                f"Method catalog entry {name!r} must declare family "
+                f"{self._family.value!r} and the same method name"
+            )
+        register_method_target_domain(
+            self._family,
+            name,
+            spec.target_domain,
+            replace=name in self._specs,
+        )
+        self._specs[name] = spec
+
+    def __delitem__(self, name: str) -> None:
+        spec = self._specs[name]
+        unregister_method_target_domain(self._family, name, spec.target_domain)
+        del self._specs[name]
+
+    def __iter__(self) -> collections.abc.Iterator[str]:
+        return iter(self._specs)
+
+    def __len__(self) -> int:
+        return len(self._specs)
 
 
 _INT_SPINBOX_MINIMUM = -1_000_000
@@ -915,7 +956,7 @@ def _legend_controls(prefix: str) -> tuple[MethodControlSpec, ...]:
     )
 
 
-AXES_METHODS: dict[str, MethodSpec] = {
+_AXES_METHOD_SPECS: dict[str, MethodSpec] = {
     "text": MethodSpec(
         family=FigureMethodFamily.AXES,
         name="text",
@@ -1603,8 +1644,9 @@ AXES_METHODS: dict[str, MethodSpec] = {
         allow_extra_kwargs=False,
     ),
 }
+AXES_METHODS = _MethodCatalog(FigureMethodFamily.AXES, _AXES_METHOD_SPECS)
 
-FIGURE_METHODS: dict[str, MethodSpec] = {
+_FIGURE_METHOD_SPECS: dict[str, MethodSpec] = {
     "supxlabel": MethodSpec(
         family=FigureMethodFamily.FIGURE,
         name="supxlabel",
@@ -1792,8 +1834,9 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
         ),
     ),
 }
+FIGURE_METHODS = _MethodCatalog(FigureMethodFamily.FIGURE, _FIGURE_METHOD_SPECS)
 
-ERLAB_METHODS: dict[str, MethodSpec] = {
+_ERLAB_METHOD_SPECS: dict[str, MethodSpec] = {
     "clean_labels": MethodSpec(
         family=FigureMethodFamily.ERLAB,
         name="clean_labels",
@@ -2403,12 +2446,20 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
         ),
     ),
 }
+ERLAB_METHODS = _MethodCatalog(FigureMethodFamily.ERLAB, _ERLAB_METHOD_SPECS)
 
 _METHODS_BY_FAMILY = {
     FigureMethodFamily.AXES: AXES_METHODS,
     FigureMethodFamily.FIGURE: FIGURE_METHODS,
     FigureMethodFamily.ERLAB: ERLAB_METHODS,
 }
+validate_builtin_method_target_domains(
+    {
+        (family, name): spec.target_domain
+        for family, methods in _METHODS_BY_FAMILY.items()
+        for name, spec in methods.items()
+    }
+)
 
 _FAMILY_LABELS = {
     FigureMethodFamily.AXES: "Axes Method",
@@ -2434,7 +2485,9 @@ _CALL_POLICY_LABELS = {
 }
 
 
-def _method_specs(family: FigureMethodFamily) -> dict[str, MethodSpec]:
+def _method_specs(
+    family: FigureMethodFamily,
+) -> collections.abc.Mapping[str, MethodSpec]:
     return _METHODS_BY_FAMILY[family]
 
 
@@ -2573,10 +2626,6 @@ def _method_add_action(family: FigureMethodFamily) -> AddStepActionSpec:
     )
 
 
-def _uses_axes(operation: FigureOperationState) -> bool:
-    return _method_spec(operation).target_domain == MethodTargetDomain.AXES
-
-
 def _target_text(tool: FigureComposerTool, operation: FigureOperationState) -> str:
     spec = _method_spec(operation)
     if spec.target_domain == MethodTargetDomain.FIGURE:
@@ -2589,7 +2638,7 @@ def _target_text(tool: FigureComposerTool, operation: FigureOperationState) -> s
 def _has_invalid_target(
     context: FigureRecipeContext, operation: FigureOperationState
 ) -> bool:
-    return _uses_axes(operation) and context.axes_selection_has_invalid_target(
+    return operation_uses_axes(operation) and context.axes_selection_has_invalid_target(
         operation.axes
     )
 
@@ -5780,7 +5829,6 @@ SPEC = OperationSpec(
     tooltip=_tooltip,
     target_text=_target_text,
     has_invalid_target=_has_invalid_target,
-    uses_axes=_uses_axes,
     uses_source_section=_uses_no_source_section,
     build_source_editor=_empty_source_editor,
     build_editor_sections=_build_method_editor,

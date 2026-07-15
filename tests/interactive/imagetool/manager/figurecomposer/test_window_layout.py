@@ -1397,8 +1397,8 @@ def test_figure_composer_canvas_resize_defers_draw(qtbot, monkeypatch) -> None:
 
     tool._figure_window_canvas_size_changed(4.0, 2.5)
     assert tool.tool_status.setup.figsize == (4.0, 2.5)
-    assert np.isclose(tool.width_spin.value(), 4.0)
-    assert np.isclose(tool.height_spin.value(), 2.5)
+    assert np.isclose(tool.layout_panel.width_spin.value(), 4.0)
+    assert np.isclose(tool.layout_panel.height_spin.value(), 2.5)
     assert draw_idle_calls == []
     assert info_changes == []
 
@@ -1702,14 +1702,9 @@ def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
     tool.axes_selector.set_selected_axes((), emit=False)
     assert tool._selected_axes_state().axes == ((0, 0),)
     old_setup = tool.tool_status.setup
-    tool.width_ratios_edit.setText("0")
-    tool._setup_controls_changed()
+    tool.layout_panel.width_ratios_edit.setText("0")
+    tool.layout_panel.width_ratios_edit.editingFinished.emit()
     assert tool.tool_status.setup == old_setup
-    tool._updating_controls = True
-    try:
-        tool._size_mm_controls_changed()
-    finally:
-        tool._updating_controls = False
 
     span_00 = FigureGridSpecSpanState(
         row_start=0,
@@ -1761,25 +1756,19 @@ def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
     )
     qtbot.addWidget(grid_tool)
 
-    grid_tool._active_gridspec_grid_id = "missing"
-    grid_tool._sync_active_grid_controls(grid_tool.tool_status.setup)
-    assert grid_tool._active_gridspec_grid_id == "root"
-    grid_tool._active_gridspec_grid_id = "missing"
-    grid_tool._refresh_gridspec_editor()
-    assert grid_tool._active_gridspec_grid_id == "root"
-    grid_tool._refresh_gridspec_status(root)
-    assert grid_tool.gridspec_status_label.text()
-    grid_tool._gridspec_open_grid("missing")
-    assert grid_tool._active_gridspec_grid_id == "root"
-    grid_tool.gridspec_layout_widget.set_selected_region("")
-    grid_tool._gridspec_open_selected_grid()
-    grid_tool._gridspec_open_parent_grid()
-
-    grid_tool._gridspec_region_changed("ax0", outside_span)
-    grid_tool._gridspec_region_changed("ax0", span_01)
-    grid_tool._add_gridspec_region(outside_span, "axes")
-    grid_tool._add_gridspec_region(span_00, "axes")
-    grid_tool._add_gridspec_region(span_01, "grid")
+    grid_tool.layout_panel.set_setup(grid_tool.tool_status.setup)
+    assert not grid_tool.layout_panel.gridspec_parent_grid_button.isEnabled()
+    assert figurecomposer_gridspec._gridspec_has_invalid_regions(root)
+    grid_tool.layout_panel.gridspec_layout_widget.set_selected_region("")
+    grid_tool.layout_panel.gridspec_layout_widget.sigRegionChanged.emit(
+        "ax0", outside_span
+    )
+    grid_tool.layout_panel.gridspec_layout_widget.sigRegionChanged.emit("ax0", span_01)
+    grid_tool.layout_panel.gridspec_layout_widget.sigRegionCreated.emit(
+        outside_span, "axes"
+    )
+    grid_tool.layout_panel.gridspec_layout_widget.sigRegionCreated.emit(span_00, "axes")
+    grid_tool.layout_panel.gridspec_layout_widget.sigRegionCreated.emit(span_01, "grid")
 
     grid_tool.gridspec_axes_selector.set_selected_axes_ids((), emit=False)
     assert grid_tool._selected_axes_state().axes_ids == ("ax0",)
@@ -1791,10 +1780,18 @@ def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
         "ax1",
         "outside",
     }
-    grid_tool._active_gridspec_grid_id = "missing"
-    assert grid_tool._nearest_gridspec_axes_after_delete("ax0") == ""
-    grid_tool._active_gridspec_grid_id = "root"
-    assert grid_tool._nearest_gridspec_axes_after_delete("missing") == ""
+    assert (
+        figurecomposer_gridspec._gridspec_nearest_axes_after_region_delete(
+            grid_tool.tool_status.setup, "missing", "ax0"
+        )
+        == ""
+    )
+    assert (
+        figurecomposer_gridspec._gridspec_nearest_axes_after_region_delete(
+            grid_tool.tool_status.setup, "root", "missing"
+        )
+        == ""
+    )
 
     child_with_invalid_axis = FigureGridSpecGridState(
         grid_id="child",
@@ -1819,8 +1816,8 @@ def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
             )
         }
     )
-    grid_tool._refresh_gridspec_status(nested_root)
-    assert grid_tool.gridspec_status_label.text()
+    grid_tool.layout_panel.set_setup(grid_tool.tool_status.setup)
+    assert figurecomposer_gridspec._gridspec_has_invalid_regions(nested_root)
 
 
 def test_figure_composer_editor_factories_preserve_mixed_and_missing_values(
@@ -2043,7 +2040,7 @@ def test_figure_composer_undo_redo_setup_state(qtbot) -> None:
     qtbot.addWidget(tool)
     initial = tool.tool_status
 
-    tool.nrows_spin.setValue(initial.setup.nrows + 1)
+    tool.layout_panel.nrows_spin.setValue(initial.setup.nrows + 1)
 
     assert tool.undoable
     assert tool.tool_status.setup.nrows == initial.setup.nrows + 1
@@ -2060,32 +2057,32 @@ def test_figure_composer_subplot_controls_accept_more_than_twelve(qtbot) -> None
     tool = FigureComposerTool(_figure_composer_image_source("data"))
     qtbot.addWidget(tool)
 
-    assert np.isinf(tool.nrows_spin.maximum())
-    assert np.isinf(tool.ncols_spin.maximum())
+    assert np.isinf(tool.layout_panel.nrows_spin.maximum())
+    assert np.isinf(tool.layout_panel.ncols_spin.maximum())
 
-    tool.nrows_spin.setValue(13)
-    assert tool.nrows_spin.value() == 13
+    tool.layout_panel.nrows_spin.setValue(13)
+    assert tool.layout_panel.nrows_spin.value() == 13
     assert tool.tool_status.setup.nrows == 13
 
-    tool.nrows_spin.setValue(1)
-    tool.ncols_spin.setValue(13)
-    assert tool.ncols_spin.value() == 13
+    tool.layout_panel.nrows_spin.setValue(1)
+    tool.layout_panel.ncols_spin.setValue(13)
+    assert tool.layout_panel.ncols_spin.value() == 13
     assert tool.tool_status.setup.ncols == 13
 
 
 def test_figure_composer_gridspec_controls_accept_more_than_twelve(qtbot) -> None:
     tool = FigureComposerTool(_figure_composer_image_source("data"))
     qtbot.addWidget(tool)
-    tool.editor_tabs.setCurrentWidget(tool.layout_page)
-    tool.layout_mode_combo.setCurrentText("gridspec")
+    tool.editor_tabs.setCurrentWidget(tool.layout_panel)
+    tool.layout_panel.layout_mode_combo.setCurrentText("gridspec")
 
-    tool.nrows_spin.setValue(13)
-    assert tool.nrows_spin.value() == 13
+    tool.layout_panel.nrows_spin.setValue(13)
+    assert tool.layout_panel.nrows_spin.value() == 13
     assert tool.tool_status.setup.gridspec.root.nrows == 13
 
-    tool.nrows_spin.setValue(1)
-    tool.ncols_spin.setValue(13)
-    assert tool.ncols_spin.value() == 13
+    tool.layout_panel.nrows_spin.setValue(1)
+    tool.layout_panel.ncols_spin.setValue(13)
+    assert tool.layout_panel.ncols_spin.value() == 13
     assert tool.tool_status.setup.gridspec.root.ncols == 13
 
 
@@ -3957,7 +3954,7 @@ def test_figure_composer_operation_table_centralizes_status_and_layout_refresh(
 
     tool._set_operation_input_errors({})
     tool._set_operation_render_errors({})
-    tool.ncols_spin.setValue(2)
+    tool.layout_panel.ncols_spin.setValue(2)
     assert _operation_status_codes(tool, 0) == ("missing_source",)
     descriptor = tool.operation_panel.operation_list.topLevelItem(0).data(
         figurecomposer_operation_panel._OPERATION_LIST_TARGET_COLUMN,
@@ -5872,7 +5869,7 @@ def test_figure_composer_gridspec_to_subplots_preserves_targets(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool.layout_mode_combo.setCurrentText("subplots")
+    tool.layout_panel.layout_mode_combo.setCurrentText("subplots")
     operation = tool.tool_status.operations[0]
     assert operation.axes.axes == ((0, 0), (1, 0), (0, 1))
     assert not tool._operation_has_invalid_axes(operation)
@@ -5885,24 +5882,23 @@ def test_figure_composer_gridspec_widget_creates_nested_regions(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
     tool = FigureComposerTool(data)
     qtbot.addWidget(tool)
-    tool.editor_tabs.setCurrentWidget(tool.layout_page)
-    tool.layout_mode_combo.setCurrentText("gridspec")
-    tool.nrows_spin.setValue(2)
-    tool.ncols_spin.setValue(2)
-    tool._setup_controls_changed()
-    widget = tool.gridspec_layout_widget
+    tool.editor_tabs.setCurrentWidget(tool.layout_panel)
+    tool.layout_panel.layout_mode_combo.setCurrentText("gridspec")
+    tool.layout_panel.nrows_spin.setValue(2)
+    tool.layout_panel.ncols_spin.setValue(2)
+    widget = tool.layout_panel.gridspec_layout_widget
     widget.resize(widget.sizeHint())
 
-    tool.gridspec_region_kind_combo.setCurrentIndex(
-        tool.gridspec_region_kind_combo.findData("grid")
+    tool.layout_panel.gridspec_region_kind_combo.setCurrentIndex(
+        tool.layout_panel.gridspec_region_kind_combo.findData("grid")
     )
     qtbot.mousePress(
         widget,
         QtCore.Qt.MouseButton.LeftButton,
         pos=widget.cell_rect((0, 1)).center(),
     )
-    tool.gridspec_region_kind_combo.setCurrentIndex(
-        tool.gridspec_region_kind_combo.findData("axes")
+    tool.layout_panel.gridspec_region_kind_combo.setCurrentIndex(
+        tool.layout_panel.gridspec_region_kind_combo.findData("axes")
     )
     qtbot.mouseRelease(
         widget,
@@ -5911,8 +5907,8 @@ def test_figure_composer_gridspec_widget_creates_nested_regions(qtbot) -> None:
     )
     child_grid = tool.tool_status.setup.gridspec.root.child_grids[0]
     assert child_grid.label == ""
-    assert tool.gridspec_region_label_edit.isHidden()
-    assert tool.gridspec_region_name_label.isHidden()
+    assert tool.layout_panel.gridspec_region_label_edit.isHidden()
+    assert tool.layout_panel.gridspec_region_name_label.isHidden()
     assert child_grid.span == FigureGridSpecSpanState(
         row_start=0,
         row_stop=1,
@@ -5925,16 +5921,13 @@ def test_figure_composer_gridspec_widget_creates_nested_regions(qtbot) -> None:
         QtCore.Qt.MouseButton.LeftButton,
         pos=widget.span_rect(child_grid.span).center(),
     )
-    assert tool._active_gridspec_grid_id == child_grid.grid_id
-    assert [button.text() for button in tool._gridspec_breadcrumb_buttons] == [
-        "Root",
-        "Grid 1",
-    ]
+    assert tool.layout_panel.ncols_spin.value() == child_grid.ncols
+    assert tool.layout_panel.gridspec_parent_grid_button.isEnabled()
 
-    tool.gridspec_region_kind_combo.setCurrentIndex(
-        tool.gridspec_region_kind_combo.findData("axes")
+    tool.layout_panel.gridspec_region_kind_combo.setCurrentIndex(
+        tool.layout_panel.gridspec_region_kind_combo.findData("axes")
     )
-    child_widget = tool.gridspec_layout_widget
+    child_widget = tool.layout_panel.gridspec_layout_widget
     child_widget.resize(child_widget.sizeHint())
     qtbot.mousePress(
         child_widget,
@@ -5948,10 +5941,14 @@ def test_figure_composer_gridspec_widget_creates_nested_regions(qtbot) -> None:
     )
     active_grid = tool.tool_status.setup.gridspec.root.child_grids[0]
     assert len(active_grid.axes) == 1
-    assert not tool.gridspec_region_label_edit.isHidden()
-    assert not tool.gridspec_region_name_label.isHidden()
-    tool._gridspec_open_parent_grid()
-    assert tool._active_gridspec_grid_id == "root"
+    assert not tool.layout_panel.gridspec_region_label_edit.isHidden()
+    assert not tool.layout_panel.gridspec_region_name_label.isHidden()
+    tool.layout_panel.gridspec_parent_grid_button.click()
+    assert (
+        tool.layout_panel.ncols_spin.value()
+        == tool.tool_status.setup.gridspec.root.ncols
+    )
+    assert not tool.layout_panel.gridspec_parent_grid_button.isEnabled()
     widget.resize(widget.sizeHint())
     child_axis_id = active_grid.axes[0].axes_id
     assert child_axis_id in widget.axes_ids()
@@ -5960,15 +5957,120 @@ def test_figure_composer_gridspec_widget_creates_nested_regions(qtbot) -> None:
     )
 
 
+def test_figure_composer_layout_reserved_names_follow_source_structure(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    tool.layout_panel.layout_mode_combo.setCurrentText("gridspec")
+    axis = tool.tool_status.setup.gridspec.root.axes[0]
+    tool.layout_panel.gridspec_layout_widget.set_selected_region(axis.axes_id)
+    tool.layout_panel.gridspec_layout_widget.sigRegionSelected.emit(
+        axis.axes_id, "axes"
+    )
+
+    def name_is_rejected(name: str) -> bool:
+        tool.layout_panel.gridspec_region_label_edit.setText(name)
+        tool.layout_panel.gridspec_region_label_edit.editingFinished.emit()
+        return tool.layout_panel.gridspec_region_label_edit.property("invalid") is True
+
+    initial_axis_name = figurecomposer_gridspec._gridspec_axis_code_names(
+        tool.tool_status.setup, reserved_names=tool._document.source_names()
+    )[axis.axes_id]
+    extra = data.rename(initial_axis_name)
+    result = tool.add_sources(
+        (FigureSourceState(name=initial_axis_name),),
+        {initial_axis_name: extra},
+    )
+    assert result.added
+    assert name_is_rejected(initial_axis_name)
+
+    expected_axis_names = figurecomposer_gridspec._gridspec_axis_code_names(
+        tool.tool_status.setup, reserved_names=tool._document.source_names()
+    )
+    assert tool.layout_panel.gridspec_layout_widget._labels == expected_axis_names
+    assert tool.gridspec_axes_selector._labels == expected_axis_names
+    operation_item = tool.operation_panel.operation_list.topLevelItem(0)
+    assert operation_item is not None
+    assert (
+        operation_item.data(
+            figurecomposer_operation_panel._OPERATION_LIST_TARGET_COLUMN,
+            QtCore.Qt.ItemDataRole.AccessibleDescriptionRole,
+        )
+        == expected_axis_names[axis.axes_id]
+    )
+
+    tool.source_panel.rename_requested.emit(initial_axis_name, "renamed")
+    assert name_is_rejected("renamed")
+
+    existing_names = {source.name for source in tool.tool_status.sources}
+    tool.source_panel.duplicate_requested.emit(("renamed",))
+    duplicate_name = next(
+        source.name
+        for source in tool.tool_status.sources
+        if source.name not in existing_names
+    )
+    assert name_is_rejected(duplicate_name)
+
+    assert tool.remove_source(duplicate_name)
+    tool.layout_panel.gridspec_region_label_edit.setText(duplicate_name)
+    tool.layout_panel.gridspec_region_label_edit.editingFinished.emit()
+    assert tool.layout_panel.gridspec_region_label_edit.property("invalid") is False
+    assert tool.tool_status.setup.gridspec.root.axes[0].label == duplicate_name
+
+
+def test_figure_composer_public_source_data_updates_layout_reserved_names(
+    qtbot,
+) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    setup = figurecomposer_gridspec._gridspec_setup_from_subplots(FigureSubplotsState())
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(setup=setup, sources=(), operations=()),
+        source_data={"initial": data},
+    )
+    qtbot.addWidget(tool)
+    axis = tool.tool_status.setup.gridspec.root.axes[0]
+    tool.layout_panel.gridspec_layout_widget.set_selected_region(axis.axes_id)
+    tool.layout_panel.gridspec_layout_widget.sigRegionSelected.emit(
+        axis.axes_id, "axes"
+    )
+
+    tool.set_source_data({"live_source": data})
+    assert tool.source_panel.source_list.topLevelItemCount() == 1
+    assert tool.source_panel.selected_names() == ("live_source",)
+    assert tool.source_panel.current_name() == "live_source"
+    expected_axis_names = figurecomposer_gridspec._gridspec_axis_code_names(
+        tool.tool_status.setup, reserved_names=tool._document.source_names()
+    )
+    assert tool.layout_panel.gridspec_layout_widget._labels == expected_axis_names
+    assert tool.gridspec_axes_selector._labels == expected_axis_names
+    tool.layout_panel.gridspec_region_label_edit.setText("live_source")
+    tool.layout_panel.gridspec_region_label_edit.editingFinished.emit()
+    assert tool.layout_panel.gridspec_region_label_edit.property("invalid") is True
+
+    tool.set_source_data({"replacement": data})
+    assert tool.source_panel.source_list.topLevelItemCount() == 1
+    assert tool.source_panel.selected_names() == ("replacement",)
+    assert tool.source_panel.current_name() == "replacement"
+    expected_axis_names = figurecomposer_gridspec._gridspec_axis_code_names(
+        tool.tool_status.setup, reserved_names=tool._document.source_names()
+    )
+    assert tool.layout_panel.gridspec_layout_widget._labels == expected_axis_names
+    assert tool.gridspec_axes_selector._labels == expected_axis_names
+    tool.layout_panel.gridspec_region_label_edit.setText("live_source")
+    tool.layout_panel.gridspec_region_label_edit.editingFinished.emit()
+    assert tool.layout_panel.gridspec_region_label_edit.property("invalid") is False
+    assert tool.tool_status.setup.gridspec.root.axes[0].label == "live_source"
+
+
 def test_figure_composer_gridspec_widget_resizes_selected_region(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
     tool = FigureComposerTool(data)
     qtbot.addWidget(tool)
-    tool.editor_tabs.setCurrentWidget(tool.layout_page)
-    tool.layout_mode_combo.setCurrentText("gridspec")
-    tool.nrows_spin.setValue(2)
-    tool.ncols_spin.setValue(3)
-    tool._setup_controls_changed()
+    tool.editor_tabs.setCurrentWidget(tool.layout_panel)
+    tool.layout_panel.layout_mode_combo.setCurrentText("gridspec")
+    tool.layout_panel.nrows_spin.setValue(2)
+    tool.layout_panel.ncols_spin.setValue(3)
 
     original_span = FigureGridSpecSpanState(
         row_start=0,
@@ -5977,9 +6079,11 @@ def test_figure_composer_gridspec_widget_resizes_selected_region(qtbot) -> None:
         col_stop=3,
     )
     axis = tool.tool_status.setup.gridspec.root.axes[0]
-    tool._gridspec_region_changed(axis.axes_id, original_span)
+    tool.layout_panel.gridspec_layout_widget.sigRegionChanged.emit(
+        axis.axes_id, original_span
+    )
     axis = tool.tool_status.setup.gridspec.root.axes[0]
-    widget = tool.gridspec_layout_widget
+    widget = tool.layout_panel.gridspec_layout_widget
     widget.resize(widget.sizeHint())
     widget.set_selected_region(axis.axes_id)
 
@@ -6002,11 +6106,10 @@ def test_figure_composer_gridspec_widget_moves_selected_region(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
     tool = FigureComposerTool(data)
     qtbot.addWidget(tool)
-    tool.editor_tabs.setCurrentWidget(tool.layout_page)
-    tool.layout_mode_combo.setCurrentText("gridspec")
-    tool.nrows_spin.setValue(2)
-    tool.ncols_spin.setValue(3)
-    tool._setup_controls_changed()
+    tool.editor_tabs.setCurrentWidget(tool.layout_panel)
+    tool.layout_panel.layout_mode_combo.setCurrentText("gridspec")
+    tool.layout_panel.nrows_spin.setValue(2)
+    tool.layout_panel.ncols_spin.setValue(3)
 
     original_span = FigureGridSpecSpanState(
         row_start=0,
@@ -6015,8 +6118,10 @@ def test_figure_composer_gridspec_widget_moves_selected_region(qtbot) -> None:
         col_stop=1,
     )
     axis = tool.tool_status.setup.gridspec.root.axes[0]
-    tool._gridspec_region_changed(axis.axes_id, original_span)
-    widget = tool.gridspec_layout_widget
+    tool.layout_panel.gridspec_layout_widget.sigRegionChanged.emit(
+        axis.axes_id, original_span
+    )
+    widget = tool.layout_panel.gridspec_layout_widget
     widget.resize(widget.sizeHint())
 
     _drag_widget(
@@ -6042,21 +6147,22 @@ def test_figure_composer_gridspec_widget_hides_handles_after_outside_click(
     data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
     tool = FigureComposerTool(data)
     qtbot.addWidget(tool)
-    tool.editor_tabs.setCurrentWidget(tool.layout_page)
-    tool.layout_mode_combo.setCurrentText("gridspec")
-    tool._setup_controls_changed()
+    tool.editor_tabs.setCurrentWidget(tool.layout_panel)
+    tool.layout_panel.layout_mode_combo.setCurrentText("gridspec")
     tool.show()
     qtbot.wait_until(lambda: tool.isVisible(), timeout=5000)
     qtbot.wait(1)
 
     axis = tool.tool_status.setup.gridspec.root.axes[0]
-    widget = tool.gridspec_layout_widget
+    widget = tool.layout_panel.gridspec_layout_widget
     widget.resize(widget.sizeHint())
     widget.set_selected_region(axis.axes_id)
     assert widget.selected_region_id() == axis.axes_id
     assert widget._region_handles_visible
 
-    outside_global_pos = tool.gridspec_status_label.mapToGlobal(QtCore.QPoint(1, 1))
+    outside_global_pos = tool.layout_panel.gridspec_status_label.mapToGlobal(
+        QtCore.QPoint(1, 1)
+    )
     widget._handle_application_event(
         QtGui.QMouseEvent(
             QtCore.QEvent.Type.MouseButtonPress,
@@ -6070,13 +6176,13 @@ def test_figure_composer_gridspec_widget_hides_handles_after_outside_click(
 
     assert widget.selected_region_id() == axis.axes_id
     assert not widget._region_handles_visible
-    tool.gridspec_region_label_edit.setText("1 renamed")
-    tool._gridspec_region_label_changed()
-    assert tool.gridspec_region_label_edit.property("invalid") is True
+    tool.layout_panel.gridspec_region_label_edit.setText("1 renamed")
+    tool.layout_panel.gridspec_region_label_edit.editingFinished.emit()
+    assert tool.layout_panel.gridspec_region_label_edit.property("invalid") is True
     assert tool.tool_status.setup.gridspec.root.axes[0].label == ""
-    tool.gridspec_region_label_edit.setText("renamed")
-    tool._gridspec_region_label_changed()
-    assert tool.gridspec_region_label_edit.property("invalid") is False
+    tool.layout_panel.gridspec_region_label_edit.setText("renamed")
+    tool.layout_panel.gridspec_region_label_edit.editingFinished.emit()
+    assert tool.layout_panel.gridspec_region_label_edit.property("invalid") is False
     assert tool.tool_status.setup.gridspec.root.axes[0].label == "renamed"
 
 
@@ -6117,11 +6223,11 @@ def test_figure_composer_gridspec_shrink_marks_invalid_regions(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
     tool = FigureComposerTool(data)
     qtbot.addWidget(tool)
-    tool.editor_tabs.setCurrentWidget(tool.layout_page)
-    tool.layout_mode_combo.setCurrentText("gridspec")
-    tool.ncols_spin.setValue(2)
+    tool.editor_tabs.setCurrentWidget(tool.layout_panel)
+    tool.layout_panel.layout_mode_combo.setCurrentText("gridspec")
+    tool.layout_panel.ncols_spin.setValue(2)
     assert tool.tool_status.setup.gridspec.root.ncols == 2
-    widget = tool.gridspec_layout_widget
+    widget = tool.layout_panel.gridspec_layout_widget
     widget.resize(widget.sizeHint())
 
     qtbot.mousePress(
@@ -6136,21 +6242,22 @@ def test_figure_composer_gridspec_shrink_marks_invalid_regions(qtbot) -> None:
     )
     assert len(tool.tool_status.setup.gridspec.root.axes) == 2
 
-    tool.ncols_spin.setValue(1)
-    assert tool.editor_tabs.currentWidget() is tool.layout_page
-    invalid_axes_id = tool.tool_status.setup.gridspec.root.axes[1].axes_id
+    tool.layout_panel.ncols_spin.setValue(1)
+    assert tool.editor_tabs.currentWidget() is tool.layout_panel
+    root = tool.tool_status.setup.gridspec.root
+    invalid_axes_id = root.axes[1].axes_id
     assert invalid_axes_id not in tool.gridspec_axes_selector.axes_ids()
-    assert any(not region.valid for region in tool.gridspec_layout_widget._regions)
+    assert not figurecomposer_gridspec._gridspec_region_valid(root, root.axes[1].span)
 
 
 def test_figure_composer_gridspec_row_shrink_ignores_invalid_regions(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
     tool = FigureComposerTool(data)
     qtbot.addWidget(tool)
-    tool.editor_tabs.setCurrentWidget(tool.layout_page)
-    tool.layout_mode_combo.setCurrentText("gridspec")
-    tool.nrows_spin.setValue(2)
-    widget = tool.gridspec_layout_widget
+    tool.editor_tabs.setCurrentWidget(tool.layout_panel)
+    tool.layout_panel.layout_mode_combo.setCurrentText("gridspec")
+    tool.layout_panel.nrows_spin.setValue(2)
+    widget = tool.layout_panel.gridspec_layout_widget
     widget.resize(widget.sizeHint())
 
     qtbot.mousePress(
@@ -6166,8 +6273,9 @@ def test_figure_composer_gridspec_row_shrink_ignores_invalid_regions(qtbot) -> N
     assert len(tool.tool_status.setup.gridspec.root.axes) == 2
     removed_span = tool.tool_status.setup.gridspec.root.axes[1].span
 
-    tool.nrows_spin.setValue(1)
-    assert any(not region.valid for region in widget._regions)
+    tool.layout_panel.nrows_spin.setValue(1)
+    root = tool.tool_status.setup.gridspec.root
+    assert not figurecomposer_gridspec._gridspec_region_valid(root, root.axes[1].span)
     assert widget.span_rect(removed_span) == QtCore.QRect()
     assert widget._region_at(widget.cell_rect((0, 0)).center()) is not None
     _send_mouse_move(widget, widget.cell_rect((0, 0)).center())
@@ -6177,7 +6285,7 @@ def test_figure_composer_gridspec_axes_targets_survive_region_delete(qtbot) -> N
     data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
     tool = FigureComposerTool(data)
     qtbot.addWidget(tool)
-    tool.layout_mode_combo.setCurrentText("gridspec")
+    tool.layout_panel.layout_mode_combo.setCurrentText("gridspec")
     first_axes_id = tool.tool_status.setup.gridspec.root.axes[0].axes_id
     tool.operation_panel.select_section("axes")
     tool._sync_axes_selector()
@@ -6185,8 +6293,10 @@ def test_figure_composer_gridspec_axes_targets_survive_region_delete(qtbot) -> N
     tool.gridspec_axes_selector.set_selected_axes_ids((first_axes_id,), emit=True)
     assert tool.tool_status.operations[0].axes.axes_ids == (first_axes_id,)
 
-    tool.gridspec_layout_widget.set_selected_region(first_axes_id)
-    tool._gridspec_delete_selected_region()
+    tool.layout_panel.gridspec_layout_widget.sigRegionSelected.emit(
+        first_axes_id, "axes"
+    )
+    tool.layout_panel.gridspec_delete_region_button.click()
     assert tool._operation_has_invalid_axes(tool.tool_status.operations[0])
     assert tool.tool_status.operations[0].axes.axes_ids == (first_axes_id,)
     target_text = tool._axes_target_text(tool.tool_status.operations[0].axes)
@@ -6253,8 +6363,8 @@ def test_figure_composer_gridspec_axes_selector_click_keeps_surviving_removed_ta
     tool.operation_panel.select_section("axes")
     tool._sync_axes_selector()
 
-    tool.gridspec_layout_widget.set_selected_region("ax1")
-    tool._gridspec_delete_selected_region()
+    tool.layout_panel.gridspec_layout_widget.sigRegionSelected.emit("ax1", "axes")
+    tool.layout_panel.gridspec_delete_region_button.click()
     tool._sync_axes_selector()
     tool.gridspec_axes_selector.resize(tool.gridspec_axes_selector.sizeHint())
 
@@ -6321,13 +6431,18 @@ def test_figure_composer_gridspec_delete_selects_nearby_axes(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool.gridspec_layout_widget.set_selected_region(middle_axis.axes_id)
-    tool._gridspec_delete_selected_region()
+    tool.layout_panel.gridspec_layout_widget.sigRegionSelected.emit(
+        middle_axis.axes_id, "axes"
+    )
+    tool.layout_panel.gridspec_delete_region_button.click()
 
     axes_ids = tuple(axis.axes_id for axis in tool.tool_status.setup.gridspec.root.axes)
     assert axes_ids == (left_axis.axes_id, far_axis.axes_id)
-    assert tool.gridspec_layout_widget.selected_region_id() == left_axis.axes_id
-    assert tool.gridspec_delete_region_button.isEnabled()
+    assert (
+        tool.layout_panel.gridspec_layout_widget.selected_region_id()
+        == left_axis.axes_id
+    )
+    assert tool.layout_panel.gridspec_delete_region_button.isEnabled()
 
 
 def test_figure_composer_step_section_buttons_are_tab_focusable(qtbot) -> None:
@@ -8363,12 +8478,12 @@ def test_figure_composer_layout_ratios_update_subplots_kwargs(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    assert tool.width_ratios_edit.text() == "1, 2, 3"
-    assert tool.height_ratios_edit.text() == "2, 1"
+    assert tool.layout_panel.width_ratios_edit.text() == "1, 2, 3"
+    assert tool.layout_panel.height_ratios_edit.text() == "2, 1"
 
-    tool.width_ratios_edit.setText("3, 2, 1")
-    tool.height_ratios_edit.setText("4, 1")
-    tool._setup_controls_changed()
+    tool.layout_panel.width_ratios_edit.setText("3, 2, 1")
+    tool.layout_panel.height_ratios_edit.setText("4, 1")
+    tool.layout_panel.height_ratios_edit.editingFinished.emit()
 
     assert tool.tool_status.setup.width_ratios == (3.0, 2.0, 1.0)
     assert tool.tool_status.setup.height_ratios == (4.0, 1.0)
@@ -8619,10 +8734,10 @@ def test_figure_composer_layout_change_marks_removed_axes(qtbot, monkeypatch) ->
     )
     qtbot.addWidget(tool)
 
-    tool.editor_tabs.setCurrentWidget(tool.layout_page)
-    tool.nrows_spin.setValue(1)
+    tool.editor_tabs.setCurrentWidget(tool.layout_panel)
+    tool.layout_panel.nrows_spin.setValue(1)
 
-    assert tool.editor_tabs.currentWidget() is tool.layout_page
+    assert tool.editor_tabs.currentWidget() is tool.layout_panel
     assert tool.tool_status.setup.nrows == 1
     assert tool.tool_status.operations[0].axes.axes == ((1, 1),)
     assert tool._operation_has_invalid_axes(tool.tool_status.operations[0])
@@ -8674,7 +8789,7 @@ def test_figure_composer_axes_selector_click_keeps_surviving_removed_axes_target
     )
     qtbot.addWidget(tool)
 
-    tool.nrows_spin.setValue(1)
+    tool.layout_panel.nrows_spin.setValue(1)
     tool.editor_tabs.setCurrentWidget(tool.operation_panel)
     tool.operation_panel.select_section("axes")
     tool.axes_selector.resize(tool.axes_selector.sizeHint())

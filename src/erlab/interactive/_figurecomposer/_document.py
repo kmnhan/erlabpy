@@ -8,10 +8,15 @@ import uuid
 
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._gridspec import (
+    _gridspec_all_axes_ids,
+    _gridspec_axes_root_targets,
     _gridspec_invalid_axes_ids,
+    _gridspec_setup_from_subplots,
     _gridspec_valid_axes_ids,
+    _subplots_setup_from_gridspec,
 )
 from erlab.interactive._figurecomposer._operation_metadata import (
+    operation_uses_axes,
     recipe_operation_source_names,
     rename_operation_sources,
 )
@@ -28,6 +33,7 @@ from erlab.interactive._figurecomposer._sources import (
 from erlab.interactive._figurecomposer._state import (
     FigureOperationKind,
     FigureSourceState,
+    FigureSubplotsState,
 )
 
 if typing.TYPE_CHECKING:
@@ -138,6 +144,75 @@ class FigureDocument:
             return False
         self.recipe = recipe
         return True
+
+    def replace_setup(self, setup: FigureSubplotsState) -> bool:
+        """Replace the complete validated figure layout setup."""
+        validated = FigureSubplotsState.model_validate(setup.model_dump(mode="python"))
+        if validated == self.recipe.setup:
+            return False
+        self.recipe = self.recipe.model_copy(update={"setup": validated})
+        return True
+
+    def convert_layout_mode(self, mode: typing.Literal["subplots", "gridspec"]) -> bool:
+        """Convert layout mode and retarget axes operations atomically."""
+        setup = self.recipe.setup
+        if mode == setup.layout_mode:
+            return False
+        if mode == "gridspec":
+            updated_setup = _gridspec_setup_from_subplots(setup)
+            axes_ids = _gridspec_all_axes_ids(updated_setup)
+            axis_id_by_tuple = {
+                (row, col): axes_ids[row * updated_setup.ncols + col]
+                for row in range(updated_setup.nrows)
+                for col in range(updated_setup.ncols)
+                if row * updated_setup.ncols + col < len(axes_ids)
+            }
+
+            def retarget(operation: FigureOperationState) -> FigureOperationState:
+                if not operation_uses_axes(operation):
+                    return operation
+                axes = operation.axes.model_copy(
+                    update={
+                        "axes_ids": tuple(
+                            axis_id_by_tuple[axis]
+                            for axis in operation.axes.axes
+                            if axis in axis_id_by_tuple
+                        ),
+                        "expression": "",
+                    }
+                )
+                return operation.model_copy(update={"axes": axes})
+
+        elif mode == "subplots":
+            updated_setup = _subplots_setup_from_gridspec(setup)
+            root_targets = _gridspec_axes_root_targets(setup)
+
+            def retarget(operation: FigureOperationState) -> FigureOperationState:
+                if not operation_uses_axes(operation):
+                    return operation
+                axes_targets = tuple(
+                    dict.fromkeys(
+                        target
+                        for axes_id in operation.axes.axes_ids
+                        for target in root_targets.get(axes_id, ())
+                    )
+                )
+                axes = operation.axes.model_copy(
+                    update={
+                        "axes": axes_targets or operation.axes.axes or ((0, 0),),
+                        "expression": "",
+                    }
+                )
+                return operation.model_copy(update={"axes": axes})
+
+        else:
+            raise ValueError(f"unknown figure layout mode {mode!r}")
+        operations = tuple(retarget(operation) for operation in self.recipe.operations)
+        return self.replace_recipe(
+            self.recipe.model_copy(
+                update={"setup": updated_setup, "operations": operations}
+            )
+        )
 
     @staticmethod
     def _validate_operation_id_sequence(

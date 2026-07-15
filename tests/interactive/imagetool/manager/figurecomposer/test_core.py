@@ -5,6 +5,9 @@ import textwrap
 
 from erlab.interactive._figurecomposer._document import FigureDocument
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._operations import (
+    _registry as figurecomposer_operation_registry,
+)
 
 from ._common import *
 
@@ -63,6 +66,157 @@ def test_figure_document_sources_import_without_qt_widgets() -> None:
         """
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_figure_document_replaces_only_valid_layout_setup() -> None:
+    document = FigureDocument(FigureRecipeState())
+    invalid = document.recipe.setup.model_copy(update={"nrows": 0})
+
+    with pytest.raises(ValueError, match="at least one row"):
+        document.replace_setup(invalid)
+
+    assert document.recipe.setup.nrows == 1
+    updated = document.recipe.setup.model_copy(update={"nrows": 2})
+    assert document.replace_setup(updated)
+    assert not document.replace_setup(updated)
+
+
+def test_figure_document_converts_layout_and_operation_targets_atomically() -> None:
+    axes_operation = FigureOperationState.plot_array(
+        label="image",
+        source="data",
+        axes=FigureAxesSelectionState(axes=((0, 1), (1, 0)), expression="custom_axes"),
+    )
+    figure_operation = FigureOperationState.method(
+        family=FigureMethodFamily.FIGURE,
+        name="supxlabel",
+        axes=FigureAxesSelectionState(axes=((1, 1),), expression="figure_expression"),
+    )
+    palette_operation = FigureOperationState.set_palette()
+    document = FigureDocument(
+        FigureRecipeState(
+            setup=FigureSubplotsState(nrows=2, ncols=2),
+            operations=(axes_operation, figure_operation, palette_operation),
+        )
+    )
+
+    assert document.convert_layout_mode("gridspec")
+    gridspec_setup = document.recipe.setup
+    axes_ids = figurecomposer_gridspec._gridspec_all_axes_ids(gridspec_setup)
+    converted = document.recipe.operations
+    assert gridspec_setup.layout_mode == "gridspec"
+    assert converted[0].axes.axes_ids == (axes_ids[1], axes_ids[2])
+    assert converted[0].axes.expression == ""
+    assert converted[1] == figure_operation
+    assert converted[2] == palette_operation
+    assert tuple(operation.operation_id for operation in converted) == tuple(
+        operation.operation_id
+        for operation in (axes_operation, figure_operation, palette_operation)
+    )
+    assert not document.convert_layout_mode("gridspec")
+
+    assert document.convert_layout_mode("subplots")
+    assert document.recipe.setup.layout_mode == "subplots"
+    assert document.recipe.operations[0].axes.axes == ((0, 1), (1, 0))
+    assert document.recipe.operations[1] == figure_operation
+    with pytest.raises(ValueError, match="unknown figure layout mode"):
+        document.convert_layout_mode("unknown")
+
+
+def test_figure_document_converts_nested_gridspec_targets_to_root_spans() -> None:
+    first = FigureGridSpecAxesState(
+        axes_id="nested-first",
+        span=FigureGridSpecSpanState(row_start=0, row_stop=1, col_start=0, col_stop=1),
+    )
+    second = FigureGridSpecAxesState(
+        axes_id="nested-second",
+        span=FigureGridSpecSpanState(row_start=0, row_stop=1, col_start=1, col_stop=2),
+    )
+    nested = FigureGridSpecGridState(
+        grid_id="nested",
+        nrows=1,
+        ncols=2,
+        span=FigureGridSpecSpanState(row_start=0, row_stop=1, col_start=0, col_stop=2),
+        axes=(first, second),
+    )
+    setup = FigureSubplotsState(
+        layout_mode="gridspec",
+        gridspec=FigureGridSpecLayoutState(
+            root=FigureGridSpecGridState(
+                grid_id="root", nrows=2, ncols=2, child_grids=(nested,)
+            )
+        ),
+    )
+    operation = FigureOperationState.line(
+        label="profiles",
+        source="data",
+        axes=FigureAxesSelectionState(
+            axes=((1, 1),),
+            axes_ids=("nested-first", "nested-second", "removed"),
+            expression="advanced",
+        ),
+    )
+    document = FigureDocument(FigureRecipeState(setup=setup, operations=(operation,)))
+
+    assert document.convert_layout_mode("subplots")
+    assert document.recipe.operations[0].axes.axes == ((0, 0), (0, 1))
+    assert document.recipe.operations[0].axes.expression == ""
+
+
+@pytest.mark.parametrize(
+    ("name", "target_domain", "call_policy"),
+    (
+        (
+            "figure_target_test",
+            figurecomposer_method.MethodTargetDomain.FIGURE,
+            figurecomposer_method.MethodCallPolicy.FIG_KEYWORD,
+        ),
+        (
+            "no_target_test",
+            figurecomposer_method.MethodTargetDomain.NONE,
+            figurecomposer_method.MethodCallPolicy.PLAIN_CALL,
+        ),
+    ),
+)
+def test_figure_document_preserves_dynamic_non_axes_method_targets(
+    monkeypatch,
+    name: str,
+    target_domain: figurecomposer_method.MethodTargetDomain,
+    call_policy: figurecomposer_method.MethodCallPolicy,
+) -> None:
+    spec = figurecomposer_method.MethodSpec(
+        family=FigureMethodFamily.ERLAB,
+        name=name,
+        label=name,
+        tooltip="test method target",
+        target_domain=target_domain,
+        call_policy=call_policy,
+    )
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.ERLAB,
+        name=name,
+        axes=FigureAxesSelectionState(
+            axes=((0, 0),), expression="preserved_expression"
+        ),
+    )
+    with pytest.raises(ValueError, match="Unsupported erlab method"):
+        figurecomposer_operation_metadata.operation_uses_axes(operation)
+
+    with monkeypatch.context() as context:
+        context.setitem(figurecomposer_method.ERLAB_METHODS, name, spec)
+        operation_spec = figurecomposer_operation_registry.spec_for(
+            FigureOperationKind.METHOD
+        )
+        assert not operation_spec.uses_axes(operation)
+        document = FigureDocument(FigureRecipeState(operations=(operation,)))
+
+        assert document.convert_layout_mode("gridspec")
+        assert document.recipe.operations[0] == operation
+        assert document.convert_layout_mode("subplots")
+        assert document.recipe.operations[0] == operation
+
+    with pytest.raises(ValueError, match="Unsupported erlab method"):
+        figurecomposer_operation_metadata.operation_uses_axes(operation)
 
 
 def test_figure_document_renames_source_references_atomically() -> None:
@@ -645,6 +799,22 @@ def test_operation_metadata_covers_every_operation_kind() -> None:
     }
 
     assert {operation.kind for operation in operations} == set(FigureOperationKind)
+    assert {
+        operation.kind: figurecomposer_operation_metadata.operation_uses_axes(operation)
+        for operation in operations
+    } == {
+        FigureOperationKind.SET_PALETTE: False,
+        FigureOperationKind.PLOT_ARRAY: True,
+        FigureOperationKind.PLOT_SLICES: True,
+        FigureOperationKind.LINE: True,
+        FigureOperationKind.BZ_OVERLAY: True,
+        FigureOperationKind.PHOTON_ENERGY_OVERLAY: True,
+        FigureOperationKind.METHOD: True,
+        FigureOperationKind.CUSTOM: False,
+    }
+    assert not figurecomposer_operation_metadata.operation_uses_axes(
+        FigureOperationState.method(family=FigureMethodFamily.FIGURE, name="supxlabel")
+    )
     assert {
         operation.kind: (
             figurecomposer_operation_metadata.declared_operation_source_names(operation)

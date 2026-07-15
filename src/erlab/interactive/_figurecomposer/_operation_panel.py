@@ -195,6 +195,7 @@ class FigureOperationPanel(QtWidgets.QWidget):
         add_actions: Sequence[FigureOperationAction],
     ) -> None:
         super().__init__(editor_tabs)
+        self._operation_viewport: QtWidgets.QWidget | None = None
         self.setObjectName("figureComposerRecipePage")
         self._editor_tabs = editor_tabs
         self._selection_input_event = False

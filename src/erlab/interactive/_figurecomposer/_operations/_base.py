@@ -26,6 +26,8 @@ from __future__ import annotations
 import dataclasses
 import typing
 
+from erlab.interactive._figurecomposer._operation_metadata import operation_uses_axes
+
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
@@ -64,7 +66,6 @@ class OperationSpec:
     tooltip: Callable[[FigureComposerTool, FigureOperationState], str]
     target_text: Callable[[FigureComposerTool, FigureOperationState], str]
     has_invalid_target: Callable[[FigureRecipeContext, FigureOperationState], bool]
-    uses_axes: Callable[[FigureOperationState], bool]
     uses_source_section: Callable[[FigureOperationState], bool]
     build_source_editor: Callable[[FigureComposerTool, FigureOperationState], None]
     build_editor_sections: Callable[
@@ -75,6 +76,9 @@ class OperationSpec:
         [FigureComposerTool, FigureOperationState, Figure, typing.Any], None
     ]
     code_lines: Callable[[FigureComposerTool, FigureOperationState], list[str]]
+    uses_axes: Callable[[FigureOperationState], bool] = dataclasses.field(
+        default=operation_uses_axes
+    )
     required_imports: Callable[
         [FigureComposerTool, FigureOperationState], Sequence[str]
     ] = dataclasses.field(default=lambda _tool, _operation: ())
@@ -98,10 +102,6 @@ def _empty_code_lines(
 def _no_invalid_target(
     _context: FigureRecipeContext, _operation: FigureOperationState
 ) -> bool:
-    return False
-
-
-def _uses_no_axes(_operation: FigureOperationState) -> bool:
     return False
 
 

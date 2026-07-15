@@ -939,3 +939,110 @@ def test_figure_composer_rendering_helpers_cover_selection_edges(qtbot) -> None:
     assert figurecomposer_rendering._iter_axes([grid_axs]) == (grid_axs,)
     assert figurecomposer_rendering._render_error_text(RuntimeError()) == "RuntimeError"
     plt.close(grid_fig)
+
+
+def test_gridspec_transformations_validate_edits_and_ignore_stale_ids() -> None:
+    setup = FigureSubplotsState(
+        layout_mode="gridspec",
+        gridspec=FigureGridSpecLayoutState(
+            root=FigureGridSpecGridState(grid_id="root", nrows=2, ncols=2)
+        ),
+    )
+    top_left = FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=1,
+        col_start=0,
+        col_stop=1,
+    )
+    top_right = FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=1,
+        col_start=1,
+        col_stop=2,
+    )
+    bottom_left = FigureGridSpecSpanState(
+        row_start=1,
+        row_stop=2,
+        col_start=0,
+        col_stop=1,
+    )
+
+    assert (
+        figurecomposer_gridspec._gridspec_update_grid_settings(
+            setup, "missing", nrows=1, ncols=1
+        )
+        == setup
+    )
+    with pytest.raises(ValueError, match="at least one row"):
+        figurecomposer_gridspec._gridspec_update_grid_settings(
+            setup, "root", nrows=0, ncols=1
+        )
+
+    unchanged, region_id = figurecomposer_gridspec._gridspec_add_region(
+        setup, "missing", top_left, "axes"
+    )
+    assert unchanged == setup
+    assert region_id == ""
+    with pytest.raises(ValueError, match="unknown GridSpec region kind"):
+        figurecomposer_gridspec._gridspec_add_region(
+            setup, "root", top_left, typing.cast(typing.Any, "unknown")
+        )
+
+    setup, first_axes_id = figurecomposer_gridspec._gridspec_add_region(
+        setup, "root", top_left, "axes"
+    )
+    setup, second_axes_id = figurecomposer_gridspec._gridspec_add_region(
+        setup, "root", top_right, "axes"
+    )
+    with pytest.raises(ValueError, match="cannot overlap"):
+        figurecomposer_gridspec._gridspec_add_region(setup, "root", top_left, "grid")
+    with pytest.raises(ValueError, match="outside the active grid"):
+        figurecomposer_gridspec._gridspec_update_region_span(
+            setup,
+            "root",
+            first_axes_id,
+            FigureGridSpecSpanState(
+                row_start=2,
+                row_stop=3,
+                col_start=0,
+                col_stop=1,
+            ),
+        )
+    with pytest.raises(ValueError, match="cannot overlap"):
+        figurecomposer_gridspec._gridspec_update_region_span(
+            setup, "root", first_axes_id, top_right
+        )
+    assert (
+        figurecomposer_gridspec._gridspec_update_region_span(
+            setup, "missing", first_axes_id, bottom_left
+        )
+        == setup
+    )
+    assert (
+        figurecomposer_gridspec._gridspec_update_region_span(
+            setup, "root", "missing", bottom_left
+        )
+        == setup
+    )
+    assert (
+        figurecomposer_gridspec._gridspec_nearest_axes_after_region_delete(
+            setup, "root", second_axes_id
+        )
+        == first_axes_id
+    )
+    assert (
+        figurecomposer_gridspec._gridspec_nearest_axes_after_region_delete(
+            setup, "missing", first_axes_id
+        )
+        == ""
+    )
+    assert (
+        figurecomposer_gridspec._gridspec_nearest_axes_after_region_delete(
+            setup, "root", "missing"
+        )
+        == ""
+    )
+    assert (
+        figurecomposer_gridspec._gridspec_remove_region(setup, "root", "missing")
+        == setup
+    )

@@ -2128,9 +2128,7 @@ def _layout_engine_text(tool: FigureComposerTool) -> str:
 
 
 def _set_setup_layout_engine(tool: FigureComposerTool, text: str) -> None:
-    with QtCore.QSignalBlocker(tool.layout_combo):
-        tool.layout_combo.setCurrentText(text)
-    tool._setup_controls_changed()
+    tool._set_layout_engine(text)
 
 
 def _float_pair_text(values: Sequence[float]) -> str:

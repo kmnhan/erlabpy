@@ -19,7 +19,6 @@ from erlab.interactive._figurecomposer._operations._base import (
     StepSection,
     _empty_source_editor,
     _no_invalid_target,
-    _uses_no_axes,
     _uses_no_source_section,
 )
 from erlab.interactive._figurecomposer._rendering import _source_namespace
@@ -280,7 +279,6 @@ SPEC = OperationSpec(
     tooltip=_tooltip,
     target_text=lambda _tool, _operation: "none",
     has_invalid_target=_no_invalid_target,
-    uses_axes=_uses_no_axes,
     uses_source_section=_uses_no_source_section,
     build_source_editor=_empty_source_editor,
     build_editor_sections=_editor_sections,

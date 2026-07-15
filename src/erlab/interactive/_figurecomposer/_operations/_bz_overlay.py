@@ -837,7 +837,6 @@ SPEC = OperationSpec(
     tooltip=_tooltip,
     target_text=lambda tool, operation: tool._axes_target_text(operation.axes),
     has_invalid_target=_has_invalid_target,
-    uses_axes=lambda _operation: True,
     uses_source_section=_uses_no_source_section,
     build_source_editor=_empty_source_editor,
     build_editor_sections=_editor_sections,
