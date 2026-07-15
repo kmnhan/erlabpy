@@ -5,6 +5,7 @@ import pytest
 import xarray as xr
 from qtpy import QtCore
 
+import erlab.utils.array
 from erlab.interactive.imagetool.slicer import (
     ArraySlicer,
     _display_safe_float,
@@ -12,7 +13,6 @@ from erlab.interactive.imagetool.slicer import (
     _display_safe_values,
     check_cursors_compatible,
     qsel_args_from_indexers,
-    restore_nonuniform_dims,
 )
 from erlab.io.plugins.da30 import load_zip
 
@@ -53,7 +53,7 @@ def test_restore_nonuniform_dims_ignores_user_idx_dim() -> None:
         },
     )
 
-    restored = restore_nonuniform_dims(data)
+    restored = erlab.utils.array._restore_nonuniform_dims(data)
 
     xr.testing.assert_identical(restored, data)
 

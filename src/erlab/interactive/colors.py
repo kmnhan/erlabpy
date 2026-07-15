@@ -18,9 +18,7 @@ __all__ = [
 ]
 
 import contextlib
-import contextvars
 import functools
-import importlib.util
 import typing
 import weakref
 from collections.abc import Iterable, Sequence
@@ -31,57 +29,16 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive._colormap import (
+    _ALL_COLORMAPS_LOADED,
+    load_all_colormaps,
+    matplotlib_colormap_name,
+)
 
 if typing.TYPE_CHECKING:
     from matplotlib.typing import ColorType
 
-_ALL_COLORMAPS_LOADED: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "all_colormaps_loaded", default=False
-)
 _POWER_NORM_LUT_CACHE_SIZE = 64
-
-
-def _matplotlib_has_colormap(name: str) -> bool:
-    import matplotlib as mpl
-
-    return name in mpl.colormaps
-
-
-def _colorcet_matplotlib_candidate(name: str) -> str:
-    return name if name.startswith("cet_") else f"cet_{name}"
-
-
-def matplotlib_colormap_name(name: str) -> str:
-    """Return the Matplotlib colormap name matching a pyqtgraph display name."""
-    if not name or _matplotlib_has_colormap(name):
-        return name
-
-    candidate = _colorcet_matplotlib_candidate(name)
-    if _matplotlib_has_colormap(candidate):
-        return candidate
-
-    if not _ALL_COLORMAPS_LOADED.get():
-        with contextlib.suppress(Exception):
-            load_all_colormaps()
-        if _matplotlib_has_colormap(name):
-            return name
-        if _matplotlib_has_colormap(candidate):
-            return candidate
-
-    return name
-
-
-def load_all_colormaps() -> None:
-    """Load all colormaps from additional sources."""
-    if _ALL_COLORMAPS_LOADED.get():
-        return
-
-    import erlab.plotting
-
-    for package in erlab.interactive.options.model.colors.cmap.packages:
-        if importlib.util.find_spec(package):
-            importlib.import_module(package)
-    _ALL_COLORMAPS_LOADED.set(True)
 
 
 class ColorMapComboBox(QtWidgets.QComboBox):

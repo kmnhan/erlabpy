@@ -10,7 +10,7 @@ if typing.TYPE_CHECKING:
 
     import numpy as np
 
-    from erlab.interactive._figurecomposer._state import FigureSubplotsState
+    from erlab.interactive._figurecomposer._model._state import FigureSubplotsState
 
 
 def _all_axes(setup: FigureSubplotsState) -> tuple[tuple[int, int], ...]:

@@ -10,13 +10,12 @@ import warnings
 import matplotlib as mpl
 from matplotlib import style as mpl_style
 
-import erlab.interactive._stylesheets
-
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator
 
     from matplotlib.figure import Figure
 
+    from erlab.interactive._figurecomposer._tool import FigureComposerTool
     from erlab.interactive._options.schema import AppOptions
 
 _MM_PER_INCH = 25.4
@@ -53,18 +52,36 @@ def figure_options_context(options_model: AppOptions | None) -> Iterator[None]:
         _OPTIONS_MODEL_CONTEXT.reset(token)
 
 
+def _tool_figure_options_context(
+    tool: FigureComposerTool,
+) -> contextlib.AbstractContextManager[None]:
+    """Return the options context supplied by a live composer tool, if any."""
+    options_context = getattr(tool, "_figure_options_context", None)
+    if callable(options_context):
+        return options_context()
+    return contextlib.nullcontext()
+
+
 def _configured_stylesheets() -> tuple[str, ...]:
     return tuple(_current_options().figure.stylesheets)
 
 
 def _available_configured_stylesheets() -> tuple[str, ...]:
     configured = _configured_stylesheets()
+    if not configured:
+        return ()
+    import erlab.interactive._stylesheets
+
     available = erlab.interactive._stylesheets.available_stylesheets(configured)
     return tuple(name for name in configured if name in available)
 
 
 def _unavailable_configured_stylesheets() -> tuple[str, ...]:
     configured = _configured_stylesheets()
+    if not configured:
+        return ()
+    import erlab.interactive._stylesheets
+
     available = erlab.interactive._stylesheets.available_stylesheets(configured)
     return tuple(name for name in configured if name not in available)
 
@@ -158,6 +175,10 @@ def _style_code_lines() -> list[str]:
 
 def _style_required_imports() -> tuple[str, ...]:
     configured = _configured_stylesheets()
+    if not configured:
+        return ()
+    import erlab.interactive._stylesheets
+
     lines: list[str] = []
     if erlab.interactive._stylesheets.stylesheets_require_erlab_plotting(configured):
         lines.append("import erlab.plotting  # registers ERLab matplotlib stylesheets")

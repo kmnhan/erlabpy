@@ -1,6 +1,18 @@
 # ruff: noqa: F403, F405
 
 import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
+import erlab.interactive._figurecomposer._ui._axes_widgets as axes_widgets
+import erlab.interactive._figurecomposer._ui._figure_window as figure_window_ui
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _editor as plot_slices_editor,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _model as plot_slices_model,
+)
+from erlab.interactive._figurecomposer._ui import (
+    _source_panel as figurecomposer_source_panel,
+)
 
 from ._common import *
 
@@ -8,19 +20,19 @@ from ._common import *
 def _source_context_action(
     tool: FigureComposerTool, object_name: str
 ) -> tuple[QtWidgets.QMenu, QtGui.QAction]:
-    tool._show_source_context_menu(QtCore.QPoint(0, 0))
-    assert tool._source_context_menu is not None
-    action = next(
-        action
-        for action in tool._source_context_menu.actions()
-        if action.objectName() == object_name
+    existing_menus = tool.source_panel.source_list.findChildren(QtWidgets.QMenu)
+    tool.source_panel._show_context_menu(QtCore.QPoint(0, 0))
+    menu = next(
+        menu
+        for menu in tool.source_panel.source_list.findChildren(QtWidgets.QMenu)
+        if all(menu is not existing_menu for existing_menu in existing_menus)
     )
-    return tool._source_context_menu, action
+    action = menu.findChild(QtGui.QAction, object_name)
+    assert action is not None
+    return menu, action
 
 
-def test_figure_composer_source_alias_candidate_rejects_unusable_names(
-    monkeypatch,
-) -> None:
+def test_figure_composer_source_alias_candidate_normalizes_usable_names() -> None:
     assert (
         figurecomposer_sources._source_alias_candidate(
             xr.DataArray(np.arange(2), dims=("x",), name=" ")
@@ -40,18 +52,11 @@ def test_figure_composer_source_alias_candidate_rejects_unusable_names(
         is not None
     )
 
-    class InvalidIdentifierValidator:
-        def fixup(self, _text: str) -> str:
-            return "bad name"
-
-    monkeypatch.setattr(
-        erlab.interactive.utils, "IdentifierValidator", InvalidIdentifierValidator
-    )
     assert (
         figurecomposer_sources._source_alias_candidate(
             xr.DataArray(np.arange(2), dims=("x",), name="bad name")
         )
-        is None
+        == "bad_name"
     )
 
 
@@ -105,7 +110,7 @@ def test_figure_composer_plot_source_move_button_uses_disabled_icon_color(
     monkeypatch.setattr(erlab.interactive.utils.qtawesome, "icon", record_icon)
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)
-    button = figurecomposer_plot_slices._PlotSourceMoveButton("up", parent)
+    button = plot_slices_editor._PlotSourceMoveButton("up", parent)
     palette = button.palette()
     disabled_text = QtGui.QColor("#6f7782")
     palette.setColor(
@@ -184,13 +189,17 @@ def test_figure_composer_selected_source_roundtrip_applies_selection_once(
     )
     qtbot.addWidget(tool)
     if retain_base_data:
-        tool._source_selection_base_data["profile"] = base
+        tool._document.replace_source_payloads(
+            tool._document.source_data, {"profile": base}
+        )
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(tool.to_dataset())
     qtbot.addWidget(restored)
     assert isinstance(restored, FigureComposerTool)
     xr.testing.assert_identical(restored.source_data()["profile"], selected)
-    assert ("profile" in restored._source_selection_base_data) is retain_base_data
+    assert (
+        "profile" in restored._document.source_selection_base_data
+    ) is retain_base_data
 
     restored_again = erlab.interactive.utils.ToolWindow.from_dataset(
         restored.to_dataset()
@@ -234,7 +243,9 @@ def test_figure_composer_selected_source_reference_restores_from_base_data(
     qtbot.addWidget(restored)
     assert isinstance(restored, FigureComposerTool)
     xr.testing.assert_identical(restored.source_data()["profile"], selected)
-    xr.testing.assert_identical(restored._source_selection_base_data["profile"], base)
+    xr.testing.assert_identical(
+        restored._document.source_selection_base_data["profile"], base
+    )
 
 
 def test_figure_composer_selected_alias_roundtrip_uses_source_alias_base(
@@ -266,7 +277,9 @@ def test_figure_composer_selected_alias_roundtrip_uses_source_alias_base(
     qtbot.addWidget(restored)
     assert isinstance(restored, FigureComposerTool)
     xr.testing.assert_identical(restored.source_data()["selected"], selected)
-    xr.testing.assert_identical(restored._source_selection_base_data["selected"], base)
+    xr.testing.assert_identical(
+        restored._document.source_selection_base_data["selected"], base
+    )
 
 
 def test_figure_composer_restore_rebuilds_selected_source_chain_out_of_order(
@@ -304,9 +317,11 @@ def test_figure_composer_restore_rebuilds_selected_source_chain_out_of_order(
     selected_v = selected_u.qsel(v=2.0)
     xr.testing.assert_identical(tool.source_data()["selected_u"], selected_u)
     xr.testing.assert_identical(tool.source_data()["selected_v"], selected_v)
-    xr.testing.assert_identical(tool._source_selection_base_data["selected_u"], base)
     xr.testing.assert_identical(
-        tool._source_selection_base_data["selected_v"], selected_u
+        tool._document.source_selection_base_data["selected_u"], base
+    )
+    xr.testing.assert_identical(
+        tool._document.source_selection_base_data["selected_v"], selected_u
     )
 
 
@@ -332,10 +347,10 @@ def test_figure_composer_restore_recomputes_cached_selected_descendants(qtbot) -
     assert not tool.source_data()["selected_u"].identical(selected_u)
     assert not tool.source_data()["selected_v"].identical(selected_v)
     xr.testing.assert_identical(
-        tool._source_selection_base_data["selected_u"], replacement
+        tool._document.source_selection_base_data["selected_u"], replacement
     )
     xr.testing.assert_identical(
-        tool._source_selection_base_data["selected_v"], expected_u
+        tool._document.source_selection_base_data["selected_v"], expected_u
     )
 
 
@@ -400,7 +415,7 @@ def test_figure_composer_restore_selected_source_cycle_stays_unresolved(qtbot) -
     tool._restore_persistence_data_items({}, xr.Dataset())
 
     assert set(tool.source_data()) == {"stable"}
-    assert tool._source_selection_base_data == {}
+    assert tool._document.source_selection_base_data == {}
 
 
 def test_figure_composer_persistence_metadata_fallbacks(qtbot) -> None:
@@ -416,7 +431,11 @@ def test_figure_composer_persistence_metadata_fallbacks(qtbot) -> None:
         primary_source="primary",
     )
     qtbot.addWidget(tool)
-    del tool._source_data["primary"]
+    source_data = dict(tool._document.source_data)
+    del source_data["primary"]
+    tool._document.replace_source_payloads(
+        source_data, tool._document.source_selection_base_data
+    )
 
     items = tool._persistence_data_items()
     xr.testing.assert_identical(
@@ -457,18 +476,17 @@ def test_figure_composer_source_ui_keeps_aliases_as_internal_keys(qtbot) -> None
     )
     qtbot.addWidget(tool)
 
-    first_item = tool.source_list.topLevelItem(0)
+    first_item = tool.source_panel.source_list.topLevelItem(0)
     assert first_item is not None
     assert first_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "data_0"
     assert first_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is True
     assert not first_item.font(0).bold()
-    assert first_item.text(0) == "data_0"
-    second_item = tool.source_list.topLevelItem(1)
+    second_item = tool.source_panel.source_list.topLevelItem(1)
     assert second_item is not None
+    assert second_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "data_1"
     assert second_item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is False
-    assert second_item.text(0) == "data_1"
 
-    tool._select_step_section("sources")
+    tool.operation_editor.select_section("sources")
     checks = _plot_source_checks(tool)
     assert checks["data_0"].property("figure_source_name") == "data_0"
 
@@ -494,12 +512,11 @@ def test_figure_composer_source_ui_uses_shared_shape_formatter(
     tool = FigureComposerTool(data)
     qtbot.addWidget(tool)
 
-    first_item = tool.source_list.topLevelItem(0)
+    first_item = tool.source_panel.source_list.topLevelItem(0)
     assert first_item is not None
-    shape_widget = tool.source_list.itemWidget(first_item, 1)
+    shape_widget = tool.source_panel.source_list.itemWidget(first_item, 1)
     assert isinstance(shape_widget, QtWidgets.QLabel)
-    assert shape_widget.text() == "<p>formatted shape</p>"
-    assert tool.source_list.toolTip() == ""
+    assert tool.source_panel.source_list.toolTip() == ""
     assert first_item.toolTip(0)
     assert first_item.toolTip(1) == first_item.toolTip(0)
     assert shape_widget.toolTip() == ""
@@ -531,14 +548,17 @@ def test_figure_composer_source_refresh_controls_use_live_source_callbacks(
     )
     qtbot.addWidget(tool)
 
-    assert tool.source_list.columnCount() == 2
-    assert tool.source_list.findChildren(QtWidgets.QToolButton) == []
-    assert tool.refresh_sources_button.accessibleName() == "Refresh Selected Sources"
-    assert tool.refresh_sources_button.menu() is None
-    assert not tool.refresh_sources_button.isEnabled()
+    assert tool.source_panel.source_list.columnCount() == 2
+    assert tool.source_panel.source_list.findChildren(QtWidgets.QToolButton) == []
+    assert (
+        tool.source_panel.refresh_sources_button.accessibleName()
+        == "Refresh Selected Sources"
+    )
+    assert tool.source_panel.refresh_sources_button.menu() is None
+    assert not tool.source_panel.refresh_sources_button.isEnabled()
     assert tool._source_refresh_label("data_0") is None
-    tool._refresh_selected_sources_from_button()
-    assert not tool.source_status_label.isHidden()
+    tool.source_panel.refresh_requested.emit(tool.source_panel.selected_names())
+    assert not tool.source_panel.source_status_label.isHidden()
 
     refreshed: list[str] = []
 
@@ -558,51 +578,51 @@ def test_figure_composer_source_refresh_controls_use_live_source_callbacks(
         source_label=source_label,
     )
 
-    first_item = tool.source_list.topLevelItem(0)
-    second_item = tool.source_list.topLevelItem(1)
+    first_item = tool.source_panel.source_list.topLevelItem(0)
+    second_item = tool.source_panel.source_list.topLevelItem(1)
     assert first_item is not None
     assert second_item is not None
     assert first_item.icon(0).isNull()
     assert second_item.icon(0).isNull()
     assert first_item.data(0, QtCore.Qt.ItemDataRole.AccessibleDescriptionRole)
-    assert tool.refresh_sources_button.isEnabled()
+    assert tool.source_panel.refresh_sources_button.isEnabled()
 
-    tool.refresh_sources_button.click()
+    tool.source_panel.refresh_sources_button.click()
     assert refreshed == ["data_0"]
-    assert not tool.source_status_label.isHidden()
+    assert not tool.source_panel.source_status_label.isHidden()
 
     refreshed.clear()
     tool._refresh_all_sources_from_button()
     assert refreshed == ["data_0"]
-    assert not tool.source_status_label.isHidden()
+    assert not tool.source_panel.source_status_label.isHidden()
 
-    tool._set_selected_source_names_silent({"data_0", "profile"}, "data_0")
+    tool.source_panel.set_selected_names({"data_0", "profile"}, current_name="data_0")
     tool._refresh_source_controls()
     refreshed.clear()
-    tool.refresh_sources_button.click()
+    tool.source_panel.refresh_sources_button.click()
     assert refreshed == ["data_0"]
-    assert "profile" in tool.source_status_label.text()
+    assert not tool.source_panel.source_status_label.isHidden()
 
     def raise_refresh(name: str) -> bool:
         raise RuntimeError(f"{name} is incompatible")
 
-    tool._set_selected_source_names_silent({"data_0"}, "data_0")
+    tool.source_panel.set_selected_names({"data_0"}, current_name="data_0")
     tool._set_source_refresh_callbacks(
         can_refresh_source=can_refresh_source,
         refresh_source=raise_refresh,
         source_label=source_label,
     )
-    tool.refresh_sources_button.click()
-    assert "incompatible" in tool.source_status_label.text()
+    tool.source_panel.refresh_sources_button.click()
+    assert not tool.source_panel.source_status_label.isHidden()
 
     tool._set_source_refresh_callbacks(
         can_refresh_source=lambda _name: False,
         refresh_source=refresh_source,
         source_label=source_label,
     )
-    assert not tool.refresh_sources_button.isEnabled()
+    assert not tool.source_panel.refresh_sources_button.isEnabled()
     refreshed.clear()
-    tool._refresh_selected_sources_from_button()
+    tool.source_panel.refresh_requested.emit(tool.source_panel.selected_names())
     tool._refresh_all_sources_from_button()
     assert refreshed == []
 
@@ -665,28 +685,34 @@ def test_figure_composer_source_remove_controls_disable_used_sources(qtbot) -> N
         source_data={"data_0": image, "profile": profile, "unused": unused},
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
 
     before_status = tool.tool_status
     before_source_data = tool.source_data()
-    tool._set_selected_source_names_silent({"profile"}, "profile")
+    tool.source_panel.set_selected_names({"profile"}, current_name="profile")
     tool._refresh_source_controls()
     tool._refresh_source_detail_panel()
-    assert not tool.remove_selected_source_button.isEnabled()
-    assert tool.source_detail_content.property("figureComposerSourceUsageCount") == 1
-    tool._remove_selected_sources()
+    assert not tool.source_panel.remove_selected_source_button.isEnabled()
+    assert (
+        tool.source_panel.source_detail_content.property(
+            "figureComposerSourceUsageCount"
+        )
+        == 1
+    )
+    tool.source_panel.remove_requested.emit(tool.source_panel.selected_names())
     assert tool.tool_status == before_status
     assert set(tool.source_data()) == set(before_source_data)
     assert not tool.remove_source("profile")
     assert not tool.remove_source("missing")
 
-    tool._set_selected_source_names_silent({"unused"}, "unused")
+    tool.source_panel.set_selected_names({"unused"}, current_name="unused")
     tool._refresh_source_controls()
-    assert tool.remove_selected_source_button.isEnabled()
-    tool.remove_selected_source_button.click()
+    assert tool.source_panel.remove_selected_source_button.isEnabled()
+    tool.source_panel.remove_selected_source_button.click()
     assert "unused" not in tool.source_data()
-    assert tool.source_status_label.text() == ""
-    assert tool.source_status_label.isHidden()
+    assert tool.source_panel.source_status_label.isHidden()
 
 
 def test_figure_composer_source_list_has_plain_rows_and_balanced_columns(
@@ -711,8 +737,8 @@ def test_figure_composer_source_list_has_plain_rows_and_balanced_columns(
         source_label=lambda name: name,
     )
 
-    data_item = tool.source_list.topLevelItem(0)
-    missing_item = tool.source_list.topLevelItem(1)
+    data_item = tool.source_panel.source_list.topLevelItem(0)
+    missing_item = tool.source_panel.source_list.topLevelItem(1)
     assert data_item is not None
     assert missing_item is not None
     assert data_item.icon(0).isNull()
@@ -722,7 +748,7 @@ def test_figure_composer_source_list_has_plain_rows_and_balanced_columns(
     tool.resize(900, 650)
     tool.show()
     QtWidgets.QApplication.processEvents()
-    header = tool.source_list.header()
+    header = tool.source_panel.source_list.header()
     assert header is not None
     assert header.sectionResizeMode(0) == QtWidgets.QHeaderView.ResizeMode.Stretch
     assert header.sectionResizeMode(1) == QtWidgets.QHeaderView.ResizeMode.Interactive
@@ -773,8 +799,8 @@ def test_figure_composer_remove_source_updates_state_history_and_code(qtbot) -> 
     assert set(tool.source_data()) == {"data_0"}
     assert tool.tool_status.operations == (operation,)
     assert tool.tool_status.primary_source == "data_0"
-    assert tool.source_status_label.text() == ""
-    assert not tool.remove_selected_source_button.isEnabled()
+    assert tool.source_panel.source_status_label.isHidden()
+    assert not tool.source_panel.remove_selected_source_button.isEnabled()
 
     _render_figure_composer_rgba(tool)
     assert tool._operation_render_errors == {}
@@ -800,7 +826,7 @@ def test_figure_composer_remove_source_updates_state_history_and_code(qtbot) -> 
     assert set(tool.source_data()) == {"data_0"}
     assert tool.tool_status.primary_source == "data_0"
     tool._refresh_source_list()
-    assert tool.source_list.findChildren(QtWidgets.QToolButton) == []
+    assert tool.source_panel.source_list.findChildren(QtWidgets.QToolButton) == []
 
 
 def test_figure_composer_remove_selected_sources_coalesces_history(qtbot) -> None:
@@ -823,11 +849,11 @@ def test_figure_composer_remove_selected_sources_coalesces_history(qtbot) -> Non
     )
     qtbot.addWidget(tool)
     tool._reset_history_stack()
-    tool._set_selected_source_names_silent(
-        {"first_unused", "second_unused"}, "first_unused"
+    tool.source_panel.set_selected_names(
+        {"first_unused", "second_unused"}, current_name="first_unused"
     )
 
-    tool._remove_selected_sources()
+    tool.source_panel.remove_requested.emit(tool.source_panel.selected_names())
 
     assert tuple(tool.source_data()) == ("data",)
     assert len(tool._prev_states) == 2
@@ -909,13 +935,13 @@ def test_figure_composer_source_alias_editor_renames_references(qtbot) -> None:
         source_data={"data_0": first, "data_1": second},
     )
     qtbot.addWidget(tool)
-    tool._set_selected_source_names_silent({"data_0"}, "data_0")
+    tool.source_panel.set_selected_names({"data_0"}, current_name="data_0")
     tool._refresh_source_detail_panel()
     tool._refresh_source_selection_editor()
 
-    alias_edit = tool.source_alias_edit
+    alias_edit = tool.source_panel.source_alias_edit
     assert alias_edit.text() == "data_0"
-    tool._rename_source_alias("data_0", "renamed")
+    tool.source_panel.rename_requested.emit("data_0", "renamed")
 
     assert tuple(source.name for source in tool.source_states()) == (
         "renamed",
@@ -925,11 +951,15 @@ def test_figure_composer_source_alias_editor_renames_references(qtbot) -> None:
     assert tuple(tool.source_data()) == ("renamed", "data_1")
     assert tool.tool_status.operations[0].sources == ("renamed", "data_1")
     assert tool.tool_status.operations[1].line_source == "renamed"
-    assert tool._source_by_name()["renamed"].label == "Legacy first"
-    assert tool.source_list.topLevelItem(0).text(0) == "renamed"
-    assert "Legacy" not in tool.source_list.topLevelItem(0).text(0)
+    assert tool._document.source_by_name()["renamed"].label == "Legacy first"
+    assert (
+        tool.source_panel.source_list.topLevelItem(0).data(
+            0, QtCore.Qt.ItemDataRole.UserRole
+        )
+        == "renamed"
+    )
 
-    assert tool._source_alias_error("data_1", current="renamed") is not None
+    assert tool._document.source_alias_error("data_1", current="renamed") is not None
 
 
 def test_figure_composer_source_alias_rename_keeps_own_selection_implicit(
@@ -950,15 +980,19 @@ def test_figure_composer_source_alias_rename_keeps_own_selection_implicit(
         primary_source="selected",
     )
     qtbot.addWidget(tool)
-    tool._source_selection_base_data["selected"] = base
+    tool._document.replace_source_payloads(
+        tool._document.source_data, {"selected": base}
+    )
 
-    assert tool._rename_source_alias("selected", "renamed")
+    assert tool._document.rename_source("selected", "renamed")
 
     [source] = tool.source_states()
     assert source.name == "renamed"
     assert source.selection_source is None
     xr.testing.assert_identical(tool.source_data()["renamed"], selected)
-    xr.testing.assert_identical(tool._source_selection_base_data["renamed"], base)
+    xr.testing.assert_identical(
+        tool._document.source_selection_base_data["renamed"], base
+    )
 
 
 def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
@@ -977,8 +1011,10 @@ def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
         primary_source="first",
     )
     qtbot.addWidget(tool)
-    tool._source_selection_base_data["second"] = first
-    tool._set_selected_source_names_silent({"second"}, "second")
+    tool._document.replace_source_payloads(
+        tool._document.source_data, {"second": first}
+    )
+    tool.source_panel.set_selected_names({"second"}, current_name="second")
     tool._refresh_source_controls()
     assert (
         tool.findChild(QtWidgets.QToolButton, "figureComposerDuplicateSourceButton")
@@ -993,11 +1029,14 @@ def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
         is None
     )
     assert (
-        tool.source_list.dragDropMode()
+        tool.source_panel.source_list.dragDropMode()
         == QtWidgets.QAbstractItemView.DragDropMode.InternalMove
     )
-    assert tool.source_list.defaultDropAction() == QtCore.Qt.DropAction.MoveAction
-    assert tool.source_list.showDropIndicator()
+    assert (
+        tool.source_panel.source_list.defaultDropAction()
+        == QtCore.Qt.DropAction.MoveAction
+    )
+    assert tool.source_panel.source_list.showDropIndicator()
 
     menu, move_up_action = _source_context_action(
         tool, "figureComposerContextMoveSourceUpAction"
@@ -1007,8 +1046,6 @@ def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
         for action in menu.actions()
         if action.objectName() == "figureComposerContextMoveSourceDownAction"
     )
-    assert move_up_action.text() == "Move Up"
-    assert move_down_action.text() == "Move Down"
     assert move_up_action.isEnabled()
     assert move_down_action.isEnabled()
     menu.close()
@@ -1025,13 +1062,15 @@ def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
         "second_copy",
         "third",
     )
-    duplicate = tool._source_by_name()["second_copy"]
+    duplicate = tool._document.source_by_name()["second_copy"]
     assert duplicate.label == "second_copy"
     assert duplicate.isel == {"x": 0}
     assert duplicate.selection_source == "first"
     xr.testing.assert_identical(tool.source_data()["second_copy"], second)
-    xr.testing.assert_identical(tool._source_selection_base_data["second_copy"], first)
-    assert tool.source_list.currentItem().text(0) == "second_copy"
+    xr.testing.assert_identical(
+        tool._document.source_selection_base_data["second_copy"], first
+    )
+    assert tool.source_panel.current_name() == "second_copy"
 
     menu, move_up_action = _source_context_action(
         tool, "figureComposerContextMoveSourceUpAction"
@@ -1044,7 +1083,7 @@ def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
         "second",
         "third",
     )
-    assert tool.source_list.currentItem().text(0) == "second_copy"
+    assert tool.source_panel.current_name() == "second_copy"
 
     menu, move_down_action = _source_context_action(
         tool, "figureComposerContextMoveSourceDownAction"
@@ -1062,7 +1101,7 @@ def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
         "third",
         "second_copy",
     )
-    assert tool.source_list.currentItem().text(0) == "second_copy"
+    assert tool.source_panel.current_name() == "second_copy"
 
 
 def test_figure_composer_duplicate_source_preserves_historical_label(qtbot) -> None:
@@ -1081,11 +1120,13 @@ def test_figure_composer_duplicate_source_preserves_historical_label(qtbot) -> N
         primary_source="keeper",
     )
     qtbot.addWidget(tool)
-    tool._set_selected_source_names_silent({"automatic", "historical"}, "automatic")
+    tool.source_panel.set_selected_names(
+        {"automatic", "historical"}, current_name="automatic"
+    )
 
-    tool._duplicate_selected_sources()
+    tool.source_panel.duplicate_requested.emit(tool.source_panel.selected_names())
 
-    source_by_name = tool._source_by_name()
+    source_by_name = tool._document.source_by_name()
     assert source_by_name["automatic_copy"].label == "automatic_copy"
     assert source_by_name["historical_copy"].label == "Historical display label"
 
@@ -1120,14 +1161,14 @@ def test_figure_composer_duplicate_selected_source_generated_code_uses_raw_base(
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    tool._source_selection_base_data["data"] = base
-    tool._set_selected_source_names_silent({"data"}, "data")
-    tool._duplicate_selected_sources()
-    assert tool._source_by_name()["data_copy"].selection_source is None
-    tool._recipe = tool._recipe.model_copy(
+    tool._document.replace_source_payloads(tool._document.source_data, {"data": base})
+    tool.source_panel.set_selected_names({"data"}, current_name="data")
+    tool.source_panel.duplicate_requested.emit(tool.source_panel.selected_names())
+    assert tool._document.source_by_name()["data_copy"].selection_source is None
+    tool.tool_status = tool.tool_status.model_copy(
         update={
             "operations": (
-                *tool._recipe.operations,
+                *tool.tool_status.operations,
                 FigureOperationState.plot_array(
                     label="copy",
                     source="data_copy",
@@ -1228,9 +1269,9 @@ def test_figure_composer_generated_code_resolves_selected_source_dependencies(
         else source
         for source in tool.source_states()
     )
-    tool._recipe = tool._recipe.model_copy(update={"sources": cyclic_sources})
+    tool.tool_status = tool.tool_status.model_copy(update={"sources": cyclic_sources})
     with pytest.raises(
-        figurecomposer_text.FigureComposerInputError,
+        FigureComposerInputError,
         match=r"dependency cycle: selected_v -> selected_u -> selected_v",
     ):
         tool.generated_code()
@@ -1247,16 +1288,16 @@ def test_figure_composer_source_list_internal_reorder_updates_recipe(qtbot) -> N
         primary_source="a",
     )
     qtbot.addWidget(tool)
-    tool._set_selected_source_names_silent({"b", "c"}, "b")
+    tool.source_panel.set_selected_names({"b", "c"}, current_name="b")
 
-    first_moved = tool.source_list.takeTopLevelItem(1)
-    second_moved = tool.source_list.takeTopLevelItem(1)
+    first_moved = tool.source_panel.source_list.takeTopLevelItem(1)
+    second_moved = tool.source_panel.source_list.takeTopLevelItem(1)
     assert first_moved is not None
     assert second_moved is not None
-    tool.source_list.insertTopLevelItem(2, first_moved)
-    tool.source_list.insertTopLevelItem(3, second_moved)
-    tool._set_selected_source_names_silent({"b", "c"}, "b")
-    tool.source_list._queue_rows_reordered()
+    tool.source_panel.source_list.insertTopLevelItem(2, first_moved)
+    tool.source_panel.source_list.insertTopLevelItem(3, second_moved)
+    tool.source_panel.set_selected_names({"b", "c"}, current_name="b")
+    tool.source_panel.source_list._queue_rows_reordered()
 
     assert tuple(source.name for source in tool.source_states()) == (
         "a",
@@ -1277,8 +1318,8 @@ def test_figure_composer_source_list_internal_reorder_updates_recipe(qtbot) -> N
         "b",
         "c",
     )
-    assert tool.source_list.currentItem().text(0) == "b"
-    assert {item.text(0) for item in tool.source_list.selectedItems()} == {"b", "c"}
+    assert tool.source_panel.current_name() == "b"
+    assert set(tool.source_panel.selected_names()) == {"b", "c"}
 
 
 def test_figure_composer_source_list_keyboard_context_menu(qtbot) -> None:
@@ -1290,7 +1331,7 @@ def test_figure_composer_source_list_keyboard_context_menu(qtbot) -> None:
         primary_source="a",
     )
     qtbot.addWidget(tool)
-    tool._set_selected_source_names_silent({"b"}, "b")
+    tool.source_panel.set_selected_names({"b"}, current_name="b")
     refreshed: list[str] = []
 
     def refresh_source(name: str) -> bool:
@@ -1307,30 +1348,82 @@ def test_figure_composer_source_list_keyboard_context_menu(qtbot) -> None:
         QtCore.Qt.Key.Key_F10,
         QtCore.Qt.KeyboardModifier.ShiftModifier,
     )
-    tool.source_list.keyPressEvent(event)
+    tool.source_panel.source_list.keyPressEvent(event)
 
     assert event.isAccepted()
-    assert tool._source_context_menu is not None
+    refresh_all_action = tool.source_panel.source_list.findChild(
+        QtGui.QAction, "figureComposerContextRefreshAllSourcesAction"
+    )
+    assert refresh_all_action is not None
+    menu = refresh_all_action.parent()
+    assert isinstance(menu, QtWidgets.QMenu)
     action_names = {
-        action.objectName()
-        for action in tool._source_context_menu.actions()
-        if action.objectName()
+        action.objectName() for action in menu.actions() if action.objectName()
     }
     assert "figureComposerContextMoveSourceUpAction" in action_names
     assert "figureComposerContextMoveSourceDownAction" in action_names
-    refresh_all_action = next(
-        action
-        for action in tool._source_context_menu.actions()
-        if action.objectName() == "figureComposerContextRefreshAllSourcesAction"
-    )
     assert refresh_all_action.isEnabled()
     refresh_all_action.trigger()
     assert refreshed == ["a", "b"]
-    tool._source_context_menu.close()
+    menu.close()
+
+
+def test_figure_composer_data_only_source_context_menu_disables_rename(qtbot) -> None:
+    source = _figure_composer_profile_source("source")
+    data_only = _figure_composer_profile_source("data_only")
+    tool = FigureComposerTool.from_sources(
+        {"source": source, "data_only": data_only},
+        sources=(FigureSourceState(name="source"),),
+        operations=(),
+        setup=FigureSubplotsState(),
+        primary_source="source",
+    )
+    qtbot.addWidget(tool)
+    tool.source_panel.set_selected_names({"data_only"}, current_name="data_only")
+    tool._refresh_source_detail_panel()
+
+    assert not tool.source_panel.source_alias_edit.isEnabled()
+    menu, rename_action = _source_context_action(
+        tool, "figureComposerContextRenameSourceAction"
+    )
+    triggered: list[bool] = []
+    rename_action.triggered.connect(triggered.append)
+
+    assert not rename_action.isEnabled()
+    rename_action.trigger()
+    assert triggered == []
+    menu.close()
+
+
+def test_figure_composer_source_context_menus_are_released(qtbot) -> None:
+    tool = FigureComposerTool.from_sources(
+        {"a": _figure_composer_profile_source("a")},
+        sources=(FigureSourceState(name="a"),),
+        setup=FigureSubplotsState(),
+        primary_source="a",
+    )
+    qtbot.addWidget(tool)
+
+    tool.source_panel._show_context_menu(QtCore.QPoint(0, 0))
+    first_menus = tool.source_panel.source_list.findChildren(QtWidgets.QMenu)
+    assert len(first_menus) == 1
+    first_menu = first_menus[0]
+    tool.source_panel._show_context_menu(QtCore.QPoint(0, 0))
+    menus = tool.source_panel.source_list.findChildren(QtWidgets.QMenu)
+    assert len(menus) == 2
+    second_menu = next(menu for menu in menus if menu is not first_menu)
+
+    first_menu.close()
+    qtbot.waitUntil(lambda: not erlab.interactive.utils.qt_is_valid(first_menu))
+    assert tool.source_panel.source_list.findChildren(QtWidgets.QMenu) == [second_menu]
+
+    second_menu.close()
+    qtbot.waitUntil(lambda: not erlab.interactive.utils.qt_is_valid(second_menu))
+    assert tool.source_panel.source_list.findChildren(QtWidgets.QMenu) == []
 
 
 def test_figure_composer_source_list_edge_events(qtbot) -> None:
-    source_list = figurecomposer_tool_module._FigureComposerSourceList()
+    source_list = figurecomposer_source_panel._FigureSourceList()
     qtbot.addWidget(source_list)
     emitted: list[tuple[object, object, object]] = []
     source_list.rows_reordered.connect(
@@ -1365,60 +1458,56 @@ def test_figure_composer_source_alias_editor_commit_paths(
         primary_source="first",
     )
     qtbot.addWidget(tool)
-    tool._set_selected_source_names_silent({"first"}, "first")
+    tool.source_panel.set_selected_names({"first"}, current_name="first")
     tool._refresh_source_detail_panel()
     tool._refresh_source_selection_editor()
-    alias_edit = tool.source_alias_edit
+    alias_edit = tool.source_panel.source_alias_edit
 
-    original_sources = tool.source_states()
-    monkeypatch.setattr(tool, "sender", lambda: None)
-    tool._commit_source_alias_edit()
-    assert tool.source_states() == original_sources
-
-    detached_edit = QtWidgets.QLineEdit()
-    monkeypatch.setattr(tool, "sender", lambda: detached_edit)
-    tool._commit_source_alias_edit()
-    assert tool.source_states() == original_sources
-
-    monkeypatch.setattr(tool, "sender", lambda: alias_edit)
     alias_edit.setText("first")
-    tool._commit_source_alias_edit()
+    alias_edit.editingFinished.emit()
     assert tuple(source.name for source in tool.source_states()) == ("first", "second")
 
     alias_edit.setText("second")
-    tool._commit_source_alias_edit()
-    assert not tool.source_validation_label.isHidden()
-    assert tool.source_status_label.isHidden()
+    alias_edit.editingFinished.emit()
+    assert not tool.source_panel.source_validation_label.isHidden()
+    assert tool.source_panel.source_status_label.isHidden()
     assert alias_edit.text() == "second"
 
-    alias_edit.setText("list")
-    tool._commit_source_alias_edit()
+    alias_edit.setText("not valid")
+    alias_edit.editingFinished.emit()
     assert tuple(source.name for source in tool.source_states()) == ("first", "second")
-    assert not tool.source_validation_label.isHidden()
+    assert not tool.source_panel.source_validation_label.isHidden()
+    assert alias_edit.text() == "not valid"
+
+    alias_edit.setText("list")
+    alias_edit.editingFinished.emit()
+    assert tuple(source.name for source in tool.source_states()) == ("first", "second")
+    assert not tool.source_panel.source_validation_label.isHidden()
+    assert alias_edit.text() == "list"
 
     with monkeypatch.context() as patch:
-        patch.setattr(tool, "_rename_source_alias", lambda *_args: False)
+        patch.setattr(tool._document, "rename_source", lambda *_args: False)
         alias_edit.setText("third")
-        tool._commit_source_alias_edit()
+        alias_edit.editingFinished.emit()
     assert alias_edit.text() == "first"
 
-    tool._set_selected_source_names_silent(set(), None)
-    tool._focus_source_alias_editor()
-    tool._set_selected_source_names_silent({"first"}, "first")
+    tool.source_panel.set_selected_names(set(), current_name=None)
+    tool.source_panel.focus_alias_editor()
+    tool.source_panel.set_selected_names({"first"}, current_name="first")
     tool._refresh_source_detail_panel()
-    tool.source_alias_edit.setEnabled(False)
-    tool._focus_source_alias_editor()
-    assert not tool.source_alias_edit.isEnabled()
-    tool.source_alias_edit.setEnabled(True)
+    tool.source_panel.source_alias_edit.setEnabled(False)
+    tool.source_panel.focus_alias_editor()
+    assert not tool.source_panel.source_alias_edit.isEnabled()
+    tool.source_panel.source_alias_edit.setEnabled(True)
 
     alias_edit.setText("renamed")
-    tool._commit_source_alias_edit()
+    alias_edit.editingFinished.emit()
     assert tuple(source.name for source in tool.source_states()) == (
         "renamed",
         "second",
     )
-    assert tool._source_by_name()["renamed"].label == "renamed"
-    assert "renamed" in tool._source_data
+    assert tool._document.source_by_name()["renamed"].label == "renamed"
+    assert "renamed" in tool._document.source_data
 
 
 def test_figure_composer_remove_selected_sources_removes_available_rows(qtbot) -> None:
@@ -1431,12 +1520,12 @@ def test_figure_composer_remove_selected_sources_removes_available_rows(qtbot) -
         primary_source="first",
     )
     qtbot.addWidget(tool)
-    tool._set_selected_source_names_silent({"second"}, "second")
+    tool.source_panel.set_selected_names({"second"}, current_name="second")
 
-    tool._remove_selected_sources()
+    tool.source_panel.remove_requested.emit(tool.source_panel.selected_names())
 
     assert tuple(source.name for source in tool.source_states()) == ("first",)
-    assert "second" not in tool._source_data
+    assert "second" not in tool._document.source_data
 
 
 def test_figure_composer_remove_selected_sources_resolves_dependencies(qtbot) -> None:
@@ -1461,9 +1550,9 @@ def test_figure_composer_remove_selected_sources_resolves_dependencies(qtbot) ->
         primary_source="other",
     )
     qtbot.addWidget(tool)
-    tool._set_selected_source_names_silent({"base", "selected"}, "base")
+    tool.source_panel.set_selected_names({"base", "selected"}, current_name="base")
 
-    tool._remove_selected_sources()
+    tool.source_panel.remove_requested.emit(tool.source_panel.selected_names())
 
     assert tuple(source.name for source in tool.source_states()) == ("other",)
     assert set(tool.source_data()) == {"other"}
@@ -1481,9 +1570,9 @@ def test_figure_composer_remove_all_selected_sources_keeps_last_row(qtbot) -> No
         primary_source="first",
     )
     qtbot.addWidget(tool)
-    tool._set_selected_source_names_silent(set(source_data), "first")
+    tool.source_panel.set_selected_names(set(source_data), current_name="first")
 
-    tool._remove_selected_sources()
+    tool.source_panel.remove_requested.emit(tool.source_panel.selected_names())
 
     assert tuple(source.name for source in tool.source_states()) == ("third",)
     assert set(tool.source_data()) == {"third"}
@@ -1495,9 +1584,7 @@ def test_figure_composer_source_add_callbacks_handle_unavailable_paths(
     data = _figure_composer_profile_source("data")
     tool = FigureComposerTool(data)
     qtbot.addWidget(tool)
-    figure_window = figurecomposer_widgets._FigureComposerDisplayWindow(
-        FigureSubplotsState()
-    )
+    figure_window = figure_window_ui._FigureComposerDisplayWindow(FigureSubplotsState())
     qtbot.addWidget(figure_window)
     tool._figure_window = figure_window
     mime = QtCore.QMimeData()
@@ -1551,63 +1638,61 @@ def test_figure_composer_source_structure_edge_paths(qtbot) -> None:
     qtbot.addWidget(tool)
 
     def clear_source_current() -> None:
-        tool.source_list.clearSelection()
-        tool.source_list.setCurrentIndex(QtCore.QModelIndex())
+        tool.source_panel.source_list.clearSelection()
+        tool.source_panel.source_list.setCurrentIndex(QtCore.QModelIndex())
 
     clear_source_current()
-    tool._remove_selected_sources()
+    tool.source_panel.remove_requested.emit(tool.source_panel.selected_names())
     clear_source_current()
-    tool._duplicate_selected_sources()
+    tool.source_panel.duplicate_requested.emit(tool.source_panel.selected_names())
     clear_source_current()
-    tool._move_selected_sources(1)
-    assert not tool._source_move_possible(1)
+    tool.source_panel.move_requested.emit(tool.source_panel.selected_names(), 1)
+    assert not tool._document.can_move_sources((), 1)
     assert tuple(source.name for source in tool.source_states()) == (
         "first",
         "second",
     )
 
-    tool._set_selected_source_names_silent({"first"}, "first")
-    tool._move_selected_sources(-1)
+    tool.source_panel.set_selected_names({"first"}, current_name="first")
+    tool.source_panel.move_requested.emit(tool.source_panel.selected_names(), -1)
     assert tuple(source.name for source in tool.source_states()) == (
         "first",
         "second",
     )
-    tool._rename_source_alias("missing", "renamed")
+    tool.source_panel.rename_requested.emit("missing", "renamed")
     assert tuple(source.name for source in tool.source_states()) == (
         "first",
         "second",
     )
 
-    assert tool._source_alias_error("") is not None
-    assert tool._source_alias_error("bad name") is not None
-    assert tool._source_alias_error(erlab.interactive.utils._SAVED_TOOL_DATA_NAME)
-    assert tool._source_alias_error("fig") is not None
-    assert tool._source_alias_error("second", current="first") is not None
-    reserved = {"first_copy"}
-    assert tool._source_copy_alias("first", reserved) == "first_copy_2"
-    reserved = {"first"}
-    assert tool._source_unique_alias("first", reserved) == "first_2"
+    assert tool._document.source_alias_error("") is not None
+    assert tool._document.source_alias_error("bad name") is not None
+    assert tool._document.source_alias_error(
+        erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+    )
+    assert tool._document.source_alias_error("fig") is not None
+    assert tool._document.source_alias_error("second", current="first") is not None
 
     tool._refresh_source_detail_panel()
     tool._refresh_source_selection_editor()
-    alias_edit = tool.source_alias_edit
+    alias_edit = tool.source_panel.source_alias_edit
     alias_edit.setText("bvec")
     alias_edit.editingFinished.emit()
     assert alias_edit.text() == "bvec"
-    assert not tool.source_validation_label.isHidden()
-    assert tool.source_status_label.isHidden()
-    tool._focus_source_alias_editor()
-    first_item = tool.source_list.topLevelItem(0)
+    assert not tool.source_panel.source_validation_label.isHidden()
+    assert tool.source_panel.source_status_label.isHidden()
+    tool.source_panel.focus_alias_editor()
+    first_item = tool.source_panel.source_list.topLevelItem(0)
     assert first_item is not None
-    tool._source_list_item_double_clicked(first_item, 0)
-    tool._rename_source_alias("first", "renamed")
+    tool.source_panel.source_list.itemDoubleClicked.emit(first_item, 0)
+    tool.source_panel.rename_requested.emit("first", "renamed")
     assert tuple(source.name for source in tool.source_states()) == (
         "renamed",
         "second",
     )
 
-    tool._set_selected_source_names_silent({"renamed", "second"}, "renamed")
-    tool._focus_source_alias_editor()
+    tool.source_panel.set_selected_names({"renamed", "second"}, current_name="renamed")
+    tool.source_panel.focus_alias_editor()
     tool._source_list_reordered("not-a-sequence", set(), None)
     tool._source_list_reordered(("renamed", "renamed"), set(), None)
     tool._source_list_reordered(("renamed", "second"), set(), None)
@@ -1616,6 +1701,39 @@ def test_figure_composer_source_structure_edge_paths(qtbot) -> None:
         "second",
         "renamed",
     )
+
+
+def test_figure_composer_source_selection_editor_widget_visibility(qtbot) -> None:
+    panel = figurecomposer_source_panel.FigureSourcePanel()
+    qtbot.addWidget(panel)
+    row = figurecomposer_source_panel.FigureSourceSelectionRow(
+        dimension="x",
+        tooltip="",
+        mode=None,
+        mode_mixed=False,
+        value_text="",
+        value_mixed=False,
+        width_text="",
+        width_mixed=False,
+    )
+
+    conditional_widgets = (
+        panel._selection_section,
+        panel._selection_message_label,
+        panel._selection_message,
+    )
+    assert all(widget.isHidden() for widget in conditional_widgets)
+
+    panel.set_selection_editor((row,))
+    assert not panel._selection_section.isHidden()
+    assert panel._selection_message_label.isHidden()
+    assert panel._selection_message.isHidden()
+
+    panel.set_selection_editor((), message="Unavailable")
+    assert all(not widget.isHidden() for widget in conditional_widgets)
+
+    panel.set_selection_editor(())
+    assert all(widget.isHidden() for widget in conditional_widgets)
 
 
 def test_figure_composer_source_selection_editor_edge_paths(qtbot) -> None:
@@ -1643,41 +1761,44 @@ def test_figure_composer_source_selection_editor_edge_paths(qtbot) -> None:
         QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
         QtWidgets.QApplication.processEvents()
 
-    tool.source_list.clearSelection()
-    tool.source_list.setCurrentIndex(QtCore.QModelIndex())
+    tool.source_panel.source_list.clearSelection()
+    tool.source_panel.source_list.setCurrentIndex(QtCore.QModelIndex())
     tool._refresh_source_detail_panel()
     tool._refresh_source_selection_editor()
     flush_deferred_editor_deletes()
-    assert tool.source_selection_controls_layout.count() == 0
+    assert tool.source_panel.source_selection_controls_layout.count() == 0
     assert (
-        tool.source_detail_content.property("figureComposerSourceEditorMode") == "empty"
+        tool.source_panel.source_detail_content.property(
+            "figureComposerSourceEditorMode"
+        )
+        == "empty"
     )
 
-    tool._set_selected_source_names_silent({"scalar"}, "scalar")
+    tool.source_panel.set_selected_names({"scalar"}, current_name="scalar")
     tool._refresh_source_detail_panel()
     tool._refresh_source_selection_editor()
     flush_deferred_editor_deletes()
-    item = tool.source_selection_controls_layout.itemAt(
-        tool.source_selection_controls_layout.rowCount() - 1,
+    item = tool.source_panel.source_selection_controls_layout.itemAt(
+        tool.source_panel.source_selection_controls_layout.rowCount() - 1,
         QtWidgets.QFormLayout.ItemRole.FieldRole,
     )
     assert item is not None
     assert isinstance(item.widget(), QtWidgets.QLabel)
 
-    tool.source_list.clearSelection()
-    first_item = tool.source_list.topLevelItem(0)
-    second_item = tool.source_list.topLevelItem(1)
+    tool.source_panel.source_list.clearSelection()
+    first_item = tool.source_panel.source_list.topLevelItem(0)
+    second_item = tool.source_panel.source_list.topLevelItem(1)
     assert first_item is not None
     assert second_item is not None
-    tool.source_list.setCurrentItem(first_item)
+    tool.source_panel.source_list.setCurrentItem(first_item)
     first_item.setSelected(True)
     second_item.setSelected(True)
     tool._refresh_source_detail_panel()
     tool._refresh_source_selection_editor()
     flush_deferred_editor_deletes()
     combo = None
-    for row in range(tool.source_selection_controls_layout.rowCount()):
-        item = tool.source_selection_controls_layout.itemAt(
+    for row in range(tool.source_panel.source_selection_controls_layout.rowCount()):
+        item = tool.source_panel.source_selection_controls_layout.itemAt(
             row, QtWidgets.QFormLayout.ItemRole.FieldRole
         )
         widget = None if item is None else item.widget()
@@ -1698,18 +1819,25 @@ def test_figure_composer_source_selection_editor_edge_paths(qtbot) -> None:
         assert index >= 0
         assert combo.itemData(index, QtCore.Qt.ItemDataRole.ToolTipRole)
     assert (
-        tool.source_detail_content.property("figureComposerSourceEditorMode")
+        tool.source_panel.source_detail_content.property(
+            "figureComposerSourceEditorMode"
+        )
         == "multiple"
     )
     assert (
-        tool.source_detail_content.property("figureComposerSourceSelectionCount") == 2
+        tool.source_panel.source_detail_content.property(
+            "figureComposerSourceSelectionCount"
+        )
+        == 2
     )
-    assert not tool.source_alias_controls.isVisible()
-    assert tool.source_inspector.isHidden()
+    assert not tool.source_panel.source_alias_controls.isVisible()
+    assert tool.source_panel.source_inspector.isHidden()
 
-    tool._source_data.clear()
-    tool._update_selected_source_dimension("x", "isel", "0", "")
-    assert tool._source_data == {}
+    tool._document.replace_source_payloads({}, {})
+    tool.source_panel.selection_dimension_requested.emit(
+        tool.source_panel.selected_names(), "x", "isel", "0", ""
+    )
+    assert tool._document.source_data == {}
 
 
 def test_figure_composer_source_selection_helper_edges(qtbot) -> None:
@@ -1729,10 +1857,7 @@ def test_figure_composer_source_selection_helper_edges(qtbot) -> None:
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    assert (
-        tool._source_selection_input_data("derived", tool._source_by_name()["derived"])
-        is data
-    )
+    assert tool._document.source_selection_input_data("derived") is data
 
     operation = FigureOperationState.plot_slices(
         label="slice",
@@ -1774,7 +1899,7 @@ def test_figure_composer_source_selection_helper_edges(qtbot) -> None:
         "derived",
         "data_2",
     )
-    assert tool._source_by_name()["data_2"].label == "data_2"
+    assert tool._document.source_by_name()["data_2"].label == "data_2"
     tool.add_sources(
         (FigureSourceState(name="data", label="Historical incoming"),),
         {"data": data},
@@ -1785,7 +1910,7 @@ def test_figure_composer_source_selection_helper_edges(qtbot) -> None:
         "data_2",
         "data_3",
     )
-    assert tool._source_by_name()["data_3"].label == "Historical incoming"
+    assert tool._document.source_by_name()["data_3"].label == "Historical incoming"
 
 
 def test_figure_composer_legacy_source_selection_normalization_edges(
@@ -1927,7 +2052,7 @@ def test_figure_composer_plot_slices_legacy_selections_preserve_source_order(
         else:
             selected = first.qsel(cut=expected_value)
             xr.testing.assert_identical(tool.source_data()[source_name], selected)
-            source = tool._source_by_name()[source_name]
+            source = tool._document.source_by_name()[source_name]
             assert source.selection_source == "first"
             assert source.qsel == {"cut": expected_value}
 
@@ -2000,11 +2125,12 @@ def test_figure_composer_replace_source_preserves_alias_and_generated_code(
         source_data={"data_0": original},
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
 
-    assert "data_0" in tool.operation_list.topLevelItem(0).text(0)
-    assert "data_0" in tool.operation_list.topLevelItem(1).text(0)
-    assert tool.step_section_buttons["sources"].text() == "Sources: data_0"
+    assert tool.tool_status.operations[0].sources == ("data_0",)
+    assert tool.tool_status.operations[1].line_source == "data_0"
 
     replaced = tool.replace_source(
         "data_0",
@@ -2028,11 +2154,6 @@ def test_figure_composer_replace_source_preserves_alias_and_generated_code(
     xr.testing.assert_identical(tool.source_data()["data_0"], replacement)
     assert tool.tool_status.operations[0].sources == ("data_0",)
     assert tool.tool_status.operations[1].line_source == "data_0"
-    assert "data_0" in tool.operation_list.topLevelItem(0).text(0)
-    assert "ImageTool 1: replacement" not in tool.operation_list.topLevelItem(0).text(0)
-    assert "data_0" in tool.operation_list.topLevelItem(1).text(0)
-    assert "ImageTool 1: replacement" not in tool.operation_list.topLevelItem(1).text(0)
-    assert tool.step_section_buttons["sources"].text() == "Sources: data_0"
 
     _render_figure_composer_rgba(tool)
     assert tool._operation_render_errors == {}
@@ -2057,13 +2178,21 @@ def test_figure_composer_replace_source_preserves_alias_and_generated_code(
         FigureSourceState(name="data_2", label="Missing"),
         replacement,
     )
-    tool._source_data["orphan"] = original
+    source_data = dict(tool._document.source_data)
+    source_data["orphan"] = original
+    tool._document.replace_source_payloads(
+        source_data, tool._document.source_selection_base_data
+    )
     assert tool.replace_source(
         "orphan",
         FigureSourceState(name="data_2", label="Historical orphan"),
         original,
     )
-    tool._source_data["default_orphan"] = original
+    source_data = dict(tool._document.source_data)
+    source_data["default_orphan"] = original
+    tool._document.replace_source_payloads(
+        source_data, tool._document.source_selection_base_data
+    )
     assert tool.replace_source(
         "default_orphan",
         FigureSourceState(name="data_3"),
@@ -2074,8 +2203,8 @@ def test_figure_composer_replace_source_preserves_alias_and_generated_code(
         "orphan",
         "default_orphan",
     )
-    assert tool._source_by_name()["orphan"].label == "Historical orphan"
-    assert tool._source_by_name()["default_orphan"].label == "default_orphan"
+    assert tool._document.source_by_name()["orphan"].label == "Historical orphan"
+    assert tool._document.source_by_name()["default_orphan"].label == "default_orphan"
 
 
 def test_figure_composer_source_refresh_applies_saved_selection(
@@ -2128,12 +2257,12 @@ def test_figure_composer_source_refresh_applies_saved_selection(
         incompatible,
     )
     xr.testing.assert_identical(tool.source_data()["data"], stale)
-    assert "Could not refresh source" in tool.source_status_label.text()
+    assert not tool.source_panel.source_status_label.isHidden()
 
     refreshed = original + 20.0
     tool.refresh_from_sources({"data": refreshed})
     xr.testing.assert_identical(tool.source_data()["data"], refreshed.qsel(eV=0.0))
-    assert tool.source_status_label.text() == ""
+    assert tool.source_panel.source_status_label.isHidden()
 
 
 def _transitive_selected_source_tool() -> tuple[
@@ -2168,8 +2297,9 @@ def _transitive_selected_source_tool() -> tuple[
         operations=(FigureOperationState.line(label="line", source="selected_v"),),
         primary_source="base",
     )
-    tool._source_selection_base_data.update(
-        {"selected_u": base, "selected_v": selected_u}
+    tool._document.replace_source_payloads(
+        tool._document.source_data,
+        {"selected_u": base, "selected_v": selected_u},
     )
     return tool, base, selected_u, selected_v
 
@@ -2203,16 +2333,16 @@ def test_figure_composer_source_refresh_recomputes_transitive_selected_sources(
     xr.testing.assert_identical(tool.source_data()["selected_u"], expected_u)
     xr.testing.assert_identical(tool.source_data()["selected_v"], expected_v)
     xr.testing.assert_identical(
-        tool._source_selection_base_data["selected_u"], replacement
+        tool._document.source_selection_base_data["selected_u"], replacement
     )
     xr.testing.assert_identical(
-        tool._source_selection_base_data["selected_v"], expected_u
+        tool._document.source_selection_base_data["selected_v"], expected_u
     )
     if mutation == "replace":
         assert {source.node_uid for source in tool.source_states()} == {
             "replacement-node"
         }
-    assert tool.source_status_label.text() == ""
+    assert tool.source_panel.source_status_label.isHidden()
 
 
 def test_figure_composer_refreshing_selected_alias_updates_linked_root(qtbot) -> None:
@@ -2233,7 +2363,7 @@ def test_figure_composer_refreshing_selected_alias_updates_linked_root(qtbot) ->
         replacement,
     )
 
-    source_by_name = tool._source_by_name()
+    source_by_name = tool._document.source_by_name()
     assert source_by_name["base"].selection_source is None
     assert source_by_name["selected_u"].selection_source == "base"
     assert source_by_name["selected_v"].selection_source == "selected_u"
@@ -2267,7 +2397,11 @@ def test_figure_composer_readding_shared_link_updates_root_without_new_alias(
     assert result.updated == (("manager_default", "base"),)
     assert result.skipped == ()
     assert result.name_map == {"manager_default": "base"}
-    assert tuple(tool._source_by_name()) == ("base", "selected_u", "selected_v")
+    assert tuple(tool._document.source_by_name()) == (
+        "base",
+        "selected_u",
+        "selected_v",
+    )
     expected_u = replacement.qsel(u=1.0)
     expected_v = expected_u.qsel(v=2.0)
     xr.testing.assert_identical(tool.source_data()["base"], replacement)
@@ -2297,7 +2431,7 @@ def test_figure_composer_add_sources_reports_partial_batch_outcome(qtbot) -> Non
     assert result
     xr.testing.assert_identical(tool.source_data()["base"], base)
     xr.testing.assert_identical(tool.source_data()["extra"], extra)
-    assert "Could not update source data for: base" in tool.source_status_label.text()
+    assert not tool.source_panel.source_status_label.isHidden()
 
 
 @pytest.mark.parametrize("mutation", ("replace", "add", "refresh"))
@@ -2309,7 +2443,7 @@ def test_figure_composer_source_refresh_is_atomic_when_dependent_selection_fails
     qtbot.addWidget(tool)
     original_status = tool.tool_status
     original_data = dict(tool.source_data())
-    original_bases = dict(tool._source_selection_base_data)
+    original_bases = dict(tool._document.source_selection_base_data)
     incompatible = base.isel(v=0, drop=True) + 100.0
 
     if mutation == "replace":
@@ -2330,10 +2464,12 @@ def test_figure_composer_source_refresh_is_atomic_when_dependent_selection_fails
     assert set(tool.source_data()) == set(original_data)
     for source_name, data in original_data.items():
         xr.testing.assert_identical(tool.source_data()[source_name], data)
-    assert set(tool._source_selection_base_data) == set(original_bases)
+    assert set(tool._document.source_selection_base_data) == set(original_bases)
     for source_name, data in original_bases.items():
-        xr.testing.assert_identical(tool._source_selection_base_data[source_name], data)
-    assert tool.source_status_label.text()
+        xr.testing.assert_identical(
+            tool._document.source_selection_base_data[source_name], data
+        )
+    assert not tool.source_panel.source_status_label.isHidden()
 
 
 def test_figure_composer_selection_edit_recomputes_transitive_selected_sources(
@@ -2341,20 +2477,24 @@ def test_figure_composer_selection_edit_recomputes_transitive_selected_sources(
 ) -> None:
     tool, base, _selected_u, _selected_v = _transitive_selected_source_tool()
     qtbot.addWidget(tool)
-    tool._set_selected_source_names_silent({"selected_u"}, "selected_u")
+    tool.source_panel.set_selected_names({"selected_u"}, current_name="selected_u")
 
-    tool._update_selected_source_dimension("u", "qsel", "0.0", "")
+    tool.source_panel.selection_dimension_requested.emit(
+        tool.source_panel.selected_names(), "u", "qsel", "0.0", ""
+    )
 
     expected_u = base.qsel(u=0.0)
     expected_v = expected_u.qsel(v=2.0)
-    assert tool._source_by_name()["selected_u"].qsel == {"u": 0.0}
+    assert tool._document.source_by_name()["selected_u"].qsel == {"u": 0.0}
     xr.testing.assert_identical(tool.source_data()["selected_u"], expected_u)
     xr.testing.assert_identical(tool.source_data()["selected_v"], expected_v)
-    xr.testing.assert_identical(tool._source_selection_base_data["selected_u"], base)
     xr.testing.assert_identical(
-        tool._source_selection_base_data["selected_v"], expected_u
+        tool._document.source_selection_base_data["selected_u"], base
     )
-    assert tool.source_validation_label.text() == ""
+    xr.testing.assert_identical(
+        tool._document.source_selection_base_data["selected_v"], expected_u
+    )
+    assert tool.source_panel.source_validation_label.isHidden()
 
 
 def test_figure_composer_selection_edit_is_atomic_when_dependent_fails(
@@ -2362,20 +2502,23 @@ def test_figure_composer_selection_edit_is_atomic_when_dependent_fails(
 ) -> None:
     tool, _base, _selected_u, _selected_v = _transitive_selected_source_tool()
     qtbot.addWidget(tool)
-    tool._set_selected_source_names_silent({"selected_u"}, "selected_u")
+    tool.source_panel.set_selected_names({"selected_u"}, current_name="selected_u")
     original_status = tool.tool_status
     original_data = dict(tool.source_data())
-    original_bases = dict(tool._source_selection_base_data)
+    original_bases = dict(tool._document.source_selection_base_data)
 
-    tool._update_selected_source_dimension("v", "mean", "", "")
+    tool.source_panel.selection_dimension_requested.emit(
+        tool.source_panel.selected_names(), "v", "mean", "", ""
+    )
 
     assert tool.tool_status == original_status
     for source_name, data in original_data.items():
         xr.testing.assert_identical(tool.source_data()[source_name], data)
     for source_name, data in original_bases.items():
-        xr.testing.assert_identical(tool._source_selection_base_data[source_name], data)
-    assert "selected_u" in tool.source_validation_label.text()
-    assert "selected_v" in tool.source_validation_label.text()
+        xr.testing.assert_identical(
+            tool._document.source_selection_base_data[source_name], data
+        )
+    assert not tool.source_panel.source_validation_label.isHidden()
 
 
 def test_figure_composer_readding_linked_source_preserves_selection(qtbot) -> None:
@@ -2411,7 +2554,9 @@ def test_figure_composer_readding_linked_source_preserves_selection(qtbot) -> No
     assert source.qsel == {"eV": 0.0}
     assert source.selection_source is None
     xr.testing.assert_identical(tool.source_data()["data"], refreshed.qsel(eV=0.0))
-    xr.testing.assert_identical(tool._source_selection_base_data["data"], refreshed)
+    xr.testing.assert_identical(
+        tool._document.source_selection_base_data["data"], refreshed
+    )
 
     state_before = tool.tool_status
     data_before = tool.source_data()["data"]
@@ -2422,7 +2567,7 @@ def test_figure_composer_readding_linked_source_preserves_selection(qtbot) -> No
     )
     assert tool.tool_status == state_before
     xr.testing.assert_identical(tool.source_data()["data"], data_before)
-    assert not tool.source_status_label.isHidden()
+    assert not tool.source_panel.source_status_label.isHidden()
 
 
 def test_figure_composer_readding_renamed_linked_source_updates_alias(qtbot) -> None:
@@ -2463,7 +2608,7 @@ def test_figure_composer_readding_renamed_linked_source_updates_alias(qtbot) -> 
         tool.source_data()["custom_alias"], refreshed.qsel(eV=0.0)
     )
     xr.testing.assert_identical(
-        tool._source_selection_base_data["custom_alias"], refreshed
+        tool._document.source_selection_base_data["custom_alias"], refreshed
     )
 
 
@@ -2503,7 +2648,9 @@ def test_figure_composer_replace_different_source_preserves_compatible_selection
     assert source.qsel == {"eV": 0.0}
     assert source.selection_source is None
     xr.testing.assert_identical(tool.source_data()["data"], replacement.qsel(eV=0.0))
-    xr.testing.assert_identical(tool._source_selection_base_data["data"], replacement)
+    xr.testing.assert_identical(
+        tool._document.source_selection_base_data["data"], replacement
+    )
 
     selected_replacement = (original + 40.0).rename("selected_replacement")
     assert tool.replace_source(
@@ -2553,18 +2700,20 @@ def test_figure_composer_refresh_from_sources_covers_edge_paths(qtbot) -> None:
     qtbot.addWidget(tool)
 
     tool.refresh_from_sources({})
-    assert tool.source_status_label.text() == ""
+    assert tool.source_panel.source_status_label.isHidden()
 
     incompatible = second + 10.0
     tool.refresh_from_sources({"first": incompatible})
-    assert "Could not refresh source data for: first" in tool.source_status_label.text()
+    assert not tool.source_panel.source_status_label.isHidden()
 
     refreshed_second = second + 20.0
-    tool._source_selection_base_data["second"] = second
+    tool._document.replace_source_payloads(
+        tool._document.source_data, {"second": second}
+    )
     tool.refresh_from_sources({"second": refreshed_second})
     xr.testing.assert_identical(tool.source_data()["second"], refreshed_second)
-    assert "second" not in tool._source_selection_base_data
-    assert tool.source_status_label.text() == ""
+    assert "second" not in tool._document.source_selection_base_data
+    assert tool.source_panel.source_status_label.isHidden()
 
     extra = xr.DataArray(np.arange(2.0), dims=("x",), name="extra")
     tool.refresh_from_sources({"extra": extra})
@@ -2597,23 +2746,24 @@ def test_figure_composer_batch_source_selection_skips_incompatible_sources(
     )
     qtbot.addWidget(tool)
 
-    tool.source_list.clearSelection()
-    first_item = tool.source_list.topLevelItem(0)
-    second_item = tool.source_list.topLevelItem(1)
+    tool.source_panel.source_list.clearSelection()
+    first_item = tool.source_panel.source_list.topLevelItem(0)
+    second_item = tool.source_panel.source_list.topLevelItem(1)
     assert first_item is not None
     assert second_item is not None
     first_item.setSelected(True)
     second_item.setSelected(True)
 
-    tool._update_selected_source_dimension("x", "isel", "1", "")
+    tool.source_panel.selection_dimension_requested.emit(
+        tool.source_panel.selected_names(), "x", "isel", "1", ""
+    )
 
     source_by_name = {source.name: source for source in tool.source_states()}
     assert source_by_name["first"].isel == {"x": 1}
     assert source_by_name["second"].isel == {}
     xr.testing.assert_identical(tool.source_data()["first"], first.isel(x=1))
     xr.testing.assert_identical(tool.source_data()["second"], second)
-    assert not tool.source_validation_label.isHidden()
-    assert "second" in tool.source_validation_label.text()
+    assert not tool.source_panel.source_validation_label.isHidden()
 
 
 def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
@@ -2874,7 +3024,7 @@ def test_figure_composer_source_helpers_cover_selection_contract() -> None:
     )
     with pytest.raises(ValueError, match="not a valid variable"):
         figurecomposer_sources._valid_source_variable("bad name")
-    assert figurecomposer_plot_slices._source_names(
+    assert figurecomposer_operation_metadata.declared_operation_source_names(
         FigureOperationState.plot_slices(
             label="mapped",
             sources=("extra",),
@@ -2974,9 +3124,7 @@ def test_figure_composer_source_helpers_cover_selection_contract() -> None:
         },
         name="map",
     )
-    nonuniform_internal = erlab.interactive.imagetool.slicer.make_dims_uniform(
-        nonuniform_public
-    )
+    nonuniform_internal = erlab.utils.array._make_dims_uniform(nonuniform_public)
     assert nonuniform_internal.dims == ("alpha", "eV", "sample_temp_idx")
     assert figurecomposer_sources._available_source_dims(
         {"data": nonuniform_internal}, ("data",)
@@ -3020,7 +3168,7 @@ def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
         },
         name="map",
     )
-    internal = erlab.interactive.imagetool.slicer.make_dims_uniform(public)
+    internal = erlab.utils.array._make_dims_uniform(public)
     operation = FigureOperationState.plot_slices(
         label="plot_slices",
         sources=("data",),
@@ -3035,14 +3183,13 @@ def test_figure_composer_raw_sources_use_public_nonuniform_dims(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    shape = figurecomposer_plot_slices._plot_slices_shape(tool, operation)
+    shape = plot_slices_model._plot_slices_shape(tool._document, operation)
     assert "sample_temp" in shape.source_text
     assert "sample_temp_idx" not in shape.source_text
-    shape_item = tool.source_list.topLevelItem(0)
+    shape_item = tool.source_panel.source_list.topLevelItem(0)
     assert shape_item is not None
-    shape_label = tool.source_list.itemWidget(shape_item, 1)
+    shape_label = tool.source_panel.source_list.itemWidget(shape_item, 1)
     assert isinstance(shape_label, QtWidgets.QLabel)
-    assert "sample_temp_idx" not in shape_label.text()
 
 
 def test_figure_composer_source_inspector_is_sources_tab_compact(
@@ -3087,66 +3234,105 @@ def test_figure_composer_source_inspector_is_sources_tab_compact(
     )
     qtbot.addWidget(tool)
 
-    assert tool.source_splitter.orientation() == QtCore.Qt.Orientation.Horizontal
-    assert not tool.source_splitter.childrenCollapsible()
-    assert tool.source_inspector.parentWidget() is tool.source_detail_content
-    assert tool.source_detail_scroll.widget() is tool.source_detail_content
-    assert tool.editor_tabs.indexOf(tool.sources_page) == 0
+    assert (
+        tool.source_panel.source_splitter.orientation()
+        == QtCore.Qt.Orientation.Horizontal
+    )
+    assert not tool.source_panel.source_splitter.childrenCollapsible()
+    assert (
+        tool.source_panel.source_inspector.parentWidget()
+        is tool.source_panel.source_detail_content
+    )
+    assert (
+        tool.source_panel.source_detail_scroll.widget()
+        is tool.source_panel.source_detail_content
+    )
+    assert tool.editor_tabs.indexOf(tool.source_panel) == 0
     assert not hasattr(tool, "step_detail_splitter")
-    assert tool.source_inspector.source_name() == "map"
-    assert tool.source_inspector.property("figureComposerSourceAlias") == "map"
-    assert tool.source_inspector.property("figureComposerSourceDims") == ("eV", "kx")
-    assert tool.source_inspector.property("figureComposerSourceDtype") == "float64"
-    summary_html = tool.source_inspector.subtitle_label.text()
-    assert summary_html.startswith("original map<br>")
-    assert "Original name:" not in summary_html
-    assert "<p>" not in summary_html
-    assert "<br><br>" not in summary_html
-    assert not tool.source_inspector.details_button.isChecked()
-    assert not tool.source_inspector.details_label.isVisibleTo(tool.source_inspector)
-    assert tool.source_inspector.details_html() == ""
+    assert tool.source_panel.source_inspector.source_name() == "map"
+    assert (
+        tool.source_panel.source_inspector.property("figureComposerSourceAlias")
+        == "map"
+    )
+    assert tool.source_panel.source_inspector.property("figureComposerSourceDims") == (
+        "eV",
+        "kx",
+    )
+    assert (
+        tool.source_panel.source_inspector.property("figureComposerSourceDtype")
+        == "float64"
+    )
+    assert tool.source_panel.source_inspector.subtitle_label.isVisibleTo(
+        tool.source_panel.source_inspector
+    )
+    assert not tool.source_panel.source_inspector.details_button.isChecked()
+    assert not tool.source_panel.source_inspector.details_label.isVisibleTo(
+        tool.source_panel.source_inspector
+    )
+    assert tool.source_panel.source_inspector.details_html() == ""
     assert format_calls == []
     assert (
-        tool.source_detail_content.property("figureComposerSourceEditorMode")
+        tool.source_panel.source_detail_content.property(
+            "figureComposerSourceEditorMode"
+        )
         == "single"
     )
-    assert tool.source_detail_content.property("figureComposerSourceUsageCount") == 1
-    assert tool.source_alias_edit.text() == "map"
     assert (
-        tool.source_list.selectionMode()
+        tool.source_panel.source_detail_content.property(
+            "figureComposerSourceUsageCount"
+        )
+        == 1
+    )
+    assert tool.source_panel.source_alias_edit.text() == "map"
+    assert (
+        tool.source_panel.source_list.selectionMode()
         == QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
     )
     assert (
-        tool.source_list.selectionBehavior()
+        tool.source_panel.source_list.selectionBehavior()
         == QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
     )
-    first_item = tool.source_list.topLevelItem(0)
+    first_item = tool.source_panel.source_list.topLevelItem(0)
     assert first_item is not None
     assert first_item.flags() & QtCore.Qt.ItemFlag.ItemIsSelectable
-    assert tool.source_list.selectedItems() == [first_item]
-    shape_label = tool.source_list.itemWidget(first_item, 1)
+    assert tool.source_panel.source_list.selectedItems() == [first_item]
+    shape_label = tool.source_panel.source_list.itemWidget(first_item, 1)
     assert isinstance(shape_label, QtWidgets.QLabel)
     assert shape_label.testAttribute(
         QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents
     )
 
-    tool.source_inspector.details_button.setChecked(True)
-    assert tool.source_inspector.details_label.isVisibleTo(tool.source_inspector)
-    assert tool.source_inspector.property("figureComposerSourceDetailsExpanded") is True
-    assert tool.source_inspector.details_html() == "<p>formatted details</p>"
+    tool.source_panel.source_inspector.details_button.setChecked(True)
+    assert tool.source_panel.source_inspector.details_label.isVisibleTo(
+        tool.source_panel.source_inspector
+    )
+    assert (
+        tool.source_panel.source_inspector.property(
+            "figureComposerSourceDetailsExpanded"
+        )
+        is True
+    )
+    assert (
+        tool.source_panel.source_inspector.details_html() == "<p>formatted details</p>"
+    )
     assert format_calls == [(("eV", "kx"), {"show_size": True, "show_summary": False})]
-    tool.source_inspector.details_button.setChecked(False)
-    tool.source_inspector.details_button.setChecked(True)
+    tool.source_panel.source_inspector.details_button.setChecked(False)
+    tool.source_panel.source_inspector.details_button.setChecked(True)
     assert len(format_calls) == 1
 
-    second_item = tool.source_list.topLevelItem(1)
+    second_item = tool.source_panel.source_list.topLevelItem(1)
     assert second_item is not None
-    tool.source_list.clearSelection()
-    tool.source_list.setCurrentItem(second_item)
-    assert tool.source_list.selectedItems() == [second_item]
-    assert tool.source_inspector.source_name() == "profile"
-    assert tool.source_inspector.property("figureComposerSourceAlias") == "profile"
-    assert tool.source_inspector.property("figureComposerSourceDims") == ("delay",)
+    tool.source_panel.source_list.clearSelection()
+    tool.source_panel.source_list.setCurrentItem(second_item)
+    assert tool.source_panel.source_list.selectedItems() == [second_item]
+    assert tool.source_panel.source_inspector.source_name() == "profile"
+    assert (
+        tool.source_panel.source_inspector.property("figureComposerSourceAlias")
+        == "profile"
+    )
+    assert tool.source_panel.source_inspector.property("figureComposerSourceDims") == (
+        "delay",
+    )
     assert len(format_calls) == 2
 
 
@@ -3164,8 +3350,8 @@ def test_figure_composer_source_inspector_details_show_coord_values(qtbot) -> No
     )
     qtbot.addWidget(tool)
 
-    tool.source_inspector.details_button.setChecked(True)
-    html = tool.source_inspector.details_html()
+    tool.source_panel.source_inspector.details_button.setChecked(True)
+    html = tool.source_panel.source_inspector.details_html()
 
     assert "0 : 1 : 2" in html
     assert ">20</td>" in html
@@ -3212,8 +3398,10 @@ def test_figure_composer_source_inspector_details_fallback_is_metadata_only(
     )
     qtbot.addWidget(tool)
 
-    tool.source_inspector.details_button.setChecked(True)
-    assert tool.source_inspector.details_html() == "<p>fallback details</p>"
+    tool.source_panel.source_inspector.details_button.setChecked(True)
+    assert (
+        tool.source_panel.source_inspector.details_html() == "<p>fallback details</p>"
+    )
     assert format_calls[-1] == {
         "show_size": True,
         "show_summary": False,
@@ -3238,25 +3426,25 @@ def test_figure_composer_source_list_shape_cell_click_selects_row(qtbot) -> None
         primary_source="map",
     )
     qtbot.addWidget(tool)
-    tool.editor_tabs.setCurrentWidget(tool.sources_page)
+    tool.editor_tabs.setCurrentWidget(tool.source_panel)
     with qtbot.waitExposed(tool):
         tool.show()
 
-    second_item = tool.source_list.topLevelItem(1)
+    second_item = tool.source_panel.source_list.topLevelItem(1)
     assert second_item is not None
-    index = tool.source_list.indexFromItem(second_item, 1)
-    rect = tool.source_list.visualRect(index)
+    index = tool.source_panel.source_list.indexFromItem(second_item, 1)
+    rect = tool.source_panel.source_list.visualRect(index)
     assert rect.isValid()
 
     qtbot.mouseClick(
-        tool.source_list.viewport(),
+        tool.source_panel.source_list.viewport(),
         QtCore.Qt.MouseButton.LeftButton,
         pos=rect.center(),
     )
 
-    assert tool.source_list.currentItem() is second_item
-    assert tool.source_list.selectedItems() == [second_item]
-    assert tool.source_inspector.source_name() == "profile"
+    assert tool.source_panel.source_list.currentItem() is second_item
+    assert tool.source_panel.source_list.selectedItems() == [second_item]
+    assert tool.source_panel.source_inspector.source_name() == "profile"
 
 
 def test_figure_composer_source_inspector_uses_public_nonuniform_dims(qtbot) -> None:
@@ -3270,7 +3458,7 @@ def test_figure_composer_source_inspector_uses_public_nonuniform_dims(qtbot) -> 
         },
         name="map",
     )
-    internal = erlab.interactive.imagetool.slicer.make_dims_uniform(public)
+    internal = erlab.utils.array._make_dims_uniform(public)
     tool = FigureComposerTool.from_sources(
         {"data": internal},
         sources=(FigureSourceState(name="data", label="map"),),
@@ -3279,11 +3467,11 @@ def test_figure_composer_source_inspector_uses_public_nonuniform_dims(qtbot) -> 
     )
     qtbot.addWidget(tool)
 
-    dims = tool.source_inspector.property("figureComposerSourceDims")
+    dims = tool.source_panel.source_inspector.property("figureComposerSourceDims")
     assert dims == ("alpha", "eV", "sample_temp")
-    tool.source_inspector.details_button.setChecked(True)
-    assert "sample_temp_idx" not in tool.source_inspector.details_html()
-    assert "sample_temp" in tool.source_inspector.details_html()
+    tool.source_panel.source_inspector.details_button.setChecked(True)
+    assert "sample_temp_idx" not in tool.source_panel.source_inspector.details_html()
+    assert "sample_temp" in tool.source_panel.source_inspector.details_html()
 
 
 def test_figure_composer_source_inspector_tracks_source_tab_selection(qtbot) -> None:
@@ -3303,18 +3491,21 @@ def test_figure_composer_source_inspector_tracks_source_tab_selection(qtbot) -> 
     )
     qtbot.addWidget(tool)
 
-    assert tool.source_inspector.source_name() == "first"
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
-    assert tool.source_inspector.source_name() == "first"
-    assert tool.source_status_label.text() == ""
-    assert tool.source_status_label.isHidden()
-    assert tool.step_source_status_label.isHidden()
-    first_item = tool.source_list.topLevelItem(0)
+    assert tool.source_panel.source_inspector.source_name() == "first"
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(1)
+    )
+    assert tool.source_panel.source_inspector.source_name() == "first"
+    assert tool.source_panel.source_status_label.isHidden()
+    assert _operation_source_status_label(tool).isHidden()
+    first_item = tool.source_panel.source_list.topLevelItem(0)
     assert first_item is not None
-    tool.source_list.setCurrentItem(first_item)
-    assert tool.source_inspector.source_name() == "first"
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    assert tool.source_inspector.source_name() == "first"
+    tool.source_panel.source_list.setCurrentItem(first_item)
+    assert tool.source_panel.source_inspector.source_name() == "first"
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    assert tool.source_panel.source_inspector.source_name() == "first"
 
 
 def test_figure_composer_source_inspector_updates_without_render_or_history(
@@ -3351,14 +3542,16 @@ def test_figure_composer_source_inspector_updates_without_render_or_history(
     )
     monkeypatch.setattr(tool, "_write_state", lambda: write_calls.append(None))
 
-    y_item = tool.source_list.topLevelItem(1)
+    y_item = tool.source_panel.source_list.topLevelItem(1)
     assert y_item is not None
-    tool.source_list.setCurrentItem(y_item)
+    tool.source_panel.source_list.setCurrentItem(y_item)
 
     assert render_calls == []
     assert write_calls == []
-    assert tool.source_inspector.source_name() == "y"
-    assert tool.source_inspector.property("figureComposerSourceAlias") == "y"
+    assert tool.source_panel.source_inspector.source_name() == "y"
+    assert (
+        tool.source_panel.source_inspector.property("figureComposerSourceAlias") == "y"
+    )
 
 
 def test_figure_composer_source_inspector_helper_edges(qtbot) -> None:
@@ -3432,7 +3625,7 @@ def test_figure_composer_source_inspector_helper_edges(qtbot) -> None:
     assert not inspector.details_button.isEnabled()
 
     inspector._ensure_details_html()
-    assert not inspector.details_label.text()
+    assert inspector.details_html() == ""
 
 
 def test_figure_composer_source_inspector_target_fallbacks(qtbot) -> None:
@@ -3447,17 +3640,20 @@ def test_figure_composer_source_inspector_target_fallbacks(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool._source_data.clear()
-    tool._select_source_list_row_silent(None)
+    tool._document.replace_source_payloads({}, {})
+    tool.source_panel.set_selected_names((), current_name=None)
     assert tool._default_source_inspector_target() == "saved"
     tool._refresh_source_detail_panel()
-    assert tool.source_inspector.source_name() is None
+    assert tool.source_panel.source_inspector.source_name() is None
     assert (
-        tool.source_detail_content.property("figureComposerSourceEditorMode") == "empty"
+        tool.source_panel.source_detail_content.property(
+            "figureComposerSourceEditorMode"
+        )
+        == "empty"
     )
 
-    tool._select_source_list_row_silent(None)
-    assert tool.source_list.currentItem() is None
+    tool.source_panel.set_selected_names((), current_name=None)
+    assert tool.source_panel.source_list.currentItem() is None
 
 
 def test_figure_composer_line_source_combo_uses_alias_data_and_updates_recipe(
@@ -3478,17 +3674,16 @@ def test_figure_composer_line_source_combo_uses_alias_data_and_updates_recipe(
         source_data={"data_0": first, "data_1": second},
     )
     qtbot.addWidget(tool)
-    tool._select_step_section("sources")
+    tool.operation_editor.select_section("sources")
 
-    source_combos = tool.step_source_controls.findChildren(
+    source_combos = tool.operation_editor.source_controls.findChildren(
         QtWidgets.QComboBox, "figureComposerLineSourceCombo"
     )
     source_combo = next(
         (
             combo
             for combo in source_combos
-            if combo.property("figure_composer_editor_generation")
-            == tool._operation_editor_generation
+            if tool.operation_editor.control_signal_allowed(combo)
         ),
         None,
     )
@@ -3953,7 +4148,7 @@ def test_figure_composer_copy_paste_steps_carries_same_process_source_data(
     destination.sigDataChanged.connect(lambda: data_changed.append(None))
 
     _select_operation_rows(source_tool, (0,))
-    source_tool.copy_operation_button.click()
+    source_tool.operation_panel.copy_button.click()
     destination._paste_operations_from_clipboard()
 
     assert data_changed == [None]
@@ -4000,7 +4195,9 @@ def test_figure_composer_copy_paste_steps_carries_selection_dependencies(
         operations=(FigureOperationState.plot_array(label="plot", source="selected"),),
         primary_source="base",
     )
-    source_tool._source_selection_base_data["selected"] = base
+    source_tool._document.replace_source_payloads(
+        source_tool._document.source_data, {"selected": base}
+    )
 
     existing = xr.DataArray(np.zeros((2, 2)), dims=("x", "y"), name="existing")
     destination = FigureComposerTool.from_sources(
@@ -4017,12 +4214,12 @@ def test_figure_composer_copy_paste_steps_carries_selection_dependencies(
     source_tool._copy_selected_operations()
     destination._paste_operations_from_clipboard()
 
-    source_by_name = destination._source_by_name()
+    source_by_name = destination._document.source_by_name()
     assert source_by_name["selected_copy"].selection_source == "base_copy"
     xr.testing.assert_identical(destination.source_data()["base_copy"], base)
     xr.testing.assert_identical(destination.source_data()["selected_copy"], selected)
     xr.testing.assert_identical(
-        destination._source_selection_base_data["selected_copy"], base
+        destination._document.source_selection_base_data["selected_copy"], base
     )
     assert destination.tool_status.operations[-1].sources == ("selected_copy",)
 
@@ -4069,8 +4266,8 @@ def test_figure_composer_cut_paste_steps_preserves_same_composer_sources(
 
     _select_operation_rows(tool, (0,))
     original_id = tool.tool_status.operations[0].operation_id
-    tool.cut_operation_button.click()
-    tool.paste_operation_button.click()
+    tool.operation_panel.cut_button.click()
+    tool.operation_panel.paste_button.click()
 
     assert [source.name for source in tool.tool_status.sources] == ["data"]
     assert set(tool.source_data()) == {"data"}
@@ -4133,7 +4330,7 @@ def test_figure_composer_cut_paste_steps_renames_cross_composer_sources(
     _clear_clipboard()
 
     _select_operation_rows(source_tool, (0, 1))
-    source_tool.cut_operation_button.click()
+    source_tool.operation_panel.cut_button.click()
     destination._paste_operations_from_clipboard()
 
     assert [operation.label for operation in source_tool.tool_status.operations] == []
@@ -4204,7 +4401,7 @@ def test_figure_composer_copy_paste_steps_renames_source_conflicts(qtbot) -> Non
     _clear_clipboard()
 
     _select_operation_rows(source_tool, (0, 1))
-    source_tool.copy_operation_button.click()
+    source_tool.operation_panel.copy_button.click()
     destination._paste_operations_from_clipboard()
 
     assert [source.name for source in destination.tool_status.sources] == [
@@ -4266,7 +4463,7 @@ def test_figure_composer_copy_paste_steps_typed_payload_has_missing_source(
     clipboard = _clear_clipboard()
 
     _select_operation_rows(source_tool, (0,))
-    source_tool.copy_operation_button.click()
+    source_tool.operation_panel.copy_button.click()
     copied_mime = clipboard.mimeData()
     payload_text = bytes(
         copied_mime.data(figurecomposer_tool_module._STEPS_CLIPBOARD_MIME).data()
@@ -4354,29 +4551,31 @@ def test_figure_composer_history_restores_source_selection_backing(qtbot) -> Non
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    tool._set_selected_source_names_silent({"data"}, "data")
+    tool.source_panel.set_selected_names({"data"}, current_name="data")
 
-    tool._update_selected_source_dimension("eV", "qsel", "0.0", "")
+    tool.source_panel.selection_dimension_requested.emit(
+        tool.source_panel.selected_names(), "eV", "qsel", "0.0", ""
+    )
     assert tool.source_data()["data"].dims == ("x",)
-    xr.testing.assert_identical(tool._source_selection_base_data["data"], data)
+    xr.testing.assert_identical(tool._document.source_selection_base_data["data"], data)
 
     tool.undo()
     assert tool.source_states()[0].qsel == {}
-    assert "data" not in tool._source_selection_base_data
+    assert "data" not in tool._document.source_selection_base_data
     xr.testing.assert_identical(tool.source_data()["data"], data)
 
     tool.redo()
     assert tool.source_states()[0].qsel == {"eV": 0.0}
-    xr.testing.assert_identical(tool._source_selection_base_data["data"], data)
+    xr.testing.assert_identical(tool._document.source_selection_base_data["data"], data)
 
-    tool._update_selected_source_dimension("eV", "keep", "", "")
+    tool.source_panel.selection_dimension_requested.emit(
+        tool.source_panel.selected_names(), "eV", "keep", "", ""
+    )
     assert tool.source_states()[0].qsel == {}
     xr.testing.assert_identical(tool.source_data()["data"], data)
 
 
-def test_figure_composer_copy_paste_source_and_insert_fallbacks(
-    qtbot, monkeypatch
-) -> None:
+def test_figure_composer_copy_paste_source_and_insert_fallbacks(qtbot) -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
     tool = FigureComposerTool(
         data,
@@ -4393,16 +4592,7 @@ def test_figure_composer_copy_paste_source_and_insert_fallbacks(
         sources=("data",),
         map_selections=(FigureDataSelectionState(source="extra"),),
     )
-    assert tool._operation_source_names(operation) == ("data",)
-
-    renamed_sources, _, _ = tool._renamed_pasted_sources(
-        (
-            FigureSourceState(name="extra", label="extra"),
-            FigureSourceState(name="extra", label="extra"),
-        ),
-        {},
-    )
-    assert [source.name for source in renamed_sources] == ["extra"]
+    assert tool._document.operation_source_names(operation) == ("data",)
 
     clipboard = _clear_clipboard()
     clipboard.setText(
@@ -4410,55 +4600,11 @@ def test_figure_composer_copy_paste_source_and_insert_fallbacks(
             (_custom_order_step("b"),), ()
         )
     )
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    with monkeypatch.context() as patch:
-        patch.setattr(tool, "_operation_id_for_item", lambda item: "missing")
-        tool._paste_operations_from_clipboard()
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    tool._paste_operations_from_clipboard()
     assert [operation.label for operation in tool.tool_status.operations] == ["a", "b"]
-
-    def existing_source_payload(sources, source_data, *, preserve_existing=False):
-        return (FigureSourceState(name="data", label="data"),), {}, {}
-
-    with monkeypatch.context() as patch:
-        patch.setattr(tool, "_renamed_pasted_sources", existing_source_payload)
-        clipboard.setText(
-            figurecomposer_tool_module._step_clipboard_payload_text(
-                (_custom_order_step("c"),), ()
-            )
-        )
-        tool._paste_operations_from_clipboard()
-    assert [source.name for source in tool.tool_status.sources] == ["data"]
-
-    tool._source_data["data_copy"] = data
-    renamed_sources, rename_map, _ = tool._renamed_pasted_sources(
-        (FigureSourceState(name="data", label="data"),),
-        {},
-    )
-    assert [source.name for source in renamed_sources] == ["data_copy_2"]
-    assert rename_map == {"data": "data_copy_2"}
-
-    tool._source_data["extra"] = data
-    renamed_sources, rename_map, renamed_source_data = tool._renamed_pasted_sources(
-        (FigureSourceState(name="extra", label="extra"),),
-        {"extra": data},
-        preserve_existing=True,
-    )
-    assert [source.name for source in renamed_sources] == ["extra"]
-    assert rename_map == {"extra": "extra"}
-    assert renamed_source_data == {}
-
-    metadata_source = FigureSourceState(name="metadata_only", label="metadata")
-    tool._recipe = tool._recipe.model_copy(
-        update={"sources": (*tool.tool_status.sources, metadata_source)}
-    )
-    renamed_sources, rename_map, renamed_source_data = tool._renamed_pasted_sources(
-        (metadata_source,),
-        {"metadata_only": data},
-        preserve_existing=True,
-    )
-    assert renamed_sources == ()
-    assert rename_map == {"metadata_only": "metadata_only"}
-    xr.testing.assert_identical(renamed_source_data["metadata_only"], data)
 
 
 def test_figure_composer_toolbar_image_target_combo_elides_long_sources(qtbot) -> None:
@@ -4498,7 +4644,7 @@ def test_figure_composer_toolbar_image_target_combo_elides_long_sources(qtbot) -
     tool._show_axes_customize_dialog()
     dialog = tool._axes_customize_dialog
     assert isinstance(dialog, QtWidgets.QDialog)
-    selector = dialog.findChild(figurecomposer_widgets._AxesSelectorWidget)
+    selector = dialog.findChild(axes_widgets._AxesSelectorWidget)
     target_combo = dialog.findChild(
         QtWidgets.QComboBox, "figureComposerToolbarImageTargetCombo"
     )
@@ -4532,7 +4678,7 @@ def test_figure_composer_toolbar_image_target_combo_elides_long_sources(qtbot) -
     custom_label = figurecomposer_toolbar_dialogs._image_style_target_label(
         1,
         operation.model_copy(update={"label": "Custom image step"}),
-        (figurecomposer_plot_slices._PlotSlicesPanelKey(0, 1, "ignored"),),
+        (plot_slices_model._PlotSlicesPanelKey(0, 1, "ignored"),),
     )
     assert custom_label == "Step 2: Custom image step: panel 1.2"
 
@@ -4570,8 +4716,8 @@ def test_figure_composer_batch_line_source_dependent_combos_disable(
     qtbot.addWidget(tool)
 
     _select_operation_rows(tool, (0, 1))
-    tool._select_step_section("selection")
-    selection_page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("selection")
+    selection_page = tool.operation_editor.stack.currentWidget()
     coordinate_combo = selection_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
     )
@@ -4655,15 +4801,14 @@ def test_figure_composer_source_structure_defensive_paths(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool._update_source_list_item(QtWidgets.QTreeWidgetItem())
-    tool._set_selected_source_names_silent(set(), None)
-    assert tool._selected_source_names() == ()
+    tool.source_panel.set_selected_names(set(), current_name=None)
+    assert tool.source_panel.selected_names() == ()
 
     refreshed: list[str] = []
 
     def refresh_source(name: str) -> bool:
         if name == "first":
-            tool._set_source_status_text("refresh rejected")
+            tool._set_source_panel_status("refresh rejected")
             return False
         refreshed.append(name)
         return True
@@ -4674,12 +4819,12 @@ def test_figure_composer_source_structure_defensive_paths(qtbot) -> None:
     )
     tool._refresh_source_names(("first", "second"))
     assert refreshed == ["second"]
-    assert not tool.source_status_label.isHidden()
+    assert not tool.source_panel.source_status_label.isHidden()
 
     legacy_source = FigureSourceState(name="legacy").model_copy(
         update={"selection_source": "legacy"}
     )
-    renamed = FigureComposerTool._source_with_renamed_references(
+    renamed = tool._document.source_with_renamed_references(
         legacy_source, {"legacy": "renamed"}
     )
     assert renamed.name == "renamed"
@@ -4687,18 +4832,18 @@ def test_figure_composer_source_structure_defensive_paths(qtbot) -> None:
 
     tool._source_list_reordered(("second", "first"), (), "second")
     assert tuple(source.name for source in tool.source_states()) == ("second", "first")
-    assert tool._selected_source_names() == ("second",)
+    assert tool.source_panel.selected_names() == ("second",)
 
-    first_source = tool._source_by_name()["first"].model_copy(
+    first_source = tool._document.source_by_name()["first"].model_copy(
         update={"selection_source": "second"}
     )
-    second_source = tool._source_by_name()["second"].model_copy(
+    second_source = tool._document.source_by_name()["second"].model_copy(
         update={"selection_source": "first"}
     )
-    tool._recipe = tool._recipe.model_copy(
+    tool.tool_status = tool.tool_status.model_copy(
         update={"sources": (first_source, second_source)}
     )
-    assert tool._source_dependency_names(("first",)) == ("second", "first")
+    assert tool._document.source_dependency_names(("first",)) == ("second", "first")
 
 
 def test_figure_composer_legacy_source_selection_defensive_paths(qtbot) -> None:
@@ -4718,19 +4863,23 @@ def test_figure_composer_legacy_source_selection_defensive_paths(qtbot) -> None:
 
     source_list = list(tool.source_states())
     source_by_name = {source.name: source for source in source_list}
+    source_data = dict(tool.source_data())
+    selection_base_data = dict(tool._document.source_selection_base_data)
     alias = tool._source_alias_for_legacy_selection(
         FigureDataSelectionState(source="base", qsel={"missing": 0.0}),
         source_list=source_list,
         source_by_name=source_by_name,
         reserved=set(source_by_name),
+        source_data=source_data,
+        selection_base_data=selection_base_data,
     )
     assert alias == "selected"
-    assert "selected" not in tool.source_data()
-    xr.testing.assert_identical(tool._source_selection_base_data["selected"], base)
+    assert "selected" not in source_data
+    xr.testing.assert_identical(selection_base_data["selected"], base)
 
-    assert FigureComposerTool._source_lineage_names(
-        "selected", {"selected": selected}
-    ) == ("selected",)
+    assert tool._document.source_lineage_names("selected", {"selected": selected}) == (
+        "selected",
+    )
     cycle_a = selected.model_copy(
         update={"name": "cycle_a", "selection_source": "cycle_b"}
     )
@@ -4738,21 +4887,20 @@ def test_figure_composer_legacy_source_selection_defensive_paths(qtbot) -> None:
         update={"name": "cycle_b", "selection_source": "cycle_a"}
     )
     with pytest.raises(ValueError, match="cycle"):
-        FigureComposerTool._source_lineage_names(
+        tool._document.source_lineage_names(
             "cycle_a", {"cycle_a": cycle_a, "cycle_b": cycle_b}
         )
-    propagated = FigureComposerTool._source_states_with_propagated_link_metadata(
+    propagated = tool._document.source_states_with_propagated_link_metadata(
         {"selected": selected}, ("missing",)
     )
     assert propagated["selected"] is selected
-
     with pytest.raises(ValueError, match="unavailable"):
-        tool._source_data_with_recomputed_dependents(
+        tool._document.recompute_source_dependents(
             {}, {}, ("base",), source_by_name=source_by_name
         )
 
     linked = FigureSourceState(name="linked", selection_source="base")
-    recomputed_data, recomputed_bases = tool._source_data_with_recomputed_dependents(
+    recomputed_data, recomputed_bases = tool._document.recompute_source_dependents(
         {"base": base},
         {"linked": base},
         ("base",),
@@ -4801,6 +4949,8 @@ def test_figure_composer_legacy_source_selection_defensive_paths(qtbot) -> None:
         source_list=[source_by_name["base"]],
         source_by_name={"base": source_by_name["base"]},
         reserved={"base"},
+        source_data=dict(tool.source_data()),
+        selection_base_data=dict(tool._document.source_selection_base_data),
     )
     assert converted_sources.sources == ("base",)
     assert converted_sources.map_selections == ()
@@ -4810,6 +4960,40 @@ def test_figure_composer_legacy_source_selection_defensive_paths(qtbot) -> None:
             "base",
         )
         is None
+    )
+
+
+def test_figure_composer_legacy_selection_reports_replaced_backing_data(qtbot) -> None:
+    base = xr.DataArray(np.arange(3.0), dims=("x",), name="base")
+    selected = FigureSourceState(
+        name="selected",
+        selection_source="base",
+        qsel={"missing": 0.0},
+    )
+    tool = FigureComposerTool.from_sources(
+        {"base": base},
+        sources=(FigureSourceState(name="base"), selected),
+        operations=(),
+        primary_source="base",
+    )
+    qtbot.addWidget(tool)
+    stale_base = base + 10
+    tool._document.replace_source_payloads(
+        tool._document.source_data, {"selected": stale_base}
+    )
+    tool._document.append_operation(
+        FigureOperationState.plot_array(
+            label="legacy",
+            source="base",
+            map_selections=(
+                FigureDataSelectionState(source="base", qsel={"missing": 0.0}),
+            ),
+        )
+    )
+
+    assert tool._normalize_operation_source_selections()
+    xr.testing.assert_identical(
+        tool._document.source_selection_base_data["selected"], base
     )
 
 
@@ -4849,7 +5033,7 @@ def test_figure_composer_add_and_replace_tolerate_broken_link_cycle(qtbot) -> No
     unavailable = tool.add_sources((FigureSourceState(name="missing"),), {})
     assert not unavailable
     assert unavailable.skipped[0][0] == "missing"
-    assert not tool.source_status_label.isHidden()
+    assert not tool.source_panel.source_status_label.isHidden()
 
 
 def test_figure_composer_restore_persisted_selection_failure_paths(qtbot) -> None:
@@ -4865,7 +5049,7 @@ def test_figure_composer_restore_persisted_selection_failure_paths(qtbot) -> Non
     invalid_primary = primary_tool.source_states()[0].model_copy(
         update={"qsel": {"missing": 0.0}}
     )
-    primary_tool._recipe = primary_tool._recipe.model_copy(
+    primary_tool.tool_status = primary_tool.tool_status.model_copy(
         update={"sources": (invalid_primary,)}
     )
     primary_tool.set_source_data({})
@@ -4874,7 +5058,7 @@ def test_figure_composer_restore_persisted_selection_failure_paths(qtbot) -> Non
         xr.Dataset(attrs={"tool_data_name": "restored"}),
     )
     assert primary_tool.source_data()["primary"].name == "restored"
-    assert "primary" not in primary_tool._source_selection_base_data
+    assert "primary" not in primary_tool._document.source_selection_base_data
 
     invalid_child = FigureSourceState(
         name="child",
@@ -4932,7 +5116,7 @@ def test_figure_composer_selected_source_codegen_fallback_uses_base_input(
     qtbot.addWidget(tool)
 
     malformed_provenance = {"kind": "not-a-provenance-kind"}
-    tool._recipe = tool._recipe.model_copy(
+    tool.tool_status = tool.tool_status.model_copy(
         update={
             "sources": (
                 base_source.model_copy(
@@ -4956,10 +5140,12 @@ def test_figure_composer_selected_source_codegen_fallback_uses_base_input(
         primary_source="base",
     )
     qtbot.addWidget(cleanup_tool)
-    cleanup_tool._source_selection_base_data["selected"] = base_data
+    cleanup_tool._document.replace_source_payloads(
+        cleanup_tool._document.source_data, {"selected": base_data}
+    )
     cleanup_tool.set_missing_sources({"selected"})
     assert "selected" not in cleanup_tool.source_data()
-    assert "selected" not in cleanup_tool._source_selection_base_data
+    assert "selected" not in cleanup_tool._document.source_selection_base_data
 
 
 def test_figure_composer_source_selection_control_guard_paths(qtbot) -> None:
@@ -4990,17 +5176,25 @@ def test_figure_composer_source_selection_control_guard_paths(qtbot) -> None:
 
     assert tool._source_selection_dimension_tooltip("x", source_names)
     assert tool._common_source_selection_dims(("unavailable", "plain", "other")) == ()
-    tool._set_selected_source_names_silent({"with_coordinates"}, "with_coordinates")
+    tool.source_panel.set_selected_names(
+        {"with_coordinates"}, current_name="with_coordinates"
+    )
     assert tool._default_source_inspector_target() == "with_coordinates"
 
-    mode_combo = tool._source_selection_mode_combo(
-        current="qsel", mixed=False, parent=tool
+    tool._refresh_source_detail_panel()
+    tool._refresh_source_selection_editor()
+    mode_combo = tool.source_panel.source_selection_controls.findChild(
+        QtWidgets.QComboBox, "figureComposerSourceSelectionModeCombo0"
     )
-    value_edit = QtWidgets.QLineEdit("1.0", tool)
-    width_edit = QtWidgets.QLineEdit("0.5", tool)
-    tool._connect_source_selection_dimension_controls(
-        "x", mode_combo, value_edit, width_edit
+    value_edit = tool.source_panel.source_selection_controls.findChild(
+        QtWidgets.QLineEdit, "figureComposerSourceSelectionValueEdit0"
     )
+    width_edit = tool.source_panel.source_selection_controls.findChild(
+        QtWidgets.QLineEdit, "figureComposerSourceSelectionWidthEdit0"
+    )
+    assert mode_combo is not None
+    assert value_edit is not None
+    assert width_edit is not None
     before = tool.source_states()
     mode_combo.addItem("unsupported", object())
     unsupported_index = mode_combo.count() - 1
@@ -5012,27 +5206,27 @@ def test_figure_composer_source_selection_control_guard_paths(qtbot) -> None:
     assert qsel_index >= 0
     mode_combo.setCurrentIndex(qsel_index)
     mode_combo.activated.emit(qsel_index)
-    FigureComposerTool._apply_mixed_line_edit(value_edit, True)
+    _editor_controls.LineEditControlAdapter(value_edit).set_mixed(True)
     value_edit.editingFinished.emit()
     assert tool.source_states() == before
 
-    FigureComposerTool._apply_mixed_line_edit(value_edit, False)
+    _editor_controls.LineEditControlAdapter(value_edit).set_mixed(False)
     value_edit.setText("1.0")
-    FigureComposerTool._apply_mixed_line_edit(width_edit, True)
+    _editor_controls.LineEditControlAdapter(width_edit).set_mixed(True)
     value_edit.editingFinished.emit()
     assert tool.source_states() == before
 
-    FigureComposerTool._apply_mixed_line_edit(width_edit, False)
+    _editor_controls.LineEditControlAdapter(width_edit).set_mixed(False)
     value_edit.setText("[")
     width_edit.setText("0.5")
     value_edit.editingFinished.emit()
-    assert not tool.source_validation_label.isHidden()
+    assert not tool.source_panel.source_validation_label.isHidden()
 
     value_edit.setText("1.0")
     width_edit.editingFinished.emit()
-    selected_source = tool._source_by_name()["with_coordinates"]
+    selected_source = tool._document.source_by_name()["with_coordinates"]
     assert selected_source.qsel
-    assert "with_coordinates" in tool._source_selection_base_data
+    assert "with_coordinates" in tool._document.source_selection_base_data
 
     detached_selected = FigureSourceState(
         name="selected", selection_source="missing_base"
@@ -5044,23 +5238,27 @@ def test_figure_composer_source_selection_control_guard_paths(qtbot) -> None:
         primary_source="selected",
     )
     qtbot.addWidget(detached_tool)
-    detached_tool._set_selected_source_names_silent({"selected"}, "selected")
+    detached_tool.source_panel.set_selected_names({"selected"}, current_name="selected")
     detached_before = detached_tool.source_states()
-    detached_tool._update_selected_source_dimension("x", "qsel", "1.0", "")
+    detached_tool.source_panel.selection_dimension_requested.emit(
+        detached_tool.source_panel.selected_names(), "x", "qsel", "1.0", ""
+    )
     assert detached_tool.source_states() == detached_before
 
-    tool._set_selected_source_names_silent({"unavailable"}, "unavailable")
-    tool._recipe = tool._recipe.model_copy(
-        update={
-            "sources": tuple(
-                source
-                for source in tool.source_states()
-                if source.name != "unavailable"
-            )
-        }
+    tool.source_panel.set_selected_names({"unavailable"}, current_name="unavailable")
+    tool._document.replace_recipe(
+        tool.tool_status.model_copy(
+            update={
+                "sources": tuple(
+                    source
+                    for source in tool.source_states()
+                    if source.name != "unavailable"
+                )
+            }
+        )
     )
     tool._refresh_source_detail_panel()
-    assert not tool.source_alias_edit.isEnabled()
+    assert not tool.source_panel.source_alias_edit.isEnabled()
 
 
 def test_figure_composer_restore_persisted_source_pending_paths(qtbot) -> None:

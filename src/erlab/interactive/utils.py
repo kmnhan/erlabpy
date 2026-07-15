@@ -43,6 +43,12 @@ from qtpy import PYQT6, PYSIDE6, QtCore, QtGui, QtWidgets, uic
 
 import erlab
 from erlab.interactive import _qt_state
+from erlab.utils._code import (
+    _parse_single_arg,
+    format_1d_numeric_array_code,
+    format_call_kwargs,
+    format_kwargs,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Collection, Iterator
@@ -1151,146 +1157,6 @@ class _ToolSourceUpdateDialog(MessageDialog):
         self.accept()
 
 
-def _is_kwarg_name(value: typing.Any) -> bool:
-    return (
-        isinstance(value, str) and value.isidentifier() and not keyword.iskeyword(value)
-    )
-
-
-def format_kwargs(d: Mapping[typing.Any, typing.Any]) -> str:
-    """Format a dictionary of keyword arguments for a function call.
-
-    If the keys are valid Python identifiers, the output will be formatted as keyword
-    arguments. Otherwise, the output will be formatted as a dictionary.
-
-    Parameters
-    ----------
-    d
-        Dictionary of keyword arguments.
-
-    """
-    if all(_is_kwarg_name(k) for k in d):
-        return ", ".join(f"{k}={_parse_single_arg(v)!s}" for k, v in d.items())
-    out = ", ".join(
-        f"{_parse_single_arg(k)!s}: {_parse_single_arg(v)!s}" for k, v in d.items()
-    )
-    return "{" + out + "}"
-
-
-def format_call_kwargs(d: Mapping[typing.Any, typing.Any]) -> str:
-    """Format mapping arguments for a call site.
-
-    If all keys are identifier strings, emit plain keyword syntax. If all keys are
-    strings but at least one is not an identifier, emit ``**{...}`` so the generated
-    call still uses keyword expansion. Non-string keys fall back to a positional
-    mapping literal.
-    """
-    string_keys = [k for k in d if isinstance(k, str)]
-    if len(string_keys) == len(d):
-        if all(_is_kwarg_name(k) for k in string_keys):
-            return format_kwargs(d)
-        return f"**{format_kwargs(d)}"
-    return format_kwargs(d)
-
-
-def _parse_single_arg(arg: typing.Any) -> str:
-    arg = erlab.utils.misc._convert_to_native(arg)
-
-    if isinstance(arg, str):
-        # If the string is surrounded by vertical bars, remove them
-        # Otherwise, emit a Python string literal with escaped backslashes.
-        if arg.startswith("|") and arg.endswith("|"):
-            arg = arg[1:-1]
-        else:
-            arg = json.dumps(arg, ensure_ascii=False)
-    elif isinstance(arg, tuple):
-        inner = ", ".join(_parse_single_arg(item) for item in arg)
-        if len(arg) == 1:
-            inner += ","
-        arg = f"({inner})"
-    elif isinstance(arg, list):
-        arg = "[" + ", ".join(_parse_single_arg(item) for item in arg) + "]"
-    elif isinstance(arg, dict):
-        # If the argument is a dict, convert to string
-        arg = {
-            erlab.utils.misc._convert_to_native(k): erlab.utils.misc._convert_to_native(
-                v
-            )
-            for k, v in arg.items()
-        }
-        arg = (
-            "{"
-            + ", ".join(
-                f"{_parse_single_arg(k)}: {_parse_single_arg(v)}"
-                for k, v in arg.items()
-            )
-            + "}"
-        )
-    elif isinstance(arg, slice):
-        start, stop, step = arg.start, arg.stop, arg.step
-        if step is not None:
-            args = [start, stop, step]
-        elif start is None:
-            args = [stop]
-        else:
-            args = [start, stop]
-        return f"slice({', '.join(_parse_single_arg(a) for a in args)})"
-    elif isinstance(arg, np.ndarray):
-        arg = np.array2string(
-            arg,
-            separator=", ",
-            threshold=sys.maxsize,
-            formatter={"float_kind": lambda v: np.format_float_positional(v, trim="-")},
-        ).replace("\n", "")
-        arg = f"np.array({arg})"
-
-    return str(arg)
-
-
-def format_1d_numeric_array_code(values: npt.ArrayLike) -> str:
-    """Format one-dimensional numeric values as compact executable Python code.
-
-    This is intended for generated snippets where readability matters but exact values
-    must still round-trip when executed. Uniform integer-like grids are written as
-    ``np.arange(...)``, uniform floating-point grids as ``np.linspace(...)``, and
-    other inputs fall back to the general array formatter used by
-    :func:`_parse_single_arg`.
-    """
-    values = np.asarray(values)
-    values_code = _parse_single_arg(values)
-    if values.ndim != 1 or values.size == 0:
-        return values_code
-    if not np.issubdtype(values.dtype, np.number) or np.issubdtype(
-        values.dtype, np.complexfloating
-    ):
-        return values_code
-
-    numeric = values.astype(np.float64, copy=False)
-    if not np.all(np.isfinite(numeric)):
-        return values_code
-
-    if numeric.size == 1:
-        value_code = _parse_single_arg(float(numeric[0]))
-        return f"np.linspace({value_code}, {value_code}, 1)"
-
-    diffs = np.diff(numeric)
-    step = float(diffs[0])
-    if not np.allclose(diffs, step, rtol=1e-12, atol=1e-12):
-        return values_code
-
-    rounded = np.rint(numeric)
-    if np.allclose(numeric, rounded, rtol=0.0, atol=1e-12):
-        int_step = int(rounded[1] - rounded[0])
-        if int_step != 0:
-            start = int(rounded[0])
-            stop = int(rounded[-1] + int_step)
-            return f"np.arange({start}, {stop}, {int_step})"
-
-    start_code = _parse_single_arg(float(numeric[0]))
-    stop_code = _parse_single_arg(float(numeric[-1]))
-    return f"np.linspace({start_code}, {stop_code}, {numeric.size})"
-
-
 # @functools.cache
 def _filter_to_patterns(name_filter: str) -> list[str]:
     """Extract a list of patterns from a name filter."""
@@ -1488,7 +1354,7 @@ def _handle_xarray_dict_or_kwargs(
     dictionary contains at least one key that contains spaces, a conversion of kwargs to
     the first positional argument is attempted.
     """
-    if len(args) != 0 or all(_is_kwarg_name(k) for k in kwargs):
+    if len(args) != 0 or all(erlab.utils.misc._is_valid_identifier(k) for k in kwargs):
         return args, kwargs
 
     params = inspect.signature(func).parameters
@@ -1604,7 +1470,7 @@ def _gen_single_function_code(
 
     invalid_kwargs: dict[str, typing.Any] = {}
     for k, v in kwargs.items():
-        if _is_kwarg_name(k):
+        if erlab.utils.misc._is_valid_identifier(k):
             code += f"{TAB}{k}={_parse_single_arg(v)},\n"
         else:
             invalid_kwargs[k] = v
@@ -5034,6 +4900,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Get a rendered preview pixmap for the ImageTool manager."""
         return None
 
+    def _preview_thumbnail_pixmap(self, _size: QtCore.QSize) -> QtGui.QPixmap | None:
+        """Get a preview suitable for an internal manager thumbnail.
+
+        Manager-integrated subclasses may override this protected hook to provide a
+        cached or cheaper thumbnail. The default preserves the generic
+        :attr:`preview_pixmap` preview contract.
+        """
+        return self.preview_pixmap
+
     @property
     def info_text(self) -> str:
         """Get the HTML text to be shown in the ImageTool manager."""
@@ -6254,18 +6129,7 @@ class IdentifierValidator(QtGui.QValidator):
         return QtGui.QValidator.State.Acceptable, input_str, pos
 
     def fixup(self, input_str: str | None) -> str:
-        if input_str is None:
-            return self.fixup("")
-        input_str = input_str.strip()
-        # Replace spaces and invalid chars with underscores
-        fixed = re.sub(r"\W|^(?=\d)", "_", input_str)
-        # Remove leading underscores if the rest is empty or all underscores
-        if not fixed or fixed.lstrip("_") == "":
-            fixed = "var"
-        # Avoid Python keywords
-        if keyword.iskeyword(fixed):
-            fixed += "_"
-        return fixed
+        return erlab.utils.misc._normalize_identifier(input_str)
 
 
 class _GuidelineTargetItem(pg.TargetItem):

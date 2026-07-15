@@ -354,7 +354,7 @@ def _load_code_from_file_details(
     source_input_dtype: np.dtype[typing.Any] | str | None = None,
 ) -> str | None:
     """Generate replay code for loading one ImageTool data source from a file."""
-    if not erlab.interactive.utils._is_kwarg_name(assign):
+    if not erlab.utils.misc._is_valid_identifier(assign):
         raise ValueError("assign must be a valid Python identifier")
     resolved = _resolve_load_func(
         load_func,

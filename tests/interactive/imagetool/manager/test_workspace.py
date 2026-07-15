@@ -11921,8 +11921,8 @@ def test_manager_workspace_load_context_batches_secondary_ui_refreshes(
 
         monkeypatch.setattr(manager, "_figure_uids", list)
         monkeypatch.setattr(
-            manager,
-            "_set_figures_tab_available",
+            manager._figure_controller,
+            "_set_available",
             lambda available: calls.append(("figures", available)),
         )
         monkeypatch.setattr(
@@ -11940,7 +11940,7 @@ def test_manager_workspace_load_context_batches_secondary_ui_refreshes(
             "_refresh_dependency_dependents",
             lambda uid: calls.append(("dependency", uid)),
         )
-        update_figure_gallery_icon = manager._update_figure_gallery_icon
+        update_figure_gallery_icon = manager._figure_controller.update_gallery_icon
 
         def _update_figure_gallery_icon(uid: str) -> None:
             if manager._workspace_ui_refresh_defer_depth > 0:
@@ -11949,8 +11949,8 @@ def test_manager_workspace_load_context_batches_secondary_ui_refreshes(
             calls.append(("gallery", uid))
 
         monkeypatch.setattr(
-            manager,
-            "_update_figure_gallery_icon",
+            manager._figure_controller,
+            "update_gallery_icon",
             _update_figure_gallery_icon,
         )
         refresh_figure_source_controls = manager._refresh_figure_source_controls
@@ -11968,16 +11968,16 @@ def test_manager_workspace_load_context_batches_secondary_ui_refreshes(
         )
 
         with manager._workspace_load_context():
-            manager._sync_figures_ui(select_uid="figure")
+            manager._figure_controller.sync(select_uid="figure")
             manager._update_info(uid="figure")
             manager._update_info(uid="figure")
             manager._update_actions()
             manager._update_actions()
             manager._refresh_dependency_dependents("source")
             manager._refresh_dependency_dependents("source")
-            manager._update_figure_gallery_icon("figure")
-            manager._schedule_figure_gallery_icon_update("figure")
-            manager._schedule_figure_gallery_icon_update("figure")
+            manager._figure_controller.update_gallery_icon("figure")
+            manager._figure_controller.update_gallery_icon("figure")
+            manager._figure_controller.update_gallery_icon("figure")
             manager._refresh_figure_source_controls()
             manager._refresh_figure_source_controls()
             assert calls == []
@@ -15502,9 +15502,7 @@ def test_pending_workspace_lazy_source_data_restores_nonuniform_dimension_order(
         assert pending.dims == tool.slicer_area.data.dims
         assert pending.chunks is not None
         xr.testing.assert_identical(
-            erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-                pending.compute()
-            ),
+            erlab.utils.array._restore_nonuniform_dims(pending.compute()),
             data,
         )
         info = controller._pending_workspace_imagetool_info_text(node)

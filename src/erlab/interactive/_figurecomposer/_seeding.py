@@ -7,7 +7,7 @@ import typing
 import numpy as np
 
 from erlab.interactive._figurecomposer._defaults import _current_options
-from erlab.interactive._figurecomposer._state import (
+from erlab.interactive._figurecomposer._model._state import (
     FigureAxesSelectionState,
     FigureOperationState,
     FigurePlotSlicesPanelStyleState,
@@ -199,7 +199,7 @@ def bz_overlay_operation_from_momentum_data(
     axes: FigureAxesSelectionState | None = None,
 ) -> FigureOperationState | None:
     """Seed a BZ overlay from simple momentum-cut dimensions and bounds."""
-    from erlab.interactive._figurecomposer._sources import _public_source_data
+    from erlab.interactive._figurecomposer._model._sources import _public_source_data
 
     data = _public_source_data(data).squeeze(drop=True)
     dims = {str(dim) for dim in data.dims}

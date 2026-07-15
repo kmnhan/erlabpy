@@ -9,7 +9,7 @@ import typing
 from qtpy import QtCore, QtWidgets
 
 import erlab
-from erlab.interactive._figurecomposer._sources import (
+from erlab.interactive._figurecomposer._model._sources import (
     _public_source_data,
     _source_display_label,
 )
@@ -19,7 +19,7 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
-    from erlab.interactive._figurecomposer._state import FigureSourceState
+    from erlab.interactive._figurecomposer._model._state import FigureSourceState
 
 
 logger = logging.getLogger(__name__)

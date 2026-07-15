@@ -4,6 +4,7 @@ import pytest
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive._colormap as interactive_colormap
 from erlab.interactive._options import options
 from erlab.interactive.colors import (
     BetterColorBarItem,
@@ -502,20 +503,18 @@ def test_matplotlib_colormap_name_checks_again_after_loading(monkeypatch) -> Non
     def load_colormaps() -> None:
         available.update({"late_cmap", "cet_late_colorcet"})
 
-    token = erlab.interactive.colors._ALL_COLORMAPS_LOADED.set(False)
+    token = interactive_colormap._ALL_COLORMAPS_LOADED.set(False)
     try:
         monkeypatch.setattr(
-            erlab.interactive.colors, "_matplotlib_has_colormap", has_colormap
+            interactive_colormap, "_matplotlib_has_colormap", has_colormap
         )
-        monkeypatch.setattr(
-            erlab.interactive.colors, "load_all_colormaps", load_colormaps
-        )
+        monkeypatch.setattr(interactive_colormap, "load_all_colormaps", load_colormaps)
 
         assert matplotlib_colormap_name("late_cmap") == "late_cmap"
         available.clear()
         assert matplotlib_colormap_name("late_colorcet") == "cet_late_colorcet"
     finally:
-        erlab.interactive.colors._ALL_COLORMAPS_LOADED.reset(token)
+        interactive_colormap._ALL_COLORMAPS_LOADED.reset(token)
 
 
 def test_colormap_combobox_explicit_icon_and_fallback_helpers(qtbot) -> None:

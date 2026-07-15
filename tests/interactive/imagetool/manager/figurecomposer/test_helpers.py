@@ -28,31 +28,33 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)
     combo = QtWidgets.QComboBox(parent)
-    figurecomposer_line_style.configure_style_combo(
+    figurecomposer_line_style_ui.configure_style_combo(
         combo,
         figurecomposer_line_style.LINE_STYLE_OPTIONS,
         None,
     )
     assert combo.itemData(0) is None
-    assert figurecomposer_line_style.style_combo_value(combo) is None
-    figurecomposer_line_style.set_style_combo_value(combo, "")
-    assert figurecomposer_line_style.style_combo_value(combo) == "none"
-    figurecomposer_line_style.set_style_combo_value(combo, " ")
-    assert figurecomposer_line_style.style_combo_value(combo) == "none"
-    figurecomposer_line_style.set_style_combo_value(combo, "None")
-    assert figurecomposer_line_style.style_combo_value(combo) == "none"
-    figurecomposer_line_style.set_style_combo_value(combo, "custom-dash")
-    assert figurecomposer_line_style.style_combo_value(combo) == "custom-dash"
+    assert figurecomposer_line_style_ui.style_combo_value(combo) is None
+    figurecomposer_line_style_ui.set_style_combo_value(combo, "")
+    assert figurecomposer_line_style_ui.style_combo_value(combo) == "none"
+    figurecomposer_line_style_ui.set_style_combo_value(combo, " ")
+    assert figurecomposer_line_style_ui.style_combo_value(combo) == "none"
+    figurecomposer_line_style_ui.set_style_combo_value(combo, "None")
+    assert figurecomposer_line_style_ui.style_combo_value(combo) == "none"
+    figurecomposer_line_style_ui.set_style_combo_value(combo, "custom-dash")
+    assert figurecomposer_line_style_ui.style_combo_value(combo) == "custom-dash"
     assert combo.itemText(combo.count() - 1) == "custom-dash"
 
-    spinbox = figurecomposer_line_style.optional_positive_spinbox(None, parent=parent)
+    spinbox = figurecomposer_line_style_ui.optional_positive_spinbox(
+        None, parent=parent
+    )
     assert (
-        figurecomposer_line_style.optional_positive_spinbox_value(spinbox.value())
+        figurecomposer_line_style_ui.optional_positive_spinbox_value(spinbox.value())
         is None
     )
     spinbox.setValue(2.5)
     assert (
-        figurecomposer_line_style.optional_positive_spinbox_value(spinbox.value())
+        figurecomposer_line_style_ui.optional_positive_spinbox_value(spinbox.value())
         == 2.5
     )
 
@@ -76,17 +78,19 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
 
     tool._updating_controls = True
-    figurecomposer_line_style.update_current_line_kw(
-        tool, "color", "red", clear_stale_cmap=True
+    figurecomposer_line_style_ui.update_current_line_kw(
+        tool.operation_editor, "color", "red", clear_stale_cmap=True
     )
     tool._updating_controls = False
     assert tool.tool_status.operations[0].cmap == "magma"
 
-    figurecomposer_line_style.update_current_line_kw(
-        tool,
+    figurecomposer_line_style_ui.update_current_line_kw(
+        tool.operation_editor,
         "color",
         "red",
         aliases=("c",),
@@ -98,11 +102,15 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
     assert updated.cmap is None
 
     tool._updating_controls = True
-    figurecomposer_line_style.update_current_extra_line_kw(tool, {"zorder": 5})
+    figurecomposer_line_style_ui.update_current_extra_line_kw(
+        tool.operation_editor, {"zorder": 5}
+    )
     tool._updating_controls = False
     assert "zorder" not in tool.tool_status.operations[0].line_kw
 
-    figurecomposer_line_style.update_current_extra_line_kw(tool, {"zorder": 5})
+    figurecomposer_line_style_ui.update_current_extra_line_kw(
+        tool.operation_editor, {"zorder": 5}
+    )
     assert tool.tool_status.operations[0].line_kw == {
         "lw": "2",
         "color": "red",
@@ -155,10 +163,12 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
     tool._update_operation_editor()
-    tool._select_step_section("selection")
-    line_selection_page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("selection")
+    line_selection_page = tool.operation_editor.stack.currentWidget()
     assert line_selection_page is not None
     _assert_step_editor_section(
         line_selection_page, "figureComposerLineSelectionDataSection"
@@ -166,8 +176,8 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     _assert_step_editor_section(
         line_selection_page, "figureComposerLineSelectionProfilesSection"
     )
-    tool._select_step_section("view")
-    line_view_page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("view")
+    line_view_page = tool.operation_editor.stack.currentWidget()
     assert line_view_page is not None
     assert (
         line_view_page.findChild(
@@ -175,17 +185,20 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         )
         is None
     )
-    tool._select_step_section("style")
-    line_style_page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("style")
+    line_style_page = tool.operation_editor.stack.currentWidget()
     assert line_style_page is not None
     _assert_step_editor_section(line_style_page, "figureComposerLineStyleLegendSection")
     _assert_step_editor_section(line_style_page, "figureComposerLineStyleColorSection")
     _assert_step_editor_section(line_style_page, "figureComposerLineStyleLineSection")
     _assert_step_editor_section(line_style_page, "figureComposerLineStyleFillSection")
-    tool._select_step_section("other")
-    line_other_page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("other")
+    line_other_page = tool.operation_editor.stack.currentWidget()
     assert line_other_page is not None
-    assert tool.step_section_buttons["other"].property("section_title") == "Transform"
+    assert (
+        _operation_section_button(tool, "other").property("section_title")
+        == "Transform"
+    )
     assert (
         line_other_page.findChild(
             QtWidgets.QWidget, "figureComposerLineOtherTransformSection"
@@ -193,10 +206,12 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         is None
     )
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(1)
+    )
     tool._update_operation_editor()
-    tool._select_step_section("selection")
-    line_slices_selection_page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("selection")
+    line_slices_selection_page = tool.operation_editor.stack.currentWidget()
     assert line_slices_selection_page is not None
     _assert_step_editor_section(
         line_slices_selection_page,
@@ -206,8 +221,8 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         line_slices_selection_page,
         "figureComposerPlotSlicesSelectionValuesSection",
     )
-    tool._select_step_section("view")
-    line_slices_view_page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("view")
+    line_slices_view_page = tool.operation_editor.stack.currentWidget()
     assert line_slices_view_page is not None
     _assert_step_editor_section(
         line_slices_view_page, "figureComposerPlotSlicesViewPanelsSection"
@@ -215,8 +230,8 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     _assert_step_editor_section(
         line_slices_view_page, "figureComposerPlotSlicesViewAxesSection"
     )
-    tool._select_step_section("colors")
-    line_slices_colors_page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("colors")
+    line_slices_colors_page = tool.operation_editor.stack.currentWidget()
     assert line_slices_colors_page is not None
     _assert_step_editor_section(
         line_slices_colors_page,
@@ -234,8 +249,8 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         line_slices_colors_page,
         "figureComposerPlotSlicesStylePanelOverridesSection",
     )
-    tool._select_step_section("transform")
-    line_slices_transform_page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("transform")
+    line_slices_transform_page = tool.operation_editor.stack.currentWidget()
     assert line_slices_transform_page is not None
     assert (
         line_slices_transform_page.objectName()
@@ -248,10 +263,12 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         is None
     )
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(2))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(2)
+    )
     tool._update_operation_editor()
-    tool._select_step_section("colors")
-    image_slices_colors_page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("colors")
+    image_slices_colors_page = tool.operation_editor.stack.currentWidget()
     assert image_slices_colors_page is not None
     _assert_step_editor_section(
         image_slices_colors_page,
@@ -266,19 +283,23 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
         "figureComposerPlotSlicesColorsPanelOverridesSection",
     )
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(3))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(3)
+    )
     tool._update_operation_editor()
-    tool._select_step_section("method")
-    method_page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("method")
+    method_page = tool.operation_editor.stack.currentWidget()
     assert method_page is not None
     _assert_step_editor_section(method_page, "figureComposerMethodCallSection")
     _assert_step_editor_section(method_page, "figureComposerMethodValuesSection")
     _assert_step_editor_section(method_page, "figureComposerMethodAdvancedSection")
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(4))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(4)
+    )
     tool._update_operation_editor()
-    tool._select_step_section("view")
-    plot_array_view_page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("view")
+    plot_array_view_page = tool.operation_editor.stack.currentWidget()
     assert plot_array_view_page is not None
     _assert_step_editor_section(
         plot_array_view_page, "figureComposerPlotArrayViewImageSection"
@@ -286,8 +307,8 @@ def test_figure_composer_step_editor_section_headers_are_native_subgroups(
     _assert_step_editor_section(
         plot_array_view_page, "figureComposerPlotArrayViewAxesSection"
     )
-    tool._select_step_section("colors")
-    plot_array_colors_page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("colors")
+    plot_array_colors_page = tool.operation_editor.stack.currentWidget()
     assert plot_array_colors_page is not None
     _assert_step_editor_section(
         plot_array_colors_page,
@@ -575,10 +596,12 @@ def test_figure_composer_codegen_axes_helpers_cover_invalid_targets(qtbot) -> No
 
     with pytest.raises(ValueError, match="outside the current layout"):
         figurecomposer_code._axes_sequence_code(
-            tool, FigureAxesSelectionState(axes=((1, 0),))
+            tool._document, FigureAxesSelectionState(axes=((1, 0),))
         )
     with pytest.raises(ValueError, match="No axes"):
-        figurecomposer_code._axes_sequence_code(tool, FigureAxesSelectionState(axes=()))
+        figurecomposer_code._axes_sequence_code(
+            tool._document, FigureAxesSelectionState(axes=())
+        )
 
     root = FigureGridSpecGridState(
         grid_id="root",
@@ -620,7 +643,7 @@ def test_figure_composer_codegen_axes_helpers_cover_invalid_targets(qtbot) -> No
 
     assert (
         figurecomposer_code._axes_code(
-            grid_tool,
+            grid_tool._document,
             FigureAxesSelectionState(axes_ids=("axis-a", "axis-b")),
             for_plot_slices=False,
         )
@@ -628,7 +651,7 @@ def test_figure_composer_codegen_axes_helpers_cover_invalid_targets(qtbot) -> No
     )
     with pytest.raises(ValueError, match="No axes"):
         figurecomposer_code._axes_sequence_code(
-            grid_tool, FigureAxesSelectionState(axes_ids=())
+            grid_tool._document, FigureAxesSelectionState(axes_ids=())
         )
 
 
@@ -847,8 +870,8 @@ def test_figure_composer_rendering_helpers_cover_selection_edges(qtbot) -> None:
         ),
     )
     qtbot.addWidget(tool)
-    assert "sharex" not in figurecomposer_rendering._setup_kwargs(tool)
-    assert "sharey" not in figurecomposer_rendering._setup_kwargs(tool)
+    assert "sharex" not in figurecomposer_rendering._setup_kwargs(tool._document)
+    assert "sharey" not in figurecomposer_rendering._setup_kwargs(tool._document)
 
     fig, axs = plt.subplots(1, 1, squeeze=False)
     with pytest.raises(ValueError, match="outside the current figure"):
@@ -922,3 +945,110 @@ def test_figure_composer_rendering_helpers_cover_selection_edges(qtbot) -> None:
     assert figurecomposer_rendering._iter_axes([grid_axs]) == (grid_axs,)
     assert figurecomposer_rendering._render_error_text(RuntimeError()) == "RuntimeError"
     plt.close(grid_fig)
+
+
+def test_gridspec_transformations_validate_edits_and_ignore_stale_ids() -> None:
+    setup = FigureSubplotsState(
+        layout_mode="gridspec",
+        gridspec=FigureGridSpecLayoutState(
+            root=FigureGridSpecGridState(grid_id="root", nrows=2, ncols=2)
+        ),
+    )
+    top_left = FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=1,
+        col_start=0,
+        col_stop=1,
+    )
+    top_right = FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=1,
+        col_start=1,
+        col_stop=2,
+    )
+    bottom_left = FigureGridSpecSpanState(
+        row_start=1,
+        row_stop=2,
+        col_start=0,
+        col_stop=1,
+    )
+
+    assert (
+        figurecomposer_gridspec._gridspec_update_grid_settings(
+            setup, "missing", nrows=1, ncols=1
+        )
+        == setup
+    )
+    with pytest.raises(ValueError, match="at least one row"):
+        figurecomposer_gridspec._gridspec_update_grid_settings(
+            setup, "root", nrows=0, ncols=1
+        )
+
+    unchanged, region_id = figurecomposer_gridspec._gridspec_add_region(
+        setup, "missing", top_left, "axes"
+    )
+    assert unchanged == setup
+    assert region_id == ""
+    with pytest.raises(ValueError, match="unknown GridSpec region kind"):
+        figurecomposer_gridspec._gridspec_add_region(
+            setup, "root", top_left, typing.cast(typing.Any, "unknown")
+        )
+
+    setup, first_axes_id = figurecomposer_gridspec._gridspec_add_region(
+        setup, "root", top_left, "axes"
+    )
+    setup, second_axes_id = figurecomposer_gridspec._gridspec_add_region(
+        setup, "root", top_right, "axes"
+    )
+    with pytest.raises(ValueError, match="cannot overlap"):
+        figurecomposer_gridspec._gridspec_add_region(setup, "root", top_left, "grid")
+    with pytest.raises(ValueError, match="outside the active grid"):
+        figurecomposer_gridspec._gridspec_update_region_span(
+            setup,
+            "root",
+            first_axes_id,
+            FigureGridSpecSpanState(
+                row_start=2,
+                row_stop=3,
+                col_start=0,
+                col_stop=1,
+            ),
+        )
+    with pytest.raises(ValueError, match="cannot overlap"):
+        figurecomposer_gridspec._gridspec_update_region_span(
+            setup, "root", first_axes_id, top_right
+        )
+    assert (
+        figurecomposer_gridspec._gridspec_update_region_span(
+            setup, "missing", first_axes_id, bottom_left
+        )
+        == setup
+    )
+    assert (
+        figurecomposer_gridspec._gridspec_update_region_span(
+            setup, "root", "missing", bottom_left
+        )
+        == setup
+    )
+    assert (
+        figurecomposer_gridspec._gridspec_nearest_axes_after_region_delete(
+            setup, "root", second_axes_id
+        )
+        == first_axes_id
+    )
+    assert (
+        figurecomposer_gridspec._gridspec_nearest_axes_after_region_delete(
+            setup, "missing", first_axes_id
+        )
+        == ""
+    )
+    assert (
+        figurecomposer_gridspec._gridspec_nearest_axes_after_region_delete(
+            setup, "root", "missing"
+        )
+        == ""
+    )
+    assert (
+        figurecomposer_gridspec._gridspec_remove_region(setup, "root", "missing")
+        == setup
+    )

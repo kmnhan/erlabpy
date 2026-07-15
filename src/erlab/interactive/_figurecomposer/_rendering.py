@@ -13,17 +13,18 @@ from matplotlib.figure import Figure
 
 import erlab
 import erlab.plotting as eplt
-from erlab.interactive._figurecomposer._axes import _axes_expression_value
 from erlab.interactive._figurecomposer._defaults import (
     _apply_figure_dpi,
     _figure_style_context,
+    _tool_figure_options_context,
 )
-from erlab.interactive._figurecomposer._gridspec import (
+from erlab.interactive._figurecomposer._model._axes import _axes_expression_value
+from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_region_valid,
     _gridspec_valid_axes_ids,
 )
-from erlab.interactive._figurecomposer._sources import (
+from erlab.interactive._figurecomposer._model._sources import (
     _public_source_data,
     _valid_source_variable,
 )
@@ -31,15 +32,16 @@ from erlab.interactive._figurecomposer._sources import (
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from erlab.interactive._figurecomposer._state import (
+    from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
+    from erlab.interactive._figurecomposer._model._state import (
         FigureAxesSelectionState,
         FigureGridSpecGridState,
     )
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
-def _setup_kwargs(tool: FigureComposerTool) -> dict[str, typing.Any]:
-    setup = tool._recipe.setup
+def _setup_kwargs(context: FigureRecipeContext) -> dict[str, typing.Any]:
+    setup = context.recipe.setup
     kwargs: dict[str, typing.Any] = {
         "nrows": setup.nrows,
         "ncols": setup.ncols,
@@ -61,9 +63,9 @@ def _setup_kwargs(tool: FigureComposerTool) -> dict[str, typing.Any]:
 
 
 def _setup_layout_value(
-    tool: FigureComposerTool,
+    context: FigureRecipeContext,
 ) -> typing.Literal["constrained", "compressed", "tight", "none"] | None:
-    return tool._recipe.setup.layout
+    return context.recipe.setup.layout
 
 
 def _set_creation_layout_engine(
@@ -95,7 +97,7 @@ def _make_axes(
     *,
     sync_visible: bool = True,
 ) -> np.ndarray | dict[str, matplotlib.axes.Axes]:
-    setup = tool._recipe.setup
+    setup = tool._document.recipe.setup
     if figure is None:
         figure = tool.figure
     _apply_figure_dpi(figure, setup.dpi)
@@ -106,14 +108,14 @@ def _make_axes(
         and tool._figure_window.isVisible()
     ):
         tool._sync_recipe_figsize_to_canvas(draw=False, emit_info=False)
-        setup = tool._recipe.setup
+        setup = tool._document.recipe.setup
         _apply_figure_dpi(figure, setup.dpi)
     figure.clear()
     figure.set_facecolor(mpl.rcParams["figure.facecolor"])
     figure.set_edgecolor(mpl.rcParams["figure.edgecolor"])
     figure.set_size_inches(setup.figsize, forward=False)
     with contextlib.suppress(ValueError, NotImplementedError):
-        _set_creation_layout_engine(figure, _setup_layout_value(tool))
+        _set_creation_layout_engine(figure, _setup_layout_value(tool._document))
     if setup.layout_mode == "gridspec":
         return _make_gridspec_axes(tool, figure)
     return np.asarray(
@@ -137,7 +139,7 @@ def _make_axes(
 def _make_gridspec_axes(
     tool: FigureComposerTool, figure: Figure
 ) -> dict[str, matplotlib.axes.Axes]:
-    setup = tool._recipe.setup
+    setup = tool._document.recipe.setup
     axes_by_id: dict[str, matplotlib.axes.Axes] = {}
 
     def gridspec_kwargs(grid: FigureGridSpecGridState) -> dict[str, typing.Any]:
@@ -180,22 +182,13 @@ def _make_gridspec_axes(
 
 
 def _new_offscreen_figure(tool: FigureComposerTool) -> Figure:
-    setup = tool._recipe.setup
+    setup = tool._document.recipe.setup
     with _tool_figure_options_context(tool), _figure_style_context():
         return Figure(
             figsize=setup.figsize,
             dpi=setup.dpi,
             layout=typing.cast("typing.Any", setup.layout),
         )
-
-
-def _tool_figure_options_context(
-    tool: FigureComposerTool,
-) -> contextlib.AbstractContextManager[None]:
-    options_context = getattr(tool, "_figure_options_context", None)
-    if callable(options_context):
-        return options_context()
-    return contextlib.nullcontext()
 
 
 def _valid_figure_window(tool: FigureComposerTool) -> typing.Any | None:
@@ -208,7 +201,7 @@ def _valid_figure_window(tool: FigureComposerTool) -> typing.Any | None:
 def _layout_axes_from_figure(
     tool: FigureComposerTool, figure: Figure
 ) -> np.ndarray | dict[str, matplotlib.axes.Axes] | None:
-    setup = tool._recipe.setup
+    setup = tool._document.recipe.setup
     if setup.layout_mode == "gridspec":
         axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
         axes = figure.axes[: len(axes_ids)]
@@ -259,7 +252,7 @@ def _source_namespace(
         "xr": xr,
         "eplt": eplt,
     }
-    for name, data in tool._source_data.items():
+    for name, data in tool._document.source_data.items():
         namespace[_valid_source_variable(name)] = _public_source_data(data)
     return namespace
 
@@ -277,7 +270,9 @@ def _axes_from_selection(
         return _axes_expression_value(selection.expression, axs)
 
     if isinstance(axs, dict):
-        valid_ids = _gridspec_valid_axes_ids(tool._recipe.setup, selection.axes_ids)
+        valid_ids = _gridspec_valid_axes_ids(
+            tool._document.recipe.setup, selection.axes_ids
+        )
         invalid_ids = tuple(
             axis_id for axis_id in selection.axes_ids if axis_id not in valid_ids
         )
@@ -292,9 +287,11 @@ def _axes_from_selection(
             return selected[0]
         return np.asarray(selected, dtype=object)
 
-    if selection.invalid_axes(tool._recipe.setup):
+    if selection.invalid_axes(tool._document.recipe.setup):
         raise ValueError("Selected axes are outside the current figure layout")
-    selected = [axs[row, col] for row, col in selection.valid_axes(tool._recipe.setup)]
+    selected = [
+        axs[row, col] for row, col in selection.valid_axes(tool._document.recipe.setup)
+    ]
     if not selected:
         raise ValueError("No axes are selected for this operation")
     if for_plot_slices:
@@ -325,13 +322,13 @@ def _render_into_figure(
     try:
         with _tool_figure_options_context(tool), _figure_style_context():
             axs = _make_axes(tool, figure, sync_visible=sync_visible)
-            for operation in tool._recipe.operations:
+            for operation in tool._document.recipe.operations:
                 if not operation.enabled:
                     continue
                 spec = _registry.spec_for(operation.kind)
                 if spec.has_invalid_target(
-                    tool, operation
-                ) or tool._operation_has_invalid_input(operation):
+                    tool._document, operation
+                ) or tool.operation_editor.has_input_error(operation):
                     continue
                 try:
                     spec.render(tool, operation, figure, axs)

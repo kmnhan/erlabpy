@@ -674,11 +674,14 @@ class DataTransformDialog(_DataManipulationDialog):
             if self.apply_on_nonuniform_data
             else provenance.full_data
         )
-        if not self.apply_on_nonuniform_data and any(
-            str(dim).endswith("_idx") and str(dim).removesuffix("_idx") in data.coords
-            for dim in data.dims
-        ):
-            operations.append(provenance.RestoreNonuniformDimsOperation())
+        if not self.apply_on_nonuniform_data:
+            dimension_mapping = erlab.utils.array._nonuniform_dim_mapping(data)
+            if dimension_mapping:
+                operations.append(
+                    provenance.RestoreNonuniformDimsOperation(
+                        dimension_mapping=dimension_mapping
+                    )
+                )
         return builder(*operations)
 
     def source_spec(self, new_name: str | None = None) -> provenance.ToolProvenanceSpec:
@@ -806,7 +809,7 @@ class DataTransformDialog(_DataManipulationDialog):
                     input_name,
                 )
 
-            if not erlab.interactive.utils._is_kwarg_name(input_name):
+            if not erlab.utils.misc._is_valid_identifier(input_name):
                 input_name = "data"
             output_name = f"{input_name}{self.copy_output_suffix}"
             current_name = input_name
@@ -910,15 +913,18 @@ class DataTransformDialog(_DataManipulationDialog):
 
         try:
             if self.apply_on_nonuniform_data:
-                input_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+                input_data = erlab.utils.array._restore_nonuniform_dims(
                     self.slicer_area.data
                 )
                 self.preflight_data(input_data)
                 processed = self.process_data(input_data)
             else:
                 self.preflight_data(self.slicer_area.data)
-                processed = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-                    self.process_data(self.slicer_area.data)
+                dimension_mapping = erlab.utils.array._nonuniform_dim_mapping(
+                    self.slicer_area.data
+                )
+                processed = erlab.utils.array._restore_nonuniform_dims(
+                    self.process_data(self.slicer_area.data), dimension_mapping
                 )
             processed = processed.rename(input_name)
 
@@ -1226,7 +1232,7 @@ class KspaceConversionDialog(DataTransformDialog):
 
     def setup_widgets(self) -> None:
         self.setObjectName("kspaceConversionDialog")
-        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        self._source_data = erlab.utils.array._restore_nonuniform_dims(
             self.slicer_area.data
         )
         self._compatible = bool(self._source_data.kspace._interactive_compatible)
@@ -1583,7 +1589,7 @@ class KspaceConversionDialog(DataTransformDialog):
         )
 
     def _conversion_input_for_data(self, data: xr.DataArray) -> xr.DataArray:
-        source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)
+        source_data = erlab.utils.array._restore_nonuniform_dims(data)
         if int(source_data.kspace.configuration) != int(self.current_configuration):
             source_data = source_data.kspace.as_configuration(
                 self.current_configuration
@@ -1695,7 +1701,7 @@ class KspaceConversionDialog(DataTransformDialog):
         self,
         data: xr.DataArray,
     ) -> tuple[provenance.ToolProvenanceOperation, ...]:
-        source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)
+        source_data = erlab.utils.array._restore_nonuniform_dims(data)
         return _kspace_conversion.kspace_conversion_operations(
             source_data,
             target_configuration=self.current_configuration,
@@ -2356,9 +2362,7 @@ class SelectionDialog(DataTransformDialog):
         source_data = self._source_data
         if source_data is None:
             source_data = self.slicer_area.data
-        self.public_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-            source_data
-        )
+        self.public_data = erlab.utils.array._restore_nonuniform_dims(source_data)
 
         self.grid_layout = QtWidgets.QGridLayout()
         self.grid_layout.setContentsMargins(0, 0, 0, 0)
@@ -2578,7 +2582,7 @@ class InterpolationDialog(DataTransformDialog):
     operation_types = (provenance.InterpolationOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        self._source_data = erlab.utils.array._restore_nonuniform_dims(
             self.slicer_area.data
         )
 
@@ -2730,9 +2734,7 @@ class SortByDialog(DataTransformDialog):
     operation_types = (provenance.SortByOperation,)
 
     def setup_widgets(self) -> None:
-        source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-            self.slicer_area.data
-        )
+        source_data = erlab.utils.array._restore_nonuniform_dims(self.slicer_area.data)
         public_dims = tuple(
             dim.removesuffix("_idx")
             if isinstance(dim, str) and dim.endswith("_idx")
@@ -2916,7 +2918,7 @@ class LeadingEdgeDialog(DataTransformDialog):
     operation_types = (provenance.LeadingEdgeOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        self._source_data = erlab.utils.array._restore_nonuniform_dims(
             self.slicer_area.data
         )
 
@@ -3040,7 +3042,7 @@ class CoarsenDialog(DataTransformDialog):
     )
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        self._source_data = erlab.utils.array._restore_nonuniform_dims(
             self.slicer_area.data
         )
 
@@ -3198,7 +3200,7 @@ class ThinDialog(DataTransformDialog):
     operation_types = (provenance.ThinOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        self._source_data = erlab.utils.array._restore_nonuniform_dims(
             self.slicer_area.data
         )
 
@@ -3350,7 +3352,7 @@ class SqueezeDialog(DataTransformDialog):
     operation_types = (provenance.SqueezeOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        self._source_data = erlab.utils.array._restore_nonuniform_dims(
             self.slicer_area.data
         )
 
@@ -3984,7 +3986,7 @@ class DivideByCoordDialog(DataTransformDialog):
     operation_types = (provenance.DivideByCoordOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        self._source_data = erlab.utils.array._restore_nonuniform_dims(
             self.slicer_area.data
         )
         self.coord_combo = QtWidgets.QComboBox()
@@ -4288,7 +4290,7 @@ class SwapDimsDialog(DataTransformDialog):
     operation_types = (provenance.SwapDimsOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        self._source_data = erlab.utils.array._restore_nonuniform_dims(
             self.slicer_area.data
         )
         public_dims = tuple(
@@ -4410,7 +4412,7 @@ class RenameDimsCoordsDialog(DataTransformDialog):
     operation_types = (provenance.RenameDimsCoordsOperation,)
 
     def setup_widgets(self) -> None:
-        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        self._source_data = erlab.utils.array._restore_nonuniform_dims(
             self.slicer_area.data
         )
         public_dims = tuple(

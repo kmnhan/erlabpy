@@ -21,7 +21,7 @@ __all__ = [
 
 import functools
 import typing
-from collections.abc import Callable, Collection, Hashable, Iterable
+from collections.abc import Callable, Collection, Hashable, Iterable, Mapping
 
 import numpy as np
 import numpy.typing as npt
@@ -419,6 +419,103 @@ def is_dims_uniform(
         dims = darr.dims
 
     return all(is_uniform_spaced(darr[dim].values, **kwargs) for dim in dims)
+
+
+def _is_uniform_for_image_tool(values: npt.NDArray[np.float64]) -> bool:
+    if values.size == 1:
+        return True
+    differences = np.diff(values)
+    if differences[0] == 0.0:
+        return False
+    return np.allclose(
+        differences,
+        differences[0],
+        rtol=3e-5,
+        atol=3e-5,
+        equal_nan=True,
+    )
+
+
+def _nonuniform_dim_name(darr: xr.DataArray, dim: Hashable) -> str | None:
+    if not str(dim).endswith("_idx"):
+        return None
+    restored_name = str(dim).removesuffix("_idx")
+    coordinate = darr.coords.get(restored_name)
+    if coordinate is None:
+        return None
+    if (
+        coordinate.ndim != 1
+        or coordinate.dims != (dim,)
+        or coordinate.size != darr.sizes[dim]
+    ):
+        return None
+    try:
+        values = coordinate.values.astype(np.float64)
+    except (TypeError, ValueError):
+        return None
+    if _is_uniform_for_image_tool(values):
+        return None
+    return restored_name
+
+
+def _make_dims_uniform(darr: xr.DataArray) -> xr.DataArray:
+    """Replace nonuniform dimensions with index dimensions for image rendering."""
+    nonuniform_dims = [
+        str(dim)
+        for dim in darr.dims
+        if not _is_uniform_for_image_tool(darr[dim].values.astype(np.float64))
+    ]
+    for dim in nonuniform_dims:
+        darr = darr.assign_coords(
+            {f"{dim}_idx": (dim, np.arange(len(darr[dim]), dtype=np.float32))}
+        ).swap_dims({dim: f"{dim}_idx"})
+    return darr
+
+
+def _nonuniform_dim_mapping(darr: xr.DataArray) -> dict[Hashable, Hashable]:
+    """Return index-dimension replacements created for ImageTool rendering."""
+    mapping: dict[Hashable, Hashable] = {}
+    for dim in darr.dims:
+        restored_name = _nonuniform_dim_name(darr, dim)
+        if restored_name is not None:
+            mapping[dim] = restored_name
+    return mapping
+
+
+def _applicable_nonuniform_dim_mapping(
+    darr: xr.DataArray,
+    dimension_mapping: Mapping[Hashable, Hashable],
+) -> dict[Hashable, Hashable]:
+    """Return recorded dimension replacements still represented by *darr*."""
+    mapping: dict[Hashable, Hashable] = {}
+    for index_dim, restored_dim in dimension_mapping.items():
+        if index_dim not in darr.dims:
+            continue
+        coordinate = darr.coords.get(restored_dim)
+        if coordinate is None:
+            continue
+        if (
+            coordinate.ndim == 1
+            and coordinate.dims == (index_dim,)
+            and coordinate.size == darr.sizes[index_dim]
+        ):
+            mapping[index_dim] = restored_dim
+    return mapping
+
+
+def _restore_nonuniform_dims(
+    darr: xr.DataArray,
+    dimension_mapping: Mapping[Hashable, Hashable] | None = None,
+) -> xr.DataArray:
+    """Restore dimensions previously replaced by :func:`_make_dims_uniform`."""
+    mapping = (
+        _nonuniform_dim_mapping(darr)
+        if dimension_mapping is None
+        else _applicable_nonuniform_dim_mapping(darr, dimension_mapping)
+    )
+    if not mapping:
+        return darr
+    return darr.swap_dims(mapping).drop_vars(tuple(mapping), errors="ignore")
 
 
 def check_arg_2d_darr(func: Callable) -> Callable:

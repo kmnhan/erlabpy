@@ -529,9 +529,7 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
         },
         name="data",
     )
-    parent_nonuniform = erlab.interactive.imagetool.slicer.make_dims_uniform(
-        parent_nonuniform_public
-    )
+    parent_nonuniform = erlab.utils.array._make_dims_uniform(parent_nonuniform_public)
     resolved_nonuniform = erlab.interactive.imagetool.provenance.selection(
         erlab.interactive.imagetool.provenance.QSelOperation(kwargs={"beta": 2.0}),
         erlab.interactive.imagetool.provenance.IselOperation(

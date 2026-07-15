@@ -162,8 +162,8 @@ def legend_label_input_widget(
     button.setIcon(QtGui.QIcon.fromTheme("help-faq"))
     if button.icon().isNull():
         button.setIcon(QtGui.QIcon.fromTheme("help-about"))
-    style = button.style()
-    if button.icon().isNull() and style is not None:  # pragma: no branch
+    style = typing.cast("QtWidgets.QStyle", button.style())
+    if button.icon().isNull():
         button.setIcon(
             style.standardIcon(
                 QtWidgets.QStyle.StandardPixmap.SP_TitleBarContextHelpButton

@@ -32,13 +32,13 @@ from erlab.interactive._figurecomposer import (
 from erlab.interactive._figurecomposer._exceptions import (
     FigureComposerPlotSlicesSelectionError,
 )
-from erlab.interactive._figurecomposer._tool import FigureSourceAddResult
+from erlab.interactive._figurecomposer._model._document import FigureSourceAddResult
 from erlab.interactive._widgets import _CenteredIconToolButton
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import _kspace_conversion, itool, provenance
 from erlab.interactive.imagetool._load_source import _LoadSourceDetails
-from erlab.interactive.imagetool.manager import fetch, replace_data
+from erlab.interactive.imagetool.manager import _figure_dialogs, fetch, replace_data
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._dialogs import (
     _batch_operation_dialog_classes,
@@ -216,10 +216,12 @@ def test_managed_window_actions_reveal_tree_and_figure_rows(
         assert not manager.reveal_nodes(("missing",))
 
         figure_tool.reveal_in_manager_action.trigger()
-        assert manager.left_tabs.currentWidget() is manager.figure_tab
+        figure_pane = manager._figure_controller.pane
+        assert figure_pane is not None
+        assert manager.left_tabs.currentWidget() is figure_pane
         selected_figure_uids = {
-            manager._figure_uid_from_item(item)
-            for item in manager.figure_list.selectedItems()
+            manager._figure_controller.uid_from_item(item)
+            for item in figure_pane.list_widget.selectedItems()
         }
         assert selected_figure_uids == {figure_uid}
         assert not manager.tree_view.selectedIndexes()
@@ -3168,7 +3170,9 @@ def test_shutdown_remove_all_tools_skips_teardown_ui_refresh(
             lambda _uid: calls.append("childtool_removed"),
         )
         monkeypatch.setattr(
-            manager, "_sync_figures_ui", lambda **_kwargs: calls.append("figures")
+            manager._figure_controller,
+            "sync",
+            lambda **_kwargs: calls.append("figures"),
         )
         monkeypatch.setattr(manager, "_update_actions", lambda: calls.append("actions"))
         monkeypatch.setattr(
@@ -3327,7 +3331,7 @@ def test_manager_figure_source_picker_skips_stale_rows_and_deduplicates_targets(
                     "root_indices_for_workspace",
                     lambda: (999, 0),
                 )
-                dialog = manager_mainwindow._FigureSourcePickerDialog(manager)
+                dialog = _figure_dialogs._FigureSourcePickerDialog(manager)
                 qtbot.addWidget(dialog)
                 assert dialog.tree.topLevelItemCount() == 1
                 root_item = dialog.tree.topLevelItem(0)

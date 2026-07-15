@@ -1064,7 +1064,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def displayed_data(self) -> xr.DataArray:
         """Return the public data values committed for derived outputs."""
-        return erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        return erlab.utils.array._restore_nonuniform_dims(
             self._accepted_data_for_dims(tuple(self._data.dims)).copy(deep=False)
         )
 
@@ -1142,7 +1142,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ) -> xr.DataArray:
         missing_dims = tuple(dim for dim in dims if dim not in data.dims)
         if missing_dims and any(str(dim).endswith("_idx") for dim in missing_dims):
-            data = erlab.interactive.imagetool.slicer.make_dims_uniform(data)
+            data = erlab.utils.array._make_dims_uniform(data)
             missing_dims = tuple(dim for dim in dims if dim not in data.dims)
         if missing_dims == ("stack_dim",):
             data = data.expand_dims("stack_dim", axis=dims.index("stack_dim"))

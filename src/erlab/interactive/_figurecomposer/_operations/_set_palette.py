@@ -9,27 +9,30 @@ import typing
 import matplotlib.pyplot as plt
 from qtpy import QtCore, QtGui, QtWidgets
 
-from erlab.interactive._figurecomposer._operations._base import (
-    AddStepActionSpec,
-    OperationSpec,
-    StepSection,
-    _empty_source_editor,
-    _empty_source_names,
-    _no_invalid_target,
-    _uses_no_axes,
-    _uses_no_source_section,
-)
-from erlab.interactive._figurecomposer._state import (
+from erlab.interactive._figurecomposer._model._state import (
     FigureOperationKind,
     FigureOperationState,
 )
-from erlab.interactive._figurecomposer._widgets import _ColorListEditorWidget
+from erlab.interactive._figurecomposer._operations._base import (
+    AddStepActionSpec,
+    OperationSpec,
+    _empty_source_editor,
+    _no_invalid_target,
+    _uses_no_source_section,
+)
+from erlab.interactive._figurecomposer._ui._color_widgets import _ColorListEditorWidget
+from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
 from erlab.plotting.colors import close_to_white
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from matplotlib.figure import Figure
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
+    from erlab.interactive._figurecomposer._ui._operation_editor import (
+        FigureOperationEditor,
+    )
 
 _SET_PALETTE_DOC_URL = "https://seaborn.pydata.org/generated/seaborn.set_palette.html"
 _SEABORN_NAMED_PALETTES = (
@@ -161,9 +164,8 @@ class _PaletteSwatch(QtWidgets.QFrame):
         event.accept()
 
     def copy_hex_to_clipboard(self) -> None:
-        clipboard = QtWidgets.QApplication.clipboard()
-        if clipboard is not None:  # pragma: no branch
-            clipboard.setText(self._hex_color)
+        clipboard = typing.cast("QtGui.QClipboard", QtWidgets.QApplication.clipboard())
+        clipboard.setText(self._hex_color)
 
 
 class _PalettePreviewWidget(QtWidgets.QWidget):
@@ -177,11 +179,8 @@ class _PalettePreviewWidget(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(3)
 
-    def set_colors(self, colors: typing.Sequence[typing.Any]) -> None:
-        base_layout = self.layout()
-        if base_layout is None:  # pragma: no cover
-            return
-        layout = typing.cast("QtWidgets.QHBoxLayout", base_layout)
+    def set_colors(self, colors: Sequence[typing.Any]) -> None:
+        layout = typing.cast("QtWidgets.QHBoxLayout", self.layout())
         while layout.count():
             item = layout.takeAt(0)
             if item is not None and (widget := item.widget()) is not None:
@@ -281,7 +280,7 @@ def _palette_colors(
         return ()
 
 
-def _palette_hex_colors(colors: typing.Sequence[typing.Any]) -> tuple[str, ...]:
+def _palette_hex_colors(colors: Sequence[typing.Any]) -> tuple[str, ...]:
     return tuple(_qt_color(color).name() for color in colors)
 
 
@@ -379,12 +378,12 @@ def _target_text(_tool: FigureComposerTool, _operation: FigureOperationState) ->
 
 
 def _editor_sections(
-    tool: FigureComposerTool, operation: FigureOperationState
+    editor: FigureOperationEditor, operation: FigureOperationState
 ) -> tuple[StepSection, ...]:
-    page, layout = tool._new_step_form_page("figureComposerSetPalettePage")
+    page, layout = editor.new_form_page("figureComposerSetPalettePage")
     sns = _import_seaborn()
     available = sns is not None
-    tool._add_form_section(
+    editor.add_form_section(
         layout,
         "Palette",
         object_name="figureComposerSetPaletteSection",
@@ -438,7 +437,7 @@ def _editor_sections(
         message.setObjectName("figureComposerSetPaletteUnavailableLabel")
         message.setProperty("missing_dependency", "seaborn")
         message.setWordWrap(True)
-        tool._add_form_row(
+        editor.add_form_row(
             layout,
             "Dependency",
             message,
@@ -464,9 +463,9 @@ def _editor_sections(
             palette_mode=mode,
             palette_colors=updates.get("palette_colors", operation.palette_colors),
         )
-        tool._update_current_operation_rebuild(**updates)
+        editor.request_update_rebuild(**updates)
 
-    mode_mixed = tool._batch_is_mixed(operation, lambda target: target.palette_mode)
+    mode_mixed = editor.batch_is_mixed(operation, lambda target: target.palette_mode)
     mode_combo = QtWidgets.QComboBox(page)
     mode_combo.setObjectName("figureComposerSetPaletteModeCombo")
     for mode, text in _PALETTE_MODE_LABELS.items():
@@ -483,7 +482,7 @@ def _editor_sections(
     mode_combo.setToolTip(
         "Choose a named seaborn or Matplotlib palette, or provide explicit colors."
     )
-    tool._connect_editor_signal(
+    editor.connect_signal(
         mode_combo,
         mode_combo.activated,
         lambda _index, combo=mode_combo: (
@@ -509,13 +508,13 @@ def _editor_sections(
     def open_docs(_checked: bool = False) -> None:
         QtGui.QDesktopServices.openUrl(QtCore.QUrl(_SET_PALETTE_DOC_URL))
 
-    tool._connect_editor_signal(
+    editor.connect_signal(
         docs_button,
         docs_button.clicked,
         open_docs,
     )
     mode_layout.addWidget(docs_button)
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Use",
         mode_row,
@@ -524,19 +523,19 @@ def _editor_sections(
 
     def update_palette_name(text: str) -> None:
         refresh_preview(palette_name=text)
-        tool._update_current_operation(palette_name=text)
+        editor.request_update(palette_name=text)
 
     if not mode_mixed and operation.palette_mode == "colors":
 
         def update_palette_colors(colors: typing.Any) -> None:
             colors = tuple(str(color).strip() for color in colors if str(color).strip())
             refresh_preview(palette_colors=colors)
-            tool._update_current_operation(
+            editor.request_update(
                 palette_mode="colors",
                 palette_colors=colors,
             )
 
-        colors_mixed = tool._batch_is_mixed(
+        colors_mixed = editor.batch_is_mixed(
             operation, lambda target: target.palette_colors
         )
         colors_widget = _ColorListEditorWidget(
@@ -549,24 +548,24 @@ def _editor_sections(
             colors_widget.setMixedPlaceholder("(multiple values)")
         colors_widget.setEnabled(available)
         colors_widget.setToolTip("Colors passed as a sequence to seaborn.set_palette.")
-        tool._connect_value_signal(
+        editor.connect_value_signal(
             colors_widget,
             colors_widget.colorsChanged,
             lambda colors: tuple(colors),
             update_palette_colors,
             unchanged_mixed=colors_widget.batchUnchanged,
         )
-        tool._add_form_row(
+        editor.add_form_row(
             layout,
             "Colors",
             colors_widget,
             "Explicit color sequence passed to seaborn.set_palette.",
         )
     else:
-        palette_mixed = tool._batch_is_mixed(
+        palette_mixed = editor.batch_is_mixed(
             operation, lambda target: target.palette_name
         )
-        palette_combo = tool._combo(
+        palette_combo = editor.combo(
             _palette_options(operation, sns),
             None if palette_mixed else operation.palette_name,
             update_palette_name,
@@ -580,14 +579,14 @@ def _editor_sections(
             "palettes and Matplotlib colormaps."
         )
         _apply_palette_combo_icons(palette_combo, sns)
-        tool._add_form_row(
+        editor.add_form_row(
             layout,
             "Palette",
             palette_combo,
             "Named seaborn or Matplotlib palette passed to seaborn.set_palette.",
         )
 
-    count_mixed = tool._batch_is_mixed(
+    count_mixed = editor.batch_is_mixed(
         operation, lambda target: target.palette_n_colors
     )
     count_spin = QtWidgets.QSpinBox(page)
@@ -600,16 +599,16 @@ def _editor_sections(
     def update_count(value: typing.Any) -> None:
         n_colors = None if value == 0 else int(value)
         refresh_preview(n_colors=n_colors)
-        tool._update_current_operation(palette_n_colors=n_colors)
+        editor.request_update(palette_n_colors=n_colors)
 
-    tool._connect_value_signal(
+    editor.connect_value_signal(
         count_spin,
         count_spin.valueChanged,
         lambda *_args: count_spin.value(),
         update_count,
     )
 
-    desat_mixed = tool._batch_is_mixed(operation, lambda target: target.palette_desat)
+    desat_mixed = editor.batch_is_mixed(operation, lambda target: target.palette_desat)
     desat_spin = QtWidgets.QDoubleSpinBox(page)
     desat_spin.setObjectName("figureComposerSetPaletteSaturationSpin")
     desat_spin.setRange(_DESAT_AUTO_VALUE, 1.0)
@@ -626,46 +625,46 @@ def _editor_sections(
     def update_desat(value: typing.Any) -> None:
         desat = None if value <= _DESAT_AUTO_VALUE else float(value)
         refresh_preview(desat=desat)
-        tool._update_current_operation(palette_desat=desat)
+        editor.request_update(palette_desat=desat)
 
-    tool._connect_value_signal(
+    editor.connect_value_signal(
         desat_spin,
         desat_spin.valueChanged,
         lambda *_args: desat_spin.value(),
         update_desat,
     )
 
-    tool._add_compound_form_row(
+    editor.add_compound_form_row(
         layout,
         "Options",
         (
             (
                 "Colors",
-                tool._mixed_value_widget(count_spin, mixed=count_mixed, parent=page),
+                editor.mixed_value_widget(count_spin, mixed=count_mixed, parent=page),
                 "Number of colors requested from the palette. Auto uses seaborn's "
                 "default length.",
             ),
             (
                 "Saturation",
-                tool._mixed_value_widget(desat_spin, mixed=desat_mixed, parent=page),
+                editor.mixed_value_widget(desat_spin, mixed=desat_mixed, parent=page),
                 "Scale palette saturation. Auto uses seaborn's default saturation.",
             ),
         ),
         "Optional arguments passed to seaborn.set_palette.",
     )
 
-    color_codes_mixed = tool._batch_is_mixed(
+    color_codes_mixed = editor.batch_is_mixed(
         operation, lambda target: target.palette_color_codes
     )
-    color_codes_check = tool._check_box(
+    color_codes_check = editor.check_box(
         operation.palette_color_codes,
-        lambda checked: tool._update_current_operation(palette_color_codes=checked),
+        lambda checked: editor.request_update(palette_color_codes=checked),
         parent=page,
         mixed=color_codes_mixed,
     )
     color_codes_check.setObjectName("figureComposerSetPaletteColorCodesCheck")
     color_codes_check.setEnabled(available)
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Color codes",
         color_codes_check,
@@ -673,7 +672,7 @@ def _editor_sections(
     )
 
     refresh_preview()
-    tool._add_form_row(
+    editor.add_form_row(
         layout,
         "Preview",
         preview,
@@ -749,9 +748,7 @@ SPEC = OperationSpec(
     tooltip=_tooltip,
     target_text=_target_text,
     has_invalid_target=_no_invalid_target,
-    uses_axes=_uses_no_axes,
     uses_source_section=_uses_no_source_section,
-    source_names=_empty_source_names,
     build_source_editor=_empty_source_editor,
     build_editor_sections=_editor_sections,
     section_summary=_section_summary,

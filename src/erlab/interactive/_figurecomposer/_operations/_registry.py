@@ -8,32 +8,36 @@ from erlab.interactive._figurecomposer._operations import (
     _bz_overlay,
     _custom_code,
     _line_profile,
-    _method,
     _photon_energy,
     _plot_array,
-    _plot_slices,
     _set_palette,
+)
+from erlab.interactive._figurecomposer._operations._method._spec import (
+    SPEC as _METHOD_SPEC,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices._spec import (
+    SPEC as _PLOT_SLICES_SPEC,
 )
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from erlab.interactive._figurecomposer._model._state import FigureOperationKind
     from erlab.interactive._figurecomposer._operations._base import (
         AddStepActionSpec,
         OperationSpec,
     )
-    from erlab.interactive._figurecomposer._state import FigureOperationKind
 
 _OPERATION_SPECS = {
     spec.kind: spec
     for spec in (
         _set_palette.SPEC,
         _plot_array.SPEC,
-        _plot_slices.SPEC,
+        _PLOT_SLICES_SPEC,
         _line_profile.SPEC,
         _bz_overlay.SPEC,
         _photon_energy.SPEC,
-        _method.SPEC,
+        _METHOD_SPEC,
         _custom_code.SPEC,
     )
 }

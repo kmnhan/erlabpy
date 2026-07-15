@@ -29,21 +29,23 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.accessors.general as accessor_general
-import erlab.interactive._figurecomposer._axes as figurecomposer_axes
 import erlab.interactive._figurecomposer._code as figurecomposer_code
 import erlab.interactive._figurecomposer._defaults as figurecomposer_defaults
-import erlab.interactive._figurecomposer._gridspec as figurecomposer_gridspec
 import erlab.interactive._figurecomposer._line_colormap as figurecomposer_line_colormap
 import erlab.interactive._figurecomposer._line_style as figurecomposer_line_style
+import erlab.interactive._figurecomposer._line_transform as _line_transform
+import erlab.interactive._figurecomposer._model._axes as figurecomposer_axes
+import erlab.interactive._figurecomposer._model._gridspec as figurecomposer_gridspec
+import erlab.interactive._figurecomposer._model._sources as figurecomposer_sources
 import erlab.interactive._figurecomposer._norms as figurecomposer_norms
 import erlab.interactive._figurecomposer._provenance as figurecomposer_provenance
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._seeding as figurecomposer_seeding
-import erlab.interactive._figurecomposer._sources as figurecomposer_sources
 import erlab.interactive._figurecomposer._text as figurecomposer_text
-import erlab.interactive._figurecomposer._tick_params as figurecomposer_tick_params
 import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
-import erlab.interactive._figurecomposer._widgets as figurecomposer_widgets
+import erlab.interactive._figurecomposer._ui._editor_controls as _editor_controls
+import erlab.interactive._figurecomposer._ui._line_style as figurecomposer_line_style_ui
+import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._workspace as manager_workspace
@@ -67,41 +69,33 @@ from erlab.interactive._figurecomposer import (
     FigureRecipeState,
     FigureSourceState,
     FigureSubplotsState,
-    _editor_controls,
-    _line_transform,
-)
-from erlab.interactive._figurecomposer import (
-    _source_inspector as figurecomposer_source_inspector,
 )
 from erlab.interactive._figurecomposer import (
     _subplot_adjust as figurecomposer_subplot_adjust,
 )
-from erlab.interactive._figurecomposer import (
-    _toolbar_dialogs as figurecomposer_toolbar_dialogs,
-)
 from erlab.interactive._figurecomposer._exceptions import (
     FigureComposerPlotSlicesSelectionError,
+)
+from erlab.interactive._figurecomposer._model import (
+    _custom_code as figurecomposer_custom_code,
+)
+from erlab.interactive._figurecomposer._model import (
+    _operation_metadata as figurecomposer_operation_metadata,
 )
 from erlab.interactive._figurecomposer._operations import (
     _bz_overlay as figurecomposer_bz_overlay,
 )
 from erlab.interactive._figurecomposer._operations import (
-    _custom_code as figurecomposer_custom_code,
+    _custom_code as figurecomposer_custom_code_operation,
 )
 from erlab.interactive._figurecomposer._operations import (
     _line_profile as figurecomposer_line_profile,
-)
-from erlab.interactive._figurecomposer._operations import (
-    _method as figurecomposer_method,
 )
 from erlab.interactive._figurecomposer._operations import (
     _photon_energy as figurecomposer_photon_energy,
 )
 from erlab.interactive._figurecomposer._operations import (
     _plot_array as figurecomposer_plot_array,
-)
-from erlab.interactive._figurecomposer._operations import (
-    _plot_slices as figurecomposer_plot_slices,
 )
 from erlab.interactive._figurecomposer._operations import (
     _set_palette as figurecomposer_set_palette,
@@ -111,7 +105,16 @@ from erlab.interactive._figurecomposer._seeding import (
     bz_overlay_operation_from_momentum_data,
     plot_slices_operation_with_source_styles,
 )
-from erlab.interactive._figurecomposer._toolbar_dialogs import (
+from erlab.interactive._figurecomposer._ui import (
+    _operation_panel as figurecomposer_operation_panel,
+)
+from erlab.interactive._figurecomposer._ui import (
+    _source_inspector as figurecomposer_source_inspector,
+)
+from erlab.interactive._figurecomposer._ui import (
+    _toolbar_dialogs as figurecomposer_toolbar_dialogs,
+)
+from erlab.interactive._figurecomposer._ui._toolbar_dialogs import (
     _connect_panel_editor_signal,
 )
 from erlab.interactive._options import options
@@ -137,6 +140,24 @@ _COLLAPSED_LAYOUT_WARNING = (
     "constrained_layout not applied because axes sizes collapsed to zero.  "
     "Try making figure larger or Axes decorations smaller."
 )
+
+
+def _operation_section_button(
+    tool: FigureComposerTool, key: str
+) -> QtWidgets.QToolButton:
+    button = tool.findChild(QtWidgets.QToolButton, f"figureComposerSection_{key}")
+    if button is None:
+        raise AssertionError(f"operation section {key!r} is not mounted")
+    return button
+
+
+def _operation_section_buttons(
+    tool: FigureComposerTool,
+) -> tuple[QtWidgets.QToolButton, ...]:
+    return tuple(
+        _operation_section_button(tool, key)
+        for key in tool.operation_editor.section_keys
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -280,36 +301,36 @@ def _file_load_provenance(path: Path) -> provenance.ToolProvenanceSpec:
 
 
 def _select_operation_rows(tool: FigureComposerTool, rows: tuple[int, ...]) -> None:
-    was_blocked = tool.operation_list.blockSignals(True)
+    was_blocked = tool.operation_panel.operation_list.blockSignals(True)
     try:
-        tool.operation_list.clearSelection()
+        tool.operation_panel.operation_list.clearSelection()
         if rows:
-            tool.operation_list.setCurrentItem(
-                tool.operation_list.topLevelItem(rows[0])
+            tool.operation_panel.operation_list.setCurrentItem(
+                tool.operation_panel.operation_list.topLevelItem(rows[0])
             )
             for row in rows:
-                item = tool.operation_list.topLevelItem(row)
+                item = tool.operation_panel.operation_list.topLevelItem(row)
                 assert item is not None
                 item.setSelected(True)
     finally:
-        tool.operation_list.blockSignals(was_blocked)
-    tool._operation_selection_changed()
+        tool.operation_panel.operation_list.blockSignals(was_blocked)
+    tool.operation_panel._selection_did_change()
 
 
 def _selected_operation_rows(tool: FigureComposerTool) -> tuple[int, ...]:
     return tuple(
         row
-        for row in range(tool.operation_list.topLevelItemCount())
-        if tool.operation_list.topLevelItem(row).isSelected()
+        for row in range(tool.operation_panel.operation_list.topLevelItemCount())
+        if tool.operation_panel.operation_list.topLevelItem(row).isSelected()
     )
 
 
 def _operation_status_codes(tool: FigureComposerTool, row: int) -> tuple[str, ...]:
-    item = tool.operation_list.topLevelItem(row)
+    item = tool.operation_panel.operation_list.topLevelItem(row)
     assert item is not None
     value = item.data(
-        figurecomposer_tool_module._OPERATION_LIST_STATUS_COLUMN,
-        figurecomposer_tool_module._OPERATION_LIST_STATUS_ROLE,
+        figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN,
+        figurecomposer_operation_panel._OPERATION_LIST_STATUS_ROLE,
     )
     assert isinstance(value, tuple)
     return value
@@ -341,6 +362,14 @@ def _method_operations(
         and operation.method_family == family
         and operation.method_name == name
     )
+
+
+def _operation_source_status_label(tool: FigureComposerTool) -> QtWidgets.QLabel:
+    label = tool.operation_editor.findChild(
+        QtWidgets.QLabel, "figureComposerStepSourceStatus"
+    )
+    assert label is not None
+    return label
 
 
 def _activate_combo_text(combo: QtWidgets.QComboBox, text: str) -> None:
@@ -399,7 +428,9 @@ def _finish_tick_params_edit(
 def _plot_source_checks(tool: FigureComposerTool) -> dict[str, QtWidgets.QCheckBox]:
     return {
         str(source_name): check
-        for check in tool.step_source_controls.findChildren(QtWidgets.QCheckBox)
+        for check in tool.operation_editor.source_controls.findChildren(
+            QtWidgets.QCheckBox
+        )
         if (source_name := check.property("figure_source_name")) is not None
     }
 
@@ -441,7 +472,9 @@ def _plot_source_move_buttons(
             str(source_name),
             str(direction),
         ): button
-        for button in tool.step_source_controls.findChildren(QtWidgets.QToolButton)
+        for button in tool.operation_editor.source_controls.findChildren(
+            QtWidgets.QToolButton
+        )
         if (source_name := button.property("figure_source_name")) is not None
         and (direction := button.property("figure_source_move")) is not None
     }

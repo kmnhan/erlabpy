@@ -16,6 +16,10 @@ class FigureComposerSelectionError(ValueError):
     """Base class for Figure Composer selection construction failures."""
 
 
+class FigureComposerInputError(ValueError):
+    """Invalid text entered into a Figure Composer editor control."""
+
+
 class FigureComposerPlotSlicesSelectionError(FigureComposerSelectionError):
     """Raised when an ImageTool pane cannot seed editable plot_slices selection."""
 

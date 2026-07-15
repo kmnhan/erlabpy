@@ -3271,6 +3271,9 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
             self.unavailable: list[str] = []
             self.removed: list[str] = []
             self.figure_gallery_updates: list[str] = []
+            self._figure_controller = types.SimpleNamespace(
+                update_gallery_icon=self.figure_gallery_updates.append
+            )
             self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.interaction_activity_count = 0
@@ -3330,15 +3333,6 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
 
         def _mark_tool_info_dirty(self, uid: str) -> None:
             self._mark_node_state_dirty(uid)
-
-        def _update_figure_gallery_icon(self, uid: str) -> None:
-            self.figure_gallery_updates.append(uid)
-
-        def _schedule_figure_gallery_icon_update(self, uid: str) -> None:
-            self._queue_idle_work(
-                ("figure-gallery-icon", uid),
-                lambda: self._update_figure_gallery_icon(uid),
-            )
 
         def _schedule_tool_metadata_update(self, uid: str) -> None:
             self._update_info(uid=uid)

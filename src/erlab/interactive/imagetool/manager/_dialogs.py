@@ -656,8 +656,8 @@ class _StoreDialog(QtWidgets.QDialog):
             data = manager.get_imagetool(tool_idx).slicer_area.displayed_data
             wrapper = manager._tool_graph.root_wrappers[tool_idx]
             default_name = data.name
-            if not erlab.interactive.utils._is_kwarg_name(default_name):
-                if erlab.interactive.utils._is_kwarg_name(wrapper.name):
+            if not erlab.utils.misc._is_valid_identifier(default_name):
+                if erlab.utils.misc._is_valid_identifier(wrapper.name):
                     default_name = wrapper.name
                 else:
                     default_name = f"data_{tool_idx}"

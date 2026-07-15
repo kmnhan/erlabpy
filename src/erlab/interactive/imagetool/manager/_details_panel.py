@@ -646,7 +646,7 @@ class _DetailsPanelController:
     ) -> str | None:
         data = node._metadata_data()
         candidate = None if data is None else data.name
-        if not erlab.interactive.utils._is_kwarg_name(candidate) or candidate in {
+        if not erlab.utils.misc._is_valid_identifier(candidate) or candidate in {
             "data",
             "derived",
             "result",
@@ -666,7 +666,7 @@ class _DetailsPanelController:
         if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
             return None
         source_name = dialog.textValue().strip()
-        if not erlab.interactive.utils._is_kwarg_name(source_name):
+        if not erlab.utils.misc._is_valid_identifier(source_name):
             return None
         return source_name
 

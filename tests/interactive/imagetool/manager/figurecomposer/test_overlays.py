@@ -9,10 +9,12 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
     )
     tool = _bz_tool(operation)
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
 
-    tool._select_step_section("slice")
-    page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("slice")
+    page = tool.operation_editor.stack.currentWidget()
     assert page is not None
     mode_combo = page.findChild(QtWidgets.QComboBox, "figureComposerBZModeCombo")
     angle_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZAngleSpin")
@@ -45,8 +47,8 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
     bounds_edit.setText("-2, 2, -3, 3")
     bounds_edit.editingFinished.emit()
 
-    tool._select_step_section("lattice")
-    page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("lattice")
+    page = tool.operation_editor.stack.currentWidget()
     assert page is not None
     a_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZAEdit")
     b_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZBEdit")
@@ -73,8 +75,8 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
     c_spin.setValue(4.5)
     _activate_combo_text(centering_combo, "F")
 
-    tool._select_step_section("style")
-    page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("style")
+    page = tool.operation_editor.stack.currentWidget()
     assert page is not None
     color_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerBZColorEdit")
     line_style_combo = page.findChild(
@@ -289,7 +291,9 @@ def test_figure_composer_bz_overlay_helper_edges(qtbot, monkeypatch) -> None:
     )
     qtbot.addWidget(empty_tool)
     assert (
-        figurecomposer_bz_overlay._current_bz_operation(empty_tool, operation)
+        figurecomposer_bz_overlay._current_bz_operation(
+            empty_tool.operation_editor, operation
+        )
         is operation
     )
 
@@ -360,7 +364,9 @@ def test_figure_composer_bz_overlay_helper_edges(qtbot, monkeypatch) -> None:
     )
     figurecomposer_bz_overlay._render_bz_overlay(tool, operation, None)
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
     created = figurecomposer_bz_overlay._create_operation(tool)
     assert created.kind == FigureOperationKind.BZ_OVERLAY
     assert figurecomposer_bz_overlay._section_summary(tool, "unknown", operation) == ""
@@ -593,16 +599,17 @@ def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> No
         extra_source_data={"other_kconv": other_data},
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
 
     source_combo = next(
         (
             combo
-            for combo in tool.step_source_controls.findChildren(
+            for combo in tool.operation_editor.source_controls.findChildren(
                 QtWidgets.QComboBox, "figureComposerPhotonEnergySourceCombo"
             )
-            if combo.property("figure_composer_editor_generation")
-            == tool._operation_editor_generation
+            if tool.operation_editor.control_signal_allowed(combo)
         ),
         None,
     )
@@ -611,8 +618,8 @@ def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> No
     assert other_index >= 0
     _activate_combo_index(source_combo, other_index)
 
-    tool._select_step_section("photon")
-    page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("photon")
+    page = tool.operation_editor.stack.currentWidget()
     assert page is not None
     energies_edit = page.findChild(
         QtWidgets.QLineEdit, "figureComposerPhotonEnergyValuesEdit"
@@ -628,8 +635,8 @@ def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> No
     binding_edit.setText("-0.3")
     binding_edit.editingFinished.emit()
 
-    tool._select_step_section("style")
-    page = tool.step_editor_stack.currentWidget()
+    tool.operation_editor.select_section("style")
+    page = tool.operation_editor.stack.currentWidget()
     assert page is not None
     color_edit = page.findChild(
         QtWidgets.QLineEdit, "figureComposerPhotonEnergyColorEdit"
@@ -673,7 +680,6 @@ def test_figure_composer_photon_energy_overlay_editor_updates_state(qtbot) -> No
     assert updated.show_legend is False
     assert updated.legend_kw == {"title": "Photon energy", "frameon": False}
     assert updated.label_template == "hv={hv:g} eV"
-    assert tool.step_section_buttons["photon"].text() == "hν: 30, 45, 60; eV=-0.3"
     assert updated.line_kw == {
         "color": "tab:red",
         "linestyle": "--",
@@ -1065,11 +1071,13 @@ def test_figure_composer_photon_energy_overlay_add_step_seeds_source_and_binding
         primary_source="hvdep_kconv",
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
 
     action = next(
         action
-        for action in tool.add_step_menu.actions()
+        for action in tool.operation_panel.add_step_menu.actions()
         if action.data() == FigureOperationKind.PHOTON_ENERGY_OVERLAY.value
     )
     action.trigger()
@@ -1117,7 +1125,9 @@ def test_figure_composer_photon_energy_overlay_seed_fallbacks(qtbot) -> None:
         primary_source="hvdep_kconv",
     )
     qtbot.addWidget(line_tool)
-    line_tool.operation_list.setCurrentItem(line_tool.operation_list.topLevelItem(0))
+    line_tool.operation_panel.operation_list.setCurrentItem(
+        line_tool.operation_panel.operation_list.topLevelItem(0)
+    )
 
     assert figurecomposer_photon_energy._seed_source(line_tool) == "hvdep_kconv"
     assert figurecomposer_photon_energy._seed_binding_energy(line_tool) is None
@@ -1151,11 +1161,11 @@ def test_figure_composer_photon_energy_overlay_tracks_source_ownership(
     qtbot.addWidget(destination)
     _clear_clipboard()
 
-    assert not source_tool._source_removable("hvdep_kconv")
-    assert source_tool._source_removable("unused")
+    assert not source_tool._document.source_is_removable("hvdep_kconv")
+    assert source_tool._document.source_is_removable("unused")
 
     _select_operation_rows(source_tool, (0,))
-    source_tool.copy_operation_button.click()
+    source_tool.operation_panel.copy_button.click()
     payload = source_tool._clipboard_step_payload()
     assert payload is not None
     _operations, sources, source_data, selection_base_data = payload

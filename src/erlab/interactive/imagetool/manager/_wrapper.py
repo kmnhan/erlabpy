@@ -911,7 +911,7 @@ class _ManagedWindowNode(QtCore.QObject):
         if self.tool_window is not None:
             self.tool_window._tool_display_name = name
             if self.manager._is_figure_node(self):
-                self.manager._sync_figures_ui(select_uid=self.uid)
+                self.manager._figure_controller.sync(select_uid=self.uid)
             else:
                 self.manager.tree_view.refresh(self.uid)
             self.manager._mark_node_state_dirty(self.uid)
@@ -1160,7 +1160,7 @@ class _ManagedWindowNode(QtCore.QObject):
         details = self._load_source_details()
         if details is None or details.load_code is None:
             return None
-        if not erlab.interactive.utils._is_kwarg_name(assign):
+        if not erlab.utils.misc._is_valid_identifier(assign):
             raise ValueError("assign must be a valid Python identifier")
         if assign == "data":
             return details.load_code
@@ -1948,7 +1948,7 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         if manager._tool_graph.nodes.get(self.uid) is not self:
             return
-        manager._update_figure_gallery_icon(self.uid)
+        manager._figure_controller.update_gallery_icon(self.uid)
         manager._update_info(uid=self.uid)
 
     @QtCore.Slot()

@@ -3,6 +3,7 @@
 import textwrap
 
 import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 
 from ._common import *
 
@@ -26,8 +27,13 @@ def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
         ),
         trusted=True,
     )
-    assert figurecomposer_custom_code._section_summary(tool, "missing", operation) == ""
-    assert figurecomposer_custom_code._required_imports(tool, operation) == (
+    assert (
+        figurecomposer_custom_code_operation._section_summary(
+            tool, "missing", operation
+        )
+        == ""
+    )
+    assert figurecomposer_custom_code_operation._required_imports(tool, operation) == (
         "import numpy as np",
         "import xarray as xr",
         "import erlab.plotting as eplt",
@@ -69,15 +75,15 @@ def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
         figurecomposer_custom_code._custom_code_bound_names("bad code !!")
         == frozenset()
     )
-    assert figurecomposer_custom_code._custom_axes_alias_lines(tool) == []
+    assert figurecomposer_custom_code_operation._custom_axes_alias_lines(tool) == []
     assert (
-        figurecomposer_custom_code._code_lines(
+        figurecomposer_custom_code_operation._code_lines(
             tool, operation.model_copy(update={"trusted": False})
         )
         == []
     )
     assert (
-        figurecomposer_custom_code._required_imports(
+        figurecomposer_custom_code_operation._required_imports(
             tool, operation.model_copy(update={"code": ""})
         )
         == ()
@@ -112,12 +118,14 @@ def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
         ),
     )
     qtbot.addWidget(grid_tool)
-    assert figurecomposer_custom_code._custom_axes_alias_lines(grid_tool) == [
+    assert figurecomposer_custom_code_operation._custom_axes_alias_lines(grid_tool) == [
         "axs = {",
         "    'axis-a': ax0,",
         "}",
     ]
-    assert figurecomposer_custom_code._custom_first_axis_code(grid_tool) == "ax0"
+    assert (
+        figurecomposer_custom_code_operation._custom_first_axis_code(grid_tool) == "ax0"
+    )
 
 
 def test_figure_composer_custom_code_names_cover_nested_class_and_flow() -> None:
@@ -450,8 +458,8 @@ def test_figure_composer_custom_code_read_write_source_is_dependency(
     )
     qtbot.addWidget(tool)
 
-    assert tool._operation_source_names(operation) == ("data",)
-    assert tool._source_usage_count("data") == 1
+    assert tool._document.operation_source_names(operation) == ("data",)
+    assert tool._document.source_usage_count("data") == 1
     assert not tool.remove_source("data")
 
 
@@ -478,7 +486,7 @@ def test_figure_composer_source_rename_refactors_custom_python(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    assert tool._rename_source_alias("data", "renamed")
+    assert tool._document.rename_source("data", "renamed")
     renamed_code = tool.tool_status.operations[0].code
     assert renamed_code == code.replace("float(data.mean())", "float(renamed.mean())")
 
@@ -517,10 +525,10 @@ def test_figure_composer_source_rename_rejects_ambiguous_python(
     )
     qtbot.addWidget(tool)
 
-    assert not tool._rename_source_alias("data", "renamed")
+    with pytest.raises(FigureComposerInputError):
+        tool._document.rename_source("data", "renamed")
     assert tool.tool_status.sources[0].name == "data"
     assert tool.tool_status.operations[0].code == code
-    assert not tool.source_validation_label.isHidden()
 
 
 def test_figure_composer_custom_code_editor_is_multiline_and_debounced(
@@ -542,10 +550,12 @@ def test_figure_composer_custom_code_editor_is_multiline_and_debounced(
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    tool._select_step_section("code")
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    tool.operation_editor.select_section("code")
 
-    current_page = tool.step_editor_stack.currentWidget()
+    current_page = tool.operation_editor.stack.currentWidget()
     assert current_page is not None
     code_edit = current_page.findChild(
         erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
@@ -600,10 +610,12 @@ def test_figure_composer_custom_code_editor_skips_render_until_valid_python(
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    tool._select_step_section("code")
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    tool.operation_editor.select_section("code")
 
-    current_page = tool.step_editor_stack.currentWidget()
+    current_page = tool.operation_editor.stack.currentWidget()
     assert current_page is not None
     code_edit = current_page.findChild(
         erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
@@ -664,10 +676,12 @@ def test_figure_composer_custom_code_pending_edit_survives_step_switch(
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    tool._select_step_section("code")
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    tool.operation_editor.select_section("code")
 
-    current_page = tool.step_editor_stack.currentWidget()
+    current_page = tool.operation_editor.stack.currentWidget()
     assert current_page is not None
     code_edit = current_page.findChild(
         erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
@@ -676,7 +690,9 @@ def test_figure_composer_custom_code_pending_edit_survives_step_switch(
 
     new_code = "ax.set_title('pending')\nax.set_ylabel('counts')"
     code_edit.setPlainText(new_code)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(1))
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(1)
+    )
 
     qtbot.waitUntil(
         lambda: tool.tool_status.operations[0].code == new_code,
@@ -701,10 +717,12 @@ def test_figure_composer_custom_code_pending_edit_flushes_on_close(qtbot) -> Non
         ),
     )
     qtbot.addWidget(tool)
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    tool._select_step_section("code")
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    tool.operation_editor.select_section("code")
 
-    current_page = tool.step_editor_stack.currentWidget()
+    current_page = tool.operation_editor.stack.currentWidget()
     assert current_page is not None
     code_edit = current_page.findChild(
         erlab.interactive.utils.PythonCodeEditor, "figureComposerCustomCodeEdit"
@@ -730,7 +748,7 @@ def test_figure_composer_custom_code_uses_public_nonuniform_dims(qtbot) -> None:
         },
         name="map",
     )
-    internal = erlab.interactive.imagetool.slicer.make_dims_uniform(public)
+    internal = erlab.utils.array._make_dims_uniform(public)
     operation = FigureOperationState.custom(
         label="code",
         code=(
@@ -751,7 +769,7 @@ def test_figure_composer_custom_code_uses_public_nonuniform_dims(qtbot) -> None:
 
     figurecomposer_rendering._render_preview(tool, show_window=False)
 
-    item = tool.operation_list.topLevelItem(0)
+    item = tool.operation_panel.operation_list.topLevelItem(0)
     assert item is not None
     assert _operation_status_codes(tool, 0) == ()
 
@@ -908,7 +926,7 @@ def test_figure_composer_custom_code_sources_drive_usage_and_full_replay(
     )
     qtbot.addWidget(tool)
 
-    assert tool._source_usage_count("custom_source") == 2
+    assert tool._document.source_usage_count("custom_source") == 2
     assert not tool.remove_source("custom_source")
     _select_operation_rows(tool, (0,))
     tool._copy_selected_operations()
@@ -1124,17 +1142,17 @@ def test_figure_composer_source_alias_editor_rejects_ambiguous_python(qtbot) -> 
         ),
     )
     qtbot.addWidget(tool)
-    tool._set_selected_source_names_silent({"data"}, "data")
+    tool.source_panel.set_selected_names(("data",), current_name="data")
     tool._refresh_source_detail_panel()
     tool._refresh_source_selection_editor()
-    alias_edit = tool.source_alias_edit
+    alias_edit = tool.source_panel.source_alias_edit
 
     alias_edit.setText("renamed")
     alias_edit.editingFinished.emit()
 
     assert alias_edit.text() == "data"
     assert tool.tool_status.sources[0].name == "data"
-    assert not tool.source_validation_label.isHidden()
+    assert not tool.source_panel.source_validation_label.isHidden()
 
 
 def test_figure_composer_custom_code_codegen_gridspec_axes_alias(qtbot) -> None:
@@ -1224,17 +1242,19 @@ def test_figure_composer_untrusted_custom_code_reports_render_error(qtbot) -> No
     qtbot.addWidget(tool)
     tool.show_figure_window(activate=False)
 
-    item = tool.operation_list.topLevelItem(0)
+    item = tool.operation_panel.operation_list.topLevelItem(0)
     assert item is not None
     assert _operation_status_codes(tool, 0) == ("render_error",)
     assert "Custom code is not trusted" in item.toolTip(
-        figurecomposer_tool_module._OPERATION_LIST_STATUS_COLUMN
+        figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
     )
-    assert tool.step_source_status_label.isHidden()
+    assert _operation_source_status_label(tool).isHidden()
 
-    tool.operation_list.setCurrentItem(tool.operation_list.topLevelItem(0))
-    tool._select_step_section("code")
-    trusted_check = tool.step_editor_stack.currentWidget().findChild(
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    tool.operation_editor.select_section("code")
+    trusted_check = tool.operation_editor.stack.currentWidget().findChild(
         QtWidgets.QCheckBox, "figureComposerCustomCodeTrustedCheck"
     )
     assert trusted_check is not None
@@ -1244,10 +1264,10 @@ def test_figure_composer_untrusted_custom_code_reports_render_error(qtbot) -> No
 
     assert tool.tool_status.operations[0].trusted is True
     qtbot.waitUntil(lambda: not tool._operation_render_errors, timeout=1000)
-    item = tool.operation_list.topLevelItem(0)
+    item = tool.operation_panel.operation_list.topLevelItem(0)
     assert item is not None
     assert _operation_status_codes(tool, 0) == ()
     assert "Custom code is not trusted" not in item.toolTip(
-        figurecomposer_tool_module._OPERATION_LIST_STATUS_COLUMN
+        figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
     )
-    assert tool.step_source_status_label.isHidden()
+    assert _operation_source_status_label(tool).isHidden()

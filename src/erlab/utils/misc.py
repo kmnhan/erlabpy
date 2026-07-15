@@ -11,11 +11,13 @@ __all__ = [
 ]
 
 import inspect
+import keyword
 import os
 import pathlib
 import subprocess
 import sys
 import typing
+import unicodedata
 import warnings
 from collections.abc import Callable, Sequence
 
@@ -99,6 +101,35 @@ def emit_user_level_warning(message, category=None) -> None:
 
 
 _T = typing.TypeVar("_T")
+
+
+def _is_valid_identifier(value: typing.Any) -> bool:
+    return (
+        isinstance(value, str) and value.isidentifier() and not keyword.iskeyword(value)
+    )
+
+
+def _normalize_identifier(value: str | None) -> str:
+    """Return a valid Python identifier derived from arbitrary user text."""
+    text = unicodedata.normalize("NFKC", "" if value is None else value.strip())
+    normalized_chars: list[str] = []
+    for index, char in enumerate(text):
+        if (index == 0 and char.isidentifier()) or (
+            index > 0 and f"a{char}".isidentifier()
+        ):
+            normalized_chars.append(char)
+        elif index == 0 and f"a{char}".isidentifier():
+            normalized_chars.extend(("_", char))
+        else:
+            normalized_chars.append("_")
+    normalized = "".join(normalized_chars)
+    if not normalized or not normalized.strip("_"):
+        normalized = "var"
+    if keyword.iskeyword(normalized):
+        normalized += "_"
+    if not _is_valid_identifier(normalized):
+        raise RuntimeError(f"Failed to normalize {value!r} as a Python identifier")
+    return normalized
 
 
 def is_sequence_of(

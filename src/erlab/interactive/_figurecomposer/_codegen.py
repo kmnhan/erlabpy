@@ -10,15 +10,15 @@ from erlab.interactive._figurecomposer._defaults import (
     _style_code_lines,
     _style_required_imports,
 )
-from erlab.interactive._figurecomposer._operations import _registry
-from erlab.interactive._figurecomposer._sources import (
+from erlab.interactive._figurecomposer._model._sources import (
     _source_has_selection,
     _valid_source_variable,
 )
-from erlab.interactive._figurecomposer._state import (
+from erlab.interactive._figurecomposer._model._state import (
     FigureDataSelectionState,
     FigureOperationKind,
 )
+from erlab.interactive._figurecomposer._operations import _registry
 
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping
@@ -35,7 +35,9 @@ def generated_code(
     invalid_indices = tool._invalid_operation_indices()
     if invalid_indices:
         if any(
-            tool._operation_has_invalid_input(tool._recipe.operations[index])
+            tool.operation_editor.has_input_error(
+                tool._document.recipe.operations[index]
+            )
             for index in invalid_indices
         ):
             raise ValueError(
@@ -47,7 +49,7 @@ def generated_code(
         )
     lines = ["import matplotlib.pyplot as plt"]
     required_imports: list[str] = []
-    for operation in tool._recipe.operations:
+    for operation in tool._document.recipe.operations:
         if not operation.enabled:
             continue
         for import_line in _registry.spec_for(operation.kind).required_imports(
@@ -72,7 +74,7 @@ def generated_code(
     )
     operation_line_groups: list[list[str]] = []
     has_custom_code_lines = False
-    for operation in tool._recipe.operations:
+    for operation in tool._document.recipe.operations:
         if not operation.enabled:
             continue
         operation_lines = _registry.spec_for(operation.kind).code_lines(tool, operation)
@@ -97,7 +99,7 @@ def generated_code(
         )
     if source_lines:
         lines.extend(["", *source_lines])
-    lines.extend(["", _setup_code(tool)])
+    lines.extend(["", _setup_code(tool._document)])
 
     for operation_lines in operation_line_groups:
         lines.extend(operation_lines)
@@ -110,12 +112,14 @@ def _source_selection_code_lines(
     *,
     skip_source_names: frozenset[str] = frozenset(),
 ) -> list[str]:
-    dependency_names = tool._source_dependency_names(
-        tool._direct_sources_used_by_recipe(enabled_only=True, executable_only=True),
+    dependency_names = tool._document.source_dependency_names(
+        tool._document.direct_sources_used_by_recipe(
+            enabled_only=True, executable_only=True
+        ),
         stop_at=skip_source_names,
         reject_cycles=True,
     )
-    source_by_name = tool._source_by_name()
+    source_by_name = tool._document.source_by_name()
     selected_sources = tuple(
         source_by_name[name]
         for name in dependency_names

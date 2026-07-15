@@ -11,15 +11,7 @@ import numpy as np
 from qtpy import QtCore, QtWidgets
 
 import erlab
-from erlab.interactive._figurecomposer._editor_controls import (
-    MIXED_VALUE,
-    MIXED_VALUES_TEXT,
-)
-from erlab.interactive._figurecomposer._gridspec import (
-    _gridspec_all_axes_ids,
-    _gridspec_axis_display_name,
-    _gridspec_valid_axes_ids,
-)
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._line_colormap import (
     LINE_COLOR_CMAP_TRIM_MAX,
     effective_line_color_coord,
@@ -31,14 +23,22 @@ from erlab.interactive._figurecomposer._line_style import (
     LINE_MARKER_OPTIONS,
     LINE_STYLE_OPTIONS,
     color_kw_value_from_text,
-    configure_style_combo,
     extra_line_kw,
     line_kw_float,
     line_kw_style_value,
     line_kw_text,
-    optional_positive_spinbox,
-    optional_positive_spinbox_value,
-    style_combo_value,
+)
+from erlab.interactive._figurecomposer._model._gridspec import (
+    _gridspec_all_axes_ids,
+    _gridspec_axis_display_name,
+    _gridspec_valid_axes_ids,
+)
+from erlab.interactive._figurecomposer._model._state import (
+    FigureAxesSelectionState,
+    FigureMethodFamily,
+    FigureOperationKind,
+    FigureOperationState,
+    FigurePlotSlicesPanelStyleState,
 )
 from erlab.interactive._figurecomposer._norms import (
     _NORM_CHOICES,
@@ -52,37 +52,33 @@ from erlab.interactive._figurecomposer._operations._line_profile import (
     _line_color_mode_from_text,
     _line_color_mode_text,
 )
+from erlab.interactive._figurecomposer._operations._method._catalog import (
+    TICK_PARAMS_CONTROLLED_KWARGS,
+)
 from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _panel_style_editor,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices._model import (
     _PLOT_SLICES_PANEL_IMAGE,
     _PLOT_SLICES_PANEL_LINE,
     _available_plot_slices_line_color_coords,
     _norm_clip_from_text,
     _norm_clip_text,
-    _PanelLineStyleEditorWidget,
-    _PanelStyleEditorWidget,
     _plot_slices_default_cmap,
     _plot_slices_panel_keys,
     _plot_slices_panel_kind,
     _plot_slices_shape,
     _PlotSlicesPanelKey,
 )
-from erlab.interactive._figurecomposer._operations._plot_slices import (
+from erlab.interactive._figurecomposer._operations._plot_slices._model import (
     _line_color_mode_from_text as _plot_slices_line_color_mode_from_text,
 )
-from erlab.interactive._figurecomposer._operations._plot_slices import (
+from erlab.interactive._figurecomposer._operations._plot_slices._model import (
     _line_color_mode_text as _plot_slices_line_color_mode_text,
 )
 from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
-    _render_preview,
-)
-from erlab.interactive._figurecomposer._state import (
-    FigureAxesSelectionState,
-    FigureMethodFamily,
-    FigureOperationKind,
-    FigureOperationState,
-    FigurePlotSlicesPanelStyleState,
 )
 from erlab.interactive._figurecomposer._subplot_adjust import (
     SUBPLOTS_ADJUST_SPINBOX_DECIMALS,
@@ -93,21 +89,29 @@ from erlab.interactive._figurecomposer._subplot_adjust import (
     subplots_adjust_spinbox_range,
 )
 from erlab.interactive._figurecomposer._text import (
-    FigureComposerInputError,
     _dict_from_text,
     _format_dict,
     _limit_pair_from_text,
 )
-from erlab.interactive._figurecomposer._tick_params import (
-    TICK_PARAMS_CONTROLLED_KWARGS,
-    TickParamsEditorWidget,
-)
-from erlab.interactive._figurecomposer._widgets import (
+from erlab.interactive._figurecomposer._ui._axes_widgets import (
     _AxesSelectorWidget,
-    _ColorLineEditWidget,
-    _ColorListEditorWidget,
     _GridSpecViewWidget,
 )
+from erlab.interactive._figurecomposer._ui._color_widgets import (
+    _ColorLineEditWidget,
+    _ColorListEditorWidget,
+)
+from erlab.interactive._figurecomposer._ui._editor_controls import (
+    MIXED_VALUE,
+    MIXED_VALUES_TEXT,
+)
+from erlab.interactive._figurecomposer._ui._line_style import (
+    configure_style_combo,
+    optional_positive_spinbox,
+    optional_positive_spinbox_value,
+    style_combo_value,
+)
+from erlab.interactive._figurecomposer._ui._tick_params import TickParamsEditorWidget
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -526,7 +530,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
 
     def tick_params_for_selection() -> dict[str, typing.Any]:
         selection = current_selection()
-        for operation in tool._recipe.operations:
+        for operation in tool._document.recipe.operations:
             if (
                 operation.kind == FigureOperationKind.METHOD
                 and operation.method_family == FigureMethodFamily.AXES
@@ -645,7 +649,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
             images_layout.addWidget(editor)
             return
 
-        editor = _PanelStyleEditorWidget(
+        editor = _panel_style_editor._PanelStyleEditorWidget(
             operation,
             target.panel_keys,
             _connect_panel_editor_signal,
@@ -1115,7 +1119,7 @@ class _PlotSlicesLineOperationStyleWidget(QtWidgets.QWidget):
             line_kind="plot_slices",
             parent=self,
         )
-        self.panel_editor = _PanelLineStyleEditorWidget(
+        self.panel_editor = _panel_style_editor._PanelLineStyleEditorWidget(
             operation,
             panel_keys,
             connect_signal,
@@ -1256,8 +1260,16 @@ class _LineColorModeWidget(QtWidgets.QWidget):
 
     def _available_coords(self) -> list[str]:
         if self._line_kind == "plot_slices":
-            return _available_plot_slices_line_color_coords(self._tool, self._operation)
-        return _available_line_color_coords(self._tool, self._operation)
+            return _available_plot_slices_line_color_coords(
+                self._tool._document,
+                self._tool._source_display_name,
+                self._operation,
+            )
+        return _available_line_color_coords(
+            self._tool._document,
+            self._tool._source_display_name,
+            self._operation,
+        )
 
     def _default_coord(self) -> str | None:
         if self._line_kind == "plot_slices":
@@ -1710,7 +1722,7 @@ def _curve_style_targets(
     if not selected_axis_ids:
         return []
     targets: list[_StyleTarget] = []
-    for index, operation in enumerate(tool._recipe.operations):
+    for index, operation in enumerate(tool._document.recipe.operations):
         if not operation.enabled:
             continue
         if operation.kind == FigureOperationKind.LINE:
@@ -1726,7 +1738,7 @@ def _curve_style_targets(
             continue
         if operation.kind != FigureOperationKind.PLOT_SLICES:
             continue
-        if _plot_slices_panel_kind(_plot_slices_shape(tool, operation)) != (
+        if _plot_slices_panel_kind(_plot_slices_shape(tool._document, operation)) != (
             _PLOT_SLICES_PANEL_LINE
         ):
             continue
@@ -1753,7 +1765,7 @@ def _image_style_targets(
     if not selected_axis_ids:
         return []
     targets: list[_StyleTarget] = []
-    for index, operation in enumerate(tool._recipe.operations):
+    for index, operation in enumerate(tool._document.recipe.operations):
         if operation.enabled and operation.kind == FigureOperationKind.PLOT_ARRAY:
             operation_axes = _axes_for_selection(tool, operation.axes)
             if len(operation_axes) == 1 and id(operation_axes[0]) in selected_axis_ids:
@@ -1770,7 +1782,7 @@ def _image_style_targets(
         if (
             not operation.enabled
             or operation.kind != FigureOperationKind.PLOT_SLICES
-            or _plot_slices_panel_kind(_plot_slices_shape(tool, operation))
+            or _plot_slices_panel_kind(_plot_slices_shape(tool._document, operation))
             != _PLOT_SLICES_PANEL_IMAGE
         ):
             continue
@@ -1827,7 +1839,9 @@ def _selected_plot_slices_panel_keys(
     operation_axis_ids = {id(axis) for axis in operation_axes}
     if not (selected_axis_ids & operation_axis_ids):
         return ()
-    panel_keys = _plot_slices_panel_keys(tool, operation)
+    panel_keys = _plot_slices_panel_keys(
+        tool._document, tool._source_display_name, operation
+    )
     if len(operation_axes) != len(panel_keys):
         return panel_keys
     return tuple(
@@ -1871,10 +1885,7 @@ def _image_style_target_label(
 def _operation_by_id(
     tool: FigureComposerTool, operation_id: str
 ) -> FigureOperationState | None:
-    for operation in tool._recipe.operations:
-        if operation.operation_id == operation_id:
-            return operation
-    return None
+    return tool._document.operation_by_id(operation_id)
 
 
 def _replace_operation_by_id(
@@ -1884,15 +1895,11 @@ def _replace_operation_by_id(
     *,
     rebuild_editor: bool = False,
 ) -> None:
-    for index, operation in enumerate(tool._recipe.operations):
-        if operation.operation_id == operation_id:
-            _replace_recipe_operation(
-                tool,
-                index,
-                updated,
-                rebuild_editor=rebuild_editor,
-            )
-            return
+    tool._update_operations_by_ids(
+        (operation_id,),
+        lambda _index, _operation: updated,
+        rebuild_editor=rebuild_editor,
+    )
 
 
 def _is_single_image_plot_slices_target(
@@ -1902,12 +1909,17 @@ def _is_single_image_plot_slices_target(
 ) -> bool:
     if (
         operation.kind != FigureOperationKind.PLOT_SLICES
-        or _plot_slices_panel_kind(_plot_slices_shape(tool, operation))
+        or _plot_slices_panel_kind(_plot_slices_shape(tool._document, operation))
         != _PLOT_SLICES_PANEL_IMAGE
     ):
         return False
     return (
-        len(_plot_slices_panel_keys(tool, operation)) == 1
+        len(
+            _plot_slices_panel_keys(
+                tool._document, tool._source_display_name, operation
+            )
+        )
+        == 1
         and len(target.panel_keys) == 1
     )
 
@@ -1948,29 +1960,6 @@ def _update_plot_slices_panel_styles(
         rebuild_editor=_current_operation_id(tool) == operation_id,
     )
     return updated
-
-
-def _replace_recipe_operation(
-    tool: FigureComposerTool,
-    index: int,
-    operation: FigureOperationState,
-    *,
-    rebuild_editor: bool = False,
-) -> None:
-    if index < 0 or index >= len(tool._recipe.operations):
-        return
-    current = tool._current_operation()
-    current_id = current[1].operation_id if current is not None else None
-    selected_ids = tool._selected_operation_ids()
-    operations = list(tool._recipe.operations)
-    operations[index] = operation
-    _set_operations(
-        tool,
-        tuple(operations),
-        current_id,
-        selected_ids,
-        rebuild_editor=rebuild_editor,
-    )
 
 
 def _current_operation_id(tool: FigureComposerTool) -> str | None:
@@ -2040,7 +2029,6 @@ def _upsert_method_operation(
     current = tool._current_operation()
     current_id = current[1].operation_id if current is not None else None
     selected_ids = tool._selected_operation_ids()
-    operations = list(tool._recipe.operations)
     updates: dict[str, typing.Any] = {
         "label": label or name,
         "method_args": tuple(args),
@@ -2050,29 +2038,32 @@ def _upsert_method_operation(
         updates["axes"] = axes
     if enabled is not None:
         updates["enabled"] = enabled
-    for index, operation in enumerate(operations):
+    for index, operation in enumerate(tool._document.recipe.operations):
         if (
             operation.kind == FigureOperationKind.METHOD
             and operation.method_family == family
             and operation.method_name == name
             and _method_axes_match(operation.axes, axes)
         ):
-            operations[index] = operation.model_copy(update=updates)
-            break
-    else:
-        new_operation = FigureOperationState.method(
-            family=family,
-            name=name,
-            label=label,
-            axes=axes,
-            args=args,
-            kwargs=kwargs,
-        )
-        if enabled is not None:
-            new_operation = new_operation.model_copy(update={"enabled": enabled})
-        operations.append(new_operation)
-        index = len(operations) - 1
-    _set_operations(tool, tuple(operations), current_id, selected_ids)
+            tool._update_operations_by_ids(
+                (operation.operation_id,),
+                lambda _index, target: target.model_copy(update=updates),
+                rebuild_editor=True,
+            )
+            return index
+
+    new_operation = FigureOperationState.method(
+        family=family,
+        name=name,
+        label=label,
+        axes=axes,
+        args=args,
+        kwargs=kwargs,
+    )
+    if enabled is not None:
+        new_operation = new_operation.model_copy(update={"enabled": enabled})
+    index = tool._document.append_operation(new_operation)
+    tool._finish_operation_structure_change(selected_ids, current_id)
     return index
 
 
@@ -2084,56 +2075,26 @@ def _set_method_operation_enabled(
     axes: FigureAxesSelectionState | None,
     enabled: bool,
 ) -> None:
-    current = tool._current_operation()
-    current_id = current[1].operation_id if current is not None else None
-    selected_ids = tool._selected_operation_ids()
-    operations = list(tool._recipe.operations)
-    changed = False
-    for index, operation in enumerate(operations):
+    operation_ids = tuple(
+        operation.operation_id
+        for operation in tool._document.recipe.operations
         if (
             operation.kind == FigureOperationKind.METHOD
             and operation.method_family == family
             and operation.method_name == name
             and _method_axes_match(operation.axes, axes)
             and operation.enabled != enabled
-        ):
-            operations[index] = operation.model_copy(update={"enabled": enabled})
-            changed = True
-    if changed:
-        _set_operations(tool, tuple(operations), current_id, selected_ids)
-
-
-def _set_operations(
-    tool: FigureComposerTool,
-    operations: tuple[FigureOperationState, ...],
-    current_id: str | None,
-    selected_ids: set[str],
-    *,
-    rebuild_editor: bool = True,
-) -> None:
-    tool._recipe = tool._recipe.model_copy(update={"operations": operations})
-    tool._refresh_operation_list()
-    if selected_ids:
-        tool._set_selected_operation_ids_silent(selected_ids)
-    if current_id is not None:
-        for row, operation in enumerate(tool._recipe.operations):
-            if operation.operation_id == current_id:
-                tool._set_current_operation_row_silent(row)
-                break
-    tool._sync_axes_selector()
-    tool._update_step_action_buttons()
-    tool._refresh_step_section_button_texts()
-    current = tool._current_operation()
-    tool._update_source_status(current[1] if current is not None else None)
-    if rebuild_editor:
-        tool._update_operation_editor_safely()
-    _render_preview(tool)
-    tool.sigInfoChanged.emit()
-    tool._write_state()
+        )
+    )
+    tool._update_operations_by_ids(
+        operation_ids,
+        lambda _index, operation: operation.model_copy(update={"enabled": enabled}),
+        rebuild_editor=True,
+    )
 
 
 def _layout_axes(tool: FigureComposerTool) -> np.ndarray | dict[str, Axes] | None:
-    setup = tool._recipe.setup
+    setup = tool._document.recipe.setup
     if setup.layout_mode == "gridspec":
         axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
         axes = tool.figure.axes[: len(axes_ids)]
@@ -2163,13 +2124,11 @@ def _axes_for_selection(
 
 
 def _layout_engine_text(tool: FigureComposerTool) -> str:
-    return tool._recipe.setup.layout or "default"
+    return tool._document.recipe.setup.layout or "default"
 
 
 def _set_setup_layout_engine(tool: FigureComposerTool, text: str) -> None:
-    with QtCore.QSignalBlocker(tool.layout_combo):
-        tool.layout_combo.setCurrentText(text)
-    tool._setup_controls_changed()
+    tool._set_layout_engine(text)
 
 
 def _float_pair_text(values: Sequence[float]) -> str:
@@ -2349,12 +2308,12 @@ def _aspect_value(text: str) -> str | float:
 def _selector_widget(
     tool: FigureComposerTool, parent: QtWidgets.QWidget
 ) -> _AxesSelectorWidget | _GridSpecViewWidget:
-    setup = tool._recipe.setup
+    setup = tool._document.recipe.setup
     if setup.layout_mode == "gridspec":
         selector = _GridSpecViewWidget(parent, mode="select")
         labels = {
             axes_id: _gridspec_axis_display_name(
-                setup, axes_id, reserved_names=tool._source_names()
+                setup, axes_id, reserved_names=tool._document.source_names()
             )
             for axes_id in _gridspec_all_axes_ids(setup)
         }
@@ -2375,7 +2334,7 @@ def _selector_widget(
         selected = selector.selected_axes()
         if not tool._grow_subplot_grid(direction):
             return
-        updated_setup = tool._recipe.setup
+        updated_setup = tool._document.recipe.setup
         selector.set_grid(updated_setup.nrows, updated_setup.ncols)
         selector.set_selected_axes(selected or ((0, 0),), emit=True)
 
@@ -2393,8 +2352,8 @@ def _selector_selection(
         axes_ids = selector.selected_axes_ids()
         if not axes_ids:
             axes_ids = _gridspec_valid_axes_ids(
-                tool._recipe.setup,
-                _gridspec_all_axes_ids(tool._recipe.setup),
+                tool._document.recipe.setup,
+                _gridspec_all_axes_ids(tool._document.recipe.setup),
             )[:1]
         return FigureAxesSelectionState(axes_ids=axes_ids)
     axes = selector.selected_axes()

@@ -5,11 +5,12 @@ from __future__ import annotations
 import typing
 
 import erlab
-from erlab.interactive._figurecomposer._axes import (
+import erlab.utils._code
+from erlab.interactive._figurecomposer._model._axes import (
     _compact_axes_code,
     _compact_axes_iterable_code,
 )
-from erlab.interactive._figurecomposer._gridspec import (
+from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_axis_code_names,
     _gridspec_axis_code_tuple,
     _gridspec_has_invalid_regions,
@@ -17,25 +18,25 @@ from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_span_code,
     _gridspec_valid_axes_ids,
 )
+from erlab.interactive._figurecomposer._model._sources import (
+    _decode_indexers,
+    _valid_source_variable,
+)
 from erlab.interactive._figurecomposer._rendering import (
     _setup_kwargs,
     _setup_layout_value,
-)
-from erlab.interactive._figurecomposer._sources import (
-    _decode_indexers,
-    _valid_source_variable,
 )
 from erlab.interactive._figurecomposer._text import _code_kwargs, _format_axes_tuple
 
 if typing.TYPE_CHECKING:
     import xarray as xr
 
-    from erlab.interactive._figurecomposer._state import (
+    from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
+    from erlab.interactive._figurecomposer._model._state import (
         FigureAxesSelectionState,
         FigureDataSelectionState,
         FigureGridSpecGridState,
     )
-    from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
 def _invalid_gridspec_axes_error(invalid_axes: tuple[str, ...]) -> str:
@@ -44,12 +45,12 @@ def _invalid_gridspec_axes_error(invalid_axes: tuple[str, ...]) -> str:
     return f"{count} selected GridSpec {suffix} outside the current layout"
 
 
-def _reserved_code_names(tool: FigureComposerTool) -> tuple[str, ...]:
-    return tuple(tool._source_names())
+def _reserved_code_names(context: FigureRecipeContext) -> tuple[str, ...]:
+    return tuple(context.source_names())
 
 
 def _axes_code(
-    tool: FigureComposerTool,
+    context: FigureRecipeContext,
     selection: FigureAxesSelectionState,
     *,
     for_plot_slices: bool,
@@ -57,7 +58,7 @@ def _axes_code(
     if selection.expression:
         return selection.expression
 
-    setup = tool._recipe.setup
+    setup = context.recipe.setup
     if setup.layout_mode == "gridspec":
         invalid_axes = _gridspec_invalid_axes_ids(setup, selection.axes_ids)
         if invalid_axes:
@@ -66,7 +67,7 @@ def _axes_code(
         if not axes_ids:
             raise ValueError("No axes are selected")
         axes_code = _gridspec_axis_code_tuple(
-            setup, axes_ids, reserved_names=_reserved_code_names(tool)
+            setup, axes_ids, reserved_names=_reserved_code_names(context)
         )
         if for_plot_slices:
             return "[" + ", ".join(axes_code) + "]"
@@ -74,13 +75,13 @@ def _axes_code(
             return axes_code[0]
         return "[" + ", ".join(axes_code) + "]"
 
-    invalid_axes = selection.invalid_axes(tool._recipe.setup)
+    invalid_axes = selection.invalid_axes(context.recipe.setup)
     if invalid_axes:
         raise ValueError(
             f"Selected axes are outside the current layout: "
             f"{_format_axes_tuple(invalid_axes)}"
         )
-    axes = selection.valid_axes(tool._recipe.setup)
+    axes = selection.valid_axes(context.recipe.setup)
     if not axes:
         raise ValueError("No axes are selected")
     compact = _compact_axes_code(axes, nrows=setup.nrows, ncols=setup.ncols)
@@ -94,11 +95,11 @@ def _axes_code(
 
 
 def _axes_sequence_code(
-    tool: FigureComposerTool, selection: FigureAxesSelectionState
+    context: FigureRecipeContext, selection: FigureAxesSelectionState
 ) -> str:
     if selection.expression:
-        return _axes_code(tool, selection, for_plot_slices=True)
-    setup = tool._recipe.setup
+        return _axes_code(context, selection, for_plot_slices=True)
+    setup = context.recipe.setup
     if setup.layout_mode == "gridspec":
         invalid_axes = _gridspec_invalid_axes_ids(setup, selection.axes_ids)
         if invalid_axes:
@@ -107,19 +108,19 @@ def _axes_sequence_code(
         if not axes_ids:
             raise ValueError("No axes are selected")
         axes_code = _gridspec_axis_code_tuple(
-            setup, axes_ids, reserved_names=_reserved_code_names(tool)
+            setup, axes_ids, reserved_names=_reserved_code_names(context)
         )
         if len(axes_code) == 1:
             return f"({axes_code[0]},)"
         return "(" + ", ".join(axes_code) + ")"
 
-    invalid_axes = selection.invalid_axes(tool._recipe.setup)
+    invalid_axes = selection.invalid_axes(context.recipe.setup)
     if invalid_axes:
         raise ValueError(
             f"Selected axes are outside the current layout: "
             f"{_format_axes_tuple(invalid_axes)}"
         )
-    axes = selection.valid_axes(tool._recipe.setup)
+    axes = selection.valid_axes(context.recipe.setup)
     if not axes:
         raise ValueError("No axes are selected")
     code = _compact_axes_iterable_code(axes, nrows=setup.nrows, ncols=setup.ncols)
@@ -136,9 +137,9 @@ def _selection_code(selection: FigureDataSelectionState) -> str:
         code += f".qsel({_code_kwargs(selection.qsel)})"
     if selection.mean_dims:
         if len(selection.mean_dims) == 1:
-            mean_arg = erlab.interactive.utils._parse_single_arg(selection.mean_dims[0])
+            mean_arg = erlab.utils._code._parse_single_arg(selection.mean_dims[0])
         else:
-            mean_arg = erlab.interactive.utils._parse_single_arg(selection.mean_dims)
+            mean_arg = erlab.utils._code._parse_single_arg(selection.mean_dims)
         code += f".qsel.mean({mean_arg})"
     return code
 
@@ -153,27 +154,27 @@ def _maybe_squeeze_drop_code(code: str, data: xr.DataArray) -> str:
     return code
 
 
-def _setup_code(tool: FigureComposerTool) -> str:
-    setup = tool._recipe.setup
+def _setup_code(context: FigureRecipeContext) -> str:
+    setup = context.recipe.setup
     if setup.layout_mode == "gridspec":
         if _gridspec_has_invalid_regions(setup.gridspec.root):
             raise ValueError("GridSpec layout contains regions outside their grids")
-        return "\n".join(_gridspec_setup_code_lines(tool))
-    kwargs = _code_kwargs(_setup_kwargs(tool))
+        return "\n".join(_gridspec_setup_code_lines(context))
+    kwargs = _code_kwargs(_setup_kwargs(context))
     return f"fig, axs = plt.subplots({kwargs})"
 
 
-def _gridspec_setup_code_lines(tool: FigureComposerTool) -> list[str]:
-    setup = tool._recipe.setup
+def _gridspec_setup_code_lines(context: FigureRecipeContext) -> list[str]:
+    setup = context.recipe.setup
     kwargs = {
         "figsize": setup.figsize,
         "dpi": setup.dpi,
     }
-    if (layout := _setup_layout_value(tool)) is not None:
+    if (layout := _setup_layout_value(context)) is not None:
         kwargs["layout"] = layout
     lines = [f"fig = plt.figure({_code_kwargs(kwargs)})"]
     code_names = _gridspec_axis_code_names(
-        setup, reserved_names=_reserved_code_names(tool)
+        setup, reserved_names=_reserved_code_names(context)
     )
 
     def grid_kwargs(grid: FigureGridSpecGridState) -> dict[str, typing.Any]:

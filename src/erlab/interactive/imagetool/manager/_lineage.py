@@ -295,7 +295,7 @@ class _LineageController:
     def _refresh_dependency_dependents(self, uid: str) -> None:
         for dependent_uid in self._manager._dependency_dependent_uids(uid):
             if self._manager._is_figure_uid(dependent_uid):
-                self._manager._sync_figures_ui()
+                self._manager._figure_controller.sync()
                 self._manager._update_info(uid=dependent_uid)
             else:
                 self._manager.tree_view.refresh(dependent_uid)

@@ -2953,10 +2953,7 @@ def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
         dims=("x", "y"),
         coords={"x": [0.0, 0.2, 0.8, 1.5], "y": np.arange(3.0)},
     )
-    operation_code = (
-        "derived = "
-        "erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data_0) + 1"
-    )
+    operation_code = "derived = erlab.utils.array._restore_nonuniform_dims(data_0) + 1"
 
     with manager_context() as manager:
         manager.show()
@@ -2993,7 +2990,7 @@ def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
         manager.reload_selected()
 
         xr.testing.assert_identical(
-            erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+            erlab.utils.array._restore_nonuniform_dims(
                 manager.get_imagetool(1).slicer_area.data
             ),
             updated + 1.0,

@@ -11,10 +11,11 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
-import erlab.interactive.imagetool.slicer
-import erlab.interactive.utils
-from erlab.interactive._figurecomposer._axes import _all_axes
-from erlab.interactive._figurecomposer._state import (
+import erlab
+import erlab.utils._code
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._model._axes import _all_axes
+from erlab.interactive._figurecomposer._model._state import (
     FigureAxesSelectionState,
     FigureDataSelectionState,
     FigureOperationState,
@@ -22,6 +23,7 @@ from erlab.interactive._figurecomposer._state import (
     FigureSubplotsState,
     _restore_slice_mapping,
 )
+from erlab.interactive._figurecomposer._text import _dict_from_text
 
 # Keep every binding emitted by Figure Composer code generation here. Source aliases
 # share the generated module namespace, so missing one can silently replace source data.
@@ -79,6 +81,9 @@ _FIGURE_CODE_RESERVED_NAMES = (
     | _FIGURE_CODE_OPERATION_BINDINGS
     | _FIGURE_CODE_BUILTIN_BINDINGS
 )
+
+_SELECTION_VALUE_MESSAGE = "Enter a selection value, such as 0 or slice(0, 2)."
+_SELECTION_WIDTH_MESSAGE = "Enter a qsel width, such as 0.1."
 _FIGURE_CODE_RESERVED_NAME_PATTERN = re.compile(
     r"(?:ax\d+|gs\d+(?:_\d+)*|_line(?:_\d+)?)"
 )
@@ -91,13 +96,13 @@ def _source_alias_candidate(data: xr.DataArray) -> str | None:
     text = str(data.name).strip()
     if not text:
         return None
-    if erlab.interactive.utils._is_kwarg_name(text):
+    if erlab.utils.misc._is_valid_identifier(text):
         return text
     if not any(character.isalnum() for character in text):
         return None
     snake_text = _CAMEL_CASE_BOUNDARY.sub("_", text).lower()
-    alias = erlab.interactive.utils.IdentifierValidator().fixup(snake_text)
-    if not erlab.interactive.utils._is_kwarg_name(alias):
+    alias = erlab.utils.misc._normalize_identifier(snake_text)
+    if not erlab.utils.misc._is_valid_identifier(alias):
         return None
     return alias
 
@@ -126,7 +131,7 @@ def _source_display_tooltip(source: FigureSourceState | None, name: str) -> str:
 
 
 def _valid_source_variable(name: str) -> str:
-    if not erlab.interactive.utils._is_kwarg_name(name):
+    if not erlab.utils.misc._is_valid_identifier(name):
         raise ValueError(f"Figure source name {name!r} is not a valid variable name")
     return name
 
@@ -170,7 +175,7 @@ def _source_unique_name(source_name: str, reserved: set[str]) -> str:
 
 
 def _public_source_data(data: xr.DataArray) -> xr.DataArray:
-    return erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)
+    return erlab.utils.array._restore_nonuniform_dims(data)
 
 
 def _available_source_dims(
@@ -221,6 +226,121 @@ def _source_has_selection(source: FigureSourceState) -> bool:
     return bool(source.isel or source.qsel or source.mean_dims)
 
 
+def selection_has_effect(selection: FigureDataSelectionState) -> bool:
+    """Return whether a source selection changes its input data."""
+    return bool(selection.isel or selection.qsel or selection.mean_dims)
+
+
+def selection_width_key(dim: str) -> str:
+    return f"{dim}_width"
+
+
+def selection_content_equal(
+    first: FigureDataSelectionState, second: FigureDataSelectionState
+) -> bool:
+    """Return whether two selections apply the same operations."""
+    return (
+        first.isel == second.isel
+        and first.qsel == second.qsel
+        and first.mean_dims == second.mean_dims
+    )
+
+
+def shared_selection(
+    selections: Sequence[FigureDataSelectionState],
+) -> FigureDataSelectionState | None:
+    """Return the source-neutral selection shared by every input."""
+    if not selections:
+        return FigureDataSelectionState(source="")
+    first = selections[0].model_copy(update={"source": ""})
+    if all(selection_content_equal(first, selection) for selection in selections[1:]):
+        return first
+    return None
+
+
+def selection_dim_mode(selection: FigureDataSelectionState, dim: str) -> str:
+    if dim in selection.isel:
+        return "isel"
+    if dim in selection.qsel or selection_width_key(dim) in selection.qsel:
+        return "qsel"
+    if dim in selection.mean_dims:
+        return "mean"
+    return "keep"
+
+
+def selection_dim_value_text(selection: FigureDataSelectionState, dim: str) -> str:
+    if dim in selection.isel:
+        return erlab.utils._code._parse_single_arg(selection.isel[dim])
+    if dim in selection.qsel:
+        return erlab.utils._code._parse_single_arg(selection.qsel[dim])
+    return ""
+
+
+def selection_dim_width_text(selection: FigureDataSelectionState, dim: str) -> str:
+    width_key = selection_width_key(dim)
+    if width_key in selection.qsel:
+        return erlab.utils._code._parse_single_arg(selection.qsel[width_key])
+    return ""
+
+
+def selection_value_from_text(text: str) -> typing.Any:
+    stripped = text.strip()
+    if not stripped:
+        raise FigureComposerInputError(_SELECTION_VALUE_MESSAGE)
+    try:
+        return _dict_from_text(f"value={stripped}", allow_slice=True)["value"]
+    except FigureComposerInputError as exc:
+        raise FigureComposerInputError(_SELECTION_VALUE_MESSAGE) from exc
+
+
+def selection_width_from_text(text: str) -> typing.Any:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        value = _dict_from_text(f"value={stripped}", allow_slice=True)["value"]
+    except FigureComposerInputError as exc:
+        raise FigureComposerInputError(_SELECTION_WIDTH_MESSAGE) from exc
+    if isinstance(value, slice):
+        raise FigureComposerInputError(_SELECTION_WIDTH_MESSAGE)
+    return value
+
+
+def selection_with_dimension(
+    selection: FigureDataSelectionState,
+    dim: str,
+    mode: str,
+    value: typing.Any = None,
+    width: typing.Any = None,
+) -> FigureDataSelectionState:
+    """Return *selection* with one dimension's complete rule replaced."""
+    isel = dict(selection.isel)
+    qsel = dict(selection.qsel)
+    mean_dims = [target for target in selection.mean_dims if target != dim]
+    isel.pop(dim, None)
+    qsel.pop(dim, None)
+    qsel.pop(selection_width_key(dim), None)
+    if mode == "isel":
+        isel[dim] = value
+    elif mode == "qsel":
+        if isinstance(value, slice) and width is not None:
+            raise FigureComposerInputError(
+                "A qsel slice cannot also use a width argument."
+            )
+        qsel[dim] = value
+        if width is not None:
+            qsel[selection_width_key(dim)] = width
+    elif mode == "mean":
+        mean_dims.append(dim)
+    return selection.model_copy(
+        update={
+            "isel": isel,
+            "qsel": qsel,
+            "mean_dims": tuple(mean_dims),
+        }
+    )
+
+
 def _source_with_selection(
     source: FigureSourceState, selection: FigureDataSelectionState
 ) -> FigureSourceState:
@@ -242,9 +362,7 @@ def _selected_source_data(
     data: xr.DataArray, source: FigureSourceState
 ) -> xr.DataArray:
     selected = _selected_data({source.name: data}, _source_selection(source))
-    if selected is None:  # pragma: no cover
-        raise KeyError(source.name)
-    return selected
+    return typing.cast("xr.DataArray", selected)
 
 
 def _middle_coord_value(data: xr.DataArray, dim: str) -> float | None:

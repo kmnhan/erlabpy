@@ -1237,10 +1237,45 @@ def compile_replay_graph(
     return graph
 
 
+def _node_may_contain_image_tool_dimensions(
+    graph: ReplayGraph,
+    key: str,
+) -> bool:
+    """Return whether display replay may still hold ImageTool rendering dimensions."""
+    node_by_key = {node.key: node for node in graph.nodes}
+
+    def visit(node_key: str) -> bool:
+        node = node_by_key[node_key]
+        if node.kind in {"script", "live_input"}:
+            return True
+        if node.kind in {"file_load", "setup"}:
+            return False
+        if node.kind == "source_view" and node.payload["source_kind"] != "full_data":
+            return False
+        if node.kind == "operation":
+            operation = node.payload["operation"]
+            operation_name = getattr(operation, "op", None)
+            if operation_name == "source_view":
+                return False
+            # A recorded mapping may restore only some internal dimensions. Only
+            # the dynamic operation inspects every dimension that reaches it.
+            if (
+                operation_name == "restore_nonuniform_dims"
+                and getattr(operation, "dimension_mapping", None) is None
+            ):
+                return False
+        return bool(node.parents) and visit(node.parents[0])
+
+    return visit(key)
+
+
 def _source_view_emits_code(graph: ReplayGraph, node: ReplayNode) -> bool:
+    """Return whether this semantic view requires standalone conversion code."""
     if node.payload["source_kind"] == "full_data":
         return False
-    return not graph.display
+    return not graph.display or _node_may_contain_image_tool_dimensions(
+        graph, node.parents[0]
+    )
 
 
 def _node_names(
@@ -1689,6 +1724,65 @@ def _leading_top_level_imports(code: str) -> tuple[list[tuple[str, str]], str]:
     return imports, body
 
 
+def _split_module_prologue(code: str) -> tuple[str, str]:
+    """Split off a leading module docstring and its future imports.
+
+    Generated support definitions must follow both constructs: moving a definition
+    ahead of the docstring changes ``__doc__``, while moving it ahead of a future
+    import makes otherwise valid replay code fail to compile.
+    """
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return "", code
+    if not module.body:
+        return "", code
+
+    statement_index = 0
+    prologue_end: ast.stmt | None = None
+    first_statement = module.body[0]
+    if (
+        isinstance(first_statement, ast.Expr)
+        and isinstance(first_statement.value, ast.Constant)
+        and isinstance(first_statement.value.value, str)
+    ):
+        prologue_end = first_statement
+        statement_index = 1
+
+    while statement_index < len(module.body):
+        statement = module.body[statement_index]
+        if not (
+            isinstance(statement, ast.ImportFrom) and statement.module == "__future__"
+        ):
+            break
+        prologue_end = statement
+        statement_index += 1
+
+    if (
+        prologue_end is None
+        or prologue_end.end_lineno is None
+        or prologue_end.end_col_offset is None
+    ):
+        return "", code
+
+    encoded = code.encode()
+    line_starts = [0]
+    for line in encoded.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+    split_at = line_starts[prologue_end.end_lineno - 1] + prologue_end.end_col_offset
+
+    line_end = line_starts[prologue_end.end_lineno]
+    line_suffix = encoded[split_at:line_end]
+    if not line_suffix.strip() or line_suffix.lstrip().startswith(b"#"):
+        split_at = line_end
+
+    prologue = encoded[:split_at].decode().strip("\n")
+    body = encoded[split_at:].decode().lstrip(" \t")
+    if body.startswith(";"):
+        body = body[1:].lstrip(" \t")
+    return prologue, body.strip("\n")
+
+
 def _import_binding_targets(code: str) -> dict[str, str] | None:
     """Return names bound by one import and their canonical targets.
 
@@ -1858,6 +1952,56 @@ def _group_framework_imports(chunks: Sequence[tuple[str, bool]]) -> str:
     return "\n".join((*future_imports, *imports, *body))
 
 
+def _operation_uses_dynamic_nonuniform_restore(
+    graph: ReplayGraph,
+    node: ReplayNode,
+) -> bool:
+    operation = node.payload["operation"]
+    operation_name = getattr(operation, "op", None)
+    if operation_name == "source_view":
+        if getattr(operation, "source_kind", None) == "full_data":
+            return False
+        return not graph.display or _node_may_contain_image_tool_dimensions(
+            graph, node.parents[0]
+        )
+    return (
+        operation_name == "restore_nonuniform_dims"
+        and getattr(operation, "dimension_mapping", None) is None
+    )
+
+
+def _dynamic_nonuniform_restore_name(
+    graph: ReplayGraph,
+    names: Mapping[str, str],
+) -> str:
+    """Return a support-function name that cannot shadow emitted replay code."""
+    unavailable = graph.reserved_names | set(names.values())
+    for node in graph.nodes:
+        code_fragments: list[str] = []
+        for field in ("code", "load_code"):
+            value = node.payload.get(field)
+            if isinstance(value, str):
+                code_fragments.append(value)
+        code_fragments.extend(
+            code for code in node.payload.get("codes", ()) if isinstance(code, str)
+        )
+        operation_code = getattr(node.payload.get("operation"), "code", None)
+        if isinstance(operation_code, str):
+            code_fragments.append(operation_code)
+        for code in code_fragments:
+            accesses, rebindings = _code_name_accesses(code)
+            unavailable.update(accesses)
+            unavailable.update(rebindings)
+
+    base_name = _provenance_framework._NONUNIFORM_RESTORE_FUNCTION_NAME
+    function_name = base_name
+    suffix = 2
+    while function_name in unavailable:
+        function_name = f"{base_name}_{suffix}"
+        suffix += 1
+    return function_name
+
+
 def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> str:
     names = _node_names(graph, output_name=output_name)
     node_by_key = {node.key: node for node in graph.nodes}
@@ -1866,6 +2010,25 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
 
     def append_code(code: str, *, group_imports: bool = False) -> None:
         chunks.append((code, graph.display and group_imports))
+
+    dynamic_restore_needed = any(
+        (node.kind == "source_view" and _source_view_emits_code(graph, node))
+        or (
+            node.kind == "operation"
+            and _operation_uses_dynamic_nonuniform_restore(graph, node)
+        )
+        for node in graph.nodes
+    )
+    dynamic_restore_name = (
+        _dynamic_nonuniform_restore_name(graph, names)
+        if dynamic_restore_needed
+        else None
+    )
+    dynamic_restore_support = (
+        _provenance_framework._nonuniform_restore_support_code(dynamic_restore_name)
+        if dynamic_restore_name is not None
+        else None
+    )
 
     for node in graph.nodes:
         if node.kind == "setup":
@@ -1896,25 +2059,36 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
         elif node.kind == "live_input":
             raise ReplayGraphError("Live inputs cannot be emitted as replay code")
         elif node.kind == "source_view":
-            parent_name = names[node.parents[0]]
             if not _source_view_emits_code(graph, node):
                 continue
+            if dynamic_restore_name is None:
+                raise ReplayGraphError("Public source view has no restore support")
+            parent_name = names[node.parents[0]]
             append_code(
-                f"{name} = erlab.interactive.imagetool.slicer."
-                f"restore_nonuniform_dims({parent_name})"
+                f"{name} = {dynamic_restore_name}({parent_name}.copy(deep=False))"
             )
         elif node.kind == "operation":
             parent_name = names[node.parents[0]]
             context_name = names[node.parents[1]]
             operation = node.payload["operation"]
-            append_code(
-                _operation_replay_code(
-                    operation,
-                    active_name=name,
-                    context_name=context_name,
-                    parent_name=parent_name,
+            if _operation_uses_dynamic_nonuniform_restore(graph, node):
+                if dynamic_restore_name is None:
+                    raise ReplayGraphError(
+                        "Nonuniform restore operation has no restore support"
+                    )
+                input_expression = parent_name
+                if getattr(operation, "op", None) == "source_view":
+                    input_expression = f"{parent_name}.copy(deep=False)"
+                append_code(f"{name} = {dynamic_restore_name}({input_expression})")
+            else:
+                append_code(
+                    _operation_replay_code(
+                        operation,
+                        active_name=name,
+                        context_name=context_name,
+                        parent_name=parent_name,
+                    )
                 )
-            )
         elif node.kind == "script":
             codes = list(typing.cast("tuple[str, ...]", node.payload["codes"]))
             hoist_imports = list(
@@ -1994,7 +2168,24 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
         planned_name = names[key]
         if public_name != planned_name:
             append_code(f"{public_name} = {planned_name}")
-    return _cleanup_emitted_replay_code(_group_framework_imports(chunks))
+    code = _group_framework_imports(chunks)
+    if dynamic_restore_support is None:
+        return _cleanup_emitted_replay_code(code)
+
+    module_prologue, code = _split_module_prologue(code)
+    leading_imports, body = _leading_top_level_imports(code)
+    cleaned_body = _cleanup_emitted_replay_code(body)
+    import_prefix = "\n".join(source for _canonical, source in leading_imports)
+    return "\n\n\n".join(
+        part
+        for part in (
+            module_prologue,
+            import_prefix,
+            dynamic_restore_support,
+            cleaned_body,
+        )
+        if part
+    )
 
 
 def script_inputs_code(script_inputs: Sequence[typing.Any], *, display: bool) -> str:
@@ -2078,6 +2269,12 @@ def _execute_replay_graph(
             )
         elif node.kind == "script":
             codes = typing.cast("tuple[str, ...]", node.payload["codes"])
+            compiled_codes = tuple(
+                compile(code, "<ImageTool script provenance>", "exec")
+                if graph.trusted_user_code
+                else _provenance_framework._compile_untrusted_script_replay_code(code)
+                for code in codes
+            )
             replay_builtins = (
                 vars(builtins)
                 if graph.trusted_user_code
@@ -2090,6 +2287,9 @@ def _execute_replay_graph(
                 "numpy": np,
                 "xr": xr,
                 "xarray": xr,
+                "__erlab_replay_import_erlab": erlab,
+                "__erlab_replay_import_numpy": np,
+                "__erlab_replay_import_xarray": xr,
             }
             for alias, target in _REPLAY_ALIASES.items():
                 if not any(_code_uses_name(code, alias) for code in codes):
@@ -2102,8 +2302,7 @@ def _execute_replay_graph(
                 "tuple[tuple[str, str], ...]", node.payload["bindings"]
             ):
                 namespace[input_name] = values[input_key].copy(deep=True)
-            for code in codes:
-                compiled = compile(code, "<ImageTool script provenance>", "exec")
+            for compiled in compiled_codes:
                 exec(compiled, namespace, namespace)  # noqa: S102
             active_name = typing.cast("str", node.payload["active_name"])
             if active_name not in namespace:
