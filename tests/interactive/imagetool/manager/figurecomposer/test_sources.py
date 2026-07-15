@@ -1685,6 +1685,39 @@ def test_figure_composer_source_structure_edge_paths(qtbot) -> None:
     )
 
 
+def test_figure_composer_source_selection_editor_widget_visibility(qtbot) -> None:
+    panel = figurecomposer_source_panel.FigureSourcePanel()
+    qtbot.addWidget(panel)
+    row = figurecomposer_source_panel.FigureSourceSelectionRow(
+        dimension="x",
+        tooltip="",
+        mode=None,
+        mode_mixed=False,
+        value_text="",
+        value_mixed=False,
+        width_text="",
+        width_mixed=False,
+    )
+
+    conditional_widgets = (
+        panel._selection_section,
+        panel._selection_message_label,
+        panel._selection_message,
+    )
+    assert all(widget.isHidden() for widget in conditional_widgets)
+
+    panel.set_selection_editor((row,))
+    assert not panel._selection_section.isHidden()
+    assert panel._selection_message_label.isHidden()
+    assert panel._selection_message.isHidden()
+
+    panel.set_selection_editor((), message="Unavailable")
+    assert all(not widget.isHidden() for widget in conditional_widgets)
+
+    panel.set_selection_editor(())
+    assert all(widget.isHidden() for widget in conditional_widgets)
+
+
 def test_figure_composer_source_selection_editor_edge_paths(qtbot) -> None:
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),

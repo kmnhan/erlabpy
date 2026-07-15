@@ -287,12 +287,15 @@ class FigureSourcePanel(QtWidgets.QWidget):
             QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
         )
         self._selection_section = self._create_selection_section()
+        self._selection_section.setVisible(False)
         self._selection_message = QtWidgets.QLabel(self.source_selection_controls)
         self._selection_message.setObjectName("figureComposerSourceSelectionMessage")
         self._selection_message.setWordWrap(True)
+        self._selection_message.setVisible(False)
         self._selection_message_label = QtWidgets.QLabel(
             "Dimensions", self.source_selection_controls
         )
+        self._selection_message_label.setVisible(False)
         self.source_selection_controls.setAcceptDrops(True)
         detail_layout.addWidget(self.source_selection_controls)
         self.source_validation_label = QtWidgets.QLabel(self.source_detail_content)
