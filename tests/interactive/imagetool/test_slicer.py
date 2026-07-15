@@ -1,3 +1,5 @@
+import zipfile
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -12,6 +14,7 @@ from erlab.interactive.imagetool.slicer import (
     qsel_args_from_indexers,
     restore_nonuniform_dims,
 )
+from erlab.io.plugins.da30 import load_zip
 
 
 def test_nonuniform_axes_ignores_user_idx_dim(qtbot) -> None:
@@ -338,6 +341,48 @@ def test_bin_along_multiaxis_point_value_single_binned_axis_reduces_1d(qtbot) ->
     result = slicer._bin_along_multiaxis(0, (0, 1, 2))
 
     assert result == np.nanmean(values[1, 1:4, 3])
+
+
+def test_da30_zip_readonly_array_binning(qtbot, tmp_path) -> None:
+    values = np.arange(3 * 5 * 7, dtype=np.float32).reshape(3, 5, 7)
+    zip_path = tmp_path / "data.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr(
+            "Spectrum_R1.ini",
+            """[spectrum]
+depth = 3
+depthoffset = 0
+depthdelta = 1
+depthlabel = a
+height = 5
+heightoffset = 0
+heightdelta = 1
+heightlabel = b
+width = 7
+widthoffset = 0
+widthdelta = 1
+widthlabel = c
+name = data
+""",
+        )
+        zf.writestr("R1.ini", "[attrs]\n")
+        zf.writestr("Spectrum_R1.bin", values.tobytes())
+
+    data = load_zip(zip_path)
+    assert isinstance(data, xr.DataArray)
+    assert not data.values.flags.writeable
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+    assert not slicer._obj.values.flags.writeable
+    assert np.shares_memory(data.values, slicer._obj.values)
+    selected = slicer._obj.values[:, 1:4, :]
+    assert not selected.flags.c_contiguous
+    assert not selected.flags.f_contiguous
+    slicer.set_indices(0, [1, 2, 3], update=False)
+    slicer.set_bin(0, 1, 3, update=False)
+
+    result = slicer.extract_avg_slice(0, (1,))
+
+    np.testing.assert_allclose(result, np.nanmean(values[:, 1:4, :], axis=1))
 
 
 def test_get_binned_cache_tracks_bin_updates_and_axis_swaps(qtbot) -> None:
