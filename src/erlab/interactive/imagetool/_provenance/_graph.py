@@ -1387,44 +1387,42 @@ def _copied_script_bindings(graph: ReplayGraph) -> set[tuple[str, str, str]]:
     """Return shared bindings that need independent script-owned arrays.
 
     Runtime replay gives every script binding its own deep copy. Emitted code preserves
-    that ownership wherever bindings share the same value or a common graph ancestor.
+    that ownership wherever two bindings share the same value or a value-producing
+    graph ancestor. Setup nodes are excluded because sharing import/setup code does not
+    imply sharing an array.
     """
-    binding_counts = Counter(
-        input_key
+    bindings = [
+        (node.key, input_name, input_key)
         for node in graph.nodes
         if node.kind == "script"
-        for _input_name, input_key in typing.cast(
-            "tuple[tuple[str, str], ...]", node.payload["bindings"]
-        )
-    )
-    consumers: dict[str, set[str]] = {}
-    for node in graph.nodes:
-        for parent_key in set(node.parents):
-            consumers.setdefault(parent_key, set()).add(node.key)
-    node_by_key = {node.key: node for node in graph.nodes}
-    shared_ancestry: dict[str, bool] = {}
-
-    def has_shared_ancestry(key: str) -> bool:
-        if key not in shared_ancestry:
-            shared_ancestry[key] = (
-                binding_counts[key] > 1 or len(consumers.get(key, ())) > 1
-            )
-            if not shared_ancestry[key]:
-                shared_ancestry[key] = any(
-                    has_shared_ancestry(parent_key)
-                    for parent_key in node_by_key[key].parents
-                )
-        return shared_ancestry[key]
-
-    copied: set[tuple[str, str, str]] = set()
-    for node in graph.nodes:
-        if node.kind != "script":
-            continue
         for input_name, input_key in typing.cast(
             "tuple[tuple[str, str], ...]", node.payload["bindings"]
+        )
+    ]
+    node_by_key = {node.key: node for node in graph.nodes}
+    ancestors_by_key: dict[str, frozenset[str]] = {}
+
+    def value_ancestors(key: str) -> frozenset[str]:
+        if key not in ancestors_by_key:
+            node = node_by_key[key]
+            ancestors = set() if node.kind == "setup" else {key}
+            for parent_key in node.parents:
+                ancestors.update(value_ancestors(parent_key))
+            ancestors_by_key[key] = frozenset(ancestors)
+        return ancestors_by_key[key]
+
+    binding_counts = Counter(input_key for _node_key, _name, input_key in bindings)
+    copied: set[tuple[str, str, str]] = set()
+    for binding in bindings:
+        _node_key, _input_name, input_key = binding
+        if binding_counts[input_key] > 1 or any(
+            binding != other_binding
+            and not value_ancestors(input_key).isdisjoint(
+                value_ancestors(other_binding[2])
+            )
+            for other_binding in bindings
         ):
-            if has_shared_ancestry(input_key):
-                copied.add((node.key, input_name, input_key))
+            copied.add(binding)
     return copied
 
 

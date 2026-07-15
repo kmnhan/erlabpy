@@ -901,6 +901,45 @@ def test_replay_graph_emits_one_readable_binding_for_shared_inputs(
     )
 
 
+def test_replay_graph_binds_distinct_structured_inputs_directly(
+    tmp_path: pathlib.Path,
+) -> None:
+    left_path = tmp_path / "left.nc"
+    right_path = tmp_path / "right.nc"
+    left_source = xr.DataArray(np.arange(4.0), dims="x")
+    right_source = xr.DataArray(np.arange(4.0) + 10.0, dims="x")
+    left_source.to_netcdf(left_path)
+    right_source.to_netcdf(right_path)
+    left_spec = compose_full_provenance(
+        _file_spec(left_path),
+        full_data(IselOperation(kwargs={"x": slice(None)})),
+    )
+    right_spec = compose_full_provenance(
+        _file_spec(right_path),
+        full_data(IselOperation(kwargs={"x": slice(None)})),
+    )
+    assert left_spec is not None
+    assert right_spec is not None
+    spec = script(
+        ScriptCodeOperation(label="Add sources", code="result = left + right"),
+        start_label="Run script",
+        active_name="result",
+        script_inputs=(
+            ScriptInput(name="left", label="Left", provenance_spec=left_spec),
+            ScriptInput(name="right", label="Right", provenance_spec=right_spec),
+        ),
+    )
+
+    code = typing.cast("str", spec.display_code())
+
+    assert code.count("xr.load_dataarray") == 2
+    assert ".copy(deep=True)" not in code
+    assert "loaded_data" not in code
+    assert "processed_data" not in code
+    namespace = _exec_generated_code(code)
+    xr.testing.assert_identical(namespace["result"], left_source + right_source)
+
+
 @pytest.mark.parametrize(
     "mutation_code",
     [

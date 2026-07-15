@@ -9707,9 +9707,8 @@ def test_transform_replace_composes_after_script_active_name(qtbot) -> None:
 
     assert win.provenance_spec is not None
     code = win.provenance_spec.derivation_code()
-    assert (
-        code == 'result = data + 1\nderived = result\nderived = derived.qsel.mean("x")'
-    )
+    assert code.count("derived =") == 1
+    assert "result =" not in code
     namespace = _exec_generated_code(code, {"data": source.copy(deep=True)})
     derived = namespace["derived"]
     assert isinstance(derived, xr.DataArray)

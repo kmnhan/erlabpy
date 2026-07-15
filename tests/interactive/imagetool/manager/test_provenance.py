@@ -8705,8 +8705,16 @@ def test_manager_replace_current_sets_provenance_on_provenance_free_root(
 
         assert root.source_spec is None
         assert root.provenance_spec is not None
-        assert root.provenance_spec.derivation_code() == (
-            'derived = data\nderived = derived.qsel.mean("x")'
+        derivation_code = root.provenance_spec.derivation_code()
+        assert derivation_code.count("derived =") == 1
+        namespace = _exec_generated_code(
+            derivation_code,
+            {"data": data.copy(deep=True)},
+        )
+        derived = namespace["derived"]
+        assert isinstance(derived, xr.DataArray)
+        xr.testing.assert_identical(
+            derived.rename(None), data.qsel.mean("x").rename(None)
         )
         xr.testing.assert_identical(
             root_tool.slicer_area._data.rename(None),
@@ -10549,10 +10557,17 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
             "qsel_aggregate",
             "qsel_aggregate",
         ]
-        assert detached.provenance_spec.derivation_code() == (
-            "derived = data\n"
-            'derived = derived.qsel.mean("x")\n'
-            'derived = derived.qsel.mean("y")'
+        detached_derivation = detached.provenance_spec.derivation_code()
+        assert detached_derivation.count("derived =") == 1
+        detached_namespace = _exec_generated_code(
+            detached_derivation,
+            {"data": updated.copy(deep=True)},
+        )
+        detached_result = detached_namespace["derived"]
+        assert isinstance(detached_result, xr.DataArray)
+        xr.testing.assert_identical(
+            detached_result.rename(None),
+            updated.qsel.mean("x").qsel.mean("y").rename(None),
         )
         assert detached.provenance_spec.derivation_code() != detached_derivation_before
         xr.testing.assert_identical(

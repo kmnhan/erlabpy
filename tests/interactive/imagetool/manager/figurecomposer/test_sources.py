@@ -4001,6 +4001,7 @@ def test_figure_composer_full_code_composes_selected_file_sources(
 
 def test_figure_composer_full_code_keeps_needed_base_and_selected_sources(
     qtbot,
+    monkeypatch,
     tmp_path: Path,
 ) -> None:
     data = xr.DataArray(
@@ -4055,10 +4056,24 @@ def test_figure_composer_full_code_keeps_needed_base_and_selected_sources(
     code = spec.display_code()
     assert code is not None
     assert "fig =" not in code
-    assert "fig_2 = xarray.load_dataarray" in code
-    assert "fig_3 = fig_2.qsel(hv=39.274)" in code
+    assert code.count("xarray.load_dataarray(") == 1
+    assert code.count(".copy(deep=True)") == 2
+    assert "_itool_replay_" not in code
     assert "eplt.plot_array(fig_2" in code
     assert "eplt.plot_array(fig_3" in code
+
+    captured: list[xr.DataArray] = []
+    monkeypatch.setattr(
+        eplt,
+        "plot_array",
+        lambda arr, **_kwargs: captured.append(arr),
+    )
+    namespace = _exec_generated_code(code, {})
+    assert isinstance(namespace["fig_2"], xr.DataArray)
+    assert isinstance(namespace["fig_3"], xr.DataArray)
+    assert isinstance(namespace["fig"], Figure)
+    xr.testing.assert_identical(captured[0], data)
+    xr.testing.assert_identical(captured[1], data.qsel(hv=39.274))
 
 
 def test_figure_composer_full_code_falls_back_for_live_selected_source(
