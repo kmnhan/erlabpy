@@ -575,7 +575,7 @@ def test_colormap_thumbnail_pixmap_normalizes_colorcet_cache_key(qtbot) -> None:
     assert cache_info.misses == 1
 
 
-def test_colormap_combobox_load_all_defers_thumbnail_rendering(
+def test_colormap_combobox_load_all_only_renders_current_thumbnail(
     qtbot, monkeypatch
 ) -> None:
     rendered: list[str] = []
@@ -589,15 +589,78 @@ def test_colormap_combobox_load_all_defers_thumbnail_rendering(
     )
     combo = ColorMapComboBox()
     qtbot.addWidget(combo)
+    combo.setDefaultCmap("viridis")
+    combo.ensure_populated()
+    rendered.clear()
 
     combo.load_all()
 
     assert combo.count() == len(pg_colormap_names("all", exclude_local=True))
-    assert rendered == []
+    assert combo.currentText() == "viridis"
+    assert not combo.itemIcon(combo.currentIndex()).isNull()
+    assert rendered == ["viridis"]
 
-    combo.load_thumbnail(0)
+    other_index = next(i for i in range(combo.count()) if i != combo.currentIndex())
+    combo.load_thumbnail(other_index)
 
-    assert rendered == [combo.itemText(0)]
+    assert rendered == ["viridis", combo.itemText(other_index)]
+
+
+def test_colormap_combobox_blocked_updates_keep_thumbnail_and_signal_state(
+    qtbot,
+) -> None:
+    combo = ColorMapComboBox()
+    qtbot.addWidget(combo)
+    combo.setDefaultCmap("viridis")
+
+    assert combo.signalsBlocked()
+    combo.ensure_populated()
+    assert not combo.signalsBlocked()
+    assert combo.currentText() == "viridis"
+    assert not combo.itemIcon(combo.currentIndex()).isNull()
+
+    with QtCore.QSignalBlocker(combo):
+        combo.setCurrentText("magma")
+    assert not combo.signalsBlocked()
+    assert combo.currentText() == "magma"
+    assert not combo.itemIcon(combo.currentIndex()).isNull()
+
+
+def test_colormap_combobox_close_blocks_teardown_signals(qtbot) -> None:
+    combo = ColorMapComboBox()
+    qtbot.addWidget(combo)
+    combo.show()
+
+    assert combo.close()
+    assert combo.signalsBlocked()
+
+
+def test_colormap_combobox_popup_populates_once_before_loading_thumbnails(
+    qtbot, monkeypatch
+) -> None:
+    rendered: list[str] = []
+
+    def record_thumbnail(name, *args, **kwargs):
+        rendered.append(name)
+        return QtGui.QPixmap(64, 16)
+
+    monkeypatch.setattr(
+        erlab.interactive.colors, "pg_colormap_to_QPixmap", record_thumbnail
+    )
+    monkeypatch.setattr(QtWidgets.QComboBox, "showPopup", lambda self: None)
+    combo = ColorMapComboBox()
+    qtbot.addWidget(combo)
+
+    combo.showPopup()
+    count = combo.count()
+
+    assert count == len(pg_colormap_names("matplotlib", exclude_local=True))
+    assert rendered == [combo.itemText(i) for i in range(count)]
+    assert all(not combo.itemIcon(i).isNull() for i in range(count))
+
+    combo._populate()
+
+    assert combo.count() == count
 
 
 def test_colormap_combobox_load_all_keeps_current_selection(qtbot) -> None:

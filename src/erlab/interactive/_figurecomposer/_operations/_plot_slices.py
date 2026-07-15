@@ -3339,8 +3339,8 @@ def _build_plot_slices_editor(
         cmap_combo.setObjectName("figureComposerCmapCombo")
         cmap_combo.setToolTip("Colormap passed to plot_slices.")
         cmap_combo.default_cmap = None if cmap_mixed else cmap_base
+        cmap_combo.ensure_populated()
         with QtCore.QSignalBlocker(cmap_combo):
-            cmap_combo.ensure_populated()
             if cmap_mixed:
                 tool._set_combo_mixed_placeholder(cmap_combo)
             else:
