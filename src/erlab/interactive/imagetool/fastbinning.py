@@ -28,42 +28,27 @@ if importlib.util.find_spec("numbagg"):
 
 # _SIG_M_N is the list of signatures that reduces from M to N dimensions.
 
-_SIG_2_1 = [
-    numba.types.Array(numba.float64, 1, "C")(numba.types.Array(numba.float32, 2, "C")),
-    numba.types.Array(numba.float64, 1, "C")(numba.types.Array(numba.float32, 2, "A")),
-    numba.types.Array(numba.float64, 1, "C")(numba.types.Array(numba.float64, 2, "C")),
-    numba.types.Array(numba.float64, 1, "C")(numba.types.Array(numba.float64, 2, "A")),
-]
-_SIG_3_1 = [
-    numba.types.Array(numba.float64, 1, "C")(numba.types.Array(numba.float32, 3, "C")),
-    numba.types.Array(numba.float64, 1, "C")(numba.types.Array(numba.float32, 3, "A")),
-    numba.types.Array(numba.float64, 1, "C")(numba.types.Array(numba.float64, 3, "C")),
-    numba.types.Array(numba.float64, 1, "C")(numba.types.Array(numba.float64, 3, "A")),
-]
-_SIG_3_2 = [
-    numba.types.Array(numba.float64, 2, "C")(numba.types.Array(numba.float32, 3, "C")),
-    numba.types.Array(numba.float64, 2, "C")(numba.types.Array(numba.float32, 3, "A")),
-    numba.types.Array(numba.float64, 2, "C")(numba.types.Array(numba.float64, 3, "C")),
-    numba.types.Array(numba.float64, 2, "C")(numba.types.Array(numba.float64, 3, "A")),
-]
-_SIG_4_1 = [
-    numba.types.Array(numba.float64, 1, "C")(numba.types.Array(numba.float32, 4, "C")),
-    numba.types.Array(numba.float64, 1, "C")(numba.types.Array(numba.float32, 4, "A")),
-    numba.types.Array(numba.float64, 1, "C")(numba.types.Array(numba.float64, 4, "C")),
-    numba.types.Array(numba.float64, 1, "C")(numba.types.Array(numba.float64, 4, "A")),
-]
-_SIG_4_2 = [
-    numba.types.Array(numba.float64, 2, "C")(numba.types.Array(numba.float32, 4, "C")),
-    numba.types.Array(numba.float64, 2, "C")(numba.types.Array(numba.float32, 4, "A")),
-    numba.types.Array(numba.float64, 2, "C")(numba.types.Array(numba.float64, 4, "C")),
-    numba.types.Array(numba.float64, 2, "C")(numba.types.Array(numba.float64, 4, "A")),
-]
-_SIG_4_3 = [
-    numba.types.Array(numba.float64, 3, "C")(numba.types.Array(numba.float32, 4, "C")),
-    numba.types.Array(numba.float64, 3, "C")(numba.types.Array(numba.float32, 4, "A")),
-    numba.types.Array(numba.float64, 3, "C")(numba.types.Array(numba.float64, 4, "C")),
-    numba.types.Array(numba.float64, 3, "C")(numba.types.Array(numba.float64, 4, "A")),
-]
+
+def _nanmean_signatures(input_ndim: int, output_ndim: int) -> list[typing.Any]:
+    output_type = numba.types.Array(numba.float64, output_ndim, "C")
+    return [
+        output_type(input_type)
+        for dtype in (numba.float32, numba.float64)
+        for input_type in (
+            numba.types.Array(dtype, input_ndim, "C"),
+            # A readonly signature accepts both writable and readonly arrays. Keep the
+            # C signature writable to avoid ambiguous overloads for writable C arrays.
+            numba.types.Array(dtype, input_ndim, "A", readonly=True),
+        )
+    ]
+
+
+_SIG_2_1 = _nanmean_signatures(2, 1)
+_SIG_3_1 = _nanmean_signatures(3, 1)
+_SIG_3_2 = _nanmean_signatures(3, 2)
+_SIG_4_1 = _nanmean_signatures(4, 1)
+_SIG_4_2 = _nanmean_signatures(4, 2)
+_SIG_4_3 = _nanmean_signatures(4, 3)
 
 
 @numba.njit(cache=True)

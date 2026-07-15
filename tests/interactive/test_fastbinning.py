@@ -31,6 +31,37 @@ def test_fast_nanmean_signature() -> None:
                 )
 
 
+@pytest.mark.parametrize("dtype", [np.float32, np.float64], ids=["float32", "float64"])
+@pytest.mark.parametrize("layout", ["C", "A"], ids=["contiguous", "strided"])
+@pytest.mark.parametrize(
+    ("shape", "axis"),
+    [
+        ((4, 5), 0),
+        ((4, 5, 6), 1),
+        ((4, 5, 6), (0, 2)),
+        ((4, 5, 6, 7), 2),
+        ((4, 5, 6, 7), (0, 2)),
+        ((4, 5, 6, 7), (0, 2, 3)),
+    ],
+    ids=["2d-1-axis", "3d-1-axis", "3d-2-axis", "4d-1-axis", "4d-2-axis", "4d-3-axis"],
+)
+def test_fast_nanmean_readonly(dtype, layout, shape, axis) -> None:
+    base_shape = (*shape[:-1], shape[-1] * (2 if layout == "A" else 1))
+    values = np.random.RandomState(42).randn(*base_shape).astype(dtype)
+    if layout == "A":
+        values = values[..., ::2]
+        assert not values.flags.c_contiguous
+        assert not values.flags.f_contiguous
+    values[(0,) * values.ndim] = np.nan
+    values.setflags(write=False)
+
+    result = fast_nanmean(values, axis=axis)
+    expected = np.nanmean(values.astype(np.float64), axis=axis).astype(dtype)
+
+    assert not values.flags.writeable
+    np.testing.assert_allclose(result, expected, rtol=1e-7, atol=0)
+
+
 def test_fast_nanmean_5d() -> None:
     x = np.random.RandomState(42).randn(3, 4, 5, 6, 7).astype(np.float64)
     # Test with different axes
