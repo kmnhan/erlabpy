@@ -57,6 +57,83 @@ def _exec_generated_code(
     return locals_ns
 
 
+@pytest.mark.parametrize(
+    "order",
+    [(0, 1, 2), (1, 2, 0), (2, 0, 1)],
+)
+def test_file_loaders_prefers_most_general(
+    monkeypatch,
+    order: tuple[int, int, int],
+) -> None:
+    name_filter = "Test files (*.test)"
+
+    class BaseLoader:
+        @property
+        def file_dialog_methods(self):
+            return {name_filter: (self.load, {})}
+
+        def load(self) -> None:
+            pass
+
+    class FirstLoader(BaseLoader):
+        pass
+
+    class SecondLoader(BaseLoader):
+        pass
+
+    loaders = [
+        ("base", BaseLoader()),
+        ("first", FirstLoader()),
+        ("second", SecondLoader()),
+    ]
+    registry = dict(loaders[index] for index in order)
+    monkeypatch.setattr(erlab.io, "loaders", registry)
+
+    func, kwargs = erlab.interactive.utils.file_loaders()[name_filter]
+
+    assert func.__self__ is registry["base"]
+    assert kwargs == {}
+
+
+def test_file_loaders_rejects_ambiguous_filter(monkeypatch) -> None:
+    name_filter = "Test files (*.test)"
+
+    class BaseLoader:
+        @property
+        def file_dialog_methods(self):
+            return {name_filter: (self.load, {})}
+
+        def load(self) -> None:
+            pass
+
+    class FirstLoader(BaseLoader):
+        pass
+
+    class SecondLoader(BaseLoader):
+        pass
+
+    monkeypatch.setattr(
+        erlab.io,
+        "loaders",
+        {"first": FirstLoader(), "second": SecondLoader()},
+    )
+
+    with pytest.raises(ValueError, match="Conflicting file dialog filter"):
+        erlab.interactive.utils.file_loaders()
+
+
+def test_file_loaders_resolve_da30_filter_to_da30() -> None:
+    da30_loader = erlab.io.loaders["da30"]
+    name_filter = next(iter(da30_loader.file_dialog_methods))
+
+    for loader_name in ("esm", "kriss"):
+        assert name_filter in erlab.io.loaders[loader_name].file_dialog_methods
+
+    func, _ = erlab.interactive.utils.file_loaders()[name_filter]
+
+    assert func.__self__ is da30_loader
+
+
 class _PersistentToolState(pydantic.BaseModel):
     value: int = 0
 

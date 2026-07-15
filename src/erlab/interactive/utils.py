@@ -1316,6 +1316,13 @@ def file_loaders(
         Dictionary of file loaders. The keys are name filters(argument to
         :meth:`QtWidgets.QFileDialog.setNameFilter`), and the values are tuples of the
         loader function and additional keyword arguments.
+
+    Notes
+    -----
+    When a loader and its subclasses provide the same name filter through inheritance,
+    the base loader owns the filter. Subclasses should provide a filter with a different
+    name to avoid conflicts. Duplicate filters from separate loader hierarchies raise a
+    ValueError.
     """
     valid_loaders: dict[str, tuple[Callable, dict]] = {
         "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
@@ -1336,11 +1343,34 @@ def file_loaders(
             {"engine": "zarr", "chunks": "auto"},
         )
 
+    candidates: dict[
+        str,
+        list[tuple[str, object, tuple[Callable, dict]]],
+    ] = collections.defaultdict(list)
+    for loader_name in erlab.io.loaders:
+        loader = erlab.io.loaders[loader_name]
+        for name_filter, method in loader.file_dialog_methods.items():
+            candidates[name_filter].append((loader_name, loader, method))
+
     additional_loaders: dict[str, tuple[Callable, dict]] = {}
-    for k in erlab.io.loaders:
-        additional_loaders = (
-            additional_loaders | erlab.io.loaders[k].file_dialog_methods
-        )
+    for name_filter, filter_candidates in candidates.items():
+        most_general = [
+            candidate
+            for candidate in filter_candidates
+            if all(
+                isinstance(other_loader, type(candidate[1]))
+                for _, other_loader, _ in filter_candidates
+            )
+        ]
+        if not most_general:
+            loader_names = ", ".join(
+                sorted(loader_name for loader_name, _, _ in filter_candidates)
+            )
+            raise ValueError(
+                f"Conflicting file dialog filter {name_filter!r} implemented by "
+                f"loader plugins: {loader_names}"
+            )
+        additional_loaders[name_filter] = most_general[0][2]
 
     valid_loaders = valid_loaders | dict(sorted(additional_loaders.items()))
 
