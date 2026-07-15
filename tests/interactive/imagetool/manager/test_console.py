@@ -2777,10 +2777,7 @@ def test_manager_concat_uses_unfiltered_source_data(
         assert manager.dependency_status_for_uid(concat_wrapper.uid) == "current"
 
         updated_data0 = data0 + 20.0
-        manager.get_imagetool(0).slicer_area.replace_source_data(
-            updated_data0,
-            emit_edited=True,
-        )
+        manager.get_imagetool(0).slicer_area._replace_reload_data(updated_data0, {})
         qtbot.wait_until(
             lambda: manager.dependency_status_for_uid(concat_wrapper.uid) == "changed",
             timeout=5000,

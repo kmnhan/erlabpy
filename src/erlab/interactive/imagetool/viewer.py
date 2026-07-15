@@ -2588,6 +2588,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             accepted_filter_operation,
         )
         self.set_data(data, **kwargs)
+        self.sigSourceDataChanged.emit()
         self._apply_filter_result(
             filtered,
             self._filter_func_from_operation(accepted_filter_operation),

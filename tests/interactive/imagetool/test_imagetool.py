@@ -12435,6 +12435,10 @@ def test_itool_reload_reapplies_accepted_filter(qtbot, tmp_path: pathlib.Path) -
     )
     qtbot.addWidget(win)
     win.slicer_area.apply_filter_operation(operation)
+    source_changed: list[bool] = []
+    source_replaced: list[xr.DataArray] = []
+    win.slicer_area.sigSourceDataChanged.connect(lambda: source_changed.append(True))
+    win.slicer_area.sigSourceDataReplaced.connect(source_replaced.append)
 
     expected = operation.apply(data, parent_data=data)
     xarray.testing.assert_identical(win.slicer_area.data, expected)
@@ -12449,6 +12453,9 @@ def test_itool_reload_reapplies_accepted_filter(qtbot, tmp_path: pathlib.Path) -
     xarray.testing.assert_identical(win.slicer_area.data, updated_expected)
     xarray.testing.assert_identical(win.slicer_area.displayed_data, updated_expected)
     assert win.slicer_area._applied_provenance_operation == operation
+    assert source_changed == [True]
+    assert len(source_replaced) == 1
+    xarray.testing.assert_identical(source_replaced[0], updated_expected)
 
     win.close()
 
