@@ -34,7 +34,6 @@ from erlab.interactive.imagetool._provenance._model import (
     ScriptInputDataRole,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
-    mark_promoted_1d_source,
     parse_tool_provenance_operation,
     parse_tool_provenance_spec,
     require_live_source_spec,
@@ -569,7 +568,6 @@ class _WorkspaceIOController:
         attrs = node.pending_workspace_payload_attrs
         if attrs is None:
             attrs = ds.attrs
-        data = self._pending_workspace_data_with_saved_dim_order(data, attrs)
         if data_role == "displayed":
             raw_state = attrs.get("itool_state")
             if isinstance(raw_state, bytes):
@@ -587,9 +585,7 @@ class _WorkspaceIOController:
                         data = self._apply_pending_workspace_filter(
                             data, state.get("filter_operation")
                         )
-        if isinstance(node, _ImageToolWrapper) and node.source_input_ndim == 1:
-            data = mark_promoted_1d_source(data)
-        return data.copy(deep=False)
+        return node._finalize_script_input_data(data)
 
     def _workspace_tool_reference_source_data(
         self,

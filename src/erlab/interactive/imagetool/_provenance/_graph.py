@@ -2129,7 +2129,13 @@ def _cleanup_emitted_replay_code(
     code: str,
     *,
     generated_copy_names: set[str],
+    compact_temporaries: bool = True,
 ) -> str:
+    """Simplify replay code while optionally preserving graph-owned temp names.
+
+    Display emission preserves the original temporary identifiers until semantic
+    renaming can associate each surviving binding with the graph node that owns it.
+    """
     code = _remove_noop_assignments(code)
     code = _inline_simple_name_aliases(code)
     code = _inline_adjacent_replay_assignments(code)
@@ -2137,7 +2143,9 @@ def _cleanup_emitted_replay_code(
     code = _inline_adjacent_replay_assignments(code)
     code = _remove_noop_assignments(code)
     code = _remove_unused_generated_copies(code, generated_copy_names)
-    return _compact_replay_temp_names(code)
+    if compact_temporaries:
+        return _compact_replay_temp_names(code)
+    return code
 
 
 def _leading_top_level_imports(code: str) -> tuple[list[tuple[str, str]], str]:
@@ -2742,6 +2750,7 @@ def emit_replay_code(
             _cleanup_emitted_replay_code(
                 code,
                 generated_copy_names=generated_copy_names,
+                compact_temporaries=not graph.display,
             ),
         )
 
@@ -2753,6 +2762,7 @@ def emit_replay_code(
         _cleanup_emitted_replay_code(
             body,
             generated_copy_names=generated_copy_names,
+            compact_temporaries=not graph.display,
         ),
     )
     import_prefix = "\n".join(source for _canonical, source in leading_imports)

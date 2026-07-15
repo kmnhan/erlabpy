@@ -12530,6 +12530,55 @@ def test_accepted_filter_displayed_data_uses_materialized_filter(qtbot) -> None:
     win.close()
 
 
+def test_displayed_data_restores_promoted_1d_source(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(5, dtype=float),
+        dims=["x"],
+        coords={"x": np.arange(5, dtype=float)},
+    )
+    operation = BoxcarFilterOperation(size={"x": 3})
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+
+    xarray.testing.assert_identical(win.slicer_area.displayed_data, data)
+
+    win.slicer_area.apply_filter_operation(operation)
+
+    xarray.testing.assert_identical(
+        win.slicer_area.displayed_data,
+        operation.apply(data, parent_data=data),
+    )
+    win.close()
+
+
+def test_displayed_data_restores_squeezed_singleton_source_dims(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(6, dtype=float).reshape((1, 2, 3, 1, 1)),
+        dims=("a", "x", "y", "b", "c"),
+        coords={
+            "a": [5],
+            "x": [1, 2],
+            "y": [1, 2, 3],
+            "b": [6],
+            "c": [7],
+            "aux": (("a", "x"), [[10, 11]]),
+        },
+    )
+    operation = NormalizeOperation(dims=("x",), mode="min")
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+
+    xarray.testing.assert_identical(win.slicer_area.displayed_data, data)
+
+    win.slicer_area.apply_filter_operation(operation)
+
+    xarray.testing.assert_identical(
+        win.slicer_area.displayed_data,
+        operation.apply(data, parent_data=data),
+    )
+    win.close()
+
+
 def test_filter_helpers_reject_invalid_normalized_results(qtbot, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(9, dtype=float).reshape((3, 3)),

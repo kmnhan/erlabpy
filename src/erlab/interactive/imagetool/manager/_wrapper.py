@@ -1419,8 +1419,13 @@ class _ManagedWindowNode(QtCore.QObject):
             return self.current_source_data()
         if data_role == "source":
             data, _state = self.slicer_area.persistence_data_and_state()
-            return data.copy(deep=False)
-        return self.slicer_area.displayed_data
+        else:
+            data = self.slicer_area.displayed_data
+        return self._finalize_script_input_data(data)
+
+    def _finalize_script_input_data(self, data: xr.DataArray) -> xr.DataArray:
+        """Apply node-specific metadata required by script-input consumers."""
+        return data.copy(deep=False)
 
     @staticmethod
     def _is_live_source_spec(
@@ -2387,7 +2392,10 @@ class _ImageToolWrapper(_ManagedWindowNode):
         return title
 
     def current_source_data(self) -> xr.DataArray:
-        data = super().current_source_data()
+        return self._finalize_script_input_data(super().current_source_data())
+
+    def _finalize_script_input_data(self, data: xr.DataArray) -> xr.DataArray:
+        data = super()._finalize_script_input_data(data)
         if self._source_input_ndim == 1:
             return mark_promoted_1d_source(data)
         return data

@@ -1078,9 +1078,32 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def displayed_data(self) -> xr.DataArray:
         """Return the public data values committed for derived outputs."""
-        return erlab.utils.array._restore_nonuniform_dims(
-            self._accepted_data_for_dims(tuple(self._data.dims)).copy(deep=False)
+        accepted = self._accepted_data_for_dims(tuple(self.data.dims))
+        return self._restore_public_source_layout(accepted)
+
+    def _restore_public_source_layout(self, data: xr.DataArray) -> xr.DataArray:
+        """Undo slicer-only dimension normalization for a public data result."""
+        public = erlab.utils.array._restore_nonuniform_dims(data)
+        public = erlab.interactive.imagetool.slicer._drop_unmatched_stack_dim(
+            public, self._data
         )
+        missing_dims = tuple(dim for dim in self._data.dims if dim not in public.dims)
+        if any(self._data.sizes[dim] != 1 for dim in missing_dims):
+            raise ValueError(
+                "Public data result is missing a non-singleton source dimension"
+            )
+        if missing_dims:
+            public = public.expand_dims(missing_dims)
+            source_coords = {
+                name: coord
+                for name, coord in self._data.coords.items()
+                if any(dim in missing_dims for dim in coord.dims)
+            }
+            if source_coords:
+                public = public.assign_coords(source_coords)
+        if public.dims != self._data.dims:
+            public = public.transpose(*self._data.dims, transpose_coords=True)
+        return public.copy(deep=False)
 
     def _tool_source_parent_data(self) -> xr.DataArray:
         """Return the current slicer view used for source-bound child tools."""
@@ -1154,6 +1177,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _data_aligned_to_dims(
         data: xr.DataArray, dims: tuple[Hashable, ...]
     ) -> xr.DataArray:
+        extra_dims = tuple(dim for dim in data.dims if dim not in dims)
+        if extra_dims and all(data.sizes[dim] == 1 for dim in extra_dims):
+            data = data.squeeze(extra_dims)
         missing_dims = tuple(dim for dim in dims if dim not in data.dims)
         if missing_dims and any(str(dim).endswith("_idx") for dim in missing_dims):
             data = erlab.utils.array._make_dims_uniform(data)

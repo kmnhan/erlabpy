@@ -172,6 +172,20 @@ def test_provenance_layers_load_in_one_direction() -> None:
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
+def test_interactive_utils_does_not_load_imagetool_provenance() -> None:
+    code = textwrap.dedent(
+        """
+        import sys
+
+        import erlab.interactive.utils
+
+        prefix = "erlab.interactive.imagetool._provenance"
+        assert not any(name.startswith(prefix) for name in sys.modules)
+        """
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
 def test_plot_items_loads_figure_composer_only_for_action() -> None:
     code = textwrap.dedent(
         """

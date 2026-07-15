@@ -56,15 +56,20 @@ from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
+    compose_display_provenance,
     file_load,
     full_data,
     script,
+    selection,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AverageOperation,
+    BoxcarFilterOperation,
     GaussianFilterOperation,
     ImageToolSelectionSourceBinding,
     RenameOperation,
+    SortCoordOrderOperation,
+    SqueezeOperation,
 )
 from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch, replace_data
@@ -15422,7 +15427,7 @@ def test_pending_workspace_metadata_loads_only_coords() -> None:
     assert float(loaded.coords["temperature"].values) == 12.0
 
 
-def test_pending_workspace_lazy_source_data_uses_saved_slicer_dimension_order(
+def test_pending_workspace_lazy_source_data_matches_materialized_payload_order(
     qtbot, tmp_path
 ) -> None:
     data = xr.DataArray(
@@ -15458,19 +15463,27 @@ def test_pending_workspace_lazy_source_data_uses_saved_slicer_dimension_order(
         pending_workspace_payload_attrs=None,
         name="pending_order",
         added_time_display="Today",
+        _finalize_script_input_data=lambda data: data.copy(deep=False),
     )
     controller = manager_workspace_io._WorkspaceIOController(
         typing.cast("ImageToolManager", None)
     )
     reference_datasets = {}
     try:
-        pending = controller._pending_workspace_lazy_source_data(
+        pending_source = controller._pending_workspace_lazy_source_data(
             node,
+            data_role="source",
             reference_datasets=reference_datasets,
         )
-        assert pending.dims == data.dims
-        assert pending.chunks is not None
-        np.testing.assert_array_equal(pending.values, data.values)
+        pending_displayed = controller._pending_workspace_lazy_source_data(
+            node,
+            data_role="displayed",
+            reference_datasets=reference_datasets,
+        )
+        assert pending_source.dims == ("hv", "y", "x")
+        assert pending_source.chunks is not None
+        pending_source = pending_source.compute()
+        pending_displayed = pending_displayed.compute()
     finally:
         controller._close_workspace_reference_datasets(reference_datasets)
     assert node.pending_workspace_memory_payload == (fname, "0/imagetool")
@@ -15482,12 +15495,16 @@ def test_pending_workspace_lazy_source_data_uses_saved_slicer_dimension_order(
     restored = erlab.interactive.imagetool.ImageTool.from_dataset(loaded_ds)
     qtbot.addWidget(restored)
     try:
-        assert restored.slicer_area.data.dims == pending.dims
+        materialized_source, _state = restored.slicer_area.persistence_data_and_state()
+        xr.testing.assert_identical(pending_source, materialized_source)
+        xr.testing.assert_identical(
+            pending_displayed, restored.slicer_area.displayed_data
+        )
     finally:
         loaded_ds.close()
 
 
-def test_pending_workspace_lazy_source_data_restores_nonuniform_dimension_order(
+def test_pending_workspace_data_roles_match_materialized_filtered_nonuniform_data(
     qtbot, tmp_path
 ) -> None:
     data = xr.DataArray(
@@ -15502,6 +15519,8 @@ def test_pending_workspace_lazy_source_data_restores_nonuniform_dimension_order(
     )
     tool = erlab.interactive.imagetool.ImageTool(data)
     qtbot.addWidget(tool)
+    operation = BoxcarFilterOperation(size={"sample_temp": 3})
+    tool.slicer_area.apply_filter_operation(operation)
     saved = tool.to_dataset()
     state = json.loads(saved.attrs["itool_state"])
     assert tuple(state["slice"]["dims"]) == (
@@ -15527,28 +15546,125 @@ def test_pending_workspace_lazy_source_data_restores_nonuniform_dimension_order(
         pending_workspace_payload_attrs=None,
         name=data.name,
         added_time_display="Today",
+        _finalize_script_input_data=lambda data: data.copy(deep=False),
     )
     controller = manager_workspace_io._WorkspaceIOController(
         typing.cast("ImageToolManager", None)
     )
     reference_datasets = {}
     try:
-        pending = controller._pending_workspace_lazy_source_data(
+        pending_source = controller._pending_workspace_lazy_source_data(
             node,
+            data_role="source",
             reference_datasets=reference_datasets,
         )
-        assert pending.dims == tool.slicer_area.data.dims
-        assert pending.chunks is not None
-        xr.testing.assert_identical(
-            erlab.utils.array._restore_nonuniform_dims(pending.compute()),
-            data,
+        pending_displayed = controller._pending_workspace_lazy_source_data(
+            node,
+            data_role="displayed",
+            reference_datasets=reference_datasets,
         )
+        assert pending_source.dims == ("sample_temp", "eV", "alpha")
+        assert pending_displayed.dims == pending_source.dims
+        assert all(not str(dim).endswith("_idx") for dim in pending_source.dims)
+        assert pending_source.chunks is not None
+        pending_source = pending_source.compute()
+        pending_displayed = pending_displayed.compute()
         info = controller._pending_workspace_imagetool_info_text(node)
         assert info is not None
         assert "sample_temp_idx" not in info
     finally:
         controller._close_workspace_reference_datasets(reference_datasets)
     assert node.pending_workspace_memory_payload == (fname, "0/imagetool")
+
+    controller_cls = manager_workspace_io._WorkspaceIOController
+    loaded_ds = controller_cls._read_workspace_imagetool_payload_dataset(
+        fname, "0/imagetool", load_data=True
+    )
+    restored = erlab.interactive.imagetool.ImageTool.from_dataset(loaded_ds)
+    qtbot.addWidget(restored)
+    try:
+        materialized_source, _state = restored.slicer_area.persistence_data_and_state()
+        xr.testing.assert_identical(pending_source, materialized_source)
+        xr.testing.assert_identical(
+            pending_displayed, restored.slicer_area.displayed_data
+        )
+        xr.testing.assert_identical(
+            restored.slicer_area.displayed_data,
+            operation.apply(materialized_source, parent_data=materialized_source),
+        )
+    finally:
+        loaded_ds.close()
+
+
+def test_pending_workspace_1d_roles_match_materialized_provenance_input(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(5, dtype=float),
+        dims=("x",),
+        coords={"x": np.arange(5, dtype=float)},
+        name="watched_1d",
+    )
+    parent_spec = script(
+        start_label="Start from watched variable 'watched_1d'",
+        seed_code="derived = watched_1d",
+    )
+    source_spec = selection(SortCoordOrderOperation(), SqueezeOperation())
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tool = itool(data, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(
+            tool,
+            show=False,
+            source_input_ndim=1,
+            provenance_spec=parent_spec,
+        )
+        tool.hide()
+        wrapper = manager._tool_graph.root_wrappers[0]
+        materialized = {
+            role: wrapper.data_for_role(role).copy(deep=True)
+            for role in ("source", "displayed")
+        }
+
+        fname = tmp_path / "pending-1d-role-parity.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        assert manager._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+
+        wrapper = manager._tool_graph.root_wrappers[0]
+        assert wrapper.pending_workspace_memory_payload is not None
+        pending = {
+            role: manager._workspace_controller._workspace_tool_reference_source_data(
+                0,
+                data_role=role,
+                owner_node=wrapper,
+            ).compute()
+            for role in ("source", "displayed")
+        }
+        for role in ("source", "displayed"):
+            xr.testing.assert_identical(pending[role], materialized[role])
+            composed = compose_display_provenance(
+                parent_spec,
+                source_spec,
+                parent_data=pending[role],
+            )
+            assert composed is not None
+            code = composed.display_code()
+            assert code is not None
+            assert ".squeeze()" not in code
+            namespace = _exec_generated_code(code, {"watched_1d": data.copy(deep=True)})
+            xr.testing.assert_identical(namespace["derived"], data)
+
+        manager.get_imagetool(0)
+        for role in ("source", "displayed"):
+            xr.testing.assert_identical(wrapper.data_for_role(role), pending[role])
 
 
 def test_pending_workspace_saved_dim_order_handles_invalid_state(monkeypatch) -> None:
@@ -15674,6 +15790,7 @@ def test_pending_workspace_source_data_decodes_saved_state_attrs(monkeypatch) ->
         pending_workspace_payload_attrs={
             "itool_state": json.dumps({"filter_operation": None}).encode()
         },
+        _finalize_script_input_data=lambda data: data.copy(deep=False),
     )
     loaded = controller._pending_workspace_lazy_source_data(node)
     assert loaded.name == "restored"

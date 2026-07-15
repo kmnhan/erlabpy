@@ -102,7 +102,7 @@ __all__ = [
 ]
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Hashable
+    from collections.abc import Hashable, Sequence
 
     import xarray as xr
 
@@ -713,7 +713,7 @@ class DataTransformDialog(_DataManipulationDialog):
     @classmethod
     def operation_group_for_edit(
         cls,
-        operations: typing.Sequence[ToolProvenanceOperation],
+        operations: Sequence[ToolProvenanceOperation],
         operation_index: int,
     ) -> tuple[int, int] | None:
         """Return the operation range edited together with ``operation_index``."""
@@ -722,7 +722,7 @@ class DataTransformDialog(_DataManipulationDialog):
 
     def restore_transform_operations(
         self,
-        operations: typing.Sequence[ToolProvenanceOperation],
+        operations: Sequence[ToolProvenanceOperation],
     ) -> None:
         """Restore widgets from one or more transform operations."""
         if len(operations) != 1:
@@ -1300,7 +1300,7 @@ class KspaceConversionDialog(DataTransformDialog):
     @classmethod
     def operation_group_for_edit(
         cls,
-        operations: typing.Sequence[ToolProvenanceOperation],
+        operations: Sequence[ToolProvenanceOperation],
         operation_index: int,
     ) -> tuple[int, int] | None:
         return _kspace_conversion.is_kspace_conversion_group(
@@ -1837,7 +1837,7 @@ class KspaceConversionDialog(DataTransformDialog):
 
     def restore_transform_operations(
         self,
-        operations: typing.Sequence[ToolProvenanceOperation],
+        operations: Sequence[ToolProvenanceOperation],
     ) -> None:
         group = _kspace_conversion.is_kspace_conversion_group(operations, 0)
         if group != (0, len(operations)):

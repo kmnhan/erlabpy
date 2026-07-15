@@ -1,3 +1,4 @@
+import ast
 import tempfile
 import typing
 from types import SimpleNamespace
@@ -201,6 +202,36 @@ def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:
         )
         == 2
     )
+
+
+def test_dtool_interpolation_and_repeated_smoothing_use_semantic_names(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+    win.interp_group.setChecked(True)
+    win.smooth_group.setChecked(True)
+    win.sn_spin.setValue(2)
+
+    code = win.copy_code()
+
+    assigned_names = tuple(
+        statement.targets[0].id
+        for statement in ast.parse(code).body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+    )
+    assert assigned_names == (
+        "processed_data",
+        "processed_data_2",
+        "processed_data_3",
+        "result",
+    )
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    assert isinstance(namespace["result"], xr.DataArray)
+    xr.testing.assert_identical(win.result, namespace["result"])
 
 
 def test_dtool_nan_input_records_fill_operation(qtbot, monkeypatch) -> None:
