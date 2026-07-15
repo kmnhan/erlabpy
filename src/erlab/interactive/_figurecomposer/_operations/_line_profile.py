@@ -15,8 +15,6 @@ from erlab.interactive._figurecomposer._code import (
     _needs_squeeze_drop,
     _selection_code,
 )
-from erlab.interactive._figurecomposer._gridspec import _gridspec_valid_axes_ids
-from erlab.interactive._figurecomposer._label_help import legend_label_input_widget
 from erlab.interactive._figurecomposer._labels import (
     attr_value_expression,
     coord_value_expression,
@@ -64,6 +62,17 @@ from erlab.interactive._figurecomposer._line_transform import (
     profile_transform_code_lines,
     transform_profiles,
 )
+from erlab.interactive._figurecomposer._model._gridspec import _gridspec_valid_axes_ids
+from erlab.interactive._figurecomposer._model._sources import (
+    _available_source_dims,
+    _public_source_data,
+    _selected_data,
+    _valid_source_variable,
+)
+from erlab.interactive._figurecomposer._model._state import (
+    FigureOperationKind,
+    FigureOperationState,
+)
 from erlab.interactive._figurecomposer._norms import (
     _cmap_base_and_reverse,
     _cmap_with_reverse,
@@ -77,16 +86,6 @@ from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
 )
-from erlab.interactive._figurecomposer._sources import (
-    _available_source_dims,
-    _public_source_data,
-    _selected_data,
-    _valid_source_variable,
-)
-from erlab.interactive._figurecomposer._state import (
-    FigureOperationKind,
-    FigureOperationState,
-)
 from erlab.interactive._figurecomposer._text import (
     _code_kwargs,
     _dict_from_text,
@@ -96,7 +95,8 @@ from erlab.interactive._figurecomposer._text import (
     _plot_limit_from_text,
     _string_tuple_from_text,
 )
-from erlab.interactive._figurecomposer._widgets import (
+from erlab.interactive._figurecomposer._ui._label_help import legend_label_input_widget
+from erlab.interactive._figurecomposer._ui._widgets import (
     _ColorLineEditWidget,
     _ColorListEditorWidget,
 )
@@ -108,8 +108,8 @@ if typing.TYPE_CHECKING:
     import matplotlib.axes
     import xarray as xr
 
-    from erlab.interactive._figurecomposer._document import FigureRecipeContext
-    from erlab.interactive._figurecomposer._state import FigureLimit
+    from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
+    from erlab.interactive._figurecomposer._model._state import FigureLimit
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 

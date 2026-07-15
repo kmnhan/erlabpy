@@ -10,8 +10,8 @@ import pydantic
 import pytest
 from qtpy import QtCore, QtGui, QtWidgets
 
-import erlab.interactive._figurecomposer._sources as figurecomposer_sources
-import erlab.interactive._figurecomposer._widgets as figurecomposer_widgets
+import erlab.interactive._figurecomposer._model._sources as figurecomposer_sources
+import erlab.interactive._figurecomposer._ui._widgets as figurecomposer_widgets
 from erlab.interactive._figurecomposer import (
     FigureDataSelectionState,
     FigureOperationState,
@@ -19,11 +19,11 @@ from erlab.interactive._figurecomposer import (
     FigureSourceState,
     FigureSubplotsState,
 )
-from erlab.interactive._figurecomposer._editor_controls import MIXED_VALUE
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._operations import (
     _source_selection as source_selection,
 )
+from erlab.interactive._figurecomposer._ui._editor_controls import MIXED_VALUE
 
 
 def _operation_factory(

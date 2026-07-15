@@ -16,7 +16,7 @@ import typing
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive._figurecomposer
-from erlab.interactive._figurecomposer._gridspec import (
+from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_axis_display_names,
     _gridspec_valid_axes_ids,
@@ -51,7 +51,7 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         source_count: int = 1,
         selected_figure_uid: str | None = None,
     ) -> None:
-        from erlab.interactive._figurecomposer._widgets import (
+        from erlab.interactive._figurecomposer._ui._widgets import (
             _AxesSelectorWidget,
             _GridSpecViewWidget,
         )

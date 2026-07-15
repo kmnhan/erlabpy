@@ -7,11 +7,15 @@ import typing
 from qtpy import QtCore, QtWidgets
 
 import erlab.interactive.utils
-from erlab.interactive._figurecomposer._custom_code import _custom_code_names
-from erlab.interactive._figurecomposer._gridspec import (
+from erlab.interactive._figurecomposer._model._custom_code import _custom_code_names
+from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_axis_code_tuple,
     _gridspec_valid_axes_ids,
+)
+from erlab.interactive._figurecomposer._model._state import (
+    FigureOperationKind,
+    FigureOperationState,
 )
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
@@ -22,10 +26,6 @@ from erlab.interactive._figurecomposer._operations._base import (
     _uses_no_source_section,
 )
 from erlab.interactive._figurecomposer._rendering import _source_namespace
-from erlab.interactive._figurecomposer._state import (
-    FigureOperationKind,
-    FigureOperationState,
-)
 
 if typing.TYPE_CHECKING:
     from matplotlib.figure import Figure

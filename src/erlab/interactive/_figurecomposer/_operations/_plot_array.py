@@ -10,12 +10,15 @@ import erlab
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._code import _axes_code, _maybe_squeeze_drop_code
 from erlab.interactive._figurecomposer._defaults import _styled_rcparams_value
-from erlab.interactive._figurecomposer._editor_controls import (
-    MIXED_VALUE,
-    MIXED_VALUES_TEXT,
-    ComboBoxDataControlAdapter,
+from erlab.interactive._figurecomposer._model._gridspec import _gridspec_valid_axes_ids
+from erlab.interactive._figurecomposer._model._sources import (
+    _public_source_data,
+    _valid_source_variable,
 )
-from erlab.interactive._figurecomposer._gridspec import _gridspec_valid_axes_ids
+from erlab.interactive._figurecomposer._model._state import (
+    FigureOperationKind,
+    FigureOperationState,
+)
 from erlab.interactive._figurecomposer._norms import (
     _MATPLOTLIB_NORM_NAMES,
     _cmap_base_and_reverse,
@@ -40,14 +43,6 @@ from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _tool_figure_options_context,
 )
-from erlab.interactive._figurecomposer._sources import (
-    _public_source_data,
-    _valid_source_variable,
-)
-from erlab.interactive._figurecomposer._state import (
-    FigureOperationKind,
-    FigureOperationState,
-)
 from erlab.interactive._figurecomposer._text import (
     _code_kwargs,
     _dict_from_text,
@@ -56,6 +51,11 @@ from erlab.interactive._figurecomposer._text import (
     _plot_limit_from_text,
     _RawCode,
 )
+from erlab.interactive._figurecomposer._ui._editor_controls import (
+    MIXED_VALUE,
+    MIXED_VALUES_TEXT,
+    ComboBoxDataControlAdapter,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
@@ -63,7 +63,7 @@ if typing.TYPE_CHECKING:
     import matplotlib.axes
     import xarray as xr
 
-    from erlab.interactive._figurecomposer._document import FigureRecipeContext
+    from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 

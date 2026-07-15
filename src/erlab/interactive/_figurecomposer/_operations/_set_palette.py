@@ -9,6 +9,10 @@ import typing
 import matplotlib.pyplot as plt
 from qtpy import QtCore, QtGui, QtWidgets
 
+from erlab.interactive._figurecomposer._model._state import (
+    FigureOperationKind,
+    FigureOperationState,
+)
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
@@ -17,11 +21,7 @@ from erlab.interactive._figurecomposer._operations._base import (
     _no_invalid_target,
     _uses_no_source_section,
 )
-from erlab.interactive._figurecomposer._state import (
-    FigureOperationKind,
-    FigureOperationState,
-)
-from erlab.interactive._figurecomposer._widgets import _ColorListEditorWidget
+from erlab.interactive._figurecomposer._ui._widgets import _ColorListEditorWidget
 from erlab.plotting.colors import close_to_white
 
 if typing.TYPE_CHECKING:

@@ -8,21 +8,21 @@ from collections.abc import Callable
 from qtpy import QtWidgets
 
 import erlab
-from erlab.interactive._figurecomposer._editor_controls import (
-    MIXED_VALUE,
-    MIXED_VALUES_TEXT,
-    ComboBoxDataControlAdapter,
-)
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
-from erlab.interactive._figurecomposer._sources import (
+from erlab.interactive._figurecomposer._model._sources import (
     selection_has_effect,
     selection_width_key,
 )
-from erlab.interactive._figurecomposer._state import (
+from erlab.interactive._figurecomposer._model._state import (
     FigureDataSelectionState,
     FigureOperationState,
 )
 from erlab.interactive._figurecomposer._text import _dict_from_text
+from erlab.interactive._figurecomposer._ui._editor_controls import (
+    MIXED_VALUE,
+    MIXED_VALUES_TEXT,
+    ComboBoxDataControlAdapter,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Sequence

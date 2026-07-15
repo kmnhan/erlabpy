@@ -11,7 +11,7 @@ import typing
 import numpy as np
 
 import erlab.plotting.annotations as plot_annotations
-from erlab.interactive._figurecomposer._state import (
+from erlab.interactive._figurecomposer._model._state import (
     FigureMethodFamily,
     FigureOperationKind,
     FigureOperationState,
@@ -942,9 +942,7 @@ def update_current_line_label_text(tool: FigureComposerTool, text: str) -> None:
             preview_affected = True
     if not changed:
         return
-    tool._document.recipe = tool._document.recipe.model_copy(
-        update={"operations": tuple(operations)}
-    )
+    tool._document.replace_operations(operations)
     tool._refresh_operation_list()
     tool._sync_axes_selector()
     tool._update_step_action_buttons()

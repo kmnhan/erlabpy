@@ -29,22 +29,22 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.accessors.general as accessor_general
-import erlab.interactive._figurecomposer._axes as figurecomposer_axes
 import erlab.interactive._figurecomposer._code as figurecomposer_code
-import erlab.interactive._figurecomposer._custom_code as figurecomposer_custom_code
 import erlab.interactive._figurecomposer._defaults as figurecomposer_defaults
-import erlab.interactive._figurecomposer._gridspec as figurecomposer_gridspec
 import erlab.interactive._figurecomposer._line_colormap as figurecomposer_line_colormap
 import erlab.interactive._figurecomposer._line_style as figurecomposer_line_style
+import erlab.interactive._figurecomposer._model._axes as figurecomposer_axes
+import erlab.interactive._figurecomposer._model._gridspec as figurecomposer_gridspec
+import erlab.interactive._figurecomposer._model._sources as figurecomposer_sources
 import erlab.interactive._figurecomposer._norms as figurecomposer_norms
 import erlab.interactive._figurecomposer._provenance as figurecomposer_provenance
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._seeding as figurecomposer_seeding
-import erlab.interactive._figurecomposer._sources as figurecomposer_sources
 import erlab.interactive._figurecomposer._text as figurecomposer_text
-import erlab.interactive._figurecomposer._tick_params as figurecomposer_tick_params
 import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
-import erlab.interactive._figurecomposer._widgets as figurecomposer_widgets
+import erlab.interactive._figurecomposer._ui._editor_controls as _editor_controls
+import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
+import erlab.interactive._figurecomposer._ui._widgets as figurecomposer_widgets
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._workspace as manager_workspace
@@ -68,26 +68,19 @@ from erlab.interactive._figurecomposer import (
     FigureRecipeState,
     FigureSourceState,
     FigureSubplotsState,
-    _editor_controls,
     _line_transform,
-)
-from erlab.interactive._figurecomposer import (
-    _operation_metadata as figurecomposer_operation_metadata,
-)
-from erlab.interactive._figurecomposer import (
-    _operation_panel as figurecomposer_operation_panel,
-)
-from erlab.interactive._figurecomposer import (
-    _source_inspector as figurecomposer_source_inspector,
 )
 from erlab.interactive._figurecomposer import (
     _subplot_adjust as figurecomposer_subplot_adjust,
 )
-from erlab.interactive._figurecomposer import (
-    _toolbar_dialogs as figurecomposer_toolbar_dialogs,
-)
 from erlab.interactive._figurecomposer._exceptions import (
     FigureComposerPlotSlicesSelectionError,
+)
+from erlab.interactive._figurecomposer._model import (
+    _custom_code as figurecomposer_custom_code,
+)
+from erlab.interactive._figurecomposer._model import (
+    _operation_metadata as figurecomposer_operation_metadata,
 )
 from erlab.interactive._figurecomposer._operations import (
     _bz_overlay as figurecomposer_bz_overlay,
@@ -118,7 +111,16 @@ from erlab.interactive._figurecomposer._seeding import (
     bz_overlay_operation_from_momentum_data,
     plot_slices_operation_with_source_styles,
 )
-from erlab.interactive._figurecomposer._toolbar_dialogs import (
+from erlab.interactive._figurecomposer._ui import (
+    _operation_panel as figurecomposer_operation_panel,
+)
+from erlab.interactive._figurecomposer._ui import (
+    _source_inspector as figurecomposer_source_inspector,
+)
+from erlab.interactive._figurecomposer._ui import (
+    _toolbar_dialogs as figurecomposer_toolbar_dialogs,
+)
+from erlab.interactive._figurecomposer._ui._toolbar_dialogs import (
     _connect_panel_editor_signal,
 )
 from erlab.interactive._options import options

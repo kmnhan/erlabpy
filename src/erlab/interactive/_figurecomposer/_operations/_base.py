@@ -26,7 +26,9 @@ from __future__ import annotations
 import dataclasses
 import typing
 
-from erlab.interactive._figurecomposer._operation_metadata import operation_uses_axes
+from erlab.interactive._figurecomposer._model._operation_metadata import (
+    operation_uses_axes,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -34,8 +36,8 @@ if typing.TYPE_CHECKING:
     from matplotlib.figure import Figure
     from qtpy import QtWidgets
 
-    from erlab.interactive._figurecomposer._document import FigureRecipeContext
-    from erlab.interactive._figurecomposer._state import (
+    from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
+    from erlab.interactive._figurecomposer._model._state import (
         FigureOperationKind,
         FigureOperationState,
     )

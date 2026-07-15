@@ -8,7 +8,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive._figurecomposer._defaults import _MM_PER_INCH
-from erlab.interactive._figurecomposer._gridspec import (
+from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_add_region,
     _gridspec_all_axes_ids,
     _gridspec_axis_code_names,
@@ -27,7 +27,7 @@ from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_update_grid_settings,
     _gridspec_update_region_span,
 )
-from erlab.interactive._figurecomposer._state import (
+from erlab.interactive._figurecomposer._model._state import (
     FigureGridSpecGridState,
     FigureGridSpecSpanState,
     FigureSubplotsState,
@@ -36,7 +36,7 @@ from erlab.interactive._figurecomposer._text import (
     _format_tuple,
     _literal_sequence_from_text,
 )
-from erlab.interactive._figurecomposer._widgets import (
+from erlab.interactive._figurecomposer._ui._widgets import (
     _GridSpecRegionInfo,
     _GridSpecViewWidget,
     _step_toolbar_button,

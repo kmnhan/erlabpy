@@ -8,15 +8,15 @@ import typing
 import numpy as np
 
 import erlab.interactive.utils
-from erlab.interactive._figurecomposer._axes import _compact_axes_code
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._model._axes import _compact_axes_code
 
 if typing.TYPE_CHECKING:
     from collections.abc import Sequence
 
     import xarray as xr
 
-    from erlab.interactive._figurecomposer._state import FigureLimit
+    from erlab.interactive._figurecomposer._model._state import FigureLimit
 
 
 _DICT_INPUT_MESSAGE = (

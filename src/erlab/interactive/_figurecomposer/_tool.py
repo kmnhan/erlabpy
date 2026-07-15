@@ -32,35 +32,26 @@ import pydantic
 import erlab
 import erlab.interactive._figurecomposer._codegen
 import erlab.interactive._figurecomposer._provenance
-import erlab.interactive._figurecomposer._toolbar_dialogs
+import erlab.interactive._figurecomposer._ui._toolbar_dialogs
 import erlab.interactive._qt_state as _qt_state
-from erlab.interactive._figurecomposer._axes import _all_axes, _axes_expression_value
-from erlab.interactive._figurecomposer._custom_code import _custom_code_bound_names
 from erlab.interactive._figurecomposer._defaults import (
     _figure_draw_context,
     _figure_style_context,
     figure_options_context,
 )
-from erlab.interactive._figurecomposer._document import (
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._model._axes import (
+    _all_axes,
+    _axes_expression_value,
+)
+from erlab.interactive._figurecomposer._model._custom_code import (
+    _custom_code_bound_names,
+)
+from erlab.interactive._figurecomposer._model._document import (
     FigureDocument,
     FigureSourceAddResult,
 )
-from erlab.interactive._figurecomposer._editor_controls import (
-    MIXED_VALUE as _MIXED_VALUE,
-)
-from erlab.interactive._figurecomposer._editor_controls import (
-    MIXED_VALUES_TEXT as _MIXED_VALUES_TEXT,
-)
-from erlab.interactive._figurecomposer._editor_controls import (
-    CheckBoxControlAdapter,
-    ComboBoxControlAdapter,
-    ComboBoxDataControlAdapter,
-    LineEditControlAdapter,
-    PlainTextControlAdapter,
-    SignalValueControlAdapter,
-)
-from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
-from erlab.interactive._figurecomposer._gridspec import (
+from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_axis_code_names,
     _gridspec_axis_display_name,
@@ -69,14 +60,33 @@ from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_reserved_axis_code_names,
     _gridspec_valid_axes_ids,
 )
-from erlab.interactive._figurecomposer._layout_panel import FigureLayoutPanel
-from erlab.interactive._figurecomposer._operation_metadata import (
+from erlab.interactive._figurecomposer._model._operation_metadata import (
     declared_operation_source_names,
 )
-from erlab.interactive._figurecomposer._operation_panel import (
-    FigureOperationAction,
-    FigureOperationPanel,
-    FigureOperationRow,
+from erlab.interactive._figurecomposer._model._sources import (
+    _FIGURE_CODE_RESERVED_NAMES,
+    _default_plot_operation,
+    _default_setup_for_data,
+    _public_source_data,
+    _selected_data,
+    _source_display_label,
+    _source_has_selection,
+    _source_name,
+    _source_selection,
+    _source_unique_name,
+    _source_with_selection,
+    selection_has_effect,
+)
+from erlab.interactive._figurecomposer._model._state import (
+    FigureAxesSelectionState,
+    FigureDataSelectionState,
+    FigureMethodFamily,
+    FigureOperationKind,
+    FigureOperationState,
+    FigurePlotSlicesPanelStyleState,
+    FigureRecipeState,
+    FigureSourceState,
+    FigureSubplotsState,
 )
 from erlab.interactive._figurecomposer._operations import _registry
 from erlab.interactive._figurecomposer._operations._base import (
@@ -110,40 +120,37 @@ from erlab.interactive._figurecomposer._rendering import (
     _render_preview,
     _rendered_output_figure,
 )
-from erlab.interactive._figurecomposer._source_inspector import source_metadata_tooltip
-from erlab.interactive._figurecomposer._source_panel import (
+from erlab.interactive._figurecomposer._text import _format_axes_tuple
+from erlab.interactive._figurecomposer._ui._editor_controls import (
+    MIXED_VALUE as _MIXED_VALUE,
+)
+from erlab.interactive._figurecomposer._ui._editor_controls import (
+    MIXED_VALUES_TEXT as _MIXED_VALUES_TEXT,
+)
+from erlab.interactive._figurecomposer._ui._editor_controls import (
+    CheckBoxControlAdapter,
+    ComboBoxControlAdapter,
+    ComboBoxDataControlAdapter,
+    LineEditControlAdapter,
+    PlainTextControlAdapter,
+    SignalValueControlAdapter,
+)
+from erlab.interactive._figurecomposer._ui._layout_panel import FigureLayoutPanel
+from erlab.interactive._figurecomposer._ui._operation_panel import (
+    FigureOperationAction,
+    FigureOperationPanel,
+    FigureOperationRow,
+)
+from erlab.interactive._figurecomposer._ui._source_inspector import (
+    source_metadata_tooltip,
+)
+from erlab.interactive._figurecomposer._ui._source_panel import (
     FigureSourceDetail,
     FigureSourcePanel,
     FigureSourceRow,
     FigureSourceSelectionRow,
 )
-from erlab.interactive._figurecomposer._sources import (
-    _FIGURE_CODE_RESERVED_NAMES,
-    _default_plot_operation,
-    _default_setup_for_data,
-    _public_source_data,
-    _selected_data,
-    _source_display_label,
-    _source_has_selection,
-    _source_name,
-    _source_selection,
-    _source_unique_name,
-    _source_with_selection,
-    selection_has_effect,
-)
-from erlab.interactive._figurecomposer._state import (
-    FigureAxesSelectionState,
-    FigureDataSelectionState,
-    FigureMethodFamily,
-    FigureOperationKind,
-    FigureOperationState,
-    FigurePlotSlicesPanelStyleState,
-    FigureRecipeState,
-    FigureSourceState,
-    FigureSubplotsState,
-)
-from erlab.interactive._figurecomposer._text import _format_axes_tuple
-from erlab.interactive._figurecomposer._widgets import (
+from erlab.interactive._figurecomposer._ui._widgets import (
     _AxesSelectorWidget,
     _FigureComposerDisplayWindow,
     _gridspec_target_preview_descriptor,
@@ -386,7 +393,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._source_inspector_target: str | None = None
         self._projected_axis_name_sources: frozenset[str] | None = None
         initial_recipe = recipe or self._default_recipe(data)
-        self._document = FigureDocument(initial_recipe)
+        initial_source_data = dict(source_data or {})
+        if source_data is None:
+            if initial_recipe.primary_source in {
+                source.name for source in initial_recipe.sources
+            }:
+                source_name = initial_recipe.primary_source
+            else:
+                source_name = _source_name(data)
+            initial_source_data[source_name] = data
+        if initial_recipe.primary_source not in initial_source_data:
+            initial_source_data[initial_recipe.primary_source] = data
+        self._document = FigureDocument(initial_recipe, source_data=initial_source_data)
         self._figure_window: _FigureComposerDisplayWindow | None = None
         self._subplot_adjust_dialog: QtWidgets.QDialog | None = None
         self._axes_customize_dialog: QtWidgets.QDialog | None = None
@@ -398,20 +416,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._next_source_data_states: collections.deque[
             tuple[dict[str, xr.DataArray], dict[str, xr.DataArray]]
         ] = collections.deque(maxlen=self._next_states.maxlen)
-
-        if source_data is not None:
-            self._document.source_data = dict(source_data)
-            self._document.source_selection_base_data.clear()
-        elif self._document.recipe.primary_source in {
-            source.name for source in self._document.recipe.sources
-        }:
-            self._document.source_data[self._document.recipe.primary_source] = data
-        else:
-            source_name = _source_name(data)
-            self._document.source_data[source_name] = data
-
-        if self._document.recipe.primary_source not in self._document.source_data:
-            self._document.source_data[self._document.recipe.primary_source] = data
 
         self._normalize_operation_source_selections()
         self._build_ui()
@@ -962,12 +966,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return True
 
     def _show_subplot_adjust_dialog(self) -> None:
-        erlab.interactive._figurecomposer._toolbar_dialogs.show_subplot_adjust_dialog(
+        erlab.interactive._figurecomposer._ui._toolbar_dialogs.show_subplot_adjust_dialog(
             self
         )
 
     def _show_axes_customize_dialog(self) -> None:
-        erlab.interactive._figurecomposer._toolbar_dialogs.show_axes_customize_dialog(
+        erlab.interactive._figurecomposer._ui._toolbar_dialogs.show_axes_customize_dialog(
             self
         )
 
@@ -978,7 +982,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._figure_window.hide()
 
     def _close_figure_window(self) -> None:
-        erlab.interactive._figurecomposer._toolbar_dialogs.close_toolbar_dialogs(self)
+        erlab.interactive._figurecomposer._ui._toolbar_dialogs.close_toolbar_dialogs(
+            self
+        )
         if self._figure_window is None or not erlab.interactive.utils.qt_is_valid(
             self._figure_window
         ):
@@ -1969,8 +1975,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 update={"sources": tuple(source_list), "operations": tuple(operations)}
             )
         )
-        self._document.source_data = source_data
-        self._document.source_selection_base_data = selection_base_data
+        self._document.replace_source_payloads(source_data, selection_base_data)
         return data_changed
 
     def _operation_with_legacy_source_selections(
@@ -3282,8 +3287,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         state: tuple[Mapping[str, xr.DataArray], Mapping[str, xr.DataArray]],
     ) -> None:
         source_data, selection_base_data = state
-        self._document.source_data = dict(source_data)
-        self._document.source_selection_base_data = dict(selection_base_data)
+        self._document.replace_source_payloads(source_data, selection_base_data)
         self._mark_preview_pixmap_stale()
 
     def _clear_pending_figure_resize_history_write(self) -> None:
@@ -4476,8 +4480,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         _render_preview(self)
 
     def set_source_data(self, source_data: Mapping[str, xr.DataArray]) -> None:
-        self._document.source_data = dict(source_data)
-        self._document.source_selection_base_data.clear()
+        self._document.replace_source_payloads(source_data, {})
         self._refresh_source_list()
         self._mark_preview_pixmap_stale()
 
@@ -4508,8 +4511,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 sources.append(source)
         if not changed:
             return
-        self._document.recipe = self._document.recipe.model_copy(
-            update={"sources": tuple(sources)}
+        self._document.replace_recipe(
+            self._document.recipe.model_copy(update={"sources": tuple(sources)})
         )
         self.sigInfoChanged.emit()
 
@@ -4520,10 +4523,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             return
         recipe_sources = {source.name for source in self._document.recipe.sources}
+        source_data = dict(self._document.source_data)
         fallback_name, fallback_data = next(iter(self._document.source_data.items()))
-        self._document.source_data[self._document.recipe.primary_source] = fallback_data
+        source_data[self._document.recipe.primary_source] = fallback_data
         if fallback_name not in recipe_sources:
-            del self._document.source_data[fallback_name]
+            del source_data[fallback_name]
+        self._document.replace_source_payloads(
+            source_data, self._document.source_selection_base_data
+        )
 
     def _recipe_source(self, source_name: str) -> FigureSourceState | None:
         for source in self._document.recipe.sources:
@@ -4834,8 +4841,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._restore_persisted_preview_cache(ds)
             self._queue_post_restore_redraw_if_needed(ds)
             return
-        self.set_source_data(source_data)
-        self._document.source_selection_base_data.update(selection_base_data)
+        self._document.replace_source_payloads(source_data, selection_base_data)
+        self._refresh_source_list()
+        self._mark_preview_pixmap_stale()
         self._normalize_operation_source_selections()
         self._apply_recipe_to_controls()
         self._restore_persisted_preview_cache(ds)

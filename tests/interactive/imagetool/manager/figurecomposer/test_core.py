@@ -3,8 +3,8 @@
 import subprocess
 import textwrap
 
-from erlab.interactive._figurecomposer._document import FigureDocument
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._model._document import FigureDocument
 
 from ._common import *
 
@@ -22,16 +22,38 @@ def test_figure_document_orders_source_dependencies_and_rejects_cycles() -> None
 
     assert document.source_dependency_names(("selected",)) == ("base", "selected")
 
-    document.recipe = document.recipe.model_copy(
-        update={
-            "sources": (
-                sources[0].model_copy(update={"selection_source": "selected"}),
-                sources[1],
-            )
-        }
+    document.replace_recipe(
+        document.recipe.model_copy(
+            update={
+                "sources": (
+                    sources[0].model_copy(update={"selection_source": "selected"}),
+                    sources[1],
+                )
+            }
+        )
     )
     with pytest.raises(FigureComposerInputError, match="selected -> base -> selected"):
         document.source_dependency_names(("selected",), reject_cycles=True)
+
+
+def test_figure_document_replaces_source_payloads_together() -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    base = xr.DataArray(np.arange(4.0), dims="x", name="base")
+    source_data = {"data": data}
+    selection_base_data = {"selected": base}
+    document = FigureDocument(FigureRecipeState())
+
+    document.replace_source_payloads(source_data, selection_base_data)
+    source_data.clear()
+    selection_base_data.clear()
+
+    assert document.source_data["data"] is data
+    assert document.source_selection_base_data["selected"] is base
+
+    document.replace_source_payloads({"data": data}, {})
+
+    assert document.source_data["data"] is data
+    assert document.source_selection_base_data == {}
 
 
 def test_figure_document_sources_import_without_qt_widgets() -> None:
@@ -39,9 +61,11 @@ def test_figure_document_sources_import_without_qt_widgets() -> None:
         """
         import sys
 
-        from erlab.interactive._figurecomposer._document import FigureDocument
-        from erlab.interactive._figurecomposer._sources import _source_alias_error
-        from erlab.interactive._figurecomposer._state import (
+        from erlab.interactive._figurecomposer._model._document import FigureDocument
+        from erlab.interactive._figurecomposer._model._sources import (
+            _source_alias_error,
+        )
+        from erlab.interactive._figurecomposer._model._state import (
             FigureExportState,
             FigureRecipeState,
             FigureSubplotsState,
@@ -57,7 +81,7 @@ def test_figure_document_sources_import_without_qt_widgets() -> None:
         )
         assert FigureDocument(recipe)
         assert _source_alias_error("data") is None
-        assert "erlab.interactive._figurecomposer._widgets" not in sys.modules
+        assert "erlab.interactive._figurecomposer._ui._widgets" not in sys.modules
         assert "erlab.interactive._stylesheets" not in sys.modules
         assert "erlab.interactive._figurecomposer._tool" not in sys.modules
         """
@@ -199,7 +223,7 @@ def test_figure_document_renames_source_references_atomically() -> None:
             )
         }
     )
-    document.recipe = recipe
+    document.replace_recipe(recipe)
     before_data = dict(document.source_data)
     with pytest.raises(FigureComposerInputError, match="also binds"):
         document.rename_source("renamed", "other")
@@ -272,7 +296,7 @@ def test_figure_document_updates_and_inserts_operations_by_identity() -> None:
     document = FigureDocument(FigureRecipeState(operations=operations))
     before = document.recipe
     with pytest.raises(ValueError, match="must be unique"):
-        document.recipe = duplicate_recipe
+        document.replace_recipe(duplicate_recipe)
     assert document.recipe == before
 
     assert document.operation_index("second-id") == 1

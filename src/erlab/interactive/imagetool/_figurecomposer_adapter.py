@@ -15,11 +15,11 @@ from erlab.interactive._figurecomposer._exceptions import (
     FigureComposerPlotSlicesSelectionError,
 )
 from erlab.interactive._figurecomposer._labels import default_label_text
-from erlab.interactive._figurecomposer._norms import _norm_updates_from_kwargs
-from erlab.interactive._figurecomposer._state import (
+from erlab.interactive._figurecomposer._model._state import (
     FigureDataSelectionState,
     FigureOperationState,
 )
+from erlab.interactive._figurecomposer._norms import _norm_updates_from_kwargs
 from erlab.interactive.imagetool import _provenance_framework
 
 if typing.TYPE_CHECKING:

@@ -18,11 +18,11 @@ from erlab.interactive._figurecomposer._operations import (
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from erlab.interactive._figurecomposer._model._state import FigureOperationKind
     from erlab.interactive._figurecomposer._operations._base import (
         AddStepActionSpec,
         OperationSpec,
     )
-    from erlab.interactive._figurecomposer._state import FigureOperationKind
 
 _OPERATION_SPECS = {
     spec.kind: spec

@@ -1539,7 +1539,7 @@ def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
         source_data={},
     )
     qtbot.addWidget(empty_tool)
-    empty_tool._document.source_data = {}
+    empty_tool._document.replace_source_payloads({}, {})
     empty_shape = figurecomposer_plot_slices._plot_slices_shape(
         empty_tool, empty_tool.tool_status.operations[0]
     )

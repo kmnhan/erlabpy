@@ -18,7 +18,7 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
-    from erlab.interactive._figurecomposer._state import FigureOperationState
+    from erlab.interactive._figurecomposer._model._state import FigureOperationState
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 

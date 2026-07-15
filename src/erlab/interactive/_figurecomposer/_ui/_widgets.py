@@ -20,13 +20,13 @@ from matplotlib.figure import Figure
 # isort: on
 
 import erlab.interactive.utils
-from erlab.interactive._figurecomposer._axes import _all_axes_for_shape
 from erlab.interactive._figurecomposer._defaults import (
     _apply_figure_dpi,
     _figure_draw_context,
     _figure_style_context,
 )
-from erlab.interactive._figurecomposer._state import (
+from erlab.interactive._figurecomposer._model._axes import _all_axes_for_shape
+from erlab.interactive._figurecomposer._model._state import (
     FigureGridSpecGridState,
     FigureGridSpecSpanState,
 )
@@ -36,7 +36,7 @@ if typing.TYPE_CHECKING:
 
     from matplotlib.backend_bases import Event
 
-    from erlab.interactive._figurecomposer._state import FigureSubplotsState
+    from erlab.interactive._figurecomposer._model._state import FigureSubplotsState
 
 
 class _GridSpecRegionInfo(typing.NamedTuple):

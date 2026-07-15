@@ -74,7 +74,7 @@ if typing.TYPE_CHECKING:
     import numpy as np
     import xarray as xr
 
-    from erlab.interactive._figurecomposer._document import FigureSourceAddResult
+    from erlab.interactive._figurecomposer._model._document import FigureSourceAddResult
     from erlab.interactive._options.schema import WorkspaceCompressionMode
     from erlab.interactive.imagetool import provenance
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
@@ -1304,7 +1304,9 @@ class ImageToolManager(_ImageToolManagerBase):
             FigureAxesSelectionState,
             FigureOperationState,
         )
-        from erlab.interactive._figurecomposer._sources import _public_source_data
+        from erlab.interactive._figurecomposer._model._sources import (
+            _public_source_data,
+        )
 
         if not source_data:
             return ()
@@ -1555,7 +1557,9 @@ class ImageToolManager(_ImageToolManagerBase):
             FigureOperationKind,
             FigureSubplotsState,
         )
-        from erlab.interactive._figurecomposer._sources import _public_source_data
+        from erlab.interactive._figurecomposer._model._sources import (
+            _public_source_data,
+        )
 
         if operation is not None and operation.kind == FigureOperationKind.PLOT_SLICES:
             nrows, ncols = self._figure_plot_slices_grid_shape(operation)
@@ -1579,7 +1583,7 @@ class ImageToolManager(_ImageToolManagerBase):
         reserved: set[str],
     ) -> typing.Any:
         from erlab.interactive._figurecomposer import FigureSourceState
-        from erlab.interactive._figurecomposer._sources import (
+        from erlab.interactive._figurecomposer._model._sources import (
             _source_alias_candidate,
             _source_unique_name,
         )
@@ -1624,7 +1628,7 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> typing.Any:
         if not source_name_map:
             return operation
-        from erlab.interactive._figurecomposer._operation_metadata import (
+        from erlab.interactive._figurecomposer._model._operation_metadata import (
             rename_operation_sources,
         )
 
@@ -1979,7 +1983,9 @@ class ImageToolManager(_ImageToolManagerBase):
             FigureOperationState,
         )
         from erlab.interactive._figurecomposer._defaults import figure_options_context
-        from erlab.interactive._figurecomposer._sources import _public_source_data
+        from erlab.interactive._figurecomposer._model._sources import (
+            _public_source_data,
+        )
 
         resolved_targets, sources, source_data = self._figure_sources_from_targets(
             targets
@@ -2166,7 +2172,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _append_single_axis_selection(self, figure_uid: str) -> typing.Any | None:
         from erlab.interactive._figurecomposer import FigureAxesSelectionState
-        from erlab.interactive._figurecomposer._gridspec import (
+        from erlab.interactive._figurecomposer._model._gridspec import (
             _gridspec_all_axes_ids,
             _gridspec_valid_axes_ids,
         )
@@ -2227,7 +2233,9 @@ class ImageToolManager(_ImageToolManagerBase):
             FigureOperationState,
         )
         from erlab.interactive._figurecomposer._defaults import figure_options_context
-        from erlab.interactive._figurecomposer._sources import _public_source_data
+        from erlab.interactive._figurecomposer._model._sources import (
+            _public_source_data,
+        )
 
         resolved_targets = self._figure_imagetool_targets(targets)
         if not resolved_targets:

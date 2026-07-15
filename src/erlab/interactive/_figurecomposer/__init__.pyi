@@ -17,7 +17,7 @@ __all__ = [
     "FigureSubplotsState",
 ]
 
-from ._state import (
+from ._model._state import (
     FigureAxesSelectionState,
     FigureDataSelectionState,
     FigureExportState,

@@ -10,15 +10,15 @@ from erlab.interactive._figurecomposer._defaults import (
     _style_code_lines,
     _style_required_imports,
 )
-from erlab.interactive._figurecomposer._operations import _registry
-from erlab.interactive._figurecomposer._sources import (
+from erlab.interactive._figurecomposer._model._sources import (
     _source_has_selection,
     _valid_source_variable,
 )
-from erlab.interactive._figurecomposer._state import (
+from erlab.interactive._figurecomposer._model._state import (
     FigureDataSelectionState,
     FigureOperationKind,
 )
+from erlab.interactive._figurecomposer._operations import _registry
 
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping

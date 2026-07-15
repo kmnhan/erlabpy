@@ -78,15 +78,6 @@ from erlab.interactive._figurecomposer._code import (
     _axes_sequence_code,
     _needs_squeeze_drop,
 )
-from erlab.interactive._figurecomposer._editor_controls import (
-    MIXED_VALUE,
-    MIXED_VALUES_TEXT,
-    ComboBoxDataControlAdapter,
-)
-from erlab.interactive._figurecomposer._gridspec import (
-    _gridspec_all_axes_ids,
-    _gridspec_valid_axes_ids,
-)
 from erlab.interactive._figurecomposer._line_style import (
     LINE_MARKER_OPTIONS,
     LINE_STYLE_DEFAULT_LABEL,
@@ -94,10 +85,25 @@ from erlab.interactive._figurecomposer._line_style import (
     color_kw_value_from_text,
     normalize_style_value,
 )
-from erlab.interactive._figurecomposer._operation_metadata import (
+from erlab.interactive._figurecomposer._model._gridspec import (
+    _gridspec_all_axes_ids,
+    _gridspec_valid_axes_ids,
+)
+from erlab.interactive._figurecomposer._model._operation_metadata import (
     is_axes_errorbar_data_method,
     is_axes_plot_data_method,
     operation_uses_axes,
+)
+from erlab.interactive._figurecomposer._model._sources import (
+    _public_source_data,
+    _valid_source_variable,
+)
+from erlab.interactive._figurecomposer._model._state import (
+    FigureAxesSelectionState,
+    FigureMethodFamily,
+    FigureMethodPlotValueState,
+    FigureOperationKind,
+    FigureOperationState,
 )
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
@@ -110,18 +116,6 @@ from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
     _live_layout_axes,
-)
-from erlab.interactive._figurecomposer._source_inspector import source_value_tooltip
-from erlab.interactive._figurecomposer._sources import (
-    _public_source_data,
-    _valid_source_variable,
-)
-from erlab.interactive._figurecomposer._state import (
-    FigureAxesSelectionState,
-    FigureMethodFamily,
-    FigureMethodPlotValueState,
-    FigureOperationKind,
-    FigureOperationState,
 )
 from erlab.interactive._figurecomposer._subplot_adjust import (
     SUBPLOTS_ADJUST_SPINBOX_DECIMALS,
@@ -147,12 +141,18 @@ from erlab.interactive._figurecomposer._text import (
     _string_tuple_from_text,
     _text_tuple_from_text,
 )
-from erlab.interactive._figurecomposer._tick_params import (
+from erlab.interactive._figurecomposer._ui._editor_controls import (
+    MIXED_VALUE,
+    MIXED_VALUES_TEXT,
+    ComboBoxDataControlAdapter,
+)
+from erlab.interactive._figurecomposer._ui._source_inspector import source_value_tooltip
+from erlab.interactive._figurecomposer._ui._tick_params import (
     TICK_PARAMS_CONTROLLED_KWARGS,
     TICK_PARAMS_DEFAULT_KWARGS,
     TickParamsEditorWidget,
 )
-from erlab.interactive._figurecomposer._widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._widgets import _ColorLineEditWidget
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -160,7 +160,7 @@ if typing.TYPE_CHECKING:
     import xarray as xr
     from matplotlib.axes import Axes
 
-    from erlab.interactive._figurecomposer._document import FigureRecipeContext
+    from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 

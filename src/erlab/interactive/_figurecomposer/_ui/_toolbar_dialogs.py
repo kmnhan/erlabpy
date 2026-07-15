@@ -11,16 +11,7 @@ import numpy as np
 from qtpy import QtCore, QtWidgets
 
 import erlab
-from erlab.interactive._figurecomposer._editor_controls import (
-    MIXED_VALUE,
-    MIXED_VALUES_TEXT,
-)
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
-from erlab.interactive._figurecomposer._gridspec import (
-    _gridspec_all_axes_ids,
-    _gridspec_axis_display_name,
-    _gridspec_valid_axes_ids,
-)
 from erlab.interactive._figurecomposer._line_colormap import (
     LINE_COLOR_CMAP_TRIM_MAX,
     effective_line_color_coord,
@@ -40,6 +31,18 @@ from erlab.interactive._figurecomposer._line_style import (
     optional_positive_spinbox,
     optional_positive_spinbox_value,
     style_combo_value,
+)
+from erlab.interactive._figurecomposer._model._gridspec import (
+    _gridspec_all_axes_ids,
+    _gridspec_axis_display_name,
+    _gridspec_valid_axes_ids,
+)
+from erlab.interactive._figurecomposer._model._state import (
+    FigureAxesSelectionState,
+    FigureMethodFamily,
+    FigureOperationKind,
+    FigureOperationState,
+    FigurePlotSlicesPanelStyleState,
 )
 from erlab.interactive._figurecomposer._norms import (
     _NORM_CHOICES,
@@ -77,13 +80,6 @@ from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
 )
-from erlab.interactive._figurecomposer._state import (
-    FigureAxesSelectionState,
-    FigureMethodFamily,
-    FigureOperationKind,
-    FigureOperationState,
-    FigurePlotSlicesPanelStyleState,
-)
 from erlab.interactive._figurecomposer._subplot_adjust import (
     SUBPLOTS_ADJUST_SPINBOX_DECIMALS,
     SUBPLOTS_ADJUST_SPINBOX_MAXIMUM,
@@ -97,11 +93,15 @@ from erlab.interactive._figurecomposer._text import (
     _format_dict,
     _limit_pair_from_text,
 )
-from erlab.interactive._figurecomposer._tick_params import (
+from erlab.interactive._figurecomposer._ui._editor_controls import (
+    MIXED_VALUE,
+    MIXED_VALUES_TEXT,
+)
+from erlab.interactive._figurecomposer._ui._tick_params import (
     TICK_PARAMS_CONTROLLED_KWARGS,
     TickParamsEditorWidget,
 )
-from erlab.interactive._figurecomposer._widgets import (
+from erlab.interactive._figurecomposer._ui._widgets import (
     _AxesSelectorWidget,
     _ColorLineEditWidget,
     _ColorListEditorWidget,

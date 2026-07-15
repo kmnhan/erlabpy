@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import typing
 
-from erlab.interactive._figurecomposer._custom_code import (
+from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._model._custom_code import (
     _custom_code_names,
     _renamed_source_loads,
 )
-from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
-from erlab.interactive._figurecomposer._state import (
+from erlab.interactive._figurecomposer._model._state import (
     FigureMethodFamily,
     FigureOperationKind,
 )
@@ -17,7 +17,7 @@ from erlab.interactive._figurecomposer._state import (
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
-    from erlab.interactive._figurecomposer._state import FigureOperationState
+    from erlab.interactive._figurecomposer._model._state import FigureOperationState
 
 
 def _unique_source_names(names: Iterable[str]) -> tuple[str, ...]:

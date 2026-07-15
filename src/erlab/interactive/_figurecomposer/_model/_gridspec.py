@@ -5,7 +5,7 @@ from __future__ import annotations
 import keyword
 import typing
 
-from erlab.interactive._figurecomposer._state import (
+from erlab.interactive._figurecomposer._model._state import (
     FigureGridSpecAxesState,
     FigureGridSpecGridState,
     FigureGridSpecLayoutState,

@@ -12,7 +12,7 @@ from qtpy import QtWidgets
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from erlab.interactive._figurecomposer._state import FigureOperationState
+    from erlab.interactive._figurecomposer._model._state import FigureOperationState
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 

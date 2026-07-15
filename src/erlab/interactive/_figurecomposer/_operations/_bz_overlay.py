@@ -10,7 +10,6 @@ from qtpy import QtCore, QtWidgets
 import erlab
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._code import _axes_code, _axes_sequence_code
-from erlab.interactive._figurecomposer._gridspec import _gridspec_valid_axes_ids
 from erlab.interactive._figurecomposer._line_style import (
     LINE_STYLE_DEFAULT_LABEL,
     LINE_STYLE_OPTIONS,
@@ -21,6 +20,11 @@ from erlab.interactive._figurecomposer._line_style import (
     optional_positive_spinbox,
     optional_positive_spinbox_value,
     update_current_line_kw,
+)
+from erlab.interactive._figurecomposer._model._gridspec import _gridspec_valid_axes_ids
+from erlab.interactive._figurecomposer._model._state import (
+    FigureOperationKind,
+    FigureOperationState,
 )
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
@@ -33,10 +37,6 @@ from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
 )
-from erlab.interactive._figurecomposer._state import (
-    FigureOperationKind,
-    FigureOperationState,
-)
 from erlab.interactive._figurecomposer._text import (
     _code_kwargs,
     _dict_from_text,
@@ -45,12 +45,12 @@ from erlab.interactive._figurecomposer._text import (
     _literal_from_text,
     _RawCode,
 )
-from erlab.interactive._figurecomposer._widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._widgets import _ColorLineEditWidget
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
-    from erlab.interactive._figurecomposer._document import FigureRecipeContext
+    from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 

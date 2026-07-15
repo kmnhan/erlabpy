@@ -52,8 +52,8 @@ def test_figure_composer_document_metadata_does_not_load_qt_widgets() -> None:
         """
         import sys
 
-        from erlab.interactive._figurecomposer._document import FigureDocument
-        from erlab.interactive._figurecomposer._state import (
+        from erlab.interactive._figurecomposer._model._document import FigureDocument
+        from erlab.interactive._figurecomposer._model._state import (
             FigureExportState,
             FigureOperationState,
             FigureRecipeState,
@@ -84,7 +84,7 @@ def test_figure_composer_document_metadata_does_not_load_qt_widgets() -> None:
         assert document.operation_source_names(plot_operation) == ("data",)
         assert document.operation_source_names(custom_operation) == ("data",)
         assert "erlab.interactive._stylesheets" not in sys.modules
-        assert "erlab.interactive._figurecomposer._widgets" not in sys.modules
+        assert "erlab.interactive._figurecomposer._ui._widgets" not in sys.modules
         assert "erlab.interactive._figurecomposer._tool" not in sys.modules
         assert (
             "erlab.interactive._figurecomposer._operations._registry"
@@ -106,7 +106,8 @@ def test_manager_import_does_not_load_figure_dialog_widgets() -> None:
         "import erlab.interactive.imagetool.manager._mainwindow\n"
         "assert 'erlab.interactive.imagetool.manager._figure_dialogs' "
         "not in sys.modules\n"
-        "assert 'erlab.interactive._figurecomposer._widgets' not in sys.modules\n"
+        "assert 'erlab.interactive._figurecomposer._ui._widgets' "
+        "not in sys.modules\n"
         "assert 'matplotlib.backends.backend_qtagg' not in sys.modules\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
@@ -172,7 +173,7 @@ def test_plot_items_loads_figure_composer_only_for_action() -> None:
         plot_items.ItoolPlotItem.plot_with_matplotlib(plot)
 
         assert adapter_name in sys.modules
-        assert f"{composer_prefix}._state" in sys.modules
+        assert f"{composer_prefix}._model._state" in sys.modules
         assert len(created) == 1
         assert created[0].kind.value == "plot_array"
         """

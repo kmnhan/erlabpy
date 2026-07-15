@@ -11,7 +11,7 @@ import erlab.interactive.colors
 import erlab.interactive.utils
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._defaults import _current_options
-from erlab.interactive._figurecomposer._state import (
+from erlab.interactive._figurecomposer._model._state import (
     _POWER_NORM_NAME,
     FigureOperationState,
 )

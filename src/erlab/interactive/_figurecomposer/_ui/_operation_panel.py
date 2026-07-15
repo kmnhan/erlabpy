@@ -8,11 +8,11 @@ import weakref
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive._figurecomposer._reorder_list import (
+from erlab.interactive._figurecomposer._ui._reorder_list import (
     ReorderList,
     event_requests_context_menu,
 )
-from erlab.interactive._figurecomposer._widgets import (
+from erlab.interactive._figurecomposer._ui._widgets import (
     _AxesTargetItemDelegate,
     _step_toolbar_button,
 )

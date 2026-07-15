@@ -7,18 +7,20 @@ import typing
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive._figurecomposer._editor_controls import (
+from erlab.interactive._figurecomposer._model._sources import _public_source_data
+from erlab.interactive._figurecomposer._ui._editor_controls import (
     MIXED_VALUE,
     MIXED_VALUES_TEXT,
     LineEditControlAdapter,
 )
-from erlab.interactive._figurecomposer._reorder_list import (
+from erlab.interactive._figurecomposer._ui._reorder_list import (
     ReorderList,
     event_requests_context_menu,
 )
-from erlab.interactive._figurecomposer._source_inspector import SourceInspectorWidget
-from erlab.interactive._figurecomposer._sources import _public_source_data
-from erlab.interactive._figurecomposer._widgets import _step_toolbar_button
+from erlab.interactive._figurecomposer._ui._source_inspector import (
+    SourceInspectorWidget,
+)
+from erlab.interactive._figurecomposer._ui._widgets import _step_toolbar_button
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping, Sequence

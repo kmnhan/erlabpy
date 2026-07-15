@@ -5,11 +5,11 @@ from __future__ import annotations
 import typing
 
 import erlab
-from erlab.interactive._figurecomposer._axes import (
+from erlab.interactive._figurecomposer._model._axes import (
     _compact_axes_code,
     _compact_axes_iterable_code,
 )
-from erlab.interactive._figurecomposer._gridspec import (
+from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_axis_code_names,
     _gridspec_axis_code_tuple,
     _gridspec_has_invalid_regions,
@@ -17,21 +17,21 @@ from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_span_code,
     _gridspec_valid_axes_ids,
 )
+from erlab.interactive._figurecomposer._model._sources import (
+    _decode_indexers,
+    _valid_source_variable,
+)
 from erlab.interactive._figurecomposer._rendering import (
     _setup_kwargs,
     _setup_layout_value,
-)
-from erlab.interactive._figurecomposer._sources import (
-    _decode_indexers,
-    _valid_source_variable,
 )
 from erlab.interactive._figurecomposer._text import _code_kwargs, _format_axes_tuple
 
 if typing.TYPE_CHECKING:
     import xarray as xr
 
-    from erlab.interactive._figurecomposer._document import FigureRecipeContext
-    from erlab.interactive._figurecomposer._state import (
+    from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
+    from erlab.interactive._figurecomposer._model._state import (
         FigureAxesSelectionState,
         FigureDataSelectionState,
         FigureGridSpecGridState,

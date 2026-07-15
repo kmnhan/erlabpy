@@ -1,8 +1,10 @@
 # ruff: noqa: F403, F405
 
 import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
-import erlab.interactive._figurecomposer._source_panel as figurecomposer_source_panel
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._ui import (
+    _source_panel as figurecomposer_source_panel,
+)
 
 from ._common import *
 
@@ -179,7 +181,9 @@ def test_figure_composer_selected_source_roundtrip_applies_selection_once(
     )
     qtbot.addWidget(tool)
     if retain_base_data:
-        tool._document.source_selection_base_data["profile"] = base
+        tool._document.replace_source_payloads(
+            tool._document.source_data, {"profile": base}
+        )
 
     restored = erlab.interactive.utils.ToolWindow.from_dataset(tool.to_dataset())
     qtbot.addWidget(restored)
@@ -419,7 +423,11 @@ def test_figure_composer_persistence_metadata_fallbacks(qtbot) -> None:
         primary_source="primary",
     )
     qtbot.addWidget(tool)
-    del tool._document.source_data["primary"]
+    source_data = dict(tool._document.source_data)
+    del source_data["primary"]
+    tool._document.replace_source_payloads(
+        source_data, tool._document.source_selection_base_data
+    )
 
     items = tool._persistence_data_items()
     xr.testing.assert_identical(
@@ -964,7 +972,9 @@ def test_figure_composer_source_alias_rename_keeps_own_selection_implicit(
         primary_source="selected",
     )
     qtbot.addWidget(tool)
-    tool._document.source_selection_base_data["selected"] = base
+    tool._document.replace_source_payloads(
+        tool._document.source_data, {"selected": base}
+    )
 
     assert tool._document.rename_source("selected", "renamed")
 
@@ -993,7 +1003,9 @@ def test_figure_composer_source_duplicate_and_reorder_controls(qtbot) -> None:
         primary_source="first",
     )
     qtbot.addWidget(tool)
-    tool._document.source_selection_base_data["second"] = first
+    tool._document.replace_source_payloads(
+        tool._document.source_data, {"second": first}
+    )
     tool.source_panel.set_selected_names({"second"}, current_name="second")
     tool._refresh_source_controls()
     assert (
@@ -1141,7 +1153,7 @@ def test_figure_composer_duplicate_selected_source_generated_code_uses_raw_base(
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    tool._document.source_selection_base_data["data"] = base
+    tool._document.replace_source_payloads(tool._document.source_data, {"data": base})
     tool.source_panel.set_selected_names({"data"}, current_name="data")
     tool.source_panel.duplicate_requested.emit(tool.source_panel.selected_names())
     assert tool._document.source_by_name()["data_copy"].selection_source is None
@@ -1815,7 +1827,7 @@ def test_figure_composer_source_selection_editor_edge_paths(qtbot) -> None:
     assert not tool.source_panel.source_alias_controls.isVisible()
     assert tool.source_panel.source_inspector.isHidden()
 
-    tool._document.source_data.clear()
+    tool._document.replace_source_payloads({}, {})
     tool.source_panel.selection_dimension_requested.emit(
         tool.source_panel.selected_names(), "x", "isel", "0", ""
     )
@@ -2160,13 +2172,21 @@ def test_figure_composer_replace_source_preserves_alias_and_generated_code(
         FigureSourceState(name="data_2", label="Missing"),
         replacement,
     )
-    tool._document.source_data["orphan"] = original
+    source_data = dict(tool._document.source_data)
+    source_data["orphan"] = original
+    tool._document.replace_source_payloads(
+        source_data, tool._document.source_selection_base_data
+    )
     assert tool.replace_source(
         "orphan",
         FigureSourceState(name="data_2", label="Historical orphan"),
         original,
     )
-    tool._document.source_data["default_orphan"] = original
+    source_data = dict(tool._document.source_data)
+    source_data["default_orphan"] = original
+    tool._document.replace_source_payloads(
+        source_data, tool._document.source_selection_base_data
+    )
     assert tool.replace_source(
         "default_orphan",
         FigureSourceState(name="data_3"),
@@ -2271,8 +2291,9 @@ def _transitive_selected_source_tool() -> tuple[
         operations=(FigureOperationState.line(label="line", source="selected_v"),),
         primary_source="base",
     )
-    tool._document.source_selection_base_data.update(
-        {"selected_u": base, "selected_v": selected_u}
+    tool._document.replace_source_payloads(
+        tool._document.source_data,
+        {"selected_u": base, "selected_v": selected_u},
     )
     return tool, base, selected_u, selected_v
 
@@ -2680,7 +2701,9 @@ def test_figure_composer_refresh_from_sources_covers_edge_paths(qtbot) -> None:
     assert not tool.source_panel.source_status_label.isHidden()
 
     refreshed_second = second + 20.0
-    tool._document.source_selection_base_data["second"] = second
+    tool._document.replace_source_payloads(
+        tool._document.source_data, {"second": second}
+    )
     tool.refresh_from_sources({"second": refreshed_second})
     xr.testing.assert_identical(tool.source_data()["second"], refreshed_second)
     assert "second" not in tool._document.source_selection_base_data
@@ -3611,7 +3634,7 @@ def test_figure_composer_source_inspector_target_fallbacks(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool._document.source_data.clear()
+    tool._document.replace_source_payloads({}, {})
     tool.source_panel.set_selected_names((), current_name=None)
     assert tool._default_source_inspector_target() == "saved"
     tool._refresh_source_detail_panel()
@@ -4167,7 +4190,9 @@ def test_figure_composer_copy_paste_steps_carries_selection_dependencies(
         operations=(FigureOperationState.plot_array(label="plot", source="selected"),),
         primary_source="base",
     )
-    source_tool._document.source_selection_base_data["selected"] = base
+    source_tool._document.replace_source_payloads(
+        source_tool._document.source_data, {"selected": base}
+    )
 
     existing = xr.DataArray(np.zeros((2, 2)), dims=("x", "y"), name="existing")
     destination = FigureComposerTool.from_sources(
@@ -4948,7 +4973,9 @@ def test_figure_composer_legacy_selection_reports_replaced_backing_data(qtbot) -
     )
     qtbot.addWidget(tool)
     stale_base = base + 10
-    tool._document.source_selection_base_data["selected"] = stale_base
+    tool._document.replace_source_payloads(
+        tool._document.source_data, {"selected": stale_base}
+    )
     tool._document.append_operation(
         FigureOperationState.plot_array(
             label="legacy",
@@ -5108,7 +5135,9 @@ def test_figure_composer_selected_source_codegen_fallback_uses_base_input(
         primary_source="base",
     )
     qtbot.addWidget(cleanup_tool)
-    cleanup_tool._document.source_selection_base_data["selected"] = base_data
+    cleanup_tool._document.replace_source_payloads(
+        cleanup_tool._document.source_data, {"selected": base_data}
+    )
     cleanup_tool.set_missing_sources({"selected"})
     assert "selected" not in cleanup_tool.source_data()
     assert "selected" not in cleanup_tool._document.source_selection_base_data
@@ -5212,14 +5241,16 @@ def test_figure_composer_source_selection_control_guard_paths(qtbot) -> None:
     assert detached_tool.source_states() == detached_before
 
     tool.source_panel.set_selected_names({"unavailable"}, current_name="unavailable")
-    tool._document.recipe = tool.tool_status.model_copy(
-        update={
-            "sources": tuple(
-                source
-                for source in tool.source_states()
-                if source.name != "unavailable"
-            )
-        }
+    tool._document.replace_recipe(
+        tool.tool_status.model_copy(
+            update={
+                "sources": tuple(
+                    source
+                    for source in tool.source_states()
+                    if source.name != "unavailable"
+                )
+            }
+        )
     )
     tool._refresh_source_detail_panel()
     assert not tool.source_panel.source_alias_edit.isEnabled()

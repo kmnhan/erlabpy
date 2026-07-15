@@ -13,7 +13,7 @@ from erlab.interactive._figurecomposer._line_style import (
     style_combo_value,
 )
 from erlab.interactive._figurecomposer._text import _code_args, _literal_from_text
-from erlab.interactive._figurecomposer._widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._widgets import _ColorLineEditWidget
 
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping, Sequence

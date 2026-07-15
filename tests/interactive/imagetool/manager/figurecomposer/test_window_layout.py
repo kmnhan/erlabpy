@@ -1,7 +1,9 @@
 # ruff: noqa: F403, F405
 
-import erlab.interactive._figurecomposer._reorder_list as figurecomposer_reorder_list
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._ui import (
+    _reorder_list as figurecomposer_reorder_list,
+)
 
 from ._common import *
 

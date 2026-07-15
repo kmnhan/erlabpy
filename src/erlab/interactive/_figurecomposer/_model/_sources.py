@@ -12,9 +12,9 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
 import erlab
-from erlab.interactive._figurecomposer._axes import _all_axes
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
-from erlab.interactive._figurecomposer._state import (
+from erlab.interactive._figurecomposer._model._axes import _all_axes
+from erlab.interactive._figurecomposer._model._state import (
     FigureAxesSelectionState,
     FigureDataSelectionState,
     FigureOperationState,

@@ -20,7 +20,7 @@ from erlab.interactive._figurecomposer._norms import _cmap_with_reverse
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from erlab.interactive._figurecomposer._state import FigureOperationState
+    from erlab.interactive._figurecomposer._model._state import FigureOperationState
 
 
 _GENERIC_CONTEXT_FIELDS = frozenset(("index", "number", "source", "dim", "value"))

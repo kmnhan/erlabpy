@@ -16,7 +16,6 @@ from erlab.interactive._figurecomposer._defaults import (
     _current_options,
     _styled_rcparams_value,
 )
-from erlab.interactive._figurecomposer._label_help import legend_label_input_widget
 from erlab.interactive._figurecomposer._labels import (
     label_context,
     label_coord_placeholder_name,
@@ -65,6 +64,18 @@ from erlab.interactive._figurecomposer._line_transform import (
     profile_transform_code_lines,
     transform_profiles,
 )
+from erlab.interactive._figurecomposer._model._sources import (
+    _available_source_dims,
+    _public_source_data,
+    _valid_source_variable,
+)
+from erlab.interactive._figurecomposer._model._state import (
+    _POWER_NORM_NAME,
+    FigureOperationKind,
+    FigureOperationState,
+    FigurePlotSlicesPanelStyleState,
+    _PlotSlicesShape,
+)
 from erlab.interactive._figurecomposer._norms import (
     _MATPLOTLIB_NORM_NAMES,
     _NORM_CHOICES,
@@ -93,18 +104,6 @@ from erlab.interactive._figurecomposer._rendering import (
     _live_layout_axes,
     _tool_figure_options_context,
 )
-from erlab.interactive._figurecomposer._sources import (
-    _available_source_dims,
-    _public_source_data,
-    _valid_source_variable,
-)
-from erlab.interactive._figurecomposer._state import (
-    _POWER_NORM_NAME,
-    FigureOperationKind,
-    FigureOperationState,
-    FigurePlotSlicesPanelStyleState,
-    _PlotSlicesShape,
-)
 from erlab.interactive._figurecomposer._text import (
     _code_kwargs,
     _dict_from_text,
@@ -117,14 +116,15 @@ from erlab.interactive._figurecomposer._text import (
     _RawCode,
     _selection_value_count,
 )
-from erlab.interactive._figurecomposer._widgets import _ColorLineEditWidget
+from erlab.interactive._figurecomposer._ui._label_help import legend_label_input_widget
+from erlab.interactive._figurecomposer._ui._widgets import _ColorLineEditWidget
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
 
     import matplotlib.axes
 
-    from erlab.interactive._figurecomposer._document import FigureRecipeContext
+    from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 

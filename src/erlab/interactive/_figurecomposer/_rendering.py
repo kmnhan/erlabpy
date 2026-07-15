@@ -13,17 +13,17 @@ from matplotlib.figure import Figure
 
 import erlab
 import erlab.plotting as eplt
-from erlab.interactive._figurecomposer._axes import _axes_expression_value
 from erlab.interactive._figurecomposer._defaults import (
     _apply_figure_dpi,
     _figure_style_context,
 )
-from erlab.interactive._figurecomposer._gridspec import (
+from erlab.interactive._figurecomposer._model._axes import _axes_expression_value
+from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_region_valid,
     _gridspec_valid_axes_ids,
 )
-from erlab.interactive._figurecomposer._sources import (
+from erlab.interactive._figurecomposer._model._sources import (
     _public_source_data,
     _valid_source_variable,
 )
@@ -31,8 +31,8 @@ from erlab.interactive._figurecomposer._sources import (
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from erlab.interactive._figurecomposer._document import FigureRecipeContext
-    from erlab.interactive._figurecomposer._state import (
+    from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
+    from erlab.interactive._figurecomposer._model._state import (
         FigureAxesSelectionState,
         FigureGridSpecGridState,
     )

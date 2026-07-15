@@ -7,7 +7,7 @@ import typing
 import uuid
 
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
-from erlab.interactive._figurecomposer._gridspec import (
+from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_axes_root_targets,
     _gridspec_invalid_axes_ids,
@@ -15,12 +15,12 @@ from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_valid_axes_ids,
     _subplots_setup_from_gridspec,
 )
-from erlab.interactive._figurecomposer._operation_metadata import (
+from erlab.interactive._figurecomposer._model._operation_metadata import (
     operation_uses_axes,
     recipe_operation_source_names,
     rename_operation_sources,
 )
-from erlab.interactive._figurecomposer._sources import (
+from erlab.interactive._figurecomposer._model._sources import (
     _selected_source_data,
     _source_alias_error,
     _source_has_selection,
@@ -30,7 +30,7 @@ from erlab.interactive._figurecomposer._sources import (
     selection_has_effect,
     selection_with_dimension,
 )
-from erlab.interactive._figurecomposer._state import (
+from erlab.interactive._figurecomposer._model._state import (
     FigureOperationKind,
     FigureSourceState,
     FigureSubplotsState,
@@ -41,7 +41,7 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
-    from erlab.interactive._figurecomposer._state import (
+    from erlab.interactive._figurecomposer._model._state import (
         FigureAxesSelectionState,
         FigureOperationState,
         FigureRecipeState,
@@ -125,32 +125,52 @@ class FigureDocument:
             update={"sources": self.normalized_source_states(recipe.sources)}
         )
         self._validate_operation_id_sequence(self._recipe.operations)
-        self.source_data = dict(source_data or {})
-        self.source_selection_base_data = dict(source_selection_base_data or {})
+        self._source_data: dict[str, xr.DataArray]
+        self._source_selection_base_data: dict[str, xr.DataArray]
+        self.replace_source_payloads(
+            source_data or {}, source_selection_base_data or {}
+        )
 
     @property
     def recipe(self) -> FigureRecipeState:
         """Current validated figure recipe."""
         return self._recipe
 
-    @recipe.setter
-    def recipe(self, recipe: FigureRecipeState) -> None:
-        self._validate_operation_id_sequence(recipe.operations)
-        self._recipe = recipe
+    @property
+    def source_data(self) -> Mapping[str, xr.DataArray]:
+        """Effective source payloads used by figure operations."""
+        return self._source_data
+
+    @property
+    def source_selection_base_data(self) -> Mapping[str, xr.DataArray]:
+        """Unselected parent payloads used to replay source selections."""
+        return self._source_selection_base_data
 
     def replace_recipe(self, recipe: FigureRecipeState) -> bool:
         """Replace the complete recipe after validating document invariants."""
         if recipe == self._recipe:
             return False
-        self.recipe = recipe
+        self._validate_operation_id_sequence(recipe.operations)
+        self._recipe = recipe
         return True
+
+    def replace_source_payloads(
+        self,
+        source_data: Mapping[str, xr.DataArray],
+        selection_base_data: Mapping[str, xr.DataArray],
+    ) -> None:
+        """Replace effective and selection-base source payloads together."""
+        updated_source_data = dict(source_data)
+        updated_selection_base_data = dict(selection_base_data)
+        self._source_data = updated_source_data
+        self._source_selection_base_data = updated_selection_base_data
 
     def replace_setup(self, setup: FigureSubplotsState) -> bool:
         """Replace the complete validated figure layout setup."""
         validated = FigureSubplotsState.model_validate(setup.model_dump(mode="python"))
         if validated == self.recipe.setup:
             return False
-        self.recipe = self.recipe.model_copy(update={"setup": validated})
+        self.replace_recipe(self.recipe.model_copy(update={"setup": validated}))
         return True
 
     def convert_layout_mode(self, mode: typing.Literal["subplots", "gridspec"]) -> bool:
@@ -420,7 +440,9 @@ class FigureDocument:
             changed = True
         if not changed:
             return False
-        self.recipe = self.recipe.model_copy(update={"operations": tuple(operations)})
+        self.replace_recipe(
+            self.recipe.model_copy(update={"operations": tuple(operations)})
+        )
         return True
 
     def replace_operation(self, index: int, operation: FigureOperationState) -> bool:
@@ -431,7 +453,9 @@ class FigureDocument:
             return False
         self._validate_new_operation_ids((operation,), replacing_index=index)
         operations[index] = operation
-        self.recipe = self.recipe.model_copy(update={"operations": tuple(operations)})
+        self.replace_recipe(
+            self.recipe.model_copy(update={"operations": tuple(operations)})
+        )
         return True
 
     def replace_operations(self, operations: Sequence[FigureOperationState]) -> bool:
@@ -440,7 +464,7 @@ class FigureDocument:
         self._validate_operation_id_sequence(updated)
         if updated == self.recipe.operations:
             return False
-        self.recipe = self.recipe.model_copy(update={"operations": updated})
+        self.replace_recipe(self.recipe.model_copy(update={"operations": updated}))
         return True
 
     def append_operation(self, operation: FigureOperationState) -> int:
@@ -461,8 +485,8 @@ class FigureDocument:
         self._validate_new_operation_ids(inserted)
         recipe_operations = list(self.recipe.operations)
         recipe_operations[index:index] = inserted
-        self.recipe = self.recipe.model_copy(
-            update={"operations": tuple(recipe_operations)}
+        self.replace_recipe(
+            self.recipe.model_copy(update={"operations": tuple(recipe_operations)})
         )
         return tuple(operation.operation_id for operation in inserted)
 
@@ -496,7 +520,7 @@ class FigureDocument:
             for index, operation in enumerate(self.recipe.operations)
             if index not in index_set
         )
-        self.recipe = self.recipe.model_copy(update={"operations": operations})
+        self.replace_recipe(self.recipe.model_copy(update={"operations": operations}))
         return removed
 
     def duplicate_operations(self, indices: Sequence[int]) -> tuple[str, ...]:
@@ -592,9 +616,8 @@ class FigureDocument:
             }
         )
 
-        self.recipe = updated_recipe
-        self.source_data = updated_source_data
-        self.source_selection_base_data = updated_selection_base_data
+        self.replace_recipe(updated_recipe)
+        self.replace_source_payloads(updated_source_data, updated_selection_base_data)
         return FigureOperationPasteResult(
             tuple(operation.operation_id for operation in copied_operations),
             bool(renamed_source_data or renamed_selection_base_data),
@@ -618,12 +641,14 @@ class FigureDocument:
             raise ValueError("operation order must be an exact permutation")
         if ids == current_ids:
             return False
-        self.recipe = self.recipe.model_copy(
-            update={
-                "operations": tuple(
-                    operation_by_id[operation_id] for operation_id in ids
-                )
-            }
+        self.replace_recipe(
+            self.recipe.model_copy(
+                update={
+                    "operations": tuple(
+                        operation_by_id[operation_id] for operation_id in ids
+                    )
+                }
+            )
         )
         return True
 
@@ -684,7 +709,9 @@ class FigureDocument:
                     moved = True
         if not moved:
             return False
-        self.recipe = self.recipe.model_copy(update={"operations": tuple(operations)})
+        self.replace_recipe(
+            self.recipe.model_copy(update={"operations": tuple(operations)})
+        )
         return True
 
     def operation_source_names(
@@ -841,9 +868,8 @@ class FigureDocument:
         if self.recipe.primary_source == old_name:
             updates["primary_source"] = new_name
 
-        self.recipe = self.recipe.model_copy(update=updates)
-        self.source_data = source_data
-        self.source_selection_base_data = selection_base_data
+        self.replace_recipe(self.recipe.model_copy(update=updates))
+        self.replace_source_payloads(source_data, selection_base_data)
         return True
 
     def duplicate_sources(self, names: Sequence[str]) -> tuple[str, ...]:
@@ -875,9 +901,8 @@ class FigureDocument:
         insert_index = max(indices) + 1
         sources[insert_index:insert_index] = duplicates
 
-        self.recipe = self.recipe.model_copy(update={"sources": tuple(sources)})
-        self.source_data = source_data
-        self.source_selection_base_data = selection_base_data
+        self.replace_recipe(self.recipe.model_copy(update={"sources": tuple(sources)}))
+        self.replace_source_payloads(source_data, selection_base_data)
         return tuple(source.name for source in duplicates)
 
     def _source_copy_alias(self, source_name: str, reserved: set[str]) -> str:
@@ -947,7 +972,7 @@ class FigureDocument:
                     moved = True
         if not moved:
             return False
-        self.recipe = self.recipe.model_copy(update={"sources": tuple(sources)})
+        self.replace_recipe(self.recipe.model_copy(update={"sources": tuple(sources)}))
         return True
 
     def reorder_sources(self, ordered_names: Sequence[str]) -> bool:
@@ -959,8 +984,10 @@ class FigureDocument:
         current_order = tuple(source.name for source in self.recipe.sources)
         if names == current_order:
             return False
-        self.recipe = self.recipe.model_copy(
-            update={"sources": tuple(source_by_name[name] for name in names)}
+        self.replace_recipe(
+            self.recipe.model_copy(
+                update={"sources": tuple(source_by_name[name] for name in names)}
+            )
         )
         return True
 
@@ -997,9 +1024,8 @@ class FigureDocument:
         for name in removed:
             source_data.pop(name, None)
             selection_base_data.pop(name, None)
-        self.recipe = self.recipe.model_copy(update=updates)
-        self.source_data = source_data
-        self.source_selection_base_data = selection_base_data
+        self.replace_recipe(self.recipe.model_copy(update=updates))
+        self.replace_source_payloads(source_data, selection_base_data)
         return tuple(removed)
 
     @staticmethod
@@ -1100,15 +1126,16 @@ class FigureDocument:
         )
         if not result:
             return result
-        self.source_data = candidate_data
-        self.source_selection_base_data = candidate_bases
-        self.recipe = self.recipe.model_copy(
-            update={
-                "sources": tuple(
-                    candidate_sources[source.name] for source in self.recipe.sources
-                )
-            }
+        self.replace_recipe(
+            self.recipe.model_copy(
+                update={
+                    "sources": tuple(
+                        candidate_sources[source.name] for source in self.recipe.sources
+                    )
+                }
+            )
         )
+        self.replace_source_payloads(candidate_data, candidate_bases)
         return result
 
     def recompute_source_dependents(
@@ -1302,11 +1329,10 @@ class FigureDocument:
         )
         if not result:
             return result
-        self.recipe = self.recipe.model_copy(
-            update={"sources": tuple(existing.values())}
+        self.replace_recipe(
+            self.recipe.model_copy(update={"sources": tuple(existing.values())})
         )
-        self.source_data = candidate_data
-        self.source_selection_base_data = candidate_bases
+        self.replace_source_payloads(candidate_data, candidate_bases)
         return result
 
     def replace_source(
@@ -1387,9 +1413,10 @@ class FigureDocument:
         except ValueError as exc:
             return FigureSourceUpdateResult(skipped=((alias, str(exc)),))
 
-        self.recipe = self.recipe.model_copy(update={"sources": tuple(source_list)})
-        self.source_data = candidate_data
-        self.source_selection_base_data = candidate_bases
+        self.replace_recipe(
+            self.recipe.model_copy(update={"sources": tuple(source_list)})
+        )
+        self.replace_source_payloads(candidate_data, candidate_bases)
         return FigureSourceUpdateResult(updated=(replacement_name,))
 
     def refresh_sources(
@@ -1436,8 +1463,7 @@ class FigureDocument:
         )
         if not result:
             return result
-        self.source_data = candidate_data
-        self.source_selection_base_data = candidate_bases
+        self.replace_source_payloads(candidate_data, candidate_bases)
         return result
 
     def discard_source_data(self, names: Iterable[str]) -> tuple[str, ...]:
@@ -1456,8 +1482,7 @@ class FigureDocument:
         for name in discarded:
             source_data.pop(name, None)
             selection_base_data.pop(name, None)
-        self.source_data = source_data
-        self.source_selection_base_data = selection_base_data
+        self.replace_source_payloads(source_data, selection_base_data)
         return discarded
 
     def axes_selection_has_invalid_target(

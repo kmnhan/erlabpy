@@ -7,7 +7,7 @@ from erlab.interactive._figurecomposer import (
     FigureGridSpecSpanState,
     FigureSubplotsState,
 )
-from erlab.interactive._figurecomposer._layout_panel import FigureLayoutPanel
+from erlab.interactive._figurecomposer._ui._layout_panel import FigureLayoutPanel
 
 
 def _grid_setup(*, child: FigureGridSpecGridState | None = None) -> FigureSubplotsState:
