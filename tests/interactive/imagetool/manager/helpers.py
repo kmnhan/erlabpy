@@ -122,6 +122,16 @@ def activate_widget_shortcut(widget: QtWidgets.QWidget, sequence: str) -> None:
     raise AssertionError(f"{sequence!r} shortcut is not registered on {widget!r}")
 
 
+def adopt_workspace_path(manager: ImageToolManager, path: str | pathlib.Path) -> None:
+    """Adopt a workspace path while preserving the document-lock contract."""
+    controller = manager._workspace_controller
+    with controller._workspace_document_access_context(path) as access:
+        controller._set_workspace_path(
+            access.path,
+            workspace_lock=access.take_lock(),
+        )
+
+
 def console_helper_dependency(value):
     return value + CONSOLE_HELPER_OFFSET
 

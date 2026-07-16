@@ -1,6 +1,51 @@
-# ruff: noqa: F403, F405
+import types
+import typing
+import warnings
+from pathlib import Path
 
-from ._common import *
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import numpy as np
+import pytest
+import xarray as xr
+from matplotlib import colors as mcolors
+from matplotlib import style as mpl_style
+from qtpy import QtCore, QtWidgets
+
+import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
+import erlab.interactive._figurecomposer._text as figurecomposer_text
+import erlab.interactive._figurecomposer._ui._editor_controls as _editor_controls
+import erlab.interactive._stylesheets
+import erlab.plotting as eplt
+from erlab.interactive._figurecomposer import (
+    FigureAxesSelectionState,
+    FigureComposerTool,
+    FigureDataSelectionState,
+    FigureGridSpecAxesState,
+    FigureGridSpecGridState,
+    FigureGridSpecLayoutState,
+    FigureGridSpecSpanState,
+    FigureOperationKind,
+    FigureOperationState,
+    FigureRecipeState,
+    FigureSourceState,
+    FigureSubplotsState,
+)
+from erlab.interactive._figurecomposer._model import (
+    _operation_metadata as figurecomposer_operation_metadata,
+)
+from erlab.interactive._figurecomposer._operations import (
+    _plot_array as figurecomposer_plot_array,
+)
+from tests.interactive.imagetool.manager.helpers import _exec_generated_code
+
+from ._common import (
+    _activate_combo_index,
+    _activate_combo_text,
+    _figure_composer_image_source,
+    _select_operation_rows,
+    _set_figure_stylesheets,
+)
 
 
 def _source_selection_widget(

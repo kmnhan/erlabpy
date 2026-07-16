@@ -35,8 +35,11 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._details_panel import (
         _DetailsPanelController,
     )
+    from erlab.interactive.imagetool.manager._figurecomposer._collection import (
+        _FigureCollectionController,
+    )
     from erlab.interactive.imagetool.manager._figurecomposer._controller import (
-        _FigureComposerController,
+        _FigureComposerWorkflowController,
     )
     from erlab.interactive.imagetool.manager._heartbeat import (
         _RegistryHeartbeatController,
@@ -162,7 +165,8 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _dependency_tracker: _ManagerDependencyTracker
     _details_panel: _DetailsPanelController
     _file_handlers: set[_MultiFileHandler]
-    _figure_controller: _FigureComposerController
+    _figure_collection: _FigureCollectionController
+    _figure_workflows: _FigureComposerWorkflowController
     _ignored_warning_messages: set[str]
     _kb_filter: erlab.interactive.utils.KeyboardEventFilter
     _link_registry: _ManagerLinkRegistry
@@ -322,7 +326,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         return self._is_figure_node(node)
 
     def _selected_figure_uids(self) -> list[str]:
-        return self._figure_controller.selected_uids()
+        return self._figure_collection.selected_uids()
 
     def _selected_imagetool_targets(self) -> list[int | str]:
         targets: list[int | str] = list(self.tree_view.selected_imagetool_indices)

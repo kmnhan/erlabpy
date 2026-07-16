@@ -1,5 +1,34 @@
-# ruff: noqa: F403, F405
+from __future__ import annotations
 
+import typing
+
+if typing.TYPE_CHECKING:
+    from collections.abc import Callable
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pytest
+import xarray as xr
+from qtpy import QtCore, QtGui, QtWidgets
+
+import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
+import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
+import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
+import erlab.interactive._stylesheets
+from erlab.interactive._figurecomposer import (
+    FigureAxesSelectionState,
+    FigureComposerTool,
+    FigureGridSpecAxesState,
+    FigureGridSpecGridState,
+    FigureGridSpecLayoutState,
+    FigureGridSpecSpanState,
+    FigureMethodFamily,
+    FigureMethodPlotValueState,
+    FigureOperationState,
+    FigureRecipeState,
+    FigureSourceState,
+    FigureSubplotsState,
+)
 from erlab.interactive._figurecomposer._operations._method import (
     _catalog as method_catalog,
 )
@@ -14,12 +43,21 @@ from erlab.interactive._figurecomposer._operations._method import (
 )
 from erlab.interactive._figurecomposer._operations._method import _state as method_state
 
-from ._common import *
+from ._common import (
+    _activate_combo_index,
+    _activate_combo_text,
+    _click_tick_params_segment,
+    _figure_composer_profile_source,
+    _finish_tick_params_edit,
+    _select_operation_rows,
+    _selected_operation_rows,
+    _set_tick_params_button,
+)
 
 
 @pytest.mark.parametrize(
     ("family", "methods", "target_domain"),
-    (
+    [
         (
             FigureMethodFamily.AXES,
             method_catalog.AXES_METHODS,
@@ -35,7 +73,7 @@ from ._common import *
             method_catalog.ERLAB_METHODS,
             method_catalog.MethodTargetDomain.AXES,
         ),
-    ),
+    ],
 )
 def test_figure_composer_method_catalog_matches_document_target_semantics(
     family, methods, target_domain

@@ -21,7 +21,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.colors
-import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
+import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager._logging import get_log_file_path
@@ -1081,7 +1081,7 @@ _CURVE_PREVIEW_MAX_POINTS = 4096
 
 
 def _workspace_lock_owner_text(
-    lock_info: workspace_saving._WorkspaceDocumentLockInfo,
+    lock_info: workspace_storage._WorkspaceDocumentLockInfo,
 ) -> str:
     parts: list[str] = []
     if lock_info.owner:
@@ -1099,7 +1099,7 @@ def _workspace_lock_owner_text(
 
 def _workspace_lock_details_text(
     fname: str | os.PathLike[str],
-    lock_info: workspace_saving._WorkspaceDocumentLockInfo,
+    lock_info: workspace_storage._WorkspaceDocumentLockInfo,
 ) -> str:
     details = [
         f"Workspace: {pathlib.Path(fname)}",
@@ -1123,7 +1123,7 @@ def _show_workspace_file_lock_error(
     parent: QtWidgets.QWidget,
     fname: str | os.PathLike[str],
 ) -> None:
-    lock_info = workspace_saving._workspace_document_lock_info(fname)
+    lock_info = workspace_storage._workspace_document_lock_info(fname)
     owner_text = _workspace_lock_owner_text(lock_info)
     if owner_text:
         informative_text = (

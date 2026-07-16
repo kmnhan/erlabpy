@@ -237,11 +237,11 @@ def test_managed_window_actions_reveal_tree_and_figure_rows(
         assert not manager.reveal_nodes(("missing",))
 
         figure_tool.reveal_in_manager_action.trigger()
-        figure_pane = manager._figure_controller.pane
+        figure_pane = manager._figure_collection.pane
         assert figure_pane is not None
         assert manager.left_tabs.currentWidget() is figure_pane
         selected_figure_uids = {
-            manager._figure_controller.uid_from_item(item)
+            manager._figure_collection.uid_from_item(item)
             for item in figure_pane.list_widget.selectedItems()
         }
         assert selected_figure_uids == {figure_uid}
@@ -1262,8 +1262,10 @@ def test_batch_action_counts_pending_memory_imagetools_without_materializing(
             tool.hide()
 
         workspace_path = tmp_path / "pending-batch-targets.itws"
-        manager._save_workspace_document(workspace_path, force_full=True)
-        assert manager._load_workspace_file(
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path, replace=True, associate=True, mark_dirty=False, select=False
         )
         wrappers = [manager._tool_graph.root_wrappers[index] for index in range(2)]
@@ -2544,7 +2546,7 @@ def test_manager_notes_editor_actions(
         itool(test_data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         wrapper = manager._tool_graph.root_wrappers[0]
-        manager._mark_workspace_clean()
+        manager._workspace_controller._mark_workspace_clean()
 
         select_tools(manager, [0])
         manager._update_info()
@@ -3185,7 +3187,7 @@ def test_shutdown_remove_all_tools_skips_teardown_ui_refresh(
             lambda _uid: calls.append("childtool_removed"),
         )
         monkeypatch.setattr(
-            manager._figure_controller,
+            manager._figure_collection,
             "sync",
             lambda **_kwargs: calls.append("figures"),
         )
@@ -3196,7 +3198,7 @@ def test_shutdown_remove_all_tools_skips_teardown_ui_refresh(
             lambda _uid: calls.append("dependents"),
         )
         monkeypatch.setattr(
-            manager._figure_controller,
+            manager._figure_workflows,
             "_refresh_figure_source_controls",
             lambda: calls.append("source_controls"),
         )
@@ -3248,12 +3250,12 @@ def test_manager_append_reports_post_alias_plot_slices_error(
 
         errors: list[FigureComposerPlotSlicesSelectionError] = []
         monkeypatch.setattr(
-            manager._figure_controller,
+            manager._figure_workflows,
             "_figure_operations_from_image_targets",
             image_operations,
         )
         monkeypatch.setattr(
-            manager._figure_controller,
+            manager._figure_workflows,
             "_show_figure_plot_slices_selection_error",
             errors.append,
         )
@@ -3358,9 +3360,9 @@ def test_manager_figure_source_picker_skips_stale_rows_and_deduplicates_targets(
             root._childtool_indices[:] = original_children
 
         assert (
-            manager._figure_controller._figure_source_uid_for_target("missing") is None
+            manager._figure_workflows._figure_source_uid_for_target("missing") is None
         )
-        assert manager._figure_controller._figure_imagetool_targets(
+        assert manager._figure_workflows._figure_imagetool_targets(
             (0, root.uid, "missing", figure_uid)
         ) == (0,)
 
@@ -3370,7 +3372,7 @@ def test_manager_figure_source_picker_skips_stale_rows_and_deduplicates_targets(
                 "_selected_imagetool_targets",
                 lambda: (0, root.uid, "missing", figure_uid),
             )
-            assert manager._figure_controller._selected_figure_source_uids() == (
+            assert manager._figure_workflows._selected_figure_source_uids() == (
                 root.uid,
             )
 
@@ -4149,9 +4151,11 @@ def test_manager_workspace_reload_preserves_manual_root_name(
 
         manager.rename_imagetool(0, "saved manual root")
         workspace_path = tmp_path / "manual-root-name.itws"
-        manager._save_workspace_document(workspace_path, force_full=True)
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
 
-        assert manager._load_workspace_file(
+        assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,
             associate=True,
@@ -4220,9 +4224,11 @@ def test_manager_workspace_reload_preserves_manual_child_imagetool_name(
         manager._child_node(child_uid).name = "saved manual child"
 
         workspace_path = tmp_path / "manual-child-name.itws"
-        manager._save_workspace_document(workspace_path, force_full=True)
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
 
-        assert manager._load_workspace_file(
+        assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,
             associate=True,
@@ -4292,9 +4298,11 @@ def test_manager_notes_persist_workspace_roundtrip(
         )
 
         workspace_path = tmp_path / "notes.itws"
-        manager._save_workspace_document(workspace_path, force_full=True)
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
 
-        assert manager._load_workspace_file(
+        assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,
             associate=True,
@@ -5011,7 +5019,7 @@ def test_manager_selection_child_replays_stable_source_spec_after_coordinate_shi
         assert child_node.source_spec is not None
         original_source_spec = child_node.source_spec
 
-        tree = manager._to_datatree()
+        tree = manager._workspace_controller.saving._to_datatree()
         child_attrs = tree[f"0/childtools/{child_uid}/imagetool"].attrs
         assert "manager_node_live_source_binding" not in child_attrs
         assert "manager_node_live_source_spec" in child_attrs
@@ -5025,7 +5033,9 @@ def test_manager_selection_child_replays_stable_source_spec_after_coordinate_shi
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
         for node in tree.values():
-            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+            manager._workspace_controller.loading._load_workspace_node(
+                typing.cast("xr.DataTree", node)
+            )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         loaded_child = manager._child_node(child_uid)
@@ -5307,7 +5317,7 @@ def test_manager_ktool_output_itool_marks_stale_without_recomputing(
             original_set_metadata_node(node)
 
         monkeypatch.setattr(manager, "_set_metadata_node", _record_metadata_rebuild)
-        manager._mark_workspace_clean()
+        manager._workspace_controller._mark_workspace_clean()
 
         before = fetch(output_uid).copy(deep=True)
         wait_ms = int(1000 / child._UPDATE_LIMIT_HZ) + 50

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import collections
-import collections.abc
 import contextlib
 import copy
 import functools
@@ -11,7 +9,6 @@ import pathlib
 import time
 import typing
 
-import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
@@ -21,16 +18,11 @@ import erlab.interactive.imagetool.manager._workspace._format as workspace_forma
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
 import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.manager._workspace._state as workspace_state
+import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
 from erlab.interactive.imagetool import _serialization
-from erlab.interactive.imagetool._mainwindow import ImageTool
-from erlab.interactive.imagetool._provenance._model import (
-    FileDataSelection,
-    ToolProvenanceOperation,
-)
 from erlab.interactive.imagetool.manager import _desktop
-from erlab.interactive.imagetool.manager._dialogs import _is_loader_func
 from erlab.interactive.imagetool.manager._widgets import (
     _MAX_RECENT_WORKSPACES,
     _RECENT_WORKSPACES_SETTINGS_KEY,
@@ -45,16 +37,10 @@ from erlab.interactive.imagetool.manager._widgets import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import (
-        Callable,
-        Collection,
-        Iterable,
-        Iterator,
-        Mapping,
-        Sequence,
-    )
+    from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 
     import h5py
+    import xarray as xr
 
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._workspace._state import (
@@ -224,7 +210,7 @@ class _WorkspaceController:
                 native=native,
             )
         except Exception as exc:
-            if workspace_saving._is_workspace_file_lock_error(exc):
+            if workspace_storage._is_workspace_file_lock_error(exc):
                 logger.info(
                     "Workspace file is already open or locked: %s",
                     path,
@@ -387,7 +373,7 @@ class _WorkspaceController:
         workspace_path = pathlib.Path(fname).resolve()
         workspace_lock = None
         if workspace_path != self._manager._workspace_state.path:
-            workspace_lock = workspace_saving._acquire_workspace_document_lock(
+            workspace_lock = workspace_storage._acquire_workspace_document_lock(
                 workspace_path
             )
         return _WorkspaceDocumentAccess(workspace_path, workspace_lock)
@@ -713,10 +699,6 @@ class _WorkspaceController:
                 "Workspace file was saved, but live workspace data could not be "
                 "rebound to the saved file."
             ) from exc
-
-    def _adopt_workspace_path(self, fname: str | os.PathLike[str]) -> None:
-        with self._workspace_document_access_context(fname) as access:
-            self._set_workspace_path(access.path, workspace_lock=access.take_lock())
 
     def _active_managed_window(self) -> QtWidgets.QWidget | None:
         active_window = QtWidgets.QApplication.activeWindow()
@@ -1270,7 +1252,7 @@ class _WorkspaceController:
                     targets=offload_targets,
                     chunks={},
                 )
-                workspace_saving._write_workspace_root_attrs_to_file(
+                workspace_storage._write_workspace_root_attrs_to_file(
                     workspace_path,
                     self.saving._workspace_root_attrs_payload(
                         delta_save_count=self._manager._workspace_state.delta_save_count
@@ -2017,7 +1999,7 @@ class _WorkspaceController:
                 select=True,
             )
         except Exception as exc:
-            if workspace_saving._is_workspace_file_lock_error(exc):
+            if workspace_storage._is_workspace_file_lock_error(exc):
                 logger.info(
                     "Workspace file is already open or locked: %s",
                     fname,
@@ -2039,267 +2021,3 @@ class _WorkspaceController:
             if loaded:
                 self._record_recent_workspace(fname)
             return loaded
-
-    def open(self, *, native: bool = True) -> None:
-        """Open files in a new ImageTool window.
-
-        Parameters
-        ----------
-        native
-            Whether to use the native file dialog, by default `True`. This option is
-            used when testing the application to ensure reproducibility.
-        """
-        dialog = QtWidgets.QFileDialog(self._manager)
-        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
-        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFiles)
-        valid_loaders: dict[str, tuple[Callable, dict]] = (
-            erlab.interactive.utils.file_loaders()
-        )
-        dialog.setNameFilters(valid_loaders.keys())
-        if not native:
-            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
-
-        preferred_name_filter = self._manager._preferred_name_filter(valid_loaders)
-        if preferred_name_filter is not None:
-            dialog.selectNameFilter(preferred_name_filter)
-        if (directory := self._manager._recent_or_default_directory()) is not None:
-            dialog.setDirectory(directory)
-
-        if dialog.exec():
-            file_names = dialog.selectedFiles()
-            self._manager._recent_name_filter = dialog.selectedNameFilter()
-            self._manager._recent_directory = os.path.dirname(file_names[0])
-            func, kwargs = valid_loaders[self._manager._recent_name_filter]
-            if _is_loader_func(func):
-                selected = self._manager._select_loader_options(
-                    {self._manager._recent_name_filter: (func, kwargs)},
-                    self._manager._recent_name_filter,
-                    sample_paths=file_names,
-                )
-                if selected is None:
-                    return
-                self._manager._recent_name_filter, func, kwargs = selected
-            self._manager._add_from_multiple_files(
-                loaded=[],
-                queued=[pathlib.Path(f) for f in file_names],
-                failed=[],
-                func=func,
-                kwargs=kwargs,
-                retry_callback=lambda _: self._manager.open(native=native),
-            )
-
-    def _data_recv(
-        self,
-        data: list[xr.DataArray] | list[xr.Dataset],
-        kwargs: dict[str, typing.Any],
-        *,
-        watched_var: tuple[str, str] | None = None,
-        watched_metadata: Mapping[str, typing.Any] | None = None,
-        show: bool | None = None,
-    ) -> list[bool]:
-        """Slot function to receive data from the server.
-
-        DataArrays passed to this function are displayed in new ImageTool windows which
-        are added to the manager.
-
-        Parameters
-        ----------
-        data
-            A list of xarray.DataArray objects representing the data.
-
-            Also accepts a list of xarray.Dataset objects created with
-            ``ImageTool.to_dataset()``, in which case all other parameters are ignored.
-        kwargs
-            Additional keyword arguments to be passed to the ImageTool.
-        watched_var
-            If the tool is created from a watched variable, this should be a tuple of
-            the variable name and its unique ID.
-        show
-            Whether to show the created windows. By default, only show if `data`
-            contains only one DataArray.
-
-        Returns
-        -------
-        flags : list of bool
-            List of flags indicating whether the data was successfully received.
-        """
-        flags: list[bool] = []
-        if erlab.utils.misc.is_sequence_of(data, xr.Dataset):
-            for ds in data:
-                try:
-                    self._manager.add_imagetool(
-                        ImageTool.from_dataset(
-                            ds,
-                            _in_manager=True,
-                            options_model=self._manager.effective_interactive_options,
-                        ),
-                        activate=True,
-                    )
-                except Exception:
-                    flags.append(False)
-                    logger.exception(
-                        "Error creating ImageTool window",
-                        extra={"suppress_ui_alert": True},
-                    )
-                    self._manager._error_creating_imagetool()
-                else:
-                    flags.append(True)
-            return flags
-
-        try:
-            prepared_data = (
-                erlab.interactive.imagetool.viewer_state._prepare_input_data(
-                    typing.cast("list[xr.DataArray]", data),
-                    self._manager,
-                    allow_dialog=watched_var is None,
-                )
-            )
-        except ValueError:
-            logger.exception(
-                "Error creating ImageTool window",
-                extra={"suppress_ui_alert": True},
-            )
-            self._manager._error_creating_imagetool()
-            return [False for _item in data]
-        if prepared_data is None:
-            return [False for _item in data]
-
-        link = kwargs.pop("link", False)
-        link_colors = kwargs.pop("link_colors", True)
-        indices: list[int] = []
-        kwargs["_in_manager"] = True
-        kwargs.setdefault("options_model", self._manager.effective_interactive_options)
-
-        load_func = kwargs.pop("load_func", None)
-        load_selections = kwargs.pop("load_selections", None)
-        load_preparation_operations = kwargs.pop("preparation_operations", None)
-        source_input_ndims = kwargs.pop("source_input_ndims", None)
-        source_input_dtypes = kwargs.pop("source_input_dtypes", None)
-        if show is None:
-            show = len(prepared_data) == 1
-        watched_metadata = dict(watched_metadata or {})
-        if watched_var is not None:
-            watched_metadata.setdefault(
-                "workspace_link_id", self._manager._workspace_state.link_id
-            )
-
-        embedded_load_selection: FileDataSelection | None = None
-        if load_func is not None:
-            if len(load_func) not in (2, 3):
-                raise ValueError(
-                    "load_func must contain a loader and kwargs, optionally followed "
-                    "by one selection"
-                )
-            if len(load_func) == 2 and load_selections is None:
-                raise ValueError(
-                    "A two-item load_func requires explicit load_selections"
-                )
-            if len(load_func) == 3:
-                if not isinstance(load_func[2], FileDataSelection):
-                    raise TypeError("load_func selection must be a FileDataSelection")
-                if load_selections is None and len(prepared_data) != 1:
-                    raise ValueError(
-                        "A load_func selection can only describe one prepared array"
-                    )
-                embedded_load_selection = load_func[2]
-
-        normalized_load_selections: tuple[FileDataSelection, ...] | None = None
-        if load_selections is not None:
-            if isinstance(load_selections, str | bytes) or not isinstance(
-                load_selections, collections.abc.Sequence
-            ):
-                raise TypeError("load_selections must be a sequence")
-            normalized_load_selections = tuple(load_selections)
-            if len(normalized_load_selections) != len(prepared_data):
-                raise ValueError(
-                    "load_selections must contain one selection per prepared array"
-                )
-            if any(
-                not isinstance(selection, FileDataSelection)
-                for selection in normalized_load_selections
-            ):
-                raise TypeError(
-                    "load_selections must contain FileDataSelection instances"
-                )
-
-        for i, prepared in enumerate(prepared_data):
-            d = prepared.data
-            # Set selection-specific load function if provided
-            load_selection = (
-                normalized_load_selections[i]
-                if normalized_load_selections is not None
-                else (
-                    embedded_load_selection
-                    if embedded_load_selection is not None
-                    else prepared.selection
-                )
-            )
-            this_load_func = (*load_func[:2], load_selection) if load_func else None
-            preparation_operations = (
-                tuple(
-                    typing.cast(
-                        "Sequence[ToolProvenanceOperation]",
-                        load_preparation_operations,
-                    )[i]
-                )
-                if load_preparation_operations is not None
-                else prepared.operations
-            )
-            source_input_ndim = (
-                typing.cast("Sequence[int]", source_input_ndims)[i]
-                if source_input_ndims is not None
-                else prepared.source_ndim
-            )
-            source_input_dtype = (
-                typing.cast("Sequence[typing.Any]", source_input_dtypes)[i]
-                if source_input_dtypes is not None
-                else prepared.source_dtype
-            )
-            try:
-                indices.append(
-                    self._manager.add_imagetool(
-                        ImageTool(
-                            d,
-                            **kwargs,
-                            load_func=this_load_func,
-                            preparation_operations=preparation_operations,
-                        ),
-                        show=show,
-                        activate=show,
-                        watched_var=watched_var,
-                        watched_workspace_link_id=typing.cast(
-                            "str | None",
-                            watched_metadata.get("workspace_link_id"),
-                        ),
-                        watched_source_label=typing.cast(
-                            "str | None", watched_metadata.get("source_label")
-                        ),
-                        watched_source_uid=typing.cast(
-                            "str | None", watched_metadata.get("source_uid")
-                        ),
-                        watched_connected=bool(
-                            watched_metadata.get("connected", watched_var is not None)
-                        ),
-                        source_input_ndim=source_input_ndim,
-                        source_input_dtype=source_input_dtype,
-                    )
-                )
-                if watched_var is not None:
-                    # Refresh title to include variable name
-                    node = self._manager._node_for_target(indices[-1])
-                    if node.imagetool is not None:
-                        node.imagetool._update_title()
-            except Exception:
-                flags.append(False)
-                logger.exception(
-                    "Error creating ImageTool window",
-                    extra={"suppress_ui_alert": True},
-                )
-                self._manager._error_creating_imagetool()
-            else:
-                flags.append(True)
-
-        if link:
-            self._manager.link_imagetools(*indices, link_colors=link_colors)
-
-        return flags

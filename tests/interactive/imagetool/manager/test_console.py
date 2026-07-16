@@ -935,11 +935,13 @@ def test_manager_console_bare_expression_opens_provenance_root(
             "str", provenance.operations[-1].derivation_entry().code
         )
 
-        tree = manager._to_datatree()
+        tree = manager._workspace_controller.saving._to_datatree()
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
         for node in tree.values():
-            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+            manager._workspace_controller.loading._load_workspace_node(
+                typing.cast("xr.DataTree", node)
+            )
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
         loaded = [
@@ -3208,8 +3210,10 @@ def test_manager_reload_script_inputs_after_workspace_roundtrip(
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
         workspace_path = tmp_path / "script-derived-reload.itws"
-        manager._save_workspace_document(workspace_path, force_full=True)
-        assert manager._load_workspace_file(
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,
             associate=True,
@@ -3531,8 +3535,10 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
         workspace_path = tmp_path / "shared-replay.itws"
-        manager._save_workspace_document(workspace_path, force_full=True)
-        assert manager._load_workspace_file(
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,
             associate=True,
@@ -4428,11 +4434,13 @@ def test_manager_console_replacement_updates_provenance_and_descendants(
             == "data_0 = data_0.assign_coords(time=data_1.time)"
         )
 
-        tree = manager._to_datatree()
+        tree = manager._workspace_controller.saving._to_datatree()
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
         for node in tree.values():
-            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+            manager._workspace_controller.loading._load_workspace_node(
+                typing.cast("xr.DataTree", node)
+            )
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
         loaded_provenance = manager._tool_graph.root_wrappers[0].provenance_spec

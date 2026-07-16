@@ -39,9 +39,6 @@ from erlab.interactive.imagetool.manager._modelview import (
     _RowBadge,
 )
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
-from erlab.interactive.imagetool.manager._workspace._controller import (
-    _WorkspaceController,
-)
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
 from .helpers import (
@@ -491,7 +488,7 @@ def test_treeview(qtbot, accept_dialog, test_data) -> None:
         widget._workspace_state.loading_depth += 1
         try:
             widget.remove_all_tools()
-            widget._mark_workspace_clean()
+            widget._workspace_controller._mark_workspace_clean()
         finally:
             widget._workspace_state.loading_depth -= 1
 
@@ -654,7 +651,7 @@ def test_childtool_state_changed_marks_dirty_without_details_refresh(
             original_set_metadata_node(node)
 
         monkeypatch.setattr(manager, "_set_metadata_node", _record_metadata_rebuild)
-        manager._mark_workspace_clean()
+        manager._workspace_controller._mark_workspace_clean()
 
         tool.sigStateChanged.emit()
 
@@ -663,7 +660,7 @@ def test_childtool_state_changed_marks_dirty_without_details_refresh(
         assert ("tool-info-refresh", uid) not in manager._interaction_gate.pending_keys
 
         child_node = manager._child_node(uid)
-        manager._mark_workspace_clean()
+        manager._workspace_controller._mark_workspace_clean()
         original_node = manager._tool_graph.nodes[uid]
         try:
             manager._tool_graph.nodes[uid] = object()
@@ -766,7 +763,7 @@ def test_childtool_data_changed_deduplicates_descendant_refresh(
             lambda: uid in manager._tool_graph.root_wrappers[0]._childtool_indices,
             timeout=5000,
         )
-        manager._mark_workspace_clean()
+        manager._workspace_controller._mark_workspace_clean()
 
         propagated_uids: list[str] = []
         refreshed_uids: list[str | None] = []
@@ -884,7 +881,7 @@ def test_childtool_repeated_info_changes_mark_state_dirty_once(
             lambda: uid in manager._tool_graph.root_wrappers[0]._childtool_indices,
             timeout=5000,
         )
-        manager._mark_workspace_clean()
+        manager._workspace_controller._mark_workspace_clean()
 
         tool.emit_info_text("first")
         tool.emit_info_text("second")
@@ -911,7 +908,7 @@ def test_root_imagetool_repeated_history_changes_mark_state_dirty_once(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         workspace = tmp_path / "normal.itws"
         manager._workspace_state.path = workspace
-        manager._mark_workspace_clean()
+        manager._workspace_controller._mark_workspace_clean()
         file_path_calls: list[str] = []
         modified_calls: list[bool] = []
         monkeypatch.setattr(
@@ -975,7 +972,7 @@ def test_remove_imagetool_removes_childtools() -> None:
         _mark_singleton_workspace_link_groups_dirty=lambda _link_keys: None,
         _remove_uid_target=lambda child_uid: removed_uids.append(child_uid),
         _refresh_dependency_dependents=lambda _uid: None,
-        _figure_controller=types.SimpleNamespace(
+        _figure_workflows=types.SimpleNamespace(
             _refresh_figure_source_controls=lambda: refresh_calls.append(None)
         ),
         _workspace_state=types.SimpleNamespace(closing_document=False),
@@ -1371,7 +1368,7 @@ def test_manager_open_preselects_default_loader_filter(
         },
     )
 
-    _WorkspaceController(manager).open(native=False)
+    manager_io._DataIngressController(manager).open(native=False)
 
     assert selected_filters == [example_filter]
     assert directories == [default_directory]
@@ -1758,9 +1755,6 @@ def test_manager_open_loader_selection_branches(
             self._recent_directory = None
             self.effective_interactive_options = erlab.interactive.options.model
             self._select_loader_options = _select_loader_options
-            self._add_from_multiple_files = lambda *args, **kwargs: add_calls.append(
-                (args, kwargs)
-            )
 
         def _recent_or_default_directory(self) -> str | None:
             return self._recent_directory
@@ -1783,7 +1777,13 @@ def test_manager_open_loader_selection_branches(
         },
     )
 
-    _WorkspaceController(manager).open(native=False)
+    ingress = manager_io._DataIngressController(manager)
+    monkeypatch.setattr(
+        ingress,
+        "add_from_multiple_files",
+        lambda *args, **kwargs: add_calls.append((args, kwargs)),
+    )
+    ingress.open(native=False)
 
     if case == "loader_cancel":
         assert len(select_calls) == 1
@@ -1950,7 +1950,7 @@ def test_manager_file_loads_with_loader_extensions(
             slicer_area.reload()
         assert float(slicer_area._data["gui_extra"]) == 7.0
 
-        tree = manager._to_datatree()
+        tree = manager._workspace_controller.saving._to_datatree()
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
         accept_dialog(lambda: manager._from_datatree(tree))

@@ -97,15 +97,15 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/interactive/imagetool/manager/test_modelview.py",
         "tests/interactive/imagetool/manager/test_wrapper.py",
     ),
-    "cov-qt-manager-workspace-a": _split_test_file_targets(
-        "tests/interactive/imagetool/manager/test_workspace.py",
-        index=0,
-        total=2,
+    "cov-qt-manager-workspace-a": (
+        "tests/interactive/imagetool/manager/workspace/test_arrays.py",
+        "tests/interactive/imagetool/manager/workspace/test_format.py",
+        "tests/interactive/imagetool/manager/workspace/test_saving.py",
     ),
-    "cov-qt-manager-workspace-b": _split_test_file_targets(
-        "tests/interactive/imagetool/manager/test_workspace.py",
-        index=1,
-        total=2,
+    "cov-qt-manager-workspace-b": (
+        "tests/interactive/imagetool/manager/workspace/test_document.py",
+        "tests/interactive/imagetool/manager/workspace/test_loading.py",
+        "tests/interactive/imagetool/manager/workspace/test_storage.py",
     ),
     "cov-qt-manager-provenance-console": (
         "tests/interactive/imagetool/manager/test_provenance.py",

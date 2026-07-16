@@ -1,8 +1,41 @@
-# ruff: noqa: F403, F405
+import json
+import types
+import typing
+from pathlib import Path
+
+import numpy as np
+import pytest
+import xarray as xr
+from matplotlib.figure import Figure
+from qtpy import QtCore, QtGui, QtWidgets
+
 import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
+import erlab.interactive._figurecomposer._model._sources as figurecomposer_sources
+import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
 import erlab.interactive._figurecomposer._ui._axes_widgets as axes_widgets
+import erlab.interactive._figurecomposer._ui._editor_controls as _editor_controls
 import erlab.interactive._figurecomposer._ui._figure_window as figure_window_ui
+import erlab.interactive._stylesheets
+import erlab.plotting as eplt
+from erlab.interactive._figurecomposer import (
+    FigureAxesSelectionState,
+    FigureComposerTool,
+    FigureDataSelectionState,
+    FigureGridSpecAxesState,
+    FigureGridSpecGridState,
+    FigureGridSpecLayoutState,
+    FigureGridSpecSpanState,
+    FigureMethodFamily,
+    FigureMethodPlotValueState,
+    FigureOperationState,
+    FigureRecipeState,
+    FigureSourceState,
+    FigureSubplotsState,
+)
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._model import (
+    _operation_metadata as figurecomposer_operation_metadata,
+)
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _editor as plot_slices_editor,
 )
@@ -10,7 +43,13 @@ from erlab.interactive._figurecomposer._operations._plot_slices import (
     _model as plot_slices_model,
 )
 from erlab.interactive._figurecomposer._ui import (
+    _source_inspector as figurecomposer_source_inspector,
+)
+from erlab.interactive._figurecomposer._ui import (
     _source_panel as figurecomposer_source_panel,
+)
+from erlab.interactive._figurecomposer._ui import (
+    _toolbar_dialogs as figurecomposer_toolbar_dialogs,
 )
 from erlab.interactive.imagetool._provenance._execution import execute_replay_graph
 from erlab.interactive.imagetool._provenance._graph import compile_replay_graph
@@ -26,8 +65,21 @@ from erlab.interactive.imagetool._provenance._operations import (
     QSelAggregationOperation,
     QSelOperation,
 )
+from tests.interactive.imagetool.manager.helpers import _exec_generated_code
 
-from ._common import *
+from ._common import (
+    _activate_combo_index,
+    _clear_clipboard,
+    _custom_order_step,
+    _figure_composer_image_source,
+    _figure_composer_profile_source,
+    _file_load_provenance,
+    _operation_source_status_label,
+    _plot_source_checks,
+    _render_figure_composer_rgba,
+    _restored_figure_composer_from_netcdf,
+    _select_operation_rows,
+)
 
 
 def _source_context_action(
@@ -96,7 +148,7 @@ def test_figure_composer_source_state_normalizes_legacy_self_selection_parent() 
     )
     assert immutable_source.selection_source is None
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="valid dictionary"):
         FigureSourceState.model_validate("not a source mapping")
 
     legacy_source = FigureSourceState(name="selected").model_copy(
@@ -178,7 +230,7 @@ def test_figure_composer_secondary_source_roundtrip_ignores_stale_backend_encodi
     assert secondary.coords["x"].encoding["compression"] == "unknown"
 
 
-@pytest.mark.parametrize("retain_base_data", (False, True))
+@pytest.mark.parametrize("retain_base_data", [False, True])
 def test_figure_composer_selected_source_roundtrip_applies_selection_once(
     qtbot, retain_base_data: bool
 ) -> None:
@@ -2009,7 +2061,7 @@ def test_figure_composer_legacy_source_selection_normalization_edges(
 
 @pytest.mark.parametrize(
     ("operation_sources", "selection_values", "expected"),
-    (
+    [
         (("first",), (("first", 0.0), ("first", 2.0)), (0.0, 2.0)),
         (
             ("first", "second"),
@@ -2022,7 +2074,7 @@ def test_figure_composer_legacy_source_selection_normalization_edges(
             (0.0, 2.0),
         ),
         ((), (("first", 2.0), ("first", 0.0)), (2.0, 0.0)),
-    ),
+    ],
 )
 def test_figure_composer_plot_slices_legacy_selections_preserve_source_order(
     qtbot,
@@ -2317,7 +2369,7 @@ def _transitive_selected_source_tool() -> tuple[
     return tool, base, selected_u, selected_v
 
 
-@pytest.mark.parametrize("mutation", ("replace", "add", "refresh"))
+@pytest.mark.parametrize("mutation", ["replace", "add", "refresh"])
 def test_figure_composer_source_refresh_recomputes_transitive_selected_sources(
     qtbot,
     mutation: str,
@@ -2447,7 +2499,7 @@ def test_figure_composer_add_sources_reports_partial_batch_outcome(qtbot) -> Non
     assert not tool.source_panel.source_status_label.isHidden()
 
 
-@pytest.mark.parametrize("mutation", ("replace", "add", "refresh"))
+@pytest.mark.parametrize("mutation", ["replace", "add", "refresh"])
 def test_figure_composer_source_refresh_is_atomic_when_dependent_selection_fails(
     qtbot,
     mutation: str,

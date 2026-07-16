@@ -6783,7 +6783,7 @@ def test_manager_workspace_roundtrip_filtered_child_records_filter_once(
         )
         child_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
 
-        tree = manager._to_datatree()
+        tree = manager._workspace_controller.saving._to_datatree()
         saved = typing.cast(
             "xr.DataTree", tree[f"0/childtools/{child_uid}/imagetool"]
         ).to_dataset(inherit=False)
@@ -6795,7 +6795,9 @@ def test_manager_workspace_roundtrip_filtered_child_records_filter_once(
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
         for node in tree.values():
-            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+            manager._workspace_controller.loading._load_workspace_node(
+                typing.cast("xr.DataTree", node)
+            )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         loaded_node = manager._child_node(child_uid)
@@ -6902,7 +6904,7 @@ def test_manager_operation_filter_preserves_output_binding(
         assert duplicated_node.source_spec is None
         xr.testing.assert_identical(fetch(duplicated_uid), expected)
 
-        tree = manager._to_datatree()
+        tree = manager._workspace_controller.saving._to_datatree()
         saved = typing.cast(
             "xr.DataTree",
             tree[f"0/childtools/{child_uid}/childtools/{output_uid}/imagetool"],
@@ -7115,13 +7117,15 @@ def test_manager_workspace_roundtrip_independent_unbound_imagetool(
         child.main_image.open_itool()
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
-        tree = manager._to_datatree()
+        tree = manager._workspace_controller.saving._to_datatree()
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
         for node in tree.values():
-            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+            manager._workspace_controller.loading._load_workspace_node(
+                typing.cast("xr.DataTree", node)
+            )
 
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
@@ -10090,7 +10094,7 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
         accept_dialog(root_tool.mnb._average, pre_call=_detach_average)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
-        tree = manager._to_datatree()
+        tree = manager._workspace_controller.saving._to_datatree()
         provenance_payload = json.loads(
             tree["1/imagetool"].attrs["manager_node_provenance_spec"]
         )
@@ -10111,7 +10115,9 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
         for node in tree.values():
-            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+            manager._workspace_controller.loading._load_workspace_node(
+                typing.cast("xr.DataTree", node)
+            )
 
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         detached = manager._tool_graph.root_wrappers[1]
@@ -10204,7 +10210,7 @@ def test_manager_workspace_loads_legacy_321_provenance_payload(
         itool(test_data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        tree = manager._to_datatree()
+        tree = manager._workspace_controller.saving._to_datatree()
         tree["0/imagetool"].attrs["manager_node_provenance_spec"] = json.dumps(
             legacy_payload
         )
@@ -10212,7 +10218,9 @@ def test_manager_workspace_loads_legacy_321_provenance_payload(
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
         for node in tree.values():
-            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+            manager._workspace_controller.loading._load_workspace_node(
+                typing.cast("xr.DataTree", node)
+            )
 
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         loaded = manager._tool_graph.root_wrappers[0]
@@ -11714,8 +11722,10 @@ def test_manager_paste_structured_provenance_steps_into_pending_memory_imagetool
         tool.hide()
 
         workspace_path = tmp_path / "pending-provenance-paste.itws"
-        manager._save_workspace_document(workspace_path, force_full=True)
-        assert manager._load_workspace_file(
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path, replace=True, associate=True, mark_dirty=False, select=False
         )
         node = manager._tool_graph.root_wrappers[index]
@@ -12664,8 +12674,12 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         workspace_link_id = manager._workspace_state.link_id
-        tree = manager._to_datatree()
-        tree.attrs.update(manager._workspace_root_attrs_payload(delta_save_count=0))
+        tree = manager._workspace_controller.saving._to_datatree()
+        tree.attrs.update(
+            manager._workspace_controller.saving._workspace_root_attrs_payload(
+                delta_save_count=0
+            )
+        )
         manifest = json.loads(tree.attrs["imagetool_workspace_manifest"])
         assert manifest["workspace_link_id"] == workspace_link_id
         attrs = tree["0/imagetool"].attrs
@@ -12679,7 +12693,9 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
         manager._workspace_state.link_id = "different-workspace-link"
 
-        manager._load_workspace_node(typing.cast("xr.DataTree", tree["0"]))
+        manager._workspace_controller.loading._load_workspace_node(
+            typing.cast("xr.DataTree", tree["0"])
+        )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         wrapper = manager._tool_graph.root_wrappers[0]
@@ -12720,7 +12736,7 @@ def test_manager_workspace_watched_attrs_skip_missing_workspace_link(
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        attrs = manager._to_datatree()["0/imagetool"].attrs
+        attrs = manager._workspace_controller.saving._to_datatree()["0/imagetool"].attrs
         assert attrs["manager_node_watched_varname"] == "data"
         assert attrs["manager_node_watched_uid"] == "watch:stable-data"
         assert "manager_node_watched_workspace_link_id" not in attrs
@@ -13685,14 +13701,16 @@ def test_manager_workspace_roundtrip_watched_1d_root_preserves_copy_code_cleanup
         manager._data_recv([data], {}, watched_var=("my_1d", "kernel-0"))
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        tree = manager._to_datatree()
+        tree = manager._workspace_controller.saving._to_datatree()
         assert tree["0/imagetool"].attrs["manager_node_source_input_ndim"] == 1
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
         for node in tree.values():
-            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+            manager._workspace_controller.loading._load_workspace_node(
+                typing.cast("xr.DataTree", node)
+            )
 
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 

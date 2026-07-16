@@ -39,8 +39,11 @@ from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
 )
 from erlab.interactive.ptable import PeriodicTableWindow
-
-from .helpers import action_map_by_object_name, menu_map_by_object_name
+from tests.interactive.imagetool.manager.helpers import (
+    action_map_by_object_name,
+    adopt_workspace_path,
+    menu_map_by_object_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -444,7 +447,7 @@ def test_manager_workspace_properties_action_uses_current_state(
 
         workspace_path = tmp_path / "workspace.itws"
         workspace_path.touch()
-        manager._adopt_workspace_path(workspace_path)
+        adopt_workspace_path(manager, workspace_path)
 
         manager.workspace_properties_action.trigger()
         assert dialog_calls[-1][0] == str(workspace_path.resolve())

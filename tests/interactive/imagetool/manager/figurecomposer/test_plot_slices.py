@@ -1,5 +1,40 @@
-# ruff: noqa: F403, F405
+import typing
+import warnings
+from pathlib import Path
+
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import numpy as np
+import pytest
+import xarray as xr
+from matplotlib import colors as mcolors
+from matplotlib import style as mpl_style
+from matplotlib.figure import Figure
+from qtpy import QtCore, QtWidgets
+
+import erlab.accessors.general as accessor_general
+import erlab.interactive._figurecomposer._norms as figurecomposer_norms
+import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
+import erlab.interactive._figurecomposer._text as figurecomposer_text
+import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
+import erlab.interactive._stylesheets
 import erlab.interactive.imagetool._figurecomposer_adapter as figurecomposer_adapter
+import erlab.plotting as eplt
+from erlab.interactive._figurecomposer import (
+    FigureAxesSelectionState,
+    FigureComposerTool,
+    FigureDataSelectionState,
+    FigureMethodFamily,
+    FigureOperationKind,
+    FigureOperationState,
+    FigurePlotSlicesPanelStyleState,
+    FigureRecipeState,
+    FigureSourceState,
+    FigureSubplotsState,
+)
+from erlab.interactive._figurecomposer._exceptions import (
+    FigureComposerPlotSlicesSelectionError,
+)
 from erlab.interactive._figurecomposer._model._document import FigureDocument
 from erlab.interactive._figurecomposer._operations._method._catalog import _method_spec
 from erlab.interactive._figurecomposer._operations._method._editor import (
@@ -23,12 +58,34 @@ from erlab.interactive._figurecomposer._operations._plot_slices import (
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _spec as plot_slices_spec,
 )
+from erlab.interactive._figurecomposer._seeding import (
+    plot_slices_operation_with_source_styles,
+)
+from erlab.interactive._figurecomposer._ui import (
+    _toolbar_dialogs as figurecomposer_toolbar_dialogs,
+)
+from erlab.interactive._options import options
 from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
 )
 from erlab.interactive.imagetool._provenance._graph import _validate_script_code_names
 
-from ._common import *
+from ._common import (
+    _activate_combo_index,
+    _activate_combo_text,
+    _drag_widget,
+    _expected_line_colormap_colors,
+    _figure_composer_image_source,
+    _operation_section_button,
+    _operation_section_buttons,
+    _plot_source_checks,
+    _plot_source_move_buttons,
+    _render_figure_composer_rgba,
+    _select_operation_rows,
+    _set_figure_stylesheets,
+    _set_unsupported_plot_slices_cursor_state,
+    _unsupported_plot_slices_data,
+)
 
 
 def _plot_slices_selection_migration_data() -> xr.DataArray:

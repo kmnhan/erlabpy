@@ -3273,7 +3273,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
             self.unavailable: list[str] = []
             self.removed: list[str] = []
             self.figure_gallery_updates: list[str] = []
-            self._figure_controller = types.SimpleNamespace(
+            self._figure_collection = types.SimpleNamespace(
                 update_gallery_icon=self.figure_gallery_updates.append
             )
             self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []

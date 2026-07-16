@@ -1,6 +1,29 @@
-# ruff: noqa: F403, F405
+import typing
 
+import matplotlib as mpl
+import matplotlib.transforms as mtransforms
+import numpy as np
+import pytest
+import xarray as xr
+from matplotlib.container import ErrorbarContainer
+from qtpy import QtCore, QtWidgets
+
+import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._ui._color_widgets as color_widgets
+import erlab.interactive._figurecomposer._ui._editor_controls as _editor_controls
+from erlab.interactive._figurecomposer import (
+    FigureAxesSelectionState,
+    FigureComposerTool,
+    FigureMethodFamily,
+    FigureMethodPlotValueState,
+    FigureOperationState,
+    FigureRecipeState,
+    FigureSourceState,
+    FigureSubplotsState,
+)
+from erlab.interactive._figurecomposer._model import (
+    _operation_metadata as figurecomposer_operation_metadata,
+)
 from erlab.interactive._figurecomposer._operations._method import (
     _catalog as method_catalog,
 )
@@ -15,7 +38,15 @@ from erlab.interactive._figurecomposer._operations._method import (
 )
 from erlab.interactive._figurecomposer._operations._method import _state as method_state
 
-from ._common import *
+from ._common import (
+    _activate_combo_index,
+    _activate_combo_text,
+    _assert_errorbar_capsize,
+    _assert_errorbar_xerr,
+    _assert_errorbar_yerr,
+    _select_operation_rows,
+    _selected_operation_rows,
+)
 
 
 def test_figure_composer_axes_plot_data_update_helper(qtbot) -> None:

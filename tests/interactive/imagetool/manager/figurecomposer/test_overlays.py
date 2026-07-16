@@ -1,6 +1,51 @@
-# ruff: noqa: F403, F405
+from collections.abc import Sequence
 
-from ._common import *
+import numpy as np
+import pytest
+import xarray as xr
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
+from qtpy import QtWidgets
+
+import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
+import erlab.interactive._figurecomposer._seeding as figurecomposer_seeding
+import erlab.interactive._stylesheets
+from erlab.interactive._figurecomposer import (
+    FigureAxesSelectionState,
+    FigureComposerTool,
+    FigureGridSpecAxesState,
+    FigureGridSpecGridState,
+    FigureGridSpecLayoutState,
+    FigureGridSpecSpanState,
+    FigureOperationKind,
+    FigureOperationState,
+    FigureRecipeState,
+    FigureSourceState,
+    FigureSubplotsState,
+)
+from erlab.interactive._figurecomposer._operations import (
+    _bz_overlay as figurecomposer_bz_overlay,
+)
+from erlab.interactive._figurecomposer._operations import (
+    _photon_energy as figurecomposer_photon_energy,
+)
+from erlab.interactive._figurecomposer._seeding import (
+    bz_overlay_operation_from_ktool,
+    bz_overlay_operation_from_momentum_data,
+)
+from tests.interactive.imagetool.manager.helpers import _exec_generated_code
+
+from ._common import (
+    _activate_combo_index,
+    _activate_combo_text,
+    _assert_bz_lines_match_segments,
+    _assert_photon_energy_lines_match,
+    _bz_tool,
+    _clear_clipboard,
+    _photon_energy_source,
+    _photon_energy_tool,
+    _select_operation_rows,
+)
 
 
 def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:

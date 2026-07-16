@@ -2414,7 +2414,7 @@ class _FakeFigureManager:
         prompt_return: object = _DEFAULT_FIGURE_PROMPT,
     ) -> None:
         self._managed = managed
-        self._figure_controller = self
+        self._figure_workflows = self
         self._figure_uids_value = figure_uids
         self._append_return = append_return
         if prompt_return is _DEFAULT_FIGURE_PROMPT:

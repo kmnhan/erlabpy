@@ -13,9 +13,10 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._actions as manager_actions
+import erlab.interactive.imagetool.manager._io as manager_io
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
-import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
+import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.imagetool.manager._workspace import (
@@ -269,7 +270,7 @@ def test_data_recv_dataset_creation_error_no_duplicate_alert(
         staticmethod(_fake_critical),
     )
     monkeypatch.setattr(
-        workspace_controller.ImageTool,
+        manager_io.ImageTool,
         "from_dataset",
         staticmethod(_raise_from_dataset),
     )
@@ -307,7 +308,7 @@ def test_data_recv_dataarray_creation_error_no_duplicate_alert(
         staticmethod(_fake_critical),
     )
     monkeypatch.setattr(
-        workspace_controller,
+        manager_io,
         "ImageTool",
         _raise_imagetool,
     )
@@ -381,8 +382,8 @@ def test_workspace_file_lock_error_detects_nested_blocking_io() -> None:
     err = RuntimeError("open failed")
     err.__cause__ = BlockingIOError(35, "unable to lock file")
 
-    assert workspace_saving._is_workspace_file_lock_error(err)
-    assert not workspace_saving._is_workspace_file_lock_error(
+    assert workspace_storage._is_workspace_file_lock_error(err)
+    assert not workspace_storage._is_workspace_file_lock_error(
         RuntimeError("broken workspace")
     )
 
@@ -706,7 +707,9 @@ def test_open_retry_preserves_non_native_dialog(
                 retry_callback(None)
 
         monkeypatch.setattr(
-            manager, "_add_from_multiple_files", _fake_add_from_multiple_files
+            manager._data_ingress,
+            "add_from_multiple_files",
+            _fake_add_from_multiple_files,
         )
         ImageToolManager.open(manager, native=False)
 

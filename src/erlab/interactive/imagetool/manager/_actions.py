@@ -13,7 +13,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
-import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
+import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool import _kspace_conversion
 from erlab.interactive.imagetool._mainwindow import ImageTool
@@ -37,7 +37,6 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _RenameDialog,
     _StoreDialog,
 )
-from erlab.interactive.imagetool.manager._io import _MultiFileHandler
 from erlab.interactive.imagetool.manager._widgets import (
     _WATCHED_VAR_COLORS,
     _show_workspace_file_lock_error,
@@ -83,10 +82,10 @@ class _ActionsController:
         if len(selected_images) + len(selected_tools) == 1:
             target = selected_images[0] if selected_images else selected_tools[0]
             if isinstance(target, str) and self._manager._is_figure_uid(target):
-                pane = self._manager._figure_controller.pane
+                pane = self._manager._figure_collection.pane
                 if pane is None:
                     return
-                item = self._manager._figure_controller.item_for_uid(target)
+                item = self._manager._figure_collection.item_for_uid(target)
                 if item is not None:
                     pane.list_widget.editItem(item)
                 return
@@ -132,7 +131,7 @@ class _ActionsController:
                 new_uid = self._manager.duplicate_childtool(uid)
 
                 if self._manager._is_figure_uid(new_uid):
-                    self._manager._figure_controller.select_uid(new_uid)
+                    self._manager._figure_collection.select_uid(new_uid)
                     continue
 
                 qmodelindex = self._manager.tree_view._model._row_index(new_uid)
@@ -769,7 +768,7 @@ class _ActionsController:
             if node.parent_uid is None and self._manager._is_figure_node(node):
                 duplicated_tool = tool.duplicate()
                 duplicated_tool._tool_display_name = (
-                    self._manager._figure_controller.duplicated_display_name(
+                    self._manager._figure_collection.duplicated_display_name(
                         node.display_text
                     )
                 )
@@ -1244,7 +1243,7 @@ class _ActionsController:
                 try:
                     dt = workspace_arrays.open_workspace_datatree(p, chunks=None)
                 except Exception as exc:
-                    if workspace_saving._is_workspace_file_lock_error(exc):
+                    if workspace_storage._is_workspace_file_lock_error(exc):
                         logger.info(
                             "Workspace file is already open or locked: %s",
                             p,
@@ -1269,7 +1268,7 @@ class _ActionsController:
                             with self._manager._workspace_document_access_context(
                                 p
                             ) as access:
-                                workspace_saving._recover_workspace_transactions(
+                                workspace_storage._recover_workspace_transactions(
                                     access.path
                                 )
                                 workspace_dt = workspace_arrays.open_workspace_datatree(
@@ -1350,7 +1349,7 @@ class _ActionsController:
                                     if workspace_dt_owned:
                                         workspace_dt.close()
                         except Exception as exc:
-                            if workspace_saving._is_workspace_file_lock_error(exc):
+                            if workspace_storage._is_workspace_file_lock_error(exc):
                                 logger.info(
                                     "Workspace file is already open or locked: %s",
                                     p,
@@ -1467,30 +1466,6 @@ class _ActionsController:
             detailed_text=erlab.interactive.utils._format_traceback(error_text),
         )
 
-    def _add_from_multiple_files(
-        self,
-        loaded: list[pathlib.Path],
-        queued: list[pathlib.Path],
-        failed: list[pathlib.Path],
-        func: Callable,
-        kwargs: dict[str, typing.Any],
-        retry_callback: Callable,
-    ) -> None:
-        handler = _MultiFileHandler(self._manager, queued, func, kwargs)
-        self._manager._file_handlers.add(handler)
-
-        def _finished_callback(loaded_new, aborted, failed_new) -> None:
-            self._manager._show_loaded_info(
-                loaded + loaded_new,
-                aborted,
-                failed + failed_new,
-                retry_callback=retry_callback,
-            )
-            self._manager._file_handlers.remove(handler)
-
-        handler.sigFinished.connect(_finished_callback)
-        handler.start()
-
     def add_widget(self, widget: QtWidgets.QWidget) -> None:
         """Save a reference to an additional window widget.
 
@@ -1580,7 +1555,7 @@ class _ActionsController:
         self._manager.tree_view.childtool_added(node.uid, index)
         self._manager._mark_node_added(node.uid)
         if self._manager._is_figure_node(node):
-            self._manager._figure_controller.sync(select_uid=node.uid if show else None)
+            self._manager._figure_collection.sync(select_uid=node.uid if show else None)
         if show:
             node.show()
         return node.uid
@@ -1774,7 +1749,7 @@ class _ActionsController:
             return
         self._manager._mark_singleton_workspace_link_groups_dirty(removed_link_keys)
         if was_figure:
-            self._manager._figure_controller.sync()
+            self._manager._figure_collection.sync()
         self._manager._update_actions()
 
     def eventFilter(

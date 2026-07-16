@@ -1,11 +1,45 @@
-# ruff: noqa: F403, F405
-
+import ast
+import sys
 import textwrap
+import typing
+
+import numpy as np
+import pytest
+import xarray as xr
+from qtpy import QtWidgets
 
 import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
+import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
+import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
+import erlab.interactive._stylesheets
+from erlab.interactive._figurecomposer import (
+    FigureComposerTool,
+    FigureGridSpecAxesState,
+    FigureGridSpecGridState,
+    FigureGridSpecLayoutState,
+    FigureGridSpecSpanState,
+    FigureOperationState,
+    FigureRecipeState,
+    FigureSourceState,
+    FigureSubplotsState,
+)
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._model import (
+    _custom_code as figurecomposer_custom_code,
+)
+from erlab.interactive._figurecomposer._operations import (
+    _custom_code as figurecomposer_custom_code_operation,
+)
+from erlab.interactive._figurecomposer._ui import (
+    _operation_panel as figurecomposer_operation_panel,
+)
 
-from ._common import *
+from ._common import (
+    _file_load_provenance,
+    _operation_source_status_label,
+    _operation_status_codes,
+    _select_operation_rows,
+)
 
 
 def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
@@ -425,7 +459,7 @@ def test_figure_composer_custom_code_analyzer_handles_partial_ast_metadata(
 
 @pytest.mark.parametrize(
     "code",
-    (
+    [
         "data = data.mean()",
         "data += 1",
         "def update():\n    global data\n    data += 1",
@@ -437,7 +471,7 @@ def test_figure_composer_custom_code_analyzer_handles_partial_ast_metadata(
             "    return Result\n"
             "build()"
         ),
-    ),
+    ],
 )
 def test_figure_composer_custom_code_read_write_source_is_dependency(
     qtbot, code: str
@@ -498,13 +532,13 @@ def test_figure_composer_source_rename_refactors_custom_python(qtbot) -> None:
 
 @pytest.mark.parametrize(
     "code",
-    (
+    [
         "data = data.mean()",
         "def summarize(data):\n    return data.mean()\nfig.result = summarize(data)",
         "data += 1",
         "del data",
         "fig.result = data.mean(\n",
-    ),
+    ],
 )
 def test_figure_composer_source_rename_rejects_ambiguous_python(
     qtbot, code: str
@@ -1083,7 +1117,7 @@ def test_figure_composer_source_rename_preserves_multibyte_custom_code() -> None
 
 @pytest.mark.parametrize(
     "code",
-    (
+    [
         "import package as data\nresult = data.value",
         "def summarize(data):\n    return data.mean()",
         (
@@ -1095,7 +1129,7 @@ def test_figure_composer_source_rename_preserves_multibyte_custom_code() -> None
             "    return inner()"
         ),
         "def read_global():\n    global data\n    return data",
-    ),
+    ],
 )
 def test_figure_composer_source_rename_rejects_every_local_binding_kind(
     code: str,

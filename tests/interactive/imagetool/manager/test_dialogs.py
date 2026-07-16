@@ -971,7 +971,6 @@ def test_choose_from_datatree_dialog_tree_helper_branches(qtbot) -> None:
     dialog = _ChooseFromDataTreeDialog(
         manager,
         tree,
-        "load",
     )
     qtbot.addWidget(dialog)
 

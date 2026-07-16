@@ -1450,7 +1450,7 @@ class Fit2DTool(Fit1DTool):
         param_name, values = current
         target_figure = None
         if manager._figure_uids():
-            target_figure = manager._figure_controller._prompt_append_figure_target(
+            target_figure = manager._figure_workflows._prompt_append_figure_target(
                 self._parameter_figure_prompt_operation(param_name)
             )
             if target_figure is None:

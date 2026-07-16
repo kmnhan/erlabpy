@@ -8,7 +8,7 @@ import xarray as xr
 from qtpy import QtCore
 
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
-from erlab.interactive.imagetool.manager._figurecomposer import _controller
+from erlab.interactive.imagetool.manager._figurecomposer import _collection
 from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
 )
@@ -36,7 +36,7 @@ def isolated_recent_workspace_settings(
         return QtCore.QSettings(str(settings_path), QtCore.QSettings.Format.IniFormat)
 
     _settings().clear()
-    monkeypatch.setattr(_controller, "_manager_settings", _settings)
+    monkeypatch.setattr(_collection, "_manager_settings", _settings)
     monkeypatch.setattr(manager_widgets, "_manager_settings", _settings)
     monkeypatch.setattr(workspace_controller, "_manager_settings", _settings)
     return settings_path
