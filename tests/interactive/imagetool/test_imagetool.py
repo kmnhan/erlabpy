@@ -12579,6 +12579,42 @@ def test_displayed_data_restores_squeezed_singleton_source_dims(qtbot) -> None:
     win.close()
 
 
+@pytest.mark.parametrize("use_dask", [False, True], ids=["eager", "dask"])
+@pytest.mark.parametrize("filtered", [False, True], ids=["source", "filtered"])
+def test_displayed_data_restores_high_dimensional_nonuniform_source(
+    qtbot, use_dask: bool, filtered: bool
+) -> None:
+    values = np.arange(1 * 4 * 5 * 3 * 1, dtype=float).reshape((1, 4, 5, 3, 1))
+    if use_dask:
+        da = pytest.importorskip("dask.array")
+        values = da.from_array(values, chunks=(1, 2, 3, 2, 1))
+    data = xr.DataArray(
+        values,
+        dims=("a", "alpha", "eV", "sample_temp", "c"),
+        coords={
+            "a": [0.0],
+            "alpha": np.linspace(-2.0, 2.0, 4),
+            "eV": np.linspace(-0.5, 0.5, 5),
+            "sample_temp": [249.4, 251.2, 253.8],
+            "c": [1.0],
+        },
+    )
+    operation = BoxcarFilterOperation(size={"sample_temp": 3})
+    expected = operation.apply(data, parent_data=data) if filtered else data
+    win = ImageTool(data, auto_compute=False)
+    qtbot.addWidget(win)
+
+    if filtered:
+        win.slicer_area.apply_filter_operation(operation, update=False)
+    displayed = win.slicer_area.displayed_data
+
+    assert displayed.dims == data.dims
+    if use_dask:
+        assert displayed.chunks is not None
+    xr.testing.assert_identical(displayed.compute(), expected.compute())
+    win.close()
+
+
 def test_filter_helpers_reject_invalid_normalized_results(qtbot, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(9, dtype=float).reshape((3, 3)),

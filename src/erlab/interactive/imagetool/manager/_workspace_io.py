@@ -498,25 +498,25 @@ class _WorkspaceIOController:
 
         saved_dims = tuple(str(dim) for dim in raw_dims)
         # Match ArraySlicer dimension promotion before applying its saved order.
-        data = erlab.utils.array._make_dims_uniform(data)
-        dims_by_text = {str(dim): dim for dim in data.dims}
+        normalized = erlab.utils.array._make_dims_uniform(data)
+        dims_by_text = {str(dim): dim for dim in normalized.dims}
         if (
-            len(saved_dims) != data.ndim
-            or len(dims_by_text) != data.ndim
+            len(saved_dims) != normalized.ndim
+            or len(dims_by_text) != normalized.ndim
             or set(saved_dims) != set(dims_by_text)
         ):
             logger.debug(
                 "Ignoring incompatible saved pending ImageTool dimension order %s "
                 "for data dims %s",
                 saved_dims,
-                data.dims,
+                normalized.dims,
             )
             return data
         ordered_dims = tuple(dims_by_text[dim] for dim in saved_dims)
-        if ordered_dims == data.dims:
-            return data
+        if ordered_dims == normalized.dims:
+            return normalized
         try:
-            return data.transpose(*ordered_dims, transpose_coords=True)
+            return normalized.transpose(*ordered_dims, transpose_coords=True)
         except ValueError:
             logger.debug(
                 "Could not apply saved pending ImageTool dimension order %s",
@@ -568,6 +568,8 @@ class _WorkspaceIOController:
         attrs = node.pending_workspace_payload_attrs
         if attrs is None:
             attrs = ds.attrs
+        data = self._pending_workspace_data_with_saved_dim_order(data, attrs)
+        data = erlab.utils.array._restore_nonuniform_dims(data)
         if data_role == "displayed":
             raw_state = attrs.get("itool_state")
             if isinstance(raw_state, bytes):

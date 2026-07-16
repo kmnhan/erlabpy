@@ -427,4 +427,5 @@ def test_wrapper_source_data_replaced_uses_parent_fallback_and_skips_missing_chi
 
         wrapper._handle_source_data_replaced(object())
 
-        assert handled == [updated]
+        assert len(handled) == 1
+        xr.testing.assert_identical(handled[0], updated)

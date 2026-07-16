@@ -1083,17 +1083,17 @@ def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None)
 
             next_idx = later_loads[0]
             next_stmt = body[next_idx]
-            if (
-                next_idx != idx + 1
-                or not isinstance(next_stmt, ast.Assign)
-                or not _expression_starts_with_name(next_stmt.value, target)
-            ):
+            if next_idx != idx + 1 or not isinstance(next_stmt, ast.Assign):
                 continue
             reassigns_target_immediately = (
                 len(next_stmt.targets) == 1
                 and isinstance(next_stmt.targets[0], ast.Name)
                 and next_stmt.targets[0].id == target
             )
+            if not _expression_starts_with_name(next_stmt.value, target) and not (
+                reassigns_target_immediately and isinstance(stmt.value, ast.Name)
+            ):
+                continue
             if (
                 inline_targets is not None
                 and target not in inline_targets

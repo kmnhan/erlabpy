@@ -1081,13 +1081,32 @@ class ImageSlicerArea(QtWidgets.QWidget):
         accepted = self._accepted_data_for_dims(tuple(self.data.dims))
         return self._restore_public_source_layout(accepted)
 
+    def _public_source_dims_for_current_layout(self) -> tuple[Hashable, ...]:
+        """Merge the saved slicer order with source-only singleton dimensions."""
+        layout = erlab.utils.array._restore_nonuniform_dims(self.data)
+        layout = erlab.interactive.imagetool.slicer._drop_unmatched_stack_dim(
+            layout, self._data
+        )
+        layout_dims = tuple(layout.dims)
+        if any(dim not in self._data.dims for dim in layout_dims):
+            raise ValueError(
+                "Slicer layout contains a dimension absent from source data"
+            )
+        layout_dim_set = set(layout_dims)
+        ordered_layout_dims = iter(layout_dims)
+        return tuple(
+            next(ordered_layout_dims) if dim in layout_dim_set else dim
+            for dim in self._data.dims
+        )
+
     def _restore_public_source_layout(self, data: xr.DataArray) -> xr.DataArray:
         """Undo slicer-only dimension normalization for a public data result."""
         public = erlab.utils.array._restore_nonuniform_dims(data)
         public = erlab.interactive.imagetool.slicer._drop_unmatched_stack_dim(
             public, self._data
         )
-        missing_dims = tuple(dim for dim in self._data.dims if dim not in public.dims)
+        target_dims = self._public_source_dims_for_current_layout()
+        missing_dims = tuple(dim for dim in target_dims if dim not in public.dims)
         if any(self._data.sizes[dim] != 1 for dim in missing_dims):
             raise ValueError(
                 "Public data result is missing a non-singleton source dimension"
@@ -1101,8 +1120,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             }
             if source_coords:
                 public = public.assign_coords(source_coords)
-        if public.dims != self._data.dims:
-            public = public.transpose(*self._data.dims, transpose_coords=True)
+        if public.dims != target_dims:
+            public = public.transpose(*target_dims, transpose_coords=True)
         return public.copy(deep=False)
 
     def _tool_source_parent_data(self) -> xr.DataArray:
@@ -1117,8 +1136,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
 
     def persistence_data_and_state(self) -> tuple[xr.DataArray, ImageSlicerState]:
-        """Return data/state for save and clone paths."""
-        return self._data, self.state
+        """Return public source data in the saved slicer layout and its state."""
+        source = self._data_aligned_to_dims(self._data, tuple(self.data.dims))
+        return self._restore_public_source_layout(source), self.state
 
     def displayed_live_source_spec(
         self,
@@ -1177,13 +1197,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _data_aligned_to_dims(
         data: xr.DataArray, dims: tuple[Hashable, ...]
     ) -> xr.DataArray:
+        missing_dims = tuple(dim for dim in dims if dim not in data.dims)
+        if missing_dims and any(str(dim).endswith("_idx") for dim in missing_dims):
+            data = erlab.utils.array._make_dims_uniform(data)
         extra_dims = tuple(dim for dim in data.dims if dim not in dims)
         if extra_dims and all(data.sizes[dim] == 1 for dim in extra_dims):
             data = data.squeeze(extra_dims)
         missing_dims = tuple(dim for dim in dims if dim not in data.dims)
-        if missing_dims and any(str(dim).endswith("_idx") for dim in missing_dims):
-            data = erlab.utils.array._make_dims_uniform(data)
-            missing_dims = tuple(dim for dim in dims if dim not in data.dims)
         if missing_dims == ("stack_dim",):
             data = data.expand_dims("stack_dim", axis=dims.index("stack_dim"))
         if data.dims != dims:

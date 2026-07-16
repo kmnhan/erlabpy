@@ -2671,6 +2671,7 @@ def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
 
     code = spec.display_code()
     assert code is not None
+    _assert_no_meaningless_reassignments(code)
     call_names = _generated_call_names(code)
     assert not any(call.endswith(".isel") for call in call_names)
     assert call_names.count("erlab.utils.array.sort_coord_order") == 1

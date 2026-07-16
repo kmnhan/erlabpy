@@ -15427,7 +15427,7 @@ def test_pending_workspace_metadata_loads_only_coords() -> None:
     assert float(loaded.coords["temperature"].values) == 12.0
 
 
-def test_pending_workspace_lazy_source_data_matches_materialized_payload_order(
+def test_pending_workspace_lazy_source_data_matches_saved_semantic_order(
     qtbot, tmp_path
 ) -> None:
     data = xr.DataArray(
@@ -15480,7 +15480,7 @@ def test_pending_workspace_lazy_source_data_matches_materialized_payload_order(
             data_role="displayed",
             reference_datasets=reference_datasets,
         )
-        assert pending_source.dims == ("hv", "y", "x")
+        assert pending_source.dims == data.dims
         assert pending_source.chunks is not None
         pending_source = pending_source.compute()
         pending_displayed = pending_displayed.compute()
@@ -15563,7 +15563,7 @@ def test_pending_workspace_data_roles_match_materialized_filtered_nonuniform_dat
             data_role="displayed",
             reference_datasets=reference_datasets,
         )
-        assert pending_source.dims == ("sample_temp", "eV", "alpha")
+        assert pending_source.dims == data.dims
         assert pending_displayed.dims == pending_source.dims
         assert all(not str(dim).endswith("_idx") for dim in pending_source.dims)
         assert pending_source.chunks is not None
