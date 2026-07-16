@@ -35,8 +35,8 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._details_panel import (
         _DetailsPanelController,
     )
-    from erlab.interactive.imagetool.manager._figure_manager import (
-        _FigureManagerController,
+    from erlab.interactive.imagetool.manager._figurecomposer._controller import (
+        _FigureComposerController,
     )
     from erlab.interactive.imagetool.manager._heartbeat import (
         _RegistryHeartbeatController,
@@ -64,8 +64,10 @@ if typing.TYPE_CHECKING:
         _WarningNotificationHandler,
         _WidgetsController,
     )
-    from erlab.interactive.imagetool.manager._workspace_io import _WorkspaceIOController
-    from erlab.interactive.imagetool.manager._workspace_state import (
+    from erlab.interactive.imagetool.manager._workspace._controller import (
+        _WorkspaceController,
+    )
+    from erlab.interactive.imagetool.manager._workspace._state import (
         _ManagerWorkspaceState,
     )
     from erlab.interactive.imagetool.manager._wrapper import (
@@ -160,7 +162,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _dependency_tracker: _ManagerDependencyTracker
     _details_panel: _DetailsPanelController
     _file_handlers: set[_MultiFileHandler]
-    _figure_controller: _FigureManagerController
+    _figure_controller: _FigureComposerController
     _ignored_warning_messages: set[str]
     _kb_filter: erlab.interactive.utils.KeyboardEventFilter
     _link_registry: _ManagerLinkRegistry
@@ -206,7 +208,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _tool_graph: _ManagerToolGraph
     _tool_metadata_queue: _ManagerToolMetadataQueue
     _warning_handler: _WarningNotificationHandler
-    _workspace_controller: _WorkspaceIOController
+    _workspace_controller: _WorkspaceController
     _workspace_state: _ManagerWorkspaceState
     _widgets_controller: _WidgetsController
 
@@ -416,7 +418,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             loader_name=loader_name,
         )
         loader_kwargs, loader_extensions = (
-            self._workspace_controller._explorer_loader_state()
+            self._workspace_controller.loading._explorer_loader_state()
         )
         explorer.apply_loader_state(
             kwargs_by_name=loader_kwargs,

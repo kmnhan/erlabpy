@@ -18,7 +18,6 @@ import erlab.interactive.imagetool.manager._details_panel as manager_details_pan
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
-import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.utils
 from erlab.interactive._figurecomposer import (
@@ -58,7 +57,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     ScriptCodeOperation,
     TransposeOperation,
 )
-from erlab.interactive.imagetool.manager import _figure_dialogs, fetch, replace_data
+from erlab.interactive.imagetool.manager import fetch, replace_data
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._dialogs import (
     _batch_operation_dialog_classes,
@@ -66,6 +65,7 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _ConcatDialog,
     _RenameDialog,
 )
+from erlab.interactive.imagetool.manager._figurecomposer import _dialogs
 from erlab.interactive.imagetool.manager._modelview import (
     _TOOL_TYPE_ROLE,
     _ImageToolWrapperItemDelegate,
@@ -3345,7 +3345,7 @@ def test_manager_figure_source_picker_skips_stale_rows_and_deduplicates_targets(
                     "root_indices_for_workspace",
                     lambda: (999, 0),
                 )
-                dialog = _figure_dialogs._FigureSourcePickerDialog(manager)
+                dialog = _dialogs._FigureSourcePickerDialog(manager)
                 qtbot.addWidget(dialog)
                 assert dialog.tree.topLevelItemCount() == 1
                 root_item = dialog.tree.topLevelItem(0)
@@ -3770,7 +3770,7 @@ def test_manager_reload_selected_preserves_manual_root_name(
             == "0: manual root name (scan)"
         )
         assert (
-            manager_workspace_io._strip_workspace_modified_placeholder(
+            manager_widgets._strip_workspace_modified_placeholder(
                 root_tool.windowTitle()
             )
             == "0: manual root name (scan)"
@@ -3789,7 +3789,7 @@ def test_manager_reload_selected_preserves_manual_root_name(
 
         assert manager.name_of_imagetool(0) == "manual root name"
         assert (
-            manager_workspace_io._strip_workspace_modified_placeholder(
+            manager_widgets._strip_workspace_modified_placeholder(
                 root_tool.windowTitle()
             )
             == "0: manual root name (scan)"
@@ -3832,7 +3832,7 @@ def test_manager_file_suffix_does_not_seed_unnamed_root_name(
         assert root_index.data(QtCore.Qt.ItemDataRole.EditRole) == ""
         assert root_index.data(QtCore.Qt.ItemDataRole.DisplayRole) == "0 (scan)"
         assert (
-            manager_workspace_io._strip_workspace_modified_placeholder(
+            manager_widgets._strip_workspace_modified_placeholder(
                 manager.get_imagetool(0).windowTitle()
             )
             == "0 (scan)"
@@ -3925,7 +3925,7 @@ def test_manager_reload_selected_preserves_manual_child_imagetool_name(
             child_index.data(QtCore.Qt.ItemDataRole.DisplayRole) == "manual child name"
         )
         assert (
-            manager_workspace_io._strip_workspace_modified_placeholder(
+            manager_widgets._strip_workspace_modified_placeholder(
                 child_tool.windowTitle()
             )
             == "manual child name"
@@ -3955,7 +3955,7 @@ def test_manager_reload_selected_preserves_manual_child_imagetool_name(
         assert child_node.source_state == "fresh"
         assert child_node.name == "manual child name"
         assert (
-            manager_workspace_io._strip_workspace_modified_placeholder(
+            manager_widgets._strip_workspace_modified_placeholder(
                 child_tool.windowTitle()
             )
             == "manual child name"

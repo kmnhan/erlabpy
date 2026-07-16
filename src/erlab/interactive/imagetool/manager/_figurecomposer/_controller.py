@@ -1,8 +1,12 @@
-"""Manager-owned Figure Composer collection UI."""
+"""Coordinate the manager-owned Figure Composer collection UI."""
 
 from __future__ import annotations
 
-__all__ = ["_FigureManagerController", "_FigureManagerHost", "_FigureManagerPane"]
+__all__ = [
+    "_FigureComposerController",
+    "_FigureComposerHost",
+    "_FigureComposerPane",
+]
 
 import re
 import typing
@@ -29,7 +33,7 @@ _GALLERY_THUMBNAIL_SIZES = {
 }
 
 
-class _FigureManagerHost(typing.Protocol):
+class _FigureComposerHost(typing.Protocol):
     """Narrow manager surface required by the figure collection controller."""
 
     left_tabs: QtWidgets.QTabWidget
@@ -68,7 +72,7 @@ class _FigureManagerHost(typing.Protocol):
     def show_childtool(self, uid: str) -> None: ...
 
 
-class _FigureManagerPane(QtWidgets.QWidget):
+class _FigureComposerPane(QtWidgets.QWidget):
     """Own the widgets used to browse managed Figure Composer windows."""
 
     selection_changed = QtCore.Signal()
@@ -238,21 +242,21 @@ class _FigureManagerPane(QtWidgets.QWidget):
         return QtCore.QSize(width, height)
 
 
-class _FigureManagerController(QtCore.QObject):
+class _FigureComposerController(QtCore.QObject):
     """Coordinate the manager's Figure Composer collection pane."""
 
-    def __init__(self, host: _FigureManagerHost, parent: QtWidgets.QWidget) -> None:
+    def __init__(self, host: _FigureComposerHost, parent: QtWidgets.QWidget) -> None:
         super().__init__(parent)
         self._host = host
         self._parent_widget = parent
-        self._pane: _FigureManagerPane | None = None
+        self._pane: _FigureComposerPane | None = None
         self._menu: QtWidgets.QMenu | None = None
         self._refreshing = False
         self._view_mode = self._read_view_mode_setting()
         self._gallery_size_name = self._read_gallery_size_setting()
 
     @property
-    def pane(self) -> _FigureManagerPane | None:
+    def pane(self) -> _FigureComposerPane | None:
         return self._pane
 
     @staticmethod
@@ -428,10 +432,10 @@ class _FigureManagerController(QtCore.QObject):
             tab_bar.setVisible(True)
         self._host.left_tabs.updateGeometry()
 
-    def _ensure_pane(self) -> _FigureManagerPane:
+    def _ensure_pane(self) -> _FigureComposerPane:
         if self._pane is not None:
             return self._pane
-        pane = _FigureManagerPane(self._host.left_tabs)
+        pane = _FigureComposerPane(self._host.left_tabs)
         pane.selection_changed.connect(self._selection_changed)
         pane.item_changed.connect(self._item_changed)
         pane.item_activated.connect(self._show_item)
@@ -570,7 +574,7 @@ class _FigureManagerController(QtCore.QObject):
         if not erlab.interactive.utils.qt_is_valid(tool_window):
             return None
         thumbnail = tool_window._preview_thumbnail_pixmap(
-            _FigureManagerPane.thumbnail_size(self._gallery_size_name)
+            _FigureComposerPane.thumbnail_size(self._gallery_size_name)
         )
         if thumbnail is not None and not thumbnail.isNull():
             return self._thumbnail_pixmap(thumbnail)
@@ -580,7 +584,7 @@ class _FigureManagerController(QtCore.QObject):
         return self._thumbnail_pixmap(preview_pixmap)
 
     def _placeholder_pixmap(self) -> QtGui.QPixmap:
-        size = _FigureManagerPane.thumbnail_size(self._gallery_size_name)
+        size = _FigureComposerPane.thumbnail_size(self._gallery_size_name)
         pixmap = QtGui.QPixmap(size)
         pixmap.fill(self._parent_widget.palette().color(QtGui.QPalette.ColorRole.Base))
         painter = QtGui.QPainter(pixmap)
@@ -596,7 +600,7 @@ class _FigureManagerController(QtCore.QObject):
         return pixmap
 
     def _thumbnail_pixmap(self, source_pixmap: QtGui.QPixmap) -> QtGui.QPixmap:
-        size = _FigureManagerPane.thumbnail_size(self._gallery_size_name)
+        size = _FigureComposerPane.thumbnail_size(self._gallery_size_name)
         canvas = QtGui.QPixmap(size)
         canvas.fill(self._parent_widget.palette().color(QtGui.QPalette.ColorRole.Base))
         device_pixel_ratio = source_pixmap.devicePixelRatioF()

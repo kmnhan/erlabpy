@@ -35,11 +35,12 @@ import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._modelview as manager_modelview
 import erlab.interactive.imagetool.manager._provenance_edit as manager_provenance_edit
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
-import erlab.interactive.imagetool.manager._workspace as manager_workspace
-import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
-import erlab.interactive.imagetool.manager._workspace_state as manager_workspace_state
+import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
+import erlab.interactive.imagetool.manager._workspace._format as workspace_format
+import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
+import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
+import erlab.interactive.imagetool.manager._workspace._state as workspace_state
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
-import erlab.interactive.imagetool.manager._xarray as manager_xarray
 import erlab.interactive.imagetool.plot_items as imagetool_plot_items
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive._fit1d import Fit1DTool
@@ -48,6 +49,7 @@ from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._code import uses_default_replay_input
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
@@ -76,6 +78,9 @@ from erlab.interactive.imagetool.manager import ImageToolManager, fetch, replace
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
     _ChooseFromWorkspaceManifestDialog,
+)
+from erlab.interactive.imagetool.manager._workspace import (
+    _controller as workspace_controller,
 )
 
 from .helpers import (
@@ -376,11 +381,12 @@ def _workspace_sweep_runtime_snapshot(
     manager: ImageToolManager,
 ) -> dict[str, typing.Any]:
     controller = manager._workspace_controller
+    saver = controller.saving
     return {
         "root_order": list(manager._workspace_root_indices()),
         "figure_uids": list(manager._tool_graph.figure_uids),
-        "loader_state": controller._workspace_loader_state_snapshot(),
-        "standalone_apps": controller._workspace_standalone_apps_snapshot(),
+        "loader_state": saver._workspace_loader_state_snapshot(),
+        "standalone_apps": saver._workspace_standalone_apps_snapshot(),
         "nodes": {
             uid: _workspace_sweep_node_snapshot(node)
             for uid, node in sorted(manager._tool_graph.nodes.items())
@@ -582,11 +588,11 @@ def test_workspace_file_suffix_helpers_collect_nested_inputs(tmp_path) -> None:
         ),
     )
 
-    stems = manager_workspace_io._workspace_provenance_file_stems(combined)
+    stems = workspace_loading._workspace_provenance_file_stems(combined)
 
     assert stems == ("scan_a", "scan_b", "scan_c")
     assert (
-        manager_workspace_io._workspace_compact_file_suffix(stems)
+        workspace_loading._workspace_compact_file_suffix(stems)
         == " (scan_a, scan_b, +1)"
     )
 
@@ -607,7 +613,7 @@ def test_workspace_legacy_title_migration_ignores_generated_file_labels(
     ds = xr.Dataset(attrs=attrs)
     spec = _workspace_test_file_spec(tmp_path / "scan.h5")
 
-    assert manager_workspace_io._legacy_saved_title_data_name(ds, spec) == expected
+    assert workspace_loading._legacy_saved_title_data_name(ds, spec) == expected
 
 
 def test_manager_duplicate(
@@ -1371,7 +1377,7 @@ def test_manager_link_action_links_colors(
         ] == pytest.approx(0.5)
 
 
-def test_manager_workspace_io(
+def test_workspace_controller(
     qtbot,
     accept_dialog,
     manager_context: Callable[
@@ -1460,7 +1466,7 @@ def test_manager_workspace_roundtrip_restores_manager_layout(
         manager._save_workspace_document(fname, force_full=True)
 
         with h5py.File(fname, "r") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert manifest["manager_layout"] == expected_layout
 
         manager.resize(480, 500)
@@ -1522,10 +1528,12 @@ def test_manager_workspace_layout_only_save_updates_root_manifest_only(
             raise AssertionError("layout-only save requested a full workspace write")
 
         monkeypatch.setattr(
-            manager, "_serialize_workspace_node", _forbid_node_serialization
+            manager._workspace_controller.saving,
+            "_serialize_workspace_node",
+            _forbid_node_serialization,
         )
         monkeypatch.setattr(
-            manager_workspace, "_write_full_workspace_tree_file", _forbid_full_save
+            workspace_saving, "_write_full_workspace_tree_file", _forbid_full_save
         )
 
         assert _request_workspace_save_and_wait(qtbot, manager)
@@ -1533,7 +1541,7 @@ def test_manager_workspace_layout_only_save_updates_root_manifest_only(
         assert not manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert "delta_save_count" not in manifest
         assert manifest["manager_layout"] == manager._workspace_layout_snapshot()
 
@@ -1576,10 +1584,12 @@ def test_manager_workspace_standalone_app_only_save_updates_root_manifest_only(
             )
 
         monkeypatch.setattr(
-            manager, "_serialize_workspace_node", _forbid_node_serialization
+            manager._workspace_controller.saving,
+            "_serialize_workspace_node",
+            _forbid_node_serialization,
         )
         monkeypatch.setattr(
-            manager_workspace, "_write_full_workspace_tree_file", _forbid_full_save
+            workspace_saving, "_write_full_workspace_tree_file", _forbid_full_save
         )
 
         assert _request_workspace_save_and_wait(qtbot, manager)
@@ -1587,7 +1597,7 @@ def test_manager_workspace_standalone_app_only_save_updates_root_manifest_only(
         assert not manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert "delta_save_count" not in manifest
         assert manifest["standalone_apps"]["apps"]["ptable"]["photon_energy"] == "150"
 
@@ -1620,13 +1630,13 @@ def test_manager_workspace_import_does_not_restore_manager_layout(
         import h5py
 
         with h5py.File(import_fname, "r") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert manager._from_h5py_workspace_file(
             import_fname, manifest, replace=False, mark_dirty=True
         )
         assert manager._workspace_layout_snapshot() == current_layout
 
-        tree = manager_xarray.open_workspace_datatree(import_fname, chunks=None)
+        tree = workspace_arrays.open_workspace_datatree(import_fname, chunks=None)
         assert manager._from_datatree(
             tree,
             replace=False,
@@ -1704,7 +1714,7 @@ def test_manager_workspace_roundtrip_restores_loader_and_standalone_apps(
         expected_ptable_size = ptable.size()
 
         with h5py.File(fname, "r") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert manifest["loader_state"]["recent_directory"] == str(example_data_dir)
         assert manifest["loader_state"]["recent_name_filter"] == name_filter
         assert manifest["loader_state"]["manager_loader_kwargs_by_filter"][
@@ -1989,7 +1999,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
             "coordinate_attrs": ["manager"]
         }
         manager._workspace_controller._loader_state = (
-            manager_workspace.WorkspaceLoaderState(
+            workspace_format.WorkspaceLoaderState(
                 explorer_loader_kwargs_by_name={"xarray": {"single": False}},
                 explorer_loader_extensions_by_name={
                     "xarray": {"coordinate_attrs": ["explorer"]}
@@ -2033,8 +2043,8 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
         expected_snapshot = _workspace_sweep_runtime_snapshot(manager)
         expected_data_items = _workspace_sweep_data_items(manager)
 
-        root_attrs = manager_workspace._read_workspace_root_attrs_h5py(fname)
-        manifest = manager_workspace._workspace_manifest_from_attrs(root_attrs)
+        root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(fname)
+        manifest = workspace_format._workspace_manifest_from_attrs(root_attrs)
         assert root_attrs["imagetool_workspace_schema_version"] == 4
         assert manifest["root_order"] == [1, 0]
         assert manifest["workspace_link_id"] == manager._workspace_state.link_id
@@ -2150,7 +2160,7 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
             assert "auxiliary" in tool_group
             assert (
                 tool_group["auxiliary"].attrs[
-                    manager_workspace._TOOL_DATA_BLOB_NAME_ATTR
+                    workspace_arrays._TOOL_DATA_BLOB_NAME_ATTR
                 ]
                 == extra_data.name
             )
@@ -2200,7 +2210,7 @@ def test_manager_workspace_loader_state_does_not_create_explorer_app_state(
         manager._recent_name_filter = name_filter
         manager._recent_loader_kwargs_by_filter[name_filter] = {"single": True}
         manager._workspace_controller._loader_state = (
-            manager_workspace.WorkspaceLoaderState(
+            workspace_format.WorkspaceLoaderState(
                 explorer_loader_kwargs_by_name=explorer_kwargs,
                 explorer_loader_extensions_by_name=explorer_extensions,
             )
@@ -2209,14 +2219,14 @@ def test_manager_workspace_loader_state_does_not_create_explorer_app_state(
         fname = tmp_path / "loader-no-explorer.itws"
         manager._save_workspace_document(fname, force_full=True)
         with h5py.File(fname, "r") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert manifest["loader_state"]["explorer_loader_kwargs_by_name"] == (
             explorer_kwargs
         )
         assert "explorer" not in manifest["standalone_apps"]["apps"]
 
         manager._workspace_controller._loader_state = (
-            manager_workspace.WorkspaceLoaderState()
+            workspace_format.WorkspaceLoaderState()
         )
         manager._recent_directory = None
         manager._recent_name_filter = None
@@ -2234,7 +2244,7 @@ def test_manager_workspace_loader_state_does_not_create_explorer_app_state(
         manager._mark_workspace_layout_dirty()
         assert _request_workspace_save_and_wait(qtbot, manager)
         with h5py.File(fname, "r") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert "explorer" not in manifest["standalone_apps"]["apps"]
         assert manifest["loader_state"]["explorer_loader_kwargs_by_name"] == (
             explorer_kwargs
@@ -2261,9 +2271,11 @@ def test_workspace_loader_and_standalone_app_state_edge_cases(
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         controller = manager._workspace_controller
+        loader = controller.loading
+        saver = controller.saving
 
-        controller._restore_workspace_loader_state({"loader_state": []})
-        controller._restore_workspace_loader_state(
+        loader._restore_workspace_loader_state({"loader_state": []})
+        loader._restore_workspace_loader_state(
             {"loader_state": {"manager_loader_kwargs_by_filter": []}}
         )
 
@@ -2283,7 +2295,7 @@ def test_workspace_loader_and_standalone_app_state_edge_cases(
         explorer = _LoaderStateExplorer()
         qtbot.addWidget(explorer)
         manager._standalone_app_windows["explorer"] = explorer
-        controller._restore_workspace_loader_state(
+        loader._restore_workspace_loader_state(
             {
                 "loader_state": {
                     "explorer_loader_kwargs_by_name": {"example": {"single": True}},
@@ -2311,12 +2323,12 @@ def test_workspace_loader_and_standalone_app_state_edge_cases(
             "window_state": {"visible": False},
             "selected_atomic_numbers": [1],
         }
-        snapshot = controller._workspace_standalone_apps_snapshot()
+        snapshot = saver._workspace_standalone_apps_snapshot()
         assert snapshot["apps"]["ptable"]["selected_atomic_numbers"] == [1]
 
-        controller._restore_standalone_apps_state({"standalone_apps": []})
-        controller._restore_standalone_apps_state({"standalone_apps": {"apps": []}})
-        controller._restore_standalone_apps_state(
+        loader._restore_standalone_apps_state({"standalone_apps": []})
+        loader._restore_standalone_apps_state({"standalone_apps": {"apps": []}})
+        loader._restore_standalone_apps_state(
             {"standalone_apps": {"apps": {"missing": {}}}}
         )
 
@@ -2325,7 +2337,7 @@ def test_workspace_loader_and_standalone_app_state_edge_cases(
         assert ptable.isVisible()
         hidden_ptable_state = ptable.workspace_state_payload()
         hidden_ptable_state["window_state"]["visible"] = False
-        controller._restore_standalone_apps_state(
+        loader._restore_standalone_apps_state(
             {"standalone_apps": {"apps": {"ptable": hidden_ptable_state}}}
         )
         assert not ptable.isVisible()
@@ -2368,14 +2380,14 @@ def test_manager_workspace_import_does_not_restore_standalone_apps(
         ptable._refresh_window_state(ensure_visible=False)
 
         with h5py.File(fname, "r") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert manager._from_h5py_workspace_file(
             fname, manifest, replace=False, mark_dirty=True
         )
         assert ptable.hv_edit.text() == "30"
         assert ptable.selected_atomic_numbers == (1,)
 
-        tree = manager_xarray.open_workspace_datatree(fname, chunks=None)
+        tree = workspace_arrays.open_workspace_datatree(fname, chunks=None)
         assert manager._from_datatree(
             tree,
             replace=False,
@@ -2432,8 +2444,8 @@ def test_manager_workspace_preserves_link_groups(
         assert manager.is_workspace_modified
         manager._save_workspace_document(fname, force_full=True)
 
-        manifest = manager_workspace._workspace_manifest_from_attrs(
-            manager_workspace._read_workspace_root_attrs_h5py(fname)
+        manifest = workspace_format._workspace_manifest_from_attrs(
+            workspace_arrays._read_workspace_root_attrs_h5py(fname)
         )
         linked_entries = [entry for entry in manifest["nodes"] if "link_group" in entry]
         assert {entry["path"] for entry in linked_entries} == {"0", "1"}
@@ -3225,8 +3237,8 @@ def test_manager_remove_pending_linked_root_prunes_partner_without_materializing
         assert survivor.uid not in manager._workspace_state.dirty_data
 
         manager._save_workspace_document(fname, force_full=True)
-        manifest = manager_workspace._workspace_manifest_from_attrs(
-            manager_workspace._read_workspace_root_attrs_h5py(fname)
+        manifest = workspace_format._workspace_manifest_from_attrs(
+            workspace_arrays._read_workspace_root_attrs_h5py(fname)
         )
         assert all("link_group" not in entry for entry in manifest["nodes"])
 
@@ -3287,8 +3299,8 @@ def test_manager_remove_pending_linked_child_prunes_partner_without_materializin
         assert survivor.uid not in manager._workspace_state.dirty_data
 
         manager._save_workspace_document(fname, force_full=True)
-        manifest = manager_workspace._workspace_manifest_from_attrs(
-            manager_workspace._read_workspace_root_attrs_h5py(fname)
+        manifest = workspace_format._workspace_manifest_from_attrs(
+            workspace_arrays._read_workspace_root_attrs_h5py(fname)
         )
         assert all("link_group" not in entry for entry in manifest["nodes"])
 
@@ -3431,6 +3443,7 @@ def test_pending_link_state_operation_variants_update_saved_state(
         manager.add_imagetool(root, show=False)
         source = root.slicer_area
         controller = manager._workspace_controller
+        loader = controller.loading
 
         def new_state(
             *, cursors: int = 1
@@ -3448,31 +3461,31 @@ def test_pending_link_state_operation_variants_update_saved_state(
 
         array_slicer, state = new_state()
         try:
-            assert not controller._update_pending_link_state_for_operation(
+            assert not loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "refresh", {}
             )
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "view_all", {}
             )
             assert state["manual_limits"] == {}
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "center_all_cursors", {}
             )
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "center_cursor", {}
             )
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "set_current_cursor", {"cursor": 4}
             )
             assert state["current_cursor"] == 0
-            assert not controller._update_pending_link_state_for_operation(
+            assert not loader._update_pending_link_state_for_operation(
                 state,
                 array_slicer,
                 source,
                 "set_axis_inverted",
                 {"dim": "missing", "inverted": True},
             )
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state,
                 array_slicer,
                 source,
@@ -3480,7 +3493,7 @@ def test_pending_link_state_operation_variants_update_saved_state(
                 {"dim": "x", "inverted": True},
             )
             assert state["axis_inversions"] == {"x": True}
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state,
                 array_slicer,
                 source,
@@ -3488,32 +3501,32 @@ def test_pending_link_state_operation_variants_update_saved_state(
                 {"dim": "x", "inverted": False},
             )
             assert state["axis_inversions"] == {}
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "set_index", {"axis": 0, "value": 4}
             )
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "step_index", {"axis": 0, "value": -1}
             )
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "step_index_all", {"axis": 1, "value": 1}
             )
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state,
                 array_slicer,
                 source,
                 "set_value",
                 {"axis": 0, "value": 2.0, "uniform": True},
             )
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "set_bin", {"axis": 0, "value": 3}
             )
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "set_bin_all", {"axis": 1, "value": 3}
             )
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "swap_axes", {"ax1": 0, "ax2": 1}
             )
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state,
                 array_slicer,
                 source,
@@ -3530,15 +3543,15 @@ def test_pending_link_state_operation_variants_update_saved_state(
             )
             assert state["color"]["cmap"] == "magma"
             assert state["color"]["levels"] == [1.0, 5.0]
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "toggle_snap", {}
             )
             assert state["slice"]["snap_to_data"] is True
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "toggle_snap", {"value": False}
             )
             assert state["slice"]["snap_to_data"] is False
-            assert not controller._update_pending_link_state_for_operation(
+            assert not loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "unknown_operation", {}
             )
         finally:
@@ -3546,16 +3559,16 @@ def test_pending_link_state_operation_variants_update_saved_state(
 
         array_slicer, state = new_state(cursors=2)
         try:
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "add_cursor", {"color": None}
             )
             assert len(state["cursor_colors"]) == 3
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "add_cursor", {"color": "#123456"}
             )
             assert state["cursor_colors"][-1] == "#123456"
             state["current_cursor"] = 2
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "remove_cursor", {"index": 1}
             )
             assert state["current_cursor"] == 1
@@ -3565,11 +3578,11 @@ def test_pending_link_state_operation_variants_update_saved_state(
         array_slicer, state = new_state(cursors=3)
         try:
             state["current_cursor"] = 0
-            assert controller._update_pending_link_state_for_operation(
+            assert loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "remove_cursor", {"index": 0}
             )
             assert state["current_cursor"] == 0
-            assert controller._pending_link_default_cursor_color(
+            assert loader._pending_link_default_cursor_color(
                 source, 0, [QtGui.QColor(color).name() for color in source.COLORS]
             )
         finally:
@@ -3577,7 +3590,7 @@ def test_pending_link_state_operation_variants_update_saved_state(
 
         array_slicer, state = new_state()
         try:
-            assert not controller._update_pending_link_state_for_operation(
+            assert not loader._update_pending_link_state_for_operation(
                 state, array_slicer, source, "remove_cursor", {"index": 0}
             )
         finally:
@@ -3615,6 +3628,7 @@ def test_pending_workspace_link_payload_helper_fallbacks(
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         controller = manager._workspace_controller
+        loader = controller.loading
         data = xr.DataArray(
             np.arange(36, dtype=np.float64).reshape((6, 6)),
             dims=["x", "y"],
@@ -3627,10 +3641,10 @@ def test_pending_workspace_link_payload_helper_fallbacks(
         source.array_slicer.set_index(0, 0, 2, update=False)
 
         node = PendingNode()
-        assert not controller._update_pending_workspace_manual_limits(
+        assert not loader._update_pending_workspace_manual_limits(
             node, {"x": [0.0, 1.0]}
         )
-        assert not controller._apply_pending_workspace_link_operation(
+        assert not loader._apply_pending_workspace_link_operation(
             source,
             node,
             "set_index",
@@ -3644,10 +3658,10 @@ def test_pending_workspace_link_payload_helper_fallbacks(
 
         for raw_state in (b"\xff", "{bad-json"):
             node.attrs = {"itool_state": raw_state}
-            assert not controller._update_pending_workspace_manual_limits(
+            assert not loader._update_pending_workspace_manual_limits(
                 node, {"x": [0.0, 1.0]}
             )
-            assert not controller._apply_pending_workspace_link_operation(
+            assert not loader._apply_pending_workspace_link_operation(
                 source,
                 node,
                 "set_index",
@@ -3661,10 +3675,10 @@ def test_pending_workspace_link_payload_helper_fallbacks(
 
         node.attrs = {"itool_state": json.dumps({})}
         node.pending_workspace_memory_payload = None
-        assert not controller._update_pending_workspace_manual_limits(
+        assert not loader._update_pending_workspace_manual_limits(
             node, {"x": [0.0, 1.0]}
         )
-        assert not controller._apply_pending_workspace_link_operation(
+        assert not loader._apply_pending_workspace_link_operation(
             source,
             node,
             "set_index",
@@ -3685,14 +3699,14 @@ def test_pending_workspace_link_payload_helper_fallbacks(
             raise OSError("missing payload")
 
         monkeypatch.setattr(
-            controller,
+            controller.loading,
             "_read_workspace_imagetool_payload_dataset",
             _raise_payload_read,
         )
-        assert not controller._update_pending_workspace_manual_limits(
+        assert not loader._update_pending_workspace_manual_limits(
             node, {"x": [0.0, 1.0]}
         )
-        assert not controller._apply_pending_workspace_link_operation(
+        assert not loader._apply_pending_workspace_link_operation(
             source,
             node,
             "set_index",
@@ -3705,15 +3719,15 @@ def test_pending_workspace_link_payload_helper_fallbacks(
         )
 
         def _metadata_dataset(*_args, **_kwargs):
-            return xr.Dataset({manager_workspace_io._ITOOL_DATA_NAME: data})
+            return xr.Dataset({_ITOOL_DATA_NAME: data})
 
         monkeypatch.setattr(
-            controller,
+            controller.loading,
             "_read_workspace_imagetool_payload_dataset",
             _metadata_dataset,
         )
         node.attrs = {"itool_state": json.dumps({})}
-        assert controller._update_pending_workspace_manual_limits(
+        assert loader._update_pending_workspace_manual_limits(
             node, {"x": [0.0, 1.0], "missing": [2.0, 3.0]}
         )
         assert json.loads(node.attrs["itool_state"])["manual_limits"] == {
@@ -3727,7 +3741,7 @@ def test_pending_workspace_link_payload_helper_fallbacks(
                     {"slice": target_slicer.state, "current_cursor": 0}
                 )
             }
-            assert not controller._apply_pending_workspace_link_operation(
+            assert not loader._apply_pending_workspace_link_operation(
                 source,
                 node,
                 "unknown_operation",
@@ -3738,7 +3752,7 @@ def test_pending_workspace_link_payload_helper_fallbacks(
                 None,
                 False,
             )
-            assert controller._apply_pending_workspace_link_operation(
+            assert loader._apply_pending_workspace_link_operation(
                 source,
                 node,
                 "set_index",
@@ -4009,8 +4023,8 @@ def test_manager_workspace_unlink_removes_saved_link_group(
         assert manager.is_workspace_modified
         manager._save_workspace_document(fname, force_full=True)
 
-        manifest = manager_workspace._workspace_manifest_from_attrs(
-            manager_workspace._read_workspace_root_attrs_h5py(fname)
+        manifest = workspace_format._workspace_manifest_from_attrs(
+            workspace_arrays._read_workspace_root_attrs_h5py(fname)
         )
         assert all("link_group" not in entry for entry in manifest["nodes"])
 
@@ -4042,7 +4056,7 @@ def test_manager_workspace_save_selection_cancel_does_not_write(
             return QtWidgets.QDialog.DialogCode.Rejected
 
     monkeypatch.setattr(
-        erlab.interactive.imagetool.manager._workspace_io,
+        workspace_saving,
         "_ChooseFromDataTreeDialog",
         _RejectedChooseDialog,
     )
@@ -4094,7 +4108,7 @@ def test_manager_workspace_save_selection_encodes_rich_attrs(
             return QtWidgets.QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(
-        erlab.interactive.imagetool.manager._workspace_io,
+        workspace_saving,
         "_ChooseFromDataTreeDialog",
         _AcceptedChooseDialog,
     )
@@ -4115,9 +4129,9 @@ def test_manager_workspace_save_selection_encodes_rich_attrs(
         manager._save_to_file(str(fname))
 
     with h5py.File(fname, "r") as h5_file:
-        saved_data = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+        saved_data = h5_file["0/imagetool"][_ITOOL_DATA_NAME]
         assert "Single Motor Scan" not in saved_data.attrs
-        decoded = manager_workspace._h5py_attrs_to_dict(saved_data.attrs)
+        decoded = workspace_arrays._h5py_attrs_to_dict(saved_data.attrs)
     _assert_rich_workspace_attr(decoded["Single Motor Scan"])
 
 
@@ -4128,9 +4142,7 @@ def test_manager_workspace_load_selection_skips_unchecked_children(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    class _SelectedChooseDialog(
-        erlab.interactive.imagetool.manager._workspace_io._ChooseFromDataTreeDialog
-    ):
+    class _SelectedChooseDialog(_ChooseFromDataTreeDialog):
         def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
             root_item = self._tree_widget.topLevelItem(0)
@@ -4143,7 +4155,7 @@ def test_manager_workspace_load_selection_skips_unchecked_children(
             return QtWidgets.QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(
-        erlab.interactive.imagetool.manager._workspace_io,
+        workspace_loading,
         "_ChooseFromDataTreeDialog",
         _SelectedChooseDialog,
     )
@@ -4185,9 +4197,7 @@ def test_manager_workspace_load_selection_skips_unchecked_figures(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    class _SelectedChooseDialog(
-        erlab.interactive.imagetool.manager._workspace_io._ChooseFromDataTreeDialog
-    ):
+    class _SelectedChooseDialog(_ChooseFromDataTreeDialog):
         def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
             root = self._tree_widget.invisibleRootItem()
@@ -4207,7 +4217,7 @@ def test_manager_workspace_load_selection_skips_unchecked_figures(
             return QtWidgets.QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(
-        erlab.interactive.imagetool.manager._workspace_io,
+        workspace_loading,
         "_ChooseFromDataTreeDialog",
         _SelectedChooseDialog,
     )
@@ -4332,12 +4342,12 @@ def _transaction_test_root_attrs(delta_save_count: int = 0) -> dict[str, object]
     }
     if delta_save_count > 0:
         manifest["transaction_protocol"] = (
-            manager_workspace._WORKSPACE_TRANSACTION_PROTOCOL
+            workspace_format._WORKSPACE_TRANSACTION_PROTOCOL
         )
         manifest["delta_save_count"] = delta_save_count
     return {
         "imagetool_workspace_schema_version": 4,
-        manager_workspace._WORKSPACE_MANIFEST_ATTR: json.dumps(manifest),
+        workspace_format._WORKSPACE_MANIFEST_ATTR: json.dumps(manifest),
     }
 
 
@@ -4352,7 +4362,7 @@ def _write_transaction_test_workspace(fname: pathlib.Path, value: float = 1.0) -
         {"0/imagetool": _transaction_test_dataset(value, title="old")}
     )
     try:
-        manager_workspace._write_full_workspace_tree_file(
+        workspace_saving._write_full_workspace_tree_file(
             fname, tree, _transaction_test_root_attrs()
         )
     finally:
@@ -4360,7 +4370,7 @@ def _write_transaction_test_workspace(fname: pathlib.Path, value: float = 1.0) -
 
 
 def _read_transaction_test_value(fname: pathlib.Path) -> float:
-    opened = manager_xarray.open_workspace_datatree(fname, chunks=None)
+    opened = workspace_arrays.open_workspace_datatree(fname, chunks=None)
     try:
         ds = typing.cast("xr.DataTree", opened["/0/imagetool"]).to_dataset(
             inherit=False
@@ -4375,8 +4385,7 @@ def _assert_no_workspace_internal_groups(fname: pathlib.Path) -> None:
 
     with h5py.File(fname, "r") as h5_file:
         assert not any(
-            manager_workspace._is_workspace_internal_group_name(name)
-            for name in h5_file
+            workspace_format._is_workspace_internal_group_name(name) for name in h5_file
         )
 
 
@@ -4387,7 +4396,7 @@ def test_workspace_file_repack_payload_strips_delta_and_skips_internal_groups(
 
     fname = tmp_path / "file-repack.itws"
     _write_transaction_test_workspace(fname)
-    manager_workspace._write_workspace_root_attrs_to_file(
+    workspace_saving._write_workspace_root_attrs_to_file(
         fname,
         _transaction_test_root_attrs(delta_save_count=3),
         replace=True,
@@ -4396,29 +4405,29 @@ def test_workspace_file_repack_payload_strips_delta_and_skips_internal_groups(
         h5_file.create_group("__itws_pending_orphan")
         h5_file.create_dataset("root_dataset", data=np.arange(3))
 
-    assert manager_workspace._workspace_live_root_group_copy_groups(fname) == (
+    assert workspace_arrays._workspace_live_root_group_copy_groups(fname) == (
         ("0", "0", None),
     )
-    storage_size, existing_count = manager_workspace._workspace_h5_paths_storage_size(
+    storage_size, existing_count = workspace_arrays._workspace_h5_paths_storage_size(
         fname, ("0", "missing")
     )
     assert storage_size >= np.dtype(np.float64).itemsize
     assert existing_count == 1
-    assert manager_workspace._workspace_live_h5_storage_size(fname) == storage_size
-    assert manager_workspace._workspace_obsolete_estimate(fname) >= 0
-    root_attrs, copy_groups = manager_workspace._workspace_file_repack_payload(fname)
+    assert workspace_arrays._workspace_live_h5_storage_size(fname) == storage_size
+    assert workspace_saving._workspace_obsolete_estimate(fname) >= 0
+    root_attrs, copy_groups = workspace_saving._workspace_file_repack_payload(fname)
 
-    manifest = manager_workspace._workspace_manifest_from_attrs(root_attrs)
+    manifest = workspace_format._workspace_manifest_from_attrs(root_attrs)
     assert "delta_save_count" not in manifest
     assert "transaction_protocol" not in manifest
     assert (
         manifest["schema_version"]
-        == manager_workspace._current_workspace_schema_version()
+        == workspace_format._current_workspace_schema_version()
     )
     assert manifest["erlab_version"] == erlab.__version__
     assert copy_groups == (("0", "0", None),)
 
-    manager_workspace._write_full_workspace_tree_file(
+    workspace_saving._write_full_workspace_tree_file(
         fname,
         None,
         root_attrs,
@@ -4430,7 +4439,7 @@ def test_workspace_file_repack_payload_strips_delta_and_skips_internal_groups(
     _assert_no_workspace_internal_groups(fname)
     with h5py.File(fname, "r") as h5_file:
         assert set(h5_file) == {"0"}
-        manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert "delta_save_count" not in manifest
 
 
@@ -4442,16 +4451,14 @@ def test_workspace_h5py_helpers_reject_non_workspace_files(tmp_path) -> None:
         h5_file.create_group("0")
 
     with pytest.raises(ValueError, match="Not a valid workspace file"):
-        manager_workspace._workspace_live_root_group_copy_groups(fname)
+        workspace_arrays._workspace_live_root_group_copy_groups(fname)
     with pytest.raises(ValueError, match="Not a valid workspace file"):
-        manager_workspace._workspace_h5_paths_storage_size(fname, ("0",))
+        workspace_arrays._workspace_h5_paths_storage_size(fname, ("0",))
     with pytest.raises(ValueError, match="Not a valid workspace file"):
-        manager_workspace._workspace_live_h5_storage_size(fname)
+        workspace_arrays._workspace_live_h5_storage_size(fname)
 
-    assert (
-        manager_workspace._workspace_obsolete_estimate(tmp_path / "missing.itws") == 0
-    )
-    assert manager_workspace._workspace_h5_object_storage_size(object()) == 0
+    assert workspace_saving._workspace_obsolete_estimate(tmp_path / "missing.itws") == 0
+    assert workspace_arrays._workspace_h5_object_storage_size(object()) == 0
 
 
 def test_workspace_h5py_filter_matching_edge_cases(tmp_path) -> None:
@@ -4474,48 +4481,48 @@ def test_workspace_h5py_filter_matching_edge_cases(tmp_path) -> None:
         metadata_group = h5_file.create_group("metadata")
         metadata_group.create_group("nested")
 
-        assert manager_workspace._workspace_h5py_blosc2_options_match((1, 2), (1, 2))
-        assert not manager_workspace._workspace_h5py_blosc2_options_match((1,), (2,))
-        assert manager_workspace._workspace_h5py_dataset_matches_encoding(plain, {})
-        assert not manager_workspace._workspace_h5py_dataset_matches_encoding(
+        assert workspace_arrays._workspace_h5py_blosc2_options_match((1, 2), (1, 2))
+        assert not workspace_arrays._workspace_h5py_blosc2_options_match((1,), (2,))
+        assert workspace_arrays._workspace_h5py_dataset_matches_encoding(plain, {})
+        assert not workspace_arrays._workspace_h5py_dataset_matches_encoding(
             plain, {"compression": hdf5plugin.Blosc2.filter_id}
         )
-        assert manager_workspace._workspace_h5py_dataset_matches_encoding(
+        assert workspace_arrays._workspace_h5py_dataset_matches_encoding(
             compressed, {"compression": hdf5plugin.Blosc2.filter_id}
         )
-        assert manager_workspace._workspace_h5py_dataset_matches_encoding(
-            compressed, manager_xarray._workspace_blosc2_encoding("zstd1")
+        assert workspace_arrays._workspace_h5py_dataset_matches_encoding(
+            compressed, workspace_arrays._workspace_blosc2_encoding("zstd1")
         )
-        assert not manager_workspace._workspace_h5py_dataset_matches_encoding(
-            compressed, manager_xarray._workspace_blosc2_encoding("blosclz3")
+        assert not workspace_arrays._workspace_h5py_dataset_matches_encoding(
+            compressed, workspace_arrays._workspace_blosc2_encoding("blosclz3")
         )
-        gzip_filter = manager_workspace._workspace_h5py_filter_options(gzip_data)
-        assert manager_workspace._workspace_h5py_dataset_matches_encoding(
+        gzip_filter = workspace_arrays._workspace_h5py_filter_options(gzip_data)
+        assert workspace_arrays._workspace_h5py_dataset_matches_encoding(
             gzip_data,
             {"compression": 1, "compression_opts": gzip_filter[1]},
         )
-        assert not manager_workspace._h5_group_matches_compression(
+        assert not workspace_arrays._h5_group_matches_compression(
             h5_file, "missing", "none"
         )
-        assert not manager_workspace._h5_group_matches_compression(
+        assert not workspace_arrays._h5_group_matches_compression(
             h5_file, "plain", "none"
         )
-        assert manager_workspace._h5_group_matches_compression(
+        assert workspace_arrays._h5_group_matches_compression(
             h5_file, "metadata", "none"
         )
-        assert not manager_workspace._workspace_h5_group_matches_compression_mode(
+        assert not workspace_arrays._workspace_h5_group_matches_compression_mode(
             h5_file,
             "missing",
             xr.Dataset({"data": ("x", np.arange(3))}),
             "none",
         )
-        assert not manager_workspace._workspace_h5_group_matches_compression_mode(
+        assert not workspace_arrays._workspace_h5_group_matches_compression_mode(
             h5_file,
             "payload",
             xr.Dataset({"missing": ("x", np.arange(3))}),
             "none",
         )
-        assert not manager_workspace._workspace_h5_group_matches_compression_mode(
+        assert not workspace_arrays._workspace_h5_group_matches_compression_mode(
             h5_file,
             "payload",
             xr.Dataset({"data": ("x", np.arange(3))}),
@@ -4558,12 +4565,12 @@ def test_workspace_h5py_copy_rebuilds_attrs_and_dimension_scales(tmp_path) -> No
 
     array_member = _FakeH5Type(h5py.h5t.REFERENCE)
     array_type = _FakeH5Type(h5py.h5t.ARRAY, super_type=array_member)
-    assert manager_workspace._workspace_h5py_type_contains_reference(array_type)
+    assert workspace_arrays._workspace_h5py_type_contains_reference(array_type)
     assert array_member.closed
 
     plain_member = _FakeH5Type(h5py.h5t.INTEGER)
     compound_type = _FakeH5Type(h5py.h5t.COMPOUND, member_types=(plain_member,))
-    assert not manager_workspace._workspace_h5py_type_contains_reference(compound_type)
+    assert not workspace_arrays._workspace_h5py_type_contains_reference(compound_type)
     assert plain_member.closed
 
     fname = tmp_path / "dimension-scales.h5"
@@ -4603,17 +4610,17 @@ def test_workspace_h5py_copy_rebuilds_attrs_and_dimension_scales(tmp_path) -> No
         target.create_dataset("values", data=np.arange(2))
         target.create_dataset("values_missing_scale", data=np.arange(2))
 
-        assert manager_workspace._workspace_h5py_attr_text(np.bytes_(b"x")) == "x"
+        assert workspace_arrays._workspace_h5py_attr_text(np.bytes_(b"x")) == "x"
         assert (
-            manager_workspace._workspace_h5py_attr_text(
+            workspace_arrays._workspace_h5py_attr_text(
                 types.SimpleNamespace(decode=lambda: "decoded")
             )
             == "decoded"
         )
-        assert manager_workspace._workspace_h5py_attr_text("x") == "x"
-        assert manager_workspace._workspace_h5py_attr_text(object()) is None
+        assert workspace_arrays._workspace_h5py_attr_text("x") == "x"
+        assert workspace_arrays._workspace_h5py_attr_text(object()) is None
 
-        manager_workspace._workspace_h5py_rebuild_dimension_scales(source, target)
+        workspace_arrays._workspace_h5py_rebuild_dimension_scales(source, target)
 
         assert "reference" not in target.attrs
         assert "reference_array" not in target.attrs
@@ -4631,13 +4638,13 @@ def test_copy_workspace_h5_group_to_open_file_edge_cases(tmp_path) -> None:
         h5_file.create_group("source").create_dataset("data", data=np.arange(2))
         h5_file.create_group("target").create_group("source")
 
-        assert not manager_workspace._copy_workspace_h5_group_to_open_file(
+        assert not workspace_arrays._copy_workspace_h5_group_to_open_file(
             h5_file, h5_file, "missing", "target/missing", None
         )
-        assert not manager_workspace._copy_workspace_h5_group_to_open_file(
+        assert not workspace_arrays._copy_workspace_h5_group_to_open_file(
             h5_file, h5_file, "dataset", "target/dataset", None
         )
-        assert manager_workspace._copy_workspace_h5_group_to_open_file(
+        assert workspace_arrays._copy_workspace_h5_group_to_open_file(
             h5_file,
             h5_file,
             "source",
@@ -4655,20 +4662,18 @@ def test_write_workspace_dataset_group_h5py_cleans_failed_independent_items(
     ds = xr.Dataset(
         {
             saved_tool_data_name: (
-                (manager_workspace._SAVED_TOOL_DATA_REFERENCE_DIM,),
+                (workspace_arrays._SAVED_TOOL_DATA_REFERENCE_DIM,),
                 np.empty(0, dtype=np.float64),
             )
         }
     )
     monkeypatch.setattr(
-        manager_workspace,
+        workspace_arrays,
         "_workspace_h5py_create_dataset",
         lambda *_args, **_kwargs: None,
     )
 
-    assert not manager_workspace._write_workspace_dataset_group_h5py(
-        fname, "0/tool", ds
-    )
+    assert not workspace_arrays._write_workspace_dataset_group_h5py(fname, "0/tool", ds)
 
     import h5py
 
@@ -4695,7 +4700,7 @@ def test_workspace_dataset_encoding_compresses_only_large_numeric_payloads() -> 
         },
     )
 
-    encoding = manager_xarray.workspace_dataset_encoding(ds)
+    encoding = workspace_arrays.workspace_dataset_encoding(ds)
 
     assert set(encoding) == {"large"}
     assert encoding["large"] == dict(
@@ -4717,8 +4722,10 @@ def test_workspace_dataset_encoding_supports_compression_modes() -> None:
         }
     )
 
-    assert manager_xarray.workspace_dataset_encoding(ds, compression_mode="none") == {}
-    assert manager_xarray.workspace_dataset_encoding(
+    assert (
+        workspace_arrays.workspace_dataset_encoding(ds, compression_mode="none") == {}
+    )
+    assert workspace_arrays.workspace_dataset_encoding(
         ds, compression_mode="blosclz3"
     ) == {
         "large": dict(
@@ -4729,7 +4736,9 @@ def test_workspace_dataset_encoding_supports_compression_modes() -> None:
             )
         )
     }
-    assert manager_xarray.workspace_dataset_encoding(ds, compression_mode="zstd1") == {
+    assert workspace_arrays.workspace_dataset_encoding(
+        ds, compression_mode="zstd1"
+    ) == {
         "large": dict(
             hdf5plugin.Blosc2(
                 cname="zstd",
@@ -4738,7 +4747,7 @@ def test_workspace_dataset_encoding_supports_compression_modes() -> None:
             )
         )
     }
-    assert manager_xarray.workspace_dataset_encoding(ds, compress=True) == {
+    assert workspace_arrays.workspace_dataset_encoding(ds, compress=True) == {
         "large": dict(
             hdf5plugin.Blosc2(
                 cname="zstd",
@@ -4748,10 +4757,10 @@ def test_workspace_dataset_encoding_supports_compression_modes() -> None:
         )
     }
     with pytest.raises(ValueError, match="Unknown workspace compression mode"):
-        manager_xarray.workspace_dataset_encoding(
+        workspace_arrays.workspace_dataset_encoding(
             ds,
             compression_mode=typing.cast(
-                "manager_xarray.WorkspaceCompressionMode", "missing"
+                "workspace_arrays.WorkspaceCompressionMode", "missing"
             ),
         )
 
@@ -4768,11 +4777,11 @@ def test_workspace_dataset_encoding_respects_compression_preference() -> None:
     old_value = erlab.interactive.options["io/workspace/compression"]
     try:
         erlab.interactive.options["io/workspace/compression"] = "none"
-        assert not manager_xarray.workspace_compression_enabled()
-        assert manager_xarray.workspace_dataset_encoding(ds) == {}
+        assert not workspace_arrays.workspace_compression_enabled()
+        assert workspace_arrays.workspace_dataset_encoding(ds) == {}
 
         erlab.interactive.options["io/workspace/compression"] = "blosclz3"
-        assert manager_xarray.workspace_dataset_encoding(ds)["large"] == dict(
+        assert workspace_arrays.workspace_dataset_encoding(ds)["large"] == dict(
             hdf5plugin.Blosc2(
                 cname="blosclz",
                 clevel=3,
@@ -4781,7 +4790,7 @@ def test_workspace_dataset_encoding_respects_compression_preference() -> None:
         )
 
         erlab.interactive.options["io/workspace/compression"] = "zstd1"
-        assert manager_xarray.workspace_dataset_encoding(ds)["large"] == dict(
+        assert workspace_arrays.workspace_dataset_encoding(ds)["large"] == dict(
             hdf5plugin.Blosc2(
                 cname="zstd",
                 clevel=1,
@@ -4799,20 +4808,20 @@ def test_workspace_dataset_encoding_persists_dask_chunksizes() -> None:
     ).chunk({"x": (2, 3), "y": (4, 1)})
     ds = xr.Dataset({"data": data})
 
-    assert manager_xarray.workspace_dataset_encoding(ds, compress=False) == {
+    assert workspace_arrays.workspace_dataset_encoding(ds, compress=False) == {
         "data": {"chunksizes": (2, 4)}
     }
 
 
 def test_workspace_chunksizes_rejects_invalid_chunk_shapes() -> None:
     assert (
-        manager_xarray._workspace_chunksizes_for_dataarray(
+        workspace_arrays._workspace_chunksizes_for_dataarray(
             types.SimpleNamespace(chunks=((1,),), ndim=1, shape=(0,))
         )
         is None
     )
     assert (
-        manager_xarray._workspace_chunksizes_for_dataarray(
+        workspace_arrays._workspace_chunksizes_for_dataarray(
             types.SimpleNamespace(chunks=((0,),), ndim=1, shape=(5,))
         )
         is None
@@ -4832,7 +4841,7 @@ def test_workspace_datatree_encoding_uses_group_paths() -> None:
     small_ds = xr.Dataset({"data": ("x", np.arange(4, dtype=np.float64))})
     tree = xr.DataTree.from_dict({"0/imagetool": large_ds, "1/imagetool": small_ds})
     try:
-        encoding = manager_xarray.workspace_datatree_encoding(tree)
+        encoding = workspace_arrays.workspace_datatree_encoding(tree)
     finally:
         tree.close()
 
@@ -4854,7 +4863,7 @@ def test_workspace_datatree_encoding_can_be_disabled() -> None:
         }
     )
     try:
-        assert manager_xarray.workspace_datatree_encoding(tree, compress=False) == {}
+        assert workspace_arrays.workspace_datatree_encoding(tree, compress=False) == {}
     finally:
         tree.close()
 
@@ -4864,27 +4873,27 @@ def test_workspace_xarray_path_helpers_cover_fallbacks(monkeypatch, tmp_path) ->
         def __fspath__(self) -> str:
             raise TypeError
 
-    assert manager_xarray._normalized_file_path(object()) is None
-    assert manager_xarray._normalized_file_path(_BadPath()) is None
-    assert manager_xarray._normalized_file_path("") is None
+    assert workspace_arrays._normalized_file_path(object()) is None
+    assert workspace_arrays._normalized_file_path(_BadPath()) is None
+    assert workspace_arrays._normalized_file_path("") is None
 
     def _raise_oserror(_path: pathlib.Path) -> pathlib.Path:
         raise OSError("resolve failed")
 
     monkeypatch.setattr(pathlib.Path, "resolve", _raise_oserror)
-    assert manager_xarray._normalized_file_path(tmp_path / "workspace.itws") == str(
+    assert workspace_arrays._normalized_file_path(tmp_path / "workspace.itws") == str(
         tmp_path / "workspace.itws"
     )
 
-    monkeypatch.setattr(manager_xarray, "_normalized_file_path", lambda _path: None)
-    lock = manager_xarray._workspace_file_lock("fallback.itws")
-    assert lock is manager_xarray._workspace_file_lock("fallback.itws")
+    monkeypatch.setattr(workspace_arrays, "_normalized_file_path", lambda _path: None)
+    lock = workspace_arrays._workspace_file_lock("fallback.itws")
+    assert lock is workspace_arrays._workspace_file_lock("fallback.itws")
 
     def _raise_stat_oserror(_path: str):
         raise OSError
 
-    monkeypatch.setattr(manager_xarray.os, "stat", _raise_stat_oserror)
-    assert manager_xarray._workspace_file_identity("missing.itws") == (
+    monkeypatch.setattr(workspace_arrays.os, "stat", _raise_stat_oserror)
+    assert workspace_arrays._workspace_file_identity("missing.itws") == (
         "missing.itws",
         0,
         0,
@@ -4904,15 +4913,15 @@ def test_workspace_file_manager_uses_fsdecode_fallback(monkeypatch) -> None:
         self._cache = {}
 
     monkeypatch.setattr(
-        manager_xarray, "ensure_workspace_hdf5_filters_registered", lambda: None
+        workspace_arrays, "ensure_workspace_hdf5_filters_registered", lambda: None
     )
-    monkeypatch.setattr(manager_xarray, "_normalized_file_path", lambda _path: None)
+    monkeypatch.setattr(workspace_arrays, "_normalized_file_path", lambda _path: None)
     monkeypatch.setattr(
-        manager_xarray, "_workspace_file_identity", lambda path: (path, 0, 0, 0)
+        workspace_arrays, "_workspace_file_identity", lambda path: (path, 0, 0, 0)
     )
-    monkeypatch.setattr(manager_xarray.CachingFileManager, "__init__", _fake_init)
+    monkeypatch.setattr(workspace_arrays.CachingFileManager, "__init__", _fake_init)
 
-    file_manager = manager_xarray.WorkspaceFileManager("fallback.itws")
+    file_manager = workspace_arrays.WorkspaceFileManager("fallback.itws")
 
     assert file_manager.workspace_path == "fallback.itws"
     assert captured["args"][0] == "fallback.itws"
@@ -4930,14 +4939,14 @@ def test_open_workspace_dataset_uses_fsdecode_fallback(monkeypatch) -> None:
         calls.append((file_manager, group, chunks))
         return "dataset"
 
-    monkeypatch.setattr(manager_xarray, "_normalized_file_path", lambda _path: None)
-    monkeypatch.setattr(manager_xarray, "WorkspaceFileManager", _FakeFileManager)
+    monkeypatch.setattr(workspace_arrays, "_normalized_file_path", lambda _path: None)
+    monkeypatch.setattr(workspace_arrays, "WorkspaceFileManager", _FakeFileManager)
     monkeypatch.setattr(
-        manager_xarray, "_open_workspace_dataset_from_manager", _fake_open
+        workspace_arrays, "_open_workspace_dataset_from_manager", _fake_open
     )
 
     assert (
-        manager_xarray.open_workspace_dataset("fallback.itws", "/0", chunks=None)
+        workspace_arrays.open_workspace_dataset("fallback.itws", "/0", chunks=None)
         == "dataset"
     )
     file_manager, group, chunks = calls[0]
@@ -4971,17 +4980,19 @@ def test_open_workspace_datatree_closes_partial_groups_on_error(monkeypatch) -> 
             raise RuntimeError("broken group")
         return _FakeDataset(group_path)
 
-    monkeypatch.setattr(manager_xarray, "_normalized_file_path", lambda _path: None)
-    monkeypatch.setattr(manager_xarray, "WorkspaceFileManager", _FakeFileManager)
+    monkeypatch.setattr(workspace_arrays, "_normalized_file_path", lambda _path: None)
+    monkeypatch.setattr(workspace_arrays, "WorkspaceFileManager", _FakeFileManager)
     monkeypatch.setattr(
-        manager_xarray, "_iter_h5netcdf_group_paths", lambda _h5_file: ("/", "/broken")
+        workspace_arrays,
+        "_iter_h5netcdf_group_paths",
+        lambda _h5_file: ("/", "/broken"),
     )
     monkeypatch.setattr(
-        manager_xarray, "_open_workspace_dataset_from_manager", _fake_open
+        workspace_arrays, "_open_workspace_dataset_from_manager", _fake_open
     )
 
     with pytest.raises(RuntimeError, match="broken group"):
-        manager_xarray.open_workspace_datatree("fallback.itws", chunks="auto")
+        workspace_arrays.open_workspace_datatree("fallback.itws", chunks="auto")
 
     assert closed == ["/"]
 
@@ -5008,7 +5019,7 @@ def test_write_full_workspace_tree_file_compresses_payload_not_coords(
     tree = xr.DataTree.from_dict({"0/imagetool": ds})
     fname = tmp_path / "compressed.itws"
     try:
-        manager_workspace._write_full_workspace_tree_file(
+        workspace_saving._write_full_workspace_tree_file(
             fname, tree, {"imagetool_workspace_schema_version": 4}
         )
     finally:
@@ -5022,7 +5033,7 @@ def test_write_full_workspace_tree_file_compresses_payload_not_coords(
         assert _hdf5_filter_ids(h5_file["0/imagetool/y"]) == []
         assert _hdf5_filter_ids(h5_file["0/imagetool/small"]) == []
 
-    opened = manager_xarray.open_workspace_datatree(fname, chunks=None)
+    opened = workspace_arrays.open_workspace_datatree(fname, chunks=None)
     try:
         loaded = typing.cast("xr.DataTree", opened["/0/imagetool"]).to_dataset(
             inherit=False
@@ -5046,7 +5057,7 @@ def test_open_workspace_datatree_reads_uncompressed_workspace(tmp_path) -> None:
     finally:
         tree.close()
 
-    opened = manager_xarray.open_workspace_datatree(fname, chunks=None)
+    opened = workspace_arrays.open_workspace_datatree(fname, chunks=None)
     try:
         loaded = typing.cast("xr.DataTree", opened["/0/imagetool"]).to_dataset(
             inherit=False
@@ -5158,16 +5169,14 @@ def test_imagetool_private_coord_restore_ignores_invalid_records() -> None:
 def test_workspace_h5py_attrs_and_root_validation(tmp_path) -> None:
     import h5py
 
-    assert manager_workspace._h5py_attrs_to_dict({"name": b"value"}) == {
-        "name": "value"
-    }
+    assert workspace_arrays._h5py_attrs_to_dict({"name": b"value"}) == {"name": "value"}
 
     fname = tmp_path / "plain.h5"
     with h5py.File(fname, "w"):
         pass
 
     with pytest.raises(ValueError, match="Not a valid workspace file"):
-        manager_workspace._read_workspace_root_attrs_h5py(fname)
+        workspace_arrays._read_workspace_root_attrs_h5py(fname)
 
 
 def _rich_workspace_attr_value() -> dict[str, typing.Any]:
@@ -5192,29 +5201,29 @@ def _assert_rich_workspace_attr(value: typing.Any) -> None:
 
 
 def test_workspace_attr_native_detection_handles_edge_types() -> None:
-    assert manager_workspace._workspace_attr_value_writes_natively(b"ok")
-    assert not manager_workspace._workspace_attr_value_writes_natively(b"\xff")
-    assert not manager_workspace._workspace_attr_value_writes_natively(b"a\x00")
-    assert manager_workspace._workspace_attr_value_writes_natively(
+    assert workspace_format._workspace_attr_value_writes_natively(b"ok")
+    assert not workspace_format._workspace_attr_value_writes_natively(b"\xff")
+    assert not workspace_format._workspace_attr_value_writes_natively(b"a\x00")
+    assert workspace_format._workspace_attr_value_writes_natively(
         np.array([1, 2], dtype=np.int16)
     )
-    assert not manager_workspace._workspace_attr_value_writes_natively(
+    assert not workspace_format._workspace_attr_value_writes_natively(
         np.array([object()], dtype=object)
     )
-    assert manager_workspace._workspace_attr_value_writes_natively(np.float64(1.0))
-    assert not manager_workspace._workspace_attr_value_writes_natively(
+    assert workspace_format._workspace_attr_value_writes_natively(np.float64(1.0))
+    assert not workspace_format._workspace_attr_value_writes_natively(
         np.datetime64("2024-01-01")
     )
-    assert manager_workspace._workspace_attr_value_writes_natively(("left", "right"))
-    assert manager_workspace._workspace_attr_value_writes_natively((b"left", b"right"))
-    assert manager_workspace._workspace_attr_value_writes_natively(
+    assert workspace_format._workspace_attr_value_writes_natively(("left", "right"))
+    assert workspace_format._workspace_attr_value_writes_natively((b"left", b"right"))
+    assert workspace_format._workspace_attr_value_writes_natively(
         (np.bool_(True), complex(1.0, 2.0))
     )
-    assert not manager_workspace._workspace_attr_value_writes_natively([1, "text"])
-    assert not manager_workspace._workspace_attr_value_writes_natively(
+    assert not workspace_format._workspace_attr_value_writes_natively([1, "text"])
+    assert not workspace_format._workspace_attr_value_writes_natively(
         ("text", b"bytes")
     )
-    assert not manager_workspace._workspace_attr_value_writes_natively(([1],))
+    assert not workspace_format._workspace_attr_value_writes_natively(([1],))
 
 
 def test_workspace_mixed_scalar_attrs_use_typed_encoding() -> None:
@@ -5224,12 +5233,12 @@ def test_workspace_mixed_scalar_attrs_use_typed_encoding() -> None:
         "native_numbers": [1, 2.0],
     }
 
-    serializable = manager_workspace._workspace_serializable_attrs(attrs)
+    serializable = workspace_format._workspace_serializable_attrs(attrs)
 
     assert "mixed_list" not in serializable
     assert "mixed_tuple" not in serializable
     assert serializable["native_numbers"] == [1, 2.0]
-    restored = manager_workspace._restore_workspace_serialized_attrs(serializable)
+    restored = workspace_format._restore_workspace_serialized_attrs(serializable)
     assert restored["mixed_list"] == [1, "text"]
     assert restored["mixed_tuple"] == ("text", b"bytes")
     assert restored["native_numbers"] == [1, 2.0]
@@ -5254,8 +5263,8 @@ def test_workspace_attr_typed_encoding_roundtrips_safe_values(caplog) -> None:
         ],
     }
 
-    decoded = manager_workspace._workspace_decode_attr_value(
-        manager_workspace._workspace_encode_attr_value(value)
+    decoded = workspace_format._workspace_decode_attr_value(
+        workspace_format._workspace_encode_attr_value(value)
     )
 
     assert decoded[None] is None
@@ -5272,30 +5281,30 @@ def test_workspace_attr_typed_encoding_roundtrips_safe_values(caplog) -> None:
     assert decoded[("tuple", 2)][1][0]["nested"] == (None, complex(3.0, 4.0))
 
     with pytest.raises(TypeError, match="unsupported attr key type"):
-        manager_workspace._workspace_encode_attr_key(["bad"])
+        workspace_format._workspace_encode_attr_key(["bad"])
     with pytest.raises(TypeError, match="unsupported numeric attr type"):
-        manager_workspace._workspace_encode_attr_value(decimal.Decimal("1.0"))
+        workspace_format._workspace_encode_attr_value(decimal.Decimal("1.0"))
     with pytest.raises(TypeError, match="must be a mapping"):
-        manager_workspace._workspace_decode_attr_value([])
+        workspace_format._workspace_decode_attr_value([])
     with pytest.raises(TypeError, match="unknown workspace attr value kind"):
-        manager_workspace._workspace_decode_attr_value({"kind": "unknown"})
+        workspace_format._workspace_decode_attr_value({"kind": "unknown"})
     with pytest.raises(TypeError, match="not hashable"):
-        manager_workspace._workspace_decode_attr_key({"kind": "list", "items": []})
+        workspace_format._workspace_decode_attr_key({"kind": "list", "items": []})
 
-    assert manager_workspace._workspace_encoded_attr_entries(b"\xff") is None
-    assert manager_workspace._workspace_encoded_attr_entries(1) is None
-    assert manager_workspace._workspace_encoded_attr_entries("{bad-json") is None
+    assert workspace_format._workspace_encoded_attr_entries(b"\xff") is None
+    assert workspace_format._workspace_encoded_attr_entries(1) is None
+    assert workspace_format._workspace_encoded_attr_entries("{bad-json") is None
     assert (
-        manager_workspace._workspace_encoded_attr_entries(
+        workspace_format._workspace_encoded_attr_entries(
             json.dumps({"version": -1, "attrs": []})
         )
         is None
     )
     assert (
-        manager_workspace._workspace_encoded_attr_entries(
+        workspace_format._workspace_encoded_attr_entries(
             json.dumps(
                 {
-                    "version": manager_workspace._WORKSPACE_ENCODED_ATTRS_VERSION,
+                    "version": workspace_format._WORKSPACE_ENCODED_ATTRS_VERSION,
                     "attrs": [["too-short"]],
                 }
             )
@@ -5305,13 +5314,13 @@ def test_workspace_attr_typed_encoding_roundtrips_safe_values(caplog) -> None:
 
     invalid_payload = json.dumps(
         {
-            "version": manager_workspace._WORKSPACE_ENCODED_ATTRS_VERSION,
+            "version": workspace_format._WORKSPACE_ENCODED_ATTRS_VERSION,
             "attrs": [[{"kind": "list", "items": []}, {"kind": "str", "value": "x"}]],
         }
     )
     with caplog.at_level(logging.WARNING):
-        restored = manager_workspace._restore_workspace_serialized_attrs(
-            {manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR: invalid_payload}
+        restored = workspace_format._restore_workspace_serialized_attrs(
+            {workspace_format._WORKSPACE_ENCODED_ATTRS_ATTR: invalid_payload}
         )
     assert restored == {}
     assert "Ignoring invalid encoded workspace attribute" in caplog.text
@@ -5325,7 +5334,7 @@ def test_replace_h5_attrs_drops_invalid_attr_names(tmp_path) -> None:
         group = h5_file.create_group("0/imagetool")
         group.attrs["old"] = "removed"
 
-        manager_workspace._replace_h5_attrs(
+        workspace_arrays._replace_h5_attrs(
             group.attrs,
             {"": "dropped", None: "dropped", "note": "", "valid": "kept"},
         )
@@ -5344,14 +5353,14 @@ def test_replace_h5_attrs_encodes_non_native_attr_values(tmp_path) -> None:
     with h5py.File(fname, "w") as h5_file:
         group = h5_file.create_group("0/imagetool")
 
-        manager_workspace._replace_h5_attrs(
+        workspace_arrays._replace_h5_attrs(
             group.attrs,
             {"Single Motor Scan": rich_attr, "valid": "kept"},
         )
 
         assert "Single Motor Scan" not in group.attrs
-        assert manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR in group.attrs
-        decoded = manager_workspace._h5py_attrs_to_dict(group.attrs)
+        assert workspace_format._WORKSPACE_ENCODED_ATTRS_ATTR in group.attrs
+        decoded = workspace_arrays._h5py_attrs_to_dict(group.attrs)
         assert decoded["valid"] == "kept"
         _assert_rich_workspace_attr(decoded["Single Motor Scan"])
 
@@ -5359,22 +5368,22 @@ def test_replace_h5_attrs_encodes_non_native_attr_values(tmp_path) -> None:
 def _assert_workspace_h5py_roundtrip(
     tmp_path: pathlib.Path, label: str, data: xr.DataArray
 ) -> tuple[xr.Dataset, xr.Dataset, pathlib.Path]:
-    data_name = manager_workspace_io._ITOOL_DATA_NAME
+    data_name = _ITOOL_DATA_NAME
     fname = tmp_path / f"{label}.itws"
     ds = data.rename(data_name).to_dataset()
 
-    assert manager_workspace._workspace_dataset_can_write_h5py(ds)
-    assert manager_workspace._write_workspace_dataset_group_h5py(
+    assert workspace_arrays._workspace_dataset_can_write_h5py(ds)
+    assert workspace_arrays._write_workspace_dataset_group_h5py(
         fname, "0/imagetool", ds
     )
-    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+    loaded = workspace_arrays._read_workspace_dataset_group_h5py(
         fname,
         "0/imagetool",
         preferred_data_name=data_name,
     )
     assert loaded is not None
 
-    opened = manager_xarray.open_workspace_dataset(fname, "0/imagetool", chunks=None)
+    opened = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks=None)
     try:
         opened_loaded = opened.load()
     finally:
@@ -5392,29 +5401,29 @@ def test_workspace_h5py_fast_path_roundtrips_scalar_coords(tmp_path) -> None:
         dims=("x", "y"),
         coords={"x": np.arange(2.0), "y": np.arange(3.0), "temperature": 20.0},
         attrs={"coordinates": b""},
-        name=manager_workspace_io._ITOOL_DATA_NAME,
+        name=_ITOOL_DATA_NAME,
     )
     ds = data.to_dataset()
 
-    assert manager_workspace._write_workspace_dataset_group_h5py(
+    assert workspace_arrays._write_workspace_dataset_group_h5py(
         fname, "0/imagetool", ds
     )
-    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+    loaded = workspace_arrays._read_workspace_dataset_group_h5py(
         fname,
         "0/imagetool",
-        preferred_data_name=manager_workspace_io._ITOOL_DATA_NAME,
+        preferred_data_name=_ITOOL_DATA_NAME,
     )
 
     assert loaded is not None
     expected = data.copy()
     expected.attrs.pop("coordinates")
     xr.testing.assert_equal(
-        loaded[manager_workspace_io._ITOOL_DATA_NAME],
+        loaded[_ITOOL_DATA_NAME],
         expected,
     )
     assert loaded.coords["temperature"].item() == 20.0
     with h5py.File(fname, "r") as h5_file:
-        saved_data = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+        saved_data = h5_file["0/imagetool"][_ITOOL_DATA_NAME]
         coordinates = saved_data.attrs["coordinates"]
     if isinstance(coordinates, bytes):
         coordinates = coordinates.decode()
@@ -5439,12 +5448,12 @@ def test_workspace_writer_encodes_saved_tool_spaced_associated_coord(
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        manager_workspace._write_workspace_dataset_group_to_file(
+        workspace_arrays._write_workspace_dataset_group_to_file(
             fname, "0/tool", data.to_dataset()
         )
 
     assert not any("space in its name" in str(item.message) for item in caught)
-    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+    loaded = workspace_arrays._read_workspace_dataset_group_h5py(
         fname, "0/tool", preferred_data_name=data_name
     )
 
@@ -5482,15 +5491,15 @@ def test_workspace_h5py_fast_path_roundtrips_saved_tool_extra_blob(
     ds["data_1"] = erlab.interactive.utils._tool_data_to_blob(secondary, "data_1")
     fname = tmp_path / "saved-tool-extra-blob.itws"
 
-    manager_workspace._write_workspace_dataset_group_to_file(fname, "0/tool", ds)
-    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+    workspace_arrays._write_workspace_dataset_group_to_file(fname, "0/tool", ds)
+    loaded = workspace_arrays._read_workspace_dataset_group_h5py(
         fname,
         "0/tool",
         preferred_data_name=data_name,
     )
 
     assert loaded is not None
-    assert manager_workspace._workspace_dataset_can_write_h5py(
+    assert workspace_arrays._workspace_dataset_can_write_h5py(
         imagetool_serialization.encode_private_coords(ds, data_name)
     )
     with h5py.File(fname, "r") as h5_file:
@@ -5507,13 +5516,13 @@ def test_workspace_h5py_fast_path_roundtrips_saved_tool_extra_blob(
     try:
         erlab.interactive.options["io/workspace/compression"] = "blosclz3"
         blosclz_fname = tmp_path / "blosclz-saved-tool-extra-blob.itws"
-        manager_workspace._write_workspace_dataset_group_to_file(
+        workspace_arrays._write_workspace_dataset_group_to_file(
             blosclz_fname, "0/tool", ds
         )
 
         erlab.interactive.options["io/workspace/compression"] = "none"
         uncompressed_fname = tmp_path / "uncompressed-saved-tool-extra-blob.itws"
-        manager_workspace._write_workspace_dataset_group_to_file(
+        workspace_arrays._write_workspace_dataset_group_to_file(
             uncompressed_fname, "0/tool", ds
         )
     finally:
@@ -5544,8 +5553,8 @@ def test_workspace_h5py_fast_path_roundtrips_saved_tool_references(tmp_path) -> 
     )
     fname = tmp_path / "saved-tool-references.itws"
 
-    assert manager_workspace._write_workspace_dataset_group_h5py(fname, "0/tool", ds)
-    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+    assert workspace_arrays._write_workspace_dataset_group_h5py(fname, "0/tool", ds)
+    loaded = workspace_arrays._read_workspace_dataset_group_h5py(
         fname,
         "0/tool",
         preferred_data_name=data_name,
@@ -5566,7 +5575,7 @@ def test_workspace_h5py_fast_path_roundtrips_associated_coords_and_xarray(
 ) -> None:
     import h5py
 
-    data_name = manager_workspace_io._ITOOL_DATA_NAME
+    data_name = _ITOOL_DATA_NAME
     base = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
         dims=("x", "y"),
@@ -5655,7 +5664,7 @@ def test_workspace_h5py_fast_path_roundtrips_associated_coords_and_xarray(
 
 
 def test_workspace_h5py_fast_path_keeps_numeric_since_units(tmp_path) -> None:
-    data_name = manager_workspace_io._ITOOL_DATA_NAME
+    data_name = _ITOOL_DATA_NAME
     fname = tmp_path / "numeric-since-units.itws"
     data = xr.DataArray(
         [1.0, 2.0],
@@ -5672,11 +5681,11 @@ def test_workspace_h5py_fast_path_keeps_numeric_since_units(tmp_path) -> None:
     )
     ds = data.to_dataset()
 
-    assert manager_workspace._workspace_dataset_can_write_h5py(ds)
-    assert manager_workspace._write_workspace_dataset_group_h5py(
+    assert workspace_arrays._workspace_dataset_can_write_h5py(ds)
+    assert workspace_arrays._write_workspace_dataset_group_h5py(
         fname, "0/imagetool", ds
     )
-    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+    loaded = workspace_arrays._read_workspace_dataset_group_h5py(
         fname,
         "0/imagetool",
         preferred_data_name=data_name,
@@ -5692,7 +5701,7 @@ def test_workspace_writer_roundtrips_non_native_attr_values_from_fast_path(
 ) -> None:
     import h5py
 
-    data_name = manager_workspace_io._ITOOL_DATA_NAME
+    data_name = _ITOOL_DATA_NAME
     fname = tmp_path / "rich-attrs-fast-path.itws"
     rich_attr = _rich_workspace_attr_value()
     data = xr.DataArray(
@@ -5716,7 +5725,7 @@ def test_workspace_writer_roundtrips_non_native_attr_values_from_fast_path(
     ds = data.to_dataset()
     ds.attrs["dataset_config"] = rich_attr
 
-    manager_workspace._write_workspace_dataset_group_to_file(fname, "0/imagetool", ds)
+    workspace_arrays._write_workspace_dataset_group_to_file(fname, "0/imagetool", ds)
 
     assert ds.attrs["dataset_config"] is rich_attr
     assert ds[data_name].attrs["Single Motor Scan"] is rich_attr
@@ -5725,10 +5734,10 @@ def test_workspace_writer_roundtrips_non_native_attr_values_from_fast_path(
         saved_data = group[data_name]
         assert "dataset_config" not in group.attrs
         assert "Single Motor Scan" not in saved_data.attrs
-        assert manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR in group.attrs
-        assert manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR in saved_data.attrs
+        assert workspace_format._WORKSPACE_ENCODED_ATTRS_ATTR in group.attrs
+        assert workspace_format._WORKSPACE_ENCODED_ATTRS_ATTR in saved_data.attrs
 
-    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+    loaded = workspace_arrays._read_workspace_dataset_group_h5py(
         fname, "0/imagetool", preferred_data_name=data_name
     )
     assert loaded is not None
@@ -5737,9 +5746,9 @@ def test_workspace_writer_roundtrips_non_native_attr_values_from_fast_path(
     _assert_rich_workspace_attr(loaded.coords["x"].attrs["axis_config"])
     _assert_rich_workspace_attr(loaded.coords["temperature"].attrs["scan_config"])
 
-    opened = manager_xarray.open_workspace_dataset(fname, "0/imagetool", chunks=None)
+    opened = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks=None)
     try:
-        restored = manager_workspace._restore_workspace_dataset_attrs(opened.load())
+        restored = workspace_format._restore_workspace_dataset_attrs(opened.load())
     finally:
         opened.close()
     _assert_rich_workspace_attr(restored.attrs["dataset_config"])
@@ -5750,7 +5759,7 @@ def test_workspace_writer_roundtrips_non_native_attr_values_from_fast_path(
 def test_workspace_writer_drops_invalid_attr_names_from_fast_path(tmp_path) -> None:
     import h5py
 
-    data_name = manager_workspace_io._ITOOL_DATA_NAME
+    data_name = _ITOOL_DATA_NAME
     fname = tmp_path / "invalid-attrs-fast-path.itws"
     data = xr.DataArray(
         np.arange(2.0),
@@ -5774,7 +5783,7 @@ def test_workspace_writer_drops_invalid_attr_names_from_fast_path(tmp_path) -> N
     ds.attrs[""] = "dropped"
     ds.attrs["dataset_note"] = ""
 
-    manager_workspace._write_workspace_dataset_group_to_file(fname, "0/imagetool", ds)
+    workspace_arrays._write_workspace_dataset_group_to_file(fname, "0/imagetool", ds)
 
     assert "" in ds.attrs
     assert "" in ds[data_name].attrs
@@ -5791,7 +5800,7 @@ def test_workspace_writer_drops_invalid_attr_names_from_fast_path(tmp_path) -> N
         assert "" not in list(group["temperature"].attrs)
         assert group["temperature"].attrs["units"] == "K"
 
-    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+    loaded = workspace_arrays._read_workspace_dataset_group_h5py(
         fname, "0/imagetool", preferred_data_name=data_name
     )
     assert loaded is not None
@@ -5828,11 +5837,11 @@ def test_workspace_writer_drops_invalid_attr_names_from_fallback(tmp_path) -> No
         attrs={"": "dropped", "dataset_note": "", "dataset_config": rich_attr},
     )
 
-    manager_workspace._write_workspace_dataset_group_to_file(fname, "0/tool", ds)
+    workspace_arrays._write_workspace_dataset_group_to_file(fname, "0/tool", ds)
 
     opened = xr.open_dataset(fname, group="/0/tool", engine="h5netcdf")
     try:
-        loaded = manager_workspace._restore_workspace_dataset_attrs(opened.load())
+        loaded = workspace_format._restore_workspace_dataset_attrs(opened.load())
     finally:
         opened.close()
 
@@ -5852,10 +5861,10 @@ def test_workspace_writer_drops_invalid_attr_names_from_fallback(tmp_path) -> No
 def test_workspace_h5py_fast_path_rejects_invalid_payloads(
     caplog, monkeypatch, tmp_path
 ) -> None:
-    data_name = manager_workspace_io._ITOOL_DATA_NAME
+    data_name = _ITOOL_DATA_NAME
     private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
 
-    assert not manager_workspace._workspace_dataset_can_write_h5py(
+    assert not workspace_arrays._workspace_dataset_can_write_h5py(
         xr.Dataset(
             {
                 data_name: ("x", [1.0]),
@@ -5869,7 +5878,7 @@ def test_workspace_h5py_fast_path_rejects_invalid_payloads(
     missing_private[data_name].attrs[private_attr] = json.dumps(
         [{"coord_name": "Fake Motor", "variable_name": "missing", "dims": ["x"]}]
     )
-    assert not manager_workspace._workspace_dataset_can_write_h5py(missing_private)
+    assert not workspace_arrays._workspace_dataset_can_write_h5py(missing_private)
 
     bad_private_dims = xr.Dataset(
         {
@@ -5881,9 +5890,9 @@ def test_workspace_h5py_fast_path_rejects_invalid_payloads(
     bad_private_dims[data_name].attrs[private_attr] = json.dumps(
         [{"coord_name": "Fake Motor", "variable_name": "private", "dims": ["z"]}]
     )
-    assert not manager_workspace._workspace_dataset_can_write_h5py(bad_private_dims)
+    assert not workspace_arrays._workspace_dataset_can_write_h5py(bad_private_dims)
 
-    assert not manager_workspace._workspace_dataset_can_write_h5py(
+    assert not workspace_arrays._workspace_dataset_can_write_h5py(
         xr.Dataset(
             {data_name: ("x", [1.0])},
             coords={"x": np.array([object()], dtype=object)},
@@ -5894,7 +5903,7 @@ def test_workspace_h5py_fast_path_rejects_invalid_payloads(
         {data_name: ("x", [1.0])},
         coords={"x": [0.0], "z": [0.0], "bad": ("z", [1.0])},
     )
-    assert not manager_workspace._workspace_dataset_can_write_h5py(bad_associated_dims)
+    assert not workspace_arrays._workspace_dataset_can_write_h5py(bad_associated_dims)
 
     import dask.array as da
 
@@ -5905,20 +5914,20 @@ def test_workspace_h5py_fast_path_rejects_invalid_payloads(
             "chunked": ("x", da.from_array(np.array([1.0, 2.0]), chunks=(1,))),
         },
     )
-    assert not manager_workspace._workspace_dataset_can_write_h5py(chunked_coord)
+    assert not workspace_arrays._workspace_dataset_can_write_h5py(chunked_coord)
 
     monkeypatch.setattr(
-        manager_workspace, "_workspace_dataset_can_write_h5py", lambda _ds: True
+        workspace_arrays, "_workspace_dataset_can_write_h5py", lambda _ds: True
     )
-    assert not manager_workspace._write_workspace_dataset_group_h5py(
+    assert not workspace_arrays._write_workspace_dataset_group_h5py(
         tmp_path / "no-data-name.itws", "0/imagetool", xr.Dataset()
     )
 
     bad_attrs = xr.Dataset({data_name: ("x", [1.0])}, coords={"x": [0.0]})
     bad_attrs.attrs["bad"] = object()
     fname = tmp_path / "bad-attrs.itws"
-    with caplog.at_level(logging.WARNING, logger=manager_workspace.logger.name):
-        assert manager_workspace._write_workspace_dataset_group_h5py(
+    with caplog.at_level(logging.WARNING, logger=workspace_format.logger.name):
+        assert workspace_arrays._write_workspace_dataset_group_h5py(
             fname, "0/imagetool", bad_attrs
         )
     assert "unsupported value type object" in caplog.text
@@ -5932,7 +5941,7 @@ def test_workspace_h5py_fast_path_rejects_invalid_payloads(
 def test_workspace_h5py_reader_rejects_malformed_groups(tmp_path) -> None:
     import h5py
 
-    data_name = manager_workspace_io._ITOOL_DATA_NAME
+    data_name = _ITOOL_DATA_NAME
     private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
     fname = tmp_path / "malformed-reader.itws"
 
@@ -6012,56 +6021,52 @@ def test_workspace_h5py_reader_rejects_malformed_groups(tmp_path) -> None:
         time.attrs["units"] = "days since not-a-date"
         time.attrs["calendar"] = "proleptic_gregorian"
 
+    assert workspace_arrays._read_workspace_dataset_group_h5py(fname, "missing") is None
     assert (
-        manager_workspace._read_workspace_dataset_group_h5py(fname, "missing") is None
-    )
-    assert (
-        manager_workspace._read_workspace_dataset_group_h5py(fname, "not-a-group")
+        workspace_arrays._read_workspace_dataset_group_h5py(fname, "not-a-group")
         is None
     )
-    assert manager_workspace._read_workspace_dataset_group_h5py(fname, "multi") is None
+    assert workspace_arrays._read_workspace_dataset_group_h5py(fname, "multi") is None
+    assert workspace_arrays._read_workspace_dataset_group_h5py(fname, "no-dims") is None
     assert (
-        manager_workspace._read_workspace_dataset_group_h5py(fname, "no-dims") is None
+        workspace_arrays._read_workspace_dataset_group_h5py(fname, "bad-scale") is None
     )
     assert (
-        manager_workspace._read_workspace_dataset_group_h5py(fname, "bad-scale") is None
-    )
-    assert (
-        manager_workspace._read_workspace_dataset_group_h5py(fname, "missing-scalar")
+        workspace_arrays._read_workspace_dataset_group_h5py(fname, "missing-scalar")
         is None
     )
     assert (
-        manager_workspace._read_workspace_dataset_group_h5py(
+        workspace_arrays._read_workspace_dataset_group_h5py(
             fname, "missing-private", preferred_data_name=data_name
         )
         is None
     )
     assert (
-        manager_workspace._read_workspace_dataset_group_h5py(
+        workspace_arrays._read_workspace_dataset_group_h5py(
             fname, "bad-private", preferred_data_name=data_name
         )
         is None
     )
     assert (
-        manager_workspace._read_workspace_dataset_group_h5py(
+        workspace_arrays._read_workspace_dataset_group_h5py(
             fname, "bad-associated-no-scale", preferred_data_name=data_name
         )
         is None
     )
     assert (
-        manager_workspace._read_workspace_dataset_group_h5py(
+        workspace_arrays._read_workspace_dataset_group_h5py(
             fname, "bad-associated-length", preferred_data_name=data_name
         )
         is None
     )
     assert (
-        manager_workspace._read_workspace_dataset_group_h5py(
+        workspace_arrays._read_workspace_dataset_group_h5py(
             fname, "bad-associated-foreign-dim", preferred_data_name=data_name
         )
         is None
     )
     assert (
-        manager_workspace._read_workspace_dataset_group_h5py(
+        workspace_arrays._read_workspace_dataset_group_h5py(
             fname, "bad-time-metadata", preferred_data_name=data_name
         )
         is None
@@ -6071,7 +6076,7 @@ def test_workspace_h5py_reader_rejects_malformed_groups(tmp_path) -> None:
 def test_workspace_h5py_reader_restores_legacy_spaced_coords(tmp_path) -> None:
     import h5py
 
-    data_name = manager_workspace_io._ITOOL_DATA_NAME
+    data_name = _ITOOL_DATA_NAME
     private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
     fname = tmp_path / "legacy-spaced-coord.itws"
 
@@ -6107,19 +6112,19 @@ def test_workspace_h5py_reader_restores_legacy_spaced_coords(tmp_path) -> None:
         data.dims[0].attach_scale(x)
         invalid.create_dataset("Fake Motor", data=np.arange(2.0) + 30.0)
 
-    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+    loaded = workspace_arrays._read_workspace_dataset_group_h5py(
         fname, "valid", preferred_data_name=data_name
     )
     assert loaded is not None
     np.testing.assert_allclose(loaded.coords["Fake Motor"].values, [10.0, 11.0])
-    duplicate_loaded = manager_workspace._read_workspace_dataset_group_h5py(
+    duplicate_loaded = workspace_arrays._read_workspace_dataset_group_h5py(
         fname, "duplicate", preferred_data_name=data_name
     )
     assert duplicate_loaded is not None
     np.testing.assert_allclose(
         duplicate_loaded.coords["Fake Motor"].values, [20.0, 21.0]
     )
-    invalid_loaded = manager_workspace._read_workspace_dataset_group_h5py(
+    invalid_loaded = workspace_arrays._read_workspace_dataset_group_h5py(
         fname, "invalid", preferred_data_name=data_name
     )
     assert invalid_loaded is not None
@@ -6129,7 +6134,7 @@ def test_workspace_h5py_reader_restores_legacy_spaced_coords(tmp_path) -> None:
 def test_workspace_h5py_writer_replaces_groups_and_preserves_attrs(tmp_path) -> None:
     import h5py
 
-    data_name = manager_workspace_io._ITOOL_DATA_NAME
+    data_name = _ITOOL_DATA_NAME
     private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
     fname = tmp_path / "writer-attrs.itws"
     ds = xr.Dataset(
@@ -6151,10 +6156,10 @@ def test_workspace_h5py_writer_replaces_groups_and_preserves_attrs(tmp_path) -> 
         [{"coord_name": "Fake Motor", "variable_name": "private", "dims": ["x"]}]
     )
 
-    assert manager_workspace._write_workspace_dataset_group_h5py(
+    assert workspace_arrays._write_workspace_dataset_group_h5py(
         fname, "0/imagetool", ds
     )
-    assert manager_workspace._write_workspace_dataset_group_h5py(
+    assert workspace_arrays._write_workspace_dataset_group_h5py(
         fname, "0/imagetool", ds
     )
 
@@ -6412,9 +6417,10 @@ def test_manager_workspace_no_loaded_windows_error_without_skipped_nodes(
 ) -> None:
     with manager_context() as manager:
         controller = manager._workspace_controller
+        loader = controller.loading
         controller._skipped_workspace_nodes = []
         with pytest.raises(ValueError, match="No workspace windows") as exc_info:
-            controller._raise_no_workspace_windows_loaded()
+            loader._raise_no_workspace_windows_loaded()
         assert exc_info.value.__cause__ is None
 
 
@@ -6447,7 +6453,7 @@ def test_manager_load_workspace_figures_counts_loaded_and_skipped(
 
     with manager_context() as manager:
         monkeypatch.setattr(
-            manager._workspace_controller,
+            manager._workspace_controller.loading,
             "_load_workspace_node_or_warn",
             _fake_load_workspace_node_or_warn,
         )
@@ -6514,7 +6520,7 @@ def test_manager_from_h5py_workspace_falls_back_after_fast_read_error(
         fname = tmp_path / "fallback-load.itws"
         manager._save_workspace_document(fname, force_full=True)
         with h5py.File(fname, "r") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
@@ -6523,7 +6529,7 @@ def test_manager_from_h5py_workspace_falls_back_after_fast_read_error(
             raise RuntimeError("fast path failed")
 
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_arrays,
             "_read_workspace_dataset_group_h5py",
             _raise_fast_read,
         )
@@ -6556,7 +6562,11 @@ def test_manager_load_workspace_file_falls_back_after_fast_path_error(
         def _raise_fast_load(*_args, **_kwargs) -> bool:
             raise RuntimeError("fast load failed")
 
-        monkeypatch.setattr(manager, "_from_h5py_workspace_file", _raise_fast_load)
+        monkeypatch.setattr(
+            manager._workspace_controller.loading,
+            "_from_h5py_workspace_file",
+            _raise_fast_load,
+        )
 
         assert manager._load_workspace_file(
             fname,
@@ -6589,7 +6599,7 @@ def test_manager_from_h5py_workspace_logs_restore_failure(
         fname = tmp_path / "restore-failure.itws"
         manager._save_workspace_document(fname, force_full=True)
         with h5py.File(fname, "r") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
 
         def _raise_load(*_args, **_kwargs):
             raise RuntimeError("load failed")
@@ -6597,13 +6607,12 @@ def test_manager_from_h5py_workspace_logs_restore_failure(
         def _raise_restore(*_args, **_kwargs):
             raise RuntimeError("restore failed")
 
-        monkeypatch.setattr(manager, "_load_workspace_imagetool_dataset", _raise_load)
-        monkeypatch.setattr(
-            manager._workspace_controller, "_restore_replaced_workspace", _raise_restore
-        )
+        loader = manager._workspace_controller.loading
+        monkeypatch.setattr(loader, "_load_workspace_imagetool_dataset", _raise_load)
+        monkeypatch.setattr(loader, "_restore_replaced_workspace", _raise_restore)
 
         with (
-            caplog.at_level(logging.ERROR, logger=manager_workspace_io.logger.name),
+            caplog.at_level(logging.ERROR, logger=workspace_loading.logger.name),
             pytest.raises(ValueError, match="No workspace windows") as exc_info,
         ):
             manager._from_h5py_workspace_file(
@@ -6639,7 +6648,9 @@ def test_manager_workspace_rebind_skips_missing_snapshot_and_keeps_chunks(
             return data
 
         monkeypatch.setattr(
-            manager, "_workspace_rebind_data_for_uid", _fake_rebind_data
+            manager._workspace_controller.loading,
+            "_workspace_rebind_data_for_uid",
+            _fake_rebind_data,
         )
 
         manager._rebind_workspace_backed_imagetools(
@@ -6668,20 +6679,20 @@ def test_manager_workspace_full_save_copy_group_edge_cases(
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         manager._workspace_state.path = workspace_path
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_arrays,
             "_read_workspace_root_attrs_h5py",
             lambda _path: (_ for _ in ()).throw(RuntimeError("metadata failed")),
         )
-        assert manager._workspace_controller._workspace_full_save_copy_groups(
+        assert manager._workspace_controller.saving._workspace_full_save_copy_groups(
             xr.DataTree()
         ) == (None, ())
 
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_arrays,
             "_read_workspace_root_attrs_h5py",
             lambda _path: {"imagetool_workspace_schema_version": 1},
         )
-        assert manager._workspace_controller._workspace_full_save_copy_groups(
+        assert manager._workspace_controller.saving._workspace_full_save_copy_groups(
             xr.DataTree()
         ) == (None, ())
 
@@ -6707,31 +6718,34 @@ def test_manager_workspace_full_save_copy_group_edge_cases(
         )
         try:
             manifest_without_identities = {
-                "schema_version": manager_workspace._current_workspace_schema_version(),
+                "schema_version": workspace_format._current_workspace_schema_version(),
                 "nodes": [[]],
                 "root_order": [0],
             }
             monkeypatch.setattr(
-                manager_workspace,
+                workspace_arrays,
                 "_read_workspace_root_attrs_h5py",
                 lambda _path: {
                     "imagetool_workspace_schema_version": (
-                        manager_workspace._current_workspace_schema_version()
+                        workspace_format._current_workspace_schema_version()
                     ),
-                    manager_workspace._WORKSPACE_MANIFEST_ATTR: json.dumps(
+                    workspace_format._WORKSPACE_MANIFEST_ATTR: json.dumps(
                         manifest_without_identities
                     ),
                 },
             )
-            assert manager._workspace_controller._workspace_full_save_copy_groups(
-                tree
-            ) == (
-                str(workspace_path),
-                (),
+            assert (
+                manager._workspace_controller.saving._workspace_full_save_copy_groups(
+                    tree
+                )
+                == (
+                    str(workspace_path),
+                    (),
+                )
             )
 
             manifest_with_missing_tree_payload = {
-                "schema_version": manager_workspace._current_workspace_schema_version(),
+                "schema_version": workspace_format._current_workspace_schema_version(),
                 "nodes": [
                     [],
                     {"uid": uid, "kind": "imagetool", "path": "0"},
@@ -6739,22 +6753,25 @@ def test_manager_workspace_full_save_copy_group_edge_cases(
                 "root_order": [0],
             }
             monkeypatch.setattr(
-                manager_workspace,
+                workspace_arrays,
                 "_read_workspace_root_attrs_h5py",
                 lambda _path: {
                     "imagetool_workspace_schema_version": (
-                        manager_workspace._current_workspace_schema_version()
+                        workspace_format._current_workspace_schema_version()
                     ),
-                    manager_workspace._WORKSPACE_MANIFEST_ATTR: json.dumps(
+                    workspace_format._WORKSPACE_MANIFEST_ATTR: json.dumps(
                         manifest_with_missing_tree_payload
                     ),
                 },
             )
-            assert manager._workspace_controller._workspace_full_save_copy_groups(
-                xr.DataTree()
-            ) == (
-                str(workspace_path),
-                (),
+            assert (
+                manager._workspace_controller.saving._workspace_full_save_copy_groups(
+                    xr.DataTree()
+                )
+                == (
+                    str(workspace_path),
+                    (),
+                )
             )
         finally:
             tree.close()
@@ -6772,11 +6789,11 @@ def test_prepare_workspace_transaction_promotes_missing_attr_fallback(
     )
     rewrite_map: dict[str, tuple[str, dict[str, xr.Dataset]]] = {}
 
-    group_operations, attr_updates = manager_workspace._prepare_workspace_transaction(
+    group_operations, attr_updates = workspace_saving._prepare_workspace_transaction(
         fname,
-        f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}fallback",
-        f"{manager_workspace._WORKSPACE_PENDING_GROUP_PREFIX}fallback",
-        f"{manager_workspace._WORKSPACE_BACKUP_GROUP_PREFIX}fallback",
+        f"{workspace_format._WORKSPACE_TRANSACTION_GROUP_PREFIX}fallback",
+        f"{workspace_format._WORKSPACE_PENDING_GROUP_PREFIX}fallback",
+        f"{workspace_format._WORKSPACE_BACKUP_GROUP_PREFIX}fallback",
         rewrite_map,
         (("0/missing", {"itool_title": "new"}, fallback),),
         _transaction_test_root_attrs(delta_save_count=1),
@@ -6785,7 +6802,7 @@ def test_prepare_workspace_transaction_promotes_missing_attr_fallback(
     assert rewrite_map == {"0": fallback}
     assert attr_updates == []
     assert group_operations[0]["group_path"] == "0"
-    manager_workspace._recover_workspace_transactions(fname)
+    workspace_saving._recover_workspace_transactions(fname)
     _assert_no_workspace_internal_groups(fname)
 
 
@@ -6798,7 +6815,7 @@ def test_write_full_workspace_tree_file_skips_missing_copy_source_group(
         {"0/imagetool": _transaction_test_dataset(3.0, title="rewritten")}
     )
     try:
-        manager_workspace._write_full_workspace_tree_file(
+        workspace_saving._write_full_workspace_tree_file(
             fname,
             tree,
             _transaction_test_root_attrs(),
@@ -6820,7 +6837,7 @@ def test_write_full_workspace_tree_file_replaces_stale_root_attrs(tmp_path) -> N
     )
     tree.attrs["stale_workspace_attr"] = "remove me"
     try:
-        manager_workspace._write_full_workspace_tree_file(
+        workspace_saving._write_full_workspace_tree_file(
             fname, tree, _transaction_test_root_attrs()
         )
     finally:
@@ -6828,7 +6845,7 @@ def test_write_full_workspace_tree_file_replaces_stale_root_attrs(tmp_path) -> N
 
     with h5py.File(fname, "r") as h5_file:
         assert "stale_workspace_attr" not in h5_file.attrs
-        manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert manifest == {"schema_version": 4, "root_order": [0], "nodes": []}
 
 
@@ -6840,23 +6857,23 @@ def test_write_full_workspace_tree_file_local_path_uses_destination_temp(
         {"0/imagetool": _transaction_test_dataset(1.0, title="local")}
     )
     write_targets: list[pathlib.Path] = []
-    original_write = manager_workspace._write_workspace_dataset_group_to_file
+    original_write = workspace_arrays._write_workspace_dataset_group_to_file
 
     def _record_write(target, *args, **kwargs):
         write_targets.append(pathlib.Path(target))
         return original_write(target, *args, **kwargs)
 
     monkeypatch.setattr(
-        manager_workspace, "_write_workspace_dataset_group_to_file", _record_write
+        workspace_arrays, "_write_workspace_dataset_group_to_file", _record_write
     )
     monkeypatch.setattr(
-        manager_workspace, "_workspace_path_is_likely_network_path", lambda _path: False
+        workspace_saving, "_workspace_path_is_likely_network_path", lambda _path: False
     )
     monkeypatch.setattr(
-        manager_workspace, "_workspace_path_is_likely_cloud_path", lambda _path: False
+        workspace_saving, "_workspace_path_is_likely_cloud_path", lambda _path: False
     )
     try:
-        manager_workspace._write_full_workspace_tree_file(
+        workspace_saving._write_full_workspace_tree_file(
             fname, tree, _transaction_test_root_attrs()
         )
     finally:
@@ -6877,7 +6894,7 @@ def test_write_full_workspace_tree_file_cloud_path_uses_scratch_and_replace_firs
     )
     write_targets: list[pathlib.Path] = []
     replace_calls: list[tuple[pathlib.Path, pathlib.Path]] = []
-    original_write = manager_workspace._write_workspace_dataset_group_to_file
+    original_write = workspace_arrays._write_workspace_dataset_group_to_file
 
     def _record_write(target, *args, **kwargs):
         write_targets.append(pathlib.Path(target))
@@ -6891,17 +6908,17 @@ def test_write_full_workspace_tree_file_cloud_path_uses_scratch_and_replace_firs
         src_path.unlink()
 
     monkeypatch.setattr(
-        manager_workspace, "_write_workspace_dataset_group_to_file", _record_write
+        workspace_arrays, "_write_workspace_dataset_group_to_file", _record_write
     )
     monkeypatch.setattr(
-        manager_workspace, "_workspace_path_is_likely_network_path", lambda _path: False
+        workspace_saving, "_workspace_path_is_likely_network_path", lambda _path: False
     )
     monkeypatch.setattr(
-        manager_workspace, "_workspace_path_is_likely_cloud_path", lambda _path: True
+        workspace_saving, "_workspace_path_is_likely_cloud_path", lambda _path: True
     )
-    monkeypatch.setattr(manager_workspace.os, "replace", _replace_by_copy)
+    monkeypatch.setattr(workspace_saving.os, "replace", _replace_by_copy)
     try:
-        manager_workspace._write_full_workspace_tree_file(
+        workspace_saving._write_full_workspace_tree_file(
             fname, tree, _transaction_test_root_attrs()
         )
     finally:
@@ -6922,7 +6939,7 @@ def test_write_full_workspace_tree_file_copies_unchanged_payload_groups(
     fname = tmp_path / "copy.itws"
     ds = xr.Dataset(
         {
-            manager_workspace_io._ITOOL_DATA_NAME: (
+            _ITOOL_DATA_NAME: (
                 ("x", "y"),
                 np.arange(12, dtype=np.float64).reshape(3, 4),
             )
@@ -6939,7 +6956,7 @@ def test_write_full_workspace_tree_file_copies_unchanged_payload_groups(
     )
     tree = xr.DataTree.from_dict({"0/imagetool": ds})
     try:
-        manager_workspace._write_full_workspace_tree_file(
+        workspace_saving._write_full_workspace_tree_file(
             fname, tree, _transaction_test_root_attrs()
         )
     finally:
@@ -6960,7 +6977,7 @@ def test_write_full_workspace_tree_file_copies_unchanged_payload_groups(
 
     monkeypatch.setattr(xr.Dataset, "to_netcdf", _fail_to_netcdf)
     try:
-        manager_workspace._write_full_workspace_tree_file(
+        workspace_saving._write_full_workspace_tree_file(
             fname,
             tree,
             _transaction_test_root_attrs(),
@@ -6973,17 +6990,17 @@ def test_write_full_workspace_tree_file_copies_unchanged_payload_groups(
     with h5py.File(fname, "r") as h5_file:
         group = h5_file["0/imagetool"]
         assert group.attrs["itool_title"] == "new"
-        decoded_attrs = manager_workspace._h5py_attrs_to_dict(group.attrs)
+        decoded_attrs = workspace_arrays._h5py_attrs_to_dict(group.attrs)
         _assert_rich_workspace_attr(decoded_attrs["Single Motor Scan"])
         np.testing.assert_array_equal(
-            group[manager_workspace_io._ITOOL_DATA_NAME][...],
+            group[_ITOOL_DATA_NAME][...],
             np.arange(12, dtype=np.float64).reshape(3, 4),
         )
-    opened = manager_xarray.open_workspace_datatree(fname, chunks=None)
+    opened = workspace_arrays.open_workspace_datatree(fname, chunks=None)
     try:
         xr.testing.assert_identical(
-            opened["0/imagetool"].to_dataset()[manager_workspace_io._ITOOL_DATA_NAME],
-            rewritten[manager_workspace_io._ITOOL_DATA_NAME],
+            opened["0/imagetool"].to_dataset()[_ITOOL_DATA_NAME],
+            rewritten[_ITOOL_DATA_NAME],
         )
     finally:
         opened.close()
@@ -7010,15 +7027,15 @@ def test_write_full_workspace_tree_file_network_scratch_skips_copy_reuse(
         src_path.unlink()
 
     monkeypatch.setattr(
-        manager_workspace, "_workspace_path_is_likely_network_path", lambda _path: True
+        workspace_saving, "_workspace_path_is_likely_network_path", lambda _path: True
     )
     monkeypatch.setattr(
-        manager_workspace, "_workspace_path_is_likely_cloud_path", lambda _path: False
+        workspace_saving, "_workspace_path_is_likely_cloud_path", lambda _path: False
     )
     monkeypatch.setattr(shutil, "copyfile", _fail_copyfile)
-    monkeypatch.setattr(manager_workspace.os, "replace", _replace_by_copy)
+    monkeypatch.setattr(workspace_saving.os, "replace", _replace_by_copy)
     try:
-        manager_workspace._write_full_workspace_tree_file(
+        workspace_saving._write_full_workspace_tree_file(
             fname,
             tree,
             _transaction_test_root_attrs(),
@@ -7039,7 +7056,7 @@ def test_write_full_workspace_tree_file_scratch_exdev_fallback(
     tree = xr.DataTree.from_dict(
         {"0/imagetool": _transaction_test_dataset(4.0, title="fallback")}
     )
-    original_replace = manager_workspace.os.replace
+    original_replace = workspace_saving.os.replace
     replace_calls: list[tuple[pathlib.Path, pathlib.Path]] = []
     scratch_path: pathlib.Path | None = None
 
@@ -7054,14 +7071,14 @@ def test_write_full_workspace_tree_file_scratch_exdev_fallback(
         return original_replace(src, dst)
 
     monkeypatch.setattr(
-        manager_workspace, "_workspace_path_is_likely_network_path", lambda _path: False
+        workspace_saving, "_workspace_path_is_likely_network_path", lambda _path: False
     )
     monkeypatch.setattr(
-        manager_workspace, "_workspace_path_is_likely_cloud_path", lambda _path: True
+        workspace_saving, "_workspace_path_is_likely_cloud_path", lambda _path: True
     )
-    monkeypatch.setattr(manager_workspace.os, "replace", _replace_with_exdev)
+    monkeypatch.setattr(workspace_saving.os, "replace", _replace_with_exdev)
     try:
-        manager_workspace._write_full_workspace_tree_file(
+        workspace_saving._write_full_workspace_tree_file(
             fname, tree, _transaction_test_root_attrs()
         )
     finally:
@@ -7084,14 +7101,14 @@ def test_write_full_workspace_tree_file_rejects_file_repack_on_network_path(
     _write_transaction_test_workspace(fname)
 
     monkeypatch.setattr(
-        manager_workspace, "_workspace_path_is_high_risk", lambda *_: True
+        workspace_saving, "_workspace_path_is_high_risk", lambda *_: True
     )
     monkeypatch.setattr(
-        manager_workspace, "_workspace_path_is_likely_network_path", lambda *_: True
+        workspace_saving, "_workspace_path_is_likely_network_path", lambda *_: True
     )
 
     with pytest.raises(ValueError, match="File-level workspace repack cannot run"):
-        manager_workspace._write_full_workspace_tree_file(
+        workspace_saving._write_full_workspace_tree_file(
             fname,
             None,
             _transaction_test_root_attrs(),
@@ -7102,7 +7119,7 @@ def test_write_full_workspace_tree_file_rejects_file_repack_on_network_path(
         {"0/imagetool": _transaction_test_dataset(5.0, title="network")}
     )
     try:
-        manager_workspace._write_full_workspace_tree_file(
+        workspace_saving._write_full_workspace_tree_file(
             fname,
             tree,
             _transaction_test_root_attrs(),
@@ -7131,15 +7148,15 @@ def test_write_full_workspace_tree_file_scratch_replace_failure_preserves_old(
         raise OSError(errno.EPERM, "replace failed")
 
     monkeypatch.setattr(
-        manager_workspace, "_workspace_path_is_likely_network_path", lambda _path: False
+        workspace_saving, "_workspace_path_is_likely_network_path", lambda _path: False
     )
     monkeypatch.setattr(
-        manager_workspace, "_workspace_path_is_likely_cloud_path", lambda _path: True
+        workspace_saving, "_workspace_path_is_likely_cloud_path", lambda _path: True
     )
-    monkeypatch.setattr(manager_workspace.os, "replace", _fail_replace)
+    monkeypatch.setattr(workspace_saving.os, "replace", _fail_replace)
     try:
         with pytest.raises(OSError, match="replace failed"):
-            manager_workspace._write_full_workspace_tree_file(
+            workspace_saving._write_full_workspace_tree_file(
                 fname, tree, _transaction_test_root_attrs()
             )
     finally:
@@ -7161,7 +7178,7 @@ def test_write_full_workspace_tree_file_scratch_copy_failure_cleans_destination_
     tree = xr.DataTree.from_dict(
         {"0/imagetool": _transaction_test_dataset(6.0, title="failure")}
     )
-    original_replace = manager_workspace.os.replace
+    original_replace = workspace_saving.os.replace
     scratch_paths: list[pathlib.Path] = []
 
     def _replace_with_exdev(src, dst):
@@ -7177,16 +7194,16 @@ def test_write_full_workspace_tree_file_scratch_copy_failure_cleans_destination_
         raise OSError(errno.EIO, "copy failed")
 
     monkeypatch.setattr(
-        manager_workspace, "_workspace_path_is_likely_network_path", lambda _path: False
+        workspace_saving, "_workspace_path_is_likely_network_path", lambda _path: False
     )
     monkeypatch.setattr(
-        manager_workspace, "_workspace_path_is_likely_cloud_path", lambda _path: True
+        workspace_saving, "_workspace_path_is_likely_cloud_path", lambda _path: True
     )
-    monkeypatch.setattr(manager_workspace.os, "replace", _replace_with_exdev)
+    monkeypatch.setattr(workspace_saving.os, "replace", _replace_with_exdev)
     monkeypatch.setattr(shutil, "copyfile", _fail_copyfile)
     try:
         with pytest.raises(OSError, match="copy failed"):
-            manager_workspace._write_full_workspace_tree_file(
+            workspace_saving._write_full_workspace_tree_file(
                 fname, tree, _transaction_test_root_attrs()
             )
     finally:
@@ -7204,11 +7221,11 @@ def test_workspace_recovery_discards_pending_only_transaction(tmp_path) -> None:
     rewrite = ("0", {"0/imagetool": _transaction_test_dataset(2.0, title="new")})
     rewrite_map = {"0": rewrite}
     txn_id = "pendingonly"
-    txn_path = f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
-    pending_root = f"{manager_workspace._WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
-    backup_root = f"{manager_workspace._WORKSPACE_BACKUP_GROUP_PREFIX}{txn_id}"
+    txn_path = f"{workspace_format._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
+    pending_root = f"{workspace_format._WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
+    backup_root = f"{workspace_format._WORKSPACE_BACKUP_GROUP_PREFIX}{txn_id}"
 
-    manager_workspace._prepare_workspace_transaction(
+    workspace_saving._prepare_workspace_transaction(
         fname,
         txn_path,
         pending_root,
@@ -7217,11 +7234,11 @@ def test_workspace_recovery_discards_pending_only_transaction(tmp_path) -> None:
         (),
         _transaction_test_root_attrs(delta_save_count=1),
     )
-    manager_workspace._write_workspace_transaction_pending_groups(
+    workspace_saving._write_workspace_transaction_pending_groups(
         fname, rewrite_map, pending_root
     )
 
-    manager_workspace._recover_workspace_transactions(fname)
+    workspace_saving._recover_workspace_transactions(fname)
 
     assert _read_transaction_test_value(fname) == 1.0
     _assert_no_workspace_internal_groups(fname)
@@ -7235,10 +7252,10 @@ def test_workspace_recovery_restores_backup_before_pending_move(tmp_path) -> Non
     rewrite = ("0", {"0/imagetool": _transaction_test_dataset(2.0, title="new")})
     rewrite_map = {"0": rewrite}
     txn_id = "backuponly"
-    txn_path = f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
-    pending_root = f"{manager_workspace._WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
-    backup_root = f"{manager_workspace._WORKSPACE_BACKUP_GROUP_PREFIX}{txn_id}"
-    group_operations, _ = manager_workspace._prepare_workspace_transaction(
+    txn_path = f"{workspace_format._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
+    pending_root = f"{workspace_format._WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
+    backup_root = f"{workspace_format._WORKSPACE_BACKUP_GROUP_PREFIX}{txn_id}"
+    group_operations, _ = workspace_saving._prepare_workspace_transaction(
         fname,
         txn_path,
         pending_root,
@@ -7247,24 +7264,24 @@ def test_workspace_recovery_restores_backup_before_pending_move(tmp_path) -> Non
         (),
         _transaction_test_root_attrs(delta_save_count=1),
     )
-    manager_workspace._write_workspace_transaction_pending_groups(
+    workspace_saving._write_workspace_transaction_pending_groups(
         fname, rewrite_map, pending_root
     )
 
     with h5py.File(fname, "a") as h5_file:
-        manager_workspace._set_workspace_transaction_status(
+        workspace_saving._set_workspace_transaction_status(
             h5_file,
             txn_path,
             "committing",
         )
         operation = group_operations[0]
-        manager_workspace._move_h5_path(
+        workspace_saving._move_h5_path(
             h5_file,
             typing.cast("str", operation["group_path"]),
             typing.cast("str", operation["backup_path"]),
         )
 
-    manager_workspace._recover_workspace_transactions(fname)
+    workspace_saving._recover_workspace_transactions(fname)
 
     assert _read_transaction_test_value(fname) == 1.0
     _assert_no_workspace_internal_groups(fname)
@@ -7278,10 +7295,10 @@ def test_workspace_recovery_rolls_back_active_moved_before_commit(tmp_path) -> N
     rewrite = ("0", {"0/imagetool": _transaction_test_dataset(2.0, title="new")})
     rewrite_map = {"0": rewrite}
     txn_id = "activemoved"
-    txn_path = f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
-    pending_root = f"{manager_workspace._WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
-    backup_root = f"{manager_workspace._WORKSPACE_BACKUP_GROUP_PREFIX}{txn_id}"
-    group_operations, _ = manager_workspace._prepare_workspace_transaction(
+    txn_path = f"{workspace_format._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
+    pending_root = f"{workspace_format._WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
+    backup_root = f"{workspace_format._WORKSPACE_BACKUP_GROUP_PREFIX}{txn_id}"
+    group_operations, _ = workspace_saving._prepare_workspace_transaction(
         fname,
         txn_path,
         pending_root,
@@ -7290,29 +7307,29 @@ def test_workspace_recovery_rolls_back_active_moved_before_commit(tmp_path) -> N
         (),
         _transaction_test_root_attrs(delta_save_count=1),
     )
-    manager_workspace._write_workspace_transaction_pending_groups(
+    workspace_saving._write_workspace_transaction_pending_groups(
         fname, rewrite_map, pending_root
     )
 
     with h5py.File(fname, "a") as h5_file:
-        manager_workspace._set_workspace_transaction_status(
+        workspace_saving._set_workspace_transaction_status(
             h5_file,
             txn_path,
             "committing",
         )
         operation = group_operations[0]
-        manager_workspace._move_h5_path(
+        workspace_saving._move_h5_path(
             h5_file,
             typing.cast("str", operation["group_path"]),
             typing.cast("str", operation["backup_path"]),
         )
-        manager_workspace._move_h5_path(
+        workspace_saving._move_h5_path(
             h5_file,
             typing.cast("str", operation["pending_path"]),
             typing.cast("str", operation["group_path"]),
         )
 
-    manager_workspace._recover_workspace_transactions(fname)
+    workspace_saving._recover_workspace_transactions(fname)
 
     assert _read_transaction_test_value(fname) == 1.0
     _assert_no_workspace_internal_groups(fname)
@@ -7324,11 +7341,11 @@ def test_workspace_recovery_accepts_committed_before_cleanup(tmp_path) -> None:
     rewrite = ("0", {"0/imagetool": _transaction_test_dataset(2.0, title="new")})
     rewrite_map = {"0": rewrite}
     txn_id = "committed"
-    txn_path = f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
-    pending_root = f"{manager_workspace._WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
-    backup_root = f"{manager_workspace._WORKSPACE_BACKUP_GROUP_PREFIX}{txn_id}"
+    txn_path = f"{workspace_format._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
+    pending_root = f"{workspace_format._WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
+    backup_root = f"{workspace_format._WORKSPACE_BACKUP_GROUP_PREFIX}{txn_id}"
     root_attrs = _transaction_test_root_attrs(delta_save_count=1)
-    group_operations, attr_updates = manager_workspace._prepare_workspace_transaction(
+    group_operations, attr_updates = workspace_saving._prepare_workspace_transaction(
         fname,
         txn_path,
         pending_root,
@@ -7337,14 +7354,14 @@ def test_workspace_recovery_accepts_committed_before_cleanup(tmp_path) -> None:
         (),
         root_attrs,
     )
-    manager_workspace._write_workspace_transaction_pending_groups(
+    workspace_saving._write_workspace_transaction_pending_groups(
         fname, rewrite_map, pending_root
     )
-    manager_workspace._commit_workspace_transaction(
+    workspace_saving._commit_workspace_transaction(
         fname, txn_path, group_operations, attr_updates, root_attrs
     )
 
-    manager_workspace._recover_workspace_transactions(fname)
+    workspace_saving._recover_workspace_transactions(fname)
 
     assert _read_transaction_test_value(fname) == 2.0
     _assert_no_workspace_internal_groups(fname)
@@ -7361,32 +7378,32 @@ def test_workspace_recovery_rolls_back_attr_only_transaction(tmp_path) -> None:
     )
     attr_update = ("0/imagetool", {"itool_title": "new"}, fallback)
     txn_id = "attrrollback"
-    txn_path = f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
-    pending_root = f"{manager_workspace._WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
-    backup_root = f"{manager_workspace._WORKSPACE_BACKUP_GROUP_PREFIX}{txn_id}"
+    txn_path = f"{workspace_format._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
+    pending_root = f"{workspace_format._WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
+    backup_root = f"{workspace_format._WORKSPACE_BACKUP_GROUP_PREFIX}{txn_id}"
     root_attrs = _transaction_test_root_attrs(delta_save_count=1)
-    _, attr_updates = manager_workspace._prepare_workspace_transaction(
+    _, attr_updates = workspace_saving._prepare_workspace_transaction(
         fname, txn_path, pending_root, backup_root, {}, (attr_update,), root_attrs
     )
 
     with h5py.File(fname, "a") as h5_file:
-        manager_workspace._set_workspace_transaction_status(
+        workspace_saving._set_workspace_transaction_status(
             h5_file,
             txn_path,
             "committing",
         )
-        manager_workspace._replace_h5_attrs(
+        workspace_arrays._replace_h5_attrs(
             h5_file["0/imagetool"].attrs, attr_updates[0][1]
         )
-        manager_workspace._write_root_attrs_to_open_workspace_file(h5_file, root_attrs)
+        workspace_saving._write_root_attrs_to_open_workspace_file(h5_file, root_attrs)
         h5_file.flush()
 
-    manager_workspace._recover_workspace_transactions(fname)
+    workspace_saving._recover_workspace_transactions(fname)
 
     with h5py.File(fname, "r") as h5_file:
         assert h5_file["0/imagetool"].attrs["itool_title"] == "old"
         assert (
-            manager_workspace._workspace_delta_save_count_from_attrs(h5_file.attrs) == 0
+            workspace_format._workspace_delta_save_count_from_attrs(h5_file.attrs) == 0
         )
     _assert_no_workspace_internal_groups(fname)
 
@@ -7401,7 +7418,7 @@ def test_workspace_transaction_attr_update_encodes_non_native_values(tmp_path) -
         {"0/imagetool": _transaction_test_dataset(2.0, title="fallback")},
     )
     rich_attr = _rich_workspace_attr_value()
-    manager_workspace._write_workspace_transaction_file(
+    workspace_saving._write_workspace_transaction_file(
         fname,
         (),
         (
@@ -7415,13 +7432,13 @@ def test_workspace_transaction_attr_update_encodes_non_native_values(tmp_path) -
     )
 
     with h5py.File(fname, "r") as h5_file:
-        decoded_attrs = manager_workspace._h5py_attrs_to_dict(
+        decoded_attrs = workspace_arrays._h5py_attrs_to_dict(
             h5_file["0/imagetool"].attrs
         )
         assert decoded_attrs["itool_title"] == "new"
         _assert_rich_workspace_attr(decoded_attrs["Single Motor Scan"])
         assert (
-            manager_workspace._workspace_delta_save_count_from_attrs(h5_file.attrs) == 1
+            workspace_format._workspace_delta_save_count_from_attrs(h5_file.attrs) == 1
         )
     _assert_no_workspace_internal_groups(fname)
 
@@ -7433,13 +7450,11 @@ def test_workspace_recovery_cleans_orphan_internal_groups(tmp_path) -> None:
     _write_transaction_test_workspace(fname)
     with h5py.File(fname, "a") as h5_file:
         h5_file.create_group(
-            f"{manager_workspace._WORKSPACE_PENDING_GROUP_PREFIX}orphan"
+            f"{workspace_format._WORKSPACE_PENDING_GROUP_PREFIX}orphan"
         )
-        h5_file.create_group(
-            f"{manager_workspace._WORKSPACE_BACKUP_GROUP_PREFIX}orphan"
-        )
+        h5_file.create_group(f"{workspace_format._WORKSPACE_BACKUP_GROUP_PREFIX}orphan")
 
-    manager_workspace._recover_workspace_transactions(fname)
+    workspace_saving._recover_workspace_transactions(fname)
 
     _assert_no_workspace_internal_groups(fname)
 
@@ -7447,7 +7462,7 @@ def test_workspace_recovery_cleans_orphan_internal_groups(tmp_path) -> None:
 def test_workspace_lock_path_uses_hidden_sidecar(tmp_path) -> None:
     fname = tmp_path / "example.itws"
 
-    assert manager_workspace._workspace_lock_path(fname) == str(
+    assert workspace_saving._workspace_lock_path(fname) == str(
         (tmp_path / ".example.itws.lock").resolve()
     )
 
@@ -7455,15 +7470,15 @@ def test_workspace_lock_path_uses_hidden_sidecar(tmp_path) -> None:
 def test_workspace_lock_conflict_is_reported(tmp_path) -> None:
     fname = tmp_path / "locked.itws"
     _write_transaction_test_workspace(fname)
-    hidden_lock_path = pathlib.Path(manager_workspace._workspace_lock_path(fname))
+    hidden_lock_path = pathlib.Path(workspace_saving._workspace_lock_path(fname))
     visible_lock_path = pathlib.Path(f"{fname.resolve()}.lock")
-    lock = manager_workspace._acquire_workspace_document_lock(fname)
+    lock = workspace_saving._acquire_workspace_document_lock(fname)
     try:
         assert lock.staleLockTime() == 0
         assert hidden_lock_path.exists()
         assert not visible_lock_path.exists()
         with pytest.raises(BlockingIOError):
-            manager_workspace._acquire_workspace_document_lock(fname)
+            workspace_saving._acquire_workspace_document_lock(fname)
     finally:
         lock.unlock()
 
@@ -7473,16 +7488,16 @@ def test_hide_workspace_lock_file_sets_macos_hidden_flag(monkeypatch) -> None:
     lock_path = "/workspace/.workspace.itws.lock"
     regular_stat = types.SimpleNamespace(st_mode=0o100600)
 
-    monkeypatch.setattr(manager_workspace.sys, "platform", "darwin")
-    monkeypatch.setattr(manager_workspace.os, "lstat", lambda _path: regular_stat)
+    monkeypatch.setattr(workspace_saving.sys, "platform", "darwin")
+    monkeypatch.setattr(workspace_saving.os, "lstat", lambda _path: regular_stat)
     monkeypatch.setattr(
-        manager_workspace.os,
+        workspace_saving.os,
         "chflags",
         lambda path, flags: calls.append((path, flags)),
         raising=False,
     )
 
-    manager_workspace._hide_workspace_lock_file(lock_path)
+    workspace_saving._hide_workspace_lock_file(lock_path)
 
     assert calls == [(lock_path, 0x8000)]
 
@@ -7491,16 +7506,16 @@ def test_hide_workspace_lock_file_skips_macos_symlink(monkeypatch) -> None:
     calls: list[tuple[str, int]] = []
     symlink_stat = types.SimpleNamespace(st_mode=0o120777)
 
-    monkeypatch.setattr(manager_workspace.sys, "platform", "darwin")
-    monkeypatch.setattr(manager_workspace.os, "lstat", lambda _path: symlink_stat)
+    monkeypatch.setattr(workspace_saving.sys, "platform", "darwin")
+    monkeypatch.setattr(workspace_saving.os, "lstat", lambda _path: symlink_stat)
     monkeypatch.setattr(
-        manager_workspace.os,
+        workspace_saving.os,
         "chflags",
         lambda path, flags: calls.append((path, flags)),
         raising=False,
     )
 
-    manager_workspace._hide_workspace_lock_file("/workspace/.workspace.itws.lock")
+    workspace_saving._hide_workspace_lock_file("/workspace/.workspace.itws.lock")
 
     assert calls == []
 
@@ -7508,8 +7523,8 @@ def test_hide_workspace_lock_file_skips_macos_symlink(monkeypatch) -> None:
 def test_workspace_lock_error_message_names_owner(monkeypatch, tmp_path) -> None:
     fname = tmp_path / "busy-message.itws"
     _write_transaction_test_workspace(fname)
-    lock = manager_workspace._acquire_workspace_document_lock(fname)
-    lock_info = manager_workspace._workspace_document_lock_info(fname)
+    lock = workspace_saving._acquire_workspace_document_lock(fname)
+    lock_info = workspace_saving._workspace_document_lock_info(fname)
     calls: list[dict[str, object]] = []
 
     def _critical(*args, **kwargs) -> int:
@@ -7542,21 +7557,21 @@ def test_workspace_lock_error_message_names_owner(monkeypatch, tmp_path) -> None
 
 
 def test_workspace_lock_text_variants(tmp_path) -> None:
-    app_only = manager_workspace._WorkspaceDocumentLockInfo(
+    app_only = workspace_saving._WorkspaceDocumentLockInfo(
         path="marker",
         owner="user",
         hostname="",
         appname="ImageTool",
         pid=None,
     )
-    pid_only = manager_workspace._WorkspaceDocumentLockInfo(
+    pid_only = workspace_saving._WorkspaceDocumentLockInfo(
         path="marker",
         owner="",
         hostname="",
         appname="",
         pid=123,
     )
-    full_info = manager_workspace._WorkspaceDocumentLockInfo(
+    full_info = workspace_saving._WorkspaceDocumentLockInfo(
         path="marker",
         owner="user",
         hostname="workstation",
@@ -7645,7 +7660,7 @@ def test_manager_repeated_tool_dirty_event_defers_document_metadata_until_idle(
             lambda _manager, path: file_path_calls.append(path),
         )
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller,
             "_set_node_window_modified",
             lambda uid, modified: node_modified_calls.append((uid, modified)),
         )
@@ -7684,7 +7699,7 @@ def test_manager_tool_dirty_event_escalates_state_to_data(
 
 
 def test_workspace_state_repeated_options_dirty_during_save() -> None:
-    state = manager_workspace_state._ManagerWorkspaceState()
+    state = workspace_state._ManagerWorkspaceState()
 
     assert state.mark_options_dirty()
     assert state.dirty_generation == 1
@@ -7773,7 +7788,7 @@ def test_manager_loaded_workspace_association_updates_file_path(
             with manager._workspace_document_access_context(workspace) as access:
                 manager._associate_loaded_workspace_file(
                     access.path,
-                    manager_workspace._current_workspace_schema_version(),
+                    workspace_format._current_workspace_schema_version(),
                     workspace_access=access,
                     rebind_data=False,
                 )
@@ -7797,14 +7812,14 @@ def test_manager_loaded_workspace_association_rebinds_data_after_path_update(
         rebind_paths: list[pathlib.Path] = []
 
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller.loading,
             "_rebind_workspace_backed_imagetools",
             lambda path: rebind_paths.append(pathlib.Path(path)),
         )
         with manager._workspace_document_access_context(workspace) as access:
             manager._associate_loaded_workspace_file(
                 access.path,
-                manager_workspace._current_workspace_schema_version(),
+                workspace_format._current_workspace_schema_version(),
                 workspace_access=access,
                 rebind_data=True,
             )
@@ -7930,31 +7945,30 @@ def test_workspace_controller_helper_branch_edges(
 ) -> None:
     with manager_context() as manager:
         controller = manager._workspace_controller
+        loader = controller.loading
+        saver = controller.saving
 
         invalid = xr.Dataset(attrs={"itool_state": b"not text"})
         assert (
-            controller._dataset_without_missing_workspace_colormap(invalid, None)
-            is invalid
+            loader._dataset_without_missing_workspace_colormap(invalid, None) is invalid
         )
         invalid.attrs["itool_state"] = "{not-json"
         assert (
-            controller._dataset_without_missing_workspace_colormap(invalid, None)
-            is invalid
+            loader._dataset_without_missing_workspace_colormap(invalid, None) is invalid
         )
         invalid.attrs["itool_state"] = json.dumps([])
         assert (
-            controller._dataset_without_missing_workspace_colormap(invalid, None)
-            is invalid
+            loader._dataset_without_missing_workspace_colormap(invalid, None) is invalid
         )
 
         assert (
-            controller._workspace_saved_uid_from_dataset(
+            loader._workspace_saved_uid_from_dataset(
                 xr.Dataset(attrs={"manager_node_uid": b"node-1"})
             )
             == "node-1"
         )
         assert (
-            controller._workspace_saved_uid_from_dataset(
+            loader._workspace_saved_uid_from_dataset(
                 xr.Dataset(attrs={"manager_node_uid": b"\xff"})
             )
             is None
@@ -7970,8 +7984,8 @@ def test_workspace_controller_helper_branch_edges(
             )
             manager._workspace_state.dirty_data.update({"parent", "child", "sibling"})
             with monkeypatch.context() as patch:
-                patch.setattr(controller, "_workspace_node_path", lambda uid: uid)
-                assert controller._workspace_highest_dirty_data_roots() == [
+                patch.setattr(saver, "_workspace_node_path", lambda uid: uid)
+                assert saver._workspace_highest_dirty_data_roots() == [
                     "parent",
                     "sibling",
                 ]
@@ -8229,7 +8243,7 @@ def test_manager_close_compacts_clean_delta_workspace(
 def test_workspace_lock_error_message_without_owner(monkeypatch, tmp_path) -> None:
     fname = tmp_path / "busy-message.itws"
     calls: list[dict[str, object]] = []
-    lock_info = manager_workspace._WorkspaceDocumentLockInfo(
+    lock_info = workspace_saving._WorkspaceDocumentLockInfo(
         path=str(tmp_path / ".busy-message.itws.lock"),
         owner="",
         hostname="",
@@ -8242,7 +8256,7 @@ def test_workspace_lock_error_message_without_owner(monkeypatch, tmp_path) -> No
         return int(QtWidgets.QDialog.DialogCode.Accepted)
 
     monkeypatch.setattr(
-        manager_workspace, "_workspace_document_lock_info", lambda _fname: lock_info
+        workspace_saving, "_workspace_document_lock_info", lambda _fname: lock_info
     )
     monkeypatch.setattr(erlab.interactive.utils.MessageDialog, "critical", _critical)
 
@@ -8420,15 +8434,17 @@ def test_manager_workspace_save_as_locked_target_does_not_write(
 ) -> None:
     fname = tmp_path / "locked-save-as.itws"
     _write_transaction_test_workspace(fname)
-    lock = manager_workspace._acquire_workspace_document_lock(fname)
+    lock = workspace_saving._acquire_workspace_document_lock(fname)
     operation_errors: list[tuple[typing.Any, ...]] = []
     try:
         with manager_context() as manager:
             monkeypatch.setattr(
-                manager, "_workspace_save_dialog", lambda *args, **kwargs: str(fname)
+                manager._workspace_controller,
+                "_workspace_save_dialog",
+                lambda *args, **kwargs: str(fname),
             )
             monkeypatch.setattr(
-                manager,
+                manager._workspace_controller.saving,
                 "_save_workspace_document",
                 lambda *args, **kwargs: pytest.fail(
                     "Save As should lock the target before writing"
@@ -8459,10 +8475,12 @@ def test_manager_workspace_save_as_reports_snapshot_error(
 
     with manager_context() as manager:
         monkeypatch.setattr(
-            manager, "_workspace_save_dialog", lambda *args, **kwargs: str(fname)
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda *args, **kwargs: str(fname),
         )
         monkeypatch.setattr(
-            manager._workspace_controller,
+            manager._workspace_controller.saving,
             "_workspace_full_save_snapshot",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
         )
@@ -8494,7 +8512,9 @@ def test_manager_workspace_save_as_rejects_h5_target(
 
     with manager_context() as manager:
         monkeypatch.setattr(
-            manager, "_workspace_save_dialog", lambda *args, **kwargs: str(fname)
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda *args, **kwargs: str(fname),
         )
         monkeypatch.setattr(
             QtWidgets.QMessageBox, "warning", lambda *args: warnings.append(args)
@@ -8519,11 +8539,11 @@ def test_manager_workspace_load_locks_before_recovery(
 ) -> None:
     fname = tmp_path / "locked-load.itws"
     _write_transaction_test_workspace(fname)
-    lock = manager_workspace._acquire_workspace_document_lock(fname)
+    lock = workspace_saving._acquire_workspace_document_lock(fname)
     recovery_calls: list[pathlib.Path] = []
     try:
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_recover_workspace_transactions",
             lambda path: (
                 recovery_calls.append(pathlib.Path(path))
@@ -8709,7 +8729,7 @@ def test_manager_recent_workspace_normalization_and_settings(
                 return object()
 
         monkeypatch.setattr(
-            erlab.interactive.imagetool.manager._workspace_io,
+            erlab.interactive.imagetool.manager._workspace._controller,
             "_manager_settings",
             lambda: _ObjectSettings(),
         )
@@ -8739,7 +8759,9 @@ def test_manager_open_recent_workspace_flow(
             load_calls.append((pathlib.Path(path), kwargs))
             return True
 
-        monkeypatch.setattr(manager, "_load_workspace_file", _record_load)
+        monkeypatch.setattr(
+            manager._workspace_controller.loading, "_load_workspace_file", _record_load
+        )
         manager._workspace_state.structure_modified = True
         monkeypatch.setattr(
             manager._workspace_controller,
@@ -8841,19 +8863,19 @@ def test_manager_open_recent_workspace_reports_load_errors(
             lambda _message: "clean",
         )
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller.loading,
             "_load_workspace_file",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
         )
 
         lock_errors: list[pathlib.Path] = []
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_is_workspace_file_lock_error",
             lambda _exc: True,
         )
         monkeypatch.setattr(
-            erlab.interactive.imagetool.manager._workspace_io,
+            erlab.interactive.imagetool.manager._workspace._controller,
             "_show_workspace_file_lock_error",
             lambda _parent, path: lock_errors.append(pathlib.Path(path)),
         )
@@ -8862,7 +8884,7 @@ def test_manager_open_recent_workspace_reports_load_errors(
 
         critical_messages: list[tuple[str, str]] = []
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_is_workspace_file_lock_error",
             lambda _exc: False,
         )
@@ -8895,7 +8917,7 @@ def test_manager_records_recent_workspace_accesses(
         with manager._workspace_document_access_context(opened) as access:
             manager._associate_loaded_workspace_file(
                 opened,
-                manager_workspace._current_workspace_schema_version(),
+                workspace_format._current_workspace_schema_version(),
                 workspace_access=access,
             )
         data = xr.DataArray(np.arange(4).reshape((2, 2)), dims=("x", "y"))
@@ -8904,10 +8926,12 @@ def test_manager_records_recent_workspace_accesses(
         manager.add_imagetool(root, show=False)
 
         monkeypatch.setattr(
-            manager, "_workspace_save_dialog", lambda **_kwargs: str(saved)
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: str(saved),
         )
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller.loading,
             "_rebind_workspace_backed_imagetools",
             lambda *_args, **_kwargs: None,
         )
@@ -8920,7 +8944,9 @@ def test_manager_records_recent_workspace_accesses(
             lambda _dialog: [str(imported)],
         )
         monkeypatch.setattr(
-            manager, "_load_workspace_file", lambda *_args, **_kwargs: True
+            manager._workspace_controller.loading,
+            "_load_workspace_file",
+            lambda *_args, **_kwargs: True,
         )
         assert manager.import_workspace(native=False)
 
@@ -9446,7 +9472,7 @@ def test_manager_compact_workspace_edge_paths(
             lambda *args, **kwargs: contextlib.nullcontext(),
         )
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller.saving,
             "_save_workspace_document",
             lambda *args, **kwargs: (_ for _ in ()).throw(
                 RuntimeError("compact failed")
@@ -9458,7 +9484,7 @@ def test_manager_compact_workspace_edge_paths(
             lambda *args: operation_errors.append(args),
         )
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller,
             "_restore_focus_after_workspace_save",
             lambda origin: focus_restores.append(origin),
         )
@@ -9497,14 +9523,16 @@ def test_manager_compact_workspace_copies_matching_groups(
         tree = manager._to_datatree()
         try:
             copy_source, copy_groups = (
-                manager._workspace_controller._workspace_full_save_copy_groups(tree)
+                manager._workspace_controller.saving._workspace_full_save_copy_groups(
+                    tree
+                )
             )
         finally:
             tree.close()
         assert copy_source == str(fname)
         assert copy_groups
 
-        original_write = manager_workspace._write_full_workspace_tree_file
+        original_write = workspace_saving._write_full_workspace_tree_file
         full_write_calls: list[
             tuple[
                 str | os.PathLike[str] | None,
@@ -9529,7 +9557,7 @@ def test_manager_compact_workspace_copies_matching_groups(
             lambda *args, **kwargs: contextlib.nullcontext(),
         )
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_write_full_workspace_tree_file",
             _record_full_write,
         )
@@ -9628,13 +9656,11 @@ def test_manager_compact_workspace_reapplies_compression_mode(
             manager._mark_workspace_clean()
             with h5py.File(fname, "r") as h5_file:
                 assert (
-                    _hdf5_blosc2_level_codec(
-                        h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
-                    )
+                    _hdf5_blosc2_level_codec(h5_file["0/imagetool"][_ITOOL_DATA_NAME])
                     is None
                 )
 
-            original_write = manager_workspace._write_full_workspace_tree_file
+            original_write = workspace_saving._write_full_workspace_tree_file
             full_write_calls: list[
                 tuple[str | os.PathLike[str] | None, tuple[object, ...]]
             ] = []
@@ -9657,7 +9683,7 @@ def test_manager_compact_workspace_reapplies_compression_mode(
                 lambda *args, **kwargs: contextlib.nullcontext(),
             )
             monkeypatch.setattr(
-                manager_workspace,
+                workspace_saving,
                 "_write_full_workspace_tree_file",
                 _record_full_write,
             )
@@ -9666,7 +9692,7 @@ def test_manager_compact_workspace_reapplies_compression_mode(
             assert full_write_calls[-1] == (str(fname), ())
             with h5py.File(fname, "r") as h5_file:
                 assert _hdf5_blosc2_level_codec(
-                    h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+                    h5_file["0/imagetool"][_ITOOL_DATA_NAME]
                 ) == (1, 5)
     finally:
         erlab.interactive.options["io/workspace/compression"] = old_compression
@@ -9706,20 +9732,18 @@ def test_manager_shutdown_compact_preserves_existing_dataset_filters(
 
             with h5py.File(fname, "r") as h5_file:
                 assert (
-                    _hdf5_blosc2_level_codec(
-                        h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
-                    )
+                    _hdf5_blosc2_level_codec(h5_file["0/imagetool"][_ITOOL_DATA_NAME])
                     is None
                 )
 
             erlab.interactive.options["io/workspace/compression"] = "zstd1"
             monkeypatch.setattr(
-                manager_workspace_io,
+                workspace_saving,
                 "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_BYTES",
                 1,
             )
             monkeypatch.setattr(
-                manager_workspace_io,
+                workspace_saving,
                 "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO",
                 0.0,
             )
@@ -9728,9 +9752,7 @@ def test_manager_shutdown_compact_preserves_existing_dataset_filters(
 
             with h5py.File(fname, "r") as h5_file:
                 assert (
-                    _hdf5_blosc2_level_codec(
-                        h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
-                    )
+                    _hdf5_blosc2_level_codec(h5_file["0/imagetool"][_ITOOL_DATA_NAME])
                     is None
                 )
     finally:
@@ -9757,14 +9779,14 @@ def test_manager_shutdown_compaction_logs_failure(
         )
 
         monkeypatch.setattr(
-            manager._workspace_controller,
+            manager._workspace_controller.saving,
             "_workspace_should_repack_before_shutdown",
             lambda: True,
         )
         monkeypatch.setattr(
-            manager._workspace_controller,
+            manager._workspace_controller.saving,
             "_workspace_file_repack_snapshot",
-            lambda generation: manager_workspace._WorkspaceSaveSnapshot(
+            lambda generation: workspace_saving._WorkspaceSaveSnapshot(
                 generation=generation,
                 root_attrs=_transaction_test_root_attrs(delta_save_count=1),
                 delta_save_count=0,
@@ -9906,7 +9928,11 @@ def test_manager_legacy_itws_schema_save_helpers(
         )
         manager._show_legacy_workspace_upgrade_message(tmp_path / "legacy-schema.itws")
 
-        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: None)
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: None,
+        )
         assert (
             manager._save_legacy_workspace_as_v4(tmp_path / "legacy-schema.itws")
             is None
@@ -9914,16 +9940,18 @@ def test_manager_legacy_itws_schema_save_helpers(
 
         dirty_reasons: list[str] = []
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller,
             "_save_legacy_workspace_as_v4",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
-            manager, "_mark_workspace_structure_dirty", dirty_reasons.append
+            manager._workspace_controller,
+            "_mark_workspace_structure_dirty",
+            dirty_reasons.append,
         )
         manager._associate_loaded_workspace_file(
             tmp_path / "legacy-schema.itws",
-            manager_workspace._WORKSPACE_LEGACY_SCHEMA_VERSION - 1,
+            workspace_format._WORKSPACE_LEGACY_SCHEMA_VERSION - 1,
         )
 
         assert manager._workspace_state.path is None
@@ -9935,9 +9963,9 @@ class _DeferredWorkspaceSaveWorker:
     def __init__(
         self,
         _fname: str | os.PathLike[str],
-        snapshot: manager_workspace._WorkspaceSaveSnapshot,
+        snapshot: workspace_saving._WorkspaceSaveSnapshot,
     ) -> None:
-        self.signals = manager_workspace._WorkspaceSaveWorkerSignals()
+        self.signals = workspace_saving._WorkspaceSaveWorkerSignals()
         self._snapshot = snapshot
 
     def finish(
@@ -9963,7 +9991,7 @@ def _install_deferred_workspace_save_worker(
         QtCore.QThreadPool, "globalInstance", staticmethod(lambda: pool)
     )
     monkeypatch.setattr(
-        manager_workspace, "_WorkspaceSaveWorker", _DeferredWorkspaceSaveWorker
+        workspace_saving, "_WorkspaceSaveWorker", _DeferredWorkspaceSaveWorker
     )
     return pool
 
@@ -9982,8 +10010,8 @@ def _bind_dirty_workspace_for_save_test(
 
 def _workspace_save_test_snapshot(
     manager: erlab.interactive.imagetool.manager.ImageToolManager,
-) -> manager_workspace._WorkspaceSaveSnapshot:
-    return manager_workspace._WorkspaceSaveSnapshot(
+) -> workspace_saving._WorkspaceSaveSnapshot:
+    return workspace_saving._WorkspaceSaveSnapshot(
         generation=manager._workspace_state.dirty_generation,
         root_attrs={},
         delta_save_count=manager._workspace_state.delta_save_count + 1,
@@ -10075,12 +10103,14 @@ def test_manager_async_save_request_error_paths(
             lambda title, text: operation_errors.append((title, text)),
         )
         monkeypatch.setattr(
-            manager._workspace_controller,
+            manager._workspace_controller.saving,
             "_workspace_save_snapshot",
             lambda _path: (_ for _ in ()).throw(RuntimeError("snapshot failed")),
         )
         monkeypatch.setattr(
-            manager, "_restore_focus_after_workspace_save", lambda _origin: None
+            manager._workspace_controller,
+            "_restore_focus_after_workspace_save",
+            lambda _origin: None,
         )
         callback_results: list[bool] = []
         assert not manager._workspace_controller.save(
@@ -10094,7 +10124,11 @@ def test_manager_async_save_request_error_paths(
             )
         ]
 
-        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: None)
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: None,
+        )
         assert not manager._workspace_controller.save_as()
 
 
@@ -10125,12 +10159,12 @@ def test_manager_save_action_runs_workspace_save_in_background(
         fname = _bind_dirty_workspace_for_save_test(manager, tmp_path)
         assert manager.workspace_path == str(fname.resolve())
         monkeypatch.setattr(
-            manager._workspace_controller,
+            manager._workspace_controller.saving,
             "_workspace_save_snapshot",
             lambda _path: _workspace_save_test_snapshot(manager),
         )
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller,
             "save_as",
             lambda **_kwargs: pytest.fail("Save action unexpectedly used Save As"),
         )
@@ -10182,7 +10216,7 @@ def test_manager_background_workspace_save_keeps_new_changes_and_queues_followup
         )
         _fname = _bind_dirty_workspace_for_save_test(manager, tmp_path)
         monkeypatch.setattr(
-            manager._workspace_controller,
+            manager._workspace_controller.saving,
             "_workspace_save_snapshot",
             lambda _path: _workspace_save_test_snapshot(manager),
         )
@@ -10217,7 +10251,7 @@ def test_manager_background_workspace_save_keeps_duplicate_layout_change_dirty(
     with manager_context() as manager:
         _fname = _bind_dirty_workspace_for_save_test(manager, tmp_path)
         monkeypatch.setattr(
-            manager._workspace_controller,
+            manager._workspace_controller.saving,
             "_workspace_save_snapshot",
             lambda _path: _workspace_save_test_snapshot(manager),
         )
@@ -10327,7 +10361,7 @@ def test_manager_background_workspace_save_failure_restores_state(
         _fname = _bind_dirty_workspace_for_save_test(manager, tmp_path)
         errors: list[str] = []
         monkeypatch.setattr(
-            manager._workspace_controller,
+            manager._workspace_controller.saving,
             "_workspace_save_snapshot",
             lambda _path: _workspace_save_test_snapshot(manager),
         )
@@ -10371,7 +10405,7 @@ def test_manager_save_slot_requests_async_save(
         )
         _fname = _bind_dirty_workspace_for_save_test(manager, tmp_path)
         monkeypatch.setattr(
-            manager._workspace_controller,
+            manager._workspace_controller.saving,
             "_workspace_save_snapshot",
             lambda _path: _workspace_save_test_snapshot(manager),
         )
@@ -10414,12 +10448,12 @@ def test_open_multiple_files_workspace_locks_before_recovery(
 ) -> None:
     fname = tmp_path / "locked-dropped.itws"
     _write_transaction_test_workspace(fname)
-    lock = manager_workspace._acquire_workspace_document_lock(fname)
+    lock = workspace_saving._acquire_workspace_document_lock(fname)
     lock_calls: list[pathlib.Path] = []
     recovery_calls: list[pathlib.Path] = []
     try:
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_recover_workspace_transactions",
             lambda path: (
                 recovery_calls.append(pathlib.Path(path))
@@ -10497,31 +10531,31 @@ def test_manager_drop_h5_file_does_not_try_workspace(
 
 
 def test_workspace_high_risk_path_detection() -> None:
-    assert manager_workspace._workspace_path_is_high_risk(
+    assert workspace_saving._workspace_path_is_high_risk(
         pathlib.Path.home() / "OneDrive" / "workspace.itws"
     )
-    assert manager_workspace._workspace_path_is_high_risk(
+    assert workspace_saving._workspace_path_is_high_risk(
         pathlib.Path.home()
         / "Library"
         / "Mobile Documents"
         / "com~apple~CloudDocs"
         / "workspace.itws"
     )
-    assert manager_workspace._workspace_path_is_high_risk(
+    assert workspace_saving._workspace_path_is_high_risk(
         pathlib.Path("//server/share/workspace.itws")
     )
 
 
 def test_workspace_lock_error_detection_message_variants() -> None:
     transient = OSError(errno.EACCES, "resource temporarily unavailable")
-    assert manager_workspace._is_workspace_file_lock_error(transient)
-    assert manager_workspace._is_workspace_file_lock_error(
+    assert workspace_saving._is_workspace_file_lock_error(transient)
+    assert workspace_saving._is_workspace_file_lock_error(
         RuntimeError("file is already open by another process")
     )
-    assert manager_workspace._is_workspace_file_lock_error(
+    assert workspace_saving._is_workspace_file_lock_error(
         RuntimeError("unable to lock file")
     )
-    assert not manager_workspace._is_workspace_file_lock_error(
+    assert not workspace_saving._is_workspace_file_lock_error(
         OSError(errno.EINVAL, "resource temporarily unavailable")
     )
 
@@ -10536,21 +10570,21 @@ def test_hide_workspace_lock_file_windows_paths(monkeypatch) -> None:
         def SetFileAttributesW(path: str, attrs: int) -> None:
             calls.append((path, attrs))
 
-    monkeypatch.setattr(manager_workspace.sys, "platform", "win32")
-    monkeypatch.setattr(manager_workspace.os, "name", "nt")
+    monkeypatch.setattr(workspace_saving.sys, "platform", "win32")
+    monkeypatch.setattr(workspace_saving.os, "name", "nt")
     monkeypatch.setattr(ctypes, "windll", None, raising=False)
-    manager_workspace._hide_workspace_lock_file("missing-windll.itws.lock")
+    workspace_saving._hide_workspace_lock_file("missing-windll.itws.lock")
     assert calls == []
 
     monkeypatch.setattr(
         ctypes, "windll", types.SimpleNamespace(kernel32=_Kernel32()), raising=False
     )
-    manager_workspace._hide_workspace_lock_file("hidden.itws.lock")
+    workspace_saving._hide_workspace_lock_file("hidden.itws.lock")
     assert calls == [("hidden.itws.lock", 0x2)]
 
 
 def test_workspace_document_lock_info_without_lock(tmp_path) -> None:
-    info = manager_workspace._workspace_document_lock_info(tmp_path / "free.itws")
+    info = workspace_saving._workspace_document_lock_info(tmp_path / "free.itws")
 
     assert info.pid is None
     assert info.hostname == ""
@@ -10558,49 +10592,49 @@ def test_workspace_document_lock_info_without_lock(tmp_path) -> None:
 
 
 def test_workspace_metadata_helpers_cover_invalid_payloads() -> None:
-    manifest_attrs = manager_workspace._workspace_root_attrs_payload(
+    manifest_attrs = workspace_format._workspace_root_attrs_payload(
         root_order=["1"],
         nodes=[{"path": "1"}],
         delta_save_count=2,
         erlab_version="test",
     )
-    raw_manifest = manifest_attrs[manager_workspace._WORKSPACE_MANIFEST_ATTR]
+    raw_manifest = manifest_attrs[workspace_format._WORKSPACE_MANIFEST_ATTR]
 
     assert (
-        manager_workspace._workspace_manifest_from_attrs(
-            {manager_workspace._WORKSPACE_MANIFEST_ATTR: raw_manifest.encode()}
+        workspace_format._workspace_manifest_from_attrs(
+            {workspace_format._WORKSPACE_MANIFEST_ATTR: raw_manifest.encode()}
         )["delta_save_count"]
         == 2
     )
-    manifest = manager_workspace._workspace_manifest_from_attrs(
-        {manager_workspace._WORKSPACE_MANIFEST_ATTR: raw_manifest}
+    manifest = workspace_format._workspace_manifest_from_attrs(
+        {workspace_format._WORKSPACE_MANIFEST_ATTR: raw_manifest}
     )
-    assert manager_workspace._workspace_manifest_repack_estimate(
+    assert workspace_format._workspace_manifest_repack_estimate(
         manifest, delta_save_count=2
     ) == (0, 0, True)
-    assert manager_workspace._workspace_manifest_repack_estimate(
+    assert workspace_format._workspace_manifest_repack_estimate(
         {"delta_save_count": 2}, delta_save_count=2
     ) == (0, 0, False)
-    assert manager_workspace._workspace_manifest_repack_estimate(
+    assert workspace_format._workspace_manifest_repack_estimate(
         None, delta_save_count=2
     ) == (0, 0, False)
     assert (
-        manager_workspace._workspace_manifest_nonnegative_int(
+        workspace_format._workspace_manifest_nonnegative_int(
             {"estimated_obsolete_bytes": "not-an-int"},
             "estimated_obsolete_bytes",
         )
         == 0
     )
     assert (
-        manager_workspace._workspace_manifest_from_attrs(
-            {manager_workspace._WORKSPACE_MANIFEST_ATTR: "{not-json"}
+        workspace_format._workspace_manifest_from_attrs(
+            {workspace_format._WORKSPACE_MANIFEST_ATTR: "{not-json"}
         )
         == {}
     )
     assert (
-        manager_workspace._workspace_delta_save_count_from_attrs(
+        workspace_format._workspace_delta_save_count_from_attrs(
             {
-                manager_workspace._WORKSPACE_MANIFEST_ATTR: (
+                workspace_format._WORKSPACE_MANIFEST_ATTR: (
                     '{"delta_save_count": "not-an-int"}'
                 )
             }
@@ -10608,10 +10642,10 @@ def test_workspace_metadata_helpers_cover_invalid_payloads() -> None:
         == 0
     )
     with pytest.raises(ValueError, match="current workspace schema"):
-        manager_workspace._compacted_workspace_root_attrs(
+        workspace_format._compacted_workspace_root_attrs(
             {"imagetool_workspace_schema_version": 1}
         )
-    assert manager_workspace._workspace_root_attrs_with_repack_estimate(
+    assert workspace_format._workspace_root_attrs_with_repack_estimate(
         {"imagetool_workspace_schema_version": 1},
         estimated_obsolete_bytes=1,
         replacement_delta_count=1,
@@ -10623,15 +10657,15 @@ def test_workspace_path_risk_detection_fallbacks(monkeypatch, tmp_path) -> None:
         raise OSError("resolve failed")
 
     monkeypatch.setattr(pathlib.Path, "resolve", _raise_oserror)
-    assert manager_workspace._workspace_path_is_likely_cloud_path(
+    assert workspace_saving._workspace_path_is_likely_cloud_path(
         tmp_path / "Dropbox" / "workspace.itws"
     )
-    assert manager_workspace._workspace_path_is_likely_network_path(
+    assert workspace_saving._workspace_path_is_likely_network_path(
         pathlib.Path("/net/server/workspace.itws")
     )
 
-    monkeypatch.setattr(manager_workspace.sys, "platform", "darwin")
-    assert manager_workspace._workspace_path_is_likely_network_path(
+    monkeypatch.setattr(workspace_saving.sys, "platform", "darwin")
+    assert workspace_saving._workspace_path_is_likely_network_path(
         pathlib.Path("/Volumes/share/workspace.itws")
     )
 
@@ -10644,10 +10678,10 @@ def test_workspace_requires_full_save_reasons(tmp_path) -> None:
     existing.touch()
     try:
         options["io/workspace/use_incremental"] = False
-        assert manager_workspace._workspace_requires_full_save(
+        assert workspace_saving._workspace_requires_full_save(
             existing,
             needs_full_save=False,
-            schema_version=manager_workspace._current_workspace_schema_version(),
+            schema_version=workspace_format._current_workspace_schema_version(),
             structure_modified=False,
             has_dirty_added=False,
             has_dirty_removed=False,
@@ -10655,10 +10689,10 @@ def test_workspace_requires_full_save_reasons(tmp_path) -> None:
 
         options["io/workspace/use_incremental"] = True
         options["io/workspace/incremental_save_on_remote"] = True
-        assert manager_workspace._workspace_requires_full_save(
+        assert workspace_saving._workspace_requires_full_save(
             tmp_path / "missing.itws",
             needs_full_save=False,
-            schema_version=manager_workspace._current_workspace_schema_version(),
+            schema_version=workspace_format._current_workspace_schema_version(),
             structure_modified=False,
             has_dirty_added=False,
             has_dirty_removed=False,
@@ -10667,7 +10701,7 @@ def test_workspace_requires_full_save_reasons(tmp_path) -> None:
             {"needs_full_save": True},
             {
                 "schema_version": (
-                    manager_workspace._current_workspace_schema_version() - 1
+                    workspace_format._current_workspace_schema_version() - 1
                 )
             },
             {"structure_modified": True},
@@ -10676,13 +10710,13 @@ def test_workspace_requires_full_save_reasons(tmp_path) -> None:
         ):
             call_kwargs = {
                 "needs_full_save": False,
-                "schema_version": manager_workspace._current_workspace_schema_version(),
+                "schema_version": workspace_format._current_workspace_schema_version(),
                 "structure_modified": False,
                 "has_dirty_added": False,
                 "has_dirty_removed": False,
             }
             call_kwargs.update(kwargs)
-            assert manager_workspace._workspace_requires_full_save(
+            assert workspace_saving._workspace_requires_full_save(
                 existing, **call_kwargs
             )
     finally:
@@ -10696,34 +10730,34 @@ def test_workspace_h5_transaction_helper_edge_cases(tmp_path) -> None:
     fname = tmp_path / "transaction-helpers.itws"
     with h5py.File(fname, "w") as h5_file:
         h5_file.attrs["imagetool_workspace_schema_version"] = (
-            manager_workspace._current_workspace_schema_version()
+            workspace_format._current_workspace_schema_version()
         )
-        assert manager_workspace._workspace_txn_attr_target(h5_file, "/missing") is None
+        assert workspace_saving._workspace_txn_attr_target(h5_file, "/missing") is None
 
         txn = h5_file.create_group(
-            f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}x"
+            f"{workspace_format._WORKSPACE_TRANSACTION_GROUP_PREFIX}x"
         )
         txn_name = txn.name.strip("/")
-        manager_workspace._restore_workspace_attr_backups(h5_file, txn)
+        workspace_saving._restore_workspace_attr_backups(h5_file, txn)
 
         txn.attrs["operations"] = b'{"group_replacements": []}'
-        assert manager_workspace._workspace_transaction_operations(txn) == {
+        assert workspace_saving._workspace_transaction_operations(txn) == {
             "group_replacements": []
         }
         txn.attrs["operations"] = "{not-json"
-        assert manager_workspace._workspace_transaction_operations(txn) == {}
+        assert workspace_saving._workspace_transaction_operations(txn) == {}
 
         txn.attrs["pending_root"] = b"__itws_pending_x"
         txn.attrs["backup_root"] = b"__itws_backup_x"
-        assert manager_workspace._workspace_transaction_roots(txn) == (
+        assert workspace_saving._workspace_transaction_roots(txn) == (
             "__itws_pending_x",
             "__itws_backup_x",
         )
 
-        manager_workspace._rollback_workspace_group_operations(
+        workspace_saving._rollback_workspace_group_operations(
             h5_file, {"group_replacements": "not-a-list"}
         )
-        manager_workspace._rollback_workspace_group_operations(
+        workspace_saving._rollback_workspace_group_operations(
             h5_file,
             {"group_replacements": [None, {"group_path": 1, "backup_path": "x"}]},
         )
@@ -10747,7 +10781,7 @@ def test_workspace_h5_transaction_helper_edge_cases(tmp_path) -> None:
         backup = h5_file.create_group("__itws_backup_x")
         backup.attrs["unused"] = True
 
-        manager_workspace._recover_open_workspace_transaction(h5_file, txn.name)
+        workspace_saving._recover_open_workspace_transaction(h5_file, txn.name)
 
         assert "target" not in h5_file
         assert "__itws_pending_x" not in h5_file
@@ -10760,14 +10794,12 @@ def test_recover_workspace_transactions_ignores_non_workspace_file(tmp_path) -> 
 
     fname = tmp_path / "plain.h5"
     with h5py.File(fname, "w") as h5_file:
-        h5_file.create_group(
-            f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}x"
-        )
+        h5_file.create_group(f"{workspace_format._WORKSPACE_TRANSACTION_GROUP_PREFIX}x")
 
-    manager_workspace._recover_workspace_transactions(fname)
+    workspace_saving._recover_workspace_transactions(fname)
 
     with h5py.File(fname, "r") as h5_file:
-        assert f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}x" in h5_file
+        assert f"{workspace_format._WORKSPACE_TRANSACTION_GROUP_PREFIX}x" in h5_file
 
 
 def test_validate_workspace_h5_file_rejects_non_workspace(tmp_path) -> None:
@@ -10778,18 +10810,18 @@ def test_validate_workspace_h5_file_rejects_non_workspace(tmp_path) -> None:
         pass
 
     with pytest.raises(ValueError, match="not valid"):
-        manager_workspace._validate_workspace_h5_file(fname)
+        workspace_saving._validate_workspace_h5_file(fname)
 
 
 def test_fsync_parent_directory_skips_non_posix(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(manager_workspace.os, "name", "nt")
+    monkeypatch.setattr(workspace_saving.os, "name", "nt")
     monkeypatch.setattr(
-        manager_workspace.os,
+        workspace_saving.os,
         "open",
         lambda *args, **kwargs: pytest.fail("non-posix platforms should not fsync"),
     )
 
-    manager_workspace._fsync_parent_directory(tmp_path / "workspace.itws")
+    workspace_saving._fsync_parent_directory(tmp_path / "workspace.itws")
 
 
 def test_manager_workspace_v4_save_open_replaces_and_binds_path(
@@ -10876,7 +10908,7 @@ def test_manager_workspace_h5py_fast_path_preserves_spaced_associated_coord(
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
         monkeypatch.setattr(
-            manager_xarray,
+            workspace_arrays,
             "open_workspace_dataset",
             lambda *args, **kwargs: pytest.fail(
                 "spaced numeric coords should stay on the h5py fast path"
@@ -10917,7 +10949,7 @@ def test_manager_workspace_import_appends_without_reassociation(
             return QtWidgets.QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(
-        erlab.interactive.imagetool.manager._workspace_io,
+        workspace_loading,
         "_ChooseFromWorkspaceManifestDialog",
         _SelectSecondDialog,
     )
@@ -11035,7 +11067,7 @@ def test_manager_workspace_selected_import_uses_manifest_fast_path(
         fname = tmp_path / "manifest-selected-import.itws"
         manager._save_workspace_document(fname, force_full=True)
         with h5py.File(fname, "r") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         nodes = manifest["nodes"]
         paths = {
             str(entry["path"])
@@ -11069,12 +11101,12 @@ def test_manager_workspace_selected_import_uses_manifest_fast_path(
                 return QtWidgets.QDialog.DialogCode.Accepted
 
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_loading,
             "_ChooseFromWorkspaceManifestDialog",
             _SelectRootOnlyDialog,
         )
         monkeypatch.setattr(
-            manager_xarray,
+            workspace_arrays,
             "open_workspace_datatree",
             lambda *args, **kwargs: pytest.fail(
                 "selected current-schema loads should use manifest h5py path"
@@ -11121,7 +11153,9 @@ def test_manager_workspace_save_as_preserves_live_in_memory_windows(
                 raise AssertionError("Save As should not reload the saved workspace")
 
             monkeypatch.setattr(
-                manager, "_load_workspace_file", _load_workspace_file_should_not_run
+                manager._workspace_controller.loading,
+                "_load_workspace_file",
+                _load_workspace_file_should_not_run,
             )
 
             new_fname = tmp_path / "new.itws"
@@ -11194,9 +11228,9 @@ def test_manager_offload_to_workspace_save_as_rebinds_root_as_dask(
 
         rebound = manager.get_imagetool(0).slicer_area._data
         assert rebound.chunks is not None
-        assert manager_xarray._normalized_file_path(rebound.encoding.get("source")) == (
-            str(fname.resolve())
-        )
+        assert workspace_arrays._normalized_file_path(
+            rebound.encoding.get("source")
+        ) == (str(fname.resolve()))
         assert _compute_first_value(rebound) == 0.0
 
         manager._update_actions()
@@ -11231,9 +11265,9 @@ def test_manager_workspace_load_reopens_offloaded_data_as_dask(
 
         loaded = manager.get_imagetool(0).slicer_area._data
         assert loaded.chunks is not None
-        assert manager_xarray._normalized_file_path(loaded.encoding.get("source")) == (
-            str(fname.resolve())
-        )
+        assert workspace_arrays._normalized_file_path(
+            loaded.encoding.get("source")
+        ) == (str(fname.resolve()))
         assert _compute_first_value(loaded) == 0.0
 
 
@@ -11278,7 +11312,7 @@ def test_manager_workspace_import_reopens_offloaded_data_as_dask(
         assert loaded == [True]
         loaded_data = manager.get_imagetool(0).slicer_area._data
         assert loaded_data.chunks is not None
-        assert manager_xarray._normalized_file_path(
+        assert workspace_arrays._normalized_file_path(
             loaded_data.encoding.get("source")
         ) == str(fname.resolve())
         assert _compute_first_value(loaded_data) == 0.0
@@ -11391,7 +11425,7 @@ def test_manager_offload_to_workspace_saves_dirty_workspace_before_rebind(
         assert not manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][_ITOOL_DATA_NAME]
             assert saved[0, 0] == 10.0
 
 
@@ -11436,7 +11470,7 @@ def test_manager_compute_offloaded_workspace_data_marks_backing_dirty(
         assert not manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][_ITOOL_DATA_NAME]
             assert saved.chunks is None
 
 
@@ -11456,7 +11490,11 @@ def test_manager_offload_to_workspace_save_cancel_or_failure_noop(
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
 
-        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: None)
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: None,
+        )
         assert not manager.offload_to_workspace([0], native=False)
         assert manager.workspace_path is None
         assert root.slicer_area._data.chunks is None
@@ -11515,7 +11553,9 @@ def test_manager_offload_to_workspace_edge_paths(
         manager._workspace_state.needs_full_save = False
         monkeypatch.setattr(manager, "_node_for_target", lambda _target: fake_node)
         monkeypatch.setattr(
-            manager, "_active_managed_window", lambda: typing.cast("typing.Any", None)
+            manager._workspace_controller,
+            "_active_managed_window",
+            lambda: typing.cast("typing.Any", None),
         )
         monkeypatch.setattr(
             erlab.interactive.utils,
@@ -11523,7 +11563,7 @@ def test_manager_offload_to_workspace_edge_paths(
             lambda *_args, **_kwargs: contextlib.nullcontext(),
         )
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller.loading,
             "_rebind_workspace_backed_imagetools",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
         )
@@ -11535,7 +11575,9 @@ def test_manager_offload_to_workspace_edge_paths(
             lambda title, message: errors.append((title, message)),
         )
         monkeypatch.setattr(
-            manager, "_restore_focus_after_workspace_save", restored.append
+            manager._workspace_controller,
+            "_restore_focus_after_workspace_save",
+            restored.append,
         )
 
         assert not manager.offload_to_workspace([0], native=False)
@@ -11629,21 +11671,21 @@ def test_manager_manual_chunk_edits_persist_on_next_workspace_save(
         assert manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][_ITOOL_DATA_NAME]
             assert saved.chunks is None
 
         assert _request_workspace_save_and_wait(qtbot, manager)
         assert not manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][_ITOOL_DATA_NAME]
             assert saved.chunks == (2, 3)
 
-        opened = manager_xarray.open_workspace_dataset(
+        opened = workspace_arrays.open_workspace_dataset(
             fname, manager._workspace_payload_path(uid), chunks={}
         )
         try:
-            rebound = opened[manager_workspace_io._ITOOL_DATA_NAME]
+            rebound = opened[_ITOOL_DATA_NAME]
             assert rebound.chunks == ((2, 2, 1), (3, 2))
         finally:
             opened.close()
@@ -11708,7 +11750,7 @@ def test_manager_workspace_save_as_preserves_external_non_dask_file_backed_data(
         live_data = manager.get_imagetool(0).slicer_area._data
         old_source = str(old_fname.resolve())
         assert (
-            manager_xarray._normalized_file_path(live_data.encoding.get("source"))
+            workspace_arrays._normalized_file_path(live_data.encoding.get("source"))
             == old_source
         )
 
@@ -11724,7 +11766,7 @@ def test_manager_workspace_save_as_preserves_external_non_dask_file_backed_data(
 
         rebound = manager.get_imagetool(0).slicer_area._data
         new_source = str(new_fname.resolve())
-        rebound_source = manager_xarray._normalized_file_path(
+        rebound_source = workspace_arrays._normalized_file_path(
             rebound.encoding.get("source")
         )
         assert rebound_source == old_source
@@ -11758,7 +11800,7 @@ def test_manager_workspace_save_as_rebinds_workspace_non_dask_file_backed_data(
         live_data = manager.get_imagetool(0).slicer_area._data
         old_source = str(old_fname.resolve())
         assert (
-            manager_xarray._normalized_file_path(live_data.encoding.get("source"))
+            workspace_arrays._normalized_file_path(live_data.encoding.get("source"))
             == old_source
         )
         assert live_data.chunks is None
@@ -11776,7 +11818,7 @@ def test_manager_workspace_save_as_rebinds_workspace_non_dask_file_backed_data(
         rebound = manager.get_imagetool(0).slicer_area._data
         new_source = str(new_fname.resolve())
         assert (
-            manager_xarray._normalized_file_path(rebound.encoding.get("source"))
+            workspace_arrays._normalized_file_path(rebound.encoding.get("source"))
             == new_source
         )
         assert rebound.chunks is None
@@ -11826,7 +11868,7 @@ def test_manager_workspace_save_as_preserves_manually_chunked_file_backed_data(
 
         rebound = manager.get_imagetool(0).slicer_area._data
         assert rebound.chunks is not None
-        assert manager_xarray._normalized_file_path(
+        assert workspace_arrays._normalized_file_path(
             rebound.encoding.get("source")
         ) == str(new_fname.resolve())
 
@@ -11868,7 +11910,9 @@ def test_manager_workspace_save_as_rebinds_lazy_data_to_new_document(
                 raise AssertionError("Save As should not reload the saved workspace")
 
             monkeypatch.setattr(
-                manager, "_load_workspace_file", _load_workspace_file_should_not_run
+                manager._workspace_controller.loading,
+                "_load_workspace_file",
+                _load_workspace_file_should_not_run,
             )
 
             def _go_to_file(dialog: QtWidgets.QFileDialog):
@@ -11884,7 +11928,7 @@ def test_manager_workspace_save_as_rebinds_lazy_data_to_new_document(
             assert manager.workspace_path == str(new_fname.resolve())
             rebound = manager.get_imagetool(0).slicer_area._data
             assert rebound.chunks is not None
-            assert manager_xarray._normalized_file_path(
+            assert workspace_arrays._normalized_file_path(
                 rebound.encoding.get("source")
             ) == str(new_fname.resolve())
             old_fname.unlink()
@@ -12048,9 +12092,11 @@ def test_manager_workspace_save_clears_deferred_dirty_events(
         assert root.isWindowModified()
 
         focus_restored: list[QtWidgets.QWidget | None] = []
-        monkeypatch.setattr(manager, "_active_managed_window", lambda: root)
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller, "_active_managed_window", lambda: root
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller,
             "_restore_focus_after_workspace_save",
             lambda origin: focus_restored.append(origin),
         )
@@ -12191,7 +12237,7 @@ def test_manager_workspace_state_save_updates_attrs_without_full_rewrite(
         manager._mark_workspace_clean()
         manager._mark_node_state_dirty(uid)
 
-        original_transaction_write = manager_workspace._write_workspace_transaction_file
+        original_transaction_write = workspace_saving._write_workspace_transaction_file
         attr_write_calls: list[str] = []
 
         def _record_transaction_write(
@@ -12216,21 +12262,21 @@ def test_manager_workspace_state_save_updates_attrs_without_full_rewrite(
             )
 
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_write_full_workspace_tree_file",
             lambda *args, **kwargs: pytest.fail(
                 "state-only Save should not rewrite the full workspace"
             ),
         )
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_write_workspace_root_attrs_to_file",
             lambda *args, **kwargs: pytest.fail(
                 "state-only Save should batch root attrs with node attrs"
             ),
         )
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_write_workspace_transaction_file",
             _record_transaction_write,
         )
@@ -12300,7 +12346,7 @@ def test_manager_workspace_save_preserves_live_lazy_readers_during_write(
         assert _compute_first_value(live_data) == 0.0
 
         manager._mark_node_state_dirty(uid)
-        original_write = manager_workspace._write_workspace_transaction_file
+        original_write = workspace_saving._write_workspace_transaction_file
         computed_values: list[object] = []
 
         def _slow_write_workspace_transaction_file(*args, **kwargs):
@@ -12311,7 +12357,7 @@ def test_manager_workspace_save_preserves_live_lazy_readers_during_write(
             computed_values.append(live_data.isel({"x": 1, "y": 1}).compute().item())
 
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_write_workspace_transaction_file",
             _slow_write_workspace_transaction_file,
         )
@@ -12343,7 +12389,7 @@ def test_manager_workspace_slow_save_reports_status_after_background_write(
         manager._mark_workspace_clean()
         manager._mark_node_state_dirty(manager._tool_graph.root_wrappers[0].uid)
 
-        original_write = manager_workspace._write_workspace_transaction_file
+        original_write = workspace_saving._write_workspace_transaction_file
 
         def _slow_write_workspace_transaction_file(*args, **kwargs):
             time.sleep(0.05)
@@ -12351,18 +12397,20 @@ def test_manager_workspace_slow_save_reports_status_after_background_write(
 
         focus_restored: list[QtWidgets.QWidget | None] = []
         monkeypatch.setattr(
-            erlab.interactive.imagetool.manager._workspace_io,
+            erlab.interactive.imagetool.manager._workspace._controller,
             "_WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS",
             0.01,
         )
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_write_workspace_transaction_file",
             _slow_write_workspace_transaction_file,
         )
-        monkeypatch.setattr(manager, "_active_managed_window", lambda: root)
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller, "_active_managed_window", lambda: root
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller,
             "_restore_focus_after_workspace_save",
             lambda origin: focus_restored.append(origin),
         )
@@ -12437,7 +12485,7 @@ def test_manager_workspace_compact_resets_delta_count_and_cleans_internal_groups
         assert manager._workspace_state.estimated_obsolete_bytes == 0
         assert manager._workspace_state.replacement_delta_count == 0
         with h5py.File(fname, "r") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert manifest["estimated_obsolete_bytes"] == 0
         assert manifest["replacement_delta_count"] == 0
 
@@ -12454,10 +12502,10 @@ def test_manager_workspace_compact_resets_delta_count_and_cleans_internal_groups
         _assert_no_workspace_internal_groups(fname)
         with h5py.File(fname, "r") as h5_file:
             assert (
-                manager_workspace._workspace_delta_save_count_from_attrs(h5_file.attrs)
+                workspace_format._workspace_delta_save_count_from_attrs(h5_file.attrs)
                 == 0
             )
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
             assert "delta_save_count" not in manifest
             assert "transaction_protocol" not in manifest
 
@@ -12492,7 +12540,7 @@ def test_manager_workspace_delta_save_tracks_repack_benefit(
         assert manager._workspace_state.replacement_delta_count == 1
         assert manager._workspace_state.repack_estimate_known
         with h5py.File(fname, "r") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert (
             manifest["estimated_obsolete_bytes"]
             == manager._workspace_state.estimated_obsolete_bytes
@@ -12505,7 +12553,7 @@ def test_manager_workspace_delta_save_tracks_repack_benefit(
         assert manager._workspace_state.estimated_obsolete_bytes == 0
         assert manager._workspace_state.replacement_delta_count == 0
         with h5py.File(fname, "r") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert "estimated_obsolete_bytes" not in manifest
         assert "replacement_delta_count" not in manifest
 
@@ -12540,12 +12588,12 @@ def test_manager_workspace_shutdown_compacts_clean_delta_workspace(
         assert manager._workspace_state.replacement_delta_count == 1
 
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_saving,
             "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_BYTES",
             1,
         )
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_saving,
             "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO",
             0.0,
         )
@@ -12558,10 +12606,10 @@ def test_manager_workspace_shutdown_compacts_clean_delta_workspace(
         _assert_no_workspace_internal_groups(fname)
         with h5py.File(fname, "r") as h5_file:
             assert (
-                manager_workspace._workspace_delta_save_count_from_attrs(h5_file.attrs)
+                workspace_format._workspace_delta_save_count_from_attrs(h5_file.attrs)
                 == 0
             )
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
             assert "delta_save_count" not in manifest
             assert "transaction_protocol" not in manifest
 
@@ -12597,14 +12645,16 @@ def test_manager_workspace_shutdown_compact_uses_file_level_repack(
         def _fail_to_datatree() -> xr.DataTree:
             pytest.fail("Shutdown file-level repack should not serialize tools")
 
-        monkeypatch.setattr(manager, "_to_datatree", _fail_to_datatree)
         monkeypatch.setattr(
-            manager_workspace_io,
+            manager._workspace_controller.saving, "_to_datatree", _fail_to_datatree
+        )
+        monkeypatch.setattr(
+            workspace_saving,
             "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_BYTES",
             1,
         )
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_saving,
             "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO",
             0.0,
         )
@@ -12614,7 +12664,7 @@ def test_manager_workspace_shutdown_compact_uses_file_level_repack(
         assert manager._workspace_state.delta_save_count == 0
         _assert_no_workspace_internal_groups(fname)
         with h5py.File(fname, "r") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
             assert "delta_save_count" not in manifest
             assert "transaction_protocol" not in manifest
 
@@ -12724,10 +12774,10 @@ def test_manager_workspace_shutdown_compact_scans_when_estimate_missing(
         manager._mark_node_data_dirty(uid)
         assert _request_workspace_save_and_wait(qtbot, manager)
         with h5py.File(fname, "a") as h5_file:
-            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
             manifest.pop("estimated_obsolete_bytes", None)
             manifest.pop("replacement_delta_count", None)
-            h5_file.attrs[manager_workspace._WORKSPACE_MANIFEST_ATTR] = json.dumps(
+            h5_file.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(
                 manifest
             )
         manager._workspace_state.set_repack_estimate(
@@ -12743,17 +12793,17 @@ def test_manager_workspace_shutdown_compact_scans_when_estimate_missing(
             return 100
 
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_saving,
             "_workspace_obsolete_estimate",
             _fake_estimate,
         )
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_saving,
             "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_BYTES",
             1,
         )
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_saving,
             "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO",
             0.0,
         )
@@ -12790,28 +12840,28 @@ def test_manager_workspace_shutdown_compact_skips_if_file_repack_unavailable(
         assert manager._workspace_state.delta_save_count == 1
 
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_saving,
             "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_BYTES",
             1,
         )
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_saving,
             "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO",
             0.0,
         )
         monkeypatch.setattr(
-            manager._workspace_controller,
+            manager._workspace_controller.saving,
             "_workspace_file_repack_snapshot",
             lambda _generation: None,
         )
 
         def _fail_full_save_snapshot(
             _generation: int,
-        ) -> manager_workspace._WorkspaceSaveSnapshot:
+        ) -> workspace_saving._WorkspaceSaveSnapshot:
             pytest.fail("Shutdown compaction should not serialize as a fallback")
 
         monkeypatch.setattr(
-            manager._workspace_controller,
+            manager._workspace_controller.saving,
             "_workspace_full_save_snapshot",
             _fail_full_save_snapshot,
         )
@@ -12846,29 +12896,29 @@ def test_manager_workspace_shutdown_compact_runs_in_background(
         assert _request_workspace_save_and_wait(qtbot, manager)
         assert manager._workspace_state.delta_save_count == 1
 
-        original_write = manager_workspace._write_full_workspace_tree_file
+        original_write = workspace_saving._write_full_workspace_tree_file
 
         def _slow_write_full_workspace_tree_file(*args, **kwargs):
             time.sleep(0.05)
             return original_write(*args, **kwargs)
 
         monkeypatch.setattr(
-            erlab.interactive.imagetool.manager._workspace_io,
+            erlab.interactive.imagetool.manager._workspace._controller,
             "_WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS",
             0.01,
         )
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_saving,
             "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_BYTES",
             1,
         )
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_saving,
             "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO",
             0.0,
         )
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_write_full_workspace_tree_file",
             _slow_write_full_workspace_tree_file,
         )
@@ -12934,10 +12984,10 @@ def test_manager_workspace_high_risk_path_forces_full_save_snapshot(
         manager._mark_workspace_clean()
         manager._mark_node_state_dirty(uid)
         monkeypatch.setattr(
-            manager_workspace, "_workspace_path_is_high_risk", lambda *_args: True
+            workspace_saving, "_workspace_path_is_high_risk", lambda *_args: True
         )
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_workspace_path_is_likely_network_path",
             lambda *_args: True,
         )
@@ -12976,7 +13026,7 @@ def test_manager_workspace_save_snapshot_uses_compression_override(
             known=False,
         )
         root_attrs = manager._workspace_root_attrs_payload()
-        manifest = manager_workspace._workspace_manifest_from_attrs(root_attrs)
+        manifest = workspace_format._workspace_manifest_from_attrs(root_attrs)
         assert manifest["delta_save_count"] == 2
         assert "estimated_obsolete_bytes" not in manifest
         root_attrs = manager._workspace_root_attrs_payload(
@@ -12985,7 +13035,7 @@ def test_manager_workspace_save_snapshot_uses_compression_override(
             replacement_delta_count=5,
             repack_estimate_known=True,
         )
-        manifest = manager_workspace._workspace_manifest_from_attrs(root_attrs)
+        manifest = workspace_format._workspace_manifest_from_attrs(root_attrs)
         assert manifest["estimated_obsolete_bytes"] == 1024
         assert manifest["replacement_delta_count"] == 5
 
@@ -13012,8 +13062,8 @@ def test_manager_workspace_delta_save_updates_repack_state(
             generation: int,
             root_attrs: dict[str, typing.Any],
             delta_save_count: int,
-        ) -> manager_workspace._WorkspaceSaveSnapshot:
-            return manager_workspace._WorkspaceSaveSnapshot(
+        ) -> workspace_saving._WorkspaceSaveSnapshot:
+            return workspace_saving._WorkspaceSaveSnapshot(
                 generation=generation,
                 root_attrs=root_attrs,
                 delta_save_count=delta_save_count,
@@ -13026,16 +13076,22 @@ def test_manager_workspace_delta_save_updates_repack_state(
         def _record_write(*args, **kwargs) -> None:
             writes.append((*args, kwargs))
 
-        monkeypatch.setattr(manager, "_workspace_delta_save_snapshot", _snapshot)
         monkeypatch.setattr(
-            manager_workspace,
+            manager._workspace_controller.saving,
+            "_workspace_delta_save_snapshot",
+            _snapshot,
+        )
+        monkeypatch.setattr(
+            workspace_saving,
             "_write_workspace_transaction_file",
             _record_write,
         )
 
         manager._workspace_state.dirty_generation = 5
         manager._workspace_state.delta_save_count = 6
-        manager._workspace_controller._save_workspace_delta(tmp_path / "delta.itws")
+        manager._workspace_controller.saving._save_workspace_delta(
+            tmp_path / "delta.itws"
+        )
 
         assert writes
         assert manager._workspace_state.delta_save_count == 7
@@ -13054,6 +13110,7 @@ def test_manager_workspace_delta_snapshot_keeps_replacement_count_for_missing_gr
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         controller = manager._workspace_controller
+        saver = controller.saving
 
         manager._workspace_state.path = tmp_path / "workspace.itws"
         manager._workspace_state.set_repack_estimate(
@@ -13062,33 +13119,33 @@ def test_manager_workspace_delta_snapshot_keeps_replacement_count_for_missing_gr
         )
 
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller.saving,
             "_workspace_highest_dirty_data_roots",
             lambda: ("uid",),
         )
         monkeypatch.setattr(
-            controller,
+            controller.saving,
             "_workspace_rewrite_group_snapshot",
             lambda _uid: ("0", {}),
         )
         monkeypatch.setattr(manager, "_iter_descendant_uids", lambda _uid: ())
         monkeypatch.setattr(
-            controller,
+            controller.saving,
             "_workspace_manifest_node_uids",
             lambda _root_attrs: frozenset(),
         )
         monkeypatch.setattr(
-            controller,
+            controller.saving,
             "_workspace_stale_reference_rewrite_uids",
             lambda _manifest_uids: (),
         )
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_arrays,
             "_workspace_h5_paths_storage_size",
             lambda *_args, **_kwargs: (256, 0),
         )
 
-        snapshot = controller._workspace_delta_save_snapshot(1, {}, 3)
+        snapshot = saver._workspace_delta_save_snapshot(1, {}, 3)
 
         assert snapshot.estimated_obsolete_bytes == 356
         assert snapshot.replacement_delta_count == 2
@@ -13105,12 +13162,15 @@ def test_manager_write_full_workspace_file_can_disable_group_reuse(
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         controller = manager._workspace_controller
+        saver = controller.saving
         tree = xr.DataTree()
         writes: list[dict[str, typing.Any]] = []
 
-        monkeypatch.setattr(manager, "_to_datatree", lambda: tree)
         monkeypatch.setattr(
-            manager._workspace_controller,
+            manager._workspace_controller.saving, "_to_datatree", lambda: tree
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller.saving,
             "_workspace_full_save_copy_groups",
             lambda *_args, **_kwargs: pytest.fail("copy groups should not be reused"),
         )
@@ -13119,12 +13179,12 @@ def test_manager_write_full_workspace_file_can_disable_group_reuse(
             writes.append(kwargs)
 
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_write_full_workspace_tree_file",
             _record_write,
         )
 
-        controller._write_full_workspace_file(
+        saver._write_full_workspace_file(
             tmp_path / "full.itws", reuse_unchanged_groups=False
         )
 
@@ -13144,6 +13204,7 @@ def test_workspace_manifest_first_helper_edge_cases(
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         controller = manager._workspace_controller
+        saver = controller.saving
         data = xr.DataArray(np.arange(9, dtype=float).reshape(3, 3), dims=("x", "y"))
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
@@ -13151,14 +13212,12 @@ def test_workspace_manifest_first_helper_edge_cases(
         uid = manager._tool_graph.root_wrappers[0].uid
 
         with monkeypatch.context() as mp:
-            mp.setattr(controller, "_workspace_node_path", lambda uid: uid)
-            assert not controller._workspace_datatree_for_payload_uids(
-                ("missing",)
-            ).children
+            mp.setattr(saver, "_workspace_node_path", lambda uid: uid)
+            assert not saver._workspace_datatree_for_payload_uids(("missing",)).children
         assert (
-            controller._workspace_full_save_manifest_entries(
+            saver._workspace_full_save_manifest_entries(
                 {
-                    manager_workspace._WORKSPACE_MANIFEST_ATTR: json.dumps(
+                    workspace_format._WORKSPACE_MANIFEST_ATTR: json.dumps(
                         {"nodes": {"not": "a-list"}}
                     )
                 }
@@ -13166,7 +13225,7 @@ def test_workspace_manifest_first_helper_edge_cases(
             == []
         )
         root_attrs = {
-            manager_workspace._WORKSPACE_MANIFEST_ATTR: json.dumps(
+            workspace_format._WORKSPACE_MANIFEST_ATTR: json.dumps(
                 {
                     "nodes": [
                         None,
@@ -13176,20 +13235,20 @@ def test_workspace_manifest_first_helper_edge_cases(
                 }
             )
         }
-        assert controller._workspace_full_save_manifest_entries(root_attrs) == [
+        assert saver._workspace_full_save_manifest_entries(root_attrs) == [
             (uid, "imagetool", "0/imagetool")
         ]
 
         manager._workspace_state.dirty_added.add("missing")
         manager._workspace_state.dirty_data.add(uid)
-        assert controller._workspace_full_save_dirty_payload_uids() == {uid}
+        assert saver._workspace_full_save_dirty_payload_uids() == {uid}
         manager._workspace_state.dirty_added.clear()
         manager._workspace_state.dirty_data.clear()
 
-        assert controller._workspace_full_save_source_identities() is None
+        assert saver._workspace_full_save_source_identities() is None
         missing_workspace = tmp_path / "missing.itws"
         manager._workspace_state.path = missing_workspace
-        assert controller._workspace_full_save_source_identities() is None
+        assert saver._workspace_full_save_source_identities() is None
 
         workspace = tmp_path / "identity.itws"
         manifest = {
@@ -13201,23 +13260,23 @@ def test_workspace_manifest_first_helper_edge_cases(
         }
         with h5py.File(workspace, "w") as h5_file:
             h5_file.attrs["imagetool_workspace_schema_version"] = (
-                manager_workspace._current_workspace_schema_version()
+                workspace_format._current_workspace_schema_version()
             )
-            h5_file.attrs[manager_workspace._WORKSPACE_MANIFEST_ATTR] = json.dumps(
+            h5_file.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(
                 manifest
             )
         manager._workspace_state.path = workspace
-        source = controller._workspace_full_save_source_identities()
+        source = saver._workspace_full_save_source_identities()
         assert source is not None
         assert source[0] == workspace
         assert source[1] == {(uid, "imagetool"): "0/imagetool"}
 
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_arrays,
             "_read_workspace_root_attrs_h5py",
             lambda _path: (_ for _ in ()).throw(OSError("boom")),
         )
-        assert controller._workspace_full_save_source_identities() is None
+        assert saver._workspace_full_save_source_identities() is None
 
 
 def test_pending_workspace_imagetool_attrs_optional_metadata(
@@ -13258,7 +13317,7 @@ def test_pending_workspace_imagetool_attrs_optional_metadata(
             },
         )
 
-        attrs = manager._workspace_controller._pending_workspace_imagetool_attrs(
+        attrs = manager._workspace_controller.saving._pending_workspace_imagetool_attrs(
             wrapper
         )
         assert attrs["itool_name"] == "pending-name"
@@ -13279,7 +13338,7 @@ def test_pending_workspace_imagetool_attrs_optional_metadata(
         wrapper.set_watched_binding("watched_data", "watched-uid")
         wrapper.set_source_input_ndim(None)
         wrapper._source_spec = None
-        attrs = manager._workspace_controller._pending_workspace_imagetool_attrs(
+        attrs = manager._workspace_controller.saving._pending_workspace_imagetool_attrs(
             wrapper
         )
         assert "manager_node_note" not in attrs
@@ -13677,13 +13736,13 @@ def test_workspace_save_worker_start_and_finish_error_branches(
         start_errors: list[str] = []
         snapshot = Snapshot()
         monkeypatch.setattr(
-            manager_workspace_io.QtCore.QThreadPool,
+            workspace_controller.QtCore.QThreadPool,
             "globalInstance",
             staticmethod(lambda: None),
         )
         assert not controller._start_workspace_save_worker(
             tmp_path / "none.itws",
-            typing.cast("manager_workspace._WorkspaceSaveSnapshot", snapshot),
+            typing.cast("workspace_saving._WorkspaceSaveSnapshot", snapshot),
             on_finished=lambda *_args: None,
             on_start_error=lambda: start_errors.append("none"),
         )
@@ -13696,13 +13755,13 @@ def test_workspace_save_worker_start_and_finish_error_branches(
 
         snapshot = Snapshot()
         monkeypatch.setattr(
-            manager_workspace_io.QtCore.QThreadPool,
+            workspace_controller.QtCore.QThreadPool,
             "globalInstance",
             staticmethod(lambda: RaisingPool()),
         )
         assert not controller._start_workspace_save_worker(
             tmp_path / "raise.itws",
-            typing.cast("manager_workspace._WorkspaceSaveSnapshot", snapshot),
+            typing.cast("workspace_saving._WorkspaceSaveSnapshot", snapshot),
             on_finished=lambda *_args: None,
             on_start_error=lambda: start_errors.append("raise"),
         )
@@ -13722,7 +13781,7 @@ def test_workspace_save_worker_start_and_finish_error_branches(
         errors: list[tuple[str, str]] = []
         pool = RecordingPool()
         monkeypatch.setattr(
-            manager_workspace_io.QtCore.QThreadPool,
+            workspace_controller.QtCore.QThreadPool,
             "globalInstance",
             staticmethod(lambda: pool),
         )
@@ -13733,7 +13792,7 @@ def test_workspace_save_worker_start_and_finish_error_branches(
         )
         assert controller._start_workspace_save_worker(
             tmp_path / "finish.itws",
-            typing.cast("manager_workspace._WorkspaceSaveSnapshot", Snapshot()),
+            typing.cast("workspace_saving._WorkspaceSaveSnapshot", Snapshot()),
             on_finished=lambda *_args: (_ for _ in ()).throw(RuntimeError("boom")),
         )
         assert pool.worker is not None
@@ -13776,7 +13835,7 @@ def test_background_workspace_save_finish_branches(
             lambda: workspace_path,
         )
         monkeypatch.setattr(
-            manager_workspace_io.QtCore.QTimer,
+            workspace_controller.QtCore.QTimer,
             "singleShot",
             staticmethod(lambda _delay, callback: queued_callbacks.append(callback)),
         )
@@ -13786,7 +13845,7 @@ def test_background_workspace_save_finish_branches(
             old_workspace_path=None,
             backing_snapshot={},
             snapshot=typing.cast(
-                "manager_workspace._WorkspaceSaveSnapshot", types.SimpleNamespace()
+                "workspace_saving._WorkspaceSaveSnapshot", types.SimpleNamespace()
             ),
             ok=True,
             worker_elapsed=0.1,
@@ -13819,7 +13878,7 @@ def test_background_workspace_save_finish_branches(
             old_workspace_path=None,
             backing_snapshot={},
             snapshot=typing.cast(
-                "manager_workspace._WorkspaceSaveSnapshot", types.SimpleNamespace()
+                "workspace_saving._WorkspaceSaveSnapshot", types.SimpleNamespace()
             ),
             ok=True,
             worker_elapsed=0.1,
@@ -13847,8 +13906,8 @@ def test_workspace_save_and_save_as_error_continuation_branches(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    def snapshot(generation: int = 0) -> manager_workspace._WorkspaceSaveSnapshot:
-        return manager_workspace._WorkspaceSaveSnapshot(
+    def snapshot(generation: int = 0) -> workspace_saving._WorkspaceSaveSnapshot:
+        return workspace_saving._WorkspaceSaveSnapshot(
             generation=generation,
             root_attrs={},
             delta_save_count=0,
@@ -13874,10 +13933,12 @@ def test_workspace_save_and_save_as_error_continuation_branches(
 
         warnings: list[bool] = []
         monkeypatch.setattr(
-            manager, "_workspace_save_dialog", lambda **_kwargs: tmp_path / "bad.txt"
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: tmp_path / "bad.txt",
         )
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_controller,
             "_show_itws_workspace_warning",
             lambda _parent: warnings.append(True),
         )
@@ -13893,10 +13954,12 @@ def test_workspace_save_and_save_as_error_continuation_branches(
             lambda title, text: errors.append((title, text)),
         )
         monkeypatch.setattr(
-            manager, "_workspace_save_dialog", lambda **_kwargs: tmp_path / "save.itws"
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: tmp_path / "save.itws",
         )
         monkeypatch.setattr(
-            controller,
+            controller.saving,
             "_workspace_full_save_snapshot",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
         )
@@ -13909,7 +13972,7 @@ def test_workspace_save_and_save_as_error_continuation_branches(
         )
 
         monkeypatch.setattr(
-            controller,
+            controller.saving,
             "_workspace_full_save_snapshot",
             lambda generation, **_kwargs: snapshot(generation),
         )
@@ -13961,7 +14024,7 @@ def test_workspace_save_and_save_as_error_continuation_branches(
 
         manager._workspace_state.path = tmp_path / "current.itws"
         monkeypatch.setattr(
-            controller, "_workspace_save_snapshot", lambda _path: snapshot()
+            controller.saving, "_workspace_save_snapshot", lambda _path: snapshot()
         )
         finished.clear()
         assert not controller.save(on_finished=finished.append, restore_focus=False)
@@ -13984,13 +14047,13 @@ def test_workspace_save_completion_ignores_inactive_document(
         manager._workspace_state.delta_save_count = 7
         manager._workspace_state.mark_layout_dirty()
 
-        snapshot = manager_workspace._WorkspaceSaveSnapshot(
+        snapshot = workspace_saving._WorkspaceSaveSnapshot(
             generation=manager._workspace_state.dirty_generation,
             root_attrs={},
             delta_save_count=99,
         )
         monkeypatch.setattr(
-            controller, "_workspace_save_snapshot", lambda _path: snapshot
+            controller.saving, "_workspace_save_snapshot", lambda _path: snapshot
         )
         recorded_recent: list[pathlib.Path] = []
         monkeypatch.setattr(
@@ -14037,11 +14100,15 @@ def test_workspace_save_as_completion_ignores_inactive_document(
         manager.add_imagetool(root, show=False)
         manager._workspace_state.mark_layout_dirty()
 
-        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: target)
         monkeypatch.setattr(
-            controller,
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: target,
+        )
+        monkeypatch.setattr(
+            controller.saving,
             "_workspace_full_save_snapshot",
-            lambda generation, **_kwargs: manager_workspace._WorkspaceSaveSnapshot(
+            lambda generation, **_kwargs: workspace_saving._WorkspaceSaveSnapshot(
                 generation=generation,
                 root_attrs={},
                 delta_save_count=0,
@@ -14093,7 +14160,7 @@ def test_manager_manifest_first_full_save_copies_clean_payloads(
         manager._mark_workspace_clean()
 
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller.saving,
             "_serialize_workspace_node",
             lambda *_args, **_kwargs: pytest.fail(
                 "Clean full save should copy payload groups"
@@ -14133,14 +14200,20 @@ def test_manager_manifest_first_full_save_serializes_missing_source_group(
         with h5py.File(fname, "a") as h5_file:
             del h5_file["0/imagetool"]
 
-        original_serialize = manager._serialize_workspace_node
+        original_serialize = (
+            manager._workspace_controller.saving._serialize_workspace_node
+        )
         serialized_paths: list[str] = []
 
         def _record_serialize(*args, **kwargs) -> None:
             serialized_paths.append(args[2])
             original_serialize(*args, **kwargs)
 
-        monkeypatch.setattr(manager, "_serialize_workspace_node", _record_serialize)
+        monkeypatch.setattr(
+            manager._workspace_controller.saving,
+            "_serialize_workspace_node",
+            _record_serialize,
+        )
 
         manager._save_workspace_document(fname, force_full=True)
 
@@ -14176,7 +14249,7 @@ def test_manager_manifest_first_full_save_preserves_clean_mismatched_compression
             manager._adopt_workspace_path(fname)
             manager._mark_workspace_clean()
             with h5py.File(fname, "r") as h5_file:
-                data_ds = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+                data_ds = h5_file["0/imagetool"][_ITOOL_DATA_NAME]
                 assert _hdf5_blosc2_level_codec(data_ds) is None
 
             writes: list[
@@ -14185,7 +14258,7 @@ def test_manager_manifest_first_full_save_preserves_clean_mismatched_compression
                     tuple[tuple[str, str, dict[str, typing.Any] | None], ...],
                 ]
             ] = []
-            original_write = manager_workspace._write_full_workspace_tree_file
+            original_write = workspace_saving._write_full_workspace_tree_file
 
             def _record_write(*args, **kwargs) -> None:
                 writes.append(
@@ -14195,14 +14268,14 @@ def test_manager_manifest_first_full_save_preserves_clean_mismatched_compression
 
             erlab.interactive.options["io/workspace/compression"] = "zstd1"
             monkeypatch.setattr(
-                manager,
+                manager._workspace_controller.saving,
                 "_serialize_workspace_node",
                 lambda *_args, **_kwargs: pytest.fail(
                     "Clean mismatched payload should be copied"
                 ),
             )
             monkeypatch.setattr(
-                manager_workspace,
+                workspace_saving,
                 "_write_full_workspace_tree_file",
                 _record_write,
             )
@@ -14214,7 +14287,7 @@ def test_manager_manifest_first_full_save_preserves_clean_mismatched_compression
                 (("0/imagetool", "0/imagetool", None),),
             )
             with h5py.File(fname, "r") as h5_file:
-                data_ds = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+                data_ds = h5_file["0/imagetool"][_ITOOL_DATA_NAME]
                 assert _hdf5_blosc2_level_codec(data_ds) is None
     finally:
         erlab.interactive.options["io/workspace/compression"] = old_compression
@@ -14247,7 +14320,7 @@ def test_manager_full_save_rewrites_pending_dirty_state_on_compression_mismatch(
             fname = tmp_path / f"pending-compression-{force_fallback}.itws"
             manager._save_workspace_document(fname, force_full=True)
             with h5py.File(fname, "r") as h5_file:
-                data_ds = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+                data_ds = h5_file["0/imagetool"][_ITOOL_DATA_NAME]
                 assert _hdf5_blosc2_level_codec(data_ds) is None
             assert manager._load_workspace_file(
                 fname, replace=True, associate=True, mark_dirty=False, select=False
@@ -14261,7 +14334,7 @@ def test_manager_full_save_rewrites_pending_dirty_state_on_compression_mismatch(
 
             if force_fallback:
                 monkeypatch.setattr(
-                    manager._workspace_controller,
+                    manager._workspace_controller.saving,
                     "_workspace_full_save_manifest_first_snapshot",
                     lambda *_args, **_kwargs: None,
                 )
@@ -14275,7 +14348,7 @@ def test_manager_full_save_rewrites_pending_dirty_state_on_compression_mismatch(
 
             with h5py.File(fname, "r") as h5_file:
                 group = h5_file["0/imagetool"]
-                data_ds = group[manager_workspace_io._ITOOL_DATA_NAME]
+                data_ds = group[_ITOOL_DATA_NAME]
                 assert _hdf5_blosc2_level_codec(data_ds) is not None
                 assert group.attrs["itool_name"] == "renamed pending"
                 np.testing.assert_array_equal(data_ds[...], data.values)
@@ -14315,7 +14388,7 @@ def test_manager_fallback_save_materializes_pending_without_wait_dialog(
             assert wrapper.pending_workspace_memory_payload is not None
             wrapper.name = "renamed pending"
             monkeypatch.setattr(
-                manager._workspace_controller,
+                manager._workspace_controller.saving,
                 "_workspace_full_save_manifest_first_snapshot",
                 lambda *_args, **_kwargs: None,
             )
@@ -14344,7 +14417,7 @@ def test_manager_fallback_save_materializes_pending_without_wait_dialog(
             with h5py.File(fname, "r") as h5_file:
                 assert h5_file["0/imagetool"].attrs["itool_name"] == "renamed pending"
                 np.testing.assert_array_equal(
-                    h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME][...],
+                    h5_file["0/imagetool"][_ITOOL_DATA_NAME][...],
                     data.values,
                 )
     finally:
@@ -14381,23 +14454,29 @@ def test_manager_manifest_first_full_save_serializes_only_dirty_data(
         )
         manager._mark_node_data_dirty(dirty_uid)
 
-        original_serialize = manager._serialize_workspace_node
+        original_serialize = (
+            manager._workspace_controller.saving._serialize_workspace_node
+        )
         serialized_paths: list[str] = []
 
         def _record_serialize(*args, **kwargs) -> None:
             serialized_paths.append(args[2])
             original_serialize(*args, **kwargs)
 
-        original_write = manager_workspace._write_full_workspace_tree_file
+        original_write = workspace_saving._write_full_workspace_tree_file
         writes: list[tuple[tuple[str, str, dict[str, typing.Any] | None], ...]] = []
 
         def _record_write(*args, **kwargs) -> None:
             writes.append(tuple(kwargs.get("copy_groups", ())))
             original_write(*args, **kwargs)
 
-        monkeypatch.setattr(manager, "_serialize_workspace_node", _record_serialize)
         monkeypatch.setattr(
-            manager_workspace,
+            manager._workspace_controller.saving,
+            "_serialize_workspace_node",
+            _record_serialize,
+        )
+        monkeypatch.setattr(
+            workspace_saving,
             "_write_full_workspace_tree_file",
             _record_write,
         )
@@ -14430,23 +14509,29 @@ def test_manager_manifest_first_full_save_rewrites_dirty_state_attrs(
         manager._mark_workspace_clean()
         manager._tool_graph.root_wrappers[0].name = "renamed"
 
-        original_serialize = manager._serialize_workspace_node
+        original_serialize = (
+            manager._workspace_controller.saving._serialize_workspace_node
+        )
         serialized_paths: list[str] = []
 
         def _record_serialize(*args, **kwargs) -> None:
             serialized_paths.append(args[2])
             original_serialize(*args, **kwargs)
 
-        original_write = manager_workspace._write_full_workspace_tree_file
+        original_write = workspace_saving._write_full_workspace_tree_file
         writes: list[tuple[tuple[str, str, dict[str, typing.Any] | None], ...]] = []
 
         def _record_write(*args, **kwargs) -> None:
             writes.append(tuple(kwargs.get("copy_groups", ())))
             original_write(*args, **kwargs)
 
-        monkeypatch.setattr(manager, "_serialize_workspace_node", _record_serialize)
         monkeypatch.setattr(
-            manager_workspace,
+            manager._workspace_controller.saving,
+            "_serialize_workspace_node",
+            _record_serialize,
+        )
+        monkeypatch.setattr(
+            workspace_saving,
             "_write_full_workspace_tree_file",
             _record_write,
         )
@@ -14486,7 +14571,7 @@ def test_manager_manifest_first_save_as_copies_clean_payloads(
                 tuple[tuple[str, str, dict[str, typing.Any] | None], ...],
             ]
         ] = []
-        original_write = manager_workspace._write_full_workspace_tree_file
+        original_write = workspace_saving._write_full_workspace_tree_file
 
         def _record_write(*args, **kwargs) -> None:
             writes.append(
@@ -14495,15 +14580,19 @@ def test_manager_manifest_first_save_as_copies_clean_payloads(
             original_write(*args, **kwargs)
 
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller.saving,
             "_serialize_workspace_node",
             lambda *_args, **_kwargs: pytest.fail(
                 "Clean Save As should copy payload groups"
             ),
         )
-        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: target)
         monkeypatch.setattr(
-            manager_workspace,
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: target,
+        )
+        monkeypatch.setattr(
+            workspace_saving,
             "_write_full_workspace_tree_file",
             _record_write,
         )
@@ -14537,7 +14626,7 @@ def test_manager_manifest_first_full_save_falls_back_without_usable_source(
         manager._mark_workspace_clean()
 
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_arrays,
             "_read_workspace_root_attrs_h5py",
             lambda _path: {"imagetool_workspace_schema_version": 1},
         )
@@ -14545,9 +14634,13 @@ def test_manager_manifest_first_full_save_falls_back_without_usable_source(
         def _fail_materializing_fallback() -> typing.NoReturn:
             pytest.fail("fallback full save should not call _to_datatree()")
 
-        monkeypatch.setattr(manager, "_to_datatree", _fail_materializing_fallback)
+        monkeypatch.setattr(
+            manager._workspace_controller.saving,
+            "_to_datatree",
+            _fail_materializing_fallback,
+        )
 
-        snapshot = manager._workspace_controller._workspace_full_save_snapshot(
+        snapshot = manager._workspace_controller.saving._workspace_full_save_snapshot(
             1, fname=fname
         )
         try:
@@ -14558,7 +14651,7 @@ def test_manager_manifest_first_full_save_falls_back_without_usable_source(
             ds = typing.cast(
                 "xr.DataTree", snapshot.full_tree["0/imagetool"]
             ).to_dataset(inherit=False)
-            assert manager_workspace_io._ITOOL_DATA_NAME in ds
+            assert _ITOOL_DATA_NAME in ds
         finally:
             snapshot.close()
 
@@ -14577,12 +14670,12 @@ def test_manager_associate_loaded_legacy_workspace_resets_repack_state(
         manager._workspace_state.path = converted.resolve()
 
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_format,
             "_workspace_schema_requires_conversion",
             lambda _schema_version: True,
         )
         monkeypatch.setattr(
-            manager,
+            manager._workspace_controller,
             "_save_legacy_workspace_as_v4",
             lambda *_, **__: (str(converted), None),
         )
@@ -14615,29 +14708,30 @@ def test_manager_workspace_file_repack_snapshot_guards(
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         controller = manager._workspace_controller
+        saver = controller.saving
 
         manager._workspace_state.path = None
-        assert controller._workspace_file_repack_snapshot(1) is None
+        assert saver._workspace_file_repack_snapshot(1) is None
 
         manager._workspace_state.path = tmp_path / "network.itws"
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_workspace_path_is_likely_network_path",
             lambda _path: True,
         )
-        assert controller._workspace_file_repack_snapshot(1) is None
+        assert saver._workspace_file_repack_snapshot(1) is None
 
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_workspace_path_is_likely_network_path",
             lambda _path: False,
         )
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_workspace_file_repack_payload",
             lambda _path: (_ for _ in ()).throw(RuntimeError("repack failed")),
         )
-        assert controller._workspace_file_repack_snapshot(1) is None
+        assert saver._workspace_file_repack_snapshot(1) is None
 
 
 def test_manager_workspace_shutdown_repack_gate_edges(
@@ -14651,9 +14745,10 @@ def test_manager_workspace_shutdown_repack_gate_edges(
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         controller = manager._workspace_controller
+        saver = controller.saving
 
         manager._workspace_state.path = None
-        assert not controller._workspace_should_repack_before_shutdown()
+        assert not saver._workspace_should_repack_before_shutdown()
 
         workspace_path = tmp_path / "workspace.itws"
         manager._workspace_state.path = workspace_path
@@ -14663,20 +14758,20 @@ def test_manager_workspace_shutdown_repack_gate_edges(
             known=False,
         )
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_saving,
             "_workspace_obsolete_estimate",
             lambda _path: (_ for _ in ()).throw(RuntimeError("estimate failed")),
         )
-        assert not controller._workspace_should_repack_before_shutdown()
+        assert not saver._workspace_should_repack_before_shutdown()
 
         manager._workspace_state.set_repack_estimate(
             estimated_obsolete_bytes=100,
             replacement_delta_count=1,
         )
-        assert not controller._workspace_should_repack_before_shutdown()
+        assert not saver._workspace_should_repack_before_shutdown()
 
         workspace_path.touch()
-        assert not controller._workspace_should_repack_before_shutdown()
+        assert not saver._workspace_should_repack_before_shutdown()
 
 
 def test_workspace_remote_incremental_option_allows_delta_save(
@@ -14691,15 +14786,15 @@ def test_workspace_remote_incremental_option_allows_delta_save(
     fname = tmp_path / "remote-incremental.itws"
     fname.touch()
     monkeypatch.setattr(
-        manager_workspace, "_workspace_path_is_high_risk", lambda *_args: True
+        workspace_saving, "_workspace_path_is_high_risk", lambda *_args: True
     )
     options[incremental_name] = True
     options[use_incremental_name] = True
     try:
-        assert not manager_workspace._workspace_requires_full_save(
+        assert not workspace_saving._workspace_requires_full_save(
             fname,
             needs_full_save=False,
-            schema_version=manager_workspace._current_workspace_schema_version(),
+            schema_version=workspace_format._current_workspace_schema_version(),
             structure_modified=False,
             has_dirty_added=False,
             has_dirty_removed=False,
@@ -14847,9 +14942,7 @@ def test_manager_workspace_full_save_drops_empty_attr_name(
 
         assert "" in root.slicer_area._data.attrs
         with h5py.File(fname, "r") as h5_file:
-            saved_attrs = h5_file["0/imagetool"][
-                manager_workspace_io._ITOOL_DATA_NAME
-            ].attrs
+            saved_attrs = h5_file["0/imagetool"][_ITOOL_DATA_NAME].attrs
             assert "" not in list(saved_attrs)
             assert saved_attrs["note"] == ""
 
@@ -14892,13 +14985,13 @@ def test_manager_workspace_full_save_roundtrips_non_native_data_attrs(
         assert root.slicer_area._data.attrs["Single Motor Scan"] is live_rich_attr
         assert root.slicer_area._data.coords["x"].attrs["axis_config"] is live_axis_attr
         assert (
-            manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR
+            workspace_format._WORKSPACE_ENCODED_ATTRS_ATTR
             not in root.slicer_area._data.attrs
         )
         with h5py.File(fname, "r") as h5_file:
-            saved_data = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+            saved_data = h5_file["0/imagetool"][_ITOOL_DATA_NAME]
             assert "Single Motor Scan" not in saved_data.attrs
-            assert manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR in saved_data.attrs
+            assert workspace_format._WORKSPACE_ENCODED_ATTRS_ATTR in saved_data.attrs
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
@@ -14915,7 +15008,7 @@ def test_manager_workspace_full_save_roundtrips_non_native_data_attrs(
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
-        tree = manager_xarray.open_workspace_datatree(fname, chunks=None)
+        tree = workspace_arrays.open_workspace_datatree(fname, chunks=None)
         try:
             assert manager._from_datatree(
                 tree,
@@ -14998,7 +15091,7 @@ def test_manager_workspace_child_save_shortcuts_use_background_save(
             calls.append(native)
             return True
 
-        monkeypatch.setattr(manager, "save", _fake_save)
+        monkeypatch.setattr(manager._workspace_controller, "save", _fake_save)
         data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
 
         root = itool(data, manager=False, execute=False)
@@ -15077,7 +15170,7 @@ def test_manager_workspace_delta_save_splits_state_and_data_writes(
         import h5py
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][_ITOOL_DATA_NAME]
             assert saved[0, 0] == 10
 
 
@@ -15151,8 +15244,8 @@ def test_manager_workspace_full_save_preserves_in_memory_backing_after_rebind(
         )
 
         saved_data = manager.get_imagetool(0).slicer_area._data
-        assert manager_xarray.dataarray_is_numpy_backed(saved_data)
-        assert not manager_xarray.dataarray_is_file_backed(saved_data)
+        assert workspace_arrays.dataarray_is_numpy_backed(saved_data)
+        assert not workspace_arrays.dataarray_is_file_backed(saved_data)
 
 
 def test_manager_workspace_data_backing_snapshot_includes_pending_memory(
@@ -15213,10 +15306,10 @@ def test_manager_workspace_file_backed_data_can_load_into_memory(
         coords={"x": np.arange(5), "y": np.arange(5)},
     )
     tree = xr.DataTree.from_dict(
-        {"0/imagetool": source.to_dataset(name=manager_workspace_io._ITOOL_DATA_NAME)}
+        {"0/imagetool": source.to_dataset(name=_ITOOL_DATA_NAME)}
     )
     try:
-        manager_workspace._write_full_workspace_tree_file(
+        workspace_saving._write_full_workspace_tree_file(
             source_file, tree, _transaction_test_root_attrs()
         )
     finally:
@@ -15234,7 +15327,7 @@ def test_manager_workspace_file_backed_data_can_load_into_memory(
         assert slicer_area.data_loadable
         slicer_area._compute_chunked()
 
-        assert manager_xarray.dataarray_is_numpy_backed(slicer_area._data)
+        assert workspace_arrays.dataarray_is_numpy_backed(slicer_area._data)
         assert not slicer_area.data_file_backed
 
 
@@ -15266,7 +15359,7 @@ def test_manager_workspace_load_keeps_visible_saved_data_in_memory(
         assert not loaded.data_chunked
         assert not loaded.data_file_backed
         assert loaded.data_loadable is False
-        assert manager_xarray.dataarray_is_numpy_backed(loaded._data)
+        assert workspace_arrays.dataarray_is_numpy_backed(loaded._data)
         assert loaded._data.values.flags.writeable
         np.testing.assert_array_equal(loaded._data.values, data.values)
 
@@ -15298,7 +15391,7 @@ def test_manager_workspace_load_keeps_hidden_memory_payload_pending(
             pytest.fail("hidden memory payload should not use fake h5py data")
 
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_arrays,
             "_read_workspace_dataset_group_h5py",
             _fail_h5py_payload_read,
         )
@@ -15415,8 +15508,8 @@ def test_pending_workspace_metadata_loads_only_coords() -> None:
         },
     )
 
-    controller_cls = manager_workspace_io._WorkspaceIOController
-    loaded = controller_cls._pending_workspace_data_with_loaded_coords(data)
+    loader_cls = workspace_loading._WorkspaceLoader
+    loaded = loader_cls._pending_workspace_data_with_loaded_coords(data)
 
     assert loaded.chunks == data.chunks
     assert loaded.coords["x"].chunks is None
@@ -15447,15 +15540,11 @@ def test_pending_workspace_lazy_source_data_matches_saved_semantic_order(
     assert tuple(state["slice"]["dims"]) == data.dims
 
     stored = xr.Dataset(
-        {
-            manager_workspace_io._ITOOL_DATA_NAME: saved[
-                manager_workspace_io._ITOOL_DATA_NAME
-            ].transpose("hv", "y", "x")
-        },
+        {_ITOOL_DATA_NAME: saved[_ITOOL_DATA_NAME].transpose("hv", "y", "x")},
         attrs=dict(saved.attrs),
     )
     fname = tmp_path / "pending-saved-dim-order.itws"
-    assert manager_workspace._write_workspace_dataset_group_h5py(
+    assert workspace_arrays._write_workspace_dataset_group_h5py(
         fname, "0/imagetool", stored
     )
     node = types.SimpleNamespace(
@@ -15465,17 +15554,18 @@ def test_pending_workspace_lazy_source_data_matches_saved_semantic_order(
         added_time_display="Today",
         _finalize_script_input_data=lambda data: data.copy(deep=False),
     )
-    controller = manager_workspace_io._WorkspaceIOController(
-        typing.cast("ImageToolManager", None)
+    loader = workspace_loading._WorkspaceLoader(
+        typing.cast("ImageToolManager", None),
+        typing.cast("workspace_controller._WorkspaceController", None),
     )
     reference_datasets = {}
     try:
-        pending_source = controller._pending_workspace_lazy_source_data(
+        pending_source = loader._pending_workspace_lazy_source_data(
             node,
             data_role="source",
             reference_datasets=reference_datasets,
         )
-        pending_displayed = controller._pending_workspace_lazy_source_data(
+        pending_displayed = loader._pending_workspace_lazy_source_data(
             node,
             data_role="displayed",
             reference_datasets=reference_datasets,
@@ -15485,11 +15575,11 @@ def test_pending_workspace_lazy_source_data_matches_saved_semantic_order(
         pending_source = pending_source.compute()
         pending_displayed = pending_displayed.compute()
     finally:
-        controller._close_workspace_reference_datasets(reference_datasets)
+        loader._close_workspace_reference_datasets(reference_datasets)
     assert node.pending_workspace_memory_payload == (fname, "0/imagetool")
 
-    controller_cls = manager_workspace_io._WorkspaceIOController
-    loaded_ds = controller_cls._read_workspace_imagetool_payload_dataset(
+    loader_cls = workspace_loading._WorkspaceLoader
+    loaded_ds = loader_cls._read_workspace_imagetool_payload_dataset(
         fname, "0/imagetool", load_data=True
     )
     restored = erlab.interactive.imagetool.ImageTool.from_dataset(loaded_ds)
@@ -15531,14 +15621,14 @@ def test_pending_workspace_data_roles_match_materialized_filtered_nonuniform_dat
 
     stored = xr.Dataset(
         {
-            manager_workspace_io._ITOOL_DATA_NAME: saved[
-                manager_workspace_io._ITOOL_DATA_NAME
-            ].transpose("sample_temp", "eV", "alpha")
+            _ITOOL_DATA_NAME: saved[_ITOOL_DATA_NAME].transpose(
+                "sample_temp", "eV", "alpha"
+            )
         },
         attrs=dict(saved.attrs),
     )
     fname = tmp_path / "pending-nonuniform-saved-dim-order.itws"
-    assert manager_workspace._write_workspace_dataset_group_h5py(
+    assert workspace_arrays._write_workspace_dataset_group_h5py(
         fname, "0/imagetool", stored
     )
     node = types.SimpleNamespace(
@@ -15548,17 +15638,18 @@ def test_pending_workspace_data_roles_match_materialized_filtered_nonuniform_dat
         added_time_display="Today",
         _finalize_script_input_data=lambda data: data.copy(deep=False),
     )
-    controller = manager_workspace_io._WorkspaceIOController(
-        typing.cast("ImageToolManager", None)
+    loader = workspace_loading._WorkspaceLoader(
+        typing.cast("ImageToolManager", None),
+        typing.cast("workspace_controller._WorkspaceController", None),
     )
     reference_datasets = {}
     try:
-        pending_source = controller._pending_workspace_lazy_source_data(
+        pending_source = loader._pending_workspace_lazy_source_data(
             node,
             data_role="source",
             reference_datasets=reference_datasets,
         )
-        pending_displayed = controller._pending_workspace_lazy_source_data(
+        pending_displayed = loader._pending_workspace_lazy_source_data(
             node,
             data_role="displayed",
             reference_datasets=reference_datasets,
@@ -15569,15 +15660,15 @@ def test_pending_workspace_data_roles_match_materialized_filtered_nonuniform_dat
         assert pending_source.chunks is not None
         pending_source = pending_source.compute()
         pending_displayed = pending_displayed.compute()
-        info = controller._pending_workspace_imagetool_info_text(node)
+        info = loader._pending_workspace_imagetool_info_text(node)
         assert info is not None
         assert "sample_temp_idx" not in info
     finally:
-        controller._close_workspace_reference_datasets(reference_datasets)
+        loader._close_workspace_reference_datasets(reference_datasets)
     assert node.pending_workspace_memory_payload == (fname, "0/imagetool")
 
-    controller_cls = manager_workspace_io._WorkspaceIOController
-    loaded_ds = controller_cls._read_workspace_imagetool_payload_dataset(
+    loader_cls = workspace_loading._WorkspaceLoader
+    loaded_ds = loader_cls._read_workspace_imagetool_payload_dataset(
         fname, "0/imagetool", load_data=True
     )
     restored = erlab.interactive.imagetool.ImageTool.from_dataset(loaded_ds)
@@ -15640,8 +15731,9 @@ def test_pending_workspace_1d_roles_match_materialized_provenance_input(
 
         wrapper = manager._tool_graph.root_wrappers[0]
         assert wrapper.pending_workspace_memory_payload is not None
+        loader = manager._workspace_controller.loading
         pending = {
-            role: manager._workspace_controller._workspace_tool_reference_source_data(
+            role: loader._workspace_tool_reference_source_data(
                 0,
                 data_role=role,
                 owner_node=wrapper,
@@ -15668,45 +15760,45 @@ def test_pending_workspace_1d_roles_match_materialized_provenance_input(
 
 
 def test_pending_workspace_saved_dim_order_handles_invalid_state(monkeypatch) -> None:
-    controller_cls = manager_workspace_io._WorkspaceIOController
+    loader_cls = workspace_loading._WorkspaceLoader
     data = xr.DataArray(
         np.arange(6, dtype=np.float64).reshape((2, 3)),
         dims=("x", "y"),
     )
     valid_state = {"slice": {"dims": ["y", "x"]}}
 
-    reordered = controller_cls._pending_workspace_data_with_saved_dim_order(
+    reordered = loader_cls._pending_workspace_data_with_saved_dim_order(
         data, {"itool_state": json.dumps(valid_state).encode()}
     )
     assert reordered.dims == ("y", "x")
     np.testing.assert_array_equal(reordered.values, data.transpose("y", "x").values)
 
     assert (
-        controller_cls._pending_workspace_data_with_saved_dim_order(
+        loader_cls._pending_workspace_data_with_saved_dim_order(
             data, {"itool_state": b"\xff"}
         )
         is data
     )
     assert (
-        controller_cls._pending_workspace_data_with_saved_dim_order(
+        loader_cls._pending_workspace_data_with_saved_dim_order(
             data, {"itool_state": "{"}
         )
         is data
     )
     assert (
-        controller_cls._pending_workspace_data_with_saved_dim_order(
+        loader_cls._pending_workspace_data_with_saved_dim_order(
             data, {"itool_state": "[]"}
         )
         is data
     )
     assert (
-        controller_cls._pending_workspace_data_with_saved_dim_order(
+        loader_cls._pending_workspace_data_with_saved_dim_order(
             data, {"itool_state": json.dumps({"slice": []})}
         )
         is data
     )
     assert (
-        controller_cls._pending_workspace_data_with_saved_dim_order(
+        loader_cls._pending_workspace_data_with_saved_dim_order(
             data, {"itool_state": json.dumps({"slice": {"dims": "xy"}})}
         )
         is data
@@ -15717,7 +15809,7 @@ def test_pending_workspace_saved_dim_order_handles_invalid_state(monkeypatch) ->
 
     monkeypatch.setattr(xr.DataArray, "transpose", _raise_transpose)
     assert (
-        controller_cls._pending_workspace_data_with_saved_dim_order(
+        loader_cls._pending_workspace_data_with_saved_dim_order(
             data, {"itool_state": json.dumps(valid_state)}
         )
         is data
@@ -15725,15 +15817,15 @@ def test_pending_workspace_saved_dim_order_handles_invalid_state(monkeypatch) ->
 
 
 def test_pending_workspace_filter_validation(monkeypatch) -> None:
-    controller_cls = manager_workspace_io._WorkspaceIOController
+    loader_cls = workspace_loading._WorkspaceLoader
     data = xr.DataArray(
         np.arange(6, dtype=np.float64).reshape((2, 3)),
         dims=("x", "y"),
     )
 
-    assert controller_cls._apply_pending_workspace_filter(data, None) is data
+    assert loader_cls._apply_pending_workspace_filter(data, None) is data
     with pytest.raises(TypeError, match="Invalid pending filter operation"):
-        controller_cls._apply_pending_workspace_filter(data, object())
+        loader_cls._apply_pending_workspace_filter(data, object())
 
     class _FakeOperation:
         def __init__(self, result: xr.DataArray) -> None:
@@ -15747,14 +15839,14 @@ def test_pending_workspace_filter_validation(monkeypatch) -> None:
 
     def _set_filter_result(result: xr.DataArray) -> None:
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_loading,
             "parse_tool_provenance_operation",
             lambda _payload: _FakeOperation(result),
         )
 
     _set_filter_result(data.mean("x"))
     with pytest.raises(ValueError, match="changed data dimensions"):
-        controller_cls._apply_pending_workspace_filter(data, {})
+        loader_cls._apply_pending_workspace_filter(data, {})
 
     _set_filter_result(
         xr.DataArray(
@@ -15763,24 +15855,24 @@ def test_pending_workspace_filter_validation(monkeypatch) -> None:
         )
     )
     with pytest.raises(ValueError, match="changed data shape"):
-        controller_cls._apply_pending_workspace_filter(data, {})
+        loader_cls._apply_pending_workspace_filter(data, {})
 
     _set_filter_result(data.transpose("y", "x"))
-    filtered = controller_cls._apply_pending_workspace_filter(data, {})
+    filtered = loader_cls._apply_pending_workspace_filter(data, {})
     xr.testing.assert_identical(filtered, data)
 
 
 def test_pending_workspace_source_data_decodes_saved_state_attrs(monkeypatch) -> None:
-    controller = manager_workspace_io._WorkspaceIOController.__new__(
-        manager_workspace_io._WorkspaceIOController
+    loader = workspace_loading._WorkspaceLoader.__new__(
+        workspace_loading._WorkspaceLoader
     )
-    data_name = manager_workspace_io._ITOOL_DATA_NAME
+    data_name = _ITOOL_DATA_NAME
     payload = xr.Dataset(
         {data_name: xr.DataArray(np.arange(3.0), dims=("x",), name=data_name)}
     )
 
     monkeypatch.setattr(
-        controller,
+        loader,
         "_workspace_imagetool_reference_dataset",
         lambda *_args, **_kwargs: payload,
     )
@@ -15792,15 +15884,15 @@ def test_pending_workspace_source_data_decodes_saved_state_attrs(monkeypatch) ->
         },
         _finalize_script_input_data=lambda data: data.copy(deep=False),
     )
-    loaded = controller._pending_workspace_lazy_source_data(node)
+    loaded = loader._pending_workspace_lazy_source_data(node)
     assert loaded.name == "restored"
     np.testing.assert_array_equal(loaded.values, np.arange(3.0))
 
     node.pending_workspace_payload_attrs = {"itool_state": "{"}
-    assert controller._pending_workspace_lazy_source_data(node).name == "restored"
+    assert loader._pending_workspace_lazy_source_data(node).name == "restored"
 
     node.pending_workspace_payload_attrs = {"itool_state": "[]"}
-    assert controller._pending_workspace_lazy_source_data(node).name == "restored"
+    assert loader._pending_workspace_lazy_source_data(node).name == "restored"
 
 
 def test_pending_workspace_metadata_coord_load_failure_falls_back(
@@ -15811,13 +15903,13 @@ def test_pending_workspace_metadata_coord_load_failure_falls_back(
         np.arange(6, dtype=np.float64).reshape((2, 3)),
         dims=["x", "y"],
         coords={"x": [0.0, 1.0], "y": [10.0, 11.0, 12.0], "temperature": 12.0},
-        name=manager_workspace_io._ITOOL_DATA_NAME,
+        name=_ITOOL_DATA_NAME,
     )
     ds = xr.Dataset(
-        {manager_workspace_io._ITOOL_DATA_NAME: data},
+        {_ITOOL_DATA_NAME: data},
         attrs={"itool_name": "pending"},
     )
-    assert manager_workspace._write_workspace_dataset_group_h5py(
+    assert workspace_arrays._write_workspace_dataset_group_h5py(
         fname, "0/imagetool", ds
     )
 
@@ -15825,7 +15917,7 @@ def test_pending_workspace_metadata_coord_load_failure_falls_back(
         raise RuntimeError("coord read failed")
 
     monkeypatch.setattr(
-        manager_workspace_io._WorkspaceIOController,
+        workspace_loading._WorkspaceLoader,
         "_pending_workspace_data_with_loaded_coords",
         staticmethod(_fail_coord_load),
     )
@@ -15836,8 +15928,8 @@ def test_pending_workspace_metadata_coord_load_failure_falls_back(
         added_time_display="Today",
     )
 
-    controller_cls = manager_workspace_io._WorkspaceIOController
-    info = controller_cls._pending_workspace_imagetool_info_text(node)
+    loader_cls = workspace_loading._WorkspaceLoader
+    info = loader_cls._pending_workspace_imagetool_info_text(node)
     assert info is not None
     assert "pending" in info
     assert "float64 [2]" in info
@@ -16097,7 +16189,7 @@ def test_manager_pending_memory_sidebar_renders_partial_preview_without_material
             pytest.fail("pending preview should not materialize data")
 
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_arrays,
             "_read_workspace_dataset_group_h5py",
             _fail_full_payload_read,
         )
@@ -16152,7 +16244,7 @@ def test_manager_pending_memory_partial_preview_read_cap_falls_back_to_load_butt
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_loading,
             "_PENDING_WORKSPACE_PREVIEW_READ_LIMIT_BYTES",
             0,
         )
@@ -16195,7 +16287,7 @@ def test_manager_pending_memory_1d_preview_read_cap_falls_back_to_load_button(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
         monkeypatch.setattr(
-            manager_workspace_io,
+            workspace_loading,
             "_PENDING_WORKSPACE_PREVIEW_READ_LIMIT_BYTES",
             0,
         )
@@ -16578,6 +16670,7 @@ def test_pending_toolwindow_metadata_and_preview_helpers(
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         controller = manager._workspace_controller
+        loader = controller.loading
         workspace = tmp_path / "pending-tool-metadata.itws"
         with h5py.File(workspace, "w") as h5_file:
             payload = h5_file.create_group("payload/tool")
@@ -16585,24 +16678,24 @@ def test_pending_toolwindow_metadata_and_preview_helpers(
             payload.attrs["tool_display_name"] = "Saved Tool"
 
         assert (
-            manager_workspace_io._workspace_payload_window_visible_h5py(
+            workspace_loading._workspace_payload_window_visible_h5py(
                 workspace, "payload/tool", "tool"
             )
             is False
         )
         assert (
-            manager_workspace_io._workspace_payload_window_visible_h5py(
+            workspace_loading._workspace_payload_window_visible_h5py(
                 workspace, "missing", "tool"
             )
             is None
         )
-        payload_attrs = manager_workspace_io._workspace_payload_attrs_h5py(
+        payload_attrs = workspace_loading._workspace_payload_attrs_h5py(
             workspace, "payload/tool"
         )
         assert payload_attrs is not None
         assert payload_attrs["tool_display_name"] == "Saved Tool"
         assert (
-            manager_workspace_io._workspace_payload_attrs_h5py(workspace, "missing")
+            workspace_loading._workspace_payload_attrs_h5py(workspace, "missing")
             is None
         )
 
@@ -16638,43 +16731,41 @@ def test_pending_toolwindow_metadata_and_preview_helpers(
         fields = {field.label: field.value for field in node.metadata_fields}
         assert fields["Kind"] == "NestedTool"
         assert (
-            controller._workspace_tool_display_name_from_attrs(
+            loader._workspace_tool_display_name_from_attrs(
                 {"tool_cls_qualname": b"example.module:Outer.NestedTool"}
             )
             == "NestedTool"
         )
         assert (
-            controller._workspace_tool_display_name_from_attrs(
+            loader._workspace_tool_display_name_from_attrs(
                 {"tool_display_name": b"Display Tool"}
             )
             == "Display Tool"
         )
         assert (
-            controller._workspace_tool_display_name_from_attrs(
-                {"tool_title": "Window[*]"}
-            )
+            loader._workspace_tool_display_name_from_attrs({"tool_title": "Window[*]"})
             == "Window"
         )
-        assert controller._workspace_tool_display_name_from_attrs({}) == "ToolWindow"
+        assert loader._workspace_tool_display_name_from_attrs({}) == "ToolWindow"
         assert (
-            controller._workspace_tool_source_state_from_attrs(
+            loader._workspace_tool_source_state_from_attrs(
                 {"tool_source_state": b"stale"}
             )
             == "stale"
         )
         assert (
-            controller._workspace_tool_source_state_from_attrs(
+            loader._workspace_tool_source_state_from_attrs(
                 {"tool_source_state": b"unknown"}
             )
             == "fresh"
         )
 
-        text = controller._pending_workspace_tool_info_text(node)
+        text = loader._pending_workspace_tool_info_text(node)
         assert text is not None
         assert "NestedTool" in text
         assert "source_data" in text
         assert "stale" in text
-        assert controller._pending_workspace_info_text(node) == text
+        assert loader._pending_workspace_info_text(node) == text
 
         preview = node.pending_workspace_tool_preview_image()
         assert preview is not None
@@ -16696,7 +16787,7 @@ def test_pending_toolwindow_metadata_and_preview_helpers(
                 "figure_composer_preview_cache_png": encoded_png.encode(),
             }
         )
-        bytes_preview = controller._pending_workspace_tool_preview_image(node)
+        bytes_preview = loader._pending_workspace_tool_preview_image(node)
         assert bytes_preview is not None
         assert not bytes_preview[1].isNull()
 
@@ -16708,10 +16799,10 @@ def test_pending_toolwindow_metadata_and_preview_helpers(
             }
         )
         assert node.type_badge_text == "Display Tool"
-        text_without_data = controller._pending_workspace_tool_info_text(node)
+        text_without_data = loader._pending_workspace_tool_info_text(node)
         assert text_without_data is not None
         assert "Data:" not in text_without_data
-        assert controller._pending_workspace_tool_preview_image(node) is None
+        assert loader._pending_workspace_tool_preview_image(node) is None
 
         updates: list[str | None] = []
         with monkeypatch.context() as patch:
@@ -16752,9 +16843,9 @@ def test_pending_toolwindow_metadata_and_preview_helpers(
             pending_workspace_tool_payload=None,
             pending_workspace_payload_kind=None,
         )
-        assert controller._pending_workspace_tool_info_text(no_pending) is None
-        assert controller._pending_workspace_tool_preview_image(no_pending) is None
-        assert controller._pending_workspace_info_text(no_pending) is None
+        assert loader._pending_workspace_tool_info_text(no_pending) is None
+        assert loader._pending_workspace_tool_preview_image(no_pending) is None
+        assert loader._pending_workspace_info_text(no_pending) is None
 
 
 def test_pending_workspace_preview_and_metadata_reader_fallbacks(
@@ -16767,23 +16858,24 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         controller = manager._workspace_controller
+        loader = controller.loading
 
-        assert controller._pending_preview_axis_state((4, 5), {}) is None
+        assert loader._pending_preview_axis_state((4, 5), {}) is None
         assert (
-            controller._pending_preview_axis_state(
+            loader._pending_preview_axis_state(
                 (4, 5), {"slice": {"bins": [], "indices": []}}
             )
             is None
         )
-        assert controller._pending_preview_axis_state(
+        assert loader._pending_preview_axis_state(
             (4, 5),
             {"slice": {"bins": [["bad", 3]], "indices": [["bad", 99]]}},
         ) == ((1, 2), (1, 3), (False, True))
-        assert controller._pending_preview_axis_state(
+        assert loader._pending_preview_axis_state(
             (4, 5),
             {"slice": {"bins": [[0, -2]], "indices": [[2, 3]]}},
         ) == ((2, 3), (1, 1), (False, False))
-        assert controller._pending_preview_axis_state(
+        assert loader._pending_preview_axis_state(
             (4, 5),
             {
                 "current_cursor": 1,
@@ -16791,7 +16883,7 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             },
         ) == ((1, 2), (1, 1), (False, False))
         assert (
-            controller._pending_preview_axis_state(
+            loader._pending_preview_axis_state(
                 (4, 5), {"slice": {"bins": ["bad"], "indices": ["bad"]}}
             )
             is None
@@ -16802,7 +16894,7 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             np.arange(4 * 5 * 6, dtype=np.float64).reshape((4, 5, 6)),
             dims=["x", "y", "z"],
             coords={"x": np.arange(4), "y": np.arange(5), "z": np.arange(6)},
-            name=manager_workspace_io._ITOOL_DATA_NAME,
+            name=_ITOOL_DATA_NAME,
         )
         state = {
             "slice": {
@@ -16818,10 +16910,10 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             },
         }
         ds = xr.Dataset(
-            {manager_workspace_io._ITOOL_DATA_NAME: data},
+            {_ITOOL_DATA_NAME: data},
             attrs={"itool_state": json.dumps(state), "itool_name": "pending"},
         )
-        assert manager_workspace._write_workspace_dataset_group_h5py(
+        assert workspace_arrays._write_workspace_dataset_group_h5py(
             fname, "0/imagetool", ds
         )
 
@@ -16831,10 +16923,10 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             name="pending",
             added_time_display="Today",
         )
-        info = controller._pending_workspace_imagetool_info_text(node)
+        info = loader._pending_workspace_imagetool_info_text(node)
         assert info is not None
         assert "pending" in info
-        preview = controller._pending_workspace_imagetool_preview_image(node)
+        preview = loader._pending_workspace_imagetool_preview_image(node)
         assert preview is not None
         assert preview[1].isNull() is False
 
@@ -16848,7 +16940,7 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
                 "eV": np.arange(5, dtype=np.float64),
                 "z": np.arange(6, dtype=np.float64),
             },
-            name=manager_workspace_io._ITOOL_DATA_NAME,
+            name=_ITOOL_DATA_NAME,
         )
         nonuniform_state = {
             "slice": {
@@ -16860,13 +16952,13 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             "color": {"cmap": "viridis"},
         }
         nonuniform_ds = xr.Dataset(
-            {manager_workspace_io._ITOOL_DATA_NAME: nonuniform_data},
+            {_ITOOL_DATA_NAME: nonuniform_data},
             attrs={
                 "itool_state": json.dumps(nonuniform_state),
                 "itool_name": "nonuniform",
             },
         )
-        assert manager_workspace._write_workspace_dataset_group_h5py(
+        assert workspace_arrays._write_workspace_dataset_group_h5py(
             nonuniform_fname, "0/imagetool", nonuniform_ds
         )
         with h5py.File(nonuniform_fname, "r+") as h5_file:
@@ -16875,12 +16967,12 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
                 "alpha_physical_scale", data=np.array([-2.0, -0.4, 0.2, 2.1])
             )
             physical_coord.make_scale("alpha")
-            data_dataset = group[manager_workspace_io._ITOOL_DATA_NAME]
+            data_dataset = group[_ITOOL_DATA_NAME]
             data_dataset.dims[0].attach_scale(physical_coord)
             assert len(list(data_dataset.dims[0].keys())) > 1
         node.pending_workspace_memory_payload = (nonuniform_fname, "0/imagetool")
         node.pending_workspace_payload_attrs = None
-        nonuniform_preview = controller._pending_workspace_imagetool_preview_image(node)
+        nonuniform_preview = loader._pending_workspace_imagetool_preview_image(node)
         assert nonuniform_preview is not None
         assert nonuniform_preview[1].isNull() is False
 
@@ -16893,7 +16985,7 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
                 "eV": np.linspace(-0.5, 0.5, 5),
                 "alpha": np.linspace(-2.0, 2.0, 4),
             },
-            name=manager_workspace_io._ITOOL_DATA_NAME,
+            name=_ITOOL_DATA_NAME,
         )
         permuted_state = {
             "slice": {
@@ -16905,25 +16997,23 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             "color": {"cmap": "viridis"},
         }
         permuted_ds = xr.Dataset(
-            {manager_workspace_io._ITOOL_DATA_NAME: permuted_data},
+            {_ITOOL_DATA_NAME: permuted_data},
             attrs={
                 "itool_state": json.dumps(permuted_state),
                 "itool_name": "permuted",
             },
         )
-        assert manager_workspace._write_workspace_dataset_group_h5py(
+        assert workspace_arrays._write_workspace_dataset_group_h5py(
             permuted_fname, "0/imagetool", permuted_ds
         )
         with h5py.File(permuted_fname, "r") as h5_file:
-            data_dataset = h5_file[
-                f"0/imagetool/{manager_workspace_io._ITOOL_DATA_NAME}"
-            ]
-            assert controller._pending_preview_dataset_dims(
+            data_dataset = h5_file[f"0/imagetool/{_ITOOL_DATA_NAME}"]
+            assert loader._pending_preview_dataset_dims(
                 data_dataset, ("alpha", "eV", "sample_temp_idx")
             ) == (("sample_temp_idx", "eV", "alpha"), None)
         node.pending_workspace_memory_payload = (permuted_fname, "0/imagetool")
         node.pending_workspace_payload_attrs = None
-        permuted_preview = controller._pending_workspace_imagetool_preview_image(node)
+        permuted_preview = loader._pending_workspace_imagetool_preview_image(node)
         assert permuted_preview is not None
         assert permuted_preview[1].isNull() is False
 
@@ -16933,10 +17023,8 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             name="missing",
             added_time_display="Today",
         )
-        assert controller._pending_workspace_imagetool_info_text(missing_node) is None
-        assert (
-            controller._pending_workspace_imagetool_preview_image(missing_node) is None
-        )
+        assert loader._pending_workspace_imagetool_info_text(missing_node) is None
+        assert loader._pending_workspace_imagetool_preview_image(missing_node) is None
 
         no_pending = types.SimpleNamespace(
             pending_workspace_memory_payload=None,
@@ -16944,8 +17032,8 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             name="missing",
             added_time_display="Today",
         )
-        assert controller._pending_workspace_imagetool_info_text(no_pending) is None
-        assert controller._pending_workspace_imagetool_preview_image(no_pending) is None
+        assert loader._pending_workspace_imagetool_info_text(no_pending) is None
+        assert loader._pending_workspace_imagetool_preview_image(no_pending) is None
 
         malformed_payload_attrs = [
             {"itool_state": json.dumps([])},
@@ -16970,14 +17058,14 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
         ]
         for attrs in malformed_payload_attrs:
             node.pending_workspace_payload_attrs = attrs
-            assert controller._pending_workspace_imagetool_preview_image(node) is None
+            assert loader._pending_workspace_imagetool_preview_image(node) is None
 
         empty_fname = tmp_path / "pending-preview-empty.itws"
         with h5py.File(empty_fname, "w") as h5_file:
             h5_file.create_group("0/imagetool")
         node.pending_workspace_memory_payload = (empty_fname, "0/imagetool")
         node.pending_workspace_payload_attrs = None
-        assert controller._pending_workspace_imagetool_preview_image(node) is None
+        assert loader._pending_workspace_imagetool_preview_image(node) is None
 
 
 def test_pending_preview_slicer_helpers_match_array_slicer(qtbot) -> None:
@@ -17283,11 +17371,8 @@ def test_pending_toolwindow_reference_availability_rejects_unsupported_kind(
                 )
             },
         )
-        assert (
-            manager._workspace_controller._pending_workspace_tool_references_available(
-                child_node
-            )
-        )
+        saver = manager._workspace_controller.saving
+        assert saver._pending_workspace_tool_references_available(child_node)
 
         child_node.update_pending_workspace_payload_attrs(
             {
@@ -17297,7 +17382,7 @@ def test_pending_toolwindow_reference_availability_rejects_unsupported_kind(
             }
         )
         assert not (
-            manager._workspace_controller._pending_workspace_tool_references_available(
+            manager._workspace_controller.saving._pending_workspace_tool_references_available(
                 child_node
             )
         )
@@ -17310,7 +17395,7 @@ def test_pending_toolwindow_reference_availability_rejects_unsupported_kind(
             }
         )
         assert not (
-            manager._workspace_controller._pending_workspace_tool_references_available(
+            manager._workspace_controller.saving._pending_workspace_tool_references_available(
                 child_node
             )
         )
@@ -17354,14 +17439,16 @@ def test_hidden_toolwindow_with_missing_saved_class_is_skipped(
             )
 
         skipped: list[tuple[str | None, Exception]] = []
-        original_record = manager._workspace_controller._record_skipped_workspace_node
+        original_record = (
+            manager._workspace_controller.loading._record_skipped_workspace_node
+        )
 
         def _record_skipped(node_path: str | None, exc: Exception) -> None:
             skipped.append((node_path, exc))
             original_record(node_path, exc)
 
         monkeypatch.setattr(
-            manager._workspace_controller,
+            manager._workspace_controller.loading,
             "_record_skipped_workspace_node",
             _record_skipped,
         )
@@ -17400,7 +17487,7 @@ def test_pending_toolwindow_source_metadata_decodes_saved_state(
         }
 
         source_spec, source_binding, auto_update, state = (
-            manager._workspace_controller._workspace_tool_source_metadata(attrs)
+            manager._workspace_controller.loading._workspace_tool_source_metadata(attrs)
         )
 
         assert source_spec is None
@@ -17409,7 +17496,9 @@ def test_pending_toolwindow_source_metadata_decodes_saved_state(
         assert state == "stale"
 
         attrs[erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR] = "not-valid"
-        *_, state = manager._workspace_controller._workspace_tool_source_metadata(attrs)
+        *_, state = (
+            manager._workspace_controller.loading._workspace_tool_source_metadata(attrs)
+        )
         assert state == "fresh"
 
 
@@ -17445,7 +17534,7 @@ def test_manager_get_imagetool_materializes_hidden_memory_payload(
         loaded = manager.get_imagetool(0).slicer_area
 
         assert wrapper.pending_workspace_memory_payload is None
-        assert manager_xarray.dataarray_is_numpy_backed(loaded._data)
+        assert workspace_arrays.dataarray_is_numpy_backed(loaded._data)
         np.testing.assert_array_equal(loaded._data.values, data.values)
 
 
@@ -17595,7 +17684,7 @@ def test_manager_duplicate_pending_memory_uses_saved_payload(
 
         assert wrapper.pending_workspace_memory_payload is None
         duplicated = manager.get_imagetool(duplicate_index).slicer_area
-        assert manager_xarray.dataarray_is_numpy_backed(duplicated._data)
+        assert workspace_arrays.dataarray_is_numpy_backed(duplicated._data)
         np.testing.assert_array_equal(duplicated._data.values, data.values)
 
 
@@ -17749,7 +17838,7 @@ def test_manager_active_filter_edit_materializes_hidden_memory_payload(
 
         assert wrapper.pending_workspace_memory_payload is None
         assert restored == [operation]
-        assert manager_xarray.dataarray_is_numpy_backed(wrapper.slicer_area._data)
+        assert workspace_arrays.dataarray_is_numpy_backed(wrapper.slicer_area._data)
         np.testing.assert_array_equal(wrapper.slicer_area._data.values, data.values)
 
 
@@ -17789,7 +17878,7 @@ def test_manager_workspace_show_materializes_hidden_memory_payload(
         loaded = manager.get_imagetool(0).slicer_area
         assert wrapper.pending_workspace_memory_payload is None
         assert loaded.data_loadable is False
-        assert manager_xarray.dataarray_is_numpy_backed(loaded._data)
+        assert workspace_arrays.dataarray_is_numpy_backed(loaded._data)
         np.testing.assert_array_equal(loaded._data.values, data.values)
         assert loaded.array_slicer.get_value(0, 1) == 3.0
 
@@ -17831,8 +17920,8 @@ def test_manager_workspace_child_tool_reference_keeps_pending_parent_unmateriali
         }
 
         original_materialize = manager._materialize_pending_workspace_payload
-        controller_cls = manager_workspace_io._WorkspaceIOController
-        original_read = controller_cls._read_workspace_imagetool_payload_dataset
+        loader_cls = workspace_loading._WorkspaceLoader
+        original_read = loader_cls._read_workspace_imagetool_payload_dataset
 
         def _fail_materialize_pending_payload(_node) -> bool:
             if _node.is_imagetool:
@@ -17853,7 +17942,7 @@ def test_manager_workspace_child_tool_reference_keeps_pending_parent_unmateriali
             _fail_materialize_pending_payload,
         )
         monkeypatch.setattr(
-            controller_cls,
+            loader_cls,
             "_read_workspace_imagetool_payload_dataset",
             classmethod(_fail_eager_pending_read),
         )
@@ -17915,8 +18004,8 @@ def test_manager_workspace_tool_manager_node_reference_keeps_pending_source(
             )
 
         original_materialize = manager._materialize_pending_workspace_payload
-        controller_cls = manager_workspace_io._WorkspaceIOController
-        original_read = controller_cls._read_workspace_imagetool_payload_dataset
+        loader_cls = workspace_loading._WorkspaceLoader
+        original_read = loader_cls._read_workspace_imagetool_payload_dataset
 
         def _fail_materialize_pending_payload(_node) -> bool:
             if _node.is_imagetool:
@@ -17939,7 +18028,7 @@ def test_manager_workspace_tool_manager_node_reference_keeps_pending_source(
             _fail_materialize_pending_payload,
         )
         monkeypatch.setattr(
-            controller_cls,
+            loader_cls,
             "_read_workspace_imagetool_payload_dataset",
             classmethod(_fail_eager_pending_read),
         )
@@ -17999,13 +18088,17 @@ def test_manager_save_as_rebinds_live_tool_reference_dataset(
 
         loaded_figure = manager.get_childtool(figure_uid)
         assert isinstance(loaded_figure, _WorkspaceManagerReferenceFigureTool)
-        source_paths = manager_xarray.dataarray_source_paths(loaded_figure.tool_data)
+        source_paths = workspace_arrays.dataarray_source_paths(loaded_figure.tool_data)
         assert str(source.resolve()) in source_paths
 
-        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: target)
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: target,
+        )
         assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
 
-        rebound_paths = manager_xarray.dataarray_source_paths(loaded_figure.tool_data)
+        rebound_paths = workspace_arrays.dataarray_source_paths(loaded_figure.tool_data)
         assert str(target.resolve()) in rebound_paths
         assert str(source.resolve()) not in rebound_paths
         assert loaded_wrapper.pending_workspace_memory_payload == (
@@ -18051,7 +18144,9 @@ def test_manager_save_as_rebind_failure_keeps_old_live_references(
         loaded_wrapper = manager._tool_graph.root_wrappers[0]
         loaded_figure = manager.get_childtool(figure_uid)
         assert isinstance(loaded_figure, _WorkspaceManagerReferenceFigureTool)
-        original_paths = manager_xarray.dataarray_source_paths(loaded_figure.tool_data)
+        original_paths = workspace_arrays.dataarray_source_paths(
+            loaded_figure.tool_data
+        )
         assert str(source.resolve()) in original_paths
 
         def _fail_replace(_data_items, _ds) -> None:
@@ -18066,7 +18161,11 @@ def test_manager_save_as_rebind_failure_keeps_old_live_references(
             "_show_operation_error",
             lambda title, text: errors.append((title, text)),
         )
-        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: target)
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: target,
+        )
         manager._mark_node_state_dirty(figure_uid)
 
         assert not _request_workspace_save_as_and_wait(qtbot, manager, native=False)
@@ -18082,7 +18181,7 @@ def test_manager_save_as_rebind_failure_keeps_old_live_references(
             source.resolve(),
             "0/imagetool",
         )
-        assert manager_xarray.dataarray_source_paths(loaded_figure.tool_data) == (
+        assert workspace_arrays.dataarray_source_paths(loaded_figure.tool_data) == (
             original_paths
         )
 
@@ -18191,16 +18290,20 @@ def test_manager_save_as_does_not_revive_stale_live_tool_references(
         )
         loaded_figure = manager.get_childtool(figure_uid)
         assert isinstance(loaded_figure, _WorkspaceManagerReferenceFigureTool)
-        assert str(source.resolve()) in manager_xarray.dataarray_source_paths(
+        assert str(source.resolve()) in workspace_arrays.dataarray_source_paths(
             loaded_figure.tool_data
         )
 
         loaded_figure._reference_uid = None
         manager._mark_node_state_dirty(figure_uid)
-        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: target)
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: target,
+        )
 
         assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
-        rebound_paths = manager_xarray.dataarray_source_paths(loaded_figure.tool_data)
+        rebound_paths = workspace_arrays.dataarray_source_paths(loaded_figure.tool_data)
         assert str(target.resolve()) in rebound_paths
         assert str(source.resolve()) not in rebound_paths
         assert (
@@ -18258,7 +18361,11 @@ def test_manager_save_as_repoints_imported_pending_payload(
         )
         payload_path = manager._workspace_payload_path(wrapper.uid)
 
-        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: target)
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: target,
+        )
         assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
         assert wrapper.pending_workspace_memory_payload == (
             target.resolve(),
@@ -18382,7 +18489,7 @@ def test_manager_workspace_replacing_pending_memory_data_clears_pending_payload(
             group = h5_file["0/imagetool"]
             assert group.attrs["itool_name"] == "replacement"
             np.testing.assert_array_equal(
-                group[manager_workspace_io._ITOOL_DATA_NAME][...],
+                group[_ITOOL_DATA_NAME][...],
                 replacement.values,
             )
 
@@ -18455,7 +18562,7 @@ def test_manager_workspace_attr_update_keeps_pending_hidden_memory_unmaterialize
             group = h5_file["0/imagetool"]
             assert group.attrs["itool_name"] == "renamed"
             np.testing.assert_array_equal(
-                group[manager_workspace_io._ITOOL_DATA_NAME][...],
+                group[_ITOOL_DATA_NAME][...],
                 data.values,
             )
 
@@ -18501,20 +18608,20 @@ def test_manager_network_full_save_keeps_pending_hidden_memory_unmaterialized(
             _fail_materialize_pending_payload,
         )
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_workspace_path_is_likely_network_path",
             lambda _path: True,
         )
 
         wrapper.name = "network-renamed"
-        manager._workspace_controller._write_full_workspace_file(fname)
+        manager._workspace_controller.saving._write_full_workspace_file(fname)
         assert wrapper.pending_workspace_memory_payload is not None
 
         with h5py.File(fname, "r") as h5_file:
             group = h5_file["0/imagetool"]
             assert group.attrs["itool_name"] == "network-renamed"
             np.testing.assert_array_equal(
-                group[manager_workspace_io._ITOOL_DATA_NAME][...],
+                group[_ITOOL_DATA_NAME][...],
                 data.values,
             )
 
@@ -18545,7 +18652,7 @@ def test_manager_workspace_load_uses_h5py_fast_path(
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
         monkeypatch.setattr(
-            manager_xarray,
+            workspace_arrays,
             "open_workspace_datatree",
             lambda *args, **kwargs: pytest.fail(
                 "simple v4 load should not open the workspace DataTree"
@@ -18559,7 +18666,7 @@ def test_manager_workspace_load_uses_h5py_fast_path(
         if node.pending_workspace_memory_payload is not None:
             assert manager._materialize_pending_workspace_payload(node)
         loaded = manager.get_imagetool(0).slicer_area
-        assert manager_xarray.dataarray_is_numpy_backed(loaded._data)
+        assert workspace_arrays.dataarray_is_numpy_backed(loaded._data)
         assert not loaded.data_chunked
         assert not loaded.data_file_backed
         np.testing.assert_array_equal(loaded._data.values, data.values)
@@ -18587,8 +18694,8 @@ def test_manager_h5py_workspace_load_defers_hidden_imagetool_refresh_and_profile
 
         fname = tmp_path / "profiled-h5py-load.itws"
         manager._save_workspace_document(fname, force_full=True)
-        root_attrs = manager_workspace._read_workspace_root_attrs_h5py(fname)
-        _, _, manifest = manager_workspace._workspace_file_metadata_from_attrs(
+        root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(fname)
+        _, _, manifest = workspace_format._workspace_file_metadata_from_attrs(
             root_attrs
         )
         assert manifest is not None
@@ -18624,7 +18731,7 @@ def test_manager_h5py_workspace_load_defers_hidden_imagetool_refresh_and_profile
             _record_refresh_all,
         )
 
-        profiler = manager_workspace_io._WorkspaceLoadProfiler(fname)
+        profiler = workspace_loading._WorkspaceLoadProfiler(fname)
         assert manager._from_h5py_workspace_file(
             fname,
             manifest,
@@ -18807,7 +18914,7 @@ def test_manager_workspace_load_preserves_transposed_inverted_axis_limits(
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
         monkeypatch.setattr(
-            manager_xarray,
+            workspace_arrays,
             "open_workspace_datatree",
             lambda *args, **kwargs: pytest.fail(
                 "simple v4 load should not open the workspace DataTree"
@@ -18825,7 +18932,7 @@ def test_manager_workspace_load_preserves_transposed_inverted_axis_limits(
         assert loaded.manual_limits == expected_limits
         _assert_manual_limits_view_ranges(loaded, expected_limits)
         assert loaded.axis_inversions == {"x": True}
-        assert manager_xarray.dataarray_is_numpy_backed(loaded._data)
+        assert workspace_arrays.dataarray_is_numpy_backed(loaded._data)
         np.testing.assert_array_equal(
             loaded._data.transpose(*data.dims).values, data.values
         )
@@ -18857,7 +18964,7 @@ def test_manager_workspace_load_h5py_fast_path_falls_back_per_payload(
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
         monkeypatch.setattr(
-            manager_xarray,
+            workspace_arrays,
             "open_workspace_datatree",
             lambda *args, **kwargs: pytest.fail(
                 "unsupported payload should fall back by group, not by whole tree"
@@ -18868,7 +18975,7 @@ def test_manager_workspace_load_h5py_fast_path_falls_back_per_payload(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
         loaded = manager.get_imagetool(0).slicer_area
-        assert manager_xarray.dataarray_is_numpy_backed(loaded._data)
+        assert workspace_arrays.dataarray_is_numpy_backed(loaded._data)
         assert not loaded.data_chunked
         assert not loaded.data_file_backed
         assert loaded._data.coords["label"].item() == "sample"
@@ -18943,7 +19050,7 @@ def test_manager_workspace_lazy_data_delta_save_uses_pending_group_before_replac
         import h5py
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][_ITOOL_DATA_NAME]
             assert saved[0, 0] == 10
 
 
@@ -18982,7 +19089,7 @@ def test_manager_workspace_same_file_lazy_data_delta_save_does_not_deadlock(
         import h5py
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][_ITOOL_DATA_NAME]
             assert saved[0, 0] == 0
             assert saved.chunks == (128, 64)
 
@@ -19018,12 +19125,12 @@ def test_manager_workspace_lazy_data_delta_pending_failure_preserves_old_group(
             _group_path: str,
             pending_path: str,
         ) -> None:
-            with manager_workspace._open_workspace_h5_file_for_update(fname) as h5_file:
+            with workspace_saving._open_workspace_h5_file_for_update(fname) as h5_file:
                 h5_file.create_group(pending_path)
             raise RuntimeError("pending write failed")
 
         monkeypatch.setattr(
-            manager_workspace,
+            workspace_saving,
             "_write_workspace_constructor_groups_to_pending",
             _write_partial_pending_then_raise,
         )
@@ -19035,10 +19142,10 @@ def test_manager_workspace_lazy_data_delta_pending_failure_preserves_old_group(
         import h5py
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][_ITOOL_DATA_NAME]
             assert saved[0, 0] == 0
             assert not any(
-                manager_workspace._is_workspace_internal_group_name(name)
+                workspace_format._is_workspace_internal_group_name(name)
                 for name in h5_file
             )
 
@@ -19064,10 +19171,10 @@ def test_manager_workspace_stale_pending_groups_do_not_poison_open_or_save(
         manager._save_workspace_document(fname, force_full=True)
         with h5py.File(fname, "a") as h5_file:
             h5_file.create_group(
-                f"{manager_workspace._WORKSPACE_PENDING_GROUP_PREFIX}stale"
+                f"{workspace_format._WORKSPACE_PENDING_GROUP_PREFIX}stale"
             )
             h5_file.create_group(
-                f"{manager_workspace._WORKSPACE_BACKUP_GROUP_PREFIX}stale"
+                f"{workspace_format._WORKSPACE_BACKUP_GROUP_PREFIX}stale"
             )
 
         assert manager._load_workspace_file(
@@ -19079,7 +19186,7 @@ def test_manager_workspace_stale_pending_groups_do_not_poison_open_or_save(
         assert _request_workspace_save_and_wait(qtbot, manager)
         with h5py.File(fname, "r") as h5_file:
             assert not any(
-                manager_workspace._is_workspace_internal_group_name(name)
+                workspace_format._is_workspace_internal_group_name(name)
                 for name in h5_file
             )
 
@@ -19106,16 +19213,16 @@ def test_manager_workspace_load_dialog_skips_stale_internal_groups(
         manager._save_workspace_document(fname, force_full=True)
         with h5py.File(fname, "a") as h5_file:
             h5_file.create_group(
-                f"{manager_workspace._WORKSPACE_PENDING_GROUP_PREFIX}stale"
+                f"{workspace_format._WORKSPACE_PENDING_GROUP_PREFIX}stale"
             )
             h5_file.create_group(
-                f"{manager_workspace._WORKSPACE_BACKUP_GROUP_PREFIX}stale"
+                f"{workspace_format._WORKSPACE_BACKUP_GROUP_PREFIX}stale"
             )
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
-        tree = manager_xarray.open_workspace_datatree(fname, chunks="auto")
+        tree = workspace_arrays.open_workspace_datatree(fname, chunks="auto")
         accept_dialog(
             lambda: manager._from_datatree(
                 tree,
@@ -19205,7 +19312,9 @@ def test_manager_workspace_replace_load_failure_uses_clean_file_backup(
         def _fail_to_datatree(*_args, **_kwargs):
             raise AssertionError("clean associated replace load should use file backup")
 
-        monkeypatch.setattr(manager, "_to_datatree", _fail_to_datatree)
+        monkeypatch.setattr(
+            manager._workspace_controller.saving, "_to_datatree", _fail_to_datatree
+        )
 
         broken_fname = tmp_path / "broken-clean.itws"
         with h5py.File(broken_fname, "w") as h5_file:
@@ -19253,14 +19362,16 @@ def test_manager_workspace_replace_load_failure_keeps_dirty_memory_backup(
         assert manager.is_workspace_modified
 
         to_datatree_calls = 0
-        original_to_datatree = manager._to_datatree
+        original_to_datatree = manager._workspace_controller.saving._to_datatree
 
         def _record_to_datatree(*args, **kwargs):
             nonlocal to_datatree_calls
             to_datatree_calls += 1
             return original_to_datatree(*args, **kwargs)
 
-        monkeypatch.setattr(manager, "_to_datatree", _record_to_datatree)
+        monkeypatch.setattr(
+            manager._workspace_controller.saving, "_to_datatree", _record_to_datatree
+        )
 
         broken_fname = tmp_path / "broken-dirty.itws"
         with h5py.File(broken_fname, "w") as h5_file:
@@ -19786,7 +19897,7 @@ def test_manager_workspace_roundtrip_recursive_nested_imagetools(
             manager.remove_all_tools()
             qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
-            loaded = manager_xarray.open_workspace_datatree(filename, chunks="auto")
+            loaded = workspace_arrays.open_workspace_datatree(filename, chunks="auto")
             try:
                 assert manager._is_datatree_workspace(loaded)
                 assert loaded.attrs["imagetool_workspace_schema_version"] == 3

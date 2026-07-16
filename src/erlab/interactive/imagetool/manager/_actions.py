@@ -11,6 +11,9 @@ import uuid
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
+import erlab.interactive.imagetool.manager._workspace._format as workspace_format
+import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool import _kspace_conversion
 from erlab.interactive.imagetool._mainwindow import ImageTool
@@ -27,8 +30,6 @@ from erlab.interactive.imagetool._provenance._operations import (
     ImageToolSelectionSourceBinding,
     RestoreNonuniformDimsOperation,
 )
-from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
-from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
 from erlab.interactive.imagetool.manager._dialogs import (
     _BatchOperationDialog,
     _ConcatDialog,
@@ -41,12 +42,13 @@ from erlab.interactive.imagetool.manager._widgets import (
     _WATCHED_VAR_COLORS,
     _show_workspace_file_lock_error,
 )
+from erlab.interactive.imagetool.manager._workspace._format import (
+    _workspace_manifest_repack_estimate,
+)
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
 )
-
-_workspace_repack_estimate = _manager_workspace._workspace_manifest_repack_estimate
 
 if typing.TYPE_CHECKING:
     import datetime
@@ -1234,15 +1236,15 @@ class _ActionsController:
         n_files: int = len(queued)
         loaded: list[pathlib.Path] = []
         failed: list[pathlib.Path] = []
-        metadata_from_attrs = _manager_workspace._workspace_file_metadata_from_attrs
+        metadata_from_attrs = workspace_format._workspace_file_metadata_from_attrs
 
         if try_workspace:
             for p in list(queued):
                 explicit_workspace = p.suffix.lower() == ".itws"
                 try:
-                    dt = _manager_xarray.open_workspace_datatree(p, chunks=None)
+                    dt = workspace_arrays.open_workspace_datatree(p, chunks=None)
                 except Exception as exc:
-                    if _manager_workspace._is_workspace_file_lock_error(exc):
+                    if workspace_saving._is_workspace_file_lock_error(exc):
                         logger.info(
                             "Workspace file is already open or locked: %s",
                             p,
@@ -1267,10 +1269,10 @@ class _ActionsController:
                             with self._manager._workspace_document_access_context(
                                 p
                             ) as access:
-                                _manager_workspace._recover_workspace_transactions(
+                                workspace_saving._recover_workspace_transactions(
                                     access.path
                                 )
-                                workspace_dt = _manager_xarray.open_workspace_datatree(
+                                workspace_dt = workspace_arrays.open_workspace_datatree(
                                     access.path, chunks=None
                                 )
                                 workspace_dt_owned = True
@@ -1326,7 +1328,7 @@ class _ActionsController:
                                             estimated_obsolete_bytes,
                                             replacement_delta_count,
                                             repack_estimate_known,
-                                        ) = _workspace_repack_estimate(
+                                        ) = _workspace_manifest_repack_estimate(
                                             manifest,
                                             delta_save_count=delta_save_count,
                                         )
@@ -1348,7 +1350,7 @@ class _ActionsController:
                                     if workspace_dt_owned:
                                         workspace_dt.close()
                         except Exception as exc:
-                            if _manager_workspace._is_workspace_file_lock_error(exc):
+                            if workspace_saving._is_workspace_file_lock_error(exc):
                                 logger.info(
                                     "Workspace file is already open or locked: %s",
                                     p,

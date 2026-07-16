@@ -23,13 +23,13 @@ import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._provenance_edit as manager_provenance_edit
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
-import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive._mesh import MeshTool
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import _kspace_conversion, itool
+from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._code import uses_default_replay_input
 from erlab.interactive.imagetool._provenance._execution import (
     replay_file_provenance,
@@ -6911,7 +6911,7 @@ def test_manager_operation_filter_preserves_output_binding(
         state = json.loads(saved.attrs["itool_state"])
         assert state["filter_operation"]["op"] == "gaussian_filter"
         xr.testing.assert_identical(
-            saved[manager_workspace_io._ITOOL_DATA_NAME].rename(initial_output.name),
+            saved[_ITOOL_DATA_NAME].rename(initial_output.name),
             initial_output,
         )
 
@@ -8646,7 +8646,7 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
         child_tool = manager.get_imagetool(child_uid)
         child_node.name = "averaged child"
         assert (
-            manager_workspace_io._strip_workspace_modified_placeholder(
+            manager_widgets._strip_workspace_modified_placeholder(
                 child_tool.windowTitle()
             )
             == "averaged child"

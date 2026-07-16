@@ -5,13 +5,14 @@ from collections.abc import Iterable
 import h5py
 import pydantic
 
-import erlab.interactive.imagetool.manager._figure_manager as manager_figure
+import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive.imagetool._figurecomposer_adapter import (
     build_figure_composer_operation,
 )
+from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._model import FileDataSelection
-from erlab.interactive.imagetool.manager import _figure_dialogs
+from erlab.interactive.imagetool.manager._figurecomposer import _controller, _dialogs
 
 from ._common import *
 
@@ -1084,7 +1085,7 @@ def test_manager_figures_gallery_helpers_handle_invalid_sources(
         def setValue(self, key: str, value: str) -> None:
             pass
 
-    monkeypatch.setattr(manager_figure, "_manager_settings", lambda: FakeSettings())
+    monkeypatch.setattr(_controller, "_manager_settings", lambda: FakeSettings())
     with manager_context() as manager:
         figure_tool = FigureComposerTool(data)
         figure_uid = manager.add_figuretool(figure_tool, show=False)
@@ -1438,11 +1439,9 @@ def test_manager_figure_action_new_target_creates_second_figure(
                 return QtWidgets.QDialog.DialogCode.Accepted
 
             def selected_action(self) -> str:
-                return _figure_dialogs._FIGURE_DIALOG_NEW
+                return _dialogs._FIGURE_DIALOG_NEW
 
-        monkeypatch.setattr(
-            _figure_dialogs, "_AppendFigureTargetDialog", FakeFigureDialog
-        )
+        monkeypatch.setattr(_dialogs, "_AppendFigureTargetDialog", FakeFigureDialog)
 
         manager.create_figure_action.trigger()
 
@@ -1498,14 +1497,12 @@ def test_manager_figure_action_appends_to_selected_subplots_axes(
                 return QtWidgets.QDialog.DialogCode.Accepted
 
             def selected_action(self) -> str:
-                return _figure_dialogs._FIGURE_DIALOG_ADD_STEP
+                return _dialogs._FIGURE_DIALOG_ADD_STEP
 
             def selected_target(self) -> tuple[str, FigureAxesSelectionState]:
                 return figure_uid, FigureAxesSelectionState(axes=((0, 1),))
 
-        monkeypatch.setattr(
-            _figure_dialogs, "_AppendFigureTargetDialog", FakeFigureDialog
-        )
+        monkeypatch.setattr(_dialogs, "_AppendFigureTargetDialog", FakeFigureDialog)
 
         manager.create_figure_action.trigger()
 
@@ -1582,14 +1579,12 @@ def test_manager_figure_action_appends_to_selected_gridspec_axes(
                 return QtWidgets.QDialog.DialogCode.Accepted
 
             def selected_action(self) -> str:
-                return _figure_dialogs._FIGURE_DIALOG_ADD_STEP
+                return _dialogs._FIGURE_DIALOG_ADD_STEP
 
             def selected_target(self) -> tuple[str, FigureAxesSelectionState]:
                 return figure_uid, FigureAxesSelectionState(axes_ids=("axis-a",))
 
-        monkeypatch.setattr(
-            _figure_dialogs, "_AppendFigureTargetDialog", FakeFigureDialog
-        )
+        monkeypatch.setattr(_dialogs, "_AppendFigureTargetDialog", FakeFigureDialog)
 
         manager.create_figure_action.trigger()
 
@@ -1911,7 +1906,7 @@ def test_manager_workspace_figure_sources_save_as_references(
             assert "second" in references
             assert ds[erlab.interactive.utils._SAVED_TOOL_DATA_NAME].size == 0
             assert ds["second"].size == 0
-            assert manager_workspace._workspace_dataset_can_write_h5py(ds)
+            assert workspace_arrays._workspace_dataset_can_write_h5py(ds)
 
             source_data_by_uid = {
                 references[erlab.interactive.utils._SAVED_TOOL_DATA_NAME][
@@ -1934,7 +1929,7 @@ def test_manager_workspace_figure_sources_save_as_references(
 
             fname = tmp_path / "figure-source-references.itws"
             manager._save_workspace_document(fname, force_full=True)
-            saved_ds = manager_workspace._read_workspace_dataset_group_h5py(
+            saved_ds = workspace_arrays._read_workspace_dataset_group_h5py(
                 fname,
                 f"figures/{figure_uid}/tool",
                 preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
@@ -2000,23 +1995,19 @@ def test_manager_pending_figure_source_reference_uses_saved_imagetool_dim_order(
 
         workspace_path = tmp_path / "pending-figure-source-order.itws"
         manager._save_workspace_document(workspace_path, force_full=True)
-        saved_ds = manager_workspace._read_workspace_dataset_group_h5py(
+        saved_ds = workspace_arrays._read_workspace_dataset_group_h5py(
             workspace_path,
             "0/imagetool",
-            preferred_data_name=manager_workspace_io._ITOOL_DATA_NAME,
+            preferred_data_name=_ITOOL_DATA_NAME,
         )
         assert saved_ds is not None
         stored = xr.Dataset(
-            {
-                manager_workspace_io._ITOOL_DATA_NAME: saved_ds[
-                    manager_workspace_io._ITOOL_DATA_NAME
-                ].transpose("hv", "y", "x")
-            },
+            {_ITOOL_DATA_NAME: saved_ds[_ITOOL_DATA_NAME].transpose("hv", "y", "x")},
             attrs=dict(saved_ds.attrs),
         )
         with h5py.File(workspace_path, "r+") as h5_file:
             del h5_file["0/imagetool"]
-        assert manager_workspace._write_workspace_dataset_group_h5py(
+        assert workspace_arrays._write_workspace_dataset_group_h5py(
             workspace_path, "0/imagetool", stored
         )
 
@@ -2315,9 +2306,7 @@ def test_manager_append_to_gridspec_figure_uses_axes_ids(
             axes=FigureAxesSelectionState(),
         )
 
-        dialog = _figure_dialogs._AppendFigureTargetDialog(
-            manager, (figure_uid,), operation
-        )
+        dialog = _dialogs._AppendFigureTargetDialog(manager, (figure_uid,), operation)
 
         assert dialog.selector_stack.currentWidget() is dialog.gridspec_axes_selector
         assert dialog.gridspec_axes_selector.axes_ids() == ("axis-a", "axis-b")
@@ -2355,9 +2344,7 @@ def test_manager_append_to_subplots_figure_uses_axes_selector(
             axes=FigureAxesSelectionState(),
         )
 
-        dialog = _figure_dialogs._AppendFigureTargetDialog(
-            manager, (figure_uid,), operation
-        )
+        dialog = _dialogs._AppendFigureTargetDialog(manager, (figure_uid,), operation)
 
         assert dialog.selector_stack.currentWidget() is dialog.axes_selector
         assert dialog.axes_selector.selected_axes() == ((0, 0), (0, 1))
@@ -2407,14 +2394,14 @@ def test_manager_figure_target_dialog_defaults_to_add_step_without_selected_figu
         )
         figure_uid = manager.add_figuretool(figure_tool, show=False)
 
-        dialog = _figure_dialogs._AppendFigureTargetDialog(
+        dialog = _dialogs._AppendFigureTargetDialog(
             manager,
             (figure_uid,),
             None,
             allow_new_figure=True,
         )
 
-        assert dialog.selected_action() == _figure_dialogs._FIGURE_DIALOG_ADD_STEP
+        assert dialog.selected_action() == _dialogs._FIGURE_DIALOG_ADD_STEP
         assert not dialog.selector_stack.isHidden()
         assert dialog.selected_target() == (
             figure_uid,
@@ -2425,10 +2412,10 @@ def test_manager_figure_target_dialog_defaults_to_add_step_without_selected_figu
         assert button.isEnabled()
 
         dialog.action_combo.setCurrentIndex(
-            dialog.action_combo.findData(_figure_dialogs._FIGURE_DIALOG_NEW)
+            dialog.action_combo.findData(_dialogs._FIGURE_DIALOG_NEW)
         )
 
-        assert dialog.selected_action() == _figure_dialogs._FIGURE_DIALOG_NEW
+        assert dialog.selected_action() == _dialogs._FIGURE_DIALOG_NEW
         assert dialog.selector_stack.isHidden()
         assert dialog.selected_target() is None
         assert button.isEnabled()
@@ -2454,7 +2441,7 @@ def test_manager_figure_target_dialog_defaults_to_replace_selected_single_source
         )
         figure_uid = manager.add_figuretool(figure_tool, show=False)
 
-        dialog = _figure_dialogs._AppendFigureTargetDialog(
+        dialog = _dialogs._AppendFigureTargetDialog(
             manager,
             (figure_uid,),
             None,
@@ -2463,7 +2450,7 @@ def test_manager_figure_target_dialog_defaults_to_replace_selected_single_source
             selected_figure_uid=figure_uid,
         )
 
-        assert dialog.selected_action() == _figure_dialogs._FIGURE_DIALOG_REPLACE_SOURCE
+        assert dialog.selected_action() == _dialogs._FIGURE_DIALOG_REPLACE_SOURCE
         assert dialog.selected_source_alias() == "line"
         assert dialog.source_combo.currentData() == "line"
         assert dialog.selector_stack.isHidden()
@@ -2512,14 +2499,14 @@ def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
         first_uid = manager.add_figuretool(first_tool, show=False)
         second_uid = manager.add_figuretool(second_tool, show=False)
 
-        dialog = _figure_dialogs._AppendFigureTargetDialog(
+        dialog = _dialogs._AppendFigureTargetDialog(
             manager,
             (first_uid, second_uid),
             FigureOperationState.line(label="line", source="line"),
             allow_new_figure=True,
         )
 
-        assert dialog.selected_action() == _figure_dialogs._FIGURE_DIALOG_ADD_STEP
+        assert dialog.selected_action() == _dialogs._FIGURE_DIALOG_ADD_STEP
         assert not dialog.selector_stack.isHidden()
         ok_button = dialog.button_box.button(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
@@ -2529,7 +2516,7 @@ def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
 
         dialog.figure_combo.setCurrentIndex(dialog.figure_combo.findData(first_uid))
         assert dialog.figure_uid() == first_uid
-        assert dialog.selected_action() == _figure_dialogs._FIGURE_DIALOG_ADD_STEP
+        assert dialog.selected_action() == _dialogs._FIGURE_DIALOG_ADD_STEP
         assert dialog.selector_stack.currentWidget() is dialog.axes_selector
         assert dialog.axes_selection() == FigureAxesSelectionState(axes=((0, 0),))
 
@@ -2548,17 +2535,17 @@ def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
         )
 
         dialog.action_combo.setCurrentIndex(
-            dialog.action_combo.findData(_figure_dialogs._FIGURE_DIALOG_ADD_SOURCE)
+            dialog.action_combo.findData(_dialogs._FIGURE_DIALOG_ADD_SOURCE)
         )
-        assert dialog.selected_action() == _figure_dialogs._FIGURE_DIALOG_ADD_SOURCE
+        assert dialog.selected_action() == _dialogs._FIGURE_DIALOG_ADD_SOURCE
         assert dialog.selected_target() is None
         assert dialog.selector_stack.isHidden()
         assert ok_button.isEnabled()
 
         dialog.action_combo.setCurrentIndex(
-            dialog.action_combo.findData(_figure_dialogs._FIGURE_DIALOG_REPLACE_SOURCE)
+            dialog.action_combo.findData(_dialogs._FIGURE_DIALOG_REPLACE_SOURCE)
         )
-        assert dialog.selected_action() == _figure_dialogs._FIGURE_DIALOG_REPLACE_SOURCE
+        assert dialog.selected_action() == _dialogs._FIGURE_DIALOG_REPLACE_SOURCE
         assert dialog.selected_source_alias() == "line"
         assert dialog.selector_stack.isHidden()
         assert not dialog.source_combo.isHidden()
@@ -2571,7 +2558,7 @@ def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
         assert ok_button.isEnabled()
 
         dialog.action_combo.setCurrentIndex(
-            dialog.action_combo.findData(_figure_dialogs._FIGURE_DIALOG_ADD_STEP)
+            dialog.action_combo.findData(_dialogs._FIGURE_DIALOG_ADD_STEP)
         )
         dialog.figure_combo.setCurrentIndex(dialog.figure_combo.findData(second_uid))
         assert dialog.axes_selection() == FigureAxesSelectionState(axes=((0, 0),))
@@ -2606,7 +2593,7 @@ def test_manager_figure_target_dialog_disables_replace_for_multiple_sources(
         )
         figure_uid = manager.add_figuretool(figure_tool, show=False)
 
-        dialog = _figure_dialogs._AppendFigureTargetDialog(
+        dialog = _dialogs._AppendFigureTargetDialog(
             manager,
             (figure_uid,),
             None,
@@ -2616,7 +2603,7 @@ def test_manager_figure_target_dialog_disables_replace_for_multiple_sources(
         )
 
         dialog.action_combo.setCurrentIndex(
-            dialog.action_combo.findData(_figure_dialogs._FIGURE_DIALOG_REPLACE_SOURCE)
+            dialog.action_combo.findData(_dialogs._FIGURE_DIALOG_REPLACE_SOURCE)
         )
         button = dialog.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
         assert button is not None
@@ -2680,7 +2667,7 @@ def test_manager_prompt_append_figure_target_auto_and_cancel_paths(
             def exec(self) -> QtWidgets.QDialog.DialogCode:
                 return QtWidgets.QDialog.DialogCode.Rejected
 
-        monkeypatch.setattr(_figure_dialogs, "_AppendFigureTargetDialog", RejectDialog)
+        monkeypatch.setattr(_dialogs, "_AppendFigureTargetDialog", RejectDialog)
         assert manager._prompt_append_figure_target(None, figure_uid=wide_uid) is None
 
 
@@ -3227,9 +3214,7 @@ def test_manager_append_operation_uses_axes_dialog_selection(
             def selected_target(self) -> tuple[str, FigureAxesSelectionState]:
                 return figure_uid, FigureAxesSelectionState(axes=((0, 1),))
 
-        monkeypatch.setattr(
-            _figure_dialogs, "_AppendFigureTargetDialog", FakeAppendDialog
-        )
+        monkeypatch.setattr(_dialogs, "_AppendFigureTargetDialog", FakeAppendDialog)
 
         appended = manager.append_figure_from_targets(
             (0,),
@@ -3294,7 +3279,7 @@ def test_manager_figure_action_replace_source_keeps_recipe_steps(
                 return QtWidgets.QDialog.DialogCode.Accepted
 
             def selected_action(self) -> str:
-                return _figure_dialogs._FIGURE_DIALOG_REPLACE_SOURCE
+                return _dialogs._FIGURE_DIALOG_REPLACE_SOURCE
 
             def figure_uid(self) -> str:
                 return figure_uid
@@ -3302,9 +3287,7 @@ def test_manager_figure_action_replace_source_keeps_recipe_steps(
             def selected_source_alias(self) -> str:
                 return "first"
 
-        monkeypatch.setattr(
-            _figure_dialogs, "_AppendFigureTargetDialog", FakeReplaceDialog
-        )
+        monkeypatch.setattr(_dialogs, "_AppendFigureTargetDialog", FakeReplaceDialog)
 
         manager.create_figure_action.trigger()
 
@@ -3751,7 +3734,7 @@ def test_manager_figure_source_helper_edge_contracts(
                 return QtWidgets.QDialog.DialogCode.Accepted
 
             def selected_action(self) -> str:
-                return _figure_dialogs._FIGURE_DIALOG_REPLACE_SOURCE
+                return _dialogs._FIGURE_DIALOG_REPLACE_SOURCE
 
             def selected_source_alias(self) -> str | None:
                 dialog_events.append("alias")
@@ -3771,7 +3754,7 @@ def test_manager_figure_source_helper_edge_contracts(
                 lambda: figure_uid,
             )
             context.setattr(
-                _figure_dialogs,
+                _dialogs,
                 "_AppendFigureTargetDialog",
                 AliasNoneDialog,
             )
@@ -3834,14 +3817,12 @@ def test_manager_figure_action_add_source_only_keeps_recipe_steps(
                 return QtWidgets.QDialog.DialogCode.Accepted
 
             def selected_action(self) -> str:
-                return _figure_dialogs._FIGURE_DIALOG_ADD_SOURCE
+                return _dialogs._FIGURE_DIALOG_ADD_SOURCE
 
             def figure_uid(self) -> str:
                 return figure_uid
 
-        monkeypatch.setattr(
-            _figure_dialogs, "_AppendFigureTargetDialog", FakeSourceOnlyDialog
-        )
+        monkeypatch.setattr(_dialogs, "_AppendFigureTargetDialog", FakeSourceOnlyDialog)
 
         manager.create_figure_action.trigger()
 
@@ -3903,7 +3884,7 @@ def test_manager_figure_source_picker_selects_imagetool_rows_only(
             show=False,
         )
 
-        dialog = _figure_dialogs._FigureSourcePickerDialog(
+        dialog = _dialogs._FigureSourcePickerDialog(
             manager, prechecked_uids=(root_uid, child_uid)
         )
         qtbot.addWidget(dialog)
@@ -3992,9 +3973,7 @@ def test_figure_sources_add_button_adds_imagetool_sources(
             def exec(self) -> QtWidgets.QDialog.DialogCode:
                 return QtWidgets.QDialog.DialogCode.Rejected
 
-        monkeypatch.setattr(
-            _figure_dialogs, "_FigureSourcePickerDialog", RejectingPicker
-        )
+        monkeypatch.setattr(_dialogs, "_FigureSourcePickerDialog", RejectingPicker)
         figure_tool.source_panel.add_source_button.click()
 
         assert len(figure_tool.tool_status.operations) == operation_count
@@ -4010,9 +3989,7 @@ def test_figure_sources_add_button_adds_imagetool_sources(
             def selected_targets(self) -> tuple[str, ...]:
                 return (second_uid,)
 
-        monkeypatch.setattr(
-            _figure_dialogs, "_FigureSourcePickerDialog", AcceptingPicker
-        )
+        monkeypatch.setattr(_dialogs, "_FigureSourcePickerDialog", AcceptingPicker)
         with qtbot.wait_signal(figure_tool.sigDataChanged, timeout=5000):
             figure_tool.source_panel.add_source_button.click()
 
@@ -4366,14 +4343,12 @@ def test_manager_figure_action_multi_source_append_preserves_image_colormaps(
                 return QtWidgets.QDialog.DialogCode.Accepted
 
             def selected_action(self) -> str:
-                return _figure_dialogs._FIGURE_DIALOG_ADD_STEP
+                return _dialogs._FIGURE_DIALOG_ADD_STEP
 
             def selected_target(self) -> tuple[str, FigureAxesSelectionState]:
                 return figure_uid, FigureAxesSelectionState(axes=((0, 0), (0, 1)))
 
-        monkeypatch.setattr(
-            _figure_dialogs, "_AppendFigureTargetDialog", FakeAppendDialog
-        )
+        monkeypatch.setattr(_dialogs, "_AppendFigureTargetDialog", FakeAppendDialog)
 
         manager.create_figure_action.trigger()
 

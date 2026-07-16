@@ -41,7 +41,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-import erlab.interactive.imagetool.manager._xarray as _manager_xarray
+import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 from erlab.interactive.imagetool._load_source import (
     _default_load_source_name,
     _load_code_from_file_details,
@@ -1346,7 +1346,7 @@ class _ManagedWindowNode(QtCore.QObject):
             data_backing = "file_lazy"
         else:
             data_backing = "memory"
-        return data_backing, _manager_xarray.dataarray_source_paths(data)
+        return data_backing, workspace_arrays.dataarray_source_paths(data)
 
     def persistence_view(
         self, *, materialize_pending: bool = True

@@ -14,11 +14,13 @@ from qtpy import QtCore, QtWidgets
 import erlab
 import erlab.interactive.imagetool.manager._actions as manager_actions
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
-import erlab.interactive.imagetool.manager._workspace as manager_workspace
-import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
-import erlab.interactive.imagetool.manager._xarray as manager_xarray
+import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
+import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager
+from erlab.interactive.imagetool.manager._workspace import (
+    _controller as workspace_controller,
+)
 
 from .helpers import _UnserializableChildTool, select_child_tool
 
@@ -267,7 +269,7 @@ def test_data_recv_dataset_creation_error_no_duplicate_alert(
         staticmethod(_fake_critical),
     )
     monkeypatch.setattr(
-        manager_workspace_io.ImageTool,
+        workspace_controller.ImageTool,
         "from_dataset",
         staticmethod(_raise_from_dataset),
     )
@@ -305,7 +307,7 @@ def test_data_recv_dataarray_creation_error_no_duplicate_alert(
         staticmethod(_fake_critical),
     )
     monkeypatch.setattr(
-        manager_workspace_io,
+        workspace_controller,
         "ImageTool",
         _raise_imagetool,
     )
@@ -360,7 +362,9 @@ def test_load_workspace_error_no_duplicate_alert(
         "selectedFiles",
         lambda self: ["broken_workspace.itws"],
     )
-    monkeypatch.setattr(manager_xarray, "open_workspace_datatree", _raise_open_datatree)
+    monkeypatch.setattr(
+        workspace_arrays, "open_workspace_datatree", _raise_open_datatree
+    )
 
     with manager_context() as manager:
         ImageToolManager.load(manager, native=False)
@@ -377,8 +381,8 @@ def test_workspace_file_lock_error_detects_nested_blocking_io() -> None:
     err = RuntimeError("open failed")
     err.__cause__ = BlockingIOError(35, "unable to lock file")
 
-    assert manager_workspace._is_workspace_file_lock_error(err)
-    assert not manager_workspace._is_workspace_file_lock_error(
+    assert workspace_saving._is_workspace_file_lock_error(err)
+    assert not workspace_saving._is_workspace_file_lock_error(
         RuntimeError("broken workspace")
     )
 
@@ -400,9 +404,9 @@ def test_import_workspace_locked_file_shows_specific_error(
 
     monkeypatch.setattr(QtWidgets.QFileDialog, "exec", lambda self: True)
     monkeypatch.setattr(QtWidgets.QFileDialog, "selectedFiles", lambda self: [fname])
-    monkeypatch.setattr(manager_xarray, "open_workspace_datatree", _raise_locked)
+    monkeypatch.setattr(workspace_arrays, "open_workspace_datatree", _raise_locked)
     monkeypatch.setattr(
-        manager_workspace_io,
+        workspace_controller,
         "_show_workspace_file_lock_error",
         lambda _parent, locked_fname: lock_calls.append(pathlib.Path(locked_fname)),
     )
@@ -433,7 +437,7 @@ def test_open_multiple_files_locked_workspace_does_not_fall_through_to_loaders(
     def _file_loaders_should_not_run(*args, **kwargs):
         raise AssertionError("locked workspace should not fall through to loaders")
 
-    monkeypatch.setattr(manager_xarray, "open_workspace_datatree", _raise_locked)
+    monkeypatch.setattr(workspace_arrays, "open_workspace_datatree", _raise_locked)
     monkeypatch.setattr(
         manager_actions,
         "_show_workspace_file_lock_error",
@@ -501,7 +505,9 @@ def test_open_multiple_files_dropped_itws_error_does_not_fall_through_to_loaders
         "critical",
         staticmethod(_fake_critical),
     )
-    monkeypatch.setattr(manager_xarray, "open_workspace_datatree", _raise_open_datatree)
+    monkeypatch.setattr(
+        workspace_arrays, "open_workspace_datatree", _raise_open_datatree
+    )
     monkeypatch.setattr(
         erlab.interactive.utils, "file_loaders", _file_loaders_should_not_run
     )
@@ -540,7 +546,9 @@ def test_open_multiple_files_h5_workspace_probe_failure_falls_back_to_loaders(
     ) -> None:
         add_calls.append((queued, func))
 
-    monkeypatch.setattr(manager_xarray, "open_workspace_datatree", _raise_open_datatree)
+    monkeypatch.setattr(
+        workspace_arrays, "open_workspace_datatree", _raise_open_datatree
+    )
     monkeypatch.setattr(erlab.interactive.utils, "file_loaders", _fake_file_loaders)
 
     with manager_context() as manager:
@@ -576,7 +584,7 @@ def test_open_multiple_files_h5_non_workspace_falls_back_to_loaders(
         return {"Fake HDF5 (*.h5)": (lambda *_args, **_kwargs: None, {})}
 
     monkeypatch.setattr(
-        manager_xarray,
+        workspace_arrays,
         "open_workspace_datatree",
         lambda *args, **kwargs: _FakeDataTree(),
     )
@@ -625,7 +633,7 @@ def test_open_multiple_files_dropped_itws_non_workspace_does_not_fall_through(
         staticmethod(_fake_critical),
     )
     monkeypatch.setattr(
-        manager_xarray,
+        workspace_arrays,
         "open_workspace_datatree",
         lambda *args, **kwargs: _FakeDataTree(),
     )
@@ -737,7 +745,9 @@ def test_open_multiple_files_workspace_error_no_duplicate_alert(
         "critical",
         staticmethod(_fake_critical),
     )
-    monkeypatch.setattr(manager_xarray, "open_workspace_datatree", _fake_open_datatree)
+    monkeypatch.setattr(
+        workspace_arrays, "open_workspace_datatree", _fake_open_datatree
+    )
 
     with manager_context() as manager:
         monkeypatch.setattr(manager, "_is_datatree_workspace", lambda *args: True)

@@ -47,8 +47,6 @@ import erlab.interactive._figurecomposer._ui._line_style as figurecomposer_line_
 import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
-import erlab.interactive.imagetool.manager._workspace as manager_workspace
-import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.plot_items as imagetool_plot_items
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer import (
@@ -133,6 +131,9 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     file_load,
     script,
+)
+from erlab.interactive.imagetool.manager._workspace import (
+    _controller as workspace_controller,
 )
 from erlab.io.exampledata import generate_hvdep_cuts
 from tests.interactive.imagetool.manager.helpers import (

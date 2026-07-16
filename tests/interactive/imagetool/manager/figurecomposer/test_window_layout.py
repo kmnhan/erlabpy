@@ -1267,7 +1267,7 @@ def test_figure_composer_managed_display_window_configures_save_shortcut(
         lambda *_args, **_kwargs: None,
     )
     save_calls: list[bool] = []
-    controller = object.__new__(manager_workspace_io._WorkspaceIOController)
+    controller = object.__new__(workspace_controller._WorkspaceController)
     controller._manager = types.SimpleNamespace(
         save=lambda *, native=True: save_calls.append(native) or True
     )
@@ -1357,7 +1357,7 @@ def test_workspace_modified_state_updates_figure_display_window(qtbot) -> None:
         ),
     )
     node = types.SimpleNamespace(window=primary_window, tool_window=tool)
-    controller = object.__new__(manager_workspace_io._WorkspaceIOController)
+    controller = object.__new__(workspace_controller._WorkspaceController)
     controller._manager = types.SimpleNamespace(
         _tool_graph=types.SimpleNamespace(nodes={"figure_uid": node})
     )

@@ -126,10 +126,21 @@ def test_figure_composer_semantics_do_not_load_qt_widgets() -> None:
 
 def test_manager_import_does_not_load_figure_dialog_widgets() -> None:
     code = (
+        "import importlib.util\n"
         "import sys\n"
         "import erlab.interactive.imagetool.manager._mainwindow\n"
-        "assert 'erlab.interactive.imagetool.manager._figure_dialogs' "
+        "assert 'erlab.interactive.imagetool.manager._figurecomposer._dialogs' "
         "not in sys.modules\n"
+        "assert importlib.util.find_spec("
+        "'erlab.interactive.imagetool.manager._figure_dialogs') is None\n"
+        "assert importlib.util.find_spec("
+        "'erlab.interactive.imagetool.manager._figure_manager') is None\n"
+        "assert importlib.util.find_spec("
+        "'erlab.interactive.imagetool.manager._workspace_io') is None\n"
+        "assert importlib.util.find_spec("
+        "'erlab.interactive.imagetool.manager._workspace_state') is None\n"
+        "assert importlib.util.find_spec("
+        "'erlab.interactive.imagetool.manager._xarray') is None\n"
         "assert 'erlab.interactive._figurecomposer._ui._axes_widgets' "
         "not in sys.modules\n"
         "assert 'matplotlib.backends.backend_qtagg' not in sys.modules\n"

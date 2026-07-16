@@ -7,9 +7,11 @@ import pytest
 import xarray as xr
 from qtpy import QtCore
 
-import erlab.interactive.imagetool.manager._figure_manager as manager_figure
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
-import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
+from erlab.interactive.imagetool.manager._figurecomposer import _controller
+from erlab.interactive.imagetool.manager._workspace import (
+    _controller as workspace_controller,
+)
 
 if typing.TYPE_CHECKING:
     import pathlib
@@ -34,7 +36,7 @@ def isolated_recent_workspace_settings(
         return QtCore.QSettings(str(settings_path), QtCore.QSettings.Format.IniFormat)
 
     _settings().clear()
-    monkeypatch.setattr(manager_figure, "_manager_settings", _settings)
+    monkeypatch.setattr(_controller, "_manager_settings", _settings)
     monkeypatch.setattr(manager_widgets, "_manager_settings", _settings)
-    monkeypatch.setattr(manager_workspace_io, "_manager_settings", _settings)
+    monkeypatch.setattr(workspace_controller, "_manager_settings", _settings)
     return settings_path

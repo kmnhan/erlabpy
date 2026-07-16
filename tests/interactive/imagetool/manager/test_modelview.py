@@ -39,7 +39,9 @@ from erlab.interactive.imagetool.manager._modelview import (
     _RowBadge,
 )
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
-from erlab.interactive.imagetool.manager._workspace_io import _WorkspaceIOController
+from erlab.interactive.imagetool.manager._workspace._controller import (
+    _WorkspaceController,
+)
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
 from .helpers import (
@@ -1367,7 +1369,7 @@ def test_manager_open_preselects_default_loader_filter(
         },
     )
 
-    _WorkspaceIOController(manager).open(native=False)
+    _WorkspaceController(manager).open(native=False)
 
     assert selected_filters == [example_filter]
     assert directories == [default_directory]
@@ -1779,7 +1781,7 @@ def test_manager_open_loader_selection_branches(
         },
     )
 
-    _WorkspaceIOController(manager).open(native=False)
+    _WorkspaceController(manager).open(native=False)
 
     if case == "loader_cancel":
         assert len(select_calls) == 1

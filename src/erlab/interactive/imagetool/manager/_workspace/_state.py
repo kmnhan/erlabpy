@@ -2,19 +2,37 @@
 
 from __future__ import annotations
 
-__all__ = ["_ManagerWorkspaceState", "_WorkspaceStateSnapshot"]
+__all__ = [
+    "_ManagerWorkspaceState",
+    "_WorkspaceDirtyEvent",
+    "_WorkspaceStateSnapshot",
+]
 
 import contextlib
 import typing
 import uuid
+from dataclasses import dataclass
 
-from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
+from erlab.interactive.imagetool.manager._workspace._format import (
+    _current_workspace_schema_version,
+)
 
 if typing.TYPE_CHECKING:
     import pathlib
     from collections.abc import Iterator
 
     from qtpy import QtCore
+
+
+@dataclass(frozen=True)
+class _WorkspaceDirtyEvent:
+    generation: int
+    uid: str | None = None
+    data: bool = False
+    state: bool = False
+    added: bool = False
+    removed: str | None = None
+    structure: str | None = None
 
 
 class _WorkspaceStateSnapshot(typing.TypedDict):
@@ -33,7 +51,7 @@ class _WorkspaceStateSnapshot(typing.TypedDict):
     options_modified: bool
     option_overrides: dict[str, typing.Any]
     dirty_generation: int
-    dirty_events: tuple[_manager_workspace._WorkspaceDirtyEvent, ...]
+    dirty_events: tuple[_WorkspaceDirtyEvent, ...]
     delta_save_count: int
     estimated_obsolete_bytes: int
     replacement_delta_count: int
@@ -61,15 +79,13 @@ class _ManagerWorkspaceState:
         self.option_overrides: dict[str, typing.Any] = {}
         self.needs_full_save: bool = False
         self.dirty_generation: int = 0
-        self.dirty_events: list[_manager_workspace._WorkspaceDirtyEvent] = []
+        self.dirty_events: list[_WorkspaceDirtyEvent] = []
         self.save_in_progress: bool = False
         self.delta_save_count: int = 0
         self.estimated_obsolete_bytes: int = 0
         self.replacement_delta_count: int = 0
         self.repack_estimate_known: bool = True
-        self.schema_version: int = (
-            _manager_workspace._current_workspace_schema_version()
-        )
+        self.schema_version: int = _current_workspace_schema_version()
         self.lock: QtCore.QLockFile | None = None
         self.closing_document: bool = False
 
@@ -86,7 +102,7 @@ class _ManagerWorkspaceState:
             or self.options_modified
         )
 
-    def apply_dirty_event(self, event: _manager_workspace._WorkspaceDirtyEvent) -> bool:
+    def apply_dirty_event(self, event: _WorkspaceDirtyEvent) -> bool:
         dirty_changed = False
         if event.uid is not None:
             already_added = event.uid in self.dirty_added
@@ -111,7 +127,7 @@ class _ManagerWorkspaceState:
             dirty_changed = True
         return dirty_changed
 
-    def mark_dirty(self, event: _manager_workspace._WorkspaceDirtyEvent) -> bool:
+    def mark_dirty(self, event: _WorkspaceDirtyEvent) -> bool:
         dirty_changed = self.apply_dirty_event(event)
         if dirty_changed or (
             self.save_in_progress
@@ -157,9 +173,7 @@ class _ManagerWorkspaceState:
         self.structure_reasons.clear()
         self.dirty_events.clear()
 
-    def restore_dirty_events(
-        self, events: list[_manager_workspace._WorkspaceDirtyEvent]
-    ) -> None:
+    def restore_dirty_events(self, events: list[_WorkspaceDirtyEvent]) -> None:
         self.mark_clean()
         for event in events:
             self.apply_dirty_event(event)

@@ -1,4 +1,4 @@
-"""Manager-owned dialogs for Figure Composer workflows."""
+"""Dialogs for manager-owned Figure Composer workflows."""
 
 from __future__ import annotations
 
