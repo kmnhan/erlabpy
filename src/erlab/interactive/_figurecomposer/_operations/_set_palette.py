@@ -7,10 +7,12 @@ import functools
 import html
 import operator
 import typing
+import weakref
 
 import matplotlib.pyplot as plt
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab.interactive.utils
 from erlab.interactive._figurecomposer._model._state import (
     FigureOperationKind,
     FigureOperationState,
@@ -645,16 +647,26 @@ def _editor_sections(
     preview = _PalettePreviewWidget(page)
     preview.setEnabled(available)
     preview_operation = [operation]
-    seed_color_button: _ColorPickerButton | None = None
-    diverging_color_buttons: dict[str, _ColorPickerButton] = {}
+    seed_color_button_ref: weakref.ReferenceType[_ColorPickerButton] | None = None
+    diverging_color_button_refs: dict[
+        str, weakref.ReferenceType[_ColorPickerButton]
+    ] = {}
 
     def refresh_preview() -> None:
-        preview.set_colors(_resolved_palette_colors(sns, preview_operation[0]))
-        if seed_color_button is not None and sns is not None:
-            mode = preview_operation[0].palette_mode
+        current = preview_operation[0]
+        preview.set_colors(_resolved_palette_colors(sns, current))
+        seed_color_button = (
+            seed_color_button_ref() if seed_color_button_ref is not None else None
+        )
+        if (
+            seed_color_button is not None
+            and sns is not None
+            and current.palette_mode in {"light", "dark"}
+            and erlab.interactive.utils.qt_is_valid(seed_color_button)
+        ):
             state = typing.cast(
                 "FigureSequentialPaletteState",
-                getattr(preview_operation[0], f"palette_{mode}"),
+                getattr(current, f"palette_{current.palette_mode}"),
             )
             seed_color_button.setColor(
                 _qt_color(
@@ -666,9 +678,16 @@ def _editor_sections(
                     )
                 )
             )
-        if diverging_color_buttons and sns is not None:
-            state = preview_operation[0].palette_diverging
-            for field, button in diverging_color_buttons.items():
+        if (
+            diverging_color_button_refs
+            and sns is not None
+            and current.palette_mode == "diverging"
+        ):
+            state = current.palette_diverging
+            for field, button_ref in diverging_color_button_refs.items():
+                button = button_ref()
+                if button is None or not erlab.interactive.utils.qt_is_valid(button):
+                    continue
                 button.setColor(
                     _qt_color(
                         _convert_palette_color(
@@ -1259,7 +1278,7 @@ def _editor_sections(
                 color_button.colorSelected,
                 update_endpoint_color,
             )
-            diverging_color_buttons[field] = color_button
+            diverging_color_button_refs[field] = weakref.ref(color_button)
             editor.add_form_row(
                 layout,
                 f"{endpoint} color",
@@ -1399,6 +1418,7 @@ def _editor_sections(
             color=_qt_color(seed_rgb),
             show_alpha_channel=False,
         )
+        seed_color_button_ref = weakref.ref(seed_color_button)
         seed_color_button.setObjectName(
             f"figureComposerSetPalette{mode.title()}SeedColorButton"
         )

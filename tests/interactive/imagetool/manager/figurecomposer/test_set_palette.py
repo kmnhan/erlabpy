@@ -335,6 +335,44 @@ def test_figure_composer_set_palette_mode_switch_seeds_custom_colors(qtbot) -> N
     assert colors_widget.colors() == operation.palette_colors
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected_count"),
+    [("light", 10), ("dark", 10), ("diverging", 9)],
+)
+def test_figure_composer_generated_palette_switch_to_custom_colors(
+    qtbot,
+    mode: str,
+    expected_count: int,
+) -> None:
+    pytest.importorskip("seaborn")
+    operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_mode": mode}
+    )
+    tool = _set_palette_tool(qtbot, operation)
+    page = _set_palette_page(tool)
+    mode_combo = page.findChild(
+        QtWidgets.QComboBox, "figureComposerSetPaletteModeCombo"
+    )
+    assert mode_combo is not None
+
+    _activate_combo_data(mode_combo, "colors")
+
+    current = tool.tool_status.operations[0]
+    assert current.palette_mode == "colors"
+    assert len(current.palette_colors) == expected_count
+    qtbot.waitUntil(
+        lambda: (
+            tool.operation_editor.stack.currentWidget() is not None
+            and tool.operation_editor.stack.currentWidget().findChild(
+                color_widgets._ColorListEditorWidget,
+                "figureComposerSetPaletteColorsWidget",
+            )
+            is not None
+        ),
+        timeout=1000,
+    )
+
+
 def test_figure_composer_set_palette_cubehelix_editor_and_custom_seed(qtbot) -> None:
     sns = pytest.importorskip("seaborn")
     operation = FigureOperationState.set_palette().model_copy(
@@ -828,6 +866,107 @@ def test_figure_composer_set_palette_seed_color_picker_cancel(
     button.click()
 
     assert tool.tool_status.operations[0].palette_dark == state
+
+
+@pytest.mark.parametrize(
+    ("mode", "button_name", "expected_count"),
+    [
+        ("light", "figureComposerSetPaletteLightSeedColorButton", 10),
+        (
+            "diverging",
+            "figureComposerSetPaletteDivergingNegativeColorButton",
+            9,
+        ),
+    ],
+)
+def test_figure_composer_palette_picker_survives_rebuild_during_dialog(
+    qtbot,
+    monkeypatch,
+    mode: str,
+    button_name: str,
+    expected_count: int,
+) -> None:
+    pytest.importorskip("seaborn")
+    operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_mode": mode}
+    )
+    tool = _set_palette_tool(qtbot, operation)
+    page = _set_palette_page(tool)
+    button = page.findChild(color_widgets._ColorPickerButton, button_name)
+    mode_combo = page.findChild(
+        QtWidgets.QComboBox, "figureComposerSetPaletteModeCombo"
+    )
+    assert button is not None
+    assert mode_combo is not None
+
+    def rebuild_during_dialog(*_args) -> QtGui.QColor:
+        _activate_combo_data(mode_combo, "colors")
+        tool._run_queued_operation_editor_update()
+        assert page in tool.operation_editor._retired_widgets
+        tool.operation_editor._drain_retired_widgets()
+        QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+        assert not erlab.interactive.utils.qt_is_valid(page, button)
+        return QtGui.QColor("#3280cc")
+
+    monkeypatch.setattr(
+        QtWidgets.QColorDialog,
+        "getColor",
+        rebuild_during_dialog,
+    )
+
+    button._choose_color()
+
+    current = tool.tool_status.operations[0]
+    assert current.palette_mode == "colors"
+    assert len(current.palette_colors) == expected_count
+    assert not erlab.interactive.utils.qt_is_valid(page, button)
+
+
+@pytest.mark.parametrize(
+    ("mode", "button_name", "control_name"),
+    [
+        (
+            "light",
+            "figureComposerSetPaletteLightSeedColorButton",
+            "figureComposerSetPaletteLightHueControl",
+        ),
+        (
+            "diverging",
+            "figureComposerSetPaletteDivergingNegativeColorButton",
+            "figureComposerSetPaletteDivergingSaturationControl",
+        ),
+    ],
+)
+def test_figure_composer_palette_preview_ignores_deleted_picker(
+    qtbot,
+    mode: str,
+    button_name: str,
+    control_name: str,
+) -> None:
+    pytest.importorskip("seaborn")
+    operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_mode": mode}
+    )
+    tool = _set_palette_tool(qtbot, operation)
+    page = _set_palette_page(tool)
+    button = page.findChild(color_widgets._ColorPickerButton, button_name)
+    control = page.findChild(
+        figurecomposer_set_palette._PaletteSliderWidget,
+        control_name,
+    )
+    assert button is not None
+    assert control is not None
+    button.deleteLater()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    assert not erlab.interactive.utils.qt_is_valid(button)
+
+    control.spin.setValue(80.0)
+
+    current = tool.tool_status.operations[0]
+    if mode == "light":
+        assert current.palette_light.color[0] == pytest.approx(80.0)
+    else:
+        assert current.palette_diverging.s == pytest.approx(80.0)
 
 
 @pytest.mark.parametrize(
