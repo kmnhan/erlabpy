@@ -636,14 +636,6 @@ def test_figure_composer_method_helper_edge_contracts(
         assert (
             method_execution._transform_component_code("dpi") == "fig.dpi_scale_trans"
         )
-        with pytest.raises(ValueError, match="Unknown transform component"):
-            method_execution._transform_component(
-                transform_figure,
-                transform_axis,
-                "bad",
-            )
-        with pytest.raises(ValueError, match="Unknown transform component"):
-            method_execution._transform_component_code("bad")
         assert (
             method_execution._render_method_transform(
                 FigureOperationState.method(

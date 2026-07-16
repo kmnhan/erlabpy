@@ -64,6 +64,9 @@ if typing.TYPE_CHECKING:
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
+_TransformComponent = typing.Literal["data", "axes", "figure", "dpi"]
+
+
 def _first_live_axis(
     tool: FigureComposerTool, selection: FigureAxesSelectionState
 ) -> Axes | None:
@@ -135,7 +138,7 @@ def _method_code_call_args(
 
 
 def _transform_component(
-    figure: Figure, axis: Axes, component: str
+    figure: Figure, axis: Axes, component: _TransformComponent
 ) -> mtransforms.Transform:
     match component:
         case "data":
@@ -146,10 +149,11 @@ def _transform_component(
             return figure.transFigure
         case "dpi":
             return figure.dpi_scale_trans
-    raise ValueError(f"Unknown transform component: {component}")
 
 
-def _transform_component_code(component: str, *, axis_code: str = "ax") -> str:
+def _transform_component_code(
+    component: _TransformComponent, *, axis_code: str = "ax"
+) -> str:
     match component:
         case "data":
             return f"{axis_code}.transData"
@@ -159,7 +163,6 @@ def _transform_component_code(component: str, *, axis_code: str = "ax") -> str:
             return "fig.transFigure"
         case "dpi":
             return "fig.dpi_scale_trans"
-    raise ValueError(f"Unknown transform component: {component}")
 
 
 def _render_method_transform(
@@ -200,7 +203,6 @@ def _render_method_transform(
             if not isinstance(transform, mtransforms.Transform):
                 raise TypeError("Custom transform expression must return a Transform")
             return transform
-    raise ValueError(f"Unknown transform mode: {operation.method_transform}")
 
 
 def _method_transform_code(
@@ -238,7 +240,6 @@ def _method_transform_code(
             if not expression:
                 raise ValueError("Custom transform expression is empty")
             return _RawCode(expression)
-    raise ValueError(f"Unknown transform mode: {operation.method_transform}")
 
 
 def _render_args_kwargs(

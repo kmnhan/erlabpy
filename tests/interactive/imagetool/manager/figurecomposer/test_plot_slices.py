@@ -2921,6 +2921,56 @@ def test_figure_composer_plot_slices_line_coordinate_colormap_codegen(
     )
 
 
+def test_figure_composer_all_coordinate_multisource_codegen_executes(qtbot) -> None:
+    first = xr.DataArray(
+        np.arange(6.0).reshape(2, 3) + 1.0,
+        dims=("eV", "kx"),
+        coords={"eV": [0.0, 1.0], "kx": [-1.0, 0.0, 1.0]},
+        name="first",
+    )
+    second = (first + 10.0).rename("second")
+    operation = FigureOperationState.plot_slices(
+        label="all coordinates",
+        sources=("first", "second"),
+        axes=FigureAxesSelectionState(axes=((0, 0), (0, 1), (1, 0), (1, 1))),
+        slice_dim="eV",
+    ).model_copy(
+        update={
+            "slice_values_mode": "all",
+            "line_normalize": "max",
+            "line_label_text": "{index}: {source} {dim}={value:g}",
+        }
+    )
+    tool = FigureComposerTool.from_sources(
+        {"first": first, "second": second},
+        sources=(
+            FigureSourceState(name="first", label="first"),
+            FigureSourceState(name="second", label="second"),
+        ),
+        operations=(operation,),
+        setup=FigureSubplotsState(nrows=2, ncols=2),
+        primary_source="first",
+    )
+    qtbot.addWidget(tool)
+
+    namespace: dict[str, typing.Any] = {"first": first, "second": second}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+
+    figure = namespace["fig"]
+    try:
+        lines = [axis.lines[0] for axis in figure.axes]
+        assert [line.get_label() for line in lines] == [
+            "0: first eV=0",
+            "1: first eV=1",
+            "2: second eV=0",
+            "3: second eV=1",
+        ]
+        for line in lines:
+            assert np.max(line.get_ydata()) == pytest.approx(1.0)
+    finally:
+        plt.close(figure)
+
+
 def test_figure_composer_plot_slices_all_coordinate_helper_edges() -> None:
     data = xr.DataArray(
         np.arange(15.0).reshape(5, 3),
