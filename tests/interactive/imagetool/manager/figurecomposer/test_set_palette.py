@@ -5,6 +5,79 @@ import erlab.interactive._figurecomposer._ui._color_widgets as color_widgets
 from ._common import *
 
 
+def _set_palette_tool(qtbot, operation: FigureOperationState) -> FigureComposerTool:
+    profile = _figure_composer_profile_source("profile")
+    recipe = FigureRecipeState(
+        sources=(FigureSourceState(name="profile", label="profile"),),
+        operations=(operation,),
+        primary_source="profile",
+    )
+    tool = FigureComposerTool(
+        profile,
+        recipe=recipe,
+        source_data={"profile": profile},
+    )
+    qtbot.addWidget(tool)
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+    return tool
+
+
+def _set_palette_page(tool: FigureComposerTool) -> QtWidgets.QWidget:
+    page = tool.operation_editor.stack.currentWidget()
+    assert page is not None
+    return page
+
+
+def _activate_combo_data(combo: QtWidgets.QComboBox, data: typing.Any) -> None:
+    index = combo.findData(data)
+    assert index >= 0
+    combo.setCurrentIndex(index)
+    combo.activated.emit(index)
+
+
+def test_figure_composer_generated_palette_state_validation_and_roundtrip() -> None:
+    cubehelix = FigureCubehelixPaletteState(
+        n_colors=12,
+        start=1.2,
+        rot=-0.6,
+        gamma=1.4,
+        hue=0.7,
+        light=0.9,
+        dark=0.1,
+        reverse=True,
+    )
+    light = FigureSequentialPaletteState(input="rgb", color=(0.2, 0.4, 0.8), n_colors=7)
+    operation = FigureOperationState.set_palette().model_copy(
+        update={
+            "palette_mode": "light",
+            "palette_cubehelix": cubehelix,
+            "palette_light": light,
+        }
+    )
+
+    restored = FigureOperationState.model_validate_json(operation.model_dump_json())
+    assert restored == operation
+    assert restored.palette_cubehelix == cubehelix
+    assert restored.palette_light == light
+
+    legacy = FigureOperationState.model_validate(
+        {"kind": "set_palette", "label": "palette"}
+    )
+    assert legacy.palette_mode == "named"
+    assert legacy.palette_cubehelix == FigureCubehelixPaletteState()
+    assert legacy.palette_light == FigureSequentialPaletteState()
+    assert legacy.palette_dark == FigureSequentialPaletteState()
+
+    with pytest.raises(ValueError, match="less than or equal to 16"):
+        FigureCubehelixPaletteState(n_colors=17)
+    with pytest.raises(ValueError, match="outside the husl range"):
+        FigureSequentialPaletteState(input="husl", color=(360.0, 50.0, 50.0))
+    with pytest.raises(ValueError, match="outside the rgb range"):
+        FigureSequentialPaletteState(input="rgb", color=(1.1, 0.5, 0.5))
+
+
 def test_figure_composer_set_palette_editor_preview_and_controls(
     qtbot, monkeypatch
 ) -> None:
@@ -245,6 +318,337 @@ def test_figure_composer_set_palette_mode_switch_seeds_custom_colors(qtbot) -> N
     assert colors_widget.colors() == operation.palette_colors
 
 
+def test_figure_composer_set_palette_cubehelix_editor_and_custom_seed(qtbot) -> None:
+    sns = pytest.importorskip("seaborn")
+    operation = FigureOperationState.set_palette().model_copy(
+        update={
+            "palette_mode": "cubehelix",
+            "palette_cubehelix": FigureCubehelixPaletteState(n_colors=5),
+        }
+    )
+    tool = _set_palette_tool(qtbot, operation)
+    page = _set_palette_page(tool)
+
+    mode_combo = page.findChild(
+        QtWidgets.QComboBox, "figureComposerSetPaletteModeCombo"
+    )
+    assert mode_combo is not None
+    assert [mode_combo.itemData(index) for index in range(mode_combo.count())] == [
+        "named",
+        "colors",
+        "cubehelix",
+        "light",
+        "dark",
+    ]
+    assert (
+        page.findChild(QtWidgets.QComboBox, "figureComposerSetPaletteNameCombo") is None
+    )
+    assert (
+        page.findChild(QtWidgets.QSpinBox, "figureComposerSetPaletteCountSpin") is None
+    )
+    assert (
+        page.findChild(QtWidgets.QCheckBox, "figureComposerSetPaletteColorCodesCheck")
+        is None
+    )
+
+    count = page.findChild(
+        figurecomposer_set_palette._PaletteSliderWidget,
+        "figureComposerSetPaletteCubehelixNColorsControl",
+    )
+    rotation = page.findChild(
+        figurecomposer_set_palette._PaletteSliderWidget,
+        "figureComposerSetPaletteCubehelixRotationControl",
+    )
+    reverse = page.findChild(
+        QtWidgets.QCheckBox, "figureComposerSetPaletteCubehelixReverseCheck"
+    )
+    docs_button = page.findChild(
+        QtWidgets.QToolButton, "figureComposerSetPaletteDocsButton"
+    )
+    assert count is not None
+    assert count.slider.minimum() == 2
+    assert count.slider.maximum() == 16
+    assert count.value() == 5
+    assert rotation is not None
+    assert rotation.spin.minimum() == pytest.approx(-1.0)
+    assert rotation.spin.maximum() == pytest.approx(1.0)
+    assert reverse is not None
+    assert docs_button is not None
+    assert docs_button.property("figure_palette_doc_url") == (
+        "https://seaborn.pydata.org/generated/seaborn.cubehelix_palette.html"
+    )
+
+    count.slider.setValue(7)
+    rotation.slider.setValue(-25)
+    reverse.click()
+    assert tool.tool_status.operations[0].palette_cubehelix.n_colors == 7
+    assert tool.tool_status.operations[0].palette_cubehelix.rot == pytest.approx(-0.25)
+    assert tool.tool_status.operations[0].palette_cubehelix.reverse is True
+
+    preview = page.findChild(QtWidgets.QWidget, "figureComposerSetPalettePreview")
+    assert preview is not None
+    swatches = preview.findChildren(
+        QtWidgets.QFrame, "figureComposerSetPalettePreviewSwatch"
+    )
+    expected = sns.cubehelix_palette(
+        n_colors=7,
+        start=0.0,
+        rot=-0.25,
+        gamma=1.0,
+        hue=0.8,
+        light=0.85,
+        dark=0.15,
+        reverse=True,
+    )
+    assert [swatch.property("palette_color") for swatch in swatches] == [
+        QtGui.QColor.fromRgbF(*color).name() for color in expected
+    ]
+
+    _activate_combo_data(mode_combo, "colors")
+    expected_hex = tuple(QtGui.QColor.fromRgbF(*color).name() for color in expected)
+    current = tool.tool_status.operations[0]
+    assert current.palette_mode == "colors"
+    assert current.palette_colors == expected_hex
+    qtbot.waitUntil(
+        lambda: (
+            tool.operation_editor.stack.currentWidget() is not None
+            and tool.operation_editor.stack.currentWidget().findChild(
+                color_widgets._ColorListEditorWidget,
+                "figureComposerSetPaletteColorsWidget",
+            )
+            is not None
+        ),
+        timeout=1000,
+    )
+
+
+@pytest.mark.parametrize("mode", ["light", "dark"])
+def test_figure_composer_set_palette_sequential_editor(qtbot, mode: str) -> None:
+    sns = pytest.importorskip("seaborn")
+    operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_mode": mode}
+    )
+    tool = _set_palette_tool(qtbot, operation)
+    page = _set_palette_page(tool)
+
+    input_combo = page.findChild(
+        QtWidgets.QComboBox,
+        f"figureComposerSetPalette{mode.title()}InputCombo",
+    )
+    hue = page.findChild(
+        figurecomposer_set_palette._PaletteSliderWidget,
+        f"figureComposerSetPalette{mode.title()}HueControl",
+    )
+    count = page.findChild(
+        figurecomposer_set_palette._PaletteSliderWidget,
+        f"figureComposerSetPalette{mode.title()}NColorsControl",
+    )
+    docs_button = page.findChild(
+        QtWidgets.QToolButton, "figureComposerSetPaletteDocsButton"
+    )
+    assert input_combo is not None
+    assert input_combo.currentData() == "husl"
+    assert [input_combo.itemData(index) for index in range(input_combo.count())] == [
+        "husl",
+        "hls",
+        "rgb",
+    ]
+    assert hue is not None
+    assert hue.spin.minimum() == pytest.approx(0.0)
+    assert hue.spin.maximum() == pytest.approx(359.0)
+    assert count is not None
+    assert count.value() == 10
+    assert docs_button is not None
+    assert docs_button.property("figure_palette_doc_url") == (
+        f"https://seaborn.pydata.org/generated/seaborn.{mode}_palette.html"
+    )
+    assert (
+        page.findChild(QtWidgets.QSpinBox, "figureComposerSetPaletteCountSpin") is None
+    )
+
+    input_combo.addItem("Invalid", "invalid")
+    _activate_combo_data(input_combo, "invalid")
+    assert (
+        figurecomposer_set_palette._sequential_palette_state(
+            tool.tool_status.operations[0], mode
+        ).input
+        == "husl"
+    )
+
+    hue.spin.setValue(240.0)
+    count.spin.setValue(6)
+    state = figurecomposer_set_palette._sequential_palette_state(
+        tool.tool_status.operations[0], mode
+    )
+    assert state.color[0] == pytest.approx(240.0)
+    assert state.n_colors == 6
+
+    preview = page.findChild(QtWidgets.QWidget, "figureComposerSetPalettePreview")
+    assert preview is not None
+    swatches = preview.findChildren(
+        QtWidgets.QFrame, "figureComposerSetPalettePreviewSwatch"
+    )
+    expected = getattr(sns, f"{mode}_palette")(
+        state.color,
+        n_colors=state.n_colors,
+        input=state.input,
+    )
+    assert [swatch.property("palette_color") for swatch in swatches] == [
+        QtGui.QColor.fromRgbF(*color).name() for color in expected
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mode", "source", "color", "target"),
+    [
+        ("light", "husl", (220.0, 70.0, 40.0), "rgb"),
+        ("dark", "rgb", (0.2, 0.6, 0.8), "hls"),
+        ("light", "hls", (0.7, 0.4, 0.6), "husl"),
+    ],
+)
+def test_figure_composer_set_palette_space_switch_preserves_seed_color(
+    qtbot,
+    mode: str,
+    source: str,
+    color: tuple[float, float, float],
+    target: str,
+) -> None:
+    sns = pytest.importorskip("seaborn")
+    state = FigureSequentialPaletteState(input=source, color=color, n_colors=8)
+    operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_mode": mode, f"palette_{mode}": state}
+    )
+    tool = _set_palette_tool(qtbot, operation)
+    page = _set_palette_page(tool)
+    palette_factory = getattr(sns, f"{mode}_palette")
+    before_rgb = palette_factory(
+        state.color,
+        n_colors=2,
+        input=state.input,
+    )[-1]
+
+    input_combo = page.findChild(
+        QtWidgets.QComboBox,
+        f"figureComposerSetPalette{mode.title()}InputCombo",
+    )
+    assert input_combo is not None
+    _activate_combo_data(input_combo, target)
+
+    converted = figurecomposer_set_palette._sequential_palette_state(
+        tool.tool_status.operations[0], mode
+    )
+    assert converted.input == target
+    after_rgb = palette_factory(
+        converted.color,
+        n_colors=2,
+        input=converted.input,
+    )[-1]
+    np.testing.assert_allclose(after_rgb, before_rgb, atol=2e-2)
+
+
+def test_figure_composer_set_palette_cubehelix_batch_preserves_other_fields(
+    qtbot,
+) -> None:
+    first = FigureOperationState.set_palette(label="first").model_copy(
+        update={
+            "palette_mode": "cubehelix",
+            "palette_cubehelix": FigureCubehelixPaletteState(start=0.1, gamma=0.8),
+        }
+    )
+    second = FigureOperationState.set_palette(label="second").model_copy(
+        update={
+            "palette_mode": "cubehelix",
+            "palette_cubehelix": FigureCubehelixPaletteState(start=1.2, gamma=1.6),
+        }
+    )
+    profile = _figure_composer_profile_source("profile")
+    tool = FigureComposerTool(
+        profile,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="profile", label="profile"),),
+            operations=(first, second),
+            primary_source="profile",
+        ),
+        source_data={"profile": profile},
+    )
+    qtbot.addWidget(tool)
+    _select_operation_rows(tool, (0, 1))
+    page = _set_palette_page(tool)
+
+    start_control = page.findChild(
+        figurecomposer_set_palette._PaletteSliderWidget,
+        "figureComposerSetPaletteCubehelixStartControl",
+    )
+    assert start_control is not None
+    container = start_control.parentWidget()
+    assert container is not None
+    assert container.findChild(QtWidgets.QLabel, "figureComposerMixedValueMarker")
+
+    start_control.spin.setValue(0.75)
+    updated = tool.tool_status.operations
+    assert updated[0].palette_cubehelix.start == pytest.approx(0.75)
+    assert updated[1].palette_cubehelix.start == pytest.approx(0.75)
+    assert updated[0].palette_cubehelix.gamma == pytest.approx(0.8)
+    assert updated[1].palette_cubehelix.gamma == pytest.approx(1.6)
+
+
+def test_figure_composer_set_palette_batch_space_conversion_is_per_step(
+    qtbot,
+) -> None:
+    sns = pytest.importorskip("seaborn")
+    first_state = FigureSequentialPaletteState(
+        input="husl", color=(30.0, 80.0, 55.0), n_colors=5
+    )
+    second_state = FigureSequentialPaletteState(
+        input="rgb", color=(0.1, 0.6, 0.3), n_colors=9
+    )
+    first = FigureOperationState.set_palette(label="first").model_copy(
+        update={"palette_mode": "light", "palette_light": first_state}
+    )
+    second = FigureOperationState.set_palette(label="second").model_copy(
+        update={"palette_mode": "light", "palette_light": second_state}
+    )
+    profile = _figure_composer_profile_source("profile")
+    tool = FigureComposerTool(
+        profile,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="profile", label="profile"),),
+            operations=(first, second),
+            primary_source="profile",
+        ),
+        source_data={"profile": profile},
+    )
+    qtbot.addWidget(tool)
+    _select_operation_rows(tool, (0, 1))
+    page = _set_palette_page(tool)
+
+    input_combo = page.findChild(
+        QtWidgets.QComboBox, "figureComposerSetPaletteLightInputCombo"
+    )
+    assert input_combo is not None
+    assert input_combo.currentData() is None
+    expected = (
+        figurecomposer_set_palette._convert_palette_color(
+            sns, first_state.color, first_state.input, "hls"
+        ),
+        figurecomposer_set_palette._convert_palette_color(
+            sns, second_state.color, second_state.input, "hls"
+        ),
+    )
+
+    _activate_combo_data(input_combo, "hls")
+    updated = tool.tool_status.operations
+    for index, expected_color in enumerate(expected):
+        assert updated[index].palette_light.input == "hls"
+        np.testing.assert_allclose(
+            updated[index].palette_light.color,
+            expected_color,
+            atol=1e-10,
+        )
+    assert updated[0].palette_light.n_colors == 5
+    assert updated[1].palette_light.n_colors == 9
+
+
 def test_figure_composer_set_palette_swatch_tooltip_contrast(qtbot) -> None:
     dark = figurecomposer_set_palette._PaletteSwatch(QtGui.QColor("#000000"), 0)
     light = figurecomposer_set_palette._PaletteSwatch(QtGui.QColor("#ffffff"), 1)
@@ -299,6 +703,48 @@ def test_figure_composer_set_palette_helper_fallbacks(qtbot, monkeypatch) -> Non
         == ()
     )
     assert figurecomposer_set_palette._palette_icon(None, "deep").isNull()
+
+    cubehelix_operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_mode": "cubehelix"}
+    )
+    assert figurecomposer_set_palette._palette_call_kwargs(cubehelix_operation) == {}
+    color = (0.1, 0.2, 0.3)
+    assert (
+        figurecomposer_set_palette._convert_palette_color(sns, color, "rgb", "rgb")
+        == color
+    )
+
+    class BrokenGeneratedPalette:
+        @staticmethod
+        def cubehelix_palette(**_kwargs: typing.Any) -> None:
+            raise ValueError("invalid generated palette")
+
+    assert (
+        figurecomposer_set_palette._generated_palette_colors(
+            BrokenGeneratedPalette, cubehelix_operation
+        )
+        == ()
+    )
+    assert (
+        figurecomposer_set_palette._generated_palette_colors(
+            sns, FigureOperationState.set_palette()
+        )
+        == ()
+    )
+
+    monkeypatch.setattr(figurecomposer_set_palette, "_import_seaborn", lambda: sns)
+    monkeypatch.setattr(
+        figurecomposer_set_palette,
+        "_generated_palette_colors",
+        lambda _sns, _operation: (),
+    )
+    generated_fig = plt.figure()
+    try:
+        figurecomposer_set_palette._render_set_palette(
+            typing.cast("typing.Any", None), cubehelix_operation, generated_fig, None
+        )
+    finally:
+        plt.close(generated_fig)
 
     class EmptyPalette:
         @staticmethod
@@ -399,6 +845,144 @@ def test_figure_composer_set_palette_editor_disables_without_seaborn(
 
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
     assert tool._operation_render_errors == {}
+
+
+@pytest.mark.parametrize(
+    ("mode", "control_name"),
+    [
+        ("cubehelix", "figureComposerSetPaletteCubehelixNColorsControl"),
+        ("light", "figureComposerSetPaletteLightInputCombo"),
+        ("dark", "figureComposerSetPaletteDarkInputCombo"),
+    ],
+)
+def test_figure_composer_generated_palette_editor_disables_without_seaborn(
+    qtbot,
+    monkeypatch,
+    mode: str,
+    control_name: str,
+) -> None:
+    monkeypatch.setattr(figurecomposer_set_palette, "_import_seaborn", lambda: None)
+    operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_mode": mode}
+    )
+    tool = _set_palette_tool(qtbot, operation)
+    page = _set_palette_page(tool)
+
+    control = page.findChild(QtWidgets.QWidget, control_name)
+    message = page.findChild(
+        QtWidgets.QLabel, "figureComposerSetPaletteUnavailableLabel"
+    )
+    assert control is not None
+    assert not control.isEnabled()
+    assert message is not None
+    assert message.property("missing_dependency") == "seaborn"
+    assert figurecomposer_set_palette._display_text(tool, operation).startswith(
+        "Skipped Set Palette:"
+    )
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert tool._operation_render_errors == {}
+
+
+@pytest.mark.parametrize(
+    ("mode", "input_space"),
+    [
+        ("cubehelix", None),
+        ("light", "husl"),
+        ("light", "hls"),
+        ("light", "rgb"),
+        ("dark", "husl"),
+        ("dark", "hls"),
+        ("dark", "rgb"),
+    ],
+)
+def test_figure_composer_generated_palette_render_and_codegen(
+    qtbot,
+    mode: str,
+    input_space: str | None,
+) -> None:
+    sns = pytest.importorskip("seaborn")
+    if mode == "cubehelix":
+        cubehelix = FigureCubehelixPaletteState(
+            n_colors=4,
+            start=0.3,
+            rot=-0.4,
+            gamma=1.2,
+            hue=0.65,
+            light=0.9,
+            dark=0.1,
+            reverse=True,
+        )
+        palette_operation = FigureOperationState.set_palette().model_copy(
+            update={
+                "palette_mode": mode,
+                "palette_cubehelix": cubehelix,
+            }
+        )
+        expected = sns.cubehelix_palette(
+            n_colors=cubehelix.n_colors,
+            start=cubehelix.start,
+            rot=cubehelix.rot,
+            gamma=cubehelix.gamma,
+            hue=cubehelix.hue,
+            light=cubehelix.light,
+            dark=cubehelix.dark,
+            reverse=cubehelix.reverse,
+        )
+    else:
+        assert input_space is not None
+        colors = {
+            "husl": (210.0, 70.0, 45.0),
+            "hls": (0.6, 0.4, 0.7),
+            "rgb": (0.2, 0.5, 0.8),
+        }
+        sequential = FigureSequentialPaletteState(
+            input=typing.cast("typing.Any", input_space),
+            color=colors[input_space],
+            n_colors=4,
+        )
+        palette_operation = FigureOperationState.set_palette().model_copy(
+            update={
+                "palette_mode": mode,
+                f"palette_{mode}": sequential,
+            }
+        )
+        expected = getattr(sns, f"{mode}_palette")(
+            sequential.color,
+            n_colors=sequential.n_colors,
+            input=sequential.input,
+        )
+
+    profile = _figure_composer_profile_source("profile")
+    line_operation = FigureOperationState.line(label="line", source="profile")
+    tool = FigureComposerTool(
+        profile,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="profile", label="profile"),),
+            operations=(palette_operation, line_operation),
+            primary_source="profile",
+        ),
+        source_data={"profile": profile},
+    )
+    qtbot.addWidget(tool)
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert tool._operation_render_errors == {}
+    np.testing.assert_allclose(
+        mcolors.to_rgb(tool.figure.axes[0].lines[0].get_color()),
+        expected[0],
+    )
+
+    code = tool.generated_code()
+    assert f"sns.{mode}_palette(" in code
+    assert "choose_" not in code
+    namespace: dict[str, typing.Any] = {"profile": profile}
+    exec(code, namespace)  # noqa: S102
+    generated_line = namespace["fig"].axes[0].lines[0]
+    np.testing.assert_allclose(
+        mcolors.to_rgb(generated_line.get_color()),
+        expected[0],
+    )
 
 
 def test_figure_composer_set_palette_render_and_generated_code(qtbot) -> None:

@@ -440,6 +440,44 @@ class FigurePlotSlicesPanelStyleState(pydantic.BaseModel):
         return _jsonable_slice_mapping(value)
 
 
+class FigureCubehelixPaletteState(pydantic.BaseModel):
+    """Parameters for a seaborn cubehelix palette."""
+
+    n_colors: int = pydantic.Field(default=9, ge=2, le=16)
+    start: float = pydantic.Field(default=0.0, ge=0.0, le=3.0)
+    rot: float = pydantic.Field(default=0.4, ge=-1.0, le=1.0)
+    gamma: float = pydantic.Field(default=1.0, ge=0.0, le=5.0)
+    hue: float = pydantic.Field(default=0.8, ge=0.0, le=1.0)
+    light: float = pydantic.Field(default=0.85, ge=0.0, le=1.0)
+    dark: float = pydantic.Field(default=0.15, ge=0.0, le=1.0)
+    reverse: bool = False
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+
+class FigureSequentialPaletteState(pydantic.BaseModel):
+    """Seed color and size for a seaborn light or dark palette."""
+
+    input: typing.Literal["husl", "hls", "rgb"] = "husl"
+    color: tuple[float, float, float] = (179.0, 49.0, 49.0)
+    n_colors: int = pydantic.Field(default=10, ge=3, le=17)
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+    @pydantic.model_validator(mode="after")
+    def _validate_color(self) -> FigureSequentialPaletteState:
+        if self.input == "husl":
+            limits = ((0.0, 359.0), (0.0, 99.0), (0.0, 99.0))
+        else:
+            limits = ((0.0, 1.0),) * 3
+        if any(
+            not lower <= value <= upper
+            for value, (lower, upper) in zip(self.color, limits, strict=True)
+        ):
+            raise ValueError(f"palette color is outside the {self.input} range")
+        return self
+
+
 class FigureOperationState(pydantic.BaseModel):
     """One ordered plotting operation in a figure recipe."""
 
@@ -452,11 +490,22 @@ class FigureOperationState(pydantic.BaseModel):
     )
 
     palette_name: str = "deep"
-    palette_mode: typing.Literal["named", "colors"] = "named"
+    palette_mode: typing.Literal["named", "colors", "cubehelix", "light", "dark"] = (
+        "named"
+    )
     palette_colors: tuple[str, ...] = ()
     palette_n_colors: int | None = pydantic.Field(default=None, ge=1)
     palette_desat: float | None = pydantic.Field(default=None, ge=0.0, le=1.0)
     palette_color_codes: bool = False
+    palette_cubehelix: FigureCubehelixPaletteState = pydantic.Field(
+        default_factory=FigureCubehelixPaletteState
+    )
+    palette_light: FigureSequentialPaletteState = pydantic.Field(
+        default_factory=FigureSequentialPaletteState
+    )
+    palette_dark: FigureSequentialPaletteState = pydantic.Field(
+        default_factory=FigureSequentialPaletteState
+    )
 
     sources: tuple[str, ...] = ()
     # Legacy source selections. Live recipes normalize the usual single-selection
