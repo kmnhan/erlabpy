@@ -110,10 +110,12 @@ up the corresponding `ToolWindow` surface:
 - Open an ImageTool that is not one of the declared outputs:
   optional; call `_launch_detached_output_imagetool(...)`. In the manager, that opens
   a fresh independent top-level ImageTool window with no saved parent row or output id.
-  Outside the manager, each call opens a new standalone ImageTool window. Override
-  `detached_output_imagetool_provenance()` only when standalone launches should show
-  different generated code from `current_provenance_spec()`, and keep that hook free
-  of blocking side effects such as modal warnings.
+  Outside the manager, each call opens a new standalone ImageTool window. When the
+  new window needs replay code, call `detached_output_imagetool_provenance()` and pass
+  its result explicitly as `provenance_spec`; `_launch_detached_output_imagetool()`
+  does not invoke that hook implicitly. Override the hook only when detached launches
+  should show different generated code from `current_provenance_spec()`, and keep it
+  free of blocking side effects such as modal warnings.
 
 The important distinction is that outputs declared in `IMAGE_TOOL_OUTPUTS` become
 ImageTool windows as child rows of the tool in the manager, keyed by a serialized
@@ -305,7 +307,7 @@ class MyTool(erlab.interactive.utils.ToolWindow):
 
     class StateModel(pydantic.BaseModel):
         data_name: str
-        sigma: float = 1.0
+        window: int = 1
         show_reference: bool = False
 
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
@@ -327,15 +329,15 @@ class MyTool(erlab.interactive.utils.ToolWindow):
         self.reference_image = erlab.interactive.utils.xImageItem(
             axisOrder="row-major"
         )
-        self.sigma_spin = QtWidgets.QDoubleSpinBox()
+        self.window_spin = QtWidgets.QSpinBox()
         self.reference_check = QtWidgets.QCheckBox("Show reference")
         self.copy_btn = QtWidgets.QPushButton("Copy Code")
         self.open_filtered_btn = QtWidgets.QPushButton("Open filtered output")
 
-        self.sigma_spin.setRange(0.0, 100.0)
-        self.sigma_spin.setValue(1.0)
-        self.sigma_spin.valueChanged.connect(self._refresh)
-        self.reference_check.toggled.connect(self._refresh)
+        self.window_spin.setRange(1, 100)
+        self.window_spin.setValue(1)
+        self.window_spin.valueChanged.connect(self._controls_changed)
+        self.reference_check.toggled.connect(self._controls_changed)
         # COPY_PROVENANCE only defines the generated code. A UI button still has to
         # connect to the built-in copy_code() slot explicitly.
         self.copy_btn.clicked.connect(self.copy_code)
@@ -345,13 +347,14 @@ class MyTool(erlab.interactive.utils.ToolWindow):
         self.plot.addItem(self.filtered_image)
         self.plot.addItem(self.reference_image)
         layout.addWidget(self.plot)
-        controls.addWidget(self.sigma_spin)
+        controls.addWidget(self.window_spin)
         controls.addWidget(self.reference_check)
         controls.addWidget(self.copy_btn)
         controls.addWidget(self.open_filtered_btn)
         layout.addLayout(controls)
 
         self._refresh(notify=False)
+        self._reset_history_stack()
 
     @property
     def preview_imageitem(self) -> pg.ImageItem:
@@ -361,14 +364,13 @@ class MyTool(erlab.interactive.utils.ToolWindow):
     @property
     def info_text(self) -> str:
         # Optional: short HTML summary shown in the manager side panel.
-        sigma = float(self.sigma_spin.value())
+        window = self._filter_window()
         shape = " x ".join(str(size) for size in self.tool_data.shape)
         return (
             f"<b>{self.tool_name}</b><br>"
             f"shape: {shape}<br>"
-            f"window: {self._filter_window()}<br>"
-            f"show reference: {self.reference_check.isChecked()}<br>"
-            f"sigma spin value: {sigma:g}"
+            f"window: {window}<br>"
+            f"show reference: {self.reference_check.isChecked()}"
         )
 
     @property
@@ -379,15 +381,19 @@ class MyTool(erlab.interactive.utils.ToolWindow):
     def tool_status(self) -> StateModel:
         return self.StateModel(
             data_name=self._data_name,
-            sigma=float(self.sigma_spin.value()),
+            window=self._filter_window(),
             show_reference=self.reference_check.isChecked(),
         )
 
     @tool_status.setter
     def tool_status(self, status: StateModel) -> None:
         self._data_name = status.data_name
-        self.sigma_spin.setValue(status.sigma)
-        self.reference_check.setChecked(status.show_reference)
+        with (
+            QtCore.QSignalBlocker(self.window_spin),
+            QtCore.QSignalBlocker(self.reference_check),
+        ):
+            self.window_spin.setValue(status.window)
+            self.reference_check.setChecked(status.show_reference)
         self._refresh(notify=False)
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
@@ -400,13 +406,16 @@ class MyTool(erlab.interactive.utils.ToolWindow):
     def update_data(self, new_data: xr.DataArray) -> bool:
         # Preserve the existing UI state while swapping in replacement data.
         status = self.tool_status
-        self._data = self.validate_update_data(new_data)
-        self.tool_status = status
-        self._notify_data_changed()
+        validated = self.validate_update_data(new_data)
+        with self._history_suppressed():
+            self._data = validated
+            self.tool_status = status
+            self._notify_data_changed()
+        self._reset_history_stack()
         return True
 
     def _filter_window(self) -> int:
-        return max(1, int(round(self.sigma_spin.value())))
+        return int(self.window_spin.value())
 
     def _filtered_output(self) -> xr.DataArray:
         # Optional output method used by IMAGE_TOOL_OUTPUTS.
@@ -447,6 +456,10 @@ class MyTool(erlab.interactive.utils.ToolWindow):
         )
         if tool is not None:
             self._filtered_itool = tool
+
+    def _controls_changed(self, _value: int | bool) -> None:
+        self._refresh()
+        self._write_state()
 
     def _refresh(self, *, notify: bool = True) -> None:
         # Keep the on-screen view and any manager-facing outputs in sync.
@@ -747,10 +760,21 @@ implement provenance for that code path:
   base `ToolWindow.output_imagetool_data()` and
   `ToolWindow.output_imagetool_provenance()` methods resolve those declared outputs for
   the manager, so authors should not override those methods for new outputs.
-- Override `detached_output_imagetool_provenance()` only when non-bound standalone
-  ImageTool launches should use different generated code from `current_provenance_spec()`.
-  This provenance is evaluated while opening the new window, so return `None` or
-  side-effect-free provenance instead of warning the user from inside this hook.
+- Override `detached_output_imagetool_provenance()` only when detached ImageTool
+  launches should use different generated code from `current_provenance_spec()`.
+  Call it before opening the window and pass its result explicitly:
+
+  ```python
+  def open_detached_output(self, output: xr.DataArray) -> None:
+      self._launch_detached_output_imagetool(
+          output,
+          provenance_spec=self.detached_output_imagetool_provenance(output),
+      )
+  ```
+
+  `_launch_detached_output_imagetool()` does not evaluate the hook itself. Return
+  `None` or side-effect-free provenance instead of warning the user from inside the
+  hook.
 
 The full `MyTool` example above already shows the preferred pattern:
 
@@ -844,7 +868,11 @@ At minimum, add tests in `tests/interactive/test_<tool>.py` that cover:
 - dialog accept and cancel paths for any new dialogs, including {guilabel}`Save` and
   {guilabel}`Update Now` paths if the tool participates in automatic updates; and
 - manager launch paths, preferably by patching manager functions unless a live manager
-  is required.
+  is required;
+- generated code from `COPY_PROVENANCE` and every `IMAGE_TOOL_OUTPUTS` definition that
+  provides provenance: execute it in an explicit namespace and assert that the
+  resulting object exactly matches the expected `DataArray`; do not assert source
+  formatting unless that exact formatting is the behavior under test; and
 - grouped provenance behavior when applicable: serialization, full-group copy/paste
   preserving editability, partial copy/paste stripping group metadata while staying
   replayable, grouped edit replacement, grouped delete/revert behavior, and generated

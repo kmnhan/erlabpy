@@ -4188,9 +4188,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Return replay provenance for an unbound ImageTool opened from this tool.
 
         Override this only when an unbound ImageTool should display different replay
-        provenance from `current_provenance_spec()`. Standalone and managed detached
-        launches both preserve the returned provenance, so this hook must stay free of
-        blocking side effects such as warning dialogs.
+        provenance from `current_provenance_spec()`. A caller that opens an ImageTool
+        directly must pass the returned spec to `_launch_detached_output_imagetool()`;
+        that helper does not invoke this hook implicitly. Standalone and managed
+        detached launches both preserve a supplied spec, so this hook must stay free
+        of blocking side effects such as warning dialogs.
         """
         del data, source
         return self.current_provenance_spec()
@@ -4277,7 +4279,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
         Managed tools create a fresh independent top-level manager window with
         detached replay provenance when the caller provides it. Standalone tools create
-        a fresh standalone ImageTool window.
+        a fresh standalone ImageTool window. To use the tool's detached-output
+        provenance hook, call it explicitly and pass its result as ``provenance_spec``.
         """
         self._flush_restore_work()
         return self._open_output_imagetool(
