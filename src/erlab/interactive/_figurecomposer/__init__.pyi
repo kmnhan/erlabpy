@@ -1,7 +1,9 @@
 __all__ = [
     "FigureAxesSelectionState",
     "FigureComposerTool",
+    "FigureCubehelixPaletteState",
     "FigureDataSelectionState",
+    "FigureDivergingPaletteState",
     "FigureExportState",
     "FigureGridSpecAxesState",
     "FigureGridSpecGridState",
@@ -13,13 +15,16 @@ __all__ = [
     "FigureOperationState",
     "FigurePlotSlicesPanelStyleState",
     "FigureRecipeState",
+    "FigureSequentialPaletteState",
     "FigureSourceState",
     "FigureSubplotsState",
 ]
 
 from ._model._state import (
     FigureAxesSelectionState,
+    FigureCubehelixPaletteState,
     FigureDataSelectionState,
+    FigureDivergingPaletteState,
     FigureExportState,
     FigureGridSpecAxesState,
     FigureGridSpecGridState,
@@ -31,6 +36,7 @@ from ._model._state import (
     FigureOperationState,
     FigurePlotSlicesPanelStyleState,
     FigureRecipeState,
+    FigureSequentialPaletteState,
     FigureSourceState,
     FigureSubplotsState,
 )

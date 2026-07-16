@@ -229,6 +229,7 @@ class _ColorPickerButton(QtWidgets.QPushButton):
         parent: QtWidgets.QWidget | None = None,
         *,
         color: QtGui.QColor | None = None,
+        show_alpha_channel: bool = True,
     ) -> None:
         super().__init__(parent)
         self._color = (
@@ -236,6 +237,7 @@ class _ColorPickerButton(QtWidgets.QPushButton):
             if color is not None and color.isValid()
             else _default_mpl_line_color()
         )
+        self._show_alpha_channel = show_alpha_channel
         self._dialog_open = False
         self.setMinimumSize(22, 18)
         self.clicked.connect(self._choose_color)
@@ -273,12 +275,19 @@ class _ColorPickerButton(QtWidgets.QPushButton):
             parent = self.window()
             if not erlab.interactive.utils.qt_is_valid(parent):
                 parent = None
-            color = QtWidgets.QColorDialog.getColor(
-                self._color,
-                parent,
-                "Choose Color",
-                QtWidgets.QColorDialog.ColorDialogOption.ShowAlphaChannel,
-            )
+            if self._show_alpha_channel:
+                color = QtWidgets.QColorDialog.getColor(
+                    self._color,
+                    parent,
+                    "Choose Color",
+                    QtWidgets.QColorDialog.ColorDialogOption.ShowAlphaChannel,
+                )
+            else:
+                color = QtWidgets.QColorDialog.getColor(
+                    self._color,
+                    parent,
+                    "Choose Color",
+                )
         finally:
             if erlab.interactive.utils.qt_is_valid(self):
                 self._dialog_open = False

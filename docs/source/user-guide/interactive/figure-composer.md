@@ -91,7 +91,8 @@ when they occur. Hover over a reported problem for details.
 
 There are several step types:
 
-- {guilabel}`Set Palette` to set the line color cycle with {func}`seaborn.set_palette`.
+- {guilabel}`Set Palette` to set the line color cycle with a named palette, custom
+  colors, or a generated seaborn cubehelix, diverging, light, or dark palette.
 - {guilabel}`Image Plot` for one two-dimensional image on one axes. Uses
   {func}`erlab.plotting.plot_array`.
 - {guilabel}`Slice Plot` for plotting multiple slices on multiple axes. Uses

@@ -55,7 +55,9 @@ import erlab.plotting as eplt
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
     FigureComposerTool,
+    FigureCubehelixPaletteState,
     FigureDataSelectionState,
+    FigureDivergingPaletteState,
     FigureExportState,
     FigureGridSpecAxesState,
     FigureGridSpecGridState,
@@ -67,6 +69,7 @@ from erlab.interactive._figurecomposer import (
     FigureOperationState,
     FigurePlotSlicesPanelStyleState,
     FigureRecipeState,
+    FigureSequentialPaletteState,
     FigureSourceState,
     FigureSubplotsState,
 )

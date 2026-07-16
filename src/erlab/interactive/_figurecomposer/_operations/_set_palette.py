@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import colorsys
 import functools
 import html
+import operator
 import typing
+import weakref
 
 import matplotlib.pyplot as plt
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab.interactive.utils
 from erlab.interactive._figurecomposer._model._state import (
     FigureOperationKind,
     FigureOperationState,
+    FigureSequentialPaletteState,
 )
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
@@ -20,12 +25,15 @@ from erlab.interactive._figurecomposer._operations._base import (
     _no_invalid_target,
     _uses_no_source_section,
 )
-from erlab.interactive._figurecomposer._ui._color_widgets import _ColorListEditorWidget
+from erlab.interactive._figurecomposer._ui._color_widgets import (
+    _ColorListEditorWidget,
+    _ColorPickerButton,
+)
 from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
 from erlab.plotting.colors import close_to_white
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from matplotlib.figure import Figure
 
@@ -34,7 +42,16 @@ if typing.TYPE_CHECKING:
         FigureOperationEditor,
     )
 
-_SET_PALETTE_DOC_URL = "https://seaborn.pydata.org/generated/seaborn.set_palette.html"
+_SEABORN_DOC_ROOT = "https://seaborn.pydata.org/generated/seaborn"
+_SET_PALETTE_DOC_URL = f"{_SEABORN_DOC_ROOT}.set_palette.html"
+_PALETTE_DOC_URLS = {
+    "named": _SET_PALETTE_DOC_URL,
+    "colors": _SET_PALETTE_DOC_URL,
+    "cubehelix": f"{_SEABORN_DOC_ROOT}.cubehelix_palette.html",
+    "diverging": f"{_SEABORN_DOC_ROOT}.diverging_palette.html",
+    "light": f"{_SEABORN_DOC_ROOT}.light_palette.html",
+    "dark": f"{_SEABORN_DOC_ROOT}.dark_palette.html",
+}
 _SEABORN_NAMED_PALETTES = (
     "deep",
     "deep6",
@@ -93,6 +110,16 @@ _PALETTE_ICON_COLORS = 8
 _PALETTE_MODE_LABELS = {
     "named": "Named palette",
     "colors": "Custom colors",
+    "cubehelix": "Cubehelix palette",
+    "diverging": "Diverging palette",
+    "light": "Light palette",
+    "dark": "Dark palette",
+}
+_GENERATED_PALETTE_MODES = frozenset({"cubehelix", "diverging", "light", "dark"})
+_SEQUENTIAL_PALETTE_INPUT_LABELS = {
+    "husl": "HUSL",
+    "hls": "HLS",
+    "rgb": "RGB",
 }
 
 
@@ -201,6 +228,69 @@ class _PalettePreviewWidget(QtWidgets.QWidget):
         layout.addStretch(1)
 
 
+class _PaletteSliderWidget(QtWidgets.QWidget):
+    """Synchronized slider and spinbox for one chooser parameter."""
+
+    valueChanged = QtCore.Signal(object)
+    previewValueChanged = QtCore.Signal(object)
+
+    def __init__(
+        self,
+        minimum: float,
+        maximum: float,
+        value: float,
+        *,
+        decimals: int = 2,
+        single_step: float = 0.1,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._scale = 10**decimals
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self.slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, self)
+        self.slider.setRange(round(minimum * self._scale), round(maximum * self._scale))
+        self.slider.setSingleStep(max(1, round(single_step * self._scale)))
+        self.slider.setMinimumWidth(90)
+
+        self.spin = QtWidgets.QDoubleSpinBox(self)
+        self.spin.setRange(minimum, maximum)
+        self.spin.setDecimals(decimals)
+        self.spin.setSingleStep(single_step)
+        self.spin.setKeyboardTracking(False)
+
+        layout.addWidget(self.slider, 1)
+        layout.addWidget(self.spin)
+        self.setValue(value)
+
+    def value(self) -> float:
+        return self.spin.value()
+
+    def setValue(self, value: float) -> None:
+        with QtCore.QSignalBlocker(self.spin), QtCore.QSignalBlocker(self.slider):
+            self.spin.setValue(value)
+            self.slider.setValue(round(value * self._scale))
+
+    def _slider_changed(self, value: int) -> None:
+        self.spin.setValue(value / self._scale)
+
+    def _spin_changed(self, _value: float) -> None:
+        with QtCore.QSignalBlocker(self.slider):
+            self.slider.setValue(round(float(self.spin.value()) * self._scale))
+        signal = (
+            self.previewValueChanged
+            if self.slider.isSliderDown()
+            else self.valueChanged
+        )
+        signal.emit(self.value())
+
+    def _slider_released(self) -> None:
+        self.valueChanged.emit(self.value())
+
+
 def _qt_color(color: typing.Any) -> QtGui.QColor:
     red, green, blue = color[:3]
     return QtGui.QColor.fromRgbF(float(red), float(green), float(blue))
@@ -242,6 +332,15 @@ def _palette_display_text(operation: FigureOperationState) -> str:
     if operation.palette_mode == "colors":
         count = len(operation.palette_colors)
         return f"Custom colors ({count})" if count else "Custom colors"
+    if operation.palette_mode == "cubehelix":
+        return f"Cubehelix palette ({operation.palette_cubehelix.n_colors})"
+    if operation.palette_mode == "diverging":
+        state = operation.palette_diverging
+        return f"Diverging palette ({state.center}, {state.n_colors})"
+    if operation.palette_mode in {"light", "dark"}:
+        state = getattr(operation, f"palette_{operation.palette_mode}")
+        label = _PALETTE_MODE_LABELS[operation.palette_mode]
+        return f"{label} ({state.input.upper()}, {state.n_colors})"
     return operation.palette_name
 
 
@@ -278,6 +377,101 @@ def _palette_colors(
         return tuple(sns.color_palette(palette, n_colors=n_colors, desat=desat))
     except (TypeError, ValueError):
         return ()
+
+
+def _generated_palette_colors(
+    sns: typing.Any | None, operation: FigureOperationState
+) -> tuple[typing.Any, ...]:
+    if sns is None:
+        return ()
+    if operation.palette_mode == "cubehelix":
+        state = operation.palette_cubehelix
+        return tuple(
+            sns.cubehelix_palette(
+                n_colors=state.n_colors,
+                start=state.start,
+                rot=state.rot,
+                gamma=state.gamma,
+                hue=state.hue,
+                light=state.light,
+                dark=state.dark,
+                reverse=state.reverse,
+            )
+        )
+    if operation.palette_mode == "diverging":
+        state = operation.palette_diverging
+        return tuple(
+            sns.diverging_palette(
+                h_neg=state.h_neg,
+                h_pos=state.h_pos,
+                s=state.s,
+                l=state.l,
+                sep=state.sep,
+                n=state.n_colors,
+                center=state.center,
+            )
+        )
+    if operation.palette_mode == "light":
+        state = operation.palette_light
+        palette_factory = sns.light_palette
+    else:
+        state = operation.palette_dark
+        palette_factory = sns.dark_palette
+    return tuple(
+        palette_factory(
+            state.color,
+            n_colors=state.n_colors,
+            input=state.input,
+        )
+    )
+
+
+def _resolved_palette_colors(
+    sns: typing.Any | None, operation: FigureOperationState
+) -> tuple[typing.Any, ...]:
+    if operation.palette_mode in _GENERATED_PALETTE_MODES:
+        return _generated_palette_colors(sns, operation)
+    return _palette_colors(
+        sns,
+        _palette_value(operation),
+        operation.palette_n_colors,
+        operation.palette_desat,
+    )
+
+
+def _convert_palette_color(
+    sns: typing.Any,
+    color: tuple[float, float, float],
+    source: str,
+    target: str,
+) -> tuple[float, float, float]:
+    if source == target:
+        return color
+    if source == "husl":
+        rgb = tuple(float(value) for value in sns.external.husl.husl_to_rgb(*color))
+    elif source == "hls":
+        rgb = colorsys.hls_to_rgb(*color)
+    else:
+        rgb = color
+
+    if target == "husl":
+        converted = tuple(float(value) for value in sns.external.husl.rgb_to_husl(*rgb))
+    elif target == "hls":
+        converted = colorsys.rgb_to_hls(*rgb)
+    else:
+        converted = rgb
+    limits = (
+        ((0.0, 359.0), (0.0, 99.0), (0.0, 99.0))
+        if target == "husl"
+        else ((0.0, 1.0),) * 3
+    )
+    return typing.cast(
+        "tuple[float, float, float]",
+        tuple(
+            min(max(value, lower), upper)
+            for value, (lower, upper) in zip(converted, limits, strict=True)
+        ),
+    )
 
 
 def _palette_hex_colors(colors: Sequence[typing.Any]) -> tuple[str, ...]:
@@ -349,7 +543,10 @@ def _render_set_palette(
     sns = _import_seaborn()
     if sns is None or not _palette_has_effect(operation):
         return
-    sns.set_palette(_palette_value(operation), **_palette_call_kwargs(operation))
+    if operation.palette_mode in _GENERATED_PALETTE_MODES:
+        sns.set_palette(_generated_palette_colors(sns, operation))
+    else:
+        sns.set_palette(_palette_value(operation), **_palette_call_kwargs(operation))
     _apply_palette_to_existing_axes(fig, sns)
 
 
@@ -377,6 +574,64 @@ def _target_text(_tool: FigureComposerTool, _operation: FigureOperationState) ->
     return "Figure"
 
 
+def _add_palette_slider(
+    editor: FigureOperationEditor,
+    layout: QtWidgets.QFormLayout,
+    page: QtWidgets.QWidget,
+    *,
+    label: str,
+    object_name: str,
+    value: float,
+    minimum: float,
+    maximum: float,
+    changed: Callable[[float, bool], None],
+    tooltip: str,
+    mixed: bool,
+    enabled: bool,
+    decimals: int = 2,
+    single_step: float = 0.1,
+) -> _PaletteSliderWidget:
+    slider = _PaletteSliderWidget(
+        minimum,
+        maximum,
+        value,
+        decimals=decimals,
+        single_step=single_step,
+        parent=page,
+    )
+    slider.setObjectName(object_name)
+    slider.slider.setObjectName(f"{object_name}Slider")
+    slider.spin.setObjectName(f"{object_name}Spin")
+    slider.setAccessibleName(label)
+    slider.slider.setAccessibleName(label)
+    slider.spin.setAccessibleName(label)
+    slider.setEnabled(enabled)
+    editor.connect_signal(
+        slider.slider, slider.slider.valueChanged, slider._slider_changed
+    )
+    editor.connect_signal(slider.spin, slider.spin.valueChanged, slider._spin_changed)
+    editor.connect_signal(
+        slider.slider, slider.slider.sliderReleased, slider._slider_released
+    )
+    editor.connect_signal(
+        slider,
+        slider.previewValueChanged,
+        lambda value: changed(float(value), True),
+    )
+    editor.connect_signal(
+        slider,
+        slider.valueChanged,
+        lambda value: changed(float(value), False),
+    )
+    editor.add_form_row(
+        layout,
+        label,
+        editor.mixed_value_widget(slider, mixed=mixed, parent=page),
+        tooltip,
+    )
+    return slider
+
+
 def _editor_sections(
     editor: FigureOperationEditor, operation: FigureOperationState
 ) -> tuple[StepSection, ...]:
@@ -391,43 +646,86 @@ def _editor_sections(
 
     preview = _PalettePreviewWidget(page)
     preview.setEnabled(available)
-    preview_values: list[typing.Any] = [
-        operation.palette_mode,
-        operation.palette_name,
-        operation.palette_colors,
-        operation.palette_n_colors,
-        operation.palette_desat,
-    ]
-    unchanged = object()
+    preview_operation = [operation]
+    seed_color_button_ref: weakref.ReferenceType[_ColorPickerButton] | None = None
+    diverging_color_button_refs: dict[
+        str, weakref.ReferenceType[_ColorPickerButton]
+    ] = {}
 
-    def refresh_preview(
-        *,
-        palette_mode: str | None = None,
-        palette_name: str | None = None,
-        palette_colors: typing.Any = unchanged,
-        n_colors: typing.Any = unchanged,
-        desat: typing.Any = unchanged,
-    ) -> None:
-        if palette_mode is not None:
-            preview_values[0] = palette_mode
-        if palette_name is not None:
-            preview_values[1] = palette_name
-        if palette_colors is not unchanged:
-            preview_values[2] = tuple(palette_colors)
-        if n_colors is not unchanged:
-            preview_values[3] = n_colors
-        if desat is not unchanged:
-            preview_values[4] = desat
-        palette_value = (
-            preview_values[2] if preview_values[0] == "colors" else preview_values[1]
+    def refresh_preview() -> None:
+        current = preview_operation[0]
+        preview.set_colors(_resolved_palette_colors(sns, current))
+        seed_color_button = (
+            seed_color_button_ref() if seed_color_button_ref is not None else None
         )
-        preview.set_colors(
-            _palette_colors(
-                sns,
-                palette_value,
-                preview_values[3],
-                preview_values[4],
+        if (
+            seed_color_button is not None
+            and sns is not None
+            and current.palette_mode in {"light", "dark"}
+            and erlab.interactive.utils.qt_is_valid(seed_color_button)
+        ):
+            state = typing.cast(
+                "FigureSequentialPaletteState",
+                getattr(current, f"palette_{current.palette_mode}"),
             )
+            seed_color_button.setColor(
+                _qt_color(
+                    _convert_palette_color(
+                        sns,
+                        state.color,
+                        state.input,
+                        "rgb",
+                    )
+                )
+            )
+        if (
+            diverging_color_button_refs
+            and sns is not None
+            and current.palette_mode == "diverging"
+        ):
+            state = current.palette_diverging
+            for field, button_ref in diverging_color_button_refs.items():
+                button = button_ref()
+                if button is None or not erlab.interactive.utils.qt_is_valid(button):
+                    continue
+                button.setColor(
+                    _qt_color(
+                        _convert_palette_color(
+                            sns,
+                            (getattr(state, field), state.s, state.l),
+                            "husl",
+                            "rgb",
+                        )
+                    )
+                )
+
+    def update_operation(**updates: typing.Any) -> None:
+        preview_operation[0] = preview_operation[0].model_copy(update=updates)
+        refresh_preview()
+        editor.request_update(**updates)
+
+    def transform_palette_state(
+        attribute: str,
+        updater: Callable[[typing.Any], typing.Any],
+        *,
+        preview_only: bool = False,
+        rebuild: bool = False,
+    ) -> None:
+        def transform(
+            _index: int, target: FigureOperationState
+        ) -> FigureOperationState:
+            return target.model_copy(
+                update={attribute: updater(getattr(target, attribute))}
+            )
+
+        preview_operation[0] = transform(0, preview_operation[0])
+        refresh_preview()
+        if preview_only:
+            return
+        editor.request_transform(
+            transform,
+            rebuild_editor=rebuild,
+            defer_editor_rebuild=rebuild,
         )
 
     if not available:
@@ -445,25 +743,25 @@ def _editor_sections(
         )
 
     def update_palette_mode(mode: str) -> None:
-        if mode not in _PALETTE_MODE_LABELS:
-            return
-        updates: dict[str, typing.Any] = {"palette_mode": mode}
-        if mode == "colors" and not operation.palette_colors:
-            seeded_colors = _palette_hex_colors(
-                _palette_colors(
-                    sns,
-                    operation.palette_name,
-                    operation.palette_n_colors,
-                    operation.palette_desat,
+        def transform(
+            _index: int, target: FigureOperationState
+        ) -> FigureOperationState:
+            updates: dict[str, typing.Any] = {"palette_mode": mode}
+            if mode == "colors" and not target.palette_colors:
+                seeded_colors = _palette_hex_colors(
+                    _resolved_palette_colors(sns, target)
                 )
-            )
-            if seeded_colors:
-                updates["palette_colors"] = seeded_colors
-        refresh_preview(
-            palette_mode=mode,
-            palette_colors=updates.get("palette_colors", operation.palette_colors),
+                if seeded_colors:
+                    updates["palette_colors"] = seeded_colors
+            return target.model_copy(update=updates)
+
+        preview_operation[0] = transform(0, preview_operation[0])
+        refresh_preview()
+        editor.request_transform(
+            transform,
+            rebuild_editor=True,
+            defer_editor_rebuild=True,
         )
-        editor.request_update_rebuild(**updates)
 
     mode_mixed = editor.batch_is_mixed(operation, lambda target: target.palette_mode)
     mode_combo = QtWidgets.QComboBox(page)
@@ -480,7 +778,7 @@ def _editor_sections(
         mode_combo.setCurrentIndex(max(mode_combo.findData(operation.palette_mode), 0))
     mode_combo.setEnabled(available)
     mode_combo.setToolTip(
-        "Choose a named seaborn or Matplotlib palette, or provide explicit colors."
+        "Choose a named palette, explicit colors, or a generated sequential palette."
     )
     editor.connect_signal(
         mode_combo,
@@ -502,11 +800,13 @@ def _editor_sections(
     docs_button.setObjectName("figureComposerSetPaletteDocsButton")
     docs_button.setText("Docs")
     docs_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
-    docs_button.setProperty("figure_palette_doc_url", _SET_PALETTE_DOC_URL)
-    docs_button.setToolTip("Open seaborn.set_palette documentation.")
+    docs_mode = "named" if mode_mixed else operation.palette_mode
+    docs_url = _PALETTE_DOC_URLS[docs_mode]
+    docs_button.setProperty("figure_palette_doc_url", docs_url)
+    docs_button.setToolTip("Open documentation for this seaborn palette function.")
 
     def open_docs(_checked: bool = False) -> None:
-        QtGui.QDesktopServices.openUrl(QtCore.QUrl(_SET_PALETTE_DOC_URL))
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl(docs_url))
 
     editor.connect_signal(
         docs_button,
@@ -518,19 +818,14 @@ def _editor_sections(
         layout,
         "Use",
         mode_row,
-        "Choose whether this step uses a named palette or explicit colors.",
+        "Choose how this step constructs the line color palette.",
     )
-
-    def update_palette_name(text: str) -> None:
-        refresh_preview(palette_name=text)
-        editor.request_update(palette_name=text)
 
     if not mode_mixed and operation.palette_mode == "colors":
 
         def update_palette_colors(colors: typing.Any) -> None:
             colors = tuple(str(color).strip() for color in colors if str(color).strip())
-            refresh_preview(palette_colors=colors)
-            editor.request_update(
+            update_operation(
                 palette_mode="colors",
                 palette_colors=colors,
             )
@@ -561,14 +856,14 @@ def _editor_sections(
             colors_widget,
             "Explicit color sequence passed to seaborn.set_palette.",
         )
-    else:
+    elif not mode_mixed and operation.palette_mode == "named":
         palette_mixed = editor.batch_is_mixed(
             operation, lambda target: target.palette_name
         )
         palette_combo = editor.combo(
             _palette_options(operation, sns),
             None if palette_mixed else operation.palette_name,
-            update_palette_name,
+            lambda text: update_operation(palette_name=text),
             parent=page,
             mixed=palette_mixed,
             enabled=available,
@@ -586,90 +881,679 @@ def _editor_sections(
             "Named seaborn or Matplotlib palette passed to seaborn.set_palette.",
         )
 
-    count_mixed = editor.batch_is_mixed(
-        operation, lambda target: target.palette_n_colors
-    )
-    count_spin = QtWidgets.QSpinBox(page)
-    count_spin.setObjectName("figureComposerSetPaletteCountSpin")
-    count_spin.setRange(0, _PALETTE_COUNT_MAX)
-    count_spin.setSpecialValueText("Auto")
-    count_spin.setValue(operation.palette_n_colors or 0)
-    count_spin.setEnabled(available)
+    if not mode_mixed and operation.palette_mode in {"named", "colors"}:
+        count_mixed = editor.batch_is_mixed(
+            operation, lambda target: target.palette_n_colors
+        )
+        count_spin = QtWidgets.QSpinBox(page)
+        count_spin.setObjectName("figureComposerSetPaletteCountSpin")
+        count_spin.setRange(0, _PALETTE_COUNT_MAX)
+        count_spin.setSpecialValueText("Auto")
+        count_spin.setValue(operation.palette_n_colors or 0)
+        count_spin.setEnabled(available)
 
-    def update_count(value: typing.Any) -> None:
-        n_colors = None if value == 0 else int(value)
-        refresh_preview(n_colors=n_colors)
-        editor.request_update(palette_n_colors=n_colors)
+        def update_count(value: typing.Any) -> None:
+            update_operation(palette_n_colors=None if value == 0 else int(value))
 
-    editor.connect_value_signal(
-        count_spin,
-        count_spin.valueChanged,
-        lambda *_args: count_spin.value(),
-        update_count,
-    )
+        editor.connect_value_signal(
+            count_spin,
+            count_spin.valueChanged,
+            lambda *_args: count_spin.value(),
+            update_count,
+        )
 
-    desat_mixed = editor.batch_is_mixed(operation, lambda target: target.palette_desat)
-    desat_spin = QtWidgets.QDoubleSpinBox(page)
-    desat_spin.setObjectName("figureComposerSetPaletteSaturationSpin")
-    desat_spin.setRange(_DESAT_AUTO_VALUE, 1.0)
-    desat_spin.setDecimals(2)
-    desat_spin.setSingleStep(0.05)
-    desat_spin.setSpecialValueText("Auto")
-    desat_spin.setValue(
-        _DESAT_AUTO_VALUE
-        if operation.palette_desat is None
-        else operation.palette_desat
-    )
-    desat_spin.setEnabled(available)
+        desat_mixed = editor.batch_is_mixed(
+            operation, lambda target: target.palette_desat
+        )
+        desat_spin = QtWidgets.QDoubleSpinBox(page)
+        desat_spin.setObjectName("figureComposerSetPaletteSaturationSpin")
+        desat_spin.setRange(_DESAT_AUTO_VALUE, 1.0)
+        desat_spin.setDecimals(2)
+        desat_spin.setSingleStep(0.05)
+        desat_spin.setSpecialValueText("Auto")
+        desat_spin.setValue(
+            _DESAT_AUTO_VALUE
+            if operation.palette_desat is None
+            else operation.palette_desat
+        )
+        desat_spin.setEnabled(available)
 
-    def update_desat(value: typing.Any) -> None:
-        desat = None if value <= _DESAT_AUTO_VALUE else float(value)
-        refresh_preview(desat=desat)
-        editor.request_update(palette_desat=desat)
+        def update_desat(value: typing.Any) -> None:
+            update_operation(
+                palette_desat=(None if value <= _DESAT_AUTO_VALUE else float(value))
+            )
 
-    editor.connect_value_signal(
-        desat_spin,
-        desat_spin.valueChanged,
-        lambda *_args: desat_spin.value(),
-        update_desat,
-    )
+        editor.connect_value_signal(
+            desat_spin,
+            desat_spin.valueChanged,
+            lambda *_args: desat_spin.value(),
+            update_desat,
+        )
 
-    editor.add_compound_form_row(
-        layout,
-        "Options",
-        (
+        editor.add_compound_form_row(
+            layout,
+            "Options",
             (
-                "Colors",
-                editor.mixed_value_widget(count_spin, mixed=count_mixed, parent=page),
-                "Number of colors requested from the palette. Auto uses seaborn's "
-                "default length.",
+                (
+                    "Colors",
+                    editor.mixed_value_widget(
+                        count_spin, mixed=count_mixed, parent=page
+                    ),
+                    "Number of colors requested from the palette. Auto uses "
+                    "seaborn's default length.",
+                ),
+                (
+                    "Saturation",
+                    editor.mixed_value_widget(
+                        desat_spin, mixed=desat_mixed, parent=page
+                    ),
+                    "Scale palette saturation. Auto uses seaborn's default saturation.",
+                ),
+            ),
+            "Optional arguments passed to seaborn.set_palette.",
+        )
+
+        color_codes_mixed = editor.batch_is_mixed(
+            operation, lambda target: target.palette_color_codes
+        )
+        color_codes_check = editor.check_box(
+            operation.palette_color_codes,
+            lambda checked: update_operation(palette_color_codes=checked),
+            parent=page,
+            mixed=color_codes_mixed,
+        )
+        color_codes_check.setObjectName("figureComposerSetPaletteColorCodesCheck")
+        color_codes_check.setEnabled(available)
+        editor.add_form_row(
+            layout,
+            "Color codes",
+            color_codes_check,
+            "Map matplotlib color-code letters such as b, g, and r to this palette.",
+        )
+
+    elif not mode_mixed and operation.palette_mode == "cubehelix":
+        state = operation.palette_cubehelix
+        count_mixed = editor.batch_is_mixed(
+            operation, lambda target: target.palette_cubehelix.n_colors
+        )
+        count_spin = QtWidgets.QSpinBox(page)
+        count_spin.setObjectName("figureComposerSetPaletteCubehelixNColorsSpin")
+        count_spin.setAccessibleName("Colors")
+        count_spin.setRange(2, 2_147_483_647)
+        count_spin.setValue(state.n_colors)
+        count_spin.setKeyboardTracking(False)
+        count_spin.setEnabled(available)
+        editor.connect_value_signal(
+            count_spin,
+            count_spin.valueChanged,
+            lambda *_args: count_spin.value(),
+            lambda value: transform_palette_state(
+                "palette_cubehelix",
+                lambda current: current.model_copy(update={"n_colors": int(value)}),
+            ),
+        )
+        editor.add_form_row(
+            layout,
+            "Colors",
+            editor.mixed_value_widget(count_spin, mixed=count_mixed, parent=page),
+            "Number of colors in the generated cubehelix palette.",
+        )
+
+        cubehelix_controls = (
+            (
+                "start",
+                "Start",
+                "Start",
+                0.0,
+                3.0,
+                2,
+                0.1,
+                "Starting hue for the cubehelix rotation.",
             ),
             (
+                "rot",
+                "Rotation",
+                "Rotation",
+                -1.0,
+                1.0,
+                2,
+                0.1,
+                "Number and direction of rotations through the hue space.",
+            ),
+            (
+                "gamma",
+                "Gamma",
+                "Gamma",
+                0.0,
+                5.0,
+                2,
+                0.1,
+                "Gamma correction applied to the intensity ramp.",
+            ),
+            (
+                "hue",
+                "Hue",
+                "Hue",
+                0.0,
+                1.0,
+                2,
+                0.1,
+                "Saturation of the cubehelix colors.",
+            ),
+            (
+                "light",
+                "Light",
+                "Light",
+                0.0,
+                1.0,
+                2,
+                0.1,
+                "Intensity of the light end of the palette.",
+            ),
+            (
+                "dark",
+                "Dark",
+                "Dark",
+                0.0,
+                1.0,
+                2,
+                0.1,
+                "Intensity of the dark end of the palette.",
+            ),
+        )
+        for (
+            field,
+            label,
+            object_suffix,
+            minimum,
+            maximum,
+            decimals,
+            single_step,
+            tooltip,
+        ) in cubehelix_controls:
+            mixed = editor.batch_is_mixed(
+                operation,
+                operator.attrgetter(f"palette_cubehelix.{field}"),
+            )
+
+            def update_cubehelix(
+                value: float,
+                preview_only: bool,
+                *,
+                field: str = field,
+            ) -> None:
+                transform_palette_state(
+                    "palette_cubehelix",
+                    lambda current: current.model_copy(update={field: float(value)}),
+                    preview_only=preview_only,
+                )
+
+            _add_palette_slider(
+                editor,
+                layout,
+                page,
+                label=label,
+                object_name=(
+                    f"figureComposerSetPaletteCubehelix{object_suffix}Control"
+                ),
+                value=float(getattr(state, field)),
+                minimum=minimum,
+                maximum=maximum,
+                changed=update_cubehelix,
+                tooltip=tooltip,
+                mixed=mixed,
+                enabled=available,
+                decimals=decimals,
+                single_step=single_step,
+            )
+
+        reverse_mixed = editor.batch_is_mixed(
+            operation, lambda target: target.palette_cubehelix.reverse
+        )
+        reverse_check = editor.check_box(
+            state.reverse,
+            lambda checked: transform_palette_state(
+                "palette_cubehelix",
+                lambda current: current.model_copy(update={"reverse": checked}),
+            ),
+            parent=page,
+            mixed=reverse_mixed,
+        )
+        reverse_check.setObjectName("figureComposerSetPaletteCubehelixReverseCheck")
+        reverse_check.setEnabled(available)
+        editor.add_form_row(
+            layout,
+            "Reverse",
+            reverse_check,
+            "Reverse the generated cubehelix palette.",
+        )
+
+    elif not mode_mixed and operation.palette_mode == "diverging":
+        state = operation.palette_diverging
+        diverging_controls = (
+            (
+                "h_neg",
+                "Negative hue",
+                "NegativeHue",
+                0.0,
+                359.0,
+                "Hue for the negative end of the palette.",
+            ),
+            (
+                "h_pos",
+                "Positive hue",
+                "PositiveHue",
+                0.0,
+                359.0,
+                "Hue for the positive end of the palette.",
+            ),
+            (
+                "s",
                 "Saturation",
-                editor.mixed_value_widget(desat_spin, mixed=desat_mixed, parent=page),
-                "Scale palette saturation. Auto uses seaborn's default saturation.",
+                "Saturation",
+                0.0,
+                99.0,
+                "Shared saturation of the two palette endpoints.",
             ),
-        ),
-        "Optional arguments passed to seaborn.set_palette.",
-    )
+            (
+                "l",
+                "Lightness",
+                "Lightness",
+                0.0,
+                99.0,
+                "Shared lightness of the two palette endpoints.",
+            ),
+            (
+                "sep",
+                "Separation",
+                "Separation",
+                1.0,
+                50.0,
+                "Size of the intermediate region around the center.",
+            ),
+        )
+        for (
+            field,
+            label,
+            object_suffix,
+            minimum,
+            maximum,
+            tooltip,
+        ) in diverging_controls:
+            mixed = editor.batch_is_mixed(
+                operation,
+                operator.attrgetter(f"palette_diverging.{field}"),
+            )
 
-    color_codes_mixed = editor.batch_is_mixed(
-        operation, lambda target: target.palette_color_codes
-    )
-    color_codes_check = editor.check_box(
-        operation.palette_color_codes,
-        lambda checked: editor.request_update(palette_color_codes=checked),
-        parent=page,
-        mixed=color_codes_mixed,
-    )
-    color_codes_check.setObjectName("figureComposerSetPaletteColorCodesCheck")
-    color_codes_check.setEnabled(available)
-    editor.add_form_row(
-        layout,
-        "Color codes",
-        color_codes_check,
-        "Map matplotlib color-code letters such as b, g, and r to this palette.",
-    )
+            def update_diverging(
+                value: float,
+                preview_only: bool,
+                *,
+                field: str = field,
+            ) -> None:
+                normalized: float | int = int(value) if field == "sep" else float(value)
+                transform_palette_state(
+                    "palette_diverging",
+                    lambda current: current.model_copy(update={field: normalized}),
+                    preview_only=preview_only,
+                )
+
+            _add_palette_slider(
+                editor,
+                layout,
+                page,
+                label=label,
+                object_name=(
+                    f"figureComposerSetPaletteDiverging{object_suffix}Control"
+                ),
+                value=float(getattr(state, field)),
+                minimum=minimum,
+                maximum=maximum,
+                changed=update_diverging,
+                tooltip=tooltip,
+                mixed=mixed,
+                enabled=available,
+                decimals=0,
+                single_step=1.0,
+            )
+
+            if field not in {"h_neg", "h_pos"}:
+                continue
+            color_mixed = editor.batch_is_mixed(
+                operation,
+                typing.cast(
+                    "Callable[[FigureOperationState], tuple[float, float, float]]",
+                    lambda target, field=field: (
+                        getattr(target.palette_diverging, field),
+                        target.palette_diverging.s,
+                        target.palette_diverging.l,
+                    ),
+                ),
+            )
+            endpoint_rgb = (
+                _convert_palette_color(
+                    sns,
+                    (getattr(state, field), state.s, state.l),
+                    "husl",
+                    "rgb",
+                )
+                if sns is not None
+                else (0.0, 0.0, 0.0)
+            )
+            color_button = _ColorPickerButton(
+                page,
+                color=_qt_color(endpoint_rgb),
+                show_alpha_channel=False,
+            )
+            endpoint = "Negative" if field == "h_neg" else "Positive"
+            color_button.setObjectName(
+                f"figureComposerSetPaletteDiverging{endpoint}ColorButton"
+            )
+            color_button.setAccessibleName(f"Choose {endpoint.lower()} endpoint color")
+            color_button.setToolTip(f"Choose the {endpoint.lower()} endpoint color.")
+            color_button.setEnabled(available)
+
+            def update_endpoint_color(
+                color: QtGui.QColor,
+                *,
+                field: str = field,
+            ) -> None:
+                husl = _convert_palette_color(
+                    sns,
+                    (color.redF(), color.greenF(), color.blueF()),
+                    "rgb",
+                    "husl",
+                )
+                husl = tuple(float(round(value)) for value in husl)
+                transform_palette_state(
+                    "palette_diverging",
+                    lambda current: current.model_copy(
+                        update={field: husl[0], "s": husl[1], "l": husl[2]}
+                    ),
+                    rebuild=True,
+                )
+
+            editor.connect_signal(
+                color_button,
+                color_button.colorSelected,
+                update_endpoint_color,
+            )
+            diverging_color_button_refs[field] = weakref.ref(color_button)
+            editor.add_form_row(
+                layout,
+                f"{endpoint} color",
+                editor.mixed_value_widget(
+                    color_button,
+                    mixed=color_mixed,
+                    parent=page,
+                ),
+                (
+                    f"Choose the {endpoint.lower()} endpoint with the system color "
+                    "picker; saturation and lightness are shared by both endpoints."
+                ),
+            )
+
+        count_mixed = editor.batch_is_mixed(
+            operation, lambda target: target.palette_diverging.n_colors
+        )
+        count_spin = QtWidgets.QSpinBox(page)
+        count_spin.setObjectName("figureComposerSetPaletteDivergingNColorsSpin")
+        count_spin.setAccessibleName("Colors")
+        count_spin.setRange(2, 2_147_483_647)
+        count_spin.setValue(state.n_colors)
+        count_spin.setKeyboardTracking(False)
+        count_spin.setEnabled(available)
+        editor.connect_value_signal(
+            count_spin,
+            count_spin.valueChanged,
+            lambda *_args: count_spin.value(),
+            lambda value: transform_palette_state(
+                "palette_diverging",
+                lambda current: current.model_copy(update={"n_colors": int(value)}),
+            ),
+        )
+        editor.add_form_row(
+            layout,
+            "Colors",
+            editor.mixed_value_widget(count_spin, mixed=count_mixed, parent=page),
+            "Number of colors in the generated diverging palette.",
+        )
+
+        center_mixed = editor.batch_is_mixed(
+            operation, lambda target: target.palette_diverging.center
+        )
+        center_combo = editor.combo(
+            ("light", "dark"),
+            None if center_mixed else state.center,
+            lambda center: transform_palette_state(
+                "palette_diverging",
+                lambda current: current.model_copy(update={"center": center}),
+            ),
+            parent=page,
+            mixed=center_mixed,
+            enabled=available,
+        )
+        center_combo.setObjectName("figureComposerSetPaletteDivergingCenterCombo")
+        editor.add_form_row(
+            layout,
+            "Center",
+            center_combo,
+            "Use a light or dark color at the center of the palette.",
+        )
+
+    elif not mode_mixed and operation.palette_mode in {"light", "dark"}:
+        mode = operation.palette_mode
+        attribute = f"palette_{mode}"
+        state = typing.cast(
+            "FigureSequentialPaletteState", getattr(operation, attribute)
+        )
+        input_mixed = editor.batch_is_mixed(
+            operation,
+            operator.attrgetter(f"{attribute}.input"),
+        )
+        input_combo = QtWidgets.QComboBox(page)
+        input_combo.setObjectName(f"figureComposerSetPalette{mode.title()}InputCombo")
+        for input_space, label in _SEQUENTIAL_PALETTE_INPUT_LABELS.items():
+            input_combo.addItem(label, input_space)
+        if input_mixed:
+            input_combo.insertItem(0, "(multiple values)", None)
+            item = typing.cast("typing.Any", input_combo.model()).item(0)
+            if item is not None:
+                item.setEnabled(False)
+            input_combo.setCurrentIndex(0)
+        else:
+            input_combo.setCurrentIndex(input_combo.findData(state.input))
+        input_combo.setEnabled(available)
+
+        def update_input(input_space: str) -> None:
+            def convert(
+                current: FigureSequentialPaletteState,
+            ) -> FigureSequentialPaletteState:
+                return current.model_copy(
+                    update={
+                        "input": input_space,
+                        "color": _convert_palette_color(
+                            typing.cast("typing.Any", sns),
+                            current.color,
+                            current.input,
+                            input_space,
+                        ),
+                    }
+                )
+
+            transform_palette_state(attribute, convert, rebuild=True)
+
+        editor.connect_signal(
+            input_combo,
+            input_combo.activated,
+            lambda _index, combo=input_combo: (
+                None
+                if combo.currentData() is None
+                else update_input(str(combo.currentData()))
+            ),
+        )
+        editor.add_form_row(
+            layout,
+            "Input",
+            input_combo,
+            "Color space used to define the palette's seed color.",
+        )
+
+        color_mixed = input_mixed or editor.batch_is_mixed(
+            operation,
+            operator.attrgetter(f"{attribute}.color"),
+        )
+        seed_rgb = (
+            _convert_palette_color(
+                sns,
+                state.color,
+                state.input,
+                "rgb",
+            )
+            if sns is not None
+            else (0.0, 0.0, 0.0)
+        )
+        seed_color_button = _ColorPickerButton(
+            page,
+            color=_qt_color(seed_rgb),
+            show_alpha_channel=False,
+        )
+        seed_color_button_ref = weakref.ref(seed_color_button)
+        seed_color_button.setObjectName(
+            f"figureComposerSetPalette{mode.title()}SeedColorButton"
+        )
+        seed_color_button.setAccessibleName("Choose seed color")
+        seed_color_button.setToolTip("Choose the palette's seed color.")
+        seed_color_button.setEnabled(available)
+
+        def update_seed_color(color: QtGui.QColor) -> None:
+            rgb = (color.redF(), color.greenF(), color.blueF())
+            transform_palette_state(
+                attribute,
+                lambda current: current.model_copy(
+                    update={
+                        "color": _convert_palette_color(
+                            sns,
+                            rgb,
+                            "rgb",
+                            current.input,
+                        )
+                    }
+                ),
+                rebuild=True,
+            )
+
+        editor.connect_signal(
+            seed_color_button,
+            seed_color_button.colorSelected,
+            update_seed_color,
+        )
+        editor.add_form_row(
+            layout,
+            "Seed color",
+            editor.mixed_value_widget(
+                seed_color_button,
+                mixed=color_mixed,
+                parent=page,
+            ),
+            "Choose the palette's seed color with the system color picker.",
+        )
+
+        if not input_mixed:
+            if state.input == "husl":
+                component_specs = (
+                    ("Hue", 0.0, 359.0, 2, 1.0),
+                    ("Saturation", 0.0, 99.0, 2, 1.0),
+                    ("Lightness", 0.0, 99.0, 2, 1.0),
+                )
+            elif state.input == "hls":
+                component_specs = (
+                    ("Hue", 0.0, 1.0, 3, 0.01),
+                    ("Lightness", 0.0, 1.0, 3, 0.01),
+                    ("Saturation", 0.0, 1.0, 3, 0.01),
+                )
+            else:
+                component_specs = (
+                    ("Red", 0.0, 1.0, 3, 0.01),
+                    ("Green", 0.0, 1.0, 3, 0.01),
+                    ("Blue", 0.0, 1.0, 3, 0.01),
+                )
+
+            color_getter = operator.attrgetter(f"{attribute}.color")
+            for index, (
+                label,
+                minimum,
+                maximum,
+                decimals,
+                single_step,
+            ) in enumerate(component_specs):
+                mixed = editor.batch_is_mixed(
+                    operation,
+                    typing.cast(
+                        "Callable[[FigureOperationState], float]",
+                        lambda target, index=index: color_getter(target)[index],
+                    ),
+                )
+
+                def update_component(
+                    value: float, preview_only: bool, *, index: int = index
+                ) -> None:
+                    def replace_component(
+                        current: FigureSequentialPaletteState,
+                    ) -> FigureSequentialPaletteState:
+                        color = list(current.color)
+                        color[index] = float(value)
+                        return current.model_copy(update={"color": tuple(color)})
+
+                    transform_palette_state(
+                        attribute, replace_component, preview_only=preview_only
+                    )
+
+                _add_palette_slider(
+                    editor,
+                    layout,
+                    page,
+                    label=label,
+                    object_name=(
+                        f"figureComposerSetPalette{mode.title()}{label}Control"
+                    ),
+                    value=state.color[index],
+                    minimum=minimum,
+                    maximum=maximum,
+                    changed=update_component,
+                    tooltip=f"{label} component of the {state.input.upper()} seed.",
+                    mixed=mixed,
+                    enabled=available,
+                    decimals=decimals,
+                    single_step=single_step,
+                )
+
+        count_mixed = editor.batch_is_mixed(
+            operation,
+            operator.attrgetter(f"{attribute}.n_colors"),
+        )
+        count_spin = QtWidgets.QSpinBox(page)
+        count_spin.setObjectName(f"figureComposerSetPalette{mode.title()}NColorsSpin")
+        count_spin.setAccessibleName("Colors")
+        count_spin.setRange(3, 2_147_483_647)
+        count_spin.setValue(state.n_colors)
+        count_spin.setKeyboardTracking(False)
+        count_spin.setEnabled(available)
+        editor.connect_value_signal(
+            count_spin,
+            count_spin.valueChanged,
+            lambda *_args: count_spin.value(),
+            lambda value: transform_palette_state(
+                attribute,
+                lambda current: current.model_copy(update={"n_colors": int(value)}),
+            ),
+        )
+        editor.add_form_row(
+            layout,
+            "Colors",
+            editor.mixed_value_widget(count_spin, mixed=count_mixed, parent=page),
+            f"Number of colors in the generated {mode} palette.",
+        )
 
     refresh_preview()
     editor.add_form_row(
@@ -699,6 +1583,49 @@ def _section_summary(
 def _palette_call_code(operation: FigureOperationState) -> str | None:
     if not _palette_has_effect(operation):
         return None
+    if operation.palette_mode == "cubehelix":
+        state = operation.palette_cubehelix
+        constructor_lines = (
+            "    sns.cubehelix_palette(",
+            f"        n_colors={state.n_colors!r},",
+            f"        start={state.start!r},",
+            f"        rot={state.rot!r},",
+            f"        gamma={state.gamma!r},",
+            f"        hue={state.hue!r},",
+            f"        light={state.light!r},",
+            f"        dark={state.dark!r},",
+            f"        reverse={state.reverse!r},",
+            "    )",
+        )
+        return "\n".join(("sns.set_palette(", *constructor_lines, ")"))
+    if operation.palette_mode == "diverging":
+        state = operation.palette_diverging
+        constructor_lines = (
+            "    sns.diverging_palette(",
+            f"        h_neg={state.h_neg!r},",
+            f"        h_pos={state.h_pos!r},",
+            f"        s={state.s!r},",
+            f"        l={state.l!r},",
+            f"        sep={state.sep!r},",
+            f"        n={state.n_colors!r},",
+            f"        center={state.center!r},",
+            "    )",
+        )
+        return "\n".join(("sns.set_palette(", *constructor_lines, ")"))
+    if operation.palette_mode in {"light", "dark"}:
+        state = (
+            operation.palette_light
+            if operation.palette_mode == "light"
+            else operation.palette_dark
+        )
+        constructor_lines = (
+            f"    sns.{operation.palette_mode}_palette(",
+            f"        {state.color!r},",
+            f"        n_colors={state.n_colors!r},",
+            f"        input={state.input!r},",
+            "    )",
+        )
+        return "\n".join(("sns.set_palette(", *constructor_lines, ")"))
     palette_value: str | list[str]
     if operation.palette_mode == "colors":
         palette_value = list(operation.palette_colors)
@@ -716,22 +1643,15 @@ def _code_lines(
     palette_call = _palette_call_code(operation)
     if palette_call is None:
         return []
-    return [
-        "try:",
-        "    import seaborn as sns",
-        "except ImportError:",
-        "    pass",
-        "else:",
-        f"    {palette_call}",
-        "    for ax in fig.axes:",
-        "        ax.set_prop_cycle(color=sns.color_palette())",
-    ]
+    return palette_call.splitlines()
 
 
 def _required_imports(
-    _tool: FigureComposerTool, _operation: FigureOperationState
+    _tool: FigureComposerTool, operation: FigureOperationState
 ) -> tuple[str, ...]:
-    return ()
+    if not _palette_has_effect(operation):
+        return ()
+    return ("import seaborn as sns",)
 
 
 SPEC = OperationSpec(
