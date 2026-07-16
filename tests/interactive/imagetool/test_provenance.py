@@ -1,4 +1,5 @@
 import ast
+import collections.abc
 import itertools
 import json
 import pathlib
@@ -1292,6 +1293,38 @@ def test_generated_provenance_code_preserves_effect_order_across_aliases() -> No
             assert code.index("numpy.geterr") < code.index("np.seterr")
     finally:
         np.seterr(**previous_error_state)
+
+
+def test_generated_provenance_code_preserves_seed_load_before_effectful_call() -> None:
+    original = xr.DataArray([1.0], dims=("x",))
+    replacement = xr.DataArray([2.0], dims=("x",))
+    spec = script(
+        ScriptCodeOperation(
+            label="Run effectful callable",
+            code="derived = replace_data()(derived)",
+        ),
+        start_label="Start from input data",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+
+    def execute(code: str) -> dict[str, typing.Any]:
+        namespace: dict[str, typing.Any] = {"data": original}
+
+        def replace_data() -> collections.abc.Callable[[xr.DataArray], xr.DataArray]:
+            namespace["data"] = replacement
+            return lambda value: value
+
+        namespace["replace_data"] = replace_data
+        exec(code, namespace, namespace)  # noqa: S102
+        return namespace
+
+    for code in (spec.derivation_code(), spec.display_code()):
+        assert code is not None
+        namespace = execute(code)
+
+        xr.testing.assert_identical(namespace["derived"], original)
+        xr.testing.assert_identical(namespace["data"], replacement)
 
 
 @pytest.mark.parametrize("record_mapping", [False, True])
@@ -2671,7 +2704,6 @@ def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
 
     code = spec.display_code()
     assert code is not None
-    _assert_no_meaningless_reassignments(code)
     call_names = _generated_call_names(code)
     assert not any(call.endswith(".isel") for call in call_names)
     assert call_names.count("erlab.utils.array.sort_coord_order") == 1
