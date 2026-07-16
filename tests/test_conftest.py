@@ -103,8 +103,9 @@ def test_serial_xdist_group_serializes_manager_context_tests() -> None:
         "tests/interactive/imagetool/test_slicer.py::test_array_rect",
     )
     workspace_group = _CONFTEST.serial_xdist_group(
-        "tests/interactive/imagetool/manager/test_workspace.py",
-        "tests/interactive/imagetool/manager/test_workspace.py::test_roundtrip",
+        "tests/interactive/imagetool/manager/workspace/test_loading.py",
+        "tests/interactive/imagetool/manager/workspace/"
+        "test_loading.py::test_manager_workspace_load_preserves_added_time",
     )
     explorer_group = _CONFTEST.serial_xdist_group(
         "tests/interactive/test_explorer.py",
@@ -124,7 +125,9 @@ def test_serial_xdist_group_serializes_manager_context_tests() -> None:
     )
 
     assert slicer_group == "qt-tests-interactive-imagetool-test_slicer"
-    assert workspace_group == "qt-tests-interactive-imagetool-manager-test_workspace"
+    assert workspace_group == (
+        "qt-tests-interactive-imagetool-manager-workspace-test_loading"
+    )
     assert explorer_group == "qt-tests-interactive-test_explorer"
     assert watcher_group == "qt-tests-interactive-imagetool-test_watcher"
     assert console_group == "qt-tests-interactive-imagetool-manager-test_console"

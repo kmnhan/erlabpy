@@ -358,7 +358,6 @@ def test_workspace_dataset_encoding_respects_compression_preference() -> None:
     old_value = erlab.interactive.options["io/workspace/compression"]
     try:
         erlab.interactive.options["io/workspace/compression"] = "none"
-        assert not workspace_arrays.workspace_compression_enabled()
         assert workspace_arrays.workspace_dataset_encoding(ds) == {}
 
         erlab.interactive.options["io/workspace/compression"] = "blosclz3"
@@ -407,46 +406,6 @@ def test_workspace_chunksizes_rejects_invalid_chunk_shapes() -> None:
         )
         is None
     )
-
-
-def test_workspace_datatree_encoding_uses_group_paths() -> None:
-    large_ds = xr.Dataset(
-        {
-            "data": (
-                ("x", "y"),
-                np.arange(512 * 512, dtype=np.float64).reshape(512, 512),
-            )
-        },
-        coords={"x": np.arange(512, dtype=np.float64), "y": np.arange(512)},
-    )
-    small_ds = xr.Dataset({"data": ("x", np.arange(4, dtype=np.float64))})
-    tree = xr.DataTree.from_dict({"0/imagetool": large_ds, "1/imagetool": small_ds})
-    try:
-        encoding = workspace_arrays.workspace_datatree_encoding(tree)
-    finally:
-        tree.close()
-
-    assert set(encoding) == {"/0/imagetool"}
-    assert set(encoding["/0/imagetool"]) == {"data"}
-
-
-def test_workspace_datatree_encoding_can_be_disabled() -> None:
-    tree = xr.DataTree.from_dict(
-        {
-            "0/imagetool": xr.Dataset(
-                {
-                    "data": (
-                        ("x", "y"),
-                        np.arange(512 * 512, dtype=np.float64).reshape(512, 512),
-                    )
-                }
-            )
-        }
-    )
-    try:
-        assert workspace_arrays.workspace_datatree_encoding(tree, compress=False) == {}
-    finally:
-        tree.close()
 
 
 def test_workspace_xarray_path_helpers_cover_fallbacks(monkeypatch, tmp_path) -> None:

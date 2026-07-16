@@ -173,12 +173,6 @@ class _ManagerWorkspaceState:
         self.structure_reasons.clear()
         self.dirty_events.clear()
 
-    def restore_dirty_events(self, events: list[_WorkspaceDirtyEvent]) -> None:
-        self.mark_clean()
-        for event in events:
-            self.apply_dirty_event(event)
-        self.dirty_events = events
-
     def reset_repack_estimate(self) -> None:
         self.estimated_obsolete_bytes = 0
         self.replacement_delta_count = 0

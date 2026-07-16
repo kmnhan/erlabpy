@@ -919,13 +919,6 @@ class _PendingWorkspacePayloads:
             )
             return False
 
-    @staticmethod
-    def _require_workspace_root_tool_is_figure(
-        tool: erlab.interactive.utils.ToolWindow,
-    ) -> None:
-        if tool.manager_collection != "figures":
-            raise ValueError("Workspace tool node has no parent")
-
     def _materialize_pending_workspace_tool_payload(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> bool:
@@ -965,13 +958,11 @@ class _PendingWorkspacePayloads:
                     )
                 )
                 if node.parent_uid is None:
-                    self._require_workspace_root_tool_is_figure(tool)
+                    self._loader._require_workspace_root_tool_is_figure(tool)
                     node.window = tool
                     if not tool._tool_display_name:
                         tool._tool_display_name = node.name
-                    self._manager._figure_workflows._configure_materialized_figure_tool(
-                        node, tool
-                    )
+                    self._manager._configure_figure_tool(node, tool)
                     self._manager._figure_collection.sync(select_uid=None)
                 else:
                     parent = self._manager._node_for_target(node.parent_uid)

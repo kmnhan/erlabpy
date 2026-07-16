@@ -256,6 +256,14 @@ class _WorkspaceLoader:
         self._missing_workspace_colormaps: list[tuple[str, str]] = []
         self._skipped_workspace_nodes: list[tuple[str, str, str, Exception]] = []
 
+    @staticmethod
+    def _require_workspace_root_tool_is_figure(
+        tool: erlab.interactive.utils.ToolWindow,
+    ) -> None:
+        """Reject root ToolWindow payloads that do not belong to the figure pane."""
+        if tool.manager_collection != "figures":
+            raise ValueError("Workspace tool node has no parent")
+
     def _record_missing_workspace_colormap(
         self, cmap: str, node_path: str | None
     ) -> None:
@@ -895,8 +903,7 @@ class _WorkspaceLoader:
                 )
             with _workspace_load_stage(profiler, "tool manager registration"):
                 if parent_target is None:
-                    if tool.manager_collection != "figures":
-                        raise ValueError("Workspace tool node has no parent")  # noqa: TRY301
+                    self._require_workspace_root_tool_is_figure(tool)
                     target = self._manager.add_figuretool(
                         tool,
                         show=_workspace_dataset_window_visible(ds, "tool"),

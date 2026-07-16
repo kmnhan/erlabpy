@@ -1,4 +1,4 @@
-"""Helper classes for loading multiple files sequentially in a separate thread."""
+"""File selection, external data ingestion, and sequential file loading."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
+    from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
@@ -77,7 +78,7 @@ class _DataIngressController:
             failed=[],
             func=func,
             kwargs=kwargs,
-            retry_callback=lambda _: self._manager.open(native=native),
+            retry_callback=lambda _: self.open(native=native),
         )
 
     def receive_data(
@@ -108,7 +109,7 @@ class _DataIngressController:
                         "Error creating ImageTool window",
                         extra={"suppress_ui_alert": True},
                     )
-                    self._manager._error_creating_imagetool()
+                    self._error_creating_imagetool()
                 else:
                     flags.append(True)
             return flags
@@ -126,7 +127,7 @@ class _DataIngressController:
                 "Error creating ImageTool window",
                 extra={"suppress_ui_alert": True},
             )
-            self._manager._error_creating_imagetool()
+            self._error_creating_imagetool()
             return [False for _item in data]
         if prepared_data is None:
             return [False for _item in data]
@@ -259,7 +260,7 @@ class _DataIngressController:
                     "Error creating ImageTool window",
                     extra={"suppress_ui_alert": True},
                 )
-                self._manager._error_creating_imagetool()
+                self._error_creating_imagetool()
             else:
                 flags.append(True)
 
@@ -267,6 +268,139 @@ class _DataIngressController:
             self._manager.link_imagetools(*indices, link_colors=link_colors)
 
         return flags
+
+    def _show_loaded_info(
+        self,
+        loaded: list[pathlib.Path],
+        canceled: list[pathlib.Path],
+        failed: list[pathlib.Path],
+        retry_callback: Callable[[list[pathlib.Path]], typing.Any],
+    ) -> None:
+        """Report aggregate file-loading results and offer to retry failures."""
+        loaded, canceled, failed = (
+            list(dict.fromkeys(loaded)),
+            list(dict.fromkeys(canceled)),
+            list(dict.fromkeys(failed)),
+        )
+        n_done, n_fail = len(loaded), len(failed)
+        self._manager._status_bar.showMessage(
+            f"Loaded {n_done} {'file' if n_done == 1 else 'files'}", 5000
+        )
+        if n_fail == 0:
+            return
+
+        message = f"Loaded {n_done} {'file' if n_done == 1 else 'files'}"
+        message += f" with {n_fail} {'failure' if n_fail == 1 else 'failures'}."
+        msg_box = QtWidgets.QMessageBox(self._manager)
+        msg_box.setText(message)
+        details = ""
+        for label, paths in (
+            ("Loaded", loaded),
+            ("Failed", failed),
+            ("Canceled", canceled),
+        ):
+            if paths:
+                names = "\n".join(path.name for path in paths)
+                details += f"{label}:\n{names}\n\n"
+        msg_box.setDetailedText(details)
+        msg_box.setInformativeText("Do you want to retry loading the failed files?")
+        msg_box.setStandardButtons(
+            QtWidgets.QMessageBox.StandardButton.Retry
+            | QtWidgets.QMessageBox.StandardButton.Cancel
+        )
+        msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Retry)
+        if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Retry:
+            retry_callback(failed)
+
+    def _error_creating_imagetool(self) -> None:
+        """Show one user-facing error after ImageTool construction fails."""
+        erlab.interactive.utils.MessageDialog.critical(
+            self._manager,
+            "Error",
+            "An error occurred while creating the ImageTool window.",
+            "The data may be incompatible with ImageTool.",
+        )
+
+    def open_multiple_files(
+        self, queued: list[pathlib.Path], try_workspace: bool = False
+    ) -> None:
+        """Open paths as workspaces, ordinary data files, or directories."""
+        paths = list(queued)
+        if try_workspace and self._manager._workspace_state.save_in_progress:
+            self._manager._status_bar.showMessage(
+                "Workspace save in progress; open after it finishes", 3000
+            )
+            return
+
+        n_files = len(paths)
+        loaded: list[pathlib.Path] = []
+        failed: list[pathlib.Path] = []
+        if try_workspace:
+            remaining: list[pathlib.Path] = []
+            for path in paths:
+                result = self._manager._workspace_controller.open_workspace_candidate(
+                    path
+                )
+                if result == "not-workspace":
+                    remaining.append(path)
+                    continue
+                if result == "stop":
+                    return
+                loaded.append(path)
+            paths = remaining
+
+        if not paths:
+            return
+
+        valid_loaders: dict[str, tuple[Callable, dict[str, typing.Any]]] = (
+            erlab.interactive.utils.file_loaders(paths)
+        )
+        if not valid_loaders:
+            if all(path.is_dir() for path in paths):
+                explorer = typing.cast(
+                    "_TabbedExplorer", self._manager._show_standalone_app("explorer")
+                )
+                for path in paths:
+                    explorer.add_tab(root_path=path)
+                return
+
+            singular = n_files == 1
+            QtWidgets.QMessageBox.critical(
+                self._manager,
+                "Error",
+                f"The selected {'file' if singular else 'files'} "
+                f"with extension '{paths[0].suffix}' {'is' if singular else 'are'} "
+                "not supported by any available plugin.",
+            )
+            return
+
+        if len(valid_loaders) == 1:
+            name_filter, (func, kwargs) = next(iter(valid_loaders.items()))
+            if _is_loader_func(func):
+                selected = self._manager._select_loader_options(
+                    valid_loaders, name_filter, sample_paths=paths
+                )
+                if selected is None:
+                    return
+                self._manager._recent_name_filter, func, kwargs = selected
+            else:
+                self._manager._recent_name_filter = name_filter
+        else:
+            selected = self._manager._select_loader_options(
+                valid_loaders, sample_paths=paths
+            )
+            if selected is None:
+                return
+            self._manager._recent_name_filter, func, kwargs = selected
+
+        self.add_from_multiple_files(
+            loaded,
+            paths,
+            failed,
+            func,
+            kwargs,
+            self.open_multiple_files,
+        )
 
     def add_from_multiple_files(
         self,
@@ -282,7 +416,7 @@ class _DataIngressController:
         self._manager._file_handlers.add(handler)
 
         def _finished_callback(loaded_new, aborted, failed_new) -> None:
-            self._manager._show_loaded_info(
+            self._show_loaded_info(
                 loaded + loaded_new,
                 aborted,
                 failed + failed_new,
@@ -473,7 +607,7 @@ class _MultiFileHandler(QtCore.QObject):
         if isinstance(func_instance, erlab.io.dataloader.LoaderBase):
             func = func_instance.name
 
-        self.manager._data_recv(
+        self.manager._data_ingress.receive_data(
             [prepared.data for prepared in selected_data],
             kwargs={
                 "file_path": file_path,

@@ -1,3 +1,5 @@
+"""Workspace document lifecycle, persistence, and user-facing document actions."""
+
 from __future__ import annotations
 
 import contextlib
@@ -232,6 +234,91 @@ class _WorkspaceController:
             self._record_recent_workspace(path)
         return loaded
 
+    def _request_workspace_open(
+        self, path: pathlib.Path, *, native: bool = True
+    ) -> typing.Literal["opened", "scheduled", "cancelled", "failed"]:
+        """Prompt for unsaved changes and open one recognized workspace path."""
+        choice = self._dirty_workspace_save_choice(
+            "Opening a workspace replaces the windows currently in this manager."
+        )
+        if choice == "cancel":
+            return "cancelled"
+        if choice in {"clean", "discard"}:
+            loaded = self._load_workspace_path(path, native=native)
+            return "opened" if loaded else "failed"
+
+        def _continue_after_save(save_succeeded: bool) -> None:
+            if save_succeeded and not self._manager.is_workspace_modified:
+                self._load_workspace_path(path, native=native)
+
+        return (
+            "scheduled"
+            if self.save(native=native, on_finished=_continue_after_save)
+            else "failed"
+        )
+
+    def open_workspace_candidate(
+        self, fname: str | os.PathLike[str], *, native: bool = True
+    ) -> typing.Literal["not-workspace", "handled", "stop"]:
+        """Recognize and open a path supplied by the general file-ingress flow.
+
+        The return value tells data ingress whether the path is ordinary data,
+        whether the workspace path was fully handled, or whether a cancel/deferred
+        save means the rest of the current file batch must stop.
+        """
+        if self._manager._workspace_state.save_in_progress:
+            self._manager._status_bar.showMessage(
+                "Workspace save in progress; open after it finishes", 3000
+            )
+            return "stop"
+
+        path = pathlib.Path(fname).expanduser().resolve()
+        explicit_workspace = workspace_format._workspace_path_is_itws(path)
+        try:
+            tree = workspace_arrays.open_workspace_datatree(path, chunks=None)
+        except Exception as exc:
+            if workspace_storage._is_workspace_file_lock_error(exc):
+                logger.info(
+                    "Workspace file is already open or locked: %s",
+                    path,
+                    extra={"suppress_ui_alert": True},
+                )
+                _show_workspace_file_lock_error(self._manager, path)
+                return "handled"
+            if explicit_workspace:
+                self._manager._show_operation_error(
+                    "Error while loading workspace",
+                    "An error occurred while loading the workspace file.",
+                )
+                return "handled"
+            logger.debug("Failed to open %s as datatree workspace", path, exc_info=True)
+            return "not-workspace"
+
+        try:
+            is_workspace = self.loading._is_datatree_workspace(tree)
+        finally:
+            tree.close()
+        if not is_workspace:
+            if not explicit_workspace:
+                return "not-workspace"
+            logger.error(
+                "File with .itws extension is not an ImageTool workspace: %s",
+                path,
+                extra={"suppress_ui_alert": True},
+            )
+            erlab.interactive.utils.MessageDialog.critical(
+                self._manager,
+                "Error",
+                "An error occurred while loading the workspace file.",
+                f"{path.name} is not a valid ImageTool workspace file.",
+            )
+            return "handled"
+
+        status = self._request_workspace_open(path, native=native)
+        if status in {"cancelled", "scheduled"}:
+            return "stop"
+        return "handled"
+
     def _open_workspace_after_dirty_prompt(
         self, fname: str | os.PathLike[str], *, native: bool = True
     ) -> bool:
@@ -241,11 +328,10 @@ class _WorkspaceController:
             )
             return False
         path = pathlib.Path(fname).expanduser().resolve()
-        return self._run_after_dirty_workspace_saved_or_discarded(
-            "Opening a workspace replaces the windows currently in this manager.",
-            lambda: self._load_workspace_path(path, native=native),
-            native=native,
-        )
+        return self._request_workspace_open(path, native=native) in {
+            "opened",
+            "scheduled",
+        }
 
     def open_recent_workspace(self, fname: str | os.PathLike[str]) -> bool:
         """Open a recently used workspace file."""

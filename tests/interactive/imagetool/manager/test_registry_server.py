@@ -6,6 +6,7 @@ import logging
 import subprocess
 import sys
 import threading
+import types
 import typing
 from collections.abc import Callable
 
@@ -1463,12 +1464,12 @@ def test_widgets_controller_stop_servers_disconnects_and_deletes() -> None:
             self.server = _ServerDouble()
             self.watcher_server = _WatcherDouble()
             self.calls: list[tuple[str, object]] = []
+            self._data_ingress = types.SimpleNamespace(
+                receive_data=lambda *args: self._record("data_recv", *args)
+            )
 
         def _record(self, name: str, *args) -> None:
             self.calls.append((name, args))
-
-        def _data_recv(self, *args) -> None:
-            self._record("data_recv", *args)
 
         def _data_load(self, *args) -> None:
             self._record("data_load", *args)
@@ -1505,7 +1506,7 @@ def test_widgets_controller_stop_servers_disconnects_and_deletes() -> None:
     watcher_server = manager.watcher_server
 
     for signal, slot in (
-        (server.sigReceived, manager._data_recv),
+        (server.sigReceived, manager._data_ingress.receive_data),
         (server.sigLoadRequested, manager._data_load),
         (server.sigReplaceRequested, manager._data_replace),
         (server.sigDataRequested, manager._send_imagetool_data),

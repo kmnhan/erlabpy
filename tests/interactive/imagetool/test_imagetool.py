@@ -3449,7 +3449,11 @@ def test_show_in_manager_high_dimensional_data_dialog_branches(
     received: list[tuple[list[xr.DataArray], dict[str, typing.Any]]] = []
 
     class _Manager(QtWidgets.QWidget):
-        def _data_recv(self, input_data, kwargs) -> None:
+        def __init__(self) -> None:
+            super().__init__()
+            self._data_ingress = types.SimpleNamespace(receive_data=self._receive_data)
+
+        def _receive_data(self, input_data, kwargs) -> None:
             received.append((input_data, kwargs))
 
     manager = _Manager()
@@ -3504,7 +3508,11 @@ def test_show_in_manager_supplies_semantic_file_load_selections(
     received: list[tuple[list[xr.DataArray], dict[str, typing.Any]]] = []
 
     class _Manager(QtWidgets.QWidget):
-        def _data_recv(self, input_data, kwargs) -> None:
+        def __init__(self) -> None:
+            super().__init__()
+            self._data_ingress = types.SimpleNamespace(receive_data=self._receive_data)
+
+        def _receive_data(self, input_data, kwargs) -> None:
             received.append((input_data, kwargs))
 
     manager = _Manager()

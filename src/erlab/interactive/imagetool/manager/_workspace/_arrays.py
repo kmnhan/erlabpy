@@ -117,22 +117,9 @@ def dataarray_is_numpy_backed(data_array: xr.DataArray) -> bool:
     return isinstance(data_array.variable._data, (np.ndarray, np.generic))
 
 
-def dataarray_is_file_backed(data_array: xr.DataArray) -> bool:
-    """Return True for non-dask xarray arrays still backed by a file manager."""
-    return (
-        data_array.chunks is None
-        and not dataarray_is_numpy_backed(data_array)
-        and bool(dataarray_source_paths(data_array))
-    )
-
-
 def ensure_workspace_hdf5_filters_registered() -> None:
     """Register HDF5 filters needed by compressed workspace files."""
     hdf5plugin.register(force=False)
-
-
-def workspace_compression_enabled() -> bool:
-    return workspace_compression_mode() != "none"
 
 
 def workspace_compression_mode() -> WorkspaceCompressionMode:
@@ -233,30 +220,6 @@ def workspace_dataset_encoding(
             var_encoding.update(compression_encoding)
         if var_encoding:
             encoding[name] = var_encoding
-    return encoding
-
-
-def workspace_datatree_encoding(
-    tree: xr.DataTree,
-    *,
-    min_bytes: int = _WORKSPACE_COMPRESSION_MIN_BYTES,
-    compress: bool | None = None,
-    compression_mode: WorkspaceCompressionMode | None = None,
-) -> dict[str, dict[Hashable, dict[str, typing.Any]]]:
-    """Return nested h5netcdf encodings for workspace payloads."""
-    compression_mode = _resolve_workspace_compression_mode(
-        compression_mode=compression_mode, compress=compress
-    )
-
-    encoding: dict[str, dict[Hashable, dict[str, typing.Any]]] = {}
-    for node in tree.subtree:
-        node_encoding = workspace_dataset_encoding(
-            node.to_dataset(inherit=False),
-            min_bytes=min_bytes,
-            compression_mode=compression_mode,
-        )
-        if node_encoding:
-            encoding[node.path] = node_encoding
     return encoding
 
 

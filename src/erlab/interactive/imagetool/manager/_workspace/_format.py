@@ -23,7 +23,7 @@ import erlab
 
 if typing.TYPE_CHECKING:
     import os
-    from collections.abc import Iterable, Mapping, MutableMapping
+    from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 
     import xarray as xr
 
@@ -94,7 +94,7 @@ def _workspace_manifest_from_attrs(
 
 def _iter_workspace_manifest_node_entries(
     manifest: Mapping[str, typing.Any] | None,
-) -> typing.Iterator[Mapping[str, typing.Any]]:
+) -> Iterator[Mapping[str, typing.Any]]:
     if manifest is None:
         return
     nodes = manifest.get("nodes", ())
@@ -427,14 +427,6 @@ def _workspace_attr_sequence_writes_natively(
     ):
         return True
     return all(_workspace_attr_numeric_scalar_writes_natively(item) for item in value)
-
-
-def _workspace_attr_scalar_writes_natively(value: typing.Any) -> bool:
-    if isinstance(value, str):
-        return True
-    if isinstance(value, bytes):
-        return b"\x00" not in value and _workspace_bytes_are_utf8(value)
-    return _workspace_attr_numeric_scalar_writes_natively(value)
 
 
 def _workspace_attr_numeric_scalar_writes_natively(value: typing.Any) -> bool:

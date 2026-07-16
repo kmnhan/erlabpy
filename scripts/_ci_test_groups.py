@@ -100,15 +100,18 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
     "cov-qt-manager-workspace-a": (
         "tests/interactive/imagetool/manager/workspace/test_arrays.py",
         "tests/interactive/imagetool/manager/workspace/test_format.py",
+        "tests/interactive/imagetool/manager/workspace/test_pending_persistence.py",
         "tests/interactive/imagetool/manager/workspace/test_saving.py",
     ),
     "cov-qt-manager-workspace-b": (
         "tests/interactive/imagetool/manager/workspace/test_document.py",
         "tests/interactive/imagetool/manager/workspace/test_loading.py",
+        "tests/interactive/imagetool/manager/workspace/test_pending.py",
+        "tests/interactive/imagetool/manager/workspace/test_pending_preview.py",
         "tests/interactive/imagetool/manager/workspace/test_storage.py",
     ),
     "cov-qt-manager-provenance-console": (
-        "tests/interactive/imagetool/manager/test_provenance.py",
+        "tests/interactive/imagetool/manager/provenance",
         "tests/interactive/imagetool/manager/test_console.py",
         "tests/interactive/imagetool/manager/test_app.py",
         "tests/interactive/imagetool/manager/test_dialogs.py",

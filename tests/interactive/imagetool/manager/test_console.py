@@ -93,7 +93,9 @@ def test_manager_console(
         manager.show()
         manager.activateWindow()
 
-        manager._data_recv([data, data], kwargs={"link": True, "link_colors": True})
+        manager._data_ingress.receive_data(
+            [data, data], kwargs={"link": True, "link_colors": True}
+        )
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
         # Open console

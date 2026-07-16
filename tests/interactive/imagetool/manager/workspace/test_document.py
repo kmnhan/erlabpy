@@ -2024,7 +2024,7 @@ def test_manager_drop_h5_file_does_not_try_workspace(
 
     with manager_context() as manager:
         monkeypatch.setattr(
-            manager,
+            manager._data_ingress,
             "open_multiple_files",
             lambda paths, *, try_workspace=False: calls.append(
                 (list(paths), try_workspace)

@@ -1191,7 +1191,7 @@ def show_in_manager(
 
     if direct_manager is not None:
         # If the manager is running in the same process, directly pass the data
-        direct_manager._data_recv(input_data, kwargs)
+        direct_manager._data_ingress.receive_data(input_data, kwargs)
         return None
 
     record = resolve_manager_record(target)

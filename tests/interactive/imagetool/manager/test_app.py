@@ -1213,7 +1213,9 @@ def test_manager_explorer_launcher_reuses_instance_and_opens_directory_tabs(
         qtbot.wait_until(explorer.isVisible)
         assert manager.explorer is explorer
 
-        manager.open_multiple_files([pathlib.Path(dropped_dir)], try_workspace=True)
+        manager._data_ingress.open_multiple_files(
+            [pathlib.Path(dropped_dir)], try_workspace=True
+        )
 
         qtbot.wait_until(lambda: explorer.tab_widget.count() == 2)
         assert explorer.current_explorer is not None

@@ -28,7 +28,6 @@ from erlab.interactive.imagetool._provenance._model import (
     script,
 )
 from erlab.interactive.imagetool.manager import ImageToolManager, load_in_manager
-from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 from erlab.interactive.imagetool.manager._modelview import (
@@ -1206,7 +1205,7 @@ def test_manager_new_imagetool_uses_workspace_options(
         )
         data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
 
-        assert manager._data_recv([data], {}, show=False) == [True]
+        assert manager._data_ingress.receive_data([data], {}, show=False) == [True]
 
         tool = manager.get_imagetool(0)
         assert tool.slicer_area._options_model.colors.cmap.name == "viridis"
@@ -1230,7 +1229,7 @@ def test_manager_figure_generated_code_uses_workspace_stylesheets(
             dims=("x", "y"),
             name="data",
         )
-        assert manager._data_recv([data], {}, show=False) == [True]
+        assert manager._data_ingress.receive_data([data], {}, show=False) == [True]
 
         uid = manager.create_figure_from_targets((0,), show=False)
         if uid is None:
@@ -1278,8 +1277,6 @@ def test_open_multiple_files_preselects_default_loader_filter(
         _recent_loader_extensions_by_filter={},
         _recent_name_filter=None,
         effective_interactive_options=erlab.interactive.options.model,
-        _add_from_multiple_files=lambda *_args, **_kwargs: None,
-        open_multiple_files=lambda *_args, **_kwargs: None,
     )
     manager._preferred_name_filter = types.MethodType(
         ImageToolManager._preferred_name_filter, manager
@@ -1294,7 +1291,7 @@ def test_open_multiple_files_preselects_default_loader_filter(
         lambda *_args: valid_loaders,
     )
 
-    _ActionsController(manager).open_multiple_files([file_path])
+    manager_io._DataIngressController(manager).open_multiple_files([file_path])
 
     assert dialogs[-1].checked_name == example_filter
 
@@ -1571,7 +1568,7 @@ def test_manager_file_open_uses_selected_dataset_variable(
 
     with manager_context() as manager:
         manager.show()
-        manager._add_from_multiple_files(
+        manager._data_ingress.add_from_multiple_files(
             [],
             [file_path],
             [],
@@ -1625,8 +1622,9 @@ def test_manager_multifile_handler_selection_failure_branches(
             self.received: list[
                 tuple[tuple[typing.Any, ...], dict[str, typing.Any]]
             ] = []
+            self._data_ingress = types.SimpleNamespace(receive_data=self._receive_data)
 
-        def _data_recv(self, *args, **kwargs) -> None:
+        def _receive_data(self, *args, **kwargs) -> None:
             self.received.append((args, kwargs))
 
     class _MessageDialog:
@@ -1844,15 +1842,16 @@ def test_open_multiple_files_loader_selection_branches(
         select_calls.append((list(loaders), name_filter, list(sample_paths or ())))
         return select_result
 
-    def _retry_open_multiple_files(*_args, **_kwargs) -> None:
-        return None
-
     manager = types.SimpleNamespace(
         _recent_name_filter=None,
         _select_loader_options=_select_loader_options,
-        open_multiple_files=_retry_open_multiple_files,
-        _add_from_multiple_files=lambda loaded, queued, failed, func, kwargs, _: (
-            add_calls.append((loaded, queued, failed, func, kwargs))
+    )
+    ingress = manager_io._DataIngressController(manager)
+    monkeypatch.setattr(
+        ingress,
+        "add_from_multiple_files",
+        lambda loaded, queued, failed, func, kwargs, _: add_calls.append(
+            (loaded, queued, failed, func, kwargs)
         ),
     )
     monkeypatch.setattr(
@@ -1861,7 +1860,7 @@ def test_open_multiple_files_loader_selection_branches(
         lambda *_args: valid_loaders,
     )
 
-    _ActionsController(manager).open_multiple_files([file_path])
+    ingress.open_multiple_files([file_path])
 
     if case == "single_non_loader":
         assert select_calls == []
@@ -1934,7 +1933,7 @@ def test_manager_file_loads_with_loader_extensions(
         else:
 
             def _trigger_load():
-                return manager.open_multiple_files([file_path])
+                return manager._data_ingress.open_multiple_files([file_path])
 
         accept_dialog(_trigger_load, pre_call=_set_loader_extensions)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=10000)

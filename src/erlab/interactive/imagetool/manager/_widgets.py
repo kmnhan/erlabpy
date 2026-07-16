@@ -1659,7 +1659,7 @@ class _WidgetsController:
         self, *, port: int, watch_port: int
     ) -> tuple[_ManagerServer, _WatcherServer, int, int]:
         server = _ManagerServer(port=port)
-        server.sigReceived.connect(self._manager._data_recv)
+        server.sigReceived.connect(self._manager._data_ingress.receive_data)
         server.sigLoadRequested.connect(self._manager._data_load)
         server.sigReplaceRequested.connect(self._manager._data_replace)
         server.sigDataRequested.connect(self._manager._send_imagetool_data)
@@ -1717,7 +1717,7 @@ class _WidgetsController:
                 server.stop()
             if not server.isRunning():
                 for signal, slot in (
-                    (server.sigReceived, self._manager._data_recv),
+                    (server.sigReceived, self._manager._data_ingress.receive_data),
                     (server.sigLoadRequested, self._manager._data_load),
                     (server.sigReplaceRequested, self._manager._data_replace),
                     (server.sigDataRequested, self._manager._send_imagetool_data),

@@ -2414,7 +2414,6 @@ class _FakeFigureManager:
         prompt_return: object = _DEFAULT_FIGURE_PROMPT,
     ) -> None:
         self._managed = managed
-        self._figure_workflows = self
         self._figure_uids_value = figure_uids
         self._append_return = append_return
         if prompt_return is _DEFAULT_FIGURE_PROMPT:
@@ -2449,7 +2448,7 @@ class _FakeFigureManager:
     def _figure_uids(self) -> tuple[str, ...]:
         return self._figure_uids_value
 
-    def _prompt_append_figure_target(self, operation):
+    def _choose_figure_append_target(self, operation):
         self.prompt_calls.append(operation)
         return self._prompt_return
 

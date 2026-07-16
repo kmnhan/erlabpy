@@ -32,7 +32,6 @@ from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
     FileLoadSource,
     FileLoadSourceStatus,
-    ReplayStage,
     ToolProvenanceSpec,
     _script_input_reference_text,
     has_file_load_source,
@@ -49,10 +48,6 @@ def _processed_replay_ndim(darr: xr.DataArray) -> int:
     if darr.ndim > 4:
         return len(tuple(size for size in darr.shape if size != 1))
     return darr.ndim
-
-
-def _supported_replay_shape(darr: xr.DataArray) -> bool:
-    return _processed_replay_ndim(darr) in (2, 3, 4)
 
 
 def _reducible_replay_shape(darr: xr.DataArray) -> bool:
@@ -254,13 +249,6 @@ def _load_file_source_data(load_source: FileLoadSource) -> xr.DataArray:
     data = _select_replay_input(loaded, call.selection)
     if call.cast_float64:
         data = data.astype(np.float64)
-    return data
-
-
-def _apply_replay_stage(stage: ReplayStage, parent_data: xr.DataArray) -> xr.DataArray:
-    data = ToolProvenanceSpec._starting_data_for_kind(stage.source_kind, parent_data)
-    for operation in stage.operations:
-        data = operation.apply(data, parent_data=parent_data)
     return data
 
 

@@ -1294,6 +1294,20 @@ class ImageToolManager(_ImageToolManagerBase):
             show=show,
         )
 
+    def _choose_figure_append_target(
+        self, operation: FigureOperationState | None
+    ) -> tuple[str, FigureAxesSelectionState] | None:
+        """Choose the destination figure and axes for an external tool workflow."""
+        return self._figure_workflows._prompt_append_figure_target(operation)
+
+    def _configure_figure_tool(
+        self,
+        node: _ManagedWindowNode,
+        tool: erlab.interactive.utils.ToolWindow,
+    ) -> None:
+        """Attach manager services to a newly created or restored figure tool."""
+        self._figure_workflows._configure_materialized_figure_tool(node, tool)
+
     @QtCore.Slot()
     def create_figure_from_selection(self) -> None:
         self._figure_workflows.create_figure_from_selection()
@@ -1952,23 +1966,6 @@ class ImageToolManager(_ImageToolManagerBase):
     def open(self, *, native: bool = True) -> None:
         self._data_ingress.open(native=native)
 
-    def _data_recv(
-        self,
-        data: list[xr.DataArray] | list[xr.Dataset],
-        kwargs: dict[str, typing.Any],
-        *,
-        watched_var: tuple[str, str] | None = None,
-        watched_metadata: Mapping[str, typing.Any] | None = None,
-        show: bool | None = None,
-    ) -> list[bool]:
-        return self._data_ingress.receive_data(
-            data,
-            kwargs,
-            watched_var=watched_var,
-            watched_metadata=watched_metadata,
-            show=show,
-        )
-
     def _dependency_refs_for_uid(
         self, uid: str
     ) -> tuple[ScriptInputDependencyRef, ...]:
@@ -2531,45 +2528,11 @@ class ImageToolManager(_ImageToolManagerBase):
     def _handle_dropped_files(self, file_paths: list[pathlib.Path]) -> None:
         self._actions_controller._handle_dropped_files(file_paths)
 
-    def _show_loaded_info(
-        self,
-        loaded: list[pathlib.Path],
-        canceled: list[pathlib.Path],
-        failed: list[pathlib.Path],
-        retry_callback: Callable[[list[pathlib.Path]], typing.Any],
-    ) -> None:
-        self._actions_controller._show_loaded_info(
-            loaded, canceled, failed, retry_callback
-        )
-
-    def open_multiple_files(
-        self, queued: list[pathlib.Path], try_workspace: bool = False
-    ) -> None:
-        self._actions_controller.open_multiple_files(
-            queued, try_workspace=try_workspace
-        )
-
-    def _error_creating_imagetool(self) -> None:
-        self._actions_controller._error_creating_imagetool()
-
     def _show_operation_error(self, log_message: str, text: str) -> None:
         self._actions_controller._show_operation_error(log_message, text)
 
     def _show_workspace_save_worker_error(self, error_text: str) -> None:
         self._actions_controller._show_workspace_save_worker_error(error_text)
-
-    def _add_from_multiple_files(
-        self,
-        loaded: list[pathlib.Path],
-        queued: list[pathlib.Path],
-        failed: list[pathlib.Path],
-        func: Callable[..., typing.Any],
-        kwargs: dict[str, typing.Any],
-        retry_callback: Callable[..., typing.Any],
-    ) -> None:
-        self._data_ingress.add_from_multiple_files(
-            loaded, queued, failed, func, kwargs, retry_callback
-        )
 
     def add_widget(self, widget: QtWidgets.QWidget) -> None:
         self._actions_controller.add_widget(widget)
@@ -2621,7 +2584,7 @@ class ImageToolManager(_ImageToolManagerBase):
         if not tool._tool_display_name:
             tool._tool_display_name = self._figure_collection.next_display_name()
         self._register_figure_node(node)
-        self._figure_workflows._configure_materialized_figure_tool(node, tool)
+        self._configure_figure_tool(node, tool)
         self._mark_node_added(node.uid)
         self._figure_collection.sync(select_uid=node.uid if show else None)
         if show:

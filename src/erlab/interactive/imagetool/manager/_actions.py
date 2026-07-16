@@ -11,9 +11,6 @@ import uuid
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
-import erlab.interactive.imagetool.manager._workspace._format as workspace_format
-import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool import _kspace_conversion
 from erlab.interactive.imagetool._mainwindow import ImageTool
@@ -33,17 +30,10 @@ from erlab.interactive.imagetool._provenance._operations import (
 from erlab.interactive.imagetool.manager._dialogs import (
     _BatchOperationDialog,
     _ConcatDialog,
-    _is_loader_func,
     _RenameDialog,
     _StoreDialog,
 )
-from erlab.interactive.imagetool.manager._widgets import (
-    _WATCHED_VAR_COLORS,
-    _show_workspace_file_lock_error,
-)
-from erlab.interactive.imagetool.manager._workspace._format import (
-    _workspace_manifest_repack_estimate,
-)
+from erlab.interactive.imagetool.manager._widgets import _WATCHED_VAR_COLORS
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
@@ -51,11 +41,10 @@ from erlab.interactive.imagetool.manager._wrapper import (
 
 if typing.TYPE_CHECKING:
     import datetime
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Iterable, Mapping
 
     import xarray as xr
 
-    from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
 
@@ -865,7 +854,7 @@ class _ActionsController:
             self._manager._handle_dropped_files([pathlib.Path(p) for p in paths])
             return
 
-        self._manager._add_from_multiple_files(
+        self._manager._data_ingress.add_from_multiple_files(
             [],
             [pathlib.Path(p) for p in paths],
             [],
@@ -893,7 +882,7 @@ class _ActionsController:
                 idx = sorted(self._manager._tool_graph.root_wrappers.keys())[idx]
             elif isinstance(idx, int) and idx == self._manager.next_idx:
                 # If not yet created, add new tool
-                self._manager._data_recv([darr], {})
+                self._manager._data_ingress.receive_data([darr], {})
                 continue
             self._manager.get_imagetool(idx).slicer_area.replace_source_data(darr)
         self._manager._sigDataReplaced.emit()
@@ -964,7 +953,7 @@ class _ActionsController:
         idx = self._manager._find_watched_idx(uid)
         if idx is None:
             # If the tool does not exist, create a new one
-            self._manager._data_recv(
+            self._manager._data_ingress.receive_data(
                 [darr],
                 {},
                 watched_var=(varname, uid),
@@ -1147,300 +1136,10 @@ class _ActionsController:
                     "Multiple file types cannot be opened at the same time.",
                 )
                 return
-            self._manager.open_multiple_files(
+            self._manager._data_ingress.open_multiple_files(
                 file_paths,
                 try_workspace=extensions == {".itws"},
             )
-
-    def _show_loaded_info(
-        self,
-        loaded: list[pathlib.Path],
-        canceled: list[pathlib.Path],
-        failed: list[pathlib.Path],
-        retry_callback: Callable[[list[pathlib.Path]], typing.Any],
-    ) -> None:
-        """Show a message box with information about the loaded files.
-
-        Nothing is shown if all files were successfully loaded.
-
-        Parameters
-        ----------
-        loaded
-            List of successfully loaded files.
-        canceled
-            List of files that were aborted before trying to load.
-        failed
-            List of files that failed to load.
-        retry_callback
-            Callback function to retry loading the failed files. It should accept a list
-            of path objects as its only argument.
-
-        """
-        loaded, canceled, failed = (
-            list(dict.fromkeys(loaded)),
-            list(dict.fromkeys(canceled)),
-            list(dict.fromkeys(failed)),
-        )  # Remove duplicate entries
-
-        n_done, n_fail = len(loaded), len(failed)
-
-        status_msg = f"Loaded {n_done} {'file' if n_done == 1 else 'files'}"
-        self._manager._status_bar.showMessage(status_msg, 5000)
-
-        if n_fail == 0:
-            return
-
-        message = f"Loaded {n_done} file"
-        if n_done != 1:
-            message += "s"
-        message = message + f" with {n_fail} failure"
-        if n_fail != 1:
-            message += "s"
-        message += "."
-
-        msg_box = QtWidgets.QMessageBox(self._manager)
-        msg_box.setText(message)
-
-        loaded_str = "\n".join(p.name for p in loaded)
-        if loaded_str:
-            loaded_str = f"Loaded:\n{loaded_str}\n\n"
-
-        failed_str = "\n".join(p.name for p in failed)
-        if failed_str:
-            failed_str = f"Failed:\n{failed_str}\n\n"
-
-        canceled_str = "\n".join(p.name for p in canceled)
-        if canceled_str:
-            canceled_str = f"Canceled:\n{canceled_str}\n\n"
-        msg_box.setDetailedText(f"{loaded_str}{failed_str}{canceled_str}")
-
-        msg_box.setInformativeText("Do you want to retry loading the failed files?")
-        msg_box.setStandardButtons(
-            QtWidgets.QMessageBox.StandardButton.Retry
-            | QtWidgets.QMessageBox.StandardButton.Cancel
-        )
-        msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Retry)
-        if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Retry:
-            retry_callback(failed)
-
-    def open_multiple_files(
-        self, queued: list[pathlib.Path], try_workspace: bool = False
-    ) -> None:
-        """Open multiple files in the manager."""
-        if try_workspace and self._manager._workspace_state.save_in_progress:
-            self._manager._status_bar.showMessage(
-                "Workspace save in progress; open after it finishes", 3000
-            )
-            return
-        n_files: int = len(queued)
-        loaded: list[pathlib.Path] = []
-        failed: list[pathlib.Path] = []
-        metadata_from_attrs = workspace_format._workspace_file_metadata_from_attrs
-
-        if try_workspace:
-            for p in list(queued):
-                explicit_workspace = p.suffix.lower() == ".itws"
-                try:
-                    dt = workspace_arrays.open_workspace_datatree(p, chunks=None)
-                except Exception as exc:
-                    if workspace_storage._is_workspace_file_lock_error(exc):
-                        logger.info(
-                            "Workspace file is already open or locked: %s",
-                            p,
-                            extra={"suppress_ui_alert": True},
-                        )
-                        _show_workspace_file_lock_error(self._manager, p)
-                        queued.remove(p)
-                    elif explicit_workspace:
-                        self._manager._show_operation_error(
-                            "Error while loading workspace",
-                            "An error occurred while loading the workspace file.",
-                        )
-                        queued.remove(p)
-                    else:
-                        logger.debug(
-                            "Failed to open %s as datatree workspace", p, exc_info=True
-                        )
-                else:
-                    if self._manager._is_datatree_workspace(dt):
-                        dt.close()
-                        try:
-                            with self._manager._workspace_document_access_context(
-                                p
-                            ) as access:
-                                workspace_storage._recover_workspace_transactions(
-                                    access.path
-                                )
-                                workspace_dt = workspace_arrays.open_workspace_datatree(
-                                    access.path, chunks=None
-                                )
-                                workspace_dt_owned = True
-                                try:
-                                    (
-                                        schema_version,
-                                        delta_save_count,
-                                        manifest,
-                                    ) = metadata_from_attrs(workspace_dt.attrs)
-                                    controller = self._manager._workspace_controller
-                                    dirty_choice = (
-                                        controller._dirty_workspace_save_choice
-                                    )
-                                    save_choice = dirty_choice(
-                                        "Opening a workspace replaces the windows "
-                                        "currently in this manager."
-                                    )
-                                    if save_choice == "cancel":
-                                        return
-                                    if save_choice == "save":
-                                        workspace_path = access.path
-
-                                        def _load_after_save(
-                                            save_succeeded: bool,
-                                            *,
-                                            path: pathlib.Path = workspace_path,
-                                            controller=controller,
-                                        ) -> None:
-                                            if save_succeeded and (
-                                                not self._manager.is_workspace_modified
-                                            ):
-                                                controller._open_workspace_after_dirty_prompt(
-                                                    path
-                                                )
-
-                                        controller.save(on_finished=_load_after_save)
-                                        return
-                                    loaded_workspace = self._manager._from_datatree(
-                                        workspace_dt,
-                                        replace=True,
-                                        mark_dirty=False,
-                                        select=False,
-                                        workspace_file_path=access.path,
-                                    )
-                                    workspace_dt_owned = False
-                                    loaded_workspace = (
-                                        self._manager._finish_workspace_file_load(
-                                            loaded_workspace
-                                        )
-                                    )
-                                    if loaded_workspace:
-                                        (
-                                            estimated_obsolete_bytes,
-                                            replacement_delta_count,
-                                            repack_estimate_known,
-                                        ) = _workspace_manifest_repack_estimate(
-                                            manifest,
-                                            delta_save_count=delta_save_count,
-                                        )
-                                        self._manager._associate_loaded_workspace_file(
-                                            access.path,
-                                            schema_version,
-                                            delta_save_count=delta_save_count,
-                                            estimated_obsolete_bytes=(
-                                                estimated_obsolete_bytes
-                                            ),
-                                            replacement_delta_count=(
-                                                replacement_delta_count
-                                            ),
-                                            repack_estimate_known=repack_estimate_known,
-                                            workspace_access=access,
-                                            rebind_data=False,
-                                        )
-                                finally:
-                                    if workspace_dt_owned:
-                                        workspace_dt.close()
-                        except Exception as exc:
-                            if workspace_storage._is_workspace_file_lock_error(exc):
-                                logger.info(
-                                    "Workspace file is already open or locked: %s",
-                                    p,
-                                    extra={"suppress_ui_alert": True},
-                                )
-                                _show_workspace_file_lock_error(self._manager, p)
-                            else:
-                                self._manager._show_operation_error(
-                                    "Error while loading workspace",
-                                    "An error occurred while loading the workspace "
-                                    "file.",
-                                )
-                        finally:
-                            queued.remove(p)
-                            loaded.append(p)
-                    else:
-                        dt.close()
-                        if explicit_workspace:
-                            logger.error(
-                                "File with .itws extension is not an ImageTool "
-                                "workspace: %s",
-                                p,
-                                extra={"suppress_ui_alert": True},
-                            )
-                            erlab.interactive.utils.MessageDialog.critical(
-                                self._manager,
-                                "Error",
-                                "An error occurred while loading the workspace file.",
-                                f"{p.name} is not a valid ImageTool workspace file.",
-                            )
-                            queued.remove(p)
-
-        if len(queued) == 0:
-            return
-
-        # Get loaders applicable to input files
-        valid_loaders: dict[str, tuple[Callable, dict]] = (
-            erlab.interactive.utils.file_loaders(queued)
-        )
-
-        if len(valid_loaders) == 0:
-            if all(file_path.is_dir() for file_path in queued):
-                # If all dropped paths are directories, open them in the explorer
-                explorer = typing.cast(
-                    "_TabbedExplorer", self._manager._show_standalone_app("explorer")
-                )
-                for file_path in queued:
-                    explorer.add_tab(root_path=file_path)
-                return
-
-            singular: bool = n_files == 1
-            QtWidgets.QMessageBox.critical(
-                self._manager,
-                "Error",
-                f"The selected {'file' if singular else 'files'} "
-                f"with extension '{queued[0].suffix}' {'is' if singular else 'are'} "
-                "not supported by any available plugin.",
-            )
-            return
-
-        if len(valid_loaders) == 1:
-            name_filter, (func, kargs) = next(iter(valid_loaders.items()))
-            if _is_loader_func(func):
-                selected = self._manager._select_loader_options(
-                    valid_loaders, name_filter, sample_paths=queued
-                )
-                if selected is None:
-                    return
-                self._manager._recent_name_filter, func, kargs = selected
-            else:
-                self._manager._recent_name_filter = name_filter
-        else:
-            selected = self._manager._select_loader_options(
-                valid_loaders, sample_paths=queued
-            )
-            if selected is None:
-                return
-            self._manager._recent_name_filter, func, kargs = selected
-
-        self._manager._add_from_multiple_files(
-            loaded, queued, failed, func, kargs, self._manager.open_multiple_files
-        )
-
-    def _error_creating_imagetool(self) -> None:
-        """Show an error message when an ImageTool window could not be created."""
-        erlab.interactive.utils.MessageDialog.critical(
-            self._manager,
-            "Error",
-            "An error occurred while creating the ImageTool window.",
-            "The data may be incompatible with ImageTool.",
-        )
 
     def _show_operation_error(self, log_message: str, text: str) -> None:
         logger.exception(log_message, extra={"suppress_ui_alert": True})
