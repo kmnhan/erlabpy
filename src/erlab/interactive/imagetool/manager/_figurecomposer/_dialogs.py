@@ -2,20 +2,12 @@
 
 from __future__ import annotations
 
-__all__ = [
-    "_FIGURE_DIALOG_ADD_SOURCE",
-    "_FIGURE_DIALOG_ADD_STEP",
-    "_FIGURE_DIALOG_NEW",
-    "_FIGURE_DIALOG_REPLACE_SOURCE",
-    "_AppendFigureTargetDialog",
-    "_FigureSourcePickerDialog",
-]
-
 import typing
 
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive._figurecomposer
+from erlab.interactive._figurecomposer._model._axes import _all_axes_for_shape
 from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_axis_display_names,
@@ -310,7 +302,7 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
             self.selector_stack.setCurrentWidget(self.axes_selector)
             self.axes_selector.set_selected_axes(
                 self._default_subplot_axes(
-                    self._manager._figure_all_axes(setup.nrows, setup.ncols)
+                    _all_axes_for_shape(setup.nrows, setup.ncols)
                 )
             )
         self._selection_changed()
@@ -395,7 +387,7 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
             )
         else:
             self.axes_selector.set_selected_axes(
-                self._manager._figure_all_axes(setup.nrows, setup.ncols),
+                _all_axes_for_shape(setup.nrows, setup.ncols),
                 emit=True,
             )
 

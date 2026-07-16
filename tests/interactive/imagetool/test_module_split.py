@@ -52,6 +52,7 @@ def test_figure_composer_semantics_do_not_load_qt_widgets() -> None:
         """
         import sys
 
+        from erlab.interactive._figurecomposer import _seeding
         from erlab.interactive._figurecomposer._model._document import FigureDocument
         from erlab.interactive._figurecomposer._model._state import (
             FigureExportState,
@@ -92,6 +93,10 @@ def test_figure_composer_semantics_do_not_load_qt_widgets() -> None:
 
         assert document.operation_source_names(plot_operation) == ("data",)
         assert document.operation_source_names(custom_operation) == ("data",)
+        assert (
+            _seeding._operation_with_source_names(plot_operation, {})
+            is plot_operation
+        )
         assert isinstance(_default_method_args(AXES_METHODS["plot"], None), tuple)
         assert _slice_values_mode_text("all")
         assert "qtpy.QtWidgets" not in sys.modules

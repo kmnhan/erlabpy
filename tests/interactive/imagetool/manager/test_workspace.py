@@ -12021,7 +12021,9 @@ def test_manager_workspace_load_context_batches_secondary_ui_refreshes(
             "update_gallery_icon",
             _update_figure_gallery_icon,
         )
-        refresh_figure_source_controls = manager._refresh_figure_source_controls
+        refresh_figure_source_controls = (
+            manager._figure_controller._refresh_figure_source_controls
+        )
 
         def _refresh_figure_source_controls() -> None:
             if manager._workspace_ui_refresh_defer_depth > 0:
@@ -12030,7 +12032,7 @@ def test_manager_workspace_load_context_batches_secondary_ui_refreshes(
             calls.append(("source_controls", None))
 
         monkeypatch.setattr(
-            manager,
+            manager._figure_controller,
             "_refresh_figure_source_controls",
             _refresh_figure_source_controls,
         )
@@ -12046,8 +12048,8 @@ def test_manager_workspace_load_context_batches_secondary_ui_refreshes(
             manager._figure_controller.update_gallery_icon("figure")
             manager._figure_controller.update_gallery_icon("figure")
             manager._figure_controller.update_gallery_icon("figure")
-            manager._refresh_figure_source_controls()
-            manager._refresh_figure_source_controls()
+            manager._figure_controller._refresh_figure_source_controls()
+            manager._figure_controller._refresh_figure_source_controls()
             assert calls == []
 
         assert calls == [
@@ -17642,7 +17644,9 @@ def test_manager_figure_operation_materializes_hidden_memory_payload(
         wrapper = manager._tool_graph.root_wrappers[0]
         assert wrapper.pending_workspace_memory_payload is not None
 
-        manager._figure_operations_from_image_targets((0,), ("saved",))
+        manager._figure_controller._figure_operations_from_image_targets(
+            (0,), ("saved",)
+        )
 
         assert wrapper.pending_workspace_memory_payload is None
         np.testing.assert_array_equal(

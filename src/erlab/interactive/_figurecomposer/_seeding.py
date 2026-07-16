@@ -7,13 +7,25 @@ import typing
 import numpy as np
 
 from erlab.interactive._figurecomposer._defaults import _current_options
+from erlab.interactive._figurecomposer._model._axes import _all_axes_for_shape
+from erlab.interactive._figurecomposer._model._operation_metadata import (
+    rename_operation_sources,
+)
+from erlab.interactive._figurecomposer._model._sources import (
+    _middle_coord_value,
+    _public_source_data,
+)
 from erlab.interactive._figurecomposer._model._state import (
     FigureAxesSelectionState,
+    FigureOperationKind,
     FigureOperationState,
     FigurePlotSlicesPanelStyleState,
+    FigureSubplotsState,
 )
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Mapping
+
     import xarray as xr
 
 
@@ -274,3 +286,166 @@ def bz_overlay_operation_from_ktool(
     if k_parallel is not None:
         updates["bz_k_parallel"] = k_parallel
     return operation.model_copy(update=updates)
+
+
+def _default_slice_selection(
+    data: xr.DataArray,
+) -> tuple[str | None, tuple[float, ...]]:
+    slice_dim = None
+    slice_values: tuple[float, ...] = ()
+    if data.ndim > 2:
+        slice_dim = str(data.dims[0])
+        value = _middle_coord_value(data, slice_dim)
+        if value is not None:
+            slice_values = (value,)
+    return slice_dim, slice_values
+
+
+def _make_operations_for_sources(
+    source_data: Mapping[str, xr.DataArray],
+    *,
+    setup: FigureSubplotsState,
+) -> tuple[FigureOperationState, ...]:
+    """Choose readable default operations for a group of selected sources."""
+    if not source_data:
+        return ()
+
+    source_names = tuple(source_data)
+    all_axes = FigureAxesSelectionState(
+        axes=_all_axes_for_shape(setup.nrows, setup.ncols)
+    )
+    squeezed = [
+        _public_source_data(data).squeeze(drop=True) for data in source_data.values()
+    ]
+
+    if all(data.ndim == 2 for data in squeezed):
+        operations = []
+        for index, source_name in enumerate(source_names):
+            row = min(index, setup.nrows - 1)
+            operations.append(
+                FigureOperationState.plot_array(
+                    label=source_name,
+                    source=source_name,
+                    axes=FigureAxesSelectionState(axes=((row, 0),)),
+                )
+            )
+        return tuple(operations)
+
+    if all(data.ndim > 1 for data in squeezed):
+        slice_dim, slice_values = _default_slice_selection(squeezed[0])
+        operation = FigureOperationState.plot_slices(
+            label="plot_slices",
+            sources=source_names,
+            axes=all_axes,
+            slice_dim=slice_dim,
+            slice_values=slice_values,
+        ).model_copy(update={"order": "F"} if len(source_names) > 1 else {})
+        return (operation,)
+
+    operations = []
+    for index, (source_name, data) in enumerate(
+        zip(source_names, squeezed, strict=True)
+    ):
+        row = min(index, setup.nrows - 1)
+        if data.ndim == 1:
+            operations.append(
+                FigureOperationState.line(
+                    label=source_name,
+                    source=source_name,
+                    axes=FigureAxesSelectionState(axes=((row, 0),)),
+                )
+            )
+        elif data.ndim == 2:
+            operations.append(
+                FigureOperationState.plot_array(
+                    label=source_name,
+                    source=source_name,
+                    axes=FigureAxesSelectionState(axes=((row, 0),)),
+                )
+            )
+        else:
+            slice_dim, slice_values = _default_slice_selection(data)
+            operations.append(
+                FigureOperationState.plot_slices(
+                    label=source_name,
+                    sources=(source_name,),
+                    axes=FigureAxesSelectionState(axes=((row, 0),)),
+                    slice_dim=slice_dim,
+                    slice_values=slice_values,
+                )
+            )
+    return tuple(operations)
+
+
+def _plot_slices_grid_shape(operation: FigureOperationState) -> tuple[int, int]:
+    map_count = (
+        len(operation.map_selections)
+        if operation.map_selections
+        else len(operation.sources)
+    )
+    map_count = max(map_count, 1)
+    slice_count = max(len(operation.slice_values), 1)
+    if operation.order == "F":
+        return slice_count, map_count
+    return map_count, slice_count
+
+
+def _setup_for_operation(
+    operation: FigureOperationState | None,
+    source_data: Mapping[str, xr.DataArray],
+) -> FigureSubplotsState:
+    if operation is not None and operation.kind == FigureOperationKind.PLOT_SLICES:
+        nrows, ncols = _plot_slices_grid_shape(operation)
+        return FigureSubplotsState(nrows=nrows, ncols=ncols)
+
+    squeezed = [
+        _public_source_data(data).squeeze(drop=True) for data in source_data.values()
+    ]
+    return FigureSubplotsState(nrows=max(len(squeezed), 1), ncols=1)
+
+
+def _operation_with_source_names(
+    operation: FigureOperationState, source_name_map: Mapping[str, str]
+) -> FigureOperationState:
+    if not source_name_map:
+        return operation
+    return rename_operation_sources(operation, source_name_map)
+
+
+def _operations_with_append_axes(
+    operations: tuple[FigureOperationState, ...],
+    axes_selection: FigureAxesSelectionState,
+) -> tuple[FigureOperationState, ...]:
+    if (
+        len(operations) > 1
+        and not axes_selection.expression
+        and all(
+            operation.kind == FigureOperationKind.PLOT_ARRAY for operation in operations
+        )
+    ):
+        if axes_selection.axes and len(axes_selection.axes) >= len(operations):
+            return tuple(
+                operation.model_copy(
+                    update={
+                        "axes": FigureAxesSelectionState(
+                            axes=(axes_selection.axes[index],)
+                        )
+                    }
+                )
+                for index, operation in enumerate(operations)
+            )
+        if axes_selection.axes_ids and len(axes_selection.axes_ids) >= len(operations):
+            return tuple(
+                operation.model_copy(
+                    update={
+                        "axes": FigureAxesSelectionState(
+                            axes_ids=(axes_selection.axes_ids[index],)
+                        )
+                    }
+                )
+                for index, operation in enumerate(operations)
+            )
+    return tuple(
+        operation.model_copy(update={"axes": axes_selection})
+        for operation in operations
+    )

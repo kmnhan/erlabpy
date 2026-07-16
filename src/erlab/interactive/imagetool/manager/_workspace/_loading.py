@@ -1466,7 +1466,9 @@ class _WorkspaceLoader:
                     node.window = tool
                     if not tool._tool_display_name:
                         tool._tool_display_name = node.name
-                    self._manager._configure_materialized_figure_tool(node, tool)
+                    self._manager._figure_controller._configure_materialized_figure_tool(
+                        node, tool
+                    )
                     self._manager._figure_controller.sync(select_uid=None)
                 else:
                     parent = self._manager._node_for_target(node.parent_uid)

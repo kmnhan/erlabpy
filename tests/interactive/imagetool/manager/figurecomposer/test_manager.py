@@ -6,6 +6,7 @@ import h5py
 import pydantic
 
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
+from erlab.interactive._figurecomposer import _seeding
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive.imagetool._figurecomposer_adapter import (
     build_figure_composer_operation,
@@ -100,15 +101,8 @@ def test_manager_figure_operation_source_name_mapping_updates_all_fields() -> No
         }
     )
 
-    assert (
-        manager_mainwindow.ImageToolManager._figure_operation_with_source_names(
-            operation, {}
-        )
-        is operation
-    )
-    renamed = manager_mainwindow.ImageToolManager._figure_operation_with_source_names(
-        operation, {"old": "new"}
-    )
+    assert _seeding._operation_with_source_names(operation, {}) is operation
+    renamed = _seeding._operation_with_source_names(operation, {"old": "new"})
 
     assert renamed.sources == ("new", "other")
     assert renamed.map_selections == (
@@ -120,11 +114,7 @@ def test_manager_figure_operation_source_name_mapping_updates_all_fields() -> No
     assert renamed.method_plot_y is method_y
 
 
-def test_manager_default_figure_seed_uses_public_nonuniform_dims(
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
-) -> None:
+def test_manager_default_figure_seed_uses_public_nonuniform_dims() -> None:
     public = xr.DataArray(
         np.arange(24.0).reshape(4, 2, 3),
         dims=("sample_temp", "alpha", "eV"),
@@ -137,22 +127,17 @@ def test_manager_default_figure_seed_uses_public_nonuniform_dims(
     )
     internal = erlab.utils.array._make_dims_uniform(public)
 
-    with manager_context() as manager:
-        operation = manager._make_figure_operations_for_sources(
-            {"data": internal},
-            setup=FigureSubplotsState(),
-        )[0]
+    operation = _seeding._make_operations_for_sources(
+        {"data": internal},
+        setup=FigureSubplotsState(),
+    )[0]
 
     assert operation.kind == FigureOperationKind.PLOT_SLICES
     assert operation.slice_dim == "sample_temp"
     assert "sample_temp_idx" not in operation.model_dump_json()
 
 
-def test_manager_default_figure_seed_keeps_mixed_higher_dimensional_sources(
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
-) -> None:
+def test_manager_default_figure_seed_keeps_mixed_higher_dimensional_sources() -> None:
     profile = xr.DataArray(np.arange(4.0), dims=("eV",), name="profile")
     image_stack = xr.DataArray(
         np.arange(24.0).reshape(3, 2, 4),
@@ -165,11 +150,10 @@ def test_manager_default_figure_seed_keeps_mixed_higher_dimensional_sources(
         name="map",
     )
 
-    with manager_context() as manager:
-        line_operation, map_operation = manager._make_figure_operations_for_sources(
-            {"profile": profile, "map": image_stack},
-            setup=FigureSubplotsState(nrows=2, ncols=1),
-        )
+    line_operation, map_operation = _seeding._make_operations_for_sources(
+        {"profile": profile, "map": image_stack},
+        setup=FigureSubplotsState(nrows=2, ncols=1),
+    )
 
     assert line_operation.kind == FigureOperationKind.LINE
     assert line_operation.line_source == "profile"
@@ -2127,9 +2111,7 @@ def test_manager_plot_slices_setup_honors_order_for_horizontal_seeding() -> None
         slice_dim="eV",
         slice_values=(0.0, 1.0, 2.0),
     )
-    assert manager_mainwindow.ImageToolManager._figure_plot_slices_grid_shape(
-        operation
-    ) == (1, 3)
+    assert _seeding._plot_slices_grid_shape(operation) == (1, 3)
 
     multi_source_operation = FigureOperationState.plot_slices(
         label="plot_slices",
@@ -2137,27 +2119,16 @@ def test_manager_plot_slices_setup_honors_order_for_horizontal_seeding() -> None
         slice_dim="eV",
         slice_values=(0.0,),
     ).model_copy(update={"order": "F"})
-    assert manager_mainwindow.ImageToolManager._figure_plot_slices_grid_shape(
-        multi_source_operation
-    ) == (1, 3)
+    assert _seeding._plot_slices_grid_shape(multi_source_operation) == (1, 3)
 
 
 def test_manager_figure_operation_helpers_cover_multi_image_edges() -> None:
-    manager = typing.cast(
-        "manager_mainwindow.ImageToolManager",
-        manager_mainwindow.ImageToolManager.__new__(
-            manager_mainwindow.ImageToolManager
-        ),
-    )
     first_image = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("y", "x"))
     second_image = xr.DataArray(np.arange(4.0, 8.0).reshape(2, 2), dims=("y", "x"))
 
-    operations = (
-        manager_mainwindow.ImageToolManager._make_figure_operations_for_sources(
-            manager,
-            {"first": first_image, "second": second_image},
-            setup=FigureSubplotsState(nrows=2, ncols=1),
-        )
+    operations = _seeding._make_operations_for_sources(
+        {"first": first_image, "second": second_image},
+        setup=FigureSubplotsState(nrows=2, ncols=1),
     )
 
     assert [operation.kind for operation in operations] == [
@@ -2169,11 +2140,9 @@ def test_manager_figure_operation_helpers_cover_multi_image_edges() -> None:
         ((1, 0),),
     ]
 
-    split_by_axes_id = (
-        manager_mainwindow.ImageToolManager._figure_operations_with_append_axes(
-            typing.cast("tuple[typing.Any, ...]", operations),
-            FigureAxesSelectionState(axes_ids=("left", "right")),
-        )
+    split_by_axes_id = _seeding._operations_with_append_axes(
+        typing.cast("tuple[typing.Any, ...]", operations),
+        FigureAxesSelectionState(axes_ids=("left", "right")),
     )
     assert [operation.axes.axes_ids for operation in split_by_axes_id] == [
         ("left",),
@@ -2215,12 +2184,13 @@ def test_manager_figure_image_target_helpers_cover_plot_slices_edges(
             )
         ),
     }
-    manager = typing.cast(
-        "manager_mainwindow.ImageToolManager",
-        types.SimpleNamespace(
-            _node_for_target=lambda target: nodes[target],
-            get_imagetool=lambda target: nodes[target].imagetool,
-        ),
+    manager = types.SimpleNamespace(
+        _node_for_target=lambda target: nodes[target],
+        get_imagetool=lambda target: nodes[target].imagetool,
+    )
+    controller = typing.cast(
+        "_controller._FigureComposerController",
+        types.SimpleNamespace(_host=manager),
     )
     monkeypatch.setattr(
         "erlab.interactive.imagetool._figurecomposer_adapter.build_figure_composer_operation",
@@ -2230,16 +2200,16 @@ def test_manager_figure_image_target_helpers_cover_plot_slices_edges(
     )
 
     assert (
-        manager_mainwindow.ImageToolManager._figure_operations_from_image_targets(
-            manager,
+        _controller._FigureComposerController._figure_operations_from_image_targets(
+            controller,
             ("slice_a", "array"),
             ("first", "second"),
         )
         is None
     )
     combined = (
-        manager_mainwindow.ImageToolManager._figure_operations_from_image_targets(
-            manager,
+        _controller._FigureComposerController._figure_operations_from_image_targets(
+            controller,
             ("slice_a", "slice_b"),
             ("first", "second"),
         )
@@ -2620,8 +2590,13 @@ def test_manager_prompt_append_figure_target_auto_and_cancel_paths(
 ) -> None:
     with manager_context() as manager:
         data = xr.DataArray(np.arange(4.0), dims=("x",), name="line")
-        assert manager._prompt_append_figure_target(None) is None
-        assert manager._prompt_append_figure_target(None, figure_uid="missing") is None
+        assert manager._figure_controller._prompt_append_figure_target(None) is None
+        assert (
+            manager._figure_controller._prompt_append_figure_target(
+                None, figure_uid="missing"
+            )
+            is None
+        )
 
         single_tool = FigureComposerTool(
             data,
@@ -2633,10 +2608,10 @@ def test_manager_prompt_append_figure_target_auto_and_cancel_paths(
             ),
         )
         single_uid = manager.add_figuretool(single_tool, show=False)
-        assert manager._append_single_axis_selection(single_uid) == (
+        assert manager._figure_controller._append_single_axis_selection(single_uid) == (
             FigureAxesSelectionState(axes=((0, 0),))
         )
-        assert manager._prompt_append_figure_target(None) == (
+        assert manager._figure_controller._prompt_append_figure_target(None) == (
             single_uid,
             FigureAxesSelectionState(axes=((0, 0),)),
         )
@@ -2668,7 +2643,12 @@ def test_manager_prompt_append_figure_target_auto_and_cancel_paths(
                 return QtWidgets.QDialog.DialogCode.Rejected
 
         monkeypatch.setattr(_dialogs, "_AppendFigureTargetDialog", RejectDialog)
-        assert manager._prompt_append_figure_target(None, figure_uid=wide_uid) is None
+        assert (
+            manager._figure_controller._prompt_append_figure_target(
+                None, figure_uid=wide_uid
+            )
+            is None
+        )
 
 
 def test_manager_child_imagetool_gets_figure_context_actions(
@@ -3138,10 +3118,14 @@ def test_manager_bz_overlay_ignores_converted_output_without_ktool_parent() -> N
         name="momentum",
     )
     axes = FigureAxesSelectionState(axes=((0, 0),))
+    controller = typing.cast(
+        "_controller._FigureComposerController",
+        types.SimpleNamespace(_host=FakeManager()),
+    )
 
     assert (
-        manager_mainwindow.ImageToolManager._figure_bz_overlay_operation_from_targets(
-            FakeManager(),
+        _controller._FigureComposerController._figure_bz_overlay_operation_from_targets(
+            controller,
             ("first", "second"),
             {"momentum": data},
             axes=axes,
@@ -3149,8 +3133,8 @@ def test_manager_bz_overlay_ignores_converted_output_without_ktool_parent() -> N
         is None
     )
     assert (
-        manager_mainwindow.ImageToolManager._figure_bz_overlay_operation_from_targets(
-            FakeManager(),
+        _controller._FigureComposerController._figure_bz_overlay_operation_from_targets(
+            controller,
             ("converted",),
             {"first": data, "second": data},
             axes=axes,
@@ -3159,8 +3143,8 @@ def test_manager_bz_overlay_ignores_converted_output_without_ktool_parent() -> N
     )
 
     assert (
-        manager_mainwindow.ImageToolManager._figure_bz_overlay_operation_from_target(
-            FakeManager(),
+        _controller._FigureComposerController._figure_bz_overlay_operation_from_target(
+            controller,
             "converted",
             data,
             axes=axes,
@@ -3320,7 +3304,9 @@ def test_manager_figure_sources_reveal_associated_imagetool_rows(
         assert figure_uid is not None
         figure_tool = manager._child_node(figure_uid).tool_window
         assert isinstance(figure_tool, FigureComposerTool)
-        assert not manager._reveal_figure_sources("missing", ("first",))
+        assert not manager._figure_controller._reveal_figure_sources(
+            "missing", ("first",)
+        )
 
         def raise_reveal_error(_source_name: str) -> bool:
             raise RuntimeError("source is unavailable")
@@ -3585,10 +3571,12 @@ def test_manager_figure_source_only_append_uses_readable_conflict_suffix(
         figure_tool = manager._child_node(figure_uid).tool_window
         assert isinstance(figure_tool, FigureComposerTool)
 
-        _resolved_targets, sources, source_data = manager._figure_sources_from_targets(
-            (1,)
+        _resolved_targets, sources, source_data = (
+            manager._figure_controller._figure_sources_from_targets((1,))
         )
-        manager._add_sources_to_figure(figure_uid, sources, source_data, show=False)
+        manager._figure_controller._add_sources_to_figure(
+            figure_uid, sources, source_data, show=False
+        )
 
         assert tuple(source.name for source in figure_tool.source_states()) == (
             "map",
@@ -3623,7 +3611,10 @@ def test_manager_figure_source_helper_edge_contracts(
         figure_tool = manager._child_node(figure_uid).tool_window
         assert isinstance(figure_tool, FigureComposerTool)
         select_child_tool(manager, figure_uid)
-        assert manager._selected_figure_uid_for_figure_dialog() == figure_uid
+        assert (
+            manager._figure_controller._selected_figure_uid_for_figure_dialog()
+            == figure_uid
+        )
 
         source_states = figure_tool.source_states()
         source_data = figure_tool.source_data()
@@ -3633,23 +3624,31 @@ def test_manager_figure_source_helper_edge_contracts(
             label="replacement",
             node_uid=image_uid,
         )
-        assert not manager._add_sources_to_figure(
+        assert not manager._figure_controller._add_sources_to_figure(
             "missing",
             source_states,
             source_data,
             show=False,
         )
-        assert manager._figure_source_state(figure_tool, "missing") is None
-        assert manager._figure_source_live_node("missing", source_alias) is None
-        assert not manager._refresh_figure_source(figure_uid, "missing")
-        assert not manager._replace_figure_source(
+        assert (
+            manager._figure_controller._figure_source_state(figure_tool, "missing")
+            is None
+        )
+        assert (
+            manager._figure_controller._figure_source_live_node("missing", source_alias)
+            is None
+        )
+        assert not manager._figure_controller._refresh_figure_source(
+            figure_uid, "missing"
+        )
+        assert not manager._figure_controller._replace_figure_source(
             figure_uid,
             source_alias,
             (),
             {},
             show=False,
         )
-        assert not manager._replace_figure_source(
+        assert not manager._figure_controller._replace_figure_source(
             figure_uid,
             source_alias,
             (replacement_source,),
@@ -3663,50 +3662,61 @@ def test_manager_figure_source_helper_edge_contracts(
                 "_is_figure_uid",
                 lambda uid: uid in {figure_uid, child_uid},
             )
-            assert not manager._add_sources_to_figure(
+            assert not manager._figure_controller._add_sources_to_figure(
                 child_uid,
                 source_states,
                 source_data,
                 show=False,
             )
-            assert not manager._replace_figure_source(
+            assert not manager._figure_controller._replace_figure_source(
                 child_uid,
                 source_alias,
                 (replacement_source,),
                 {"replacement": data},
                 show=False,
             )
-            assert manager._figure_source_live_node(child_uid, source_alias) is None
-            assert not manager._refresh_figure_source(child_uid, source_alias)
+            assert (
+                manager._figure_controller._figure_source_live_node(
+                    child_uid, source_alias
+                )
+                is None
+            )
+            assert not manager._figure_controller._refresh_figure_source(
+                child_uid, source_alias
+            )
 
         with monkeypatch.context() as context:
             context.setattr(figure_tool, "replace_source", lambda *_args: False)
-            assert not manager._replace_figure_source(
+            assert not manager._figure_controller._replace_figure_source(
                 figure_uid,
                 source_alias,
                 (replacement_source,),
                 {"replacement": data},
                 show=False,
             )
-            assert not manager._refresh_figure_source(figure_uid, source_alias)
+            assert not manager._figure_controller._refresh_figure_source(
+                figure_uid, source_alias
+            )
 
         with monkeypatch.context() as context:
             context.setattr(
-                manager,
+                manager._figure_controller,
                 "_figure_source_live_node",
                 lambda *_args: manager._node_for_target(0),
             )
             context.setattr(manager, "_is_figure_uid", lambda uid: uid == child_uid)
-            assert not manager._refresh_figure_source(child_uid, source_alias)
+            assert not manager._figure_controller._refresh_figure_source(
+                child_uid, source_alias
+            )
 
         with monkeypatch.context() as context:
             context.setattr(manager, "_figure_uids", lambda: ("missing",))
-            manager._refresh_figure_source_controls()
+            manager._figure_controller._refresh_figure_source_controls()
 
         with monkeypatch.context() as context:
             context.setattr(manager, "_selected_figure_source_targets", lambda: (0,))
             context.setattr(
-                manager,
+                manager._figure_controller,
                 "_figure_sources_from_targets",
                 lambda _targets: ((), (), {}),
             )
@@ -3744,12 +3754,12 @@ def test_manager_figure_source_helper_edge_contracts(
             context.setattr(manager, "_selected_figure_source_targets", lambda: (0,))
             context.setattr(manager, "_figure_uids", lambda: (figure_uid,))
             context.setattr(
-                manager,
+                manager._figure_controller,
                 "_figure_sources_from_targets",
                 lambda _targets: ((0,), source_states, source_data),
             )
             context.setattr(
-                manager,
+                manager._figure_controller,
                 "_selected_figure_uid_for_figure_dialog",
                 lambda: figure_uid,
             )
@@ -3927,8 +3937,10 @@ def test_manager_figure_source_picker_selects_imagetool_rows_only(
         assert not manager.append_figure_from_targets(
             (dummy_uid,), figure_uid=figure_uid, show=False
         )
-        resolved_targets, sources, source_data = manager._figure_sources_from_targets(
-            (dummy_uid, child_uid)
+        resolved_targets, sources, source_data = (
+            manager._figure_controller._figure_sources_from_targets(
+                (dummy_uid, child_uid)
+            )
         )
         assert resolved_targets == (child_uid,)
         assert len(sources) == len(source_data) == 1
@@ -4040,7 +4052,9 @@ def test_manager_figure_source_add_reports_partial_rejection(
             itool(incompatible, manager=True, replace=0)
         manager._mark_workspace_clean()
 
-        assert manager._add_imagetool_sources_to_figure(figure_uid, (0, 1), show=False)
+        assert manager._figure_controller._add_imagetool_sources_to_figure(
+            figure_uid, (0, 1), show=False
+        )
 
         xr.testing.assert_identical(figure_tool.source_data()["first"], original_first)
         xr.testing.assert_identical(figure_tool.source_data()["second"], second)
@@ -4100,7 +4114,7 @@ def test_manager_rejected_source_update_does_not_mark_dirty_or_add_step(
             itool(incompatible, manager=True, replace=0)
         manager._mark_workspace_clean()
 
-        assert not manager._add_imagetool_sources_to_figure(
+        assert not manager._figure_controller._add_imagetool_sources_to_figure(
             figure_uid, (0,), show=False
         )
         xr.testing.assert_identical(figure_tool.source_data()["data"], original_data)
@@ -4184,25 +4198,31 @@ def test_figure_sources_drag_mime_adds_root_and_child_imagetools(
             figure_tool.source_data()[child_source_name], child_data.rename("child")
         )
 
-        assert not manager._add_imagetool_sources_to_figure(
+        assert not manager._figure_controller._add_imagetool_sources_to_figure(
             figure_uid, (figure_uid,), show=False
         )
-        assert not manager._request_add_sources_to_figure("missing-figure")
-        assert not manager._add_figure_sources_from_mime(figure_uid, QtCore.QMimeData())
+        assert not manager._figure_controller._request_add_sources_to_figure(
+            "missing-figure"
+        )
+        assert not manager._figure_controller._add_figure_sources_from_mime(
+            figure_uid, QtCore.QMimeData()
+        )
 
-        original_add_sources = manager._add_sources_to_figure
+        original_add_sources = manager._figure_controller._add_sources_to_figure
         monkeypatch.setattr(
-            manager,
+            manager._figure_controller,
             "_add_sources_to_figure",
             lambda *_args, **_kwargs: False,
         )
-        assert not manager._add_imagetool_sources_to_figure(
+        assert not manager._figure_controller._add_imagetool_sources_to_figure(
             figure_uid, (second_uid,), show=False
         )
-        monkeypatch.setattr(manager, "_add_sources_to_figure", original_add_sources)
+        monkeypatch.setattr(
+            manager._figure_controller, "_add_sources_to_figure", original_add_sources
+        )
 
         source_names = tuple(figure_tool.source_data())
-        assert manager._add_imagetool_sources_to_figure(
+        assert manager._figure_controller._add_imagetool_sources_to_figure(
             figure_uid, (second_uid, figure_uid), show=False
         )
         assert tuple(figure_tool.source_data()) == source_names
@@ -4240,11 +4260,13 @@ def test_manager_figure_remove_unused_source_persists_workspace(
         assert figure_uid is not None
         figure_tool = manager._child_node(figure_uid).tool_window
         assert isinstance(figure_tool, FigureComposerTool)
-        _resolved_targets, sources, source_data = manager._figure_sources_from_targets(
-            (1,)
+        _resolved_targets, sources, source_data = (
+            manager._figure_controller._figure_sources_from_targets((1,))
         )
         [source] = sources
-        manager._add_sources_to_figure(figure_uid, sources, source_data, show=False)
+        manager._figure_controller._add_sources_to_figure(
+            figure_uid, sources, source_data, show=False
+        )
         assert source.name in figure_tool.source_data()
         manager._mark_workspace_clean()
 

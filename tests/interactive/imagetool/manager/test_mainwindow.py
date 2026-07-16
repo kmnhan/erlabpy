@@ -27,6 +27,7 @@ from erlab.interactive._figurecomposer import (
     FigureRecipeState,
     FigureSourceState,
     FigureSubplotsState,
+    _seeding,
 )
 from erlab.interactive._figurecomposer._exceptions import (
     FigureComposerPlotSlicesSelectionError,
@@ -3195,7 +3196,7 @@ def test_shutdown_remove_all_tools_skips_teardown_ui_refresh(
             lambda _uid: calls.append("dependents"),
         )
         monkeypatch.setattr(
-            manager,
+            manager._figure_controller,
             "_refresh_figure_source_controls",
             lambda: calls.append("source_controls"),
         )
@@ -3247,10 +3248,14 @@ def test_manager_append_reports_post_alias_plot_slices_error(
 
         errors: list[FigureComposerPlotSlicesSelectionError] = []
         monkeypatch.setattr(
-            manager, "_figure_operations_from_image_targets", image_operations
+            manager._figure_controller,
+            "_figure_operations_from_image_targets",
+            image_operations,
         )
         monkeypatch.setattr(
-            manager, "_show_figure_plot_slices_selection_error", errors.append
+            manager._figure_controller,
+            "_show_figure_plot_slices_selection_error",
+            errors.append,
         )
 
         assert not manager.append_figure_from_targets(
@@ -3316,9 +3321,7 @@ def test_manager_append_reuses_short_axes_id_selection_for_all_operations() -> N
     )
     selection = FigureAxesSelectionState(axes_ids=("only",))
 
-    mapped = manager_mainwindow.ImageToolManager._figure_operations_with_append_axes(
-        operations, selection
-    )
+    mapped = _seeding._operations_with_append_axes(operations, selection)
 
     assert [operation.axes for operation in mapped] == [selection, selection]
 
@@ -3354,8 +3357,10 @@ def test_manager_figure_source_picker_skips_stale_rows_and_deduplicates_targets(
         finally:
             root._childtool_indices[:] = original_children
 
-        assert manager._figure_source_uid_for_target("missing") is None
-        assert manager._figure_imagetool_targets(
+        assert (
+            manager._figure_controller._figure_source_uid_for_target("missing") is None
+        )
+        assert manager._figure_controller._figure_imagetool_targets(
             (0, root.uid, "missing", figure_uid)
         ) == (0,)
 
@@ -3365,7 +3370,9 @@ def test_manager_figure_source_picker_skips_stale_rows_and_deduplicates_targets(
                 "_selected_imagetool_targets",
                 lambda: (0, root.uid, "missing", figure_uid),
             )
-            assert manager._selected_figure_source_uids() == (root.uid,)
+            assert manager._figure_controller._selected_figure_source_uids() == (
+                root.uid,
+            )
 
 
 def test_remove_child_imagetool_remove_action(
