@@ -5,6 +5,7 @@ from __future__ import annotations
 import colorsys
 import functools
 import html
+import operator
 import typing
 
 import matplotlib.pyplot as plt
@@ -267,23 +268,6 @@ class _PaletteSliderWidget(QtWidgets.QWidget):
         layout.addWidget(self.spin)
         self.setValue(value)
 
-    def connect_controls(
-        self,
-        connector: Callable[[QtWidgets.QWidget, typing.Any, Callable[..., None]], None],
-    ) -> None:
-        connector(self.slider, self.slider.valueChanged, self._slider_changed)
-        connector(self.spin, self.spin.valueChanged, self._spin_changed)
-
-    def set_control_name(self, name: str) -> None:
-        self.setObjectName(name)
-        self.slider.setObjectName(f"{name}Slider")
-        self.spin.setObjectName(f"{name}Spin")
-
-    def set_control_accessible_name(self, name: str) -> None:
-        self.setAccessibleName(name)
-        self.slider.setAccessibleName(name)
-        self.spin.setAccessibleName(name)
-
     def value(self) -> float:
         value = self.spin.value()
         return float(int(value)) if self._integer else float(value)
@@ -369,8 +353,6 @@ def _palette_has_effect(operation: FigureOperationState) -> bool:
 
 
 def _palette_call_kwargs(operation: FigureOperationState) -> dict[str, typing.Any]:
-    if operation.palette_mode in _GENERATED_PALETTE_MODES:
-        return {}
     kwargs: dict[str, typing.Any] = {}
     if operation.palette_n_colors is not None:
         kwargs["n_colors"] = operation.palette_n_colors
@@ -400,34 +382,33 @@ def _generated_palette_colors(
 ) -> tuple[typing.Any, ...]:
     if sns is None:
         return ()
-    try:
-        if operation.palette_mode == "cubehelix":
-            state = operation.palette_cubehelix
-            return tuple(
-                sns.cubehelix_palette(
-                    n_colors=state.n_colors,
-                    start=state.start,
-                    rot=state.rot,
-                    gamma=state.gamma,
-                    hue=state.hue,
-                    light=state.light,
-                    dark=state.dark,
-                    reverse=state.reverse,
-                )
+    if operation.palette_mode == "cubehelix":
+        state = operation.palette_cubehelix
+        return tuple(
+            sns.cubehelix_palette(
+                n_colors=state.n_colors,
+                start=state.start,
+                rot=state.rot,
+                gamma=state.gamma,
+                hue=state.hue,
+                light=state.light,
+                dark=state.dark,
+                reverse=state.reverse,
             )
-        if operation.palette_mode in {"light", "dark"}:
-            state = getattr(operation, f"palette_{operation.palette_mode}")
-            palette_factory = getattr(sns, f"{operation.palette_mode}_palette")
-            return tuple(
-                palette_factory(
-                    state.color,
-                    n_colors=state.n_colors,
-                    input=state.input,
-                )
-            )
-    except (AttributeError, TypeError, ValueError):
-        return ()
-    return ()
+        )
+    if operation.palette_mode == "light":
+        state = operation.palette_light
+        palette_factory = sns.light_palette
+    else:
+        state = operation.palette_dark
+        palette_factory = sns.dark_palette
+    return tuple(
+        palette_factory(
+            state.color,
+            n_colors=state.n_colors,
+            input=state.input,
+        )
+    )
 
 
 def _resolved_palette_colors(
@@ -441,14 +422,6 @@ def _resolved_palette_colors(
         operation.palette_n_colors,
         operation.palette_desat,
     )
-
-
-def _palette_color_limits(
-    input_space: str,
-) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]]:
-    if input_space == "husl":
-        return ((0.0, 359.0), (0.0, 99.0), (0.0, 99.0))
-    return ((0.0, 1.0),) * 3
 
 
 def _convert_palette_color(
@@ -472,13 +445,16 @@ def _convert_palette_color(
         converted = colorsys.rgb_to_hls(*rgb)
     else:
         converted = rgb
+    limits = (
+        ((0.0, 359.0), (0.0, 99.0), (0.0, 99.0))
+        if target == "husl"
+        else ((0.0, 1.0),) * 3
+    )
     return typing.cast(
         "tuple[float, float, float]",
         tuple(
             min(max(value, lower), upper)
-            for value, (lower, upper) in zip(
-                converted, _palette_color_limits(target), strict=True
-            )
+            for value, (lower, upper) in zip(converted, limits, strict=True)
         ),
     )
 
@@ -553,10 +529,7 @@ def _render_set_palette(
     if sns is None or not _palette_has_effect(operation):
         return
     if operation.palette_mode in _GENERATED_PALETTE_MODES:
-        colors = _generated_palette_colors(sns, operation)
-        if not colors:
-            return
-        sns.set_palette(colors)
+        sns.set_palette(_generated_palette_colors(sns, operation))
     else:
         sns.set_palette(_palette_value(operation), **_palette_call_kwargs(operation))
     _apply_palette_to_existing_axes(fig, sns)
@@ -613,10 +586,17 @@ def _add_palette_slider(
         single_step=single_step,
         parent=page,
     )
-    slider.set_control_name(object_name)
-    slider.set_control_accessible_name(label)
+    slider.setObjectName(object_name)
+    slider.slider.setObjectName(f"{object_name}Slider")
+    slider.spin.setObjectName(f"{object_name}Spin")
+    slider.setAccessibleName(label)
+    slider.slider.setAccessibleName(label)
+    slider.spin.setAccessibleName(label)
     slider.setEnabled(enabled)
-    slider.connect_controls(editor.connect_signal)
+    editor.connect_signal(
+        slider.slider, slider.slider.valueChanged, slider._slider_changed
+    )
+    editor.connect_signal(slider.spin, slider.spin.valueChanged, slider._spin_changed)
     editor.connect_value_signal(
         slider,
         slider.valueChanged,
@@ -630,24 +610,6 @@ def _add_palette_slider(
         tooltip,
     )
     return slider
-
-
-def _sequential_palette_state(
-    operation: FigureOperationState, mode: str
-) -> FigureSequentialPaletteState:
-    return operation.palette_light if mode == "light" else operation.palette_dark
-
-
-def _cubehelix_palette_value(
-    operation: FigureOperationState, *, field: str
-) -> typing.Any:
-    return getattr(operation.palette_cubehelix, field)
-
-
-def _sequential_palette_component(
-    operation: FigureOperationState, *, mode: str, index: int
-) -> float:
-    return _sequential_palette_state(operation, mode).color[index]
 
 
 def _editor_sections(
@@ -710,9 +672,6 @@ def _editor_sections(
         )
 
     def update_palette_mode(mode: str) -> None:
-        if mode not in _PALETTE_MODE_LABELS:
-            return
-
         def transform(
             _index: int, target: FigureOperationState
         ) -> FigureOperationState:
@@ -791,9 +750,6 @@ def _editor_sections(
         "Choose how this step constructs the line color palette.",
     )
 
-    def update_palette_name(text: str) -> None:
-        update_operation(palette_name=text)
-
     if not mode_mixed and operation.palette_mode == "colors":
 
         def update_palette_colors(colors: typing.Any) -> None:
@@ -836,7 +792,7 @@ def _editor_sections(
         palette_combo = editor.combo(
             _palette_options(operation, sns),
             None if palette_mixed else operation.palette_name,
-            update_palette_name,
+            lambda text: update_operation(palette_name=text),
             parent=page,
             mixed=palette_mixed,
             enabled=available,
@@ -1038,7 +994,7 @@ def _editor_sections(
         ) in cubehelix_controls:
             mixed = editor.batch_is_mixed(
                 operation,
-                functools.partial(_cubehelix_palette_value, field=field),
+                operator.attrgetter(f"palette_cubehelix.{field}"),
             )
 
             def update_cubehelix(
@@ -1097,10 +1053,12 @@ def _editor_sections(
     elif not mode_mixed and operation.palette_mode in {"light", "dark"}:
         mode = operation.palette_mode
         attribute = f"palette_{mode}"
-        state = _sequential_palette_state(operation, mode)
+        state = typing.cast(
+            "FigureSequentialPaletteState", getattr(operation, attribute)
+        )
         input_mixed = editor.batch_is_mixed(
             operation,
-            lambda target: _sequential_palette_state(target, mode).input,
+            operator.attrgetter(f"{attribute}.input"),
         )
         input_combo = QtWidgets.QComboBox(page)
         input_combo.setObjectName(f"figureComposerSetPalette{mode.title()}InputCombo")
@@ -1117,9 +1075,6 @@ def _editor_sections(
         input_combo.setEnabled(available)
 
         def update_input(input_space: str) -> None:
-            if sns is None or input_space not in _SEQUENTIAL_PALETTE_INPUT_LABELS:
-                return
-
             def convert(
                 current: FigureSequentialPaletteState,
             ) -> FigureSequentialPaletteState:
@@ -1127,7 +1082,7 @@ def _editor_sections(
                     update={
                         "input": input_space,
                         "color": _convert_palette_color(
-                            sns,
+                            typing.cast("typing.Any", sns),
                             current.color,
                             current.input,
                             input_space,
@@ -1173,6 +1128,7 @@ def _editor_sections(
                     ("Blue", 0.0, 1.0, 3, 0.01),
                 )
 
+            color_getter = operator.attrgetter(f"{attribute}.color")
             for index, (
                 label,
                 minimum,
@@ -1182,10 +1138,9 @@ def _editor_sections(
             ) in enumerate(component_specs):
                 mixed = editor.batch_is_mixed(
                     operation,
-                    functools.partial(
-                        _sequential_palette_component,
-                        mode=mode,
-                        index=index,
+                    typing.cast(
+                        "Callable[[FigureOperationState], float]",
+                        lambda target, index=index: color_getter(target)[index],
                     ),
                 )
 
@@ -1220,7 +1175,7 @@ def _editor_sections(
 
         count_mixed = editor.batch_is_mixed(
             operation,
-            lambda target: _sequential_palette_state(target, mode).n_colors,
+            operator.attrgetter(f"{attribute}.n_colors"),
         )
         _add_palette_slider(
             editor,
@@ -1268,47 +1223,38 @@ def _section_summary(
     return ""
 
 
-def _generated_palette_constructor_lines(
-    operation: FigureOperationState,
-) -> tuple[str, ...]:
-    if operation.palette_mode == "cubehelix":
-        state = operation.palette_cubehelix
-        return (
-            "sns.cubehelix_palette(",
-            f"    n_colors={state.n_colors!r},",
-            f"    start={state.start!r},",
-            f"    rot={state.rot!r},",
-            f"    gamma={state.gamma!r},",
-            f"    hue={state.hue!r},",
-            f"    light={state.light!r},",
-            f"    dark={state.dark!r},",
-            f"    reverse={state.reverse!r},",
-            ")",
-        )
-    if operation.palette_mode in {"light", "dark"}:
-        state = _sequential_palette_state(operation, operation.palette_mode)
-        return (
-            f"sns.{operation.palette_mode}_palette(",
-            f"    {state.color!r},",
-            f"    n_colors={state.n_colors!r},",
-            f"    input={state.input!r},",
-            ")",
-        )
-    return ()
-
-
 def _palette_call_code(operation: FigureOperationState) -> str | None:
     if not _palette_has_effect(operation):
         return None
-    constructor_lines = _generated_palette_constructor_lines(operation)
-    if constructor_lines:
-        return "\n".join(
-            (
-                "sns.set_palette(",
-                *(f"    {line}" for line in constructor_lines),
-                ")",
-            )
+    if operation.palette_mode == "cubehelix":
+        state = operation.palette_cubehelix
+        constructor_lines = (
+            "    sns.cubehelix_palette(",
+            f"        n_colors={state.n_colors!r},",
+            f"        start={state.start!r},",
+            f"        rot={state.rot!r},",
+            f"        gamma={state.gamma!r},",
+            f"        hue={state.hue!r},",
+            f"        light={state.light!r},",
+            f"        dark={state.dark!r},",
+            f"        reverse={state.reverse!r},",
+            "    )",
         )
+        return "\n".join(("sns.set_palette(", *constructor_lines, ")"))
+    if operation.palette_mode in {"light", "dark"}:
+        state = (
+            operation.palette_light
+            if operation.palette_mode == "light"
+            else operation.palette_dark
+        )
+        constructor_lines = (
+            f"    sns.{operation.palette_mode}_palette(",
+            f"        {state.color!r},",
+            f"        n_colors={state.n_colors!r},",
+            f"        input={state.input!r},",
+            "    )",
+        )
+        return "\n".join(("sns.set_palette(", *constructor_lines, ")"))
     palette_value: str | list[str]
     if operation.palette_mode == "colors":
         palette_value = list(operation.palette_colors)

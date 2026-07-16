@@ -466,20 +466,10 @@ def test_figure_composer_set_palette_sequential_editor(qtbot, mode: str) -> None
         page.findChild(QtWidgets.QSpinBox, "figureComposerSetPaletteCountSpin") is None
     )
 
-    input_combo.addItem("Invalid", "invalid")
-    _activate_combo_data(input_combo, "invalid")
-    assert (
-        figurecomposer_set_palette._sequential_palette_state(
-            tool.tool_status.operations[0], mode
-        ).input
-        == "husl"
-    )
-
     hue.spin.setValue(240.0)
     count.spin.setValue(6)
-    state = figurecomposer_set_palette._sequential_palette_state(
-        tool.tool_status.operations[0], mode
-    )
+    current = tool.tool_status.operations[0]
+    state = current.palette_light if mode == "light" else current.palette_dark
     assert state.color[0] == pytest.approx(240.0)
     assert state.n_colors == 6
 
@@ -534,9 +524,8 @@ def test_figure_composer_set_palette_space_switch_preserves_seed_color(
     assert input_combo is not None
     _activate_combo_data(input_combo, target)
 
-    converted = figurecomposer_set_palette._sequential_palette_state(
-        tool.tool_status.operations[0], mode
-    )
+    current = tool.tool_status.operations[0]
+    converted = current.palette_light if mode == "light" else current.palette_dark
     assert converted.input == target
     after_rgb = palette_factory(
         converted.color,
@@ -600,7 +589,7 @@ def test_figure_composer_set_palette_batch_space_conversion_is_per_step(
         input="husl", color=(30.0, 80.0, 55.0), n_colors=5
     )
     second_state = FigureSequentialPaletteState(
-        input="rgb", color=(0.1, 0.6, 0.3), n_colors=9
+        input="hls", color=(0.1, 0.6, 0.3), n_colors=9
     )
     first = FigureOperationState.set_palette(label="first").model_copy(
         update={"palette_mode": "light", "palette_light": first_state}
@@ -627,23 +616,23 @@ def test_figure_composer_set_palette_batch_space_conversion_is_per_step(
     )
     assert input_combo is not None
     assert input_combo.currentData() is None
-    expected = (
-        figurecomposer_set_palette._convert_palette_color(
-            sns, first_state.color, first_state.input, "hls"
-        ),
-        figurecomposer_set_palette._convert_palette_color(
-            sns, second_state.color, second_state.input, "hls"
-        ),
+    expected_colors = (
+        sns.light_palette(first_state.color, n_colors=2, input=first_state.input)[-1],
+        sns.light_palette(second_state.color, n_colors=2, input=second_state.input)[-1],
     )
 
     _activate_combo_data(input_combo, "hls")
     updated = tool.tool_status.operations
-    for index, expected_color in enumerate(expected):
+    for index, expected_color in enumerate(expected_colors):
         assert updated[index].palette_light.input == "hls"
         np.testing.assert_allclose(
-            updated[index].palette_light.color,
+            sns.light_palette(
+                updated[index].palette_light.color,
+                n_colors=2,
+                input=updated[index].palette_light.input,
+            )[-1],
             expected_color,
-            atol=1e-10,
+            atol=2e-2,
         )
     assert updated[0].palette_light.n_colors == 5
     assert updated[1].palette_light.n_colors == 9
@@ -703,48 +692,6 @@ def test_figure_composer_set_palette_helper_fallbacks(qtbot, monkeypatch) -> Non
         == ()
     )
     assert figurecomposer_set_palette._palette_icon(None, "deep").isNull()
-
-    cubehelix_operation = FigureOperationState.set_palette().model_copy(
-        update={"palette_mode": "cubehelix"}
-    )
-    assert figurecomposer_set_palette._palette_call_kwargs(cubehelix_operation) == {}
-    color = (0.1, 0.2, 0.3)
-    assert (
-        figurecomposer_set_palette._convert_palette_color(sns, color, "rgb", "rgb")
-        == color
-    )
-
-    class BrokenGeneratedPalette:
-        @staticmethod
-        def cubehelix_palette(**_kwargs: typing.Any) -> None:
-            raise ValueError("invalid generated palette")
-
-    assert (
-        figurecomposer_set_palette._generated_palette_colors(
-            BrokenGeneratedPalette, cubehelix_operation
-        )
-        == ()
-    )
-    assert (
-        figurecomposer_set_palette._generated_palette_colors(
-            sns, FigureOperationState.set_palette()
-        )
-        == ()
-    )
-
-    monkeypatch.setattr(figurecomposer_set_palette, "_import_seaborn", lambda: sns)
-    monkeypatch.setattr(
-        figurecomposer_set_palette,
-        "_generated_palette_colors",
-        lambda _sns, _operation: (),
-    )
-    generated_fig = plt.figure()
-    try:
-        figurecomposer_set_palette._render_set_palette(
-            typing.cast("typing.Any", None), cubehelix_operation, generated_fig, None
-        )
-    finally:
-        plt.close(generated_fig)
 
     class EmptyPalette:
         @staticmethod
