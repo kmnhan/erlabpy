@@ -443,7 +443,7 @@ class FigurePlotSlicesPanelStyleState(pydantic.BaseModel):
 class FigureCubehelixPaletteState(pydantic.BaseModel):
     """Parameters for a seaborn cubehelix palette."""
 
-    n_colors: int = pydantic.Field(default=9, ge=2, le=16)
+    n_colors: int = pydantic.Field(default=9, ge=2)
     start: float = pydantic.Field(default=0.0, ge=0.0, le=3.0)
     rot: float = pydantic.Field(default=0.4, ge=-1.0, le=1.0)
     gamma: float = pydantic.Field(default=1.0, ge=0.0, le=5.0)
@@ -455,12 +455,26 @@ class FigureCubehelixPaletteState(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
 
 
+class FigureDivergingPaletteState(pydantic.BaseModel):
+    """Parameters for a seaborn diverging palette."""
+
+    h_neg: float = pydantic.Field(default=220.0, ge=0.0, le=359.0)
+    h_pos: float = pydantic.Field(default=10.0, ge=0.0, le=359.0)
+    s: float = pydantic.Field(default=74.0, ge=0.0, le=99.0)
+    l: float = pydantic.Field(default=50.0, ge=0.0, le=99.0)  # noqa: E741
+    sep: int = pydantic.Field(default=10, ge=1, le=50)
+    n_colors: int = pydantic.Field(default=9, ge=2)
+    center: typing.Literal["light", "dark"] = "light"
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+
 class FigureSequentialPaletteState(pydantic.BaseModel):
     """Seed color and size for a seaborn light or dark palette."""
 
     input: typing.Literal["husl", "hls", "rgb"] = "husl"
     color: tuple[float, float, float] = (179.0, 49.0, 49.0)
-    n_colors: int = pydantic.Field(default=10, ge=3, le=17)
+    n_colors: int = pydantic.Field(default=10, ge=3)
 
     model_config = pydantic.ConfigDict(extra="forbid")
 
@@ -490,15 +504,18 @@ class FigureOperationState(pydantic.BaseModel):
     )
 
     palette_name: str = "deep"
-    palette_mode: typing.Literal["named", "colors", "cubehelix", "light", "dark"] = (
-        "named"
-    )
+    palette_mode: typing.Literal[
+        "named", "colors", "cubehelix", "diverging", "light", "dark"
+    ] = "named"
     palette_colors: tuple[str, ...] = ()
     palette_n_colors: int | None = pydantic.Field(default=None, ge=1)
     palette_desat: float | None = pydantic.Field(default=None, ge=0.0, le=1.0)
     palette_color_codes: bool = False
     palette_cubehelix: FigureCubehelixPaletteState = pydantic.Field(
         default_factory=FigureCubehelixPaletteState
+    )
+    palette_diverging: FigureDivergingPaletteState = pydantic.Field(
+        default_factory=FigureDivergingPaletteState
     )
     palette_light: FigureSequentialPaletteState = pydantic.Field(
         default_factory=FigureSequentialPaletteState

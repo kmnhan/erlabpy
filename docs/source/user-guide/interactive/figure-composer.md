@@ -92,7 +92,7 @@ when they occur. Hover over a reported problem for details.
 There are several step types:
 
 - {guilabel}`Set Palette` to set the line color cycle with a named palette, custom
-  colors, or a generated seaborn cubehelix, light, or dark palette.
+  colors, or a generated seaborn cubehelix, diverging, light, or dark palette.
 - {guilabel}`Image Plot` for one two-dimensional image on one axes. Uses
   {func}`erlab.plotting.plot_array`.
 - {guilabel}`Slice Plot` for plotting multiple slices on multiple axes. Uses
@@ -113,7 +113,7 @@ There are several step types:
 - {guilabel}`Python` for arbitrary code snippets.
 
 ```{versionadded} 3.25.0
-Set Palette includes generated cubehelix, light, and dark palette choices.
+Set Palette includes generated cubehelix, diverging, light, and dark palette choices.
 ```
 
 ### Editing steps

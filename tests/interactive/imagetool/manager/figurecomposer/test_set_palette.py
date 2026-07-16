@@ -49,10 +49,20 @@ def test_figure_composer_generated_palette_state_validation_and_roundtrip() -> N
         reverse=True,
     )
     light = FigureSequentialPaletteState(input="rgb", color=(0.2, 0.4, 0.8), n_colors=7)
+    diverging = FigureDivergingPaletteState(
+        h_neg=200.0,
+        h_pos=30.0,
+        s=65.0,
+        l=45.0,
+        sep=12,
+        n_colors=11,
+        center="dark",
+    )
     operation = FigureOperationState.set_palette().model_copy(
         update={
             "palette_mode": "light",
             "palette_cubehelix": cubehelix,
+            "palette_diverging": diverging,
             "palette_light": light,
         }
     )
@@ -60,6 +70,7 @@ def test_figure_composer_generated_palette_state_validation_and_roundtrip() -> N
     restored = FigureOperationState.model_validate_json(operation.model_dump_json())
     assert restored == operation
     assert restored.palette_cubehelix == cubehelix
+    assert restored.palette_diverging == diverging
     assert restored.palette_light == light
 
     legacy = FigureOperationState.model_validate(
@@ -67,15 +78,21 @@ def test_figure_composer_generated_palette_state_validation_and_roundtrip() -> N
     )
     assert legacy.palette_mode == "named"
     assert legacy.palette_cubehelix == FigureCubehelixPaletteState()
+    assert legacy.palette_diverging == FigureDivergingPaletteState()
     assert legacy.palette_light == FigureSequentialPaletteState()
     assert legacy.palette_dark == FigureSequentialPaletteState()
 
-    with pytest.raises(ValueError, match="less than or equal to 16"):
-        FigureCubehelixPaletteState(n_colors=17)
+    assert FigureCubehelixPaletteState(n_colors=100).n_colors == 100
+    assert FigureDivergingPaletteState(n_colors=100).n_colors == 100
+    assert FigureSequentialPaletteState(n_colors=100).n_colors == 100
     with pytest.raises(ValueError, match="outside the husl range"):
         FigureSequentialPaletteState(input="husl", color=(360.0, 50.0, 50.0))
     with pytest.raises(ValueError, match="outside the rgb range"):
         FigureSequentialPaletteState(input="rgb", color=(1.1, 0.5, 0.5))
+    with pytest.raises(ValueError):
+        FigureDivergingPaletteState(h_neg=360.0)
+    with pytest.raises(ValueError):
+        FigureDivergingPaletteState(sep=0)
 
 
 def test_figure_composer_set_palette_editor_preview_and_controls(
@@ -337,6 +354,7 @@ def test_figure_composer_set_palette_cubehelix_editor_and_custom_seed(qtbot) -> 
         "named",
         "colors",
         "cubehelix",
+        "diverging",
         "light",
         "dark",
     ]
@@ -352,8 +370,8 @@ def test_figure_composer_set_palette_cubehelix_editor_and_custom_seed(qtbot) -> 
     )
 
     count = page.findChild(
-        figurecomposer_set_palette._PaletteSliderWidget,
-        "figureComposerSetPaletteCubehelixNColorsControl",
+        QtWidgets.QSpinBox,
+        "figureComposerSetPaletteCubehelixNColorsSpin",
     )
     rotation = page.findChild(
         figurecomposer_set_palette._PaletteSliderWidget,
@@ -366,8 +384,8 @@ def test_figure_composer_set_palette_cubehelix_editor_and_custom_seed(qtbot) -> 
         QtWidgets.QToolButton, "figureComposerSetPaletteDocsButton"
     )
     assert count is not None
-    assert count.slider.minimum() == 2
-    assert count.slider.maximum() == 16
+    assert count.minimum() == 2
+    assert count.maximum() == 2_147_483_647
     assert count.value() == 5
     assert rotation is not None
     assert rotation.spin.minimum() == pytest.approx(-1.0)
@@ -378,10 +396,10 @@ def test_figure_composer_set_palette_cubehelix_editor_and_custom_seed(qtbot) -> 
         "https://seaborn.pydata.org/generated/seaborn.cubehelix_palette.html"
     )
 
-    count.slider.setValue(7)
+    count.setValue(20)
     rotation.slider.setValue(-25)
     reverse.click()
-    assert tool.tool_status.operations[0].palette_cubehelix.n_colors == 7
+    assert tool.tool_status.operations[0].palette_cubehelix.n_colors == 20
     assert tool.tool_status.operations[0].palette_cubehelix.rot == pytest.approx(-0.25)
     assert tool.tool_status.operations[0].palette_cubehelix.reverse is True
 
@@ -391,7 +409,7 @@ def test_figure_composer_set_palette_cubehelix_editor_and_custom_seed(qtbot) -> 
         QtWidgets.QFrame, "figureComposerSetPalettePreviewSwatch"
     )
     expected = sns.cubehelix_palette(
-        n_colors=7,
+        n_colors=20,
         start=0.0,
         rot=-0.25,
         gamma=1.0,
@@ -422,6 +440,209 @@ def test_figure_composer_set_palette_cubehelix_editor_and_custom_seed(qtbot) -> 
     )
 
 
+def test_figure_composer_set_palette_diverging_editor(qtbot) -> None:
+    sns = pytest.importorskip("seaborn")
+    operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_mode": "diverging"}
+    )
+    tool = _set_palette_tool(qtbot, operation)
+    page = _set_palette_page(tool)
+
+    controls = {
+        field: page.findChild(
+            figurecomposer_set_palette._PaletteSliderWidget,
+            f"figureComposerSetPaletteDiverging{suffix}Control",
+        )
+        for field, suffix in (
+            ("h_neg", "NegativeHue"),
+            ("h_pos", "PositiveHue"),
+            ("s", "Saturation"),
+            ("l", "Lightness"),
+            ("sep", "Separation"),
+        )
+    }
+    assert all(control is not None for control in controls.values())
+    negative_hue = controls["h_neg"]
+    positive_hue = controls["h_pos"]
+    separation = controls["sep"]
+    assert negative_hue is not None
+    assert positive_hue is not None
+    assert separation is not None
+    assert negative_hue.spin.minimum() == pytest.approx(0.0)
+    assert negative_hue.spin.maximum() == pytest.approx(359.0)
+    assert negative_hue.value() == pytest.approx(220.0)
+    assert positive_hue.value() == pytest.approx(10.0)
+    assert separation.spin.minimum() == pytest.approx(1.0)
+    assert separation.spin.maximum() == pytest.approx(50.0)
+    assert separation.value() == pytest.approx(10.0)
+
+    count = page.findChild(
+        QtWidgets.QSpinBox,
+        "figureComposerSetPaletteDivergingNColorsSpin",
+    )
+    center = page.findChild(
+        QtWidgets.QComboBox,
+        "figureComposerSetPaletteDivergingCenterCombo",
+    )
+    negative_color = page.findChild(
+        color_widgets._ColorPickerButton,
+        "figureComposerSetPaletteDivergingNegativeColorButton",
+    )
+    positive_color = page.findChild(
+        color_widgets._ColorPickerButton,
+        "figureComposerSetPaletteDivergingPositiveColorButton",
+    )
+    docs_button = page.findChild(
+        QtWidgets.QToolButton, "figureComposerSetPaletteDocsButton"
+    )
+    assert count is not None
+    assert count.minimum() == 2
+    assert count.maximum() == 2_147_483_647
+    assert count.value() == 9
+    assert center is not None
+    assert center.currentText() == "light"
+    assert negative_color is not None
+    assert positive_color is not None
+    assert docs_button is not None
+    assert docs_button.property("figure_palette_doc_url") == (
+        "https://seaborn.pydata.org/generated/seaborn.diverging_palette.html"
+    )
+    assert figurecomposer_set_palette._section_summary(tool, "palette", operation) == (
+        "Diverging palette (light, 9)"
+    )
+
+    negative_hue.spin.setValue(180.0)
+    separation.spin.setValue(20.0)
+    count.setValue(21)
+    _activate_combo_text(center, "dark")
+
+    state = tool.tool_status.operations[0].palette_diverging
+    assert state.h_neg == pytest.approx(180.0)
+    assert state.h_pos == pytest.approx(10.0)
+    assert state.sep == 20
+    assert state.n_colors == 21
+    assert state.center == "dark"
+    expected = sns.diverging_palette(
+        h_neg=state.h_neg,
+        h_pos=state.h_pos,
+        s=state.s,
+        l=state.l,
+        sep=state.sep,
+        n=state.n_colors,
+        center=state.center,
+    )
+    preview = page.findChild(QtWidgets.QWidget, "figureComposerSetPalettePreview")
+    assert preview is not None
+    swatches = preview.findChildren(
+        QtWidgets.QFrame, "figureComposerSetPalettePreviewSwatch"
+    )
+    assert [swatch.property("palette_color") for swatch in swatches] == [
+        QtGui.QColor.fromRgbF(*color).name() for color in expected
+    ]
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "field"),
+    [("Negative", "h_neg"), ("Positive", "h_pos")],
+)
+def test_figure_composer_set_palette_diverging_color_picker(
+    qtbot,
+    monkeypatch,
+    endpoint: str,
+    field: str,
+) -> None:
+    sns = pytest.importorskip("seaborn")
+    operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_mode": "diverging"}
+    )
+    tool = _set_palette_tool(qtbot, operation)
+    page = _set_palette_page(tool)
+    button = page.findChild(
+        color_widgets._ColorPickerButton,
+        f"figureComposerSetPaletteDiverging{endpoint}ColorButton",
+    )
+    assert button is not None
+    selected = QtGui.QColor("#3280cc")
+    monkeypatch.setattr(
+        QtWidgets.QColorDialog,
+        "getColor",
+        lambda *_args: selected,
+    )
+
+    button.click()
+
+    selected_husl = figurecomposer_set_palette._convert_palette_color(
+        sns, selected.getRgbF()[:3], "rgb", "husl"
+    )
+    selected_husl = tuple(float(round(value)) for value in selected_husl)
+    state = tool.tool_status.operations[0].palette_diverging
+    assert getattr(state, field) == pytest.approx(selected_husl[0])
+    assert state.s == pytest.approx(selected_husl[1])
+    assert state.l == pytest.approx(selected_husl[2])
+    other_field = "h_pos" if field == "h_neg" else "h_neg"
+    expected_other = 10.0 if other_field == "h_pos" else 220.0
+    assert getattr(state, other_field) == pytest.approx(expected_other)
+
+    qtbot.waitUntil(
+        lambda: tool.operation_editor.stack.currentWidget() is not page,
+        timeout=1000,
+    )
+    rebuilt_page = _set_palette_page(tool)
+    rebuilt_control = rebuilt_page.findChild(
+        figurecomposer_set_palette._PaletteSliderWidget,
+        f"figureComposerSetPaletteDiverging{endpoint}HueControl",
+    )
+    assert rebuilt_control is not None
+    assert rebuilt_control.value() == pytest.approx(selected_husl[0], abs=0.5)
+
+
+def test_figure_composer_set_palette_slider_drag_commits_on_release(
+    qtbot, monkeypatch
+) -> None:
+    sns = pytest.importorskip("seaborn")
+    operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_mode": "cubehelix"}
+    )
+    tool = _set_palette_tool(qtbot, operation)
+    page = _set_palette_page(tool)
+    rotation = page.findChild(
+        figurecomposer_set_palette._PaletteSliderWidget,
+        "figureComposerSetPaletteCubehelixRotationControl",
+    )
+    preview = page.findChild(QtWidgets.QWidget, "figureComposerSetPalettePreview")
+    assert rotation is not None
+    assert preview is not None
+
+    tool._cancel_preview_render_update()
+    redraws: list[None] = []
+    monkeypatch.setattr(tool, "_redraw_plot", lambda: redraws.append(None))
+
+    rotation.slider.setSliderDown(True)
+    rotation.slider.setValue(-25)
+    qtbot.wait(350)
+
+    assert tool.tool_status.operations[0].palette_cubehelix.rot == pytest.approx(0.4)
+    assert redraws == []
+    expected = sns.cubehelix_palette(rot=-0.25, n_colors=9)
+    swatches = preview.findChildren(
+        QtWidgets.QFrame, "figureComposerSetPalettePreviewSwatch"
+    )
+    assert [swatch.property("palette_color") for swatch in swatches] == [
+        QtGui.QColor.fromRgbF(*color).name() for color in expected
+    ]
+
+    with QtCore.QSignalBlocker(rotation.slider):
+        rotation.slider.setSliderDown(False)
+    rotation.slider.sliderReleased.emit()
+    qtbot.waitUntil(
+        lambda: (
+            tool.tool_status.operations[0].palette_cubehelix.rot == pytest.approx(-0.25)
+        ),
+        timeout=1000,
+    )
+    qtbot.waitUntil(lambda: len(redraws) == 1, timeout=1000)
+
+
 @pytest.mark.parametrize("mode", ["light", "dark"])
 def test_figure_composer_set_palette_sequential_editor(qtbot, mode: str) -> None:
     sns = pytest.importorskip("seaborn")
@@ -440,8 +661,12 @@ def test_figure_composer_set_palette_sequential_editor(qtbot, mode: str) -> None
         f"figureComposerSetPalette{mode.title()}HueControl",
     )
     count = page.findChild(
-        figurecomposer_set_palette._PaletteSliderWidget,
-        f"figureComposerSetPalette{mode.title()}NColorsControl",
+        QtWidgets.QSpinBox,
+        f"figureComposerSetPalette{mode.title()}NColorsSpin",
+    )
+    seed_color_button = page.findChild(
+        color_widgets._ColorPickerButton,
+        f"figureComposerSetPalette{mode.title()}SeedColorButton",
     )
     docs_button = page.findChild(
         QtWidgets.QToolButton, "figureComposerSetPaletteDocsButton"
@@ -457,7 +682,10 @@ def test_figure_composer_set_palette_sequential_editor(qtbot, mode: str) -> None
     assert hue.spin.minimum() == pytest.approx(0.0)
     assert hue.spin.maximum() == pytest.approx(359.0)
     assert count is not None
+    assert count.minimum() == 3
+    assert count.maximum() == 2_147_483_647
     assert count.value() == 10
+    assert seed_color_button is not None
     assert docs_button is not None
     assert docs_button.property("figure_palette_doc_url") == (
         f"https://seaborn.pydata.org/generated/seaborn.{mode}_palette.html"
@@ -467,11 +695,18 @@ def test_figure_composer_set_palette_sequential_editor(qtbot, mode: str) -> None
     )
 
     hue.spin.setValue(240.0)
-    count.spin.setValue(6)
+    count.setValue(20)
     current = tool.tool_status.operations[0]
     state = current.palette_light if mode == "light" else current.palette_dark
     assert state.color[0] == pytest.approx(240.0)
-    assert state.n_colors == 6
+    assert state.n_colors == 20
+    np.testing.assert_allclose(
+        seed_color_button.color().getRgbF()[:3],
+        figurecomposer_set_palette._convert_palette_color(
+            sns, state.color, state.input, "rgb"
+        ),
+        atol=2e-5,
+    )
 
     preview = page.findChild(QtWidgets.QWidget, "figureComposerSetPalettePreview")
     assert preview is not None
@@ -486,6 +721,113 @@ def test_figure_composer_set_palette_sequential_editor(qtbot, mode: str) -> None
     assert [swatch.property("palette_color") for swatch in swatches] == [
         QtGui.QColor.fromRgbF(*color).name() for color in expected
     ]
+
+
+@pytest.mark.parametrize("mode", ["light", "dark"])
+@pytest.mark.parametrize(
+    ("input_space", "seed"),
+    [
+        ("husl", (220.0, 70.0, 40.0)),
+        ("hls", (0.7, 0.4, 0.6)),
+        ("rgb", (0.2, 0.6, 0.8)),
+    ],
+)
+def test_figure_composer_set_palette_seed_color_picker(
+    qtbot,
+    monkeypatch,
+    mode: str,
+    input_space: str,
+    seed: tuple[float, float, float],
+) -> None:
+    sns = pytest.importorskip("seaborn")
+    state = FigureSequentialPaletteState(input=input_space, color=seed, n_colors=8)
+    operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_mode": mode, f"palette_{mode}": state}
+    )
+    tool = _set_palette_tool(qtbot, operation)
+    page = _set_palette_page(tool)
+    button = page.findChild(
+        color_widgets._ColorPickerButton,
+        f"figureComposerSetPalette{mode.title()}SeedColorButton",
+    )
+    assert button is not None
+    assert button.accessibleName() == "Choose seed color"
+    initial_rgb = figurecomposer_set_palette._convert_palette_color(
+        sns, seed, input_space, "rgb"
+    )
+    np.testing.assert_allclose(button.color().getRgbF()[:3], initial_rgb, atol=2e-5)
+
+    selected = QtGui.QColor("#3280cc")
+    dialog_call: dict[str, typing.Any] = {}
+
+    def choose_color(
+        initial: QtGui.QColor,
+        parent: QtWidgets.QWidget,
+        title: str,
+    ) -> QtGui.QColor:
+        dialog_call.update(initial=initial, parent=parent, title=title)
+        return selected
+
+    monkeypatch.setattr(QtWidgets.QColorDialog, "getColor", choose_color)
+    button.click()
+
+    assert dialog_call["parent"] is tool
+    assert dialog_call["title"] == "Choose Color"
+    expected = figurecomposer_set_palette._convert_palette_color(
+        sns,
+        selected.getRgbF()[:3],
+        "rgb",
+        input_space,
+    )
+    current = tool.tool_status.operations[0]
+    updated = current.palette_light if mode == "light" else current.palette_dark
+    assert updated.input == input_space
+    assert updated.n_colors == 8
+    np.testing.assert_allclose(updated.color, expected)
+
+    qtbot.waitUntil(
+        lambda: tool.operation_editor.stack.currentWidget() is not page,
+        timeout=1000,
+    )
+    rebuilt_page = _set_palette_page(tool)
+    component_suffixes = {
+        "husl": ("Hue", "Saturation", "Lightness"),
+        "hls": ("Hue", "Lightness", "Saturation"),
+        "rgb": ("Red", "Green", "Blue"),
+    }[input_space]
+    for suffix, value in zip(component_suffixes, expected, strict=True):
+        control = rebuilt_page.findChild(
+            figurecomposer_set_palette._PaletteSliderWidget,
+            f"figureComposerSetPalette{mode.title()}{suffix}Control",
+        )
+        assert control is not None
+        assert control.value() == pytest.approx(value, abs=0.005)
+
+
+def test_figure_composer_set_palette_seed_color_picker_cancel(
+    qtbot,
+    monkeypatch,
+) -> None:
+    state = FigureSequentialPaletteState(input="hls", color=(0.7, 0.4, 0.6))
+    operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_mode": "dark", "palette_dark": state}
+    )
+    tool = _set_palette_tool(qtbot, operation)
+    page = _set_palette_page(tool)
+    button = page.findChild(
+        color_widgets._ColorPickerButton,
+        "figureComposerSetPaletteDarkSeedColorButton",
+    )
+    assert button is not None
+    monkeypatch.setattr(
+        QtWidgets.QColorDialog,
+        "getColor",
+        lambda *_args: QtGui.QColor(),
+    )
+
+    button.click()
+
+    assert tool.tool_status.operations[0].palette_dark == state
 
 
 @pytest.mark.parametrize(
@@ -581,6 +923,50 @@ def test_figure_composer_set_palette_cubehelix_batch_preserves_other_fields(
     assert updated[1].palette_cubehelix.gamma == pytest.approx(1.6)
 
 
+def test_figure_composer_set_palette_diverging_batch_preserves_other_fields(
+    qtbot,
+) -> None:
+    first_state = FigureDivergingPaletteState(h_neg=200.0, h_pos=20.0, sep=5)
+    second_state = FigureDivergingPaletteState(h_neg=240.0, h_pos=40.0, sep=15)
+    first = FigureOperationState.set_palette(label="first").model_copy(
+        update={"palette_mode": "diverging", "palette_diverging": first_state}
+    )
+    second = FigureOperationState.set_palette(label="second").model_copy(
+        update={"palette_mode": "diverging", "palette_diverging": second_state}
+    )
+    profile = _figure_composer_profile_source("profile")
+    tool = FigureComposerTool(
+        profile,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="profile", label="profile"),),
+            operations=(first, second),
+            primary_source="profile",
+        ),
+        source_data={"profile": profile},
+    )
+    qtbot.addWidget(tool)
+    _select_operation_rows(tool, (0, 1))
+    page = _set_palette_page(tool)
+    negative_hue = page.findChild(
+        figurecomposer_set_palette._PaletteSliderWidget,
+        "figureComposerSetPaletteDivergingNegativeHueControl",
+    )
+    assert negative_hue is not None
+    container = negative_hue.parentWidget()
+    assert container is not None
+    assert container.findChild(QtWidgets.QLabel, "figureComposerMixedValueMarker")
+
+    negative_hue.spin.setValue(180.0)
+
+    updated = tool.tool_status.operations
+    assert updated[0].palette_diverging.h_neg == pytest.approx(180.0)
+    assert updated[1].palette_diverging.h_neg == pytest.approx(180.0)
+    assert updated[0].palette_diverging.h_pos == pytest.approx(20.0)
+    assert updated[1].palette_diverging.h_pos == pytest.approx(40.0)
+    assert updated[0].palette_diverging.sep == 5
+    assert updated[1].palette_diverging.sep == 15
+
+
 def test_figure_composer_set_palette_batch_space_conversion_is_per_step(
     qtbot,
 ) -> None:
@@ -636,6 +1022,73 @@ def test_figure_composer_set_palette_batch_space_conversion_is_per_step(
         )
     assert updated[0].palette_light.n_colors == 5
     assert updated[1].palette_light.n_colors == 9
+
+
+def test_figure_composer_set_palette_batch_seed_color_picker_converts_each_input(
+    qtbot,
+    monkeypatch,
+) -> None:
+    sns = pytest.importorskip("seaborn")
+    first_state = FigureSequentialPaletteState(
+        input="husl", color=(30.0, 80.0, 55.0), n_colors=5
+    )
+    second_state = FigureSequentialPaletteState(
+        input="rgb", color=(0.1, 0.6, 0.3), n_colors=9
+    )
+    first = FigureOperationState.set_palette(label="first").model_copy(
+        update={"palette_mode": "light", "palette_light": first_state}
+    )
+    second = FigureOperationState.set_palette(label="second").model_copy(
+        update={"palette_mode": "light", "palette_light": second_state}
+    )
+    profile = _figure_composer_profile_source("profile")
+    tool = FigureComposerTool(
+        profile,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="profile", label="profile"),),
+            operations=(first, second),
+            primary_source="profile",
+        ),
+        source_data={"profile": profile},
+    )
+    qtbot.addWidget(tool)
+    _select_operation_rows(tool, (0, 1))
+    page = _set_palette_page(tool)
+    button = page.findChild(
+        color_widgets._ColorPickerButton,
+        "figureComposerSetPaletteLightSeedColorButton",
+    )
+    assert button is not None
+    container = button.parentWidget()
+    assert container is not None
+    assert container.findChild(QtWidgets.QLabel, "figureComposerMixedValueMarker")
+
+    selected = QtGui.QColor("#3280cc")
+    monkeypatch.setattr(
+        QtWidgets.QColorDialog,
+        "getColor",
+        lambda *_args: selected,
+    )
+    button.click()
+
+    expected_rgb = selected.getRgbF()[:3]
+    updated = tool.tool_status.operations
+    for operation, input_space, n_colors in zip(
+        updated,
+        ("husl", "rgb"),
+        (5, 9),
+        strict=True,
+    ):
+        state = operation.palette_light
+        assert state.input == input_space
+        assert state.n_colors == n_colors
+        np.testing.assert_allclose(
+            figurecomposer_set_palette._convert_palette_color(
+                sns, state.color, state.input, "rgb"
+            ),
+            expected_rgb,
+            atol=5e-5,
+        )
 
 
 def test_figure_composer_set_palette_swatch_tooltip_contrast(qtbot) -> None:
@@ -797,7 +1250,8 @@ def test_figure_composer_set_palette_editor_disables_without_seaborn(
 @pytest.mark.parametrize(
     ("mode", "control_name"),
     [
-        ("cubehelix", "figureComposerSetPaletteCubehelixNColorsControl"),
+        ("cubehelix", "figureComposerSetPaletteCubehelixNColorsSpin"),
+        ("diverging", "figureComposerSetPaletteDivergingNColorsSpin"),
         ("light", "figureComposerSetPaletteLightInputCombo"),
         ("dark", "figureComposerSetPaletteDarkInputCombo"),
     ],
@@ -835,6 +1289,7 @@ def test_figure_composer_generated_palette_editor_disables_without_seaborn(
     ("mode", "input_space"),
     [
         ("cubehelix", None),
+        ("diverging", None),
         ("light", "husl"),
         ("light", "hls"),
         ("light", "rgb"),
@@ -875,6 +1330,31 @@ def test_figure_composer_generated_palette_render_and_codegen(
             light=cubehelix.light,
             dark=cubehelix.dark,
             reverse=cubehelix.reverse,
+        )
+    elif mode == "diverging":
+        diverging = FigureDivergingPaletteState(
+            h_neg=200.0,
+            h_pos=30.0,
+            s=65.0,
+            l=45.0,
+            sep=12,
+            n_colors=7,
+            center="dark",
+        )
+        palette_operation = FigureOperationState.set_palette().model_copy(
+            update={
+                "palette_mode": mode,
+                "palette_diverging": diverging,
+            }
+        )
+        expected = sns.diverging_palette(
+            h_neg=diverging.h_neg,
+            h_pos=diverging.h_pos,
+            s=diverging.s,
+            l=diverging.l,
+            sep=diverging.sep,
+            n=diverging.n_colors,
+            center=diverging.center,
         )
     else:
         assert input_space is not None
@@ -923,6 +1403,7 @@ def test_figure_composer_generated_palette_render_and_codegen(
     code = tool.generated_code()
     assert f"sns.{mode}_palette(" in code
     assert "choose_" not in code
+    assert "set_prop_cycle" not in code
     namespace: dict[str, typing.Any] = {"profile": profile}
     exec(code, namespace)  # noqa: S102
     generated_line = namespace["fig"].axes[0].lines[0]
@@ -961,14 +1442,29 @@ def test_figure_composer_set_palette_render_and_generated_code(qtbot) -> None:
     )
 
     code = tool.generated_code()
-    assert "import seaborn as sns" in code
+    assert code.splitlines()[:2] == [
+        "import matplotlib.pyplot as plt",
+        "import seaborn as sns",
+    ]
+    assert "set_prop_cycle" not in code
     namespace: dict[str, typing.Any] = {"profile": profile}
     exec(code, namespace)  # noqa: S102
     generated_line = namespace["fig"].axes[0].lines[0]
     np.testing.assert_allclose(mcolors.to_rgb(generated_line.get_color()), expected)
 
 
-def test_figure_composer_set_palette_generated_code_skips_without_seaborn(
+def test_figure_composer_empty_custom_palette_generated_code_needs_no_seaborn(
+    qtbot,
+) -> None:
+    operation = FigureOperationState.set_palette().model_copy(
+        update={"palette_mode": "colors", "palette_colors": ()}
+    )
+    tool = _set_palette_tool(qtbot, operation)
+
+    assert "import seaborn as sns" not in tool.generated_code()
+
+
+def test_figure_composer_set_palette_generated_code_requires_seaborn(
     qtbot,
 ) -> None:
     profile = _figure_composer_profile_source("profile")
@@ -1003,6 +1499,7 @@ def test_figure_composer_set_palette_generated_code_skips_without_seaborn(
             "__import__": import_without_seaborn,
         },
     }
-    exec(tool.generated_code(), namespace)  # noqa: S102
+    with pytest.raises(ImportError, match="seaborn is not installed"):
+        exec(tool.generated_code(), namespace)  # noqa: S102
 
-    assert len(namespace["fig"].axes[0].lines) == 1
+    assert "fig" not in namespace

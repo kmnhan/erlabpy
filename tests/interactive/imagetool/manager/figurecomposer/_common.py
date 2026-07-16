@@ -57,6 +57,7 @@ from erlab.interactive._figurecomposer import (
     FigureComposerTool,
     FigureCubehelixPaletteState,
     FigureDataSelectionState,
+    FigureDivergingPaletteState,
     FigureExportState,
     FigureGridSpecAxesState,
     FigureGridSpecGridState,
