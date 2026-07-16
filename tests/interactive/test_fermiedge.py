@@ -23,6 +23,7 @@ from erlab.interactive.fermiedge import (
     goldtool,
     restool,
 )
+from erlab.interactive.imagetool._provenance._model import full_data
 from erlab.io.exampledata import generate_gold_edge
 
 
@@ -1181,7 +1182,7 @@ def test_goldtool_auto_source_update_stays_stale_until_deferred_refresh_applies(
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
     win.set_source_binding(
-        erlab.interactive.imagetool.provenance.full_data(),
+        full_data(),
         auto_update=True,
     )
 
@@ -1222,7 +1223,7 @@ def test_goldtool_auto_source_update_emits_one_data_change(qtbot, gold) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
     win.set_source_binding(
-        erlab.interactive.imagetool.provenance.full_data(),
+        full_data(),
         auto_update=True,
     )
 
@@ -1245,7 +1246,7 @@ def test_goldtool_auto_source_update_with_refit_stays_stale_until_fit_finishes(
     qtbot.addWidget(win)
     _configure_goldtool_state(win, fitted=True)
     win.set_source_binding(
-        erlab.interactive.imagetool.provenance.full_data(),
+        full_data(),
         auto_update=True,
     )
 

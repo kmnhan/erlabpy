@@ -31,6 +31,23 @@ from erlab.interactive._fit1d import (
     _SnapCursorLine,
     _State2D,
 )
+from erlab.interactive.imagetool._provenance._model import (
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    compose_full_provenance,
+    direct_replay_input_name,
+    replay_input_name,
+    script,
+    to_replay_provenance_spec,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    IselOperation,
+    ModelFitOperation,
+    ScriptCodeOperation,
+    SelOperation,
+    _model_fit_parameters_code,
+    _ModelFitParameterSpec,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Hashable, Mapping
@@ -39,7 +56,6 @@ if typing.TYPE_CHECKING:
     import varname
 
     from erlab.interactive._figurecomposer import FigureOperationState
-    from erlab.interactive.imagetool import provenance
     from erlab.interactive.imagetool.manager import ImageToolManager
 
 else:
@@ -285,23 +301,9 @@ class Fit2DTool(Fit1DTool):
     IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
         Output.PARAMETER_VALUES: erlab.interactive.utils.ToolImageOutputDefinition(
             data_method="_parameter_values_output_data",
-            provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
-                start_label="Start from current fit-tool input data",
-                label="Extract current parameter values",
-                prelude_method="_parameter_output_prelude",
-                expression_method="_parameter_values_output_expression",
-                assign="parameter_values",
-            ),
         ),
         Output.PARAMETER_STDERR: erlab.interactive.utils.ToolImageOutputDefinition(
             data_method="_parameter_stderr_output_data",
-            provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
-                start_label="Start from current fit-tool input data",
-                label="Extract current parameter standard errors",
-                prelude_method="_parameter_output_prelude",
-                expression_method="_parameter_stderr_output_expression",
-                assign="parameter_stderr",
-            ),
         ),
     }
 
@@ -1448,7 +1450,7 @@ class Fit2DTool(Fit1DTool):
         param_name, values = current
         target_figure = None
         if manager._figure_uids():
-            target_figure = manager._prompt_append_figure_target(
+            target_figure = manager._choose_figure_append_target(
                 self._parameter_figure_prompt_operation(param_name)
             )
             if target_figure is None:
@@ -2222,26 +2224,14 @@ class Fit2DTool(Fit1DTool):
             )
         erlab.interactive.utils.save_fit_ui(full_ds, parent=self)
 
-    def _build_full_copy_prelude(
-        self, *, warn: bool = True, input_name: str | None = None
-    ) -> str:
-        data_name, _model_name, lines = self._make_model_code(
-            input_name or self._data_name_full
-        )
+    def _full_fit_parameter_specs(
+        self, *, warn: bool
+    ) -> dict[str, _ModelFitParameterSpec] | None:
+        """Collect one consistent parameter mapping across the selected fit range."""
 
         def _warn_user(title: str, text: str) -> None:
             if warn:
                 self._show_warning(title, text)
-
-        isel_kw = erlab.interactive.utils.format_kwargs(
-            {self._y_dim_name: self._y_range_slice()}
-        )
-
-        data_name = self._full_copy_fit_data_name(
-            data_name,
-            isel_kw=isel_kw,
-            lines=lines,
-        )
 
         param_names: list[str] = []
         param_names_all: list[str] = []
@@ -2256,7 +2246,6 @@ class Fit2DTool(Fit1DTool):
                 param_names.append(k)
             param_names_all.append(k)
 
-        # param_names_all = list(self._model.param_names)
         params_value: dict[str, list[float]] = {name: [] for name in param_names}
         params_min: dict[str, list[float]] = {name: [] for name in param_names}
         params_max: dict[str, list[float]] = {name: [] for name in param_names}
@@ -2278,7 +2267,7 @@ class Fit2DTool(Fit1DTool):
                     f"No fit result for index {real_index}. Please fit all indices "
                     "in the range before saving the full fit.",
                 )
-                return ""
+                return None
             for expr_param in params_expr:
                 if expr_param in params:
                     this_expr = params[expr_param].expr
@@ -2288,14 +2277,14 @@ class Fit2DTool(Fit1DTool):
                             f"Parameter {expr_param!r} has differing expressions "
                             "between fits. Cannot generate combined fit code.",
                         )
-                        return ""
+                        return None
                     continue
                 _warn_user(
                     "Inconsistent Parameters",
                     f"Parameter {expr_param!r} not found in fit at index "
                     f"{real_index}. Cannot generate combined fit code.",
                 )
-                return ""
+                return None
 
             valid_params = [k for k in params if params[k].expr is None]
             if valid_params != param_names:
@@ -2304,7 +2293,7 @@ class Fit2DTool(Fit1DTool):
                     "Parameter names or counts differ between fits. "
                     "Cannot generate combined fit code.",
                 )
-                return ""
+                return None
             for name in param_names:
                 param = params[name]
                 params_value[name].append(param.value)
@@ -2319,15 +2308,12 @@ class Fit2DTool(Fit1DTool):
                             "Parameter vary flags differ between fits. "
                             "Cannot generate combined fit code.",
                         )
-                        return ""
+                        return None
 
-        param_entries: list[str] = []
-
-        y_coord_expr = f"{data_name}.coords[{self._y_dim_name!r}]"
-
+        parameter_specs: dict[str, _ModelFitParameterSpec] = {}
         for name in param_names_all:
             if name in params_expr:
-                param_entries.append(f'"{name}": dict(expr="{params_expr[name]}"),')
+                parameter_specs[name] = _ModelFitParameterSpec(expr=params_expr[name])
                 continue
             values = params_value[name]
             mins = params_min[name]
@@ -2338,54 +2324,48 @@ class Fit2DTool(Fit1DTool):
             single_min: bool = np.allclose(mins, mins[0])
             single_max: bool = np.allclose(maxs, maxs[0])
 
-            entry_kwargs_lines: list[str] = []
-
-            if single_value:
-                if (
-                    single_min
-                    and single_max
-                    and not np.isfinite(mins[0])
-                    and not np.isfinite(maxs[0])
-                    and vary
-                ):
-                    param_entries.append(f'"{name}": {values[0]!r},')
-                    continue
-                entry_kwargs_lines.append(f"value={values[0]!r}")
-            else:
-                darr_line = f"xr.DataArray({values!r}, coords=[{y_coord_expr}])"
-                if (
-                    single_min
-                    and single_max
-                    and not np.isfinite(mins[0])
-                    and not np.isfinite(maxs[0])
-                    and vary
-                ):
-                    param_entries.append(f'"{name}": {darr_line},')
-                    continue
-                entry_kwargs_lines.append(f"value={darr_line}")
-
+            minimum: float | tuple[float, ...] | None
+            maximum: float | tuple[float, ...] | None
             if single_min:
-                if np.isfinite(mins[0]):
-                    entry_kwargs_lines.append(f"min={mins[0]!r}")
+                minimum = mins[0] if np.isfinite(mins[0]) else None
             else:
-                entry_kwargs_lines.append(
-                    f"xr.DataArray({mins!r}, coords=[{y_coord_expr}])"
-                )
-
+                minimum = tuple(mins)
             if single_max:
-                if np.isfinite(maxs[0]):
-                    entry_kwargs_lines.append(f"max={maxs[0]!r}")
+                maximum = maxs[0] if np.isfinite(maxs[0]) else None
             else:
-                entry_kwargs_lines.append(
-                    f"xr.DataArray({maxs!r}, coords=[{y_coord_expr}])"
-                )
+                maximum = tuple(maxs)
+            parameter_specs[name] = _ModelFitParameterSpec(
+                value=values[0] if single_value else tuple(values),
+                minimum=minimum,
+                maximum=maximum,
+                vary=vary,
+            )
+        return parameter_specs
 
-            if not vary:
-                entry_kwargs_lines.append("vary=False")
+    def _build_full_copy_prelude(
+        self, *, warn: bool = True, input_name: str | None = None
+    ) -> str:
+        data_name, _model_name, lines = self._make_model_code(
+            input_name or self._data_name_full
+        )
+        parameters = self._full_fit_parameter_specs(warn=warn)
+        if parameters is None:
+            return ""
 
-            param_entries.append(f'"{name}": dict({", ".join(entry_kwargs_lines)}),')
-
-        lines.extend(["params = {", "\n    ".join(param_entries), "}\n"])
+        isel_kw = erlab.interactive.utils.format_kwargs(
+            {self._y_dim_name: self._y_range_slice()}
+        )
+        data_name = self._full_copy_fit_data_name(
+            data_name,
+            isel_kw=isel_kw,
+            lines=lines,
+        )
+        parameters_code = _model_fit_parameters_code(
+            parameters,
+            input_name=data_name,
+            broadcast_dim=self._y_dim_name,
+        )
+        lines.append(f"params = {parameters_code}")
         return "\n".join(lines)
 
     def _full_copy_fit_data_name(
@@ -2466,7 +2446,7 @@ class Fit2DTool(Fit1DTool):
 
     def current_provenance_spec(
         self, *, flush_deferred_restore: bool = True
-    ) -> provenance.ToolProvenanceSpec | None:
+    ) -> ToolProvenanceSpec | None:
         # Manager metadata and other passive provenance consumers should not trigger
         # interactive warnings for incomplete fit ranges.
         return self._resolve_script_provenance(
@@ -2501,7 +2481,7 @@ class Fit2DTool(Fit1DTool):
         data: xr.DataArray,
         *,
         source: QtCore.QObject | None = None,
-    ) -> provenance.ToolProvenanceSpec | None:
+    ) -> ToolProvenanceSpec | None:
         if source is None:
             return self._resolve_script_provenance(self._DETACHED_COPY_PROVENANCE)
         return super().detached_output_imagetool_provenance(
@@ -2540,14 +2520,19 @@ class Fit2DTool(Fit1DTool):
 
     def output_imagetool_provenance(
         self, output_id: str | enum.Enum, data: xr.DataArray
-    ) -> provenance.ToolProvenanceSpec | None:
+    ) -> ToolProvenanceSpec | None:
         self._flush_restore_work()
         parts = self._parameter_output_parts(output_id)
         if parts is None:
             return super().output_imagetool_provenance(output_id, data)
         output, param_name = parts
         if param_name is None:
-            return super().output_imagetool_provenance(output, data)
+            current = self._current_param_output(
+                stderr=output == self.Output.PARAMETER_STDERR
+            )
+            if current is None:
+                return None
+            param_name = current[0]
 
         request = self._resolve_parameter_output(output, param_name)
         if request is None:
@@ -2555,25 +2540,62 @@ class Fit2DTool(Fit1DTool):
         param_name, stderr = request
         return self._parameter_output_provenance(param_name, stderr=stderr, data=data)
 
-    def _parameter_output_prelude(
-        self,
-        *,
-        input_name: str | None = None,
-        data: xr.DataArray | None = None,
-    ) -> str | None:
-        prelude = self._build_full_copy_prelude(warn=False, input_name=input_name)
-        expression = self._full_fit_expression(input_name=input_name)
-        if not prelude or not expression:
+    def _parameter_model_fit_operation(
+        self, param_name: str, *, stderr: bool
+    ) -> ModelFitOperation | None:
+        model_choice = self._infer_model_choice(self._model)
+        if model_choice not in ModelFitOperation.supported_models:
             return None
-        return "\n".join((prelude, f"result = {expression}"))
+        parameters = self._full_fit_parameter_specs(warn=False)
+        if parameters is None:
+            return None
+        registry = self._model_option_registry()
+        model_kwargs = (
+            registry[model_choice]["kwargs"]() if model_choice in registry else {}
+        )
+        return ModelFitOperation(
+            fit_dim=self._coord_name,
+            model=model_choice,
+            model_kwargs=model_kwargs,
+            parameters=parameters,
+            method=self.method_combo.currentText(),
+            parameter=param_name,
+            output="stderr" if stderr else "value",
+            broadcast_dim=self._y_dim_name,
+            normalize=self.normalize_check.isChecked(),
+        )
 
-    def _parameter_output_expression(self, param_name: str, *, stderr: bool) -> str:
+    def _parameter_output_script_operation(
+        self,
+        param_name: str,
+        *,
+        stderr: bool,
+        input_name: str | None,
+    ) -> ScriptCodeOperation | None:
+        """Build public replay code for models outside the structured catalog."""
+        prelude = self._build_full_copy_prelude(
+            warn=False,
+            input_name=input_name,
+        )
+        fit_expression = self._full_fit_expression(input_name=input_name)
+        if not prelude or not fit_expression:
+            return None
+        if "lmfit." in prelude:
+            prelude = f"import lmfit\n\n{prelude}"
+
+        assign = "parameter_stderr" if stderr else "parameter_values"
+        result_variable = "modelfit_stderr" if stderr else "modelfit_coefficients"
+        output_name = f"{param_name}_{'stderr' if stderr else 'values'}"
+        output_expression = (
+            f"({fit_expression}).{result_variable}.sel(param={param_name!r}, drop=True)"
+        )
         if stderr:
-            return (
-                f'result.modelfit_stderr.sel(param={param_name!r}).drop_vars("param")'
-            )
-        return (
-            f'result.modelfit_coefficients.sel(param={param_name!r}).drop_vars("param")'
+            output_expression += ".fillna(0.0)"
+        output_expression += f".rename({output_name!r})"
+        output_label = "standard errors" if stderr else "values"
+        return ScriptCodeOperation(
+            label=f"Fit model and extract {param_name!r} parameter {output_label}",
+            code=f"{prelude}\n{assign} = {output_expression}",
         )
 
     def _parameter_output_provenance(
@@ -2582,48 +2604,60 @@ class Fit2DTool(Fit1DTool):
         *,
         stderr: bool,
         data: xr.DataArray,
-    ) -> provenance.ToolProvenanceSpec | None:
-        from erlab.interactive.imagetool import provenance
-
+    ) -> ToolProvenanceSpec | None:
+        del data
         input_provenance = self._effective_input_provenance_spec()
-        input_name = provenance.replay_input_name(input_provenance)
-        prelude = self._parameter_output_prelude(
-            input_name=input_name if input_provenance is not None else None,
-            data=data,
-        )
-        if not prelude:
-            return None
-
+        model_fit = self._parameter_model_fit_operation(param_name, stderr=stderr)
         assign = "parameter_stderr" if stderr else "parameter_values"
-        label = (
-            "Extract current parameter standard errors"
-            if stderr
-            else "Extract current parameter values"
-        )
-        local_spec = provenance.script(
-            provenance.ScriptCodeOperation(
-                label=label,
-                code=(
-                    f"{prelude}\n"
-                    f"{assign} = "
-                    f"{self._parameter_output_expression(param_name, stderr=stderr)}"
+        if model_fit is not None:
+            operations: list[ToolProvenanceOperation] = []
+            fit_domain = self._fit_domain()
+            if fit_domain is not None:
+                operations.append(
+                    SelOperation(kwargs={self._coord_name: slice(*fit_domain)})
+                )
+            operations.extend(
+                (
+                    IselOperation(kwargs={self._y_dim_name: self._y_range_slice()}),
+                    model_fit,
+                )
+            )
+            local_spec = script(
+                *operations,
+                start_label="Start from current fit-tool input data",
+                seed_code=(
+                    "derived = data"
+                    if input_provenance is not None
+                    else f"derived = {self._data_name_full}"
                 ),
-            ),
+                active_name=assign,
+            )
+            return compose_full_provenance(input_provenance, local_spec)
+
+        input_name = replay_input_name(input_provenance) or self._data_name_full
+        fallback = self._parameter_output_script_operation(
+            param_name,
+            stderr=stderr,
+            input_name=input_name,
+        )
+        if fallback is None:
+            return None
+        local_spec = script(
+            fallback,
             start_label="Start from current fit-tool input data",
             active_name=assign,
         )
-
         if (
             input_provenance is not None
-            and provenance.direct_replay_input_name(input_provenance) is not None
+            and direct_replay_input_name(input_provenance) is not None
         ):
-            replay_spec = provenance.to_replay_provenance_spec(local_spec)
+            replay_spec = to_replay_provenance_spec(local_spec)
             if replay_spec is None:
                 raise RuntimeError("Could not convert local provenance to replay spec.")
             return replay_spec.model_copy(
                 update={"start_label": typing.cast("str", input_provenance.start_label)}
             )
-        return provenance.compose_full_provenance(input_provenance, local_spec)
+        return compose_full_provenance(input_provenance, local_spec)
 
     def _parameter_values_output_data(self) -> xr.DataArray | None:
         current = self._current_param_output(stderr=False)
@@ -2636,30 +2670,6 @@ class Fit2DTool(Fit1DTool):
         if current is None:
             return None
         return current[1]
-
-    def _parameter_values_output_expression(
-        self,
-        *,
-        input_name: str | None = None,
-        data: xr.DataArray | None = None,
-    ) -> str:
-        current = self._current_param_output(stderr=False)
-        if current is None:
-            return ""
-        param_name, _ = current
-        return self._parameter_output_expression(param_name, stderr=False)
-
-    def _parameter_stderr_output_expression(
-        self,
-        *,
-        input_name: str | None = None,
-        data: xr.DataArray | None = None,
-    ) -> str:
-        current = self._current_param_output(stderr=True)
-        if current is None:
-            return ""
-        param_name, _ = current
-        return self._parameter_output_expression(param_name, stderr=True)
 
 
 def ftool(

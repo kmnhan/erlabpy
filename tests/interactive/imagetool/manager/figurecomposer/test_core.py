@@ -1,7 +1,55 @@
-# ruff: noqa: F403, F405
+from __future__ import annotations
 
+import ast
+import typing
+from pathlib import Path
+
+if typing.TYPE_CHECKING:
+    from collections.abc import Callable
+
+import numpy as np
+import pytest
+import xarray as xr
+from qtpy import QtGui, QtWidgets
+
+import erlab.interactive._figurecomposer._model._gridspec as figurecomposer_gridspec
+import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
+import erlab.interactive._figurecomposer._text as figurecomposer_text
+import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
+import erlab.interactive._stylesheets
+from erlab.interactive._figurecomposer import (
+    FigureAxesSelectionState,
+    FigureComposerTool,
+    FigureDataSelectionState,
+    FigureGridSpecAxesState,
+    FigureGridSpecGridState,
+    FigureGridSpecLayoutState,
+    FigureGridSpecSpanState,
+    FigureMethodFamily,
+    FigureMethodPlotValueState,
+    FigureOperationKind,
+    FigureOperationState,
+    FigureRecipeState,
+    FigureSourceState,
+    FigureSubplotsState,
+)
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._model import (
+    _operation_metadata as figurecomposer_operation_metadata,
+)
 from erlab.interactive._figurecomposer._model._document import FigureDocument
+from erlab.interactive._figurecomposer._operations import (
+    _custom_code as figurecomposer_custom_code_operation,
+)
+from erlab.interactive._figurecomposer._operations import (
+    _line_profile as figurecomposer_line_profile,
+)
+from erlab.interactive._figurecomposer._operations import (
+    _photon_energy as figurecomposer_photon_energy,
+)
+from erlab.interactive._figurecomposer._operations import (
+    _set_palette as figurecomposer_set_palette,
+)
 from erlab.interactive._figurecomposer._operations._method import (
     _catalog as method_catalog,
 )
@@ -38,7 +86,7 @@ from erlab.interactive._figurecomposer._operations._plot_slices import (
     _spec as plot_slices_spec,
 )
 
-from ._common import *
+from ._common import _activate_combo_index, _select_operation_rows
 
 
 def test_figure_document_orders_source_dependencies_and_rejects_cycles() -> None:

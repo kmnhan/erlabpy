@@ -13,12 +13,21 @@
         :class: only-dark
 """
 
+from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
+from erlab.interactive.imagetool._provenance._operations import (
+    BoxcarFilterOperation,
+    FillNaOperation,
+    GaussianFilterOperation,
+    ImageDerivativeOperation,
+    TransposeOperation,
+    UniformInterpolationOperation,
+)
+
 __all__ = ["dtool"]
 
 import enum
 import functools
 import importlib.resources
-import textwrap
 import typing
 from collections.abc import Callable, Hashable
 
@@ -29,7 +38,6 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import provenance
 
 if typing.TYPE_CHECKING:
     import varname
@@ -46,6 +54,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
             start_label="Start from current dtool input data",
             operations_method="_copy_provenance",
             active_name="result",
+            seed_code_method="_provenance_seed_code",
         )
     )
 
@@ -59,6 +68,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
                 start_label="Start from current dtool input data",
                 operations_method="_output_provenance",
                 active_name="result",
+                seed_code_method="_provenance_seed_code",
             ),
         )
     }
@@ -69,6 +79,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
 
     class StateModel(pydantic.BaseModel):
         data_name: str
+        data_has_nan: bool = False
         interp: bool
         nx_value: int
         ny_value: int
@@ -135,6 +146,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
     def tool_status(self) -> StateModel:
         return self.StateModel(
             data_name=self.data_name,
+            data_has_nan=self.data_has_nan,
             interp=self.interp_group.isChecked(),
             nx_value=self.nx_spin.value(),
             ny_value=self.ny_spin.value(),
@@ -153,6 +165,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         self._pause_update = True
 
         self.data_name: str = status.data_name
+        self.data_has_nan = status.data_has_nan
         self.interp_group.setChecked(status.interp)
         self.nx_spin.setValue(status.nx_value)
         self.ny_spin.setValue(status.ny_value)
@@ -204,7 +217,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
 
         self._pause_update = False  # To temporarily pause updates during state changes
 
-        self.data_has_nan: bool = False
+        self.data_has_nan = False
 
         if data.isnull().any():
             self.data_has_nan = True
@@ -478,8 +491,8 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         status = self.tool_status
         data = self.validate_update_data(new_data)
 
-        self.data_has_nan = bool(data.isnull().any())
-        if self.data_has_nan:
+        data_has_nan = bool(data.isnull().any())
+        if data_has_nan:
             data = data.fillna(0.0)
 
         self.data = data
@@ -488,7 +501,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         self.ydim = self.data.dims[0]
         self.__dict__.pop("processed_data", None)
         with self._history_suppressed():
-            self.tool_status = status
+            self.tool_status = status.model_copy(update={"data_has_nan": data_has_nan})
             self.update_preprocess()
         self._reset_history_stack()
 
@@ -498,121 +511,78 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
             raise ValueError("Input DataArray must be 2D")
         return data
 
-    def _build_copy_code(self, *, input_name: str | None = None) -> str:
-        lines: list[str] = []
-
-        data_name = input_name or self.data_name
-
+    def _result_provenance(
+        self, *, transpose_output: bool = False
+    ) -> tuple[ToolProvenanceOperation, ...]:
+        operations: list[ToolProvenanceOperation] = []
         if self.data_has_nan:
-            data_name = f"{data_name}.fillna(0)"
+            operations.append(FillNaOperation(value=0.0))
         if self.interp_group.isChecked():
-            arg_dict: dict[str, typing.Any] = {
-                str(dim): f"|np.linspace(*{data_name}['{dim}'].values[[0, -1]], {n})|"
-                for dim, n in zip(
-                    [self.xdim, self.ydim],
-                    [self.nx_spin.value(), self.ny_spin.value()],
-                    strict=True,
-                )
-            }
-            lines.append(
-                erlab.interactive.utils.generate_code(
-                    xr.DataArray.interp,
-                    args=[],
-                    kwargs=arg_dict,
-                    module=data_name,
-                    assign="processed",
+            operations.append(
+                UniformInterpolationOperation(
+                    sizes={
+                        self.xdim: self.nx_spin.value(),
+                        self.ydim: self.ny_spin.value(),
+                    }
                 )
             )
-
-            data_name = "processed"
-
         if self.smooth_group.isChecked():
-            match self.smooth_combo.currentIndex():
-                case 0:
-                    smooth_func: Callable = erlab.analysis.image.gaussian_filter
-                    smooth_kwargs: dict[str, typing.Any] = {"sigma": self.smooth_args}
-
-                case _:
-                    smooth_func = erlab.analysis.image.boxcar_filter
-                    smooth_kwargs = {"size": self.smooth_args}
-
-            n_repeat = self.sn_spin.value()
-
-            if n_repeat == 1:
-                smooth_func_code = erlab.interactive.utils.generate_code(
-                    smooth_func,
-                    [f"|{data_name}|"],
-                    smooth_kwargs,
-                    module="era.image",
-                    assign="processed",
+            smooth_args = self.smooth_args
+            if self.smooth_combo.currentIndex() == 0:
+                operations.extend(
+                    GaussianFilterOperation(sigma=smooth_args)
+                    for _ in range(self.sn_spin.value())
+                    if smooth_args
                 )
-                lines.append(smooth_func_code)
             else:
-                lines.append(f"processed = {data_name}.copy()")
-                smooth_func_code = erlab.interactive.utils.generate_code(
-                    smooth_func,
-                    ["|processed|"],
-                    smooth_kwargs,
-                    module="era.image",
-                    assign="processed",
+                boxcar_sizes = {
+                    dim: int(size) for dim, size in smooth_args.items() if size > 1
+                }
+                operations.extend(
+                    BoxcarFilterOperation(size=boxcar_sizes)
+                    for _ in range(self.sn_spin.value())
+                    if boxcar_sizes
                 )
-                lines.extend(
-                    (
-                        f"for _ in range({self.sn_spin.value()}):",
-                        textwrap.indent(smooth_func_code, "    "),
-                    )
-                )
-            data_name = "processed"
-
-        lines.append(
-            erlab.interactive.utils.generate_code(
-                self.process_func,
-                [f"|{data_name}|"],
-                self.process_kwargs,
-                module="era.image",
-                assign="result",
-                remove_defaults=False,
+        operations.append(
+            ImageDerivativeOperation(
+                method=typing.cast(
+                    "typing.Literal['diffn', 'scaled_laplace', 'curvature1d', "
+                    "'curvature', 'minimum_gradient']",
+                    self.process_func.__name__,
+                ),
+                kwargs=typing.cast("dict[Hashable, typing.Any]", self.process_kwargs),
             )
         )
-
-        return "\n".join(lines)
-
-    def _result_provenance(
-        self, *, input_name: str | None = None, transpose_output: bool = False
-    ) -> tuple[provenance.ScriptCodeOperation, ...]:
-        operations = [
-            provenance.ScriptCodeOperation(
-                label="Compute derivative output",
-                code=self._build_copy_code(input_name=input_name),
-            )
-        ]
         if transpose_output:
-            operations.append(
-                provenance.ScriptCodeOperation(
-                    label="Transpose derivative output for ImageTool display",
-                    code="result = result.transpose()",
-                )
-            )
+            operations.append(TransposeOperation())
         return tuple(operations)
+
+    def _provenance_seed_code(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        del data
+        return f"derived = {input_name or self.data_name}"
 
     def _copy_provenance(
         self,
         *,
         input_name: str | None = None,
         data: xr.DataArray | None = None,
-    ) -> tuple[provenance.ScriptCodeOperation, ...]:
-        return self._result_provenance(input_name=input_name)
+    ) -> tuple[ToolProvenanceOperation, ...]:
+        del input_name, data
+        return self._result_provenance()
 
     def _output_provenance(
         self,
         *,
         input_name: str | None = None,
         data: xr.DataArray | None = None,
-    ) -> tuple[provenance.ScriptCodeOperation, ...]:
-        return self._result_provenance(
-            input_name=input_name,
-            transpose_output=True,
-        )
+    ) -> tuple[ToolProvenanceOperation, ...]:
+        del input_name, data
+        return self._result_provenance(transpose_output=True)
 
     def _result_output_data(self) -> xr.DataArray:
         return self.result.T

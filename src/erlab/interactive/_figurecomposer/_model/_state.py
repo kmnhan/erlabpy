@@ -17,7 +17,10 @@ from erlab.interactive._figurecomposer._defaults import (
     _default_figure_dpi,
     _default_layout,
 )
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool._provenance._model import (
+    ScriptInput,
+    ScriptInputDataRole,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Sequence
@@ -183,6 +186,10 @@ class FigureSourceState(pydantic.BaseModel):
     )
     node_uid: str | None = None
     node_snapshot_token: str | None = None
+    data_role: ScriptInputDataRole = pydantic.Field(
+        default="displayed",
+        exclude_if=lambda value: value == "displayed",
+    )
     provenance_spec: dict[str, typing.Any] | None = None
 
     model_config = pydantic.ConfigDict(extra="forbid")
@@ -213,25 +220,27 @@ class FigureSourceState(pydantic.BaseModel):
         return _jsonable_slice_mapping(value)
 
     @classmethod
-    def from_script_input(
-        cls, script_input: provenance.ScriptInput
-    ) -> FigureSourceState:
+    def from_script_input(cls, script_input: ScriptInput) -> FigureSourceState:
         return cls(
             name=script_input.name,
             label=script_input.label,
             node_uid=script_input.node_uid,
             node_snapshot_token=script_input.node_snapshot_token,
+            data_role=script_input.data_role,
             provenance_spec=script_input.provenance_spec,
         )
 
-    def to_script_input(self) -> provenance.ScriptInput | None:
+    def to_script_input(
+        self,
+    ) -> ScriptInput | None:
         if self.node_uid is None and self.provenance_spec is None:
             return None
-        return provenance.ScriptInput(
+        return ScriptInput(
             name=self.name,
             label=self.label,
             node_uid=self.node_uid,
             node_snapshot_token=self.node_snapshot_token,
+            data_role=self.data_role,
             provenance_spec=self.provenance_spec,
         )
 

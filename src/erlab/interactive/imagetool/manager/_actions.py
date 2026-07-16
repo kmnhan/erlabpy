@@ -12,36 +12,39 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
-from erlab.interactive.imagetool import _kspace_conversion, provenance
+from erlab.interactive.imagetool import _kspace_conversion
 from erlab.interactive.imagetool._mainwindow import ImageTool
-from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
-from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
+from erlab.interactive.imagetool._provenance._model import (
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    compose_display_provenance,
+    compose_full_provenance,
+    require_live_source_spec,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    AssignCoord1DOperation,
+    AssignScalarCoordOperation,
+    ImageToolSelectionSourceBinding,
+    RestoreNonuniformDimsOperation,
+)
 from erlab.interactive.imagetool.manager._dialogs import (
     _BatchOperationDialog,
     _ConcatDialog,
-    _is_loader_func,
     _RenameDialog,
     _StoreDialog,
 )
-from erlab.interactive.imagetool.manager._io import _MultiFileHandler
-from erlab.interactive.imagetool.manager._widgets import (
-    _WATCHED_VAR_COLORS,
-    _show_workspace_file_lock_error,
-)
+from erlab.interactive.imagetool.manager._widgets import _WATCHED_VAR_COLORS
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
 )
 
-_workspace_repack_estimate = _manager_workspace._workspace_manifest_repack_estimate
-
 if typing.TYPE_CHECKING:
     import datetime
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Iterable, Mapping
 
     import xarray as xr
 
-    from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
 
@@ -68,10 +71,10 @@ class _ActionsController:
         if len(selected_images) + len(selected_tools) == 1:
             target = selected_images[0] if selected_images else selected_tools[0]
             if isinstance(target, str) and self._manager._is_figure_uid(target):
-                pane = self._manager._figure_controller.pane
+                pane = self._manager._figure_collection.pane
                 if pane is None:
                     return
-                item = self._manager._figure_controller.item_for_uid(target)
+                item = self._manager._figure_collection.item_for_uid(target)
                 if item is not None:
                     pane.list_widget.editItem(item)
                 return
@@ -117,7 +120,7 @@ class _ActionsController:
                 new_uid = self._manager.duplicate_childtool(uid)
 
                 if self._manager._is_figure_uid(new_uid):
-                    self._manager._figure_controller.select_uid(new_uid)
+                    self._manager._figure_collection.select_uid(new_uid)
                     continue
 
                 qmodelindex = self._manager.tree_view._model._row_index(new_uid)
@@ -184,6 +187,7 @@ class _ActionsController:
         persistence = node.persistence_view()
         provenance_spec = persistence.provenance_spec
         snapshot_token = node.snapshot_token
+        source_snapshot_token = node.source_snapshot_token
         note = node.note
 
         self._manager.tree_view.childtool_removed(uid)
@@ -196,6 +200,7 @@ class _ActionsController:
                 uid=uid,
                 provenance_spec=provenance_spec,
                 snapshot_token=snapshot_token,
+                source_snapshot_token=source_snapshot_token,
                 created_time=created_time,
                 note=note,
             )
@@ -330,9 +335,12 @@ class _ActionsController:
     def _validate_batch_operations(
         self,
         dialog: typing.Any,
-        operations: Iterable[provenance.ToolProvenanceOperation],
+        operations: Iterable[ToolProvenanceOperation],
         *,
-        extra_types: tuple[type[provenance.ToolProvenanceOperation], ...] = (),
+        extra_types: tuple[
+            type[ToolProvenanceOperation],
+            ...,
+        ] = (),
     ) -> None:
         declared_types = tuple(dialog.operation_types)
         accepted_types = declared_types + extra_types
@@ -349,15 +357,15 @@ class _ActionsController:
 
     def _validate_batch_target_operations(
         self,
-        operations: Iterable[provenance.ToolProvenanceOperation],
+        operations: Iterable[ToolProvenanceOperation],
         data: xr.DataArray,
     ) -> None:
         for operation in operations:
             if not isinstance(
                 operation,
                 (
-                    provenance.AssignScalarCoordOperation,
-                    provenance.AssignCoord1DOperation,
+                    AssignScalarCoordOperation,
+                    AssignCoord1DOperation,
                 ),
             ):
                 continue
@@ -449,7 +457,7 @@ class _ActionsController:
                 self._validate_batch_operations(
                     dialog,
                     source_spec.operations,
-                    extra_types=(provenance.RestoreNonuniformDimsOperation,),
+                    extra_types=(RestoreNonuniformDimsOperation,),
                 )
                 source_data = slicer_area.data
                 if source_spec.kind == "public_data":
@@ -499,7 +507,7 @@ class _ActionsController:
                 parent_provenance = node.displayed_provenance_spec
                 if parent_provenance is None:
                     parent_provenance = slicer_area.displayed_provenance_spec()
-                nested_provenance = provenance.compose_full_provenance(
+                nested_provenance = compose_full_provenance(
                     parent_provenance,
                     source_spec,
                 )
@@ -533,10 +541,7 @@ class _ActionsController:
                         replace_provenance = detached_provenance
                     if replace_kind == "detached":
                         with contextlib.suppress(TypeError):
-                            if (
-                                provenance.require_live_source_spec(replace_provenance)
-                                is not None
-                            ):
+                            if require_live_source_spec(replace_provenance) is not None:
                                 replace_live_parent_data = (
                                     node.detached_live_parent_data
                                     if node.detached_live_parent_data is not None
@@ -670,7 +675,7 @@ class _ActionsController:
                 def _apply_filter(
                     *,
                     area: ImageSlicerArea = slicer_area,
-                    op: provenance.ToolProvenanceOperation | None = operation,
+                    op: ToolProvenanceOperation | None = operation,
                     edited: bool = emit_edited,
                 ) -> None:
                     area.apply_filter_operation(op, emit_edited=edited)
@@ -752,7 +757,7 @@ class _ActionsController:
             if node.parent_uid is None and self._manager._is_figure_node(node):
                 duplicated_tool = tool.duplicate()
                 duplicated_tool._tool_display_name = (
-                    self._manager._figure_controller.duplicated_display_name(
+                    self._manager._figure_collection.duplicated_display_name(
                         node.display_text
                     )
                 )
@@ -849,7 +854,7 @@ class _ActionsController:
             self._manager._handle_dropped_files([pathlib.Path(p) for p in paths])
             return
 
-        self._manager._add_from_multiple_files(
+        self._manager._data_ingress.add_from_multiple_files(
             [],
             [pathlib.Path(p) for p in paths],
             [],
@@ -877,7 +882,7 @@ class _ActionsController:
                 idx = sorted(self._manager._tool_graph.root_wrappers.keys())[idx]
             elif isinstance(idx, int) and idx == self._manager.next_idx:
                 # If not yet created, add new tool
-                self._manager._data_recv([darr], {})
+                self._manager._data_ingress.receive_data([darr], {})
                 continue
             self._manager.get_imagetool(idx).slicer_area.replace_source_data(darr)
         self._manager._sigDataReplaced.emit()
@@ -948,7 +953,7 @@ class _ActionsController:
         idx = self._manager._find_watched_idx(uid)
         if idx is None:
             # If the tool does not exist, create a new one
-            self._manager._data_recv(
+            self._manager._data_ingress.receive_data(
                 [darr],
                 {},
                 watched_var=(varname, uid),
@@ -1131,300 +1136,10 @@ class _ActionsController:
                     "Multiple file types cannot be opened at the same time.",
                 )
                 return
-            self._manager.open_multiple_files(
+            self._manager._data_ingress.open_multiple_files(
                 file_paths,
                 try_workspace=extensions == {".itws"},
             )
-
-    def _show_loaded_info(
-        self,
-        loaded: list[pathlib.Path],
-        canceled: list[pathlib.Path],
-        failed: list[pathlib.Path],
-        retry_callback: Callable[[list[pathlib.Path]], typing.Any],
-    ) -> None:
-        """Show a message box with information about the loaded files.
-
-        Nothing is shown if all files were successfully loaded.
-
-        Parameters
-        ----------
-        loaded
-            List of successfully loaded files.
-        canceled
-            List of files that were aborted before trying to load.
-        failed
-            List of files that failed to load.
-        retry_callback
-            Callback function to retry loading the failed files. It should accept a list
-            of path objects as its only argument.
-
-        """
-        loaded, canceled, failed = (
-            list(dict.fromkeys(loaded)),
-            list(dict.fromkeys(canceled)),
-            list(dict.fromkeys(failed)),
-        )  # Remove duplicate entries
-
-        n_done, n_fail = len(loaded), len(failed)
-
-        status_msg = f"Loaded {n_done} {'file' if n_done == 1 else 'files'}"
-        self._manager._status_bar.showMessage(status_msg, 5000)
-
-        if n_fail == 0:
-            return
-
-        message = f"Loaded {n_done} file"
-        if n_done != 1:
-            message += "s"
-        message = message + f" with {n_fail} failure"
-        if n_fail != 1:
-            message += "s"
-        message += "."
-
-        msg_box = QtWidgets.QMessageBox(self._manager)
-        msg_box.setText(message)
-
-        loaded_str = "\n".join(p.name for p in loaded)
-        if loaded_str:
-            loaded_str = f"Loaded:\n{loaded_str}\n\n"
-
-        failed_str = "\n".join(p.name for p in failed)
-        if failed_str:
-            failed_str = f"Failed:\n{failed_str}\n\n"
-
-        canceled_str = "\n".join(p.name for p in canceled)
-        if canceled_str:
-            canceled_str = f"Canceled:\n{canceled_str}\n\n"
-        msg_box.setDetailedText(f"{loaded_str}{failed_str}{canceled_str}")
-
-        msg_box.setInformativeText("Do you want to retry loading the failed files?")
-        msg_box.setStandardButtons(
-            QtWidgets.QMessageBox.StandardButton.Retry
-            | QtWidgets.QMessageBox.StandardButton.Cancel
-        )
-        msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Retry)
-        if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Retry:
-            retry_callback(failed)
-
-    def open_multiple_files(
-        self, queued: list[pathlib.Path], try_workspace: bool = False
-    ) -> None:
-        """Open multiple files in the manager."""
-        if try_workspace and self._manager._workspace_state.save_in_progress:
-            self._manager._status_bar.showMessage(
-                "Workspace save in progress; open after it finishes", 3000
-            )
-            return
-        n_files: int = len(queued)
-        loaded: list[pathlib.Path] = []
-        failed: list[pathlib.Path] = []
-        metadata_from_attrs = _manager_workspace._workspace_file_metadata_from_attrs
-
-        if try_workspace:
-            for p in list(queued):
-                explicit_workspace = p.suffix.lower() == ".itws"
-                try:
-                    dt = _manager_xarray.open_workspace_datatree(p, chunks=None)
-                except Exception as exc:
-                    if _manager_workspace._is_workspace_file_lock_error(exc):
-                        logger.info(
-                            "Workspace file is already open or locked: %s",
-                            p,
-                            extra={"suppress_ui_alert": True},
-                        )
-                        _show_workspace_file_lock_error(self._manager, p)
-                        queued.remove(p)
-                    elif explicit_workspace:
-                        self._manager._show_operation_error(
-                            "Error while loading workspace",
-                            "An error occurred while loading the workspace file.",
-                        )
-                        queued.remove(p)
-                    else:
-                        logger.debug(
-                            "Failed to open %s as datatree workspace", p, exc_info=True
-                        )
-                else:
-                    if self._manager._is_datatree_workspace(dt):
-                        dt.close()
-                        try:
-                            with self._manager._workspace_document_access_context(
-                                p
-                            ) as access:
-                                _manager_workspace._recover_workspace_transactions(
-                                    access.path
-                                )
-                                workspace_dt = _manager_xarray.open_workspace_datatree(
-                                    access.path, chunks=None
-                                )
-                                workspace_dt_owned = True
-                                try:
-                                    (
-                                        schema_version,
-                                        delta_save_count,
-                                        manifest,
-                                    ) = metadata_from_attrs(workspace_dt.attrs)
-                                    controller = self._manager._workspace_controller
-                                    dirty_choice = (
-                                        controller._dirty_workspace_save_choice
-                                    )
-                                    save_choice = dirty_choice(
-                                        "Opening a workspace replaces the windows "
-                                        "currently in this manager."
-                                    )
-                                    if save_choice == "cancel":
-                                        return
-                                    if save_choice == "save":
-                                        workspace_path = access.path
-
-                                        def _load_after_save(
-                                            save_succeeded: bool,
-                                            *,
-                                            path: pathlib.Path = workspace_path,
-                                            controller=controller,
-                                        ) -> None:
-                                            if save_succeeded and (
-                                                not self._manager.is_workspace_modified
-                                            ):
-                                                controller._open_workspace_after_dirty_prompt(
-                                                    path
-                                                )
-
-                                        controller.save(on_finished=_load_after_save)
-                                        return
-                                    loaded_workspace = self._manager._from_datatree(
-                                        workspace_dt,
-                                        replace=True,
-                                        mark_dirty=False,
-                                        select=False,
-                                        workspace_file_path=access.path,
-                                    )
-                                    workspace_dt_owned = False
-                                    loaded_workspace = (
-                                        self._manager._finish_workspace_file_load(
-                                            loaded_workspace
-                                        )
-                                    )
-                                    if loaded_workspace:
-                                        (
-                                            estimated_obsolete_bytes,
-                                            replacement_delta_count,
-                                            repack_estimate_known,
-                                        ) = _workspace_repack_estimate(
-                                            manifest,
-                                            delta_save_count=delta_save_count,
-                                        )
-                                        self._manager._associate_loaded_workspace_file(
-                                            access.path,
-                                            schema_version,
-                                            delta_save_count=delta_save_count,
-                                            estimated_obsolete_bytes=(
-                                                estimated_obsolete_bytes
-                                            ),
-                                            replacement_delta_count=(
-                                                replacement_delta_count
-                                            ),
-                                            repack_estimate_known=repack_estimate_known,
-                                            workspace_access=access,
-                                            rebind_data=False,
-                                        )
-                                finally:
-                                    if workspace_dt_owned:
-                                        workspace_dt.close()
-                        except Exception as exc:
-                            if _manager_workspace._is_workspace_file_lock_error(exc):
-                                logger.info(
-                                    "Workspace file is already open or locked: %s",
-                                    p,
-                                    extra={"suppress_ui_alert": True},
-                                )
-                                _show_workspace_file_lock_error(self._manager, p)
-                            else:
-                                self._manager._show_operation_error(
-                                    "Error while loading workspace",
-                                    "An error occurred while loading the workspace "
-                                    "file.",
-                                )
-                        finally:
-                            queued.remove(p)
-                            loaded.append(p)
-                    else:
-                        dt.close()
-                        if explicit_workspace:
-                            logger.error(
-                                "File with .itws extension is not an ImageTool "
-                                "workspace: %s",
-                                p,
-                                extra={"suppress_ui_alert": True},
-                            )
-                            erlab.interactive.utils.MessageDialog.critical(
-                                self._manager,
-                                "Error",
-                                "An error occurred while loading the workspace file.",
-                                f"{p.name} is not a valid ImageTool workspace file.",
-                            )
-                            queued.remove(p)
-
-        if len(queued) == 0:
-            return
-
-        # Get loaders applicable to input files
-        valid_loaders: dict[str, tuple[Callable, dict]] = (
-            erlab.interactive.utils.file_loaders(queued)
-        )
-
-        if len(valid_loaders) == 0:
-            if all(file_path.is_dir() for file_path in queued):
-                # If all dropped paths are directories, open them in the explorer
-                explorer = typing.cast(
-                    "_TabbedExplorer", self._manager._show_standalone_app("explorer")
-                )
-                for file_path in queued:
-                    explorer.add_tab(root_path=file_path)
-                return
-
-            singular: bool = n_files == 1
-            QtWidgets.QMessageBox.critical(
-                self._manager,
-                "Error",
-                f"The selected {'file' if singular else 'files'} "
-                f"with extension '{queued[0].suffix}' {'is' if singular else 'are'} "
-                "not supported by any available plugin.",
-            )
-            return
-
-        if len(valid_loaders) == 1:
-            name_filter, (func, kargs) = next(iter(valid_loaders.items()))
-            if _is_loader_func(func):
-                selected = self._manager._select_loader_options(
-                    valid_loaders, name_filter, sample_paths=queued
-                )
-                if selected is None:
-                    return
-                self._manager._recent_name_filter, func, kargs = selected
-            else:
-                self._manager._recent_name_filter = name_filter
-        else:
-            selected = self._manager._select_loader_options(
-                valid_loaders, sample_paths=queued
-            )
-            if selected is None:
-                return
-            self._manager._recent_name_filter, func, kargs = selected
-
-        self._manager._add_from_multiple_files(
-            loaded, queued, failed, func, kargs, self._manager.open_multiple_files
-        )
-
-    def _error_creating_imagetool(self) -> None:
-        """Show an error message when an ImageTool window could not be created."""
-        erlab.interactive.utils.MessageDialog.critical(
-            self._manager,
-            "Error",
-            "An error occurred while creating the ImageTool window.",
-            "The data may be incompatible with ImageTool.",
-        )
 
     def _show_operation_error(self, log_message: str, text: str) -> None:
         logger.exception(log_message, extra={"suppress_ui_alert": True})
@@ -1449,30 +1164,6 @@ class _ActionsController:
             "An error occurred while saving the workspace file.",
             detailed_text=erlab.interactive.utils._format_traceback(error_text),
         )
-
-    def _add_from_multiple_files(
-        self,
-        loaded: list[pathlib.Path],
-        queued: list[pathlib.Path],
-        failed: list[pathlib.Path],
-        func: Callable,
-        kwargs: dict[str, typing.Any],
-        retry_callback: Callable,
-    ) -> None:
-        handler = _MultiFileHandler(self._manager, queued, func, kwargs)
-        self._manager._file_handlers.add(handler)
-
-        def _finished_callback(loaded_new, aborted, failed_new) -> None:
-            self._manager._show_loaded_info(
-                loaded + loaded_new,
-                aborted,
-                failed + failed_new,
-                retry_callback=retry_callback,
-            )
-            self._manager._file_handlers.remove(handler)
-
-        handler.sigFinished.connect(_finished_callback)
-        handler.start()
 
     def add_widget(self, widget: QtWidgets.QWidget) -> None:
         """Save a reference to an additional window widget.
@@ -1506,6 +1197,7 @@ class _ActionsController:
         show: bool = True,
         uid: str | None = None,
         snapshot_token: str | None = None,
+        source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
@@ -1529,6 +1221,7 @@ class _ActionsController:
                 show=show,
                 uid=uid,
                 snapshot_token=snapshot_token,
+                source_snapshot_token=source_snapshot_token,
                 created_time=created_time,
                 note=note,
             )
@@ -1540,6 +1233,7 @@ class _ActionsController:
             parent.uid,
             tool,
             snapshot_token=snapshot_token,
+            source_snapshot_token=source_snapshot_token,
             created_time=created_time,
             note=note,
         )
@@ -1551,7 +1245,7 @@ class _ActionsController:
 
         def _parent_provenance_fetcher(
             parent_uid: str = parent.uid,
-        ) -> provenance.ToolProvenanceSpec | None:
+        ) -> ToolProvenanceSpec | None:
             return self._manager._node_for_target(parent_uid).displayed_provenance_spec
 
         tool.set_source_parent_fetcher(_parent_source_fetcher)
@@ -1560,7 +1254,7 @@ class _ActionsController:
         self._manager.tree_view.childtool_added(node.uid, index)
         self._manager._mark_node_added(node.uid)
         if self._manager._is_figure_node(node):
-            self._manager._figure_controller.sync(select_uid=node.uid if show else None)
+            self._manager._figure_collection.sync(select_uid=node.uid if show else None)
         if show:
             node.show()
         return node.uid
@@ -1573,13 +1267,14 @@ class _ActionsController:
         show: bool = True,
         activate: bool = False,
         uid: str | None = None,
-        provenance_spec: provenance.ToolProvenanceSpec | None = None,
-        source_spec: provenance.ToolProvenanceSpec | None = None,
-        source_binding: provenance.ImageToolSelectionSourceBinding | None = None,
+        provenance_spec: ToolProvenanceSpec | None = None,
+        source_spec: ToolProvenanceSpec | None = None,
+        source_binding: ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
         snapshot_token: str | None = None,
+        source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
@@ -1590,7 +1285,7 @@ class _ActionsController:
         elif source_spec is not None:
             source_binding = None
         if provenance_spec is None and source_spec is not None:
-            provenance_spec = provenance.compose_display_provenance(
+            provenance_spec = compose_display_provenance(
                 parent_node.displayed_provenance_spec,
                 source_spec,
                 parent_data=parent_node.current_source_data(),
@@ -1609,6 +1304,7 @@ class _ActionsController:
             source_state=source_state,
             output_id=output_id,
             snapshot_token=snapshot_token,
+            source_snapshot_token=source_snapshot_token,
             created_time=created_time,
             note=note,
         )
@@ -1752,7 +1448,7 @@ class _ActionsController:
             return
         self._manager._mark_singleton_workspace_link_groups_dirty(removed_link_keys)
         if was_figure:
-            self._manager._figure_controller.sync()
+            self._manager._figure_collection.sync()
         self._manager._update_actions()
 
     def eventFilter(

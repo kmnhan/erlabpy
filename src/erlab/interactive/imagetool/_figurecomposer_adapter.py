@@ -20,7 +20,9 @@ from erlab.interactive._figurecomposer._model._state import (
     FigureOperationState,
 )
 from erlab.interactive._figurecomposer._norms import _norm_updates_from_kwargs
-from erlab.interactive.imagetool import _provenance_framework
+from erlab.interactive.imagetool._provenance._code import (
+    _restore_nonuniform_dims_expression,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
@@ -519,7 +521,7 @@ class _PlotOperationBuilder:
                 qsel_kwargs.update(self.array_slicer.qsel_args(cursor, display_axes))
         selected = data_name
         if uses_nonuniform_axes:
-            selected = _provenance_framework._restore_nonuniform_dims_expression(
+            selected = _restore_nonuniform_dims_expression(
                 selected,
                 erlab.utils.array._nonuniform_dim_mapping(self.slicer_area.data),
             )

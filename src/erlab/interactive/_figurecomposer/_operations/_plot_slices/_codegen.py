@@ -103,8 +103,6 @@ def _plot_slices_label_line_kw_code(
     if not label_text_uses_placeholders(operation.line_label_text, contexts):
         return None
     keys = _plot_slices_panel_keys(tool._document, tool._source_display_name, operation)
-    if not keys:
-        return None
     fields = label_field_names(operation.line_label_text)
     source_labels = _plot_slices_source_labels(
         tool._document, tool._source_display_name, operation
@@ -138,8 +136,6 @@ def _plot_slices_line_kw_code(
     if not _plot_slices_line_colormap_active(tool._document, operation):
         return _plot_slices_label_line_kw_code(tool, operation)
     keys = _plot_slices_panel_keys(tool._document, tool._source_display_name, operation)
-    if not keys:
-        return None
     contexts = _plot_slices_line_label_contexts(
         tool._document, tool._source_display_name, operation
     )
@@ -221,8 +217,6 @@ def _plot_slices_line_color_code_lines(
         raise ValueError(f"Cannot color slices by {coord!r}")
     _plot_slices_line_color_values(tool, operation)
     keys = _plot_slices_panel_keys(tool._document, tool._source_display_name, operation)
-    if not keys:
-        return []
     slice_values_code = _plot_slices_slice_values_code(tool._document, operation)
     map_count, slice_count = _style_sequence_shape(keys)
     if map_count == 1:
@@ -552,8 +546,6 @@ def _plot_slices_transformed_maps_code(
         profile_indices = [
             index for index, key in enumerate(keys) if key.map_index == map_index
         ]
-        if len(profile_indices) != len(slice_values):
-            continue
         profile_items = ", ".join(f"profiles[{index}]" for index in profile_indices)
         map_lines.append(
             [
@@ -597,8 +589,6 @@ def _plot_slices_transformed_code_lines(
         tool._document, tool._source_display_name, operation, maps
     )
     source_codes = _plot_slices_profile_source_codes(operation)
-    if not source_codes:
-        return []
     keys = tuple(
         key
         for key in _plot_slices_panel_keys(
@@ -606,8 +596,6 @@ def _plot_slices_transformed_code_lines(
         )
         if key.map_index < len(source_codes) and key.map_index < len(maps)
     )
-    if not keys:
-        return []
 
     slice_values = _effective_slice_values(tool._document, operation)
     lines = ["profiles = ["]

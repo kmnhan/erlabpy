@@ -1,6 +1,44 @@
-# ruff: noqa: F403, F405
+import gc
+import typing
 
-from ._common import *
+import matplotlib.pyplot as plt
+import numpy as np
+import pytest
+import xarray as xr
+from qtpy import QtCore, QtWidgets
+
+import erlab.interactive._figurecomposer._code as figurecomposer_code
+import erlab.interactive._figurecomposer._line_style as figurecomposer_line_style
+import erlab.interactive._figurecomposer._line_transform as _line_transform
+import erlab.interactive._figurecomposer._model._axes as figurecomposer_axes
+import erlab.interactive._figurecomposer._model._gridspec as figurecomposer_gridspec
+import erlab.interactive._figurecomposer._norms as figurecomposer_norms
+import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
+import erlab.interactive._figurecomposer._ui._editor_controls as _editor_controls
+import erlab.interactive._figurecomposer._ui._line_style as figurecomposer_line_style_ui
+import erlab.interactive._stylesheets
+import erlab.plotting as eplt
+from erlab.interactive._figurecomposer import (
+    FigureAxesSelectionState,
+    FigureComposerTool,
+    FigureExportState,
+    FigureGridSpecAxesState,
+    FigureGridSpecGridState,
+    FigureGridSpecLayoutState,
+    FigureGridSpecSpanState,
+    FigureMethodFamily,
+    FigureOperationState,
+    FigureRecipeState,
+    FigureSourceState,
+    FigureSubplotsState,
+)
+
+from ._common import (
+    _assert_step_editor_section,
+    _figure_composer_image_source,
+    _figure_composer_line_slice_source,
+    _operation_section_button,
+)
 
 
 def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
@@ -991,7 +1029,7 @@ def test_gridspec_transformations_validate_edits_and_ignore_stale_ids() -> None:
     assert region_id == ""
     with pytest.raises(ValueError, match="unknown GridSpec region kind"):
         figurecomposer_gridspec._gridspec_add_region(
-            setup, "root", top_left, typing.cast(typing.Any, "unknown")
+            setup, "root", top_left, typing.cast("typing.Any", "unknown")
         )
 
     setup, first_axes_id = figurecomposer_gridspec._gridspec_add_region(

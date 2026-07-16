@@ -1,8 +1,33 @@
-# ruff: noqa: F403, F405
+import builtins
+import typing
 
+import matplotlib.pyplot as plt
+import numpy as np
+import pytest
+from matplotlib import colors as mcolors
+from qtpy import QtCore, QtGui, QtWidgets
+
+import erlab
+import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._ui._color_widgets as color_widgets
+from erlab.interactive._figurecomposer import (
+    FigureComposerTool,
+    FigureCubehelixPaletteState,
+    FigureDivergingPaletteState,
+    FigureOperationState,
+    FigureRecipeState,
+    FigureSequentialPaletteState,
+    FigureSourceState,
+)
+from erlab.interactive._figurecomposer._operations import (
+    _set_palette as figurecomposer_set_palette,
+)
 
-from ._common import *
+from ._common import (
+    _activate_combo_text,
+    _figure_composer_profile_source,
+    _select_operation_rows,
+)
 
 
 def _set_palette_tool(qtbot, operation: FigureOperationState) -> FigureComposerTool:
@@ -89,9 +114,9 @@ def test_figure_composer_generated_palette_state_validation_and_roundtrip() -> N
         FigureSequentialPaletteState(input="husl", color=(360.0, 50.0, 50.0))
     with pytest.raises(ValueError, match="outside the rgb range"):
         FigureSequentialPaletteState(input="rgb", color=(1.1, 0.5, 0.5))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="less than or equal to 359"):
         FigureDivergingPaletteState(h_neg=360.0)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="greater than or equal to 1"):
         FigureDivergingPaletteState(sep=0)
 
 

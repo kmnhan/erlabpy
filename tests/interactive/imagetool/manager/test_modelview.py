@@ -19,9 +19,15 @@ import erlab.interactive._options.core
 import erlab.interactive.imagetool.manager._base as manager_base
 import erlab.interactive.imagetool.manager._io as manager_io
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
-from erlab.interactive.imagetool import itool, provenance
+from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
+    ScriptInput,
+    ToolProvenanceSpec,
+    full_data,
+    script,
+)
 from erlab.interactive.imagetool.manager import ImageToolManager, load_in_manager
-from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 from erlab.interactive.imagetool.manager._modelview import (
@@ -32,7 +38,6 @@ from erlab.interactive.imagetool.manager._modelview import (
     _RowBadge,
 )
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
-from erlab.interactive.imagetool.manager._workspace_io import _WorkspaceIOController
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
 from .helpers import (
@@ -47,17 +52,17 @@ logger = logging.getLogger(__name__)
 
 
 def test_dependency_tracker_uses_passive_tool_provenance() -> None:
-    source = provenance.script(
+    source = script(
         start_label="Source",
         seed_code="source = data",
         active_name="source",
     )
-    dependent = provenance.script(
+    dependent = script(
         start_label="Dependent",
         seed_code="derived = source",
         active_name="derived",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="source",
                 label="Source",
                 node_uid="source-uid",
@@ -69,7 +74,7 @@ def test_dependency_tracker_uses_passive_tool_provenance() -> None:
     class _PassiveTool:
         def current_provenance_spec(
             self, *, flush_deferred_restore: bool = True
-        ) -> provenance.ToolProvenanceSpec:
+        ) -> ToolProvenanceSpec:
             assert flush_deferred_restore is False
             return dependent
 
@@ -482,7 +487,7 @@ def test_treeview(qtbot, accept_dialog, test_data) -> None:
         widget._workspace_state.loading_depth += 1
         try:
             widget.remove_all_tools()
-            widget._mark_workspace_clean()
+            widget._workspace_controller._mark_workspace_clean()
         finally:
             widget._workspace_state.loading_depth -= 1
 
@@ -645,7 +650,7 @@ def test_childtool_state_changed_marks_dirty_without_details_refresh(
             original_set_metadata_node(node)
 
         monkeypatch.setattr(manager, "_set_metadata_node", _record_metadata_rebuild)
-        manager._mark_workspace_clean()
+        manager._workspace_controller._mark_workspace_clean()
 
         tool.sigStateChanged.emit()
 
@@ -654,7 +659,7 @@ def test_childtool_state_changed_marks_dirty_without_details_refresh(
         assert ("tool-info-refresh", uid) not in manager._interaction_gate.pending_keys
 
         child_node = manager._child_node(uid)
-        manager._mark_workspace_clean()
+        manager._workspace_controller._mark_workspace_clean()
         original_node = manager._tool_graph.nodes[uid]
         try:
             manager._tool_graph.nodes[uid] = object()
@@ -757,7 +762,7 @@ def test_childtool_data_changed_deduplicates_descendant_refresh(
             lambda: uid in manager._tool_graph.root_wrappers[0]._childtool_indices,
             timeout=5000,
         )
-        manager._mark_workspace_clean()
+        manager._workspace_controller._mark_workspace_clean()
 
         propagated_uids: list[str] = []
         refreshed_uids: list[str | None] = []
@@ -875,7 +880,7 @@ def test_childtool_repeated_info_changes_mark_state_dirty_once(
             lambda: uid in manager._tool_graph.root_wrappers[0]._childtool_indices,
             timeout=5000,
         )
-        manager._mark_workspace_clean()
+        manager._workspace_controller._mark_workspace_clean()
 
         tool.emit_info_text("first")
         tool.emit_info_text("second")
@@ -902,7 +907,7 @@ def test_root_imagetool_repeated_history_changes_mark_state_dirty_once(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         workspace = tmp_path / "normal.itws"
         manager._workspace_state.path = workspace
-        manager._mark_workspace_clean()
+        manager._workspace_controller._mark_workspace_clean()
         file_path_calls: list[str] = []
         modified_calls: list[bool] = []
         monkeypatch.setattr(
@@ -966,7 +971,9 @@ def test_remove_imagetool_removes_childtools() -> None:
         _mark_singleton_workspace_link_groups_dirty=lambda _link_keys: None,
         _remove_uid_target=lambda child_uid: removed_uids.append(child_uid),
         _refresh_dependency_dependents=lambda _uid: None,
-        _refresh_figure_source_controls=lambda: refresh_calls.append(None),
+        _figure_workflows=types.SimpleNamespace(
+            _refresh_figure_source_controls=lambda: refresh_calls.append(None)
+        ),
         _workspace_state=types.SimpleNamespace(closing_document=False),
         tree_view=types.SimpleNamespace(
             imagetool_removed=lambda index: removed_rows.append(index)
@@ -1198,7 +1205,7 @@ def test_manager_new_imagetool_uses_workspace_options(
         )
         data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
 
-        assert manager._data_recv([data], {}, show=False) == [True]
+        assert manager._data_ingress.receive_data([data], {}, show=False) == [True]
 
         tool = manager.get_imagetool(0)
         assert tool.slicer_area._options_model.colors.cmap.name == "viridis"
@@ -1222,7 +1229,7 @@ def test_manager_figure_generated_code_uses_workspace_stylesheets(
             dims=("x", "y"),
             name="data",
         )
-        assert manager._data_recv([data], {}, show=False) == [True]
+        assert manager._data_ingress.receive_data([data], {}, show=False) == [True]
 
         uid = manager.create_figure_from_targets((0,), show=False)
         if uid is None:
@@ -1270,8 +1277,6 @@ def test_open_multiple_files_preselects_default_loader_filter(
         _recent_loader_extensions_by_filter={},
         _recent_name_filter=None,
         effective_interactive_options=erlab.interactive.options.model,
-        _add_from_multiple_files=lambda *_args, **_kwargs: None,
-        open_multiple_files=lambda *_args, **_kwargs: None,
     )
     manager._preferred_name_filter = types.MethodType(
         ImageToolManager._preferred_name_filter, manager
@@ -1286,7 +1291,7 @@ def test_open_multiple_files_preselects_default_loader_filter(
         lambda *_args: valid_loaders,
     )
 
-    _ActionsController(manager).open_multiple_files([file_path])
+    manager_io._DataIngressController(manager).open_multiple_files([file_path])
 
     assert dialogs[-1].checked_name == example_filter
 
@@ -1360,7 +1365,7 @@ def test_manager_open_preselects_default_loader_filter(
         },
     )
 
-    _WorkspaceIOController(manager).open(native=False)
+    manager_io._DataIngressController(manager).open(native=False)
 
     assert selected_filters == [example_filter]
     assert directories == [default_directory]
@@ -1528,7 +1533,7 @@ def test_manager_file_open_uses_selected_dataset_variable(
         coords={"u": np.arange(4), "v": np.arange(5)},
         name="second",
     )
-    selection = erlab.interactive.imagetool.provenance.FileDataSelection(
+    selection = FileDataSelection(
         kind="dataset_variable",
         value="second",
     )
@@ -1563,7 +1568,7 @@ def test_manager_file_open_uses_selected_dataset_variable(
 
     with manager_context() as manager:
         manager.show()
-        manager._add_from_multiple_files(
+        manager._data_ingress.add_from_multiple_files(
             [],
             [file_path],
             [],
@@ -1617,8 +1622,9 @@ def test_manager_multifile_handler_selection_failure_branches(
             self.received: list[
                 tuple[tuple[typing.Any, ...], dict[str, typing.Any]]
             ] = []
+            self._data_ingress = types.SimpleNamespace(receive_data=self._receive_data)
 
-        def _data_recv(self, *args, **kwargs) -> None:
+        def _receive_data(self, *args, **kwargs) -> None:
             self.received.append((args, kwargs))
 
     class _MessageDialog:
@@ -1747,9 +1753,6 @@ def test_manager_open_loader_selection_branches(
             self._recent_directory = None
             self.effective_interactive_options = erlab.interactive.options.model
             self._select_loader_options = _select_loader_options
-            self._add_from_multiple_files = lambda *args, **kwargs: add_calls.append(
-                (args, kwargs)
-            )
 
         def _recent_or_default_directory(self) -> str | None:
             return self._recent_directory
@@ -1772,7 +1775,13 @@ def test_manager_open_loader_selection_branches(
         },
     )
 
-    _WorkspaceIOController(manager).open(native=False)
+    ingress = manager_io._DataIngressController(manager)
+    monkeypatch.setattr(
+        ingress,
+        "add_from_multiple_files",
+        lambda *args, **kwargs: add_calls.append((args, kwargs)),
+    )
+    ingress.open(native=False)
 
     if case == "loader_cancel":
         assert len(select_calls) == 1
@@ -1833,15 +1842,16 @@ def test_open_multiple_files_loader_selection_branches(
         select_calls.append((list(loaders), name_filter, list(sample_paths or ())))
         return select_result
 
-    def _retry_open_multiple_files(*_args, **_kwargs) -> None:
-        return None
-
     manager = types.SimpleNamespace(
         _recent_name_filter=None,
         _select_loader_options=_select_loader_options,
-        open_multiple_files=_retry_open_multiple_files,
-        _add_from_multiple_files=lambda loaded, queued, failed, func, kwargs, _: (
-            add_calls.append((loaded, queued, failed, func, kwargs))
+    )
+    ingress = manager_io._DataIngressController(manager)
+    monkeypatch.setattr(
+        ingress,
+        "add_from_multiple_files",
+        lambda loaded, queued, failed, func, kwargs, _: add_calls.append(
+            (loaded, queued, failed, func, kwargs)
         ),
     )
     monkeypatch.setattr(
@@ -1850,7 +1860,7 @@ def test_open_multiple_files_loader_selection_branches(
         lambda *_args: valid_loaders,
     )
 
-    _ActionsController(manager).open_multiple_files([file_path])
+    ingress.open_multiple_files([file_path])
 
     if case == "single_non_loader":
         assert select_calls == []
@@ -1923,7 +1933,7 @@ def test_manager_file_loads_with_loader_extensions(
         else:
 
             def _trigger_load():
-                return manager.open_multiple_files([file_path])
+                return manager._data_ingress.open_multiple_files([file_path])
 
         accept_dialog(_trigger_load, pre_call=_set_loader_extensions)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=10000)
@@ -1939,7 +1949,7 @@ def test_manager_file_loads_with_loader_extensions(
             slicer_area.reload()
         assert float(slicer_area._data["gui_extra"]) == 7.0
 
-        tree = manager._to_datatree()
+        tree = manager._workspace_controller.saving._to_datatree()
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
         accept_dialog(lambda: manager._from_datatree(tree))
@@ -2129,7 +2139,7 @@ def test_manager_child_imagetool_dask_badge(
             child_tool,
             0,
             show=False,
-            source_spec=erlab.interactive.imagetool.provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=True,
         )
         child_tool.slicer_area._auto_chunk()
@@ -2199,10 +2209,14 @@ def test_manager_child_imagetool_dask_badge(
                 QtCore.Qt.KeyboardModifier.NoModifier,
             )
 
-        delegate.eventFilter(view.viewport(), _mouse_move(dask_rect.center()))
-        assert (
-            view.viewport().cursor().shape() == QtCore.Qt.CursorShape.PointingHandCursor
+        requested_cursors: list[QtCore.Qt.CursorShape | None] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "set_widget_cursor",
+            lambda widget, shape: requested_cursors.append(shape),
         )
+        delegate.eventFilter(view.viewport(), _mouse_move(dask_rect.center()))
+        assert requested_cursors == [QtCore.Qt.CursorShape.PointingHandCursor]
 
         popup_positions: list[QtCore.QPoint] = []
         monkeypatch.setattr(child_tool._dask_menu, "popup", popup_positions.append)
@@ -2296,25 +2310,23 @@ def test_manager_badge_hit_testing_edge_paths(
                 QtCore.Qt.KeyboardModifier.NoModifier,
             )
 
-        delegate.eventFilter(view.viewport(), _mouse_move(dask_rect.center()))
-        assert (
-            view.viewport().cursor().shape() == QtCore.Qt.CursorShape.PointingHandCursor
+        requested_cursors: list[QtCore.Qt.CursorShape | None] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "set_widget_cursor",
+            lambda widget, shape: requested_cursors.append(shape),
         )
+        delegate.eventFilter(view.viewport(), _mouse_move(dask_rect.center()))
+        assert requested_cursors[-1] == QtCore.Qt.CursorShape.PointingHandCursor
 
         delegate.eventFilter(view.viewport(), _mouse_move(option.rect.center()))
-        assert (
-            view.viewport().cursor().shape() != QtCore.Qt.CursorShape.PointingHandCursor
-        )
+        assert requested_cursors[-1] is None
 
         delegate.eventFilter(view.viewport(), _mouse_move(QtCore.QPoint(-10, -10)))
-        assert (
-            view.viewport().cursor().shape() != QtCore.Qt.CursorShape.PointingHandCursor
-        )
+        assert requested_cursors[-1] is None
 
         delegate.eventFilter(view.viewport(), QtCore.QEvent(QtCore.QEvent.Type.Leave))
-        assert (
-            view.viewport().cursor().shape() != QtCore.Qt.CursorShape.PointingHandCursor
-        )
+        assert requested_cursors[-1] is None
         delegate.eventFilter(None, QtCore.QEvent(QtCore.QEvent.Type.Leave))
         delegate.eventFilter(None, _mouse_move(dask_rect.center()))
 

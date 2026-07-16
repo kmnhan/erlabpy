@@ -2,6 +2,21 @@
 
 from __future__ import annotations
 
+from erlab.interactive.imagetool._provenance._code import (
+    _SCRIPT_REPLAY_ALLOWED_BUILTINS,
+    _expression_receiver_code,
+    _validate_script_replay_code,
+)
+from erlab.interactive.imagetool._provenance._model import (
+    ConsoleCall,
+    ScriptInput,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    operation_from_console_call,
+    script,
+)
+from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+
 __all__ = ["ToolNamespace", "ToolsNamespace", "_ImageToolManagerJupyterConsole"]
 
 import ast
@@ -25,7 +40,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.utils
-from erlab.interactive.imagetool import _kspace_conversion, provenance
+from erlab.interactive.imagetool import _kspace_conversion
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -69,9 +84,9 @@ def _tool_data_name(index: int) -> str:
 
 
 def _dedupe_script_inputs(
-    inputs: Sequence[provenance.ScriptInput],
-) -> tuple[provenance.ScriptInput, ...]:
-    deduped: list[provenance.ScriptInput] = []
+    inputs: Sequence[ScriptInput],
+) -> tuple[ScriptInput, ...]:
+    deduped: list[ScriptInput] = []
     seen: set[str] = set()
     for script_input in inputs:
         if script_input.name in seen:
@@ -180,7 +195,7 @@ def _callable_operand(
         "era",
         "eri",
         "eplt",
-        *provenance._SCRIPT_REPLAY_ALLOWED_BUILTINS,
+        *_SCRIPT_REPLAY_ALLOWED_BUILTINS,
     }
     for global_name in sorted(global_names):
         if global_name in allowed_globals:
@@ -208,9 +223,7 @@ def _callable_operand(
 
     code_prelude = _dedupe_code_preludes(prelude, (source,))
     try:
-        provenance._validate_script_replay_code(
-            _script_code(code_prelude, "derived = data")
-        )
+        _validate_script_replay_code(_script_code(code_prelude, "derived = data"))
     except (TypeError, ValueError):
         return None
     return _ConsoleOperand(value, name, copyable=True, code_prelude=code_prelude)
@@ -220,11 +233,11 @@ def _callable_operand(
 class _ConsoleOperand:
     value: typing.Any
     code: str
-    script_inputs: tuple[provenance.ScriptInput, ...] = ()
+    script_inputs: tuple[ScriptInput, ...] = ()
     copyable: bool = True
     code_prelude: tuple[str, ...] = ()
     seed_expression: str | None = None
-    operations: tuple[provenance.ToolProvenanceOperation, ...] = ()
+    operations: tuple[ToolProvenanceOperation, ...] = ()
 
 
 def _literal_code(value: typing.Any) -> tuple[str, bool]:
@@ -277,7 +290,7 @@ def _literal_code(value: typing.Any) -> tuple[str, bool]:
 def _merge_operands(
     *operands: _ConsoleOperand,
 ) -> tuple[
-    tuple[provenance.ScriptInput, ...],
+    tuple[ScriptInput, ...],
     bool,
     tuple[str, ...],
 ]:
@@ -398,7 +411,7 @@ def _format_call_code(
     args: tuple[typing.Any, ...], kwargs: dict[str, typing.Any]
 ) -> tuple[
     str,
-    tuple[provenance.ScriptInput, ...],
+    tuple[ScriptInput, ...],
     tuple[typing.Any, ...],
     dict[str, typing.Any],
     bool,
@@ -422,19 +435,19 @@ def _format_call_code(
 
 
 def _structured_operation_from_call(
-    call: provenance.ConsoleCall,
-) -> provenance.ToolProvenanceOperation | None:
+    call: ConsoleCall,
+) -> ToolProvenanceOperation | None:
     with contextlib.suppress(Exception):
-        return provenance.operation_from_console_call(call)
+        return operation_from_console_call(call)
     return None
 
 
 def _structured_seed_and_operations(
     source: _ConsoleOperand,
-    operation: provenance.ToolProvenanceOperation | None,
+    operation: ToolProvenanceOperation | None,
 ) -> tuple[
     str | None,
-    tuple[provenance.ToolProvenanceOperation, ...],
+    tuple[ToolProvenanceOperation, ...],
 ]:
     if operation is None or (source.seed_expression is None and not source.copyable):
         return None, ()
@@ -443,7 +456,7 @@ def _structured_seed_and_operations(
         previous.statement_mutates_input for previous in source.operations
     ):
         seed_expression = (
-            f"{provenance._expression_receiver_code(seed_expression)}.copy(deep=False)"
+            f"{_expression_receiver_code(seed_expression)}.copy(deep=False)"
         )
     return seed_expression, (*source.operations, operation)
 
@@ -486,7 +499,7 @@ class _ConsoleAccessorProxy:
             call_prelude,
         ) = _format_call_code(args, kwargs)
         source_operand = self._owner._console_operand()
-        call = provenance.ConsoleCall(
+        call = ConsoleCall(
             func=func,
             accessor_path=path,
             args=raw_args,
@@ -566,7 +579,7 @@ class _ConsoleCoarsenProxy:
         expression: str,
         raw_args: tuple[typing.Any, ...],
         raw_kwargs: dict[str, typing.Any],
-        script_inputs: Sequence[provenance.ScriptInput],
+        script_inputs: Sequence[ScriptInput],
         *,
         copyable: bool,
         code_prelude: Sequence[str],
@@ -614,7 +627,7 @@ class _ConsoleCoarsenProxy:
                     script_input.name
                     for script_input in self._source_operand.script_inputs
                 }
-                call = provenance.ConsoleCall(
+                call = ConsoleCall(
                     dataarray_method="coarsen",
                     args=self._raw_args,
                     kwargs={**self._raw_kwargs, "_reducer": attr},
@@ -708,13 +721,13 @@ class _ConsoleModuleProxy(types.ModuleType):
             operation = None
             seed_expression = None
             operations: tuple[
-                provenance.ToolProvenanceOperation,
+                ToolProvenanceOperation,
                 ...,
             ] = ()
             if source_operand is not None:
                 source_inputs = source_operand.script_inputs
                 source_names = {script_input.name for script_input in source_inputs}
-                call = provenance.ConsoleCall(
+                call = ConsoleCall(
                     func=value,
                     args=call_args,
                     kwargs=call_kwargs,
@@ -821,18 +834,18 @@ class _ConsoleDataHandleBase:
 
     def _console_provenance_spec(
         self, *, active_name: str, label: str
-    ) -> provenance.ToolProvenanceSpec | None:
+    ) -> ToolProvenanceSpec | None:
         raise NotImplementedError
 
     def _wrap_console_result(
         self,
         value: typing.Any,
         expression: str,
-        script_inputs: Sequence[provenance.ScriptInput],
+        script_inputs: Sequence[ScriptInput],
         *,
         copyable: bool,
         code_prelude: Sequence[str] = (),
-        operations: Sequence[provenance.ToolProvenanceOperation] = (),
+        operations: Sequence[ToolProvenanceOperation] = (),
         seed_expression: str | None = None,
     ) -> typing.Any:
         if not isinstance(value, xr.DataArray):
@@ -1100,7 +1113,7 @@ class _ConsoleDataHandleBase:
                     copyable=copyable,
                     code_prelude=code_prelude,
                 )
-            call = provenance.ConsoleCall(
+            call = ConsoleCall(
                 func=data_attr,
                 dataarray_method=attr,
                 args=raw_args,
@@ -1288,7 +1301,7 @@ class ToolNamespace(_ConsoleDataHandleBase):
 
     def _script_input(
         self,
-    ) -> provenance.ScriptInput:
+    ) -> ScriptInput:
         label = self._console_label
         if self._wrapper.name:
             label += f": {self._wrapper.name}"
@@ -1298,11 +1311,12 @@ class ToolNamespace(_ConsoleDataHandleBase):
             if wrapper_provenance is not None
             else None
         )
-        return provenance.ScriptInput(
+        return ScriptInput(
             name=self._console_input_name,
             label=label,
             node_uid=self._wrapper.uid,
-            node_snapshot_token=self._wrapper.snapshot_token,
+            node_snapshot_token=self._wrapper.snapshot_token_for_role("displayed"),
+            data_role="displayed",
             provenance_spec=provenance_spec,
         )
 
@@ -1315,7 +1329,7 @@ class ToolNamespace(_ConsoleDataHandleBase):
 
     def _console_provenance_spec(
         self, *, active_name: str, label: str
-    ) -> provenance.ToolProvenanceSpec | None:
+    ) -> ToolProvenanceSpec | None:
         return self._wrapper.displayed_provenance_spec
 
     def __setitem__(self, key: typing.Any, value: typing.Any) -> None:
@@ -1335,8 +1349,8 @@ class ToolNamespace(_ConsoleDataHandleBase):
                 )
             ),
         )
-        provenance_spec = provenance.script(
-            provenance.ScriptCodeOperation(
+        provenance_spec = script(
+            ScriptCodeOperation(
                 label=f"Set {self._console_label} data item from console",
                 code=code,
                 copyable=copyable,
@@ -1356,6 +1370,7 @@ class ToolNamespace(_ConsoleDataHandleBase):
             )
             self._wrapper.set_detached_provenance(provenance_spec)
             slicer_area = self.tool.slicer_area
+            slicer_area.sigSourceDataChanged.emit()
             slicer_area.sigSourceDataReplaced.emit(
                 slicer_area._tool_source_parent_data()
             )
@@ -1626,11 +1641,11 @@ class _DerivedDataNamespace(_ConsoleDataHandleBase):
         tools: ToolsNamespace | None,
         data: xr.DataArray,
         expression: str,
-        script_inputs: Sequence[provenance.ScriptInput],
+        script_inputs: Sequence[ScriptInput],
         *,
         copyable: bool,
         code_prelude: Sequence[str] = (),
-        operations: Sequence[provenance.ToolProvenanceOperation] = (),
+        operations: Sequence[ToolProvenanceOperation] = (),
         seed_expression: str | None = None,
     ) -> None:
         self._tools_ref = weakref.ref(tools) if tools is not None else None
@@ -1682,7 +1697,7 @@ class _DerivedDataNamespace(_ConsoleDataHandleBase):
             self.data,
             self._console_name,
             (
-                provenance.ScriptInput(
+                ScriptInput(
                     name=self._console_name,
                     label=f"console variable {self._console_name!r}",
                     provenance_spec=provenance_payload,
@@ -1693,7 +1708,7 @@ class _DerivedDataNamespace(_ConsoleDataHandleBase):
 
     def _console_provenance_spec(
         self, *, active_name: str, label: str
-    ) -> provenance.ToolProvenanceSpec | None:
+    ) -> ToolProvenanceSpec | None:
         if not self._script_inputs:
             return None
         if self._operations and self._seed_expression is not None:
@@ -1701,7 +1716,7 @@ class _DerivedDataNamespace(_ConsoleDataHandleBase):
                 self._code_prelude,
                 f"{active_name} = {self._seed_expression}",
             )
-            return provenance.script(
+            return script(
                 *self._operations,
                 start_label="Run ImageTool manager console code",
                 seed_code=seed_code,
@@ -1709,8 +1724,8 @@ class _DerivedDataNamespace(_ConsoleDataHandleBase):
                 script_inputs=self._script_inputs,
             )
         code = _script_code(self._code_prelude, f"{active_name} = {self._expression}")
-        return provenance.script(
-            provenance.ScriptCodeOperation(
+        return script(
+            ScriptCodeOperation(
                 label=label,
                 code=code,
                 copyable=self._copyable,
@@ -1934,7 +1949,7 @@ class ToolsNamespace:
     def _show_dataarray_with_provenance(
         self,
         data: xr.DataArray,
-        provenance_spec: provenance.ToolProvenanceSpec,
+        provenance_spec: ToolProvenanceSpec,
         **kwargs,
     ) -> bool:
         display_kwargs = dict(kwargs)

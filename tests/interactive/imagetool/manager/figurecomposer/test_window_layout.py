@@ -1,21 +1,106 @@
-# ruff: noqa: F403, F405
+import contextlib
+import json
+import sys
+import types
+import typing
+import warnings
+from collections.abc import Callable
+from pathlib import Path
 
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import numpy as np
+import pytest
+import xarray as xr
+from matplotlib import style as mpl_style
+from matplotlib.figure import Figure
+from qtpy import QtCore, QtGui, QtWidgets
+
+import erlab.interactive._figurecomposer._code as figurecomposer_code
+import erlab.interactive._figurecomposer._defaults as figurecomposer_defaults
+import erlab.interactive._figurecomposer._model._gridspec as figurecomposer_gridspec
+import erlab.interactive._figurecomposer._provenance as figurecomposer_provenance
+import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
+import erlab.interactive._figurecomposer._text as figurecomposer_text
+import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
 import erlab.interactive._figurecomposer._ui._axes_widgets as axes_widgets
 import erlab.interactive._figurecomposer._ui._color_widgets as color_widgets
+import erlab.interactive._figurecomposer._ui._editor_controls as _editor_controls
 import erlab.interactive._figurecomposer._ui._figure_window as figure_window_ui
+import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
+import erlab.interactive._stylesheets
+from erlab.interactive._figurecomposer import (
+    FigureAxesSelectionState,
+    FigureComposerTool,
+    FigureDataSelectionState,
+    FigureExportState,
+    FigureGridSpecAxesState,
+    FigureGridSpecGridState,
+    FigureGridSpecLayoutState,
+    FigureGridSpecSpanState,
+    FigureMethodFamily,
+    FigureOperationKind,
+    FigureOperationState,
+    FigurePlotSlicesPanelStyleState,
+    FigureRecipeState,
+    FigureSourceState,
+    FigureSubplotsState,
+)
+from erlab.interactive._figurecomposer import (
+    _subplot_adjust as figurecomposer_subplot_adjust,
+)
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _render as plot_slices_render,
 )
 from erlab.interactive._figurecomposer._ui import (
+    _operation_panel as figurecomposer_operation_panel,
+)
+from erlab.interactive._figurecomposer._ui import (
     _reorder_list as figurecomposer_reorder_list,
+)
+from erlab.interactive._figurecomposer._ui import (
+    _toolbar_dialogs as figurecomposer_toolbar_dialogs,
 )
 from erlab.interactive._figurecomposer._ui._operation_editor import (
     _FigureComposerStepEditorPage,
     _FigureComposerStepEditorScroll,
 )
+from erlab.interactive._figurecomposer._ui._toolbar_dialogs import (
+    _connect_panel_editor_signal,
+)
+from erlab.interactive._options import options
+from erlab.interactive._options.schema import FigureOptions
+from erlab.interactive.imagetool.manager._workspace import (
+    _controller as workspace_controller,
+)
 
-from ._common import *
+from ._common import (
+    _COLLAPSED_LAYOUT_WARNING,
+    _activate_combo_index,
+    _activate_combo_text,
+    _assert_figure_composer_provenance_replayable,
+    _assert_serialized_plot_restores_exactly,
+    _clear_clipboard,
+    _click_tick_params_segment,
+    _custom_order_step,
+    _drag_widget,
+    _expected_layout_from_rcparams,
+    _figure_composer_image_source,
+    _figure_composer_line_slice_source,
+    _figure_composer_profile_source,
+    _figure_composer_replay_source_state,
+    _finish_tick_params_edit,
+    _method_operations,
+    _operation_section_buttons,
+    _operation_source_status_label,
+    _operation_status_codes,
+    _photon_energy_source,
+    _select_operation_rows,
+    _selected_operation_rows,
+    _send_mouse_move,
+    _set_figure_stylesheets,
+)
 
 
 def _operation_context_action(
@@ -1267,7 +1352,7 @@ def test_figure_composer_managed_display_window_configures_save_shortcut(
         lambda *_args, **_kwargs: None,
     )
     save_calls: list[bool] = []
-    controller = object.__new__(manager_workspace_io._WorkspaceIOController)
+    controller = object.__new__(workspace_controller._WorkspaceController)
     controller._manager = types.SimpleNamespace(
         save=lambda *, native=True: save_calls.append(native) or True
     )
@@ -1357,7 +1442,7 @@ def test_workspace_modified_state_updates_figure_display_window(qtbot) -> None:
         ),
     )
     node = types.SimpleNamespace(window=primary_window, tool_window=tool)
-    controller = object.__new__(manager_workspace_io._WorkspaceIOController)
+    controller = object.__new__(workspace_controller._WorkspaceController)
     controller._manager = types.SimpleNamespace(
         _tool_graph=types.SimpleNamespace(nodes={"figure_uid": node})
     )
@@ -8612,11 +8697,8 @@ def test_figure_composer_retired_editor_widgets_drain_after_popup(
     )
     monkeypatch.setattr(tool.operation_editor, "_queue_retired_drain", lambda: None)
 
-    tool.operation_editor.request_update_rebuild(slice_values=(0.0, 1.0))
-    qtbot.waitUntil(
-        lambda: old_page in tool.operation_editor._retired_widgets,
-        timeout=1000,
-    )
+    tool._update_operation_editor()
+    assert old_page in tool.operation_editor._retired_widgets
     assert erlab.interactive.utils.qt_is_valid(old_page)
     active_popup[0] = QtWidgets.QMenu(tool)
 
@@ -8627,10 +8709,11 @@ def test_figure_composer_retired_editor_widgets_drain_after_popup(
     active_popup[0] = None
     tool.operation_editor._drain_retired_widgets()
     assert old_page not in tool.operation_editor._retired_widgets
-    qtbot.waitUntil(
-        lambda: not erlab.interactive.utils.qt_is_valid(old_page),
-        timeout=1000,
+    QtCore.QCoreApplication.sendPostedEvents(
+        old_page,
+        QtCore.QEvent.Type.DeferredDelete,
     )
+    assert not erlab.interactive.utils.qt_is_valid(old_page)
 
 
 def test_figure_composer_retired_editor_control_signal_is_ignored(

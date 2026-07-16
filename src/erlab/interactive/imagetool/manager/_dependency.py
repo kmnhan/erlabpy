@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from erlab.interactive.imagetool._provenance._model import (
+    ScriptInputDependencyRef,
+    script_input_dependency_refs,
+)
+
 __all__ = ["_DependencyStatus", "_ManagerDependencyTracker"]
 
 import typing
-
-from erlab.interactive.imagetool import provenance
 
 if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
@@ -24,14 +27,14 @@ class _ManagerDependencyTracker:
             tuple[
                 int,
                 tuple[
-                    provenance.ScriptInputDependencyRef,
+                    ScriptInputDependencyRef,
                     ...,
                 ],
             ],
         ] = {}
         self._pending_source_refresh_targets: dict[str, set[str]] = {}
 
-    def refs_for_uid(self, uid: str) -> tuple[provenance.ScriptInputDependencyRef, ...]:
+    def refs_for_uid(self, uid: str) -> tuple[ScriptInputDependencyRef, ...]:
         node = self._graph.nodes.get(uid)
         if node is None:
             self._ref_cache.pop(uid, None)
@@ -49,7 +52,7 @@ class _ManagerDependencyTracker:
         cached = self._ref_cache.get(uid)
         if cached is not None and cached[0] == spec_id:
             return cached[1]
-        refs = provenance.script_input_dependency_refs(spec)
+        refs = script_input_dependency_refs(spec)
         self._ref_cache[uid] = (spec_id, refs)
         return refs
 
@@ -65,7 +68,8 @@ class _ManagerDependencyTracker:
                 return "missing"
             if (
                 ref.node_snapshot_token is not None
-                and parent.snapshot_token != ref.node_snapshot_token
+                and parent.snapshot_token_for_role(ref.data_role)
+                != ref.node_snapshot_token
             ):
                 changed = True
         return "changed" if changed else "current"

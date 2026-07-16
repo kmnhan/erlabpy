@@ -1,7 +1,7 @@
 __all__ = ["itool"]
 
 import operator
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 
 import numpy.typing as npt
 import xarray as xr
@@ -15,7 +15,7 @@ from erlab.interactive.imagetool.viewer_state import (
 
 
 def itool(
-    data: Collection[xr.DataArray | npt.NDArray]
+    data: Sequence[xr.DataArray | npt.NDArray]
     | xr.DataArray
     | npt.NDArray
     | xr.Dataset
@@ -192,6 +192,12 @@ def itool(
                     index=replace, data=data_parsed, target=manager_target
                 )
             else:
+                load_func = kwargs.get("load_func")
+                if isinstance(load_func, tuple | list) and len(load_func) == 2:
+                    kwargs.setdefault(
+                        "load_selections",
+                        tuple(prepared.selection for prepared in selected_data),
+                    )
                 erlab.interactive.imagetool.manager.show_in_manager(
                     data_parsed,
                     link=link,

@@ -26,7 +26,6 @@ import erlab.interactive.imagetool.manager._desktop as manager_desktop
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._updater_gui as manager_updater_gui
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
-import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 from erlab.interactive.imagetool.manager import load_in_manager
@@ -36,9 +35,15 @@ from erlab.interactive.imagetool.manager._server import (
     _recv_multipart,
 )
 from erlab.interactive.imagetool.manager._widgets import _WorkspacePropertiesState
+from erlab.interactive.imagetool.manager._workspace import (
+    _controller as workspace_controller,
+)
 from erlab.interactive.ptable import PeriodicTableWindow
-
-from .helpers import action_map_by_object_name, menu_map_by_object_name
+from tests.interactive.imagetool.manager.helpers import (
+    action_map_by_object_name,
+    adopt_workspace_path,
+    menu_map_by_object_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -428,7 +433,7 @@ def test_manager_workspace_properties_action_uses_current_state(
             return int(QtWidgets.QDialog.DialogCode.Accepted)
 
     monkeypatch.setattr(
-        manager_workspace_io,
+        workspace_controller,
         "_WorkspacePropertiesDialog",
         _FakeWorkspacePropertiesDialog,
     )
@@ -442,7 +447,7 @@ def test_manager_workspace_properties_action_uses_current_state(
 
         workspace_path = tmp_path / "workspace.itws"
         workspace_path.touch()
-        manager._adopt_workspace_path(workspace_path)
+        adopt_workspace_path(manager, workspace_path)
 
         manager.workspace_properties_action.trigger()
         assert dialog_calls[-1][0] == str(workspace_path.resolve())
@@ -1208,7 +1213,9 @@ def test_manager_explorer_launcher_reuses_instance_and_opens_directory_tabs(
         qtbot.wait_until(explorer.isVisible)
         assert manager.explorer is explorer
 
-        manager.open_multiple_files([pathlib.Path(dropped_dir)], try_workspace=True)
+        manager._data_ingress.open_multiple_files(
+            [pathlib.Path(dropped_dir)], try_workspace=True
+        )
 
         qtbot.wait_until(lambda: explorer.tab_widget.count() == 2)
         assert explorer.current_explorer is not None

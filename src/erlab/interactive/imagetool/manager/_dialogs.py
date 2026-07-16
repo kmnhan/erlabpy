@@ -524,7 +524,7 @@ class _ConcatDialog(QtWidgets.QDialog):
                         selected,
                         operation_label="Concatenate selected ImageTools",
                         operation_code=operation_code,
-                        use_displayed_provenance=False,
+                        data_role="source",
                     )
                 else:
                     replacement_node = manager._node_for_target(replacement_target)
@@ -535,7 +535,7 @@ class _ConcatDialog(QtWidgets.QDialog):
                             operation_label="Concatenate selected ImageTools",
                             operation_code=operation_code,
                             detached_input_uid=replacement_node.uid,
-                            use_displayed_provenance=False,
+                            data_role="source",
                         ),
                         propagate_descendants=True,
                         preserve_filter=False,
@@ -1504,19 +1504,12 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
         self,
         manager: ImageToolManager,
         tree: xarray.DataTree,
-        mode: typing.Literal["save", "load"],
         root_keys: Iterable[str] | None = None,
     ) -> None:
         super().__init__(manager)
         self._manager = weakref.ref(manager)
         self._root_keys = None if root_keys is None else tuple(root_keys)
-
-        self._saving: bool = mode == "save"
-
-        if self._saving:
-            self.setWindowTitle("Select Tools to Save")
-        else:
-            self.setWindowTitle("Select Tools to Add")
+        self.setWindowTitle("Select Tools to Add")
 
         layout = QtWidgets.QHBoxLayout(self)
 
@@ -1693,11 +1686,11 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
                 node = tree[key]
                 if not isinstance(node, xr.DataTree):
                     continue
-                name = str(key) if self._saving else str(start + n_items)
+                name = str(start + n_items)
                 item = self._populate_tree_item(root, node, key=key, root_name=name)
                 self._tree_widget.addTopLevelItem(item)
                 n_items += 1
-            if not self._saving and "figures" in tree:
+            if "figures" in tree:
                 figures = typing.cast("xarray.DataTree", tree["figures"])
                 for figure_key, figure_node in figures.items():
                     if isinstance(figure_node, xr.DataTree):
@@ -1763,10 +1756,8 @@ class _ChooseFromWorkspaceManifestDialog(QtWidgets.QDialog):
         self,
         manager: ImageToolManager,
         manifest: Mapping[str, typing.Any],
-        mode: typing.Literal["load"] = "load",
     ) -> None:
         super().__init__(manager)
-        del mode
         self._manager = weakref.ref(manager)
         self.setWindowTitle("Select Tools to Add")
 

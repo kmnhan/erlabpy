@@ -18,7 +18,6 @@ import erlab.interactive.imagetool.manager._details_panel as manager_details_pan
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
-import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.utils
 from erlab.interactive._figurecomposer import (
@@ -28,6 +27,7 @@ from erlab.interactive._figurecomposer import (
     FigureRecipeState,
     FigureSourceState,
     FigureSubplotsState,
+    _seeding,
 )
 from erlab.interactive._figurecomposer._exceptions import (
     FigureComposerPlotSlicesSelectionError,
@@ -36,9 +36,29 @@ from erlab.interactive._figurecomposer._model._document import FigureSourceAddRe
 from erlab.interactive._widgets import _CenteredIconToolButton
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
-from erlab.interactive.imagetool import _kspace_conversion, itool, provenance
+from erlab.interactive.imagetool import _kspace_conversion, itool
 from erlab.interactive.imagetool._load_source import _LoadSourceDetails
-from erlab.interactive.imagetool.manager import _figure_dialogs, fetch, replace_data
+from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
+    ScriptInput,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    full_data,
+    public_data,
+    selection,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    AssignAttrsOperation,
+    ImageDerivativeOperation,
+    ImageToolSelectionSourceBinding,
+    IselOperation,
+    NormalizeOperation,
+    RenameOperation,
+    RestoreNonuniformDimsOperation,
+    ScriptCodeOperation,
+    TransposeOperation,
+)
+from erlab.interactive.imagetool.manager import fetch, replace_data
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._dialogs import (
     _batch_operation_dialog_classes,
@@ -46,6 +66,7 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _ConcatDialog,
     _RenameDialog,
 )
+from erlab.interactive.imagetool.manager._figurecomposer import _dialogs
 from erlab.interactive.imagetool.manager._modelview import (
     _TOOL_TYPE_ROLE,
     _ImageToolWrapperItemDelegate,
@@ -216,11 +237,11 @@ def test_managed_window_actions_reveal_tree_and_figure_rows(
         assert not manager.reveal_nodes(("missing",))
 
         figure_tool.reveal_in_manager_action.trigger()
-        figure_pane = manager._figure_controller.pane
+        figure_pane = manager._figure_collection.pane
         assert figure_pane is not None
         assert manager.left_tabs.currentWidget() is figure_pane
         selected_figure_uids = {
-            manager._figure_controller.uid_from_item(item)
+            manager._figure_collection.uid_from_item(item)
             for item in figure_pane.list_widget.selectedItems()
         }
         assert selected_figure_uids == {figure_uid}
@@ -429,11 +450,11 @@ def _select_batch_operation(
 
 
 class _BatchTransformStub:
-    operation_types = (provenance.AssignAttrsOperation,)
+    operation_types = (AssignAttrsOperation,)
 
     def __init__(
         self,
-        operations: list[provenance.ToolProvenanceOperation] | None = None,
+        operations: list[ToolProvenanceOperation] | None = None,
         *,
         source_error: Exception | None = None,
         public_source: bool = False,
@@ -443,39 +464,37 @@ class _BatchTransformStub:
         self._public_source = public_source
         self.keep_colors = False
 
-    def source_operations(self) -> list[provenance.ToolProvenanceOperation]:
+    def source_operations(self) -> list[ToolProvenanceOperation]:
         if self._source_error is not None:
             raise self._source_error
         if self._operations is not None:
             return list(self._operations)
-        return [provenance.AssignAttrsOperation(attrs={"batch": True})]
+        return [AssignAttrsOperation(attrs={"batch": True})]
 
     def source_spec_for_data(
         self,
         data: xr.DataArray,
         new_name: str | None = None,
-    ) -> provenance.ToolProvenanceSpec:
+    ) -> ToolProvenanceSpec:
         del data, new_name
-        builder = (
-            provenance.public_data if self._public_source else provenance.full_data
-        )
+        builder = public_data if self._public_source else full_data
         return builder(*self.source_operations())
 
     def _detached_provenance_spec(
         self,
-        parent_provenance: provenance.ToolProvenanceSpec | None,
-        source_spec: provenance.ToolProvenanceSpec,
+        parent_provenance: ToolProvenanceSpec | None,
+        source_spec: ToolProvenanceSpec,
         new_name: str,
-    ) -> provenance.ToolProvenanceSpec:
+    ) -> ToolProvenanceSpec:
         del parent_provenance, new_name
         return source_spec
 
     def _compose_transform_provenance(
         self,
-        base_spec: provenance.ToolProvenanceSpec | None,
-        source_spec: provenance.ToolProvenanceSpec,
+        base_spec: ToolProvenanceSpec | None,
+        source_spec: ToolProvenanceSpec,
         new_name: str,
-    ) -> provenance.ToolProvenanceSpec:
+    ) -> ToolProvenanceSpec:
         del base_spec, new_name
         return source_spec
 
@@ -489,15 +508,15 @@ class _BatchTransformStub:
 
 
 class _BatchFilterStub:
-    operation_types = (provenance.NormalizeOperation,)
+    operation_types = (NormalizeOperation,)
 
     def __init__(
         self,
-        operation: provenance.ToolProvenanceOperation | None,
+        operation: ToolProvenanceOperation | None,
     ) -> None:
         self._operation = operation
 
-    def filter_operation(self) -> provenance.ToolProvenanceOperation | None:
+    def filter_operation(self) -> ToolProvenanceOperation | None:
         return self._operation
 
 
@@ -516,7 +535,7 @@ def test_batch_operation_metadata_matches_launcher() -> None:
         for operation_type in dialog_cls.operation_types
         if not operation_type.batch_available
     ] == []
-    assert provenance.RestoreNonuniformDimsOperation.batch_available
+    assert RestoreNonuniformDimsOperation.batch_available
 
 
 def test_batch_dialog_defensive_paths_and_launch(
@@ -748,13 +767,13 @@ def test_details_panel_script_input_labels_omit_redundant_history() -> None:
 
     assert (
         controller._script_input_row_label(
-            provenance.ScriptInput(name="source"), include_history=False
+            ScriptInput(name="source"), include_history=False
         )
         == "Use source"
     )
     assert (
         controller._script_input_row_label(
-            provenance.ScriptInput(name="source", node_uid="missing"),
+            ScriptInput(name="source", node_uid="missing"),
             include_history=True,
         )
         == "Missing source for source"
@@ -869,22 +888,20 @@ def test_batch_action_transform_error_paths(
             "replace",
         )
         assert not manager.apply_batch_transform_dialog(
-            _BatchTransformStub([provenance.NormalizeOperation(dims=("x",))]),
+            _BatchTransformStub([NormalizeOperation(dims=("x",))]),
             "replace",
         )
 
         class _ScriptTransformStub(_BatchTransformStub):
-            operation_types = (provenance.ScriptCodeOperation,)
+            operation_types = (ScriptCodeOperation,)
 
         assert not manager.apply_batch_transform_dialog(
-            _ScriptTransformStub(
-                [provenance.ScriptCodeOperation(label="Custom", code=None)]
-            ),
+            _ScriptTransformStub([ScriptCodeOperation(label="Custom", code=None)]),
             "replace",
         )
 
-        manager._node_for_target(0).set_source_binding(provenance.full_data())
-        manager._node_for_target(1).set_detached_provenance(provenance.full_data())
+        manager._node_for_target(0).set_source_binding(full_data())
+        manager._node_for_target(1).set_detached_provenance(full_data())
         assert manager.apply_batch_transform_dialog(
             _BatchTransformStub(public_source=True),
             "replace",
@@ -948,7 +965,7 @@ def test_batch_transform_memory_preflight_runs_before_processing(
             self,
             data: xr.DataArray,
             new_name: str | None = None,
-        ) -> provenance.ToolProvenanceSpec:
+        ) -> ToolProvenanceSpec:
             self.source_spec_calls += 1
             return super().source_spec_for_data(data, new_name)
 
@@ -996,13 +1013,13 @@ def test_batch_filter_error_paths(
         select_tools(manager, [0, 1])
 
         class _ScriptFilterStub(_BatchFilterStub):
-            operation_types = (provenance.ScriptCodeOperation,)
+            operation_types = (ScriptCodeOperation,)
 
         assert not manager.apply_batch_filter_dialog(
-            _ScriptFilterStub(provenance.ScriptCodeOperation(label="Custom", code=None))
+            _ScriptFilterStub(ScriptCodeOperation(label="Custom", code=None))
         )
         assert not manager.apply_batch_filter_dialog(
-            _BatchFilterStub(provenance.NormalizeOperation(dims=("missing",)))
+            _BatchFilterStub(NormalizeOperation(dims=("missing",)))
         )
 
         real_get_imagetool = manager.get_imagetool
@@ -1017,7 +1034,7 @@ def test_batch_filter_error_paths(
 
         monkeypatch.setattr(manager, "get_imagetool", _raise_during_commit)
         assert not manager.apply_batch_filter_dialog(
-            _BatchFilterStub(provenance.NormalizeOperation(dims=("x",)))
+            _BatchFilterStub(NormalizeOperation(dims=("x",)))
         )
         assert len(messages) >= 3
 
@@ -1245,8 +1262,10 @@ def test_batch_action_counts_pending_memory_imagetools_without_materializing(
             tool.hide()
 
         workspace_path = tmp_path / "pending-batch-targets.itws"
-        manager._save_workspace_document(workspace_path, force_full=True)
-        assert manager._load_workspace_file(
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path, replace=True, associate=True, mark_dirty=False, select=False
         )
         wrappers = [manager._tool_graph.root_wrappers[index] for index in range(2)]
@@ -1458,7 +1477,7 @@ def test_batch_filter_applies_in_place_only(
             operation = manager.get_imagetool(
                 index
             ).slicer_area._accepted_filter_provenance_operation
-            assert isinstance(operation, provenance.NormalizeOperation)
+            assert isinstance(operation, NormalizeOperation)
 
 
 def test_batch_transform_preflight_failure_leaves_all_targets_unchanged(
@@ -1637,9 +1656,7 @@ def test_manager_metadata_full_code_generated_only_when_copied(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         wrapper = manager._tool_graph.root_wrappers[0]
         wrapper.set_detached_provenance(
-            provenance.full_data(
-                provenance.RenameOperation(name="renamed")
-            ).to_replay_spec()
+            full_data(RenameOperation(name="renamed")).to_replay_spec()
         )
 
         monkeypatch.setattr(
@@ -2529,7 +2546,7 @@ def test_manager_notes_editor_actions(
         itool(test_data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         wrapper = manager._tool_graph.root_wrappers[0]
-        manager._mark_workspace_clean()
+        manager._workspace_controller._mark_workspace_clean()
 
         select_tools(manager, [0])
         manager._update_info()
@@ -3170,7 +3187,7 @@ def test_shutdown_remove_all_tools_skips_teardown_ui_refresh(
             lambda _uid: calls.append("childtool_removed"),
         )
         monkeypatch.setattr(
-            manager._figure_controller,
+            manager._figure_collection,
             "sync",
             lambda **_kwargs: calls.append("figures"),
         )
@@ -3181,7 +3198,7 @@ def test_shutdown_remove_all_tools_skips_teardown_ui_refresh(
             lambda _uid: calls.append("dependents"),
         )
         monkeypatch.setattr(
-            manager,
+            manager._figure_workflows,
             "_refresh_figure_source_controls",
             lambda: calls.append("source_controls"),
         )
@@ -3233,10 +3250,14 @@ def test_manager_append_reports_post_alias_plot_slices_error(
 
         errors: list[FigureComposerPlotSlicesSelectionError] = []
         monkeypatch.setattr(
-            manager, "_figure_operations_from_image_targets", image_operations
+            manager._figure_workflows,
+            "_figure_operations_from_image_targets",
+            image_operations,
         )
         monkeypatch.setattr(
-            manager, "_show_figure_plot_slices_selection_error", errors.append
+            manager._figure_workflows,
+            "_show_figure_plot_slices_selection_error",
+            errors.append,
         )
 
         assert not manager.append_figure_from_targets(
@@ -3302,9 +3323,7 @@ def test_manager_append_reuses_short_axes_id_selection_for_all_operations() -> N
     )
     selection = FigureAxesSelectionState(axes_ids=("only",))
 
-    mapped = manager_mainwindow.ImageToolManager._figure_operations_with_append_axes(
-        operations, selection
-    )
+    mapped = _seeding._operations_with_append_axes(operations, selection)
 
     assert [operation.axes for operation in mapped] == [selection, selection]
 
@@ -3331,7 +3350,7 @@ def test_manager_figure_source_picker_skips_stale_rows_and_deduplicates_targets(
                     "root_indices_for_workspace",
                     lambda: (999, 0),
                 )
-                dialog = _figure_dialogs._FigureSourcePickerDialog(manager)
+                dialog = _dialogs._FigureSourcePickerDialog(manager)
                 qtbot.addWidget(dialog)
                 assert dialog.tree.topLevelItemCount() == 1
                 root_item = dialog.tree.topLevelItem(0)
@@ -3340,8 +3359,10 @@ def test_manager_figure_source_picker_skips_stale_rows_and_deduplicates_targets(
         finally:
             root._childtool_indices[:] = original_children
 
-        assert manager._figure_source_uid_for_target("missing") is None
-        assert manager._figure_imagetool_targets(
+        assert (
+            manager._figure_workflows._figure_source_uid_for_target("missing") is None
+        )
+        assert manager._figure_workflows._figure_imagetool_targets(
             (0, root.uid, "missing", figure_uid)
         ) == (0,)
 
@@ -3351,7 +3372,9 @@ def test_manager_figure_source_picker_skips_stale_rows_and_deduplicates_targets(
                 "_selected_imagetool_targets",
                 lambda: (0, root.uid, "missing", figure_uid),
             )
-            assert manager._selected_figure_source_uids() == (root.uid,)
+            assert manager._figure_workflows._selected_figure_source_uids() == (
+                root.uid,
+            )
 
 
 def test_remove_child_imagetool_remove_action(
@@ -3732,7 +3755,11 @@ def test_manager_reload_selected_preserves_manual_root_name(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -3752,7 +3779,7 @@ def test_manager_reload_selected_preserves_manual_root_name(
             == "0: manual root name (scan)"
         )
         assert (
-            manager_workspace_io._strip_workspace_modified_placeholder(
+            manager_widgets._strip_workspace_modified_placeholder(
                 root_tool.windowTitle()
             )
             == "0: manual root name (scan)"
@@ -3771,7 +3798,7 @@ def test_manager_reload_selected_preserves_manual_root_name(
 
         assert manager.name_of_imagetool(0) == "manual root name"
         assert (
-            manager_workspace_io._strip_workspace_modified_placeholder(
+            manager_widgets._strip_workspace_modified_placeholder(
                 root_tool.windowTitle()
             )
             == "0: manual root name (scan)"
@@ -3799,7 +3826,11 @@ def test_manager_file_suffix_does_not_seed_unnamed_root_name(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -3810,7 +3841,7 @@ def test_manager_file_suffix_does_not_seed_unnamed_root_name(
         assert root_index.data(QtCore.Qt.ItemDataRole.EditRole) == ""
         assert root_index.data(QtCore.Qt.ItemDataRole.DisplayRole) == "0 (scan)"
         assert (
-            manager_workspace_io._strip_workspace_modified_placeholder(
+            manager_widgets._strip_workspace_modified_placeholder(
                 manager.get_imagetool(0).windowTitle()
             )
             == "0 (scan)"
@@ -3824,7 +3855,7 @@ def test_manager_rename_updates_accepted_filter_data(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    operation = provenance.NormalizeOperation(
+    operation = NormalizeOperation(
         dims=("alpha",),
         mode="min",
     )
@@ -3870,7 +3901,11 @@ def test_manager_reload_selected_preserves_manual_child_imagetool_name(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -3880,7 +3915,7 @@ def test_manager_reload_selected_preserves_manual_child_imagetool_name(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=False,
         )
 
@@ -3899,7 +3934,7 @@ def test_manager_reload_selected_preserves_manual_child_imagetool_name(
             child_index.data(QtCore.Qt.ItemDataRole.DisplayRole) == "manual child name"
         )
         assert (
-            manager_workspace_io._strip_workspace_modified_placeholder(
+            manager_widgets._strip_workspace_modified_placeholder(
                 child_tool.windowTitle()
             )
             == "manual child name"
@@ -3929,7 +3964,7 @@ def test_manager_reload_selected_preserves_manual_child_imagetool_name(
         assert child_node.source_state == "fresh"
         assert child_node.name == "manual child name"
         assert (
-            manager_workspace_io._strip_workspace_modified_placeholder(
+            manager_widgets._strip_workspace_modified_placeholder(
                 child_tool.windowTitle()
             )
             == "manual child name"
@@ -3963,7 +3998,11 @@ def test_managed_child_imagetool_file_menu_reload_refreshes_file_parent(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -3973,7 +4012,7 @@ def test_managed_child_imagetool_file_menu_reload_refreshes_file_parent(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=False,
         )
 
@@ -4050,7 +4089,11 @@ def test_managed_child_imagetool_file_menu_reload_uses_own_file_source(
             manager=False,
             execute=False,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
         child_uid = manager.add_imagetool_child(child_tool, 0, show=False)
@@ -4098,15 +4141,21 @@ def test_manager_workspace_reload_preserves_manual_root_name(
             source,
             manager=True,
             file_path=source_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         manager.rename_imagetool(0, "saved manual root")
         workspace_path = tmp_path / "manual-root-name.itws"
-        manager._save_workspace_document(workspace_path, force_full=True)
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
 
-        assert manager._load_workspace_file(
+        assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,
             associate=True,
@@ -4155,7 +4204,11 @@ def test_manager_workspace_reload_preserves_manual_child_imagetool_name(
             source,
             manager=True,
             file_path=source_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -4165,15 +4218,17 @@ def test_manager_workspace_reload_preserves_manual_child_imagetool_name(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=False,
         )
         manager._child_node(child_uid).name = "saved manual child"
 
         workspace_path = tmp_path / "manual-child-name.itws"
-        manager._save_workspace_document(workspace_path, force_full=True)
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
 
-        assert manager._load_workspace_file(
+        assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,
             associate=True,
@@ -4233,7 +4288,7 @@ def test_manager_notes_persist_workspace_roundtrip(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             note="child note",
         )
         figure_uid = manager.add_figuretool(
@@ -4243,9 +4298,11 @@ def test_manager_notes_persist_workspace_roundtrip(
         )
 
         workspace_path = tmp_path / "notes.itws"
-        manager._save_workspace_document(workspace_path, force_full=True)
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
 
-        assert manager._load_workspace_file(
+        assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,
             associate=True,
@@ -4285,7 +4342,7 @@ def test_manager_notes_preserved_by_duplicate_and_promote(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             note="child note",
         )
 
@@ -4347,7 +4404,11 @@ def test_manager_reload_selected_child_tool_refreshes_from_file_parent(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -4400,7 +4461,11 @@ def test_managed_child_tool_file_menu_reload_refreshes_file_parent(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -4462,13 +4527,15 @@ def test_managed_nested_child_tool_file_menu_reload_refreshes_file_ancestor(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        child_source_spec = provenance.selection(
-            provenance.IselOperation(kwargs={"alpha": slice(0, 4)})
-        )
+        child_source_spec = selection(IselOperation(kwargs={"alpha": slice(0, 4)}))
         child_tool = itool(
             child_source_spec.apply(source), manager=False, execute=False
         )
@@ -4562,7 +4629,7 @@ def test_managed_child_tool_shows_reload_reason_without_reloadable_ancestor(
         parent_tool.slicer_area._load_func = (
             xr.load_dataarray,
             {"engine": "h5netcdf"},
-            0,
+            FileDataSelection(kind="dataarray"),
         )
 
         unavailable_reasons.clear()
@@ -4601,7 +4668,11 @@ def test_manager_reload_selected_nested_child_refreshes_from_file_ancestor(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -4611,7 +4682,7 @@ def test_manager_reload_selected_nested_child_refreshes_from_file_ancestor(
             child_tool,
             0,
             show=False,
-            source_spec=provenance.full_data(),
+            source_spec=full_data(),
             source_auto_update=False,
         )
 
@@ -4623,9 +4694,7 @@ def test_manager_reload_selected_nested_child_refreshes_from_file_ancestor(
             grandchild_tool,
             child_uid,
             show=False,
-            source_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"y": slice(0, 2)})
-            ),
+            source_spec=selection(IselOperation(kwargs={"y": slice(0, 2)})),
             source_auto_update=False,
         )
 
@@ -4675,7 +4744,11 @@ def test_manager_reload_multi_selected_children_dedupes_file_ancestor(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -4687,18 +4760,14 @@ def test_manager_reload_multi_selected_children_dedupes_file_ancestor(
             first_tool,
             0,
             show=False,
-            source_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"x": slice(0, 2)})
-            ),
+            source_spec=selection(IselOperation(kwargs={"x": slice(0, 2)})),
             source_auto_update=False,
         )
         second_uid = manager.add_imagetool_child(
             second_tool,
             0,
             show=False,
-            source_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"x": slice(2, 4)})
-            ),
+            source_spec=selection(IselOperation(kwargs={"x": slice(2, 4)})),
             source_auto_update=False,
         )
 
@@ -4762,7 +4831,11 @@ def test_manager_reload_mixed_child_selection_requires_all_children_eligible(
             source,
             manager=True,
             file_path=file_path,
-            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
@@ -4774,9 +4847,7 @@ def test_manager_reload_mixed_child_selection_requires_all_children_eligible(
             eligible_tool,
             0,
             show=False,
-            source_spec=provenance.selection(
-                provenance.IselOperation(kwargs={"x": slice(0, 2)})
-            ),
+            source_spec=selection(IselOperation(kwargs={"x": slice(0, 2)})),
             source_auto_update=False,
         )
         unbound_uid = manager.add_imagetool_child(unbound_tool, 0, show=False)
@@ -4948,12 +5019,12 @@ def test_manager_selection_child_replays_stable_source_spec_after_coordinate_shi
         assert child_node.source_spec is not None
         original_source_spec = child_node.source_spec
 
-        tree = manager._to_datatree()
+        tree = manager._workspace_controller.saving._to_datatree()
         child_attrs = tree[f"0/childtools/{child_uid}/imagetool"].attrs
         assert "manager_node_live_source_binding" not in child_attrs
         assert "manager_node_live_source_spec" in child_attrs
         child_attrs["manager_node_live_source_binding"] = json.dumps(
-            provenance.ImageToolSelectionSourceBinding(
+            ImageToolSelectionSourceBinding(
                 selection_mode="isel",
                 selection_indexers={"z": 0},
             ).model_dump(mode="json")
@@ -4962,7 +5033,9 @@ def test_manager_selection_child_replays_stable_source_spec_after_coordinate_shi
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
         for node in tree.values():
-            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+            manager._workspace_controller.loading._load_workspace_node(
+                typing.cast("xr.DataTree", node)
+            )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         loaded_child = manager._child_node(child_uid)
@@ -4994,7 +5067,7 @@ def test_manager_add_imagetool_child_materializes_source_binding_without_spec(
         coords={"x": np.arange(3.0), "y": np.arange(4.0)},
         name="scan",
     )
-    source_binding = provenance.ImageToolSelectionSourceBinding(
+    source_binding = ImageToolSelectionSourceBinding(
         selection_mode="isel",
         selection_indexers={"y": slice(1, 3)},
     )
@@ -5115,12 +5188,14 @@ def test_manager_dtool_output_itool_nests_under_tool(
         manager.tree_view.clearSelection()
         select_child_tool(manager, output_uid)
         manager._update_info(uid=output_uid)
-        derivation = metadata_derivation_texts(manager)
-        assert derivation[0] == "Start from selected parent ImageTool data"
-        assert derivation[-2:] == [
-            "Compute derivative output",
-            "Transpose derivative output for ImageTool display",
-        ]
+        assert isinstance(
+            output_node.provenance_spec.operations[-2],
+            ImageDerivativeOperation,
+        )
+        assert isinstance(
+            output_node.provenance_spec.operations[-1],
+            TransposeOperation,
+        )
         copied = copy_full_code_for_uid(monkeypatch, manager, output_uid)
         namespace = _exec_generated_code(
             copied,
@@ -5242,7 +5317,7 @@ def test_manager_ktool_output_itool_marks_stale_without_recomputing(
             original_set_metadata_node(node)
 
         monkeypatch.setattr(manager, "_set_metadata_node", _record_metadata_rebuild)
-        manager._mark_workspace_clean()
+        manager._workspace_controller._mark_workspace_clean()
 
         before = fetch(output_uid).copy(deep=True)
         wait_ms = int(1000 / child._UPDATE_LIMIT_HZ) + 50

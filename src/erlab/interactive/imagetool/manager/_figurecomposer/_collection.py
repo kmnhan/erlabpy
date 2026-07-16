@@ -1,8 +1,6 @@
-"""Manager-owned Figure Composer collection UI."""
+"""Browse and select manager-owned Figure Composer windows."""
 
 from __future__ import annotations
-
-__all__ = ["_FigureManagerController", "_FigureManagerHost", "_FigureManagerPane"]
 
 import re
 import typing
@@ -13,7 +11,7 @@ import erlab
 from erlab.interactive.imagetool.manager._widgets import _manager_settings
 
 if typing.TYPE_CHECKING:
-    from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
+    from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 
 _VIEW_MODE_SETTINGS_KEY = "figures/view_mode"
@@ -29,46 +27,7 @@ _GALLERY_THUMBNAIL_SIZES = {
 }
 
 
-class _FigureManagerHost(typing.Protocol):
-    """Narrow manager surface required by the figure collection controller."""
-
-    left_tabs: QtWidgets.QTabWidget
-    show_action: QtGui.QAction
-    hide_action: QtGui.QAction
-    duplicate_action: QtGui.QAction
-    remove_action: QtGui.QAction
-    rename_action: QtGui.QAction
-    edit_note_action: QtGui.QAction
-    copy_note_action: QtGui.QAction
-
-    def _figure_uids(self) -> list[str]: ...
-
-    def _is_figure_uid(self, uid: str) -> bool: ...
-
-    def _child_node(self, uid: str) -> _ManagedWindowNode: ...
-
-    def _install_selection_shortcuts(self, widget: QtWidgets.QWidget) -> None: ...
-
-    def _figure_ui_refresh_is_deferred(self) -> bool: ...
-
-    def _defer_figure_ui_refresh(self, select_uid: str | None) -> None: ...
-
-    def _defer_figure_gallery_icon_update(self, uid: str) -> None: ...
-
-    def _tree_has_selection(self) -> bool: ...
-
-    def _clear_tree_selection(self) -> None: ...
-
-    def _deselect_tree(self) -> None: ...
-
-    def _update_actions(self) -> None: ...
-
-    def _update_info(self, *, uid: str | None = None) -> None: ...
-
-    def show_childtool(self, uid: str) -> None: ...
-
-
-class _FigureManagerPane(QtWidgets.QWidget):
+class _FigureCollectionPane(QtWidgets.QWidget):
     """Own the widgets used to browse managed Figure Composer windows."""
 
     selection_changed = QtCore.Signal()
@@ -238,21 +197,21 @@ class _FigureManagerPane(QtWidgets.QWidget):
         return QtCore.QSize(width, height)
 
 
-class _FigureManagerController(QtCore.QObject):
-    """Coordinate the manager's Figure Composer collection pane."""
+class _FigureCollectionController(QtCore.QObject):
+    """Own the manager's Figure Composer collection browser."""
 
-    def __init__(self, host: _FigureManagerHost, parent: QtWidgets.QWidget) -> None:
+    def __init__(self, host: ImageToolManager, parent: QtWidgets.QWidget) -> None:
         super().__init__(parent)
         self._host = host
         self._parent_widget = parent
-        self._pane: _FigureManagerPane | None = None
+        self._pane: _FigureCollectionPane | None = None
         self._menu: QtWidgets.QMenu | None = None
         self._refreshing = False
         self._view_mode = self._read_view_mode_setting()
         self._gallery_size_name = self._read_gallery_size_setting()
 
     @property
-    def pane(self) -> _FigureManagerPane | None:
+    def pane(self) -> _FigureCollectionPane | None:
         return self._pane
 
     @staticmethod
@@ -428,10 +387,10 @@ class _FigureManagerController(QtCore.QObject):
             tab_bar.setVisible(True)
         self._host.left_tabs.updateGeometry()
 
-    def _ensure_pane(self) -> _FigureManagerPane:
+    def _ensure_pane(self) -> _FigureCollectionPane:
         if self._pane is not None:
             return self._pane
-        pane = _FigureManagerPane(self._host.left_tabs)
+        pane = _FigureCollectionPane(self._host.left_tabs)
         pane.selection_changed.connect(self._selection_changed)
         pane.item_changed.connect(self._item_changed)
         pane.item_activated.connect(self._show_item)
@@ -570,7 +529,7 @@ class _FigureManagerController(QtCore.QObject):
         if not erlab.interactive.utils.qt_is_valid(tool_window):
             return None
         thumbnail = tool_window._preview_thumbnail_pixmap(
-            _FigureManagerPane.thumbnail_size(self._gallery_size_name)
+            _FigureCollectionPane.thumbnail_size(self._gallery_size_name)
         )
         if thumbnail is not None and not thumbnail.isNull():
             return self._thumbnail_pixmap(thumbnail)
@@ -580,7 +539,7 @@ class _FigureManagerController(QtCore.QObject):
         return self._thumbnail_pixmap(preview_pixmap)
 
     def _placeholder_pixmap(self) -> QtGui.QPixmap:
-        size = _FigureManagerPane.thumbnail_size(self._gallery_size_name)
+        size = _FigureCollectionPane.thumbnail_size(self._gallery_size_name)
         pixmap = QtGui.QPixmap(size)
         pixmap.fill(self._parent_widget.palette().color(QtGui.QPalette.ColorRole.Base))
         painter = QtGui.QPainter(pixmap)
@@ -596,7 +555,7 @@ class _FigureManagerController(QtCore.QObject):
         return pixmap
 
     def _thumbnail_pixmap(self, source_pixmap: QtGui.QPixmap) -> QtGui.QPixmap:
-        size = _FigureManagerPane.thumbnail_size(self._gallery_size_name)
+        size = _FigureCollectionPane.thumbnail_size(self._gallery_size_name)
         canvas = QtGui.QPixmap(size)
         canvas.fill(self._parent_widget.palette().color(QtGui.QPalette.ColorRole.Base))
         device_pixel_ratio = source_pixmap.devicePixelRatioF()

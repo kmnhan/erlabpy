@@ -23,13 +23,14 @@ set of source forms:
    - Use :func:`script` for console-derived and other multi-input results. Script
      specs may reference any number of :class:`ScriptInput` records. Each input stores
      an immutable replay name, a historical display label, optional live manager node
-     identity and ``node_snapshot_token``, and an optional nested provenance snapshot.
+     identity and role-specific ``node_snapshot_token``, whether it represents source
+     or displayed data, and an optional nested provenance snapshot.
 
 Each transformation is represented by an immutable
 :class:`ToolProvenanceOperation` subclass whose serialized fields are safe to persist
 in JSON. Persisted specs are the source of truth for workspace save/load. Runtime
 reload, copied code, and shared-input deduplication compile those specs on demand
-through :mod:`erlab.interactive.imagetool._replay_graph`; the graph itself is not
+through :mod:`erlab.interactive.imagetool._provenance._graph`; the graph itself is not
 saved.
 
 Operations are intentionally primitive: a user action that needs several public API
@@ -40,9 +41,8 @@ Group markers are edit/copy metadata only. They do not change replay semantics, 
 broken or partial groups can be stripped without changing the numerical operation list.
 
 Manager children opened from an ImageTool cursor or bin selection keep the explicit
-``qsel`` or ``isel`` arguments generated when the child is opened. Legacy
-:class:`~erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding`
-payloads are materialized once into a normal source spec before refresh.
+``qsel`` or ``isel`` arguments generated when the child is opened. Legacy selection
+source bindings are materialized once into a normal source spec before refresh.
 
 Adding a new provenance-carrying operation follows the same pattern every time:
 
@@ -93,8 +93,8 @@ Adding a new provenance-carrying operation follows the same pattern every time:
    it is given. The base ``replay_code`` wrapper assigns the caller-selected output
    name.
 
-10. Export the operation class from this module so runtime call sites can instantiate
-   it directly.
+10. Export the operation class from the concrete operation catalog so runtime call
+    sites can instantiate it directly.
 
 11. Add tests that cover round-trip validation, :meth:`apply`, derivation text/code,
     console matching when supported, and any save/load or reload path that persists the
@@ -104,55 +104,11 @@ Adding a new provenance-carrying operation follows the same pattern every time:
 Parsing of serialized payloads happens only through :func:`parse_tool_provenance_spec`
 and :func:`parse_tool_provenance_operation`. Runtime authoring code should create specs
 with :func:`full_data`, :func:`public_data`, :func:`selection`, :func:`file_load`, or
-:func:`script`, then instantiate operation models from this module directly.
+:func:`script`, then instantiate operation models from
+:mod:`erlab.interactive.imagetool._provenance._operations` directly.
 """
 
 from __future__ import annotations
-
-__all__ = [
-    "DerivationEntry",
-    "FileDataSelection",
-    "FileLoadSource",
-    "FileLoadSourceStatus",
-    "FileReplayCall",
-    "OperationGroupMarker",
-    "ReplayStage",
-    "ScriptInput",
-    "ScriptInputDependencyRef",
-    "ToolProvenanceOperation",
-    "ToolProvenanceSpec",
-    "can_reload_without_trust",
-    "compose_display_provenance",
-    "compose_full_provenance",
-    "decode_provenance_value",
-    "direct_replay_input_name",
-    "encode_provenance_value",
-    "file_load",
-    "file_load_source_status",
-    "full_data",
-    "has_file_load_source",
-    "iter_operation_refs",
-    "mark_promoted_1d_source",
-    "operation_group_range",
-    "operations_expression_code",
-    "parse_tool_provenance_spec",
-    "public_data",
-    "rebase_default_replay_input",
-    "rebase_script_input_node_uids",
-    "replay_file_provenance",
-    "replay_script_provenance",
-    "require_live_source_spec",
-    "restamp_operation_groups",
-    "script",
-    "script_input_dependency_refs",
-    "script_provenance_replayable",
-    "selection",
-    "stamp_operation_group",
-    "strip_operation_groups",
-    "strip_partial_operation_groups",
-    "to_replay_provenance_spec",
-    "uses_default_replay_input",
-]
 
 import ast
 import base64
@@ -160,11 +116,9 @@ import contextlib
 import importlib
 import inspect
 import keyword
-import math
-import pathlib
 import typing
 import uuid
-from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -172,22 +126,27 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool import _replay_graph
+from erlab.interactive.imagetool._provenance._code import (
+    _DATAARRAY_MARKER,
+    _DATASET_MARKER,
+    _FIT_DATASET_MARKER,
+    _MAPPING_MARKER,
+    _SLICE_MARKER,
+    _TUPLE_MARKER,
+    _dynamic_nonuniform_restore_replay_code,
+    _expression_receiver_code,
+    _migrate_legacy_nonuniform_restore_code,
+    _receiver_path,
+    _script_codes_output_name,
+    _simplify_display_code,
+    _validate_active_name,
+)
 
 if typing.TYPE_CHECKING:
-    import types
+    from collections.abc import Iterator
 
 _SourceKind: typing.TypeAlias = typing.Literal["full_data", "public_data", "selection"]
-_LEGACY_NONUNIFORM_RESTORE_PATH = (
-    "erlab",
-    (
-        "interactive",
-        "imagetool",
-        "slicer",
-        "restore_nonuniform_dims",
-    ),
-)
-_PRIVATE_NONUNIFORM_RESTORE_EXPRESSION = "erlab.utils.array._restore_nonuniform_dims"
+ScriptInputDataRole: typing.TypeAlias = typing.Literal["source", "displayed"]
 FileLoadSourceStatus: typing.TypeAlias = typing.Literal[
     "loadable",
     "no-file-load-source",
@@ -196,68 +155,12 @@ FileLoadSourceStatus: typing.TypeAlias = typing.Literal[
     "missing-loader",
 ]
 
-_SLICE_MARKER = "__erlab_slice__"
-_DATASET_MARKER = "__erlab_xarray_dataset__"
-_FIT_DATASET_MARKER = "__erlab_xarray_lmfit_dataset__"
-_DATAARRAY_MARKER = "__erlab_xarray_dataarray__"
-_TUPLE_MARKER = "__erlab_tuple__"
-_MAPPING_MARKER = "__erlab_mapping__"
 _DEFAULT_REPLAY_SEED_CODE = "derived = data"
 _PROMOTED_1D_SOURCE_ATTR = "_erlab_promoted_from_1d_source"
 _SORT_COORD_ORDER_DERIVATION_LABEL = "Sort coordinates to parent order"
 _SORT_COORD_ORDER_DERIVATION_CODE = (
     "derived = erlab.utils.array.sort_coord_order(derived, data.coords.keys())"
 )
-_SCRIPT_REPLAY_ALLOWED_BUILTINS = {
-    "abs": abs,
-    "bool": bool,
-    "complex": complex,
-    "dict": dict,
-    "enumerate": enumerate,
-    "float": float,
-    "ImportError": ImportError,
-    "int": int,
-    "len": len,
-    "list": list,
-    "max": max,
-    "min": min,
-    "range": range,
-    "reversed": reversed,
-    "set": set,
-    "slice": slice,
-    "str": str,
-    "sum": sum,
-    "TypeError": TypeError,
-    "tuple": tuple,
-    "ValueError": ValueError,
-    "zip": zip,
-}
-_SCRIPT_REPLAY_FORBIDDEN_NODES = (
-    ast.AsyncFor,
-    ast.AsyncFunctionDef,
-    ast.AsyncWith,
-    ast.Await,
-    ast.ClassDef,
-    ast.Delete,
-    ast.Global,
-    ast.Lambda,
-    ast.Match,
-    ast.Nonlocal,
-    ast.Raise,
-    ast.While,
-    ast.With,
-    ast.Yield,
-    ast.YieldFrom,
-)
-_SCRIPT_REPLAY_FORBIDDEN_CALLS = {
-    "__import__",
-    "compile",
-    "eval",
-    "exec",
-    "globals",
-    "locals",
-    "open",
-}
 
 
 @dataclass(frozen=True)
@@ -439,6 +342,7 @@ class ScriptInputDependencyRef:
     label: str
     node_uid: str
     node_snapshot_token: str | None = None
+    data_role: ScriptInputDataRole = "displayed"
 
 
 class OperationGroupMarker(pydantic.BaseModel):
@@ -606,57 +510,6 @@ def decode_provenance_value(value: typing.Any) -> typing.Any:
     return erlab.utils.misc._convert_to_native(value)
 
 
-def _provenance_value_code(value: typing.Any) -> str:
-    value = erlab.utils.misc._convert_to_native(value)
-    if isinstance(value, np.ndarray):
-        return f"np.array({_provenance_value_code(value.tolist())})"
-    if isinstance(value, float):
-        if math.isnan(value):
-            return "np.nan"
-        if math.isinf(value):
-            return "np.inf" if value > 0 else "-np.inf"
-        return repr(value)
-    if isinstance(value, complex):
-        return (
-            f"complex({_provenance_value_code(float(value.real))}, "
-            f"{_provenance_value_code(float(value.imag))})"
-        )
-    if value is None or isinstance(value, (bool, int, str, bytes)):
-        return repr(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(_provenance_value_code(item) for item in value) + "]"
-    if isinstance(value, tuple):
-        suffix = "," if len(value) == 1 else ""
-        return (
-            "("
-            + ", ".join(_provenance_value_code(item) for item in value)
-            + suffix
-            + ")"
-        )
-    if isinstance(value, Mapping):
-        return (
-            "{"
-            + ", ".join(
-                f"{_provenance_value_code(key)}: {_provenance_value_code(item)}"
-                for key, item in value.items()
-            )
-            + "}"
-        )
-    raise TypeError(f"Cannot generate replay code for {type(value).__name__!r}")
-
-
-def _provenance_numeric_array_code(values: typing.Any) -> str:
-    values = np.asarray(values)
-    if (
-        values.ndim == 1
-        and np.issubdtype(values.dtype, np.number)
-        and not np.issubdtype(values.dtype, np.complexfloating)
-        and np.all(np.isfinite(values.astype(np.float64, copy=False)))
-    ):
-        return erlab.interactive.utils.format_1d_numeric_array_code(values)
-    return _provenance_value_code(values)
-
-
 def _normalize_provenance_hashable(value: typing.Any) -> Hashable:
     value = erlab.utils.misc._convert_to_native(value)
     if isinstance(value, tuple):
@@ -709,164 +562,6 @@ def _coerce_float_sequence(value: typing.Any) -> list[float]:
     return [float(item) for item in value]
 
 
-def _format_selection_expr(
-    input_name: str, method: str, kwargs: Mapping[Hashable, typing.Any]
-) -> str:
-    if not kwargs:
-        return f"{input_name}.{method}()"
-    args = erlab.interactive.utils.format_kwargs(dict(kwargs))
-    return f"{input_name}.{method}({args})"
-
-
-def _format_selection_step(method: str, kwargs: Mapping[Hashable, typing.Any]) -> str:
-    return f"derived = {_format_selection_expr('derived', method, kwargs)}"
-
-
-def _nonuniform_dim_mapping_condition(
-    array_name: str,
-    index_code: str,
-    restored_code: str,
-) -> str:
-    return (
-        f"{index_code} in {array_name}.dims and "
-        f"{restored_code} in {array_name}.coords and "
-        f"{array_name}.coords[{restored_code}].ndim == 1 and "
-        f"{array_name}.coords[{restored_code}].dims == ({index_code},) and "
-        f"{array_name}.coords[{restored_code}].size == "
-        f"{array_name}.sizes[{index_code}]"
-    )
-
-
-def _restore_nonuniform_dims_expression(
-    input_name: str,
-    dimension_mapping: Mapping[Hashable, Hashable],
-) -> str:
-    """Emit a self-contained expression restoring recorded index dimensions.
-
-    This is used for concise copied selection expressions whose receiver is a stable
-    data variable. Applicable dimensions are restored together so expression size grows
-    linearly with the recorded mapping instead of nesting the preceding expression for
-    every dimension. Structured provenance operations use statement code when the
-    receiver itself may need single evaluation.
-    """
-    if not dimension_mapping:
-        return input_name
-
-    receiver = _expression_receiver_code(input_name)
-    mapping_items = ", ".join(
-        f"({_provenance_value_code(index_dim)}, {_provenance_value_code(restored_dim)})"
-        for index_dim, restored_dim in dimension_mapping.items()
-    )
-    mapping_code = f"({mapping_items},)"
-    condition = _nonuniform_dim_mapping_condition(
-        receiver, "index_dimension", "dimension"
-    )
-    applicable_mapping = (
-        "{index_dimension: dimension "
-        f"for index_dimension, dimension in {mapping_code} if {condition}}}"
-    )
-    obsolete_dimensions = (
-        "[index_dimension "
-        f"for index_dimension, dimension in {mapping_code} if {condition}]"
-    )
-    return (
-        f"{receiver}.swap_dims({applicable_mapping}).drop_vars("
-        f'{obsolete_dimensions}, errors="ignore")'
-    )
-
-
-def _known_nonuniform_restore_statement_code(
-    input_name: str,
-    *,
-    output_name: str,
-    dimension_mapping: Mapping[Hashable, Hashable],
-) -> str:
-    """Emit public xarray statements restoring recorded index dimensions."""
-    lines = (
-        []
-        if input_name == output_name and dimension_mapping
-        else [f"{output_name} = {input_name}"]
-    )
-    for index_dim, restored_dim in dimension_mapping.items():
-        index_code = _provenance_value_code(index_dim)
-        restored_code = _provenance_value_code(restored_dim)
-        condition = _nonuniform_dim_mapping_condition(
-            output_name, index_code, restored_code
-        )
-        lines.extend(
-            (
-                f"if {condition}:",
-                f"    {output_name} = {output_name}.swap_dims("
-                f"{{{index_code}: {restored_code}}}).drop_vars("
-                f'{index_code}, errors="ignore")',
-            )
-        )
-    return "\n".join(lines)
-
-
-_NONUNIFORM_RESTORE_FUNCTION_NAME = "_restore_image_tool_dimensions"
-
-
-def _nonuniform_restore_support_code(
-    function_name: str = _NONUNIFORM_RESTORE_FUNCTION_NAME,
-) -> str:
-    """Emit standalone public-API code for detecting ImageTool index dimensions."""
-    return f'''def {function_name}(array):
-    """Restore nonuniform dimensions replaced for ImageTool rendering."""
-    import numpy as np
-
-    dimension_mapping = {{}}
-    for index_dimension in array.dims:
-        if not str(index_dimension).endswith("_idx"):
-            continue
-        dimension = str(index_dimension).removesuffix("_idx")
-        coordinate = array.coords.get(dimension)
-        if coordinate is None:
-            continue
-        if (
-            coordinate.ndim != 1
-            or coordinate.dims != (index_dimension,)
-            or coordinate.size != array.sizes[index_dimension]
-        ):
-            continue
-        try:
-            values = coordinate.values.astype(np.float64)
-        except (TypeError, ValueError):
-            continue
-        if values.size == 1:
-            continue
-        differences = np.diff(values)
-        if differences[0] == 0.0 or not np.allclose(
-            differences,
-            differences[0],
-            rtol=3e-5,
-            atol=3e-5,
-            equal_nan=True,
-        ):
-            dimension_mapping[index_dimension] = dimension
-    if not dimension_mapping:
-        return array
-    return array.swap_dims(dimension_mapping).drop_vars(
-        tuple(dimension_mapping), errors="ignore"
-    )'''
-
-
-def _dynamic_nonuniform_restore_replay_code(
-    input_name: str,
-    *,
-    output_name: str,
-    copy_input: bool = False,
-) -> str:
-    """Emit a standalone dynamic restore for legacy derivation-code fallbacks."""
-    input_expression = f"{input_name}.copy(deep=False)" if copy_input else input_name
-    return "\n".join(
-        (
-            _nonuniform_restore_support_code(),
-            f"{output_name} = {_NONUNIFORM_RESTORE_FUNCTION_NAME}({input_expression})",
-        )
-    )
-
-
 def _starting_data_for_source_kind(
     source_kind: _SourceKind,
     parent_data: xr.DataArray,
@@ -876,407 +571,12 @@ def _starting_data_for_source_kind(
     return erlab.utils.array._restore_nonuniform_dims(parent_data.copy(deep=False))
 
 
-def _validate_active_name(value: typing.Any) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise TypeError("active_name must be a string or None")
-    if not value.isidentifier() or keyword.iskeyword(value):
-        raise ValueError("active_name must be a valid Python identifier")
-    return value
-
-
-class _CurrentScopeNameCounter(ast.NodeVisitor):
-    def __init__(
-        self,
-        target: str,
-        contexts: tuple[type[ast.expr_context], ...],
-        *,
-        count_definition_names: bool = True,
-    ) -> None:
-        self.target = target
-        self.contexts = contexts
-        self.count_definition_names = count_definition_names
-        self.count = 0
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if node.id == self.target and isinstance(node.ctx, self.contexts):
-            self.count += 1
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        if self.count_definition_names and ast.Store in self.contexts:
-            self.count += node.name == self.target
-        for decorator in node.decorator_list:
-            self.visit(decorator)
-        self._visit_argument_expressions(node.args)
-        if node.returns is not None:
-            self.visit(node.returns)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self.visit_FunctionDef(typing.cast("ast.FunctionDef", node))
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        self._visit_argument_expressions(node.args)
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        if self.count_definition_names and ast.Store in self.contexts:
-            self.count += node.name == self.target
-        for decorator in node.decorator_list:
-            self.visit(decorator)
-        for base in node.bases:
-            self.visit(base)
-        for keyword_arg in node.keywords:
-            self.visit(keyword_arg)
-
-    def _visit_argument_expressions(self, args: ast.arguments) -> None:
-        for default in args.defaults:
-            self.visit(default)
-        for default in args.kw_defaults:
-            if default is not None:
-                self.visit(default)
-        for arg in (
-            *args.posonlyargs,
-            *args.args,
-            *args.kwonlyargs,
-            *(arg for arg in (args.vararg, args.kwarg) if arg is not None),
-        ):
-            if arg.annotation is not None:
-                self.visit(arg.annotation)
-
-
-class _ScopedNameReplacer(ast.NodeTransformer):
-    def __init__(self, target: str, replacement: ast.expr) -> None:
-        self._target = target
-        self._replacement = replacement
-
-    def visit_Name(self, node: ast.Name) -> ast.AST:
-        if isinstance(node.ctx, ast.Load) and node.id == self._target:
-            return _clone_expr(self._replacement)
-        return node
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
-        node.decorator_list = [
-            typing.cast("ast.expr", self.visit(decorator))
-            for decorator in node.decorator_list
-        ]
-        self._visit_argument_expressions(node.args)
-        if node.returns is not None:
-            node.returns = typing.cast("ast.expr", self.visit(node.returns))
-        return node
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
-        return self.visit_FunctionDef(typing.cast("ast.FunctionDef", node))
-
-    def visit_Lambda(self, node: ast.Lambda) -> ast.AST:
-        self._visit_argument_expressions(node.args)
-        return node
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
-        node.decorator_list = [
-            typing.cast("ast.expr", self.visit(decorator))
-            for decorator in node.decorator_list
-        ]
-        node.bases = [typing.cast("ast.expr", self.visit(base)) for base in node.bases]
-        node.keywords = [
-            typing.cast("ast.keyword", self.visit(keyword_arg))
-            for keyword_arg in node.keywords
-        ]
-        return node
-
-    def _visit_argument_expressions(self, args: ast.arguments) -> None:
-        args.defaults = [
-            typing.cast("ast.expr", self.visit(default)) for default in args.defaults
-        ]
-        args.kw_defaults = [
-            None if default is None else typing.cast("ast.expr", self.visit(default))
-            for default in args.kw_defaults
-        ]
-        for arg in (
-            *args.posonlyargs,
-            *args.args,
-            *args.kwonlyargs,
-            *(arg for arg in (args.vararg, args.kwarg) if arg is not None),
-        ):
-            if arg.annotation is not None:
-                arg.annotation = typing.cast("ast.expr", self.visit(arg.annotation))
-
-
-def _statement_load_count(stmt: ast.stmt, target: str) -> int:
-    counter = _CurrentScopeNameCounter(target, (ast.Load,))
-    counter.visit(stmt)
-    return counter.count
-
-
-def _statement_store_count(
-    stmt: ast.stmt, target: str, *, count_definition_names: bool = False
-) -> int:
-    counter = _CurrentScopeNameCounter(
-        target,
-        (ast.Store, ast.Del),
-        count_definition_names=count_definition_names,
-    )
-    counter.visit(stmt)
-    return counter.count
-
-
-class _NameReplacer(_ScopedNameReplacer):
-    def __init__(self, target: str, replacement: ast.expr) -> None:
-        super().__init__(target, replacement)
-
-
-def _clone_expr(node: ast.expr) -> ast.expr:
-    return ast.parse(ast.unparse(node), mode="eval").body
-
-
-def _clone_stmt(node: ast.stmt) -> ast.stmt:
-    return ast.parse(ast.unparse(node), mode="exec").body[0]
-
-
-class _IdentifierReplacer(ast.NodeTransformer):
-    def __init__(self, replacements: Mapping[str, str]) -> None:
-        self._replacements = dict(replacements)
-
-    def visit_Name(self, node: ast.Name) -> ast.AST:
-        replacement = self._replacements.get(node.id)
-        if replacement is None:
-            return node
-        return ast.copy_location(ast.Name(id=replacement, ctx=node.ctx), node)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
-        node.decorator_list = [
-            typing.cast("ast.expr", self.visit(decorator))
-            for decorator in node.decorator_list
-        ]
-        _visit_argument_expressions_with_transformer(node.args, self)
-        if node.returns is not None:
-            node.returns = typing.cast("ast.expr", self.visit(node.returns))
-        return node
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
-        return self.visit_FunctionDef(typing.cast("ast.FunctionDef", node))
-
-    def visit_Lambda(self, node: ast.Lambda) -> ast.AST:
-        _visit_argument_expressions_with_transformer(node.args, self)
-        return node
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
-        node.decorator_list = [
-            typing.cast("ast.expr", self.visit(decorator))
-            for decorator in node.decorator_list
-        ]
-        node.bases = [typing.cast("ast.expr", self.visit(base)) for base in node.bases]
-        node.keywords = [
-            typing.cast("ast.keyword", self.visit(keyword_arg))
-            for keyword_arg in node.keywords
-        ]
-        return node
-
-
-def _visit_argument_expressions_with_transformer(
-    args: ast.arguments, transformer: ast.NodeTransformer
-) -> None:
-    args.defaults = [
-        typing.cast("ast.expr", transformer.visit(default)) for default in args.defaults
-    ]
-    args.kw_defaults = [
-        None if default is None else typing.cast("ast.expr", transformer.visit(default))
-        for default in args.kw_defaults
-    ]
-    for arg in (
-        *args.posonlyargs,
-        *args.args,
-        *args.kwonlyargs,
-        *(arg for arg in (args.vararg, args.kwarg) if arg is not None),
-    ):
-        if arg.annotation is not None:
-            arg.annotation = typing.cast("ast.expr", transformer.visit(arg.annotation))
-
-
-def _replace_code_identifiers(code: str, replacements: Mapping[str, str]) -> str:
-    module = ast.parse(code, mode="exec")
-    replaced = typing.cast(
-        "ast.Module",
-        _IdentifierReplacer(replacements).visit(module),
-    )
-    return ast.unparse(ast.fix_missing_locations(replaced))
-
-
-def _code_stores_name(code: str, name: str) -> bool:
-    module = ast.parse(code, mode="exec")
-    return any(_statement_store_count(stmt, name) > 0 for stmt in module.body)
-
-
-def _script_codes_output_name(
-    codes: Sequence[str],
-    *,
-    active_name: str,
-    current_name: str | None,
-) -> str | None:
-    candidates = [active_name]
-    for name in (current_name, "derived"):
-        if name is not None and name not in candidates:
-            candidates.append(name)
-    for name in candidates:
-        for code in codes:
-            try:
-                if _code_stores_name(code, name):
-                    return name
-            except SyntaxError:
-                continue
-    return current_name
-
-
-def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None) -> str:
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return code
-
-    body = module.body
-    if not body:
-        return code
-
-    changed = False
-
-    def current_code() -> str:
-        if not changed:
-            return code
-        return ast.unparse(ast.fix_missing_locations(module))
-
-    def drop_unused_inline_targets() -> None:
-        nonlocal changed
-        if inline_targets is None:
-            return
-
-        idx = 0
-        while idx < len(body) - 1:
-            stmt = body[idx]
-            if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
-                idx += 1
-                continue
-            target_expr = stmt.targets[0]
-            if (
-                isinstance(target_expr, ast.Name)
-                and target_expr.id in inline_targets
-                and not any(
-                    _statement_load_count(later, target_expr.id) > 0
-                    for later in body[idx + 1 :]
-                )
-            ):
-                del body[idx]
-                changed = True
-                continue
-            idx += 1
-
-    drop_unused_inline_targets()
-
-    for stmt in body:
-        if not isinstance(stmt, (ast.Assign, ast.Expr, ast.Import, ast.ImportFrom)):
-            return current_code()
-
-    while True:
-        for idx, stmt in enumerate(body[:-1]):
-            if not isinstance(stmt, ast.Assign):
-                continue
-            if len(stmt.targets) != 1:
-                continue
-
-            target_expr = stmt.targets[0]
-            if not isinstance(target_expr, ast.Name):
-                continue
-            target = target_expr.id
-            if inline_targets is not None and target not in inline_targets:
-                continue
-            later_loads = [
-                later_idx
-                for later_idx, later in enumerate(body[idx + 1 :], start=idx + 1)
-                if _statement_load_count(later, target) > 0
-            ]
-            if len(later_loads) != 1:
-                continue
-
-            next_idx = later_loads[0]
-            next_stmt = body[next_idx]
-            if not isinstance(next_stmt, ast.Assign):
-                continue
-            replacement_load_names = {
-                node.id
-                for node in ast.walk(stmt.value)
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-            }
-            if (
-                len(next_stmt.targets) != 1
-                or not isinstance(next_stmt.targets[0], ast.Name)
-                or _statement_load_count(next_stmt, target) != 1
-                or any(
-                    _statement_store_count(intervening, target)
-                    for intervening in body[idx + 1 : next_idx]
-                )
-                or any(
-                    _statement_store_count(intervening, name)
-                    for intervening in body[idx + 1 : next_idx]
-                    for name in replacement_load_names
-                )
-            ):
-                continue
-
-            new_stmt = typing.cast(
-                "ast.stmt",
-                _NameReplacer(target, _clone_expr(stmt.value)).visit(
-                    _clone_stmt(next_stmt)
-                ),
-            )
-            body[next_idx] = ast.fix_missing_locations(new_stmt)
-            del body[idx]
-            changed = True
-            break
-        else:
-            break
-
-    drop_unused_inline_targets()
-
-    if not changed:
-        return code
-    return ast.unparse(ast.fix_missing_locations(module))
-
-
-def _code_uses_name(code: str, name: str) -> bool:
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return False
-    return any(_statement_load_count(stmt, name) > 0 for stmt in module.body)
-
-
-def rebase_default_replay_input(code: str, input_name: str) -> str:
-    """Replace the generic ``data`` replay input in generated code.
-
-    Manager clipboard actions use this when a concrete source is known, such as a
-    watched variable, a load snippet target, or a user-provided variable name.
-    """
-    if not _code_uses_name(code, "data"):
-        return code
-
-    try:
-        input_expr = ast.parse(input_name, mode="eval").body
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return code
-
-    rebased = typing.cast("ast.Module", _NameReplacer("data", input_expr).visit(module))
-    rebased = ast.fix_missing_locations(rebased)
-    return _simplify_display_code(
-        ast.unparse(rebased),
-        inline_targets={"derived"},
-    )
-
-
-def uses_default_replay_input(code: str) -> bool:
-    """Return whether generated replay code refers to the generic ``data`` input."""
-    return _code_uses_name(code, "data")
-
-
 _OPERATION_TYPES: dict[str, type[ToolProvenanceOperation]] = {}
+
+
+def _ensure_operation_catalog_loaded() -> None:
+    """Load concrete operations before resolving a serialized discriminator."""
+    importlib.import_module("erlab.interactive.imagetool._provenance._operations")
 
 
 def _operation_is(operation: ToolProvenanceOperation, *operation_names: str) -> bool:
@@ -1284,12 +584,12 @@ def _operation_is(operation: ToolProvenanceOperation, *operation_names: str) -> 
 
 
 def _operation_type(op: str) -> type[ToolProvenanceOperation]:
+    _ensure_operation_catalog_loaded()
     operation_type = _OPERATION_TYPES.get(op)
     if operation_type is None:
-        raise RuntimeError(
-            "Concrete provenance operations are not registered. "
-            "Import erlab.interactive.imagetool.provenance before "
-            "constructing or deserializing operation-backed provenance."
+        raise ValueError(
+            f"Unknown provenance operation {op!r}; "
+            f"expected one of {sorted(_OPERATION_TYPES)}"
         )
     return operation_type
 
@@ -1351,53 +651,6 @@ def _literal_call_args_kwargs(
             return None
         kwargs[call_keyword.arg] = value
     return args, kwargs
-
-
-def _receiver_path(node: ast.AST) -> tuple[str, tuple[str, ...]] | None:
-    if isinstance(node, ast.Name):
-        return node.id, ()
-    if isinstance(node, ast.Attribute):
-        resolved = _receiver_path(node.value)
-        if resolved is None:
-            return None
-        receiver_name, path = resolved
-        return receiver_name, (*path, node.attr)
-    return None
-
-
-def _migrate_legacy_nonuniform_restore_code(code: str | None) -> str | None:
-    """Rewrite the removed public restore helper in persisted executable code."""
-    if code is None or "restore_nonuniform_dims" not in code:
-        return code
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return code
-
-    encoded = code.encode()
-    line_starts = [0]
-    for line in encoded.splitlines(keepends=True):
-        line_starts.append(line_starts[-1] + len(line))
-
-    replacements: list[tuple[int, int]] = []
-    for node in ast.walk(module):
-        if not isinstance(node, ast.Attribute):
-            continue
-        if _receiver_path(node) != _LEGACY_NONUNIFORM_RESTORE_PATH:
-            continue
-        if node.end_lineno is None or node.end_col_offset is None:
-            continue  # pragma: no cover - populated by supported Python versions
-        start = line_starts[node.lineno - 1] + node.col_offset
-        end = line_starts[node.end_lineno - 1] + node.end_col_offset
-        replacements.append((start, end))
-
-    if not replacements:
-        return code
-
-    replacement = _PRIVATE_NONUNIFORM_RESTORE_EXPRESSION.encode()
-    for start, end in sorted(replacements, reverse=True):
-        encoded = encoded[:start] + replacement + encoded[end:]
-    return encoded.decode()
 
 
 def _operation_from_self_assignment_call(
@@ -1708,6 +961,51 @@ def _console_mapping_values(
     return mapped
 
 
+def _assignment_code(
+    output_name: str,
+    expression: str,
+    *,
+    line_length: int = 88,
+) -> str:
+    """Assign an expression while preserving readable call formatting."""
+    code = f"{output_name} = {expression}"
+    if "\n" in expression or len(code) <= line_length:
+        return code
+    try:
+        parsed = ast.parse(expression, mode="eval")
+    except SyntaxError:
+        return code
+    if not isinstance(parsed.body, ast.Call):
+        return code
+
+    function_code = ast.get_source_segment(expression, parsed.body.func)
+    if function_code is None:
+        return code
+    arguments: list[str] = []
+    for argument in parsed.body.args:
+        argument_code = ast.get_source_segment(expression, argument)
+        if argument_code is None:
+            return code
+        if isinstance(argument, ast.GeneratorExp):
+            argument_code = f"({argument_code})"
+        arguments.append(argument_code)
+    for keyword_arg in parsed.body.keywords:
+        value_code = ast.get_source_segment(expression, keyword_arg.value)
+        if value_code is None:
+            return code
+        prefix = "**" if keyword_arg.arg is None else f"{keyword_arg.arg}="
+        arguments.append(f"{prefix}{value_code}")
+    if not arguments:
+        return code
+    return "\n".join(
+        (
+            f"{output_name} = {function_code}(",
+            *(f"    {argument}," for argument in arguments),
+            ")",
+        )
+    )
+
+
 class ToolProvenanceOperation(pydantic.BaseModel):
     """Base class for typed operations stored in :class:`ToolProvenanceSpec`.
 
@@ -1931,12 +1229,28 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         """
         raise NotImplementedError
 
+    def _statement_replay_code(
+        self,
+        input_name: str,
+        *,
+        output_name: str,
+        source_name: str | None = None,
+        reserved_names: Collection[str] = (),
+    ) -> str:
+        """Call statement replay with internal graph-emission context."""
+        return self.statement_code(
+            input_name,
+            output_name=output_name,
+            source_name=source_name,
+        )
+
     def replay_code(
         self,
         input_name: str,
         *,
         output_name: str | None = None,
         source_name: str | None = None,
+        reserved_names: Collection[str] = (),
     ) -> str:
         """Return replay code for this operation with caller-selected names.
 
@@ -1955,6 +1269,9 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         source_name
             Python expression or identifier for the original public input array for
             the enclosing replay sequence. Passed through to :meth:`expression_code`.
+        reserved_names
+            Names already used by the enclosing replay sequence. Statement-based
+            operations use these to choose collision-free auxiliary targets.
 
         Returns
         -------
@@ -1967,14 +1284,34 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         except NotImplementedError:
             if output_name is None:
                 raise
-            return self.statement_code(
+            return self._statement_replay_code(
                 input_name,
                 output_name=output_name,
                 source_name=source_name,
+                reserved_names=reserved_names,
             )
         if output_name is None:
             return expression
-        return f"{output_name} = {expression}"
+        return _assignment_code(output_name, expression)
+
+    def preferred_replay_output_name(self) -> str | None:
+        """Return a semantic output name when this operation changes value kind.
+
+        Most transformations preserve the meaning of their input name and return
+        ``None``. Operations that produce a categorically different result may provide
+        a name which the replay graph uses when it matches the enclosing script's
+        active output.
+        """
+        return None
+
+    def preferred_replay_input_name(self) -> str | None:
+        """Return a semantic name for an input reused by generated code.
+
+        Most operations use their input once and should return ``None``. Operations
+        that refer to the same intermediate several times may provide a descriptive
+        name so replay code does not expose an internal graph temporary.
+        """
+        return None
 
     @classmethod
     def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
@@ -2177,20 +1514,6 @@ def strip_partial_operation_groups(
     return tuple(output)
 
 
-def _expression_receiver_code(expression: str) -> str:
-    """Return ``expression`` in a form that can safely receive another operation."""
-    try:
-        parsed = ast.parse(expression, mode="eval")
-    except SyntaxError:
-        return f"({expression})"
-    if isinstance(
-        parsed.body,
-        ast.Name | ast.Attribute | ast.Subscript | ast.Call,
-    ):
-        return expression
-    return f"({expression})"
-
-
 def operations_expression_code(
     operations: Sequence[ToolProvenanceOperation],
     input_name: str,
@@ -2219,6 +1542,7 @@ def operations_expression_code(
 
 def operation_from_console_call(call: ConsoleCall) -> ToolProvenanceOperation | None:
     """Return the structured operation represented by a console call, if known."""
+    _ensure_operation_catalog_loaded()
     for operation_type in _OPERATION_TYPES.values():
         operation = operation_type.from_console_call(call)
         if operation is not None:
@@ -2254,6 +1578,12 @@ def _coerce_nullable_hashable_tuple_field(
     if value is None:
         return None
     return ToolProvenanceOperation._coerce_hashable_tuple_field(value)
+
+
+def _coerce_nullable_hashable_field(value: typing.Any) -> Hashable | None:
+    if value is None:
+        return None
+    return ToolProvenanceOperation._coerce_hashable_field(value)
 
 
 def _coerce_hashable_pair_field(value: typing.Any) -> tuple[Hashable, Hashable]:
@@ -2302,6 +1632,14 @@ def _coerce_float_sequence_mapping_field(
 ProvenanceHashable: typing.TypeAlias = typing.Annotated[
     Hashable,
     pydantic.BeforeValidator(ToolProvenanceOperation._coerce_hashable_field),
+    pydantic.PlainSerializer(
+        ToolProvenanceOperation._json_encode_field, when_used="json"
+    ),
+]
+
+NullableProvenanceHashable: typing.TypeAlias = typing.Annotated[
+    Hashable | None,
+    pydantic.BeforeValidator(_coerce_nullable_hashable_field),
     pydantic.PlainSerializer(
         ToolProvenanceOperation._json_encode_field, when_used="json"
     ),
@@ -2401,6 +1739,7 @@ def parse_tool_provenance_operation(
     if not isinstance(op, str):
         raise TypeError("Serialized provenance operations must include a string `op`")
 
+    _ensure_operation_catalog_loaded()
     operation_type = _OPERATION_TYPES.get(op)
     if operation_type is None:
         raise ValueError(
@@ -2462,14 +1801,15 @@ def _normalize_script_code_operations(
 class FileDataSelection(pydantic.BaseModel):
     """Serializable selection of one displayable array from a loaded file object.
 
-    New provenance stores stable Dataset variable names and DataTree data paths instead
-    of the positional parsed-array index used by older workspaces.
+    New provenance stores stable Dataset variable names and DataTree node/variable
+    pairs instead of the positional parsed-array index used by older workspaces.
     """
 
     kind: typing.Literal[
         "dataarray",
         "dataset_variable",
-        "datatree_path",
+        "datatree_variable",
+        "sequence_index",
         "parsed_index",
     ]
     value: typing.Any = None
@@ -2482,12 +1822,19 @@ class FileDataSelection(pydantic.BaseModel):
 
     @pydantic.model_validator(mode="before")
     @classmethod
-    def _validate_serialized_shape(cls, value: typing.Any) -> typing.Any:
-        if isinstance(value, np.integer):
-            return {"kind": "parsed_index", "value": int(value)}
-        if isinstance(value, int) and not isinstance(value, bool):
-            return {"kind": "parsed_index", "value": value}
-        return value
+    def _migrate_legacy_datatree_path(cls, value: typing.Any) -> typing.Any:
+        if not isinstance(value, Mapping) or value.get("kind") != "datatree_path":
+            return value
+        path = value.get("value")
+        if not isinstance(path, str) or not path.startswith("/"):
+            return value
+        node_path, separator, variable = path.rpartition("/")
+        if not separator:
+            return value
+        payload = dict(value)
+        payload["kind"] = "datatree_variable"
+        payload["value"] = (node_path or "/", variable)
+        return payload
 
     @pydantic.model_validator(mode="after")
     def _validate_value(self) -> typing.Self:
@@ -2500,14 +1847,27 @@ class FileDataSelection(pydantic.BaseModel):
             if value != self.value:
                 return self.model_copy(update={"value": value})
             return self
-        if self.kind == "datatree_path":
-            if not isinstance(self.value, str) or not self.value.startswith("/"):
-                raise ValueError("datatree file selections must use an absolute path")
+        if self.kind == "datatree_variable":
+            if (
+                isinstance(self.value, str | bytes)
+                or not isinstance(self.value, Sequence)
+                or len(self.value) != 2
+            ):
+                raise ValueError(
+                    "datatree file selections must define a node path and variable"
+                )
+            node_path, variable = self.value
+            if not isinstance(node_path, str) or not node_path.startswith("/"):
+                raise ValueError("datatree node selections must use an absolute path")
+            variable = _normalize_provenance_hashable(decode_provenance_value(variable))
+            normalized = (node_path, variable)
+            if normalized != self.value:
+                return self.model_copy(update={"value": normalized})
             return self
 
         value = int(self.value) if isinstance(self.value, np.integer) else self.value
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError("parsed file selection index must be non-negative")
+            raise ValueError("file selection index must be non-negative")
         if value != self.value:
             return self.model_copy(update={"value": value})
         return self
@@ -2516,6 +1876,9 @@ class FileDataSelection(pydantic.BaseModel):
     def _serialize_value(self, value: typing.Any) -> typing.Any:
         if self.kind == "dataset_variable":
             return _encode_provenance_hashable(value)
+        if self.kind == "datatree_variable":
+            node_path, variable = value
+            return [node_path, _encode_provenance_hashable(variable)]
         return value
 
 
@@ -2672,14 +2035,19 @@ class ScriptInput(pydantic.BaseModel):
 
     ``name`` is the immutable replay variable, ``label`` is the historical display
     label, ``node_uid`` and ``node_snapshot_token`` identify the live manager input
-    that was used, and ``provenance_spec`` stores the historical replay source used
-    when that live input is unavailable. When omitted, ``label`` defaults to ``name``.
+    that was used, ``data_role`` selects its durable source or displayed view, and
+    ``provenance_spec`` stores the historical replay source used when that live input
+    is unavailable. When omitted, ``label`` defaults to ``name``.
     """
 
     name: str
     label: str = ""
     node_uid: str | None = None
     node_snapshot_token: str | None = None
+    data_role: ScriptInputDataRole = pydantic.Field(
+        default="displayed",
+        exclude_if=lambda value: value == "displayed",
+    )
     provenance_spec: dict[str, typing.Any] | None = None
 
     model_config = pydantic.ConfigDict(
@@ -3433,13 +2801,19 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     def _script_graph_code(self, *, display: bool) -> str | None:
         if not self.operations and not self.replay_stages:
             return None
+        from erlab.interactive.imagetool._provenance._graph import (
+            ReplayGraphError,
+            compile_replay_graph,
+            emit_replay_code,
+        )
+
         try:
-            graph = _replay_graph.compile_replay_graph(self, display=display)
-            return _replay_graph.emit_replay_code(
+            graph = compile_replay_graph(self, display=display)
+            return emit_replay_code(
                 graph,
                 output_name=typing.cast("str", self.active_name),
             )
-        except _replay_graph.ReplayGraphError:
+        except ReplayGraphError:
             return None
 
     def _code_lines_from_entries(
@@ -3508,7 +2882,9 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             prefix = _default_seed_code_for_operations(self.operations)
         if prefix is None and not step_codes:
             return None
-        return "\n".join(part for part in (prefix, *step_codes) if part)
+        return _simplify_display_code(
+            "\n".join(part for part in (prefix, *step_codes) if part)
+        )
 
     def display_rows(
         self,
@@ -3691,11 +3067,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if self.kind == "script" and (
             graph_code := self._script_graph_code(display=True)
         ):
-            inline_targets = {"derived"} if self.active_name != "derived" else None
-            return _simplify_display_code(
-                graph_code,
-                inline_targets=inline_targets,
-            )
+            return graph_code
         if self.kind in {"script", "file"}:
             prefix = self.seed_code
 
@@ -3749,35 +3121,9 @@ def has_file_load_source(
     return spec is not None and spec.file_load_source is not None
 
 
-def file_load_source_status(
-    value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
-) -> FileLoadSourceStatus:
-    """Return the current availability of the recorded file-load source."""
-    spec = parse_tool_provenance_spec(value)
-    if spec is None or spec.file_load_source is None:
-        return "no-file-load-source"
-    load_source = spec.file_load_source
-    if not pathlib.Path(load_source.path).exists():
-        return "missing-file"
-    replay_call = load_source.replay_call
-    if replay_call is None:
-        return "no-replay-call"
-    if (
-        replay_call.kind == "erlab_loader"
-        and replay_call.target not in erlab.io.loaders
-    ):
-        return "missing-loader"
-    if replay_call.kind == "callable":
-        try:
-            _resolve_importable_callable(replay_call.target)
-        except (AttributeError, ModuleNotFoundError, TypeError, ValueError):
-            return "missing-loader"
-    return "loadable"
-
-
 def iter_operation_refs(
     value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
-) -> typing.Iterator[tuple[_ProvenanceStepRef, ToolProvenanceOperation]]:
+) -> Iterator[tuple[_ProvenanceStepRef, ToolProvenanceOperation]]:
     """Yield operation references in replay order across all operation stores."""
     spec = parse_tool_provenance_spec(value)
     if spec is None:
@@ -3801,28 +3147,6 @@ def iter_operation_refs(
             )
 
 
-def can_reload_without_trust(
-    value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
-) -> bool:
-    """Return whether recorded provenance can replay without trusted user code."""
-    spec = parse_tool_provenance_spec(value)
-    if spec is None:
-        return False
-    if spec.kind == "file":
-        return file_load_source_status(spec) == "loadable"
-    if spec.kind != "script":
-        return False
-    if has_file_load_source(spec) and file_load_source_status(spec) != "loadable":
-        return False
-    if not script_provenance_replayable(spec):
-        return False
-    for script_input in spec.script_inputs:
-        input_spec = script_input.parsed_provenance_spec()
-        if not can_reload_without_trust(input_spec):
-            return False
-    return True
-
-
 def script_input_dependency_refs(
     value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
 ) -> tuple[ScriptInputDependencyRef, ...]:
@@ -3842,6 +3166,7 @@ def script_input_dependency_refs(
                         label=script_input.label,
                         node_uid=script_input.node_uid,
                         node_snapshot_token=script_input.node_snapshot_token,
+                        data_role=script_input.data_role,
                     )
                 )
             nested = script_input.parsed_provenance_spec()
@@ -4264,360 +3589,3 @@ def file_load(
         file_load_source=file_load_source,
         replay_stages=tuple(replay_stages),
     )
-
-
-def _processed_replay_ndim(darr: xr.DataArray) -> int:
-    if darr.ndim == 1:
-        return 2
-    if darr.ndim > 4:
-        return len(tuple(size for size in darr.shape if size != 1))
-    return darr.ndim
-
-
-def _supported_replay_shape(darr: xr.DataArray) -> bool:
-    return _processed_replay_ndim(darr) in (2, 3, 4)
-
-
-def _reducible_replay_shape(darr: xr.DataArray) -> bool:
-    return _processed_replay_ndim(darr) >= 2
-
-
-def _parse_replay_dataset(ds: xr.Dataset) -> tuple[xr.DataArray, ...]:
-    return tuple(
-        darr for darr in ds.data_vars.values() if _reducible_replay_shape(darr)
-    )
-
-
-def _parse_replay_input(data: typing.Any) -> list[xr.DataArray]:
-    input_cls = data.__class__.__name__
-    parsed: typing.Any = data
-    if isinstance(data, np.ndarray | xr.DataArray):
-        parsed = (data,)
-    elif isinstance(data, xr.Dataset):
-        parsed = _parse_replay_dataset(data)
-    elif isinstance(data, xr.DataTree):
-        parsed = tuple(
-            darr for leaf in data.leaves for darr in _parse_replay_dataset(leaf.dataset)
-        )
-
-    if len(parsed) == 0:
-        raise ValueError(f"No valid data for ImageTool found in {input_cls}")
-    if not isinstance(next(iter(parsed)), xr.DataArray | np.ndarray):
-        raise TypeError(
-            f"Unsupported input type {input_cls}. Expected DataArray, Dataset, "
-            "DataTree, numpy array, or a list of DataArray or numpy arrays."
-        )
-    return [
-        xr.DataArray(item) if not isinstance(item, xr.DataArray) else item
-        for item in parsed
-    ]
-
-
-def _require_replay_dataarray(data: typing.Any) -> xr.DataArray:
-    if isinstance(data, np.ndarray):
-        data = xr.DataArray(data)
-    if not isinstance(data, xr.DataArray):
-        raise TypeError(
-            f"Selected file data must be a DataArray, got {type(data).__name__!r}"
-        )
-    if not _reducible_replay_shape(data):
-        raise ValueError("Selected file data is not valid for ImageTool")
-    return data
-
-
-def _select_replay_input(
-    data: typing.Any,
-    selection: FileDataSelection | Mapping[str, typing.Any] | int,
-) -> xr.DataArray:
-    selection = FileDataSelection.model_validate(selection)
-    if selection.kind == "dataarray":
-        return _require_replay_dataarray(data)
-    if selection.kind == "dataset_variable":
-        if not isinstance(data, xr.Dataset):
-            raise TypeError(
-                "Dataset variable file selections require the loader to return "
-                "a Dataset"
-            )
-        try:
-            selected = data[selection.value]
-        except KeyError as err:
-            raise KeyError(
-                f"Selected file variable {selection.value!r} was not found"
-            ) from err
-        return _require_replay_dataarray(selected)
-    if selection.kind == "datatree_path":
-        if not isinstance(data, xr.DataTree):
-            raise TypeError(
-                "DataTree path file selections require the loader to return a DataTree"
-            )
-        try:
-            selected = data[selection.value]
-        except KeyError as err:
-            raise KeyError(
-                f"Selected file DataTree path {selection.value!r} was not found"
-            ) from err
-        return _require_replay_dataarray(selected)
-
-    parsed = _parse_replay_input(data)
-    index = typing.cast("int", selection.value)
-    if index >= len(parsed):
-        raise IndexError(
-            f"Selected file replay index {index} is out of range for "
-            f"{len(parsed)} parsed arrays"
-        )
-    return parsed[index]
-
-
-def _resolve_importable_callable(target: str) -> Callable[..., typing.Any]:
-    parts = target.split(".")
-    if len(parts) < 2:
-        raise ValueError(f"Importable callable target {target!r} must be dotted")
-
-    module = None
-    attr_start = 0
-    for idx in range(len(parts) - 1, 0, -1):
-        module_name = ".".join(parts[:idx])
-        try:
-            module = importlib.import_module(module_name)
-        except ModuleNotFoundError as exc:
-            if exc.name != module_name:
-                raise
-            continue
-        attr_start = idx
-        break
-    if module is None:
-        raise ModuleNotFoundError(target)
-
-    obj: typing.Any = module
-    for attr in parts[attr_start:]:
-        obj = getattr(obj, attr)
-    if not callable(obj):
-        raise TypeError(f"Importable target {target!r} is not callable")
-    return typing.cast("Callable[..., typing.Any]", obj)
-
-
-def _load_file_source_data(load_source: FileLoadSource) -> xr.DataArray:
-    call = load_source.replay_call
-    if call is None:
-        raise ValueError("File load source does not define replay metadata")
-    file_path = pathlib.Path(load_source.path)
-    if call.kind == "erlab_loader":
-        func = erlab.io.loaders[call.target].load
-    else:
-        func = _resolve_importable_callable(call.target)
-
-    loaded = func(file_path, **dict(call.kwargs))
-    data = _select_replay_input(loaded, call.selection)
-    if call.cast_float64:
-        data = data.astype(np.float64)
-    return data
-
-
-def _apply_replay_stage(stage: ReplayStage, parent_data: xr.DataArray) -> xr.DataArray:
-    data = ToolProvenanceSpec._starting_data_for_kind(stage.source_kind, parent_data)
-    for operation in stage.operations:
-        data = operation.apply(data, parent_data=parent_data)
-    return data
-
-
-def replay_file_provenance(
-    spec: ToolProvenanceSpec | Mapping[str, typing.Any],
-    *,
-    cache: dict[str, xr.DataArray] | None = None,
-) -> xr.DataArray:
-    """Replay structured file provenance without executing generated Python."""
-    try:
-        return _replay_graph.replay_file_provenance(spec, cache=cache)
-    except _replay_graph.ReplayGraphError as exc:
-        raise TypeError("Expected structured file provenance") from exc
-
-
-def _parse_validated_script_replay_code(code: str) -> ast.Module:
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError as exc:
-        raise ValueError(f"Script replay code is not valid Python: {exc}") from exc
-
-    def validate_import(node: ast.Import | ast.ImportFrom) -> None:
-        if isinstance(node, ast.ImportFrom):
-            raise TypeError("Script replay code contains unsupported ImportFrom")
-        if any(
-            alias.name not in ("erlab", "numpy", "xarray")
-            or (alias.asname is not None and alias.asname.startswith("__"))
-            for alias in node.names
-        ):
-            raise TypeError(
-                f"Script replay code contains unsupported {type(node).__name__}"
-            )
-
-    def validate_optional_import_try(node: ast.Try) -> None:
-        if (
-            node.finalbody
-            or len(node.handlers) != 1
-            or not node.body
-            or any(
-                not isinstance(statement, ast.Import | ast.ImportFrom)
-                for statement in node.body
-            )
-        ):
-            raise TypeError("Script replay code contains unsupported Try")
-        handler = node.handlers[0]
-        if (
-            handler.name is not None
-            or not isinstance(handler.type, ast.Name)
-            or handler.type.id != "ImportError"
-            or len(handler.body) != 1
-            or not isinstance(handler.body[0], ast.Pass)
-        ):
-            raise TypeError("Script replay code contains unsupported Try")
-
-    def validate_numeric_conversion_try(node: ast.Try) -> None:
-        if (
-            node.orelse
-            or node.finalbody
-            or len(node.body) != 1
-            or len(node.handlers) != 1
-        ):
-            raise TypeError("Script replay code contains unsupported Try")
-        statement = node.body[0]
-        handler = node.handlers[0]
-        exception_names = (
-            tuple(item.id for item in handler.type.elts if isinstance(item, ast.Name))
-            if isinstance(handler.type, ast.Tuple)
-            else ((handler.type.id,) if isinstance(handler.type, ast.Name) else ())
-        )
-        if (
-            not isinstance(statement, ast.Assign)
-            or len(statement.targets) != 1
-            or not isinstance(statement.targets[0], ast.Name)
-            or not isinstance(statement.value, ast.Call)
-            or not isinstance(statement.value.func, ast.Attribute)
-            or statement.value.func.attr != "astype"
-            or len(statement.value.args) != 1
-            or statement.value.keywords
-            or exception_names != ("TypeError", "ValueError")
-            or handler.name is not None
-            or len(handler.body) != 1
-            or not isinstance(handler.body[0], ast.Continue)
-        ):
-            raise TypeError("Script replay code contains unsupported Try")
-
-    def validate_safe_try(node: ast.Try) -> None:
-        try:
-            validate_optional_import_try(node)
-        except TypeError:
-            validate_numeric_conversion_try(node)
-
-    for node in ast.walk(module):
-        if isinstance(node, ast.Import | ast.ImportFrom):
-            validate_import(node)
-            continue
-        if isinstance(node, ast.Try):
-            validate_safe_try(node)
-            continue
-        if isinstance(node, _SCRIPT_REPLAY_FORBIDDEN_NODES):
-            raise TypeError(
-                f"Script replay code contains unsupported {type(node).__name__}"
-            )
-        if isinstance(node, ast.Name) and node.id.startswith("__"):
-            raise ValueError("Script replay code cannot access dunder names")
-        if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
-            raise ValueError("Script replay code cannot access dunder attributes")
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id in _SCRIPT_REPLAY_FORBIDDEN_CALLS
-        ):
-            raise ValueError(f"Script replay code cannot call {node.func.id!r}")
-
-    return module
-
-
-def _validate_script_replay_code(code: str) -> None:
-    _parse_validated_script_replay_code(code)
-
-
-class _ScriptReplayImportLowerer(ast.NodeTransformer):
-    """Replace approved imports with assignments to executor-owned bindings."""
-
-    def visit_Import(self, node: ast.Import) -> list[ast.Assign]:
-        assignments: list[ast.Assign] = []
-        for alias in node.names:
-            if alias.name == "erlab":
-                binding_name = "__erlab_replay_import_erlab"
-            elif alias.name == "numpy":
-                binding_name = "__erlab_replay_import_numpy"
-            elif alias.name == "xarray":
-                binding_name = "__erlab_replay_import_xarray"
-            else:  # pragma: no cover - validation rejects every other import
-                raise TypeError("Script replay code contains unsupported Import")
-            assignments.append(
-                ast.copy_location(
-                    ast.Assign(
-                        targets=[
-                            ast.Name(
-                                id=alias.asname or alias.name,
-                                ctx=ast.Store(),
-                            )
-                        ],
-                        value=ast.Name(id=binding_name, ctx=ast.Load()),
-                    ),
-                    node,
-                )
-            )
-        return assignments
-
-
-def _compile_untrusted_script_replay_code(code: str) -> types.CodeType:
-    """Validate and compile replay code without executing Python imports."""
-    module = _parse_validated_script_replay_code(code)
-    lowered = typing.cast("ast.Module", _ScriptReplayImportLowerer().visit(module))
-    ast.fix_missing_locations(lowered)
-    return compile(lowered, "<ImageTool script provenance>", "exec")
-
-
-def script_provenance_replayable(
-    spec: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
-) -> bool:
-    """Return whether script provenance is self-contained enough to execute.
-
-    This checks the saved code and structured operations. It does not mean live
-    manager inputs are present; callers still need to resolve ``script_inputs``.
-    """
-    return _replay_graph.script_provenance_replayable(spec)
-
-
-def script_provenance_requires_trust(
-    spec: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
-    *,
-    external_input_names: set[str] | None = None,
-) -> bool:
-    """Return whether script provenance can replay only after user trust."""
-    return _replay_graph.script_provenance_requires_trust(
-        spec,
-        external_input_names=external_input_names,
-    )
-
-
-def replay_script_provenance(
-    spec: ToolProvenanceSpec | Mapping[str, typing.Any],
-    inputs: Mapping[str, xr.DataArray],
-    *,
-    trusted_user_code: bool = False,
-) -> xr.DataArray:
-    """Execute script provenance from already resolved input arrays.
-
-    The caller is responsible for trust and input resolution. This function only
-    validates the provenance shape, compiles it through the replay graph, and returns
-    the replayed :class:`xarray.DataArray`.
-    """
-    try:
-        return _replay_graph.replay_script_provenance(
-            spec,
-            inputs,
-            trusted_user_code=trusted_user_code,
-        )
-    except _replay_graph.ReplayGraphError as exc:
-        if "non-replayable" in str(exc):
-            raise ValueError(str(exc)) from exc
-        raise TypeError(str(exc)) from exc

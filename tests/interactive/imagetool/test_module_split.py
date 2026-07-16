@@ -52,6 +52,7 @@ def test_figure_composer_semantics_do_not_load_qt_widgets() -> None:
         """
         import sys
 
+        from erlab.interactive._figurecomposer import _seeding
         from erlab.interactive._figurecomposer._model._document import FigureDocument
         from erlab.interactive._figurecomposer._model._state import (
             FigureExportState,
@@ -92,6 +93,10 @@ def test_figure_composer_semantics_do_not_load_qt_widgets() -> None:
 
         assert document.operation_source_names(plot_operation) == ("data",)
         assert document.operation_source_names(custom_operation) == ("data",)
+        assert (
+            _seeding._operation_with_source_names(plot_operation, {})
+            is plot_operation
+        )
         assert isinstance(_default_method_args(AXES_METHODS["plot"], None), tuple)
         assert _slice_values_mode_text("all")
         assert "qtpy.QtWidgets" not in sys.modules
@@ -126,13 +131,73 @@ def test_figure_composer_semantics_do_not_load_qt_widgets() -> None:
 
 def test_manager_import_does_not_load_figure_dialog_widgets() -> None:
     code = (
+        "import importlib.util\n"
         "import sys\n"
         "import erlab.interactive.imagetool.manager._mainwindow\n"
-        "assert 'erlab.interactive.imagetool.manager._figure_dialogs' "
+        "assert 'erlab.interactive.imagetool.manager._figurecomposer._dialogs' "
         "not in sys.modules\n"
+        "assert importlib.util.find_spec("
+        "'erlab.interactive.imagetool.manager._figure_dialogs') is None\n"
+        "assert importlib.util.find_spec("
+        "'erlab.interactive.imagetool.manager._figure_manager') is None\n"
+        "assert importlib.util.find_spec("
+        "'erlab.interactive.imagetool.manager._workspace_io') is None\n"
+        "assert importlib.util.find_spec("
+        "'erlab.interactive.imagetool.manager._workspace_state') is None\n"
+        "assert importlib.util.find_spec("
+        "'erlab.interactive.imagetool.manager._xarray') is None\n"
         "assert 'erlab.interactive._figurecomposer._ui._axes_widgets' "
         "not in sys.modules\n"
         "assert 'matplotlib.backends.backend_qtagg' not in sys.modules\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_provenance_layers_load_in_one_direction() -> None:
+    code = textwrap.dedent(
+        """
+        import importlib.util
+        import sys
+
+        from erlab.interactive.imagetool._provenance import _model
+
+        prefix = "erlab.interactive.imagetool._provenance"
+        assert f"{prefix}._code" in sys.modules
+        assert f"{prefix}._graph" not in sys.modules
+        assert f"{prefix}._execution" not in sys.modules
+        assert f"{prefix}._operations" not in sys.modules
+        assert "qtpy.QtWidgets" not in sys.modules
+        assert "pyqtgraph" not in sys.modules
+
+        operation = _model.parse_tool_provenance_operation(
+            {"op": "rename", "name": "renamed"}
+        )
+        assert operation.name == "renamed"
+        assert f"{prefix}._operations" in sys.modules
+        assert f"{prefix}._graph" not in sys.modules
+        assert f"{prefix}._execution" not in sys.modules
+
+        assert importlib.util.find_spec(
+            "erlab.interactive.imagetool._provenance_framework"
+        ) is None
+        assert importlib.util.find_spec(
+            "erlab.interactive.imagetool._replay_graph"
+        ) is None
+        """
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_interactive_utils_does_not_load_imagetool_provenance() -> None:
+    code = textwrap.dedent(
+        """
+        import sys
+
+        import erlab.interactive.utils
+
+        prefix = "erlab.interactive.imagetool._provenance"
+        assert not any(name.startswith(prefix) for name in sys.modules)
+        """
     )
     subprocess.run([sys.executable, "-c", code], check=True)
 

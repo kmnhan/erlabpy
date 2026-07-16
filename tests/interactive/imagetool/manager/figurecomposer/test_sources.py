@@ -1,9 +1,41 @@
-# ruff: noqa: F403, F405
+import json
+import types
+import typing
+from pathlib import Path
+
+import numpy as np
+import pytest
+import xarray as xr
+from matplotlib.figure import Figure
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive._figurecomposer._codegen as figurecomposer_codegen
+import erlab.interactive._figurecomposer._model._sources as figurecomposer_sources
+import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
 import erlab.interactive._figurecomposer._ui._axes_widgets as axes_widgets
+import erlab.interactive._figurecomposer._ui._editor_controls as _editor_controls
 import erlab.interactive._figurecomposer._ui._figure_window as figure_window_ui
+import erlab.interactive._stylesheets
+import erlab.plotting as eplt
+from erlab.interactive._figurecomposer import (
+    FigureAxesSelectionState,
+    FigureComposerTool,
+    FigureDataSelectionState,
+    FigureGridSpecAxesState,
+    FigureGridSpecGridState,
+    FigureGridSpecLayoutState,
+    FigureGridSpecSpanState,
+    FigureMethodFamily,
+    FigureMethodPlotValueState,
+    FigureOperationState,
+    FigureRecipeState,
+    FigureSourceState,
+    FigureSubplotsState,
+)
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
+from erlab.interactive._figurecomposer._model import (
+    _operation_metadata as figurecomposer_operation_metadata,
+)
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _editor as plot_slices_editor,
 )
@@ -11,10 +43,43 @@ from erlab.interactive._figurecomposer._operations._plot_slices import (
     _model as plot_slices_model,
 )
 from erlab.interactive._figurecomposer._ui import (
+    _source_inspector as figurecomposer_source_inspector,
+)
+from erlab.interactive._figurecomposer._ui import (
     _source_panel as figurecomposer_source_panel,
 )
+from erlab.interactive._figurecomposer._ui import (
+    _toolbar_dialogs as figurecomposer_toolbar_dialogs,
+)
+from erlab.interactive.imagetool._provenance._execution import execute_replay_graph
+from erlab.interactive.imagetool._provenance._graph import compile_replay_graph
+from erlab.interactive.imagetool._provenance._model import (
+    ScriptInput,
+    ToolProvenanceSpec,
+    parse_tool_provenance_spec,
+    public_data,
+    script_input_dependency_refs,
+)
+from erlab.interactive.imagetool._provenance._operations import (
+    IselOperation,
+    QSelAggregationOperation,
+    QSelOperation,
+)
+from tests.interactive.imagetool.manager.helpers import _exec_generated_code
 
-from ._common import *
+from ._common import (
+    _activate_combo_index,
+    _clear_clipboard,
+    _custom_order_step,
+    _figure_composer_image_source,
+    _figure_composer_profile_source,
+    _file_load_provenance,
+    _operation_source_status_label,
+    _plot_source_checks,
+    _render_figure_composer_rgba,
+    _restored_figure_composer_from_netcdf,
+    _select_operation_rows,
+)
 
 
 def _source_context_action(
@@ -83,7 +148,7 @@ def test_figure_composer_source_state_normalizes_legacy_self_selection_parent() 
     )
     assert immutable_source.selection_source is None
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="valid dictionary"):
         FigureSourceState.model_validate("not a source mapping")
 
     legacy_source = FigureSourceState(name="selected").model_copy(
@@ -165,7 +230,7 @@ def test_figure_composer_secondary_source_roundtrip_ignores_stale_backend_encodi
     assert secondary.coords["x"].encoding["compression"] == "unknown"
 
 
-@pytest.mark.parametrize("retain_base_data", (False, True))
+@pytest.mark.parametrize("retain_base_data", [False, True])
 def test_figure_composer_selected_source_roundtrip_applies_selection_once(
     qtbot, retain_base_data: bool
 ) -> None:
@@ -1996,7 +2061,7 @@ def test_figure_composer_legacy_source_selection_normalization_edges(
 
 @pytest.mark.parametrize(
     ("operation_sources", "selection_values", "expected"),
-    (
+    [
         (("first",), (("first", 0.0), ("first", 2.0)), (0.0, 2.0)),
         (
             ("first", "second"),
@@ -2009,7 +2074,7 @@ def test_figure_composer_legacy_source_selection_normalization_edges(
             (0.0, 2.0),
         ),
         ((), (("first", 2.0), ("first", 0.0)), (2.0, 0.0)),
-    ),
+    ],
 )
 def test_figure_composer_plot_slices_legacy_selections_preserve_source_order(
     qtbot,
@@ -2304,7 +2369,7 @@ def _transitive_selected_source_tool() -> tuple[
     return tool, base, selected_u, selected_v
 
 
-@pytest.mark.parametrize("mutation", ("replace", "add", "refresh"))
+@pytest.mark.parametrize("mutation", ["replace", "add", "refresh"])
 def test_figure_composer_source_refresh_recomputes_transitive_selected_sources(
     qtbot,
     mutation: str,
@@ -2434,7 +2499,7 @@ def test_figure_composer_add_sources_reports_partial_batch_outcome(qtbot) -> Non
     assert not tool.source_panel.source_status_label.isHidden()
 
 
-@pytest.mark.parametrize("mutation", ("replace", "add", "refresh"))
+@pytest.mark.parametrize("mutation", ["replace", "add", "refresh"])
 def test_figure_composer_source_refresh_is_atomic_when_dependent_selection_fails(
     qtbot,
     mutation: str,
@@ -2773,7 +2838,7 @@ def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
         coords={"eV": [-1.0, 0.0], "alpha": [0.0, 1.0, 2.0]},
         name="base",
     )
-    base_spec = provenance.public_data().model_dump(mode="json")
+    base_spec = public_data().model_dump(mode="json")
     base_source = FigureSourceState(
         name="base",
         node_uid="base-node",
@@ -2804,9 +2869,9 @@ def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
         )
     )
     assert operation_types == (
-        provenance.IselOperation,
-        provenance.QSelOperation,
-        provenance.QSelAggregationOperation,
+        IselOperation,
+        QSelOperation,
+        QSelAggregationOperation,
     )
     assert tool._source_code_name_candidate("ImageTool 3: data_5") == "source_5"
     assert tool._source_code_name_candidate("2 sample map") == "source_2_sample_map"
@@ -2859,7 +2924,7 @@ def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
     assert script_inputs[0].name == "gs0_source"
     assert source_name_map["source_data"] == "gs0_source"
 
-    script_input = provenance.ScriptInput(name="base", provenance_spec=base_spec)
+    script_input = ScriptInput(name="base", provenance_spec=base_spec)
     assert tool._script_input_with_name(script_input, "base") is script_input
     renamed_script_input = tool._script_input_with_name(script_input, "renamed")
     assert renamed_script_input.name == "renamed"
@@ -2927,16 +2992,16 @@ def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
     assert live_selected_input.node_uid is None
     live_selected_spec = live_selected_input.parsed_provenance_spec()
     assert live_selected_spec is not None
-    [live_dependency] = provenance.script_input_dependency_refs(live_selected_spec)
+    [live_dependency] = script_input_dependency_refs(live_selected_spec)
     assert live_dependency.node_uid == "live-node"
-    live_selected_graph = _replay_graph.compile_replay_graph(
+    live_selected_graph = compile_replay_graph(
         live_selected_spec,
         live_input_resolver=lambda script_input: (
             (base_data, script_input) if script_input.node_uid == "live-node" else None
         ),
     )
     xr.testing.assert_identical(
-        _replay_graph.execute_replay_graph(live_selected_graph),
+        execute_replay_graph(live_selected_graph),
         base_data.qsel(eV=0.0),
     )
 
@@ -3702,12 +3767,12 @@ def test_figure_composer_line_source_combo_uses_alias_data_and_updates_recipe(
 
 def test_figure_composer_rebases_source_node_uids(qtbot) -> None:
     data = _figure_composer_image_source("data")
-    nested_spec = provenance.ToolProvenanceSpec(
+    nested_spec = ToolProvenanceSpec(
         kind="script",
         start_label="nested",
         active_name="nested",
         script_inputs=(
-            provenance.ScriptInput(
+            ScriptInput(
                 name="nested",
                 label="nested",
                 node_uid="old-nested",
@@ -3736,7 +3801,7 @@ def test_figure_composer_rebases_source_node_uids(qtbot) -> None:
 
     source = tool.tool_status.sources[0]
     assert source.node_uid == "new-source"
-    rebased_spec = provenance.parse_tool_provenance_spec(source.provenance_spec)
+    rebased_spec = parse_tool_provenance_spec(source.provenance_spec)
     assert rebased_spec is not None
     assert rebased_spec.script_inputs[0].node_uid == "new-nested"
 
@@ -3849,24 +3914,24 @@ def test_figure_composer_provenance_replays_transitive_selected_source_chain(
     assert selected_spec is not None
     assert len(selected_spec.replay_stages) == 2
     assert all(len(stage.operations) == 1 for stage in selected_spec.replay_stages)
-    [dependency] = provenance.script_input_dependency_refs(selected_spec)
+    [dependency] = script_input_dependency_refs(selected_spec)
     assert dependency.node_uid == "base-node"
 
     resolved_names: list[str] = []
 
     def resolve_live(
-        script_input: provenance.ScriptInput,
-    ) -> tuple[xr.DataArray, provenance.ScriptInput] | None:
+        script_input: ScriptInput,
+    ) -> tuple[xr.DataArray, ScriptInput] | None:
         if script_input.node_uid != "base-node":
             return None
         resolved_names.append(script_input.name)
         return base, script_input
 
-    selected_graph = _replay_graph.compile_replay_graph(
+    selected_graph = compile_replay_graph(
         selected_spec,
         live_input_resolver=resolve_live,
     )
-    live_selected = _replay_graph.execute_replay_graph(selected_graph)
+    live_selected = execute_replay_graph(selected_graph)
     xr.testing.assert_identical(live_selected, selected_v)
     assert resolved_names == ["base"]
 
@@ -3988,6 +4053,7 @@ def test_figure_composer_full_code_composes_selected_file_sources(
 
 def test_figure_composer_full_code_keeps_needed_base_and_selected_sources(
     qtbot,
+    monkeypatch,
     tmp_path: Path,
 ) -> None:
     data = xr.DataArray(
@@ -4042,10 +4108,24 @@ def test_figure_composer_full_code_keeps_needed_base_and_selected_sources(
     code = spec.display_code()
     assert code is not None
     assert "fig =" not in code
-    assert "fig_2 = xarray.load_dataarray" in code
-    assert "fig_3 = fig_2.qsel(hv=39.274)" in code
+    assert code.count("xarray.load_dataarray(") == 1
+    assert code.count(".copy(deep=True)") == 2
+    assert "_itool_replay_" not in code
     assert "eplt.plot_array(fig_2" in code
     assert "eplt.plot_array(fig_3" in code
+
+    captured: list[xr.DataArray] = []
+    monkeypatch.setattr(
+        eplt,
+        "plot_array",
+        lambda arr, **_kwargs: captured.append(arr),
+    )
+    namespace = _exec_generated_code(code, {})
+    assert isinstance(namespace["fig_2"], xr.DataArray)
+    assert isinstance(namespace["fig_3"], xr.DataArray)
+    assert isinstance(namespace["fig"], Figure)
+    xr.testing.assert_identical(captured[0], data)
+    xr.testing.assert_identical(captured[1], data.qsel(hv=39.274))
 
 
 def test_figure_composer_full_code_falls_back_for_live_selected_source(
@@ -5298,7 +5378,7 @@ def test_figure_composer_selected_source_script_input_skips_nonreplayable_input(
     data = xr.DataArray(
         np.arange(2.0), dims=("x",), coords={"x": [0.0, 1.0]}, name="base"
     )
-    provenance_spec = provenance.public_data().model_dump(mode="json")
+    provenance_spec = public_data().model_dump(mode="json")
     base = FigureSourceState(name="base", provenance_spec=provenance_spec)
     selected = FigureSourceState(
         name="selected",
@@ -5314,7 +5394,11 @@ def test_figure_composer_selected_source_script_input_skips_nonreplayable_input(
     )
     qtbot.addWidget(tool)
 
-    monkeypatch.setattr(provenance, "to_replay_provenance_spec", lambda _spec: None)
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "to_replay_provenance_spec",
+        lambda _spec: None,
+    )
     assert (
         tool._selected_source_script_input(
             selected,

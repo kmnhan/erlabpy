@@ -21,17 +21,17 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.colors
+import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool.manager import _server as _manager_server
-from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
 from erlab.interactive.imagetool.manager._logging import get_log_file_path
 from erlab.interactive.imagetool.manager._server import _ManagerServer, _WatcherServer
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
-    from erlab.interactive.imagetool import provenance
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
+    from erlab.interactive.imagetool._provenance._model import ToolProvenanceSpec
     from erlab.interactive.imagetool.manager import ImageToolManager
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ _DEPENDENCY_STATUS_TOOLTIPS: dict[str, str] = {
 @dataclass(frozen=True)
 class _ScriptRebuildResult:
     data: xr.DataArray
-    provenance_spec: provenance.ToolProvenanceSpec
+    provenance_spec: ToolProvenanceSpec
 
 
 class _ScriptRebuildError(RuntimeError):
@@ -1081,7 +1081,7 @@ _CURVE_PREVIEW_MAX_POINTS = 4096
 
 
 def _workspace_lock_owner_text(
-    lock_info: _manager_workspace._WorkspaceDocumentLockInfo,
+    lock_info: workspace_storage._WorkspaceDocumentLockInfo,
 ) -> str:
     parts: list[str] = []
     if lock_info.owner:
@@ -1099,7 +1099,7 @@ def _workspace_lock_owner_text(
 
 def _workspace_lock_details_text(
     fname: str | os.PathLike[str],
-    lock_info: _manager_workspace._WorkspaceDocumentLockInfo,
+    lock_info: workspace_storage._WorkspaceDocumentLockInfo,
 ) -> str:
     details = [
         f"Workspace: {pathlib.Path(fname)}",
@@ -1123,7 +1123,7 @@ def _show_workspace_file_lock_error(
     parent: QtWidgets.QWidget,
     fname: str | os.PathLike[str],
 ) -> None:
-    lock_info = _manager_workspace._workspace_document_lock_info(fname)
+    lock_info = workspace_storage._workspace_document_lock_info(fname)
     owner_text = _workspace_lock_owner_text(lock_info)
     if owner_text:
         informative_text = (
@@ -1659,7 +1659,7 @@ class _WidgetsController:
         self, *, port: int, watch_port: int
     ) -> tuple[_ManagerServer, _WatcherServer, int, int]:
         server = _ManagerServer(port=port)
-        server.sigReceived.connect(self._manager._data_recv)
+        server.sigReceived.connect(self._manager._data_ingress.receive_data)
         server.sigLoadRequested.connect(self._manager._data_load)
         server.sigReplaceRequested.connect(self._manager._data_replace)
         server.sigDataRequested.connect(self._manager._send_imagetool_data)
@@ -1717,7 +1717,7 @@ class _WidgetsController:
                 server.stop()
             if not server.isRunning():
                 for signal, slot in (
-                    (server.sigReceived, self._manager._data_recv),
+                    (server.sigReceived, self._manager._data_ingress.receive_data),
                     (server.sigLoadRequested, self._manager._data_load),
                     (server.sigReplaceRequested, self._manager._data_replace),
                     (server.sigDataRequested, self._manager._send_imagetool_data),

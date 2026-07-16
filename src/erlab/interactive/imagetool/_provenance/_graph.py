@@ -10,18 +10,38 @@ from __future__ import annotations
 
 import ast
 import builtins
-import hashlib
+import io
 import json
 import keyword
 import symtable
+import tokenize
 import typing
-from collections.abc import Callable, Mapping, Sequence
+from collections import Counter
+from collections.abc import Callable, Collection, Mapping, Sequence
 
-import numpy as np
 import xarray as xr
 
-import erlab
-from erlab.interactive.imagetool import _provenance_framework
+from erlab.interactive.imagetool._provenance._code import (
+    _NONUNIFORM_RESTORE_FUNCTION_NAME,
+    _SCRIPT_REPLAY_ALLOWED_BUILTINS,
+    _code_stores_name,
+    _code_uses_name,
+    _expression_starts_with_name,
+    _nonuniform_restore_support_code,
+    _replace_code_identifiers,
+    _script_codes_output_name,
+    _simplify_display_code,
+    _statement_load_count,
+    _statement_store_count,
+    _validate_script_replay_code,
+)
+from erlab.interactive.imagetool._provenance._model import (
+    ToolProvenanceSpec,
+    _assignment_code,
+    _is_internal_sort_coord_order_entry,
+    _script_input_reference_text,
+    parse_tool_provenance_spec,
+)
 
 
 class ReplayGraphError(Exception):
@@ -156,19 +176,6 @@ def _reserved_names_from_spec(spec: typing.Any) -> set[str]:
     for binding in getattr(spec, "script_context_bindings", ()):
         names.update(binding.names)
     return names
-
-
-def _code_uses_name(code: str, name: str) -> bool:
-    try:
-        module = ast.parse(code, mode="exec")
-    except SyntaxError:
-        return False
-    return any(
-        isinstance(node, ast.Name)
-        and node.id == name
-        and isinstance(node.ctx, ast.Load)
-        for node in ast.walk(module)
-    )
 
 
 class _CurrentScopeNames(ast.NodeVisitor):
@@ -471,7 +478,7 @@ def _validate_script_provenance(
             "Script provenance cannot be replayed without active_name"
         )
 
-    builtin_names = set(_provenance_framework._SCRIPT_REPLAY_ALLOWED_BUILTINS)
+    builtin_names = set(_SCRIPT_REPLAY_ALLOWED_BUILTINS)
     if not strict_replay_code:
         builtin_names.update(vars(builtins))
 
@@ -496,7 +503,7 @@ def _validate_script_provenance(
         has_replay_step = True
         if strict_replay_code:
             try:
-                _provenance_framework._validate_script_replay_code(spec.seed_code)
+                _validate_script_replay_code(spec.seed_code)
             except (TypeError, ValueError) as exc:
                 raise ReplayGraphError(str(exc)) from exc
         else:
@@ -519,10 +526,10 @@ def _validate_script_provenance(
                 available_names,
                 function_dependencies,
             )
-        active_available = active_available or _provenance_framework._code_stores_name(
+        active_available = active_available or _code_stores_name(
             spec.seed_code, spec.active_name
         )
-        current_name = _provenance_framework._script_codes_output_name(
+        current_name = _script_codes_output_name(
             (spec.seed_code,),
             active_name=spec.active_name,
             current_name=current_name,
@@ -553,7 +560,7 @@ def _validate_script_provenance(
             has_replay_step = True
             if strict_replay_code:
                 try:
-                    _provenance_framework._validate_script_replay_code(operation.code)
+                    _validate_script_replay_code(operation.code)
                 except (TypeError, ValueError) as exc:
                     raise ReplayGraphError(str(exc)) from exc
             else:
@@ -568,13 +575,10 @@ def _validate_script_provenance(
                 available_names,
                 function_dependencies,
             )
-            active_available = (
-                active_available
-                or _provenance_framework._code_stores_name(
-                    operation.code, spec.active_name
-                )
+            active_available = active_available or _code_stores_name(
+                operation.code, spec.active_name
             )
-            current_name = _provenance_framework._script_codes_output_name(
+            current_name = _script_codes_output_name(
                 (operation.code,),
                 active_name=spec.active_name,
                 current_name=current_name,
@@ -588,7 +592,13 @@ def _validate_script_provenance(
             )
         has_replay_step = True
         available_names.add(current_name)
-        active_available = active_available or current_name == spec.active_name
+        preferred_name = operation.preferred_replay_output_name()
+        if preferred_name is not None:
+            current_name = preferred_name
+            available_names.add(preferred_name)
+            active_available = preferred_name == spec.active_name
+        else:
+            active_available = active_available or current_name == spec.active_name
     if not has_replay_step:
         raise ReplayGraphError("Script provenance has no replay code")
     if not active_available and current_name != spec.active_name:
@@ -633,7 +643,7 @@ def _file_seed_code_parts(seed_code: str, active_name: str) -> tuple[str | None,
         (
             idx
             for idx, stmt in enumerate(module.body)
-            if _provenance_framework._statement_store_count(stmt, active_name) > 0
+            if _statement_store_count(stmt, active_name) > 0
         ),
         None,
     )
@@ -759,11 +769,9 @@ def _compile_replay_stages(
         )
         operations = stage.operations
         if display:
-            operations = (
-                _provenance_framework.ToolProvenanceSpec._streamlined_operations(
-                    stage.source_kind,
-                    operations,
-                )
+            operations = ToolProvenanceSpec._streamlined_operations(
+                stage.source_kind,
+                operations,
             )
         for operation in operations:
             current_key = graph.add_node(
@@ -790,7 +798,7 @@ def _script_seed_file_load_parts(
 ) -> tuple[str | None, str, str] | None:
     if getattr(load_source, "replay_call", None) is None:
         return None
-    seed_output_name = _provenance_framework._script_codes_output_name(
+    seed_output_name = _script_codes_output_name(
         (seed_code,),
         active_name=active_name,
         current_name=None,
@@ -835,6 +843,7 @@ def _operation_replay_code(
     active_name: str,
     context_name: str,
     parent_name: str | None = None,
+    reserved_names: Collection[str] = (),
 ) -> str:
     input_name = active_name if parent_name is None else parent_name
     try:
@@ -842,6 +851,7 @@ def _operation_replay_code(
             input_name,
             output_name=active_name,
             source_name=context_name,
+            reserved_names=reserved_names,
         )
     except (AttributeError, NotImplementedError) as exc:
         raise ReplayGraphError("Operation does not provide replay code") from exc
@@ -851,7 +861,7 @@ def _operation_replay_code(
         ast.parse(code, mode="exec")
     except SyntaxError as exc:
         raise ReplayGraphError("Operation replay code is not valid Python") from exc
-    if not _provenance_framework._code_stores_name(code, active_name) and not (
+    if not _code_stores_name(code, active_name) and not (
         input_name == active_name
         and getattr(operation, "statement_mutates_input", False)
     ):
@@ -868,7 +878,7 @@ def _compile_spec(
     external_inputs: Mapping[str, xr.DataArray] | None,
     live_input_resolver: LiveInputResolver | None,
 ) -> str:
-    parsed = _provenance_framework.parse_tool_provenance_spec(spec)
+    parsed = parse_tool_provenance_spec(spec)
     if parsed is None:
         raise ReplayGraphError("Expected provenance spec")
 
@@ -934,11 +944,7 @@ def _compile_spec(
                 else:
                     input_spec = script_input.parsed_provenance_spec()
                     if input_spec is None:
-                        input_reference = (
-                            _provenance_framework._script_input_reference_text(
-                                script_input
-                            )
-                        )
+                        input_reference = _script_input_reference_text(script_input)
                         raise ReplayGraphError(
                             f"{input_reference} "
                             "does not contain recorded source provenance"
@@ -1038,7 +1044,7 @@ def _compile_spec(
             nonlocal pending_codes, script_current_key
             if not pending_codes:
                 return
-            output_name = _provenance_framework._script_codes_output_name(
+            output_name = _script_codes_output_name(
                 pending_codes,
                 active_name=active_name,
                 current_name=current_name,
@@ -1067,6 +1073,8 @@ def _compile_spec(
             )
             current_name = output_name
             current_bindings = bind_name(output_name, script_current_key)
+            if display and _is_semantic_replay_name(output_name):
+                graph.add_alias(output_name, script_current_key)
             pending_codes = []
             pending_code_hoist_imports = []
 
@@ -1131,7 +1139,7 @@ def _compile_spec(
                     "derived = derived.isel()",
                     "derived = derived.qsel()",
                     "derived = derived.sel()",
-                } or _provenance_framework._is_internal_sort_coord_order_entry(entry):
+                } or _is_internal_sort_coord_order_entry(entry):
                     continue
             if getattr(operation, "op", None) == "script_code":
                 operation_code = typing.cast(
@@ -1148,8 +1156,12 @@ def _compile_spec(
                     )
                 continue
 
+            preferred_name = operation.preferred_replay_output_name()
+            if pending_codes and preferred_name is not None:
+                flush_script()
+
             if pending_codes:
-                pending_output_name = _provenance_framework._script_codes_output_name(
+                pending_output_name = _script_codes_output_name(
                     pending_codes,
                     active_name=active_name,
                     current_name=current_name,
@@ -1161,6 +1173,7 @@ def _compile_spec(
                         operation,
                         active_name=pending_output_name,
                         context_name=pending_output_name,
+                        reserved_names=graph.reserved_names,
                     )
                 )
                 pending_code_hoist_imports.append(False)
@@ -1168,7 +1181,12 @@ def _compile_spec(
 
             ensure_script_current_key()
             current_key = typing.cast("str", script_current_key)
-            operation_name = current_name or active_name
+            if preferred_name is not None:
+                operation_name = preferred_name
+            elif index == len(operations) - 1:
+                operation_name = active_name
+            else:
+                operation_name = current_name or active_name
             script_current_key = graph.add_node(
                 _canonical_key(
                     "operation",
@@ -1215,7 +1233,7 @@ def compile_replay_graph(
     external_inputs: Mapping[str, xr.DataArray] | None = None,
     live_input_resolver: LiveInputResolver | None = None,
 ) -> ReplayGraph:
-    parsed = _provenance_framework.parse_tool_provenance_spec(spec)
+    parsed = parse_tool_provenance_spec(spec)
     if parsed is None:
         raise ReplayGraphError("Expected provenance spec")
     reserved_names = _reserved_names_from_spec(parsed)
@@ -1278,6 +1296,39 @@ def _source_view_emits_code(graph: ReplayGraph, node: ReplayNode) -> bool:
     )
 
 
+def _dotted_import_root_bindings(code: str) -> set[str]:
+    """Return module-scope roots bound by unaliased dotted imports."""
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return set()
+
+    roots: set[str] = set()
+
+    class ImportVisitor(ast.NodeVisitor):
+        def visit_Import(self, node: ast.Import) -> None:
+            roots.update(
+                alias.name.partition(".")[0]
+                for alias in node.names
+                if alias.asname is None and "." in alias.name
+            )
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+    ImportVisitor().visit(module)
+    return roots
+
+
 def _node_names(
     graph: ReplayGraph,
     *,
@@ -1294,16 +1345,60 @@ def _node_names(
             node = node_by_key[key]
         return key
 
+    copied_script_bindings = _copied_script_bindings(graph)
+    copied_names_by_key: dict[str, set[str]] = {}
+    for _node_key, input_name, input_key in copied_script_bindings:
+        copied_names_by_key.setdefault(emitted_key(input_key), set()).add(input_name)
     preferred_names: dict[str, str] = {}
     for public_name, key in graph.aliases:
-        preferred_names[emitted_key(key)] = public_name
+        emitted_alias_key = emitted_key(key)
+        if public_name not in copied_names_by_key.get(emitted_alias_key, set()):
+            preferred_names.setdefault(emitted_alias_key, public_name)
+    for node in graph.nodes:
+        if node.kind != "operation":
+            continue
+        preferred_output_name = node.payload["operation"].preferred_replay_output_name()
+        if preferred_output_name is not None:
+            preferred_names[node.key] = preferred_output_name
     if output_name is not None:
         if graph.output_key is None:
             raise ReplayGraphError("Replay graph has no output")
         preferred_names[emitted_key(graph.output_key)] = output_name
 
+    reserved_names = graph.reserved_names
+    dotted_import_roots: set[str] = set()
+    if graph.display:
+        for node in graph.nodes:
+            code_fragments = [
+                value
+                for field in ("code", "load_code")
+                if isinstance((value := node.payload.get(field)), str)
+            ]
+            code_fragments.extend(
+                code for code in node.payload.get("codes", ()) if isinstance(code, str)
+            )
+            operation_code = getattr(node.payload.get("operation"), "code", None)
+            if isinstance(operation_code, str):
+                code_fragments.append(operation_code)
+            for code in code_fragments:
+                accesses, rebindings = _code_name_accesses(code)
+                reserved_names.update(accesses)
+                reserved_names.update(rebindings)
+                dotted_import_roots.update(_dotted_import_root_bindings(code))
+    for node in graph.nodes:
+        if node.kind != "operation" or not node.parents:
+            continue
+        preferred_input_name = node.payload["operation"].preferred_replay_input_name()
+        parent_key = emitted_key(node.parents[0])
+        if (
+            preferred_input_name is not None
+            and preferred_input_name not in reserved_names
+            and preferred_input_name not in preferred_names.values()
+        ):
+            preferred_names.setdefault(parent_key, preferred_input_name)
+
     names: dict[str, str] = {}
-    used = graph.reserved_names
+    used = reserved_names
     counter = 0
 
     def next_temp() -> str:
@@ -1323,7 +1418,11 @@ def _node_names(
         ):
             continue
         preferred_name = preferred_names.get(node.key)
-        if preferred_name is not None and preferred_name not in names.values():
+        if (
+            preferred_name is not None
+            and preferred_name not in names.values()
+            and preferred_name not in dotted_import_roots
+        ):
             names[node.key] = preferred_name
             used.add(preferred_name)
         else:
@@ -1335,6 +1434,49 @@ def _node_names(
         ):
             names[node.key] = names[emitted_key(node.key)]
     return names
+
+
+def _copied_script_bindings(graph: ReplayGraph) -> set[tuple[str, str, str]]:
+    """Return shared bindings that need independent script-owned arrays.
+
+    Runtime replay gives every script binding its own deep copy. Emitted code preserves
+    that ownership wherever two bindings share the same value or a value-producing
+    graph ancestor. Setup nodes are excluded because sharing import/setup code does not
+    imply sharing an array.
+    """
+    bindings = [
+        (node.key, input_name, input_key)
+        for node in graph.nodes
+        if node.kind == "script"
+        for input_name, input_key in typing.cast(
+            "tuple[tuple[str, str], ...]", node.payload["bindings"]
+        )
+    ]
+    node_by_key = {node.key: node for node in graph.nodes}
+    ancestors_by_key: dict[str, frozenset[str]] = {}
+
+    def value_ancestors(key: str) -> frozenset[str]:
+        if key not in ancestors_by_key:
+            node = node_by_key[key]
+            ancestors = set() if node.kind == "setup" else {key}
+            for parent_key in node.parents:
+                ancestors.update(value_ancestors(parent_key))
+            ancestors_by_key[key] = frozenset(ancestors)
+        return ancestors_by_key[key]
+
+    binding_counts = Counter(input_key for _node_key, _name, input_key in bindings)
+    copied: set[tuple[str, str, str]] = set()
+    for binding in bindings:
+        _node_key, _input_name, input_key = binding
+        if binding_counts[input_key] > 1 or any(
+            binding != other_binding
+            and not value_ancestors(input_key).isdisjoint(
+                value_ancestors(other_binding[2])
+            )
+            for other_binding in bindings
+        ):
+            copied.add(binding)
+    return copied
 
 
 def _inline_adjacent_replay_assignments(code: str) -> str:
@@ -1352,17 +1494,17 @@ def _inline_adjacent_replay_assignments(code: str) -> str:
             if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
                 continue
             target = stmt.targets[0]
-            if not isinstance(target, ast.Name) or not target.id.startswith(
-                _REPLAY_TEMP_PREFIX
-            ):
+            if not isinstance(target, ast.Name):
                 continue
             next_stmt = module.body[idx + 1]
-            if not isinstance(next_stmt, ast.Assign):
+            if not isinstance(
+                next_stmt, ast.Assign
+            ) or not _expression_starts_with_name(next_stmt.value, target.id):
                 continue
-            if _provenance_framework._statement_load_count(next_stmt, target.id) != 1:
+            if _statement_load_count(next_stmt, target.id) != 1:
                 continue
             if any(
-                _provenance_framework._statement_load_count(later_stmt, target.id) > 0
+                _statement_load_count(later_stmt, target.id) > 0
                 for later_stmt in module.body[idx + 2 :]
             ):
                 continue
@@ -1397,82 +1539,70 @@ def _inline_adjacent_replay_assignments(code: str) -> str:
     return ast.unparse(ast.fix_missing_locations(module))
 
 
-def _inline_single_use_replay_expressions(code: str) -> str:
+def _inline_single_use_replay_names(code: str) -> str:
+    """Inline one-use replay temporaries bound to side-effect-free names."""
     try:
         module = ast.parse(code, mode="exec")
     except SyntaxError:
         return code
     changed = False
 
-    def clone_expr(expr: ast.expr) -> ast.expr:
-        return ast.parse(ast.unparse(expr), mode="eval").body
+    class ReplayNameInliner(ast.NodeTransformer):
+        def __init__(self, target_name: str, source_name: str) -> None:
+            self.target_name = target_name
+            self.source_name = source_name
 
-    def has_call(expr: ast.expr) -> bool:
-        return any(isinstance(node, ast.Call) for node in ast.walk(expr))
+        def visit_Name(self, node: ast.Name) -> ast.Name:
+            if node.id == self.target_name and isinstance(node.ctx, ast.Load):
+                return ast.copy_location(
+                    ast.Name(self.source_name, ctx=ast.Load()),
+                    node,
+                )
+            return node
 
     while True:
-        for idx, stmt in enumerate(module.body[:-1]):
-            if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
-                continue
-            target = stmt.targets[0]
-            if not isinstance(target, ast.Name) or not target.id.startswith(
-                _REPLAY_TEMP_PREFIX
+        for idx, statement in enumerate(module.body[:-1]):
+            if (
+                not isinstance(statement, ast.Assign)
+                or len(statement.targets) != 1
+                or not isinstance(statement.targets[0], ast.Name)
+                or not statement.targets[0].id.startswith(_REPLAY_TEMP_PREFIX)
+                or not isinstance(statement.value, ast.Name)
             ):
                 continue
-            if has_call(stmt.value):
-                continue
-
+            target_name = statement.targets[0].id
+            source_name = statement.value.id
             later_loads = [
                 later_idx
                 for later_idx, later in enumerate(module.body[idx + 1 :], start=idx + 1)
-                if _provenance_framework._statement_load_count(later, target.id) > 0
+                if _statement_load_count(later, target_name)
             ]
             if len(later_loads) != 1:
                 continue
             use_idx = later_loads[0]
-            use_stmt = module.body[use_idx]
-            if not isinstance(use_stmt, ast.Assign):
-                continue
-            if _provenance_framework._statement_load_count(use_stmt, target.id) != 1:
-                continue
-
-            replacement_load_names = {
-                node.id
-                for node in ast.walk(stmt.value)
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-            }
+            use_statement = module.body[use_idx]
             intervening = module.body[idx + 1 : use_idx]
-            if any(
-                _provenance_framework._statement_store_count(item, target.id)
-                for item in intervening
+            if (
+                not isinstance(use_statement, ast.Assign)
+                or _statement_load_count(use_statement, target_name) != 1
+                or any(
+                    not isinstance(item, ast.Assign)
+                    or len(item.targets) != 1
+                    or not isinstance(item.targets[0], ast.Name)
+                    or not isinstance(item.value, ast.Name)
+                    for item in intervening
+                )
+                or any(
+                    _statement_store_count(item, target_name)
+                    or _statement_store_count(item, source_name)
+                    for item in intervening
+                )
             ):
                 continue
-            if any(
-                _provenance_framework._statement_store_count(item, name)
-                for item in intervening
-                for name in replacement_load_names
-            ):
-                continue
-
-            inline_target = target.id
-            inline_value = clone_expr(stmt.value)
-
-            class ReplayExpressionInliner(ast.NodeTransformer):
-                def __init__(self, target_name: str, value: ast.expr) -> None:
-                    self.target_name = target_name
-                    self.value = value
-
-                def visit_Name(self, node: ast.Name) -> ast.expr:
-                    if node.id == self.target_name and isinstance(node.ctx, ast.Load):
-                        return ast.copy_location(clone_expr(self.value), node)
-                    return node
-
             module.body[use_idx] = ast.fix_missing_locations(
                 typing.cast(
                     "ast.stmt",
-                    ReplayExpressionInliner(inline_target, inline_value).visit(
-                        use_stmt
-                    ),
+                    ReplayNameInliner(target_name, source_name).visit(use_statement),
                 )
             )
             del module.body[idx]
@@ -1508,6 +1638,195 @@ def _remove_noop_assignments(code: str) -> str:
     return ast.unparse(ast.fix_missing_locations(module))
 
 
+def _standalone_statement_span(
+    code: str, statement: ast.stmt
+) -> tuple[int, int] | None:
+    """Return the byte span of a statement that occupies complete source lines."""
+    if statement.end_lineno is None or statement.end_col_offset is None:
+        return None
+    encoded = code.encode()
+    line_starts = [0]
+    for line in encoded.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+    start = line_starts[statement.lineno - 1] + statement.col_offset
+    end = line_starts[statement.end_lineno - 1] + statement.end_col_offset
+    line_start = line_starts[statement.lineno - 1]
+    line_end = line_starts[statement.end_lineno]
+    if encoded[line_start:start].strip() or encoded[end:line_end].strip():
+        return None
+    return line_start, line_end
+
+
+def _replace_statement_load_name(
+    code: str,
+    statement: ast.stmt,
+    *,
+    target_name: str,
+    source_name: str,
+) -> str:
+    """Replace identifier loads in one statement without reformatting its source."""
+    encoded = code.encode()
+    line_starts = [0]
+    for line in encoded.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+    spans = sorted(
+        (
+            line_starts[node.lineno - 1] + node.col_offset,
+            line_starts[node.end_lineno - 1] + node.end_col_offset,
+        )
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id == target_name
+        and node.end_lineno is not None
+        and node.end_col_offset is not None
+    )
+    replacement = source_name.encode()
+    for start, end in reversed(spans):
+        encoded = encoded[:start] + replacement + encoded[end:]
+    return encoded.decode()
+
+
+def _replace_ast_names(
+    code: str,
+    module: ast.Module,
+    replacements: Mapping[str, str],
+) -> str:
+    """Replace parsed name nodes without changing unrelated source formatting."""
+    encoded = code.encode()
+    source_lines = code.splitlines(keepends=True)
+    line_starts = [0]
+    for line in encoded.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+    spans = [
+        (
+            line_starts[node.lineno - 1] + node.col_offset,
+            line_starts[node.end_lineno - 1] + node.end_col_offset,
+            replacements[node.id].encode(),
+        )
+        for node in ast.walk(module)
+        if isinstance(node, ast.Name)
+        and node.id in replacements
+        and node.end_lineno is not None
+        and node.end_col_offset is not None
+    ]
+    tokens = iter(tokenize.generate_tokens(io.StringIO(code).readline))
+    for token in tokens:
+        if token.type != tokenize.NAME or token.string not in {"class", "def"}:
+            continue
+        for name_token in tokens:
+            if name_token.type != tokenize.NAME:
+                continue
+            replacement = replacements.get(name_token.string)
+            if replacement is not None:
+                line = source_lines[name_token.start[0] - 1]
+                name_start = line_starts[name_token.start[0] - 1] + len(
+                    line[: name_token.start[1]].encode()
+                )
+                spans.append(
+                    (
+                        name_start,
+                        name_start + len(name_token.string.encode()),
+                        replacement.encode(),
+                    )
+                )
+            break
+    for statement in ast.walk(module):
+        if not isinstance(statement, ast.Import | ast.ImportFrom):
+            continue
+        for alias in statement.names:
+            if (
+                alias.name == "*"
+                or alias.end_lineno is None
+                or alias.end_col_offset is None
+            ):
+                continue
+            bound_name = alias.asname or (
+                alias.name.partition(".")[0]
+                if isinstance(statement, ast.Import)
+                else alias.name
+            )
+            replacement = replacements.get(bound_name)
+            if replacement is None:
+                continue
+            alias_end = line_starts[alias.end_lineno - 1] + alias.end_col_offset
+            if alias.asname is not None:
+                spans.append(
+                    (
+                        alias_end - len(alias.asname.encode()),
+                        alias_end,
+                        replacement.encode(),
+                    )
+                )
+            elif not isinstance(statement, ast.Import) or "." not in alias.name:
+                spans.append((alias_end, alias_end, f" as {replacement}".encode()))
+    for start, end, replacement in sorted(spans, reverse=True):
+        encoded = encoded[:start] + replacement + encoded[end:]
+    return encoded.decode()
+
+
+def _format_long_call_assignments(code: str, *, line_length: int = 88) -> str:
+    """Wrap top-level call assignments made too long by semantic renaming."""
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return code
+    encoded = code.encode()
+    replacements: list[tuple[int, int, bytes]] = []
+    for statement in module.body:
+        if (
+            not isinstance(statement, ast.Assign)
+            or len(statement.targets) != 1
+            or not isinstance(statement.targets[0], ast.Name)
+            or not isinstance(statement.value, ast.Call)
+        ):
+            continue
+        statement_code = ast.get_source_segment(code, statement)
+        expression_code = ast.get_source_segment(code, statement.value)
+        span = _standalone_statement_span(code, statement)
+        if (
+            statement_code is None
+            or expression_code is None
+            or span is None
+            or max(map(len, statement_code.splitlines())) <= line_length
+        ):
+            continue
+        formatted = _assignment_code(
+            statement.targets[0].id,
+            expression_code,
+            line_length=line_length,
+        )
+        start, end = span
+        suffix = b"\n" if encoded[start:end].endswith(b"\n") else b""
+        replacements.append((start, end, formatted.encode() + suffix))
+    for start, end, replacement in reversed(replacements):
+        encoded = encoded[:start] + replacement + encoded[end:]
+    return encoded.decode()
+
+
+def _inline_standalone_alias(
+    code: str,
+    alias_statement: ast.stmt,
+    use_statement: ast.stmt,
+    *,
+    target_name: str,
+    source_name: str,
+) -> str | None:
+    """Inline one standalone alias without changing surrounding formatting."""
+    alias_span = _standalone_statement_span(code, alias_statement)
+    if alias_span is None:
+        return None
+    code = _replace_statement_load_name(
+        code,
+        use_statement,
+        target_name=target_name,
+        source_name=source_name,
+    )
+    alias_start, alias_end = alias_span
+    encoded = code.encode()
+    return (encoded[:alias_start] + encoded[alias_end:]).decode().strip("\n")
+
+
 def _inline_simple_name_aliases(code: str) -> str:
     try:
         module = ast.parse(code, mode="exec")
@@ -1531,18 +1850,24 @@ def _inline_simple_name_aliases(code: str) -> str:
                 )
             return node
 
-    def kspace_receiver_load_count(stmt: ast.stmt, target_name: str) -> int:
-        return sum(
-            1
-            for node in ast.walk(stmt)
-            if (
-                isinstance(node, ast.Attribute)
-                and node.attr == "kspace"
-                and isinstance(node.value, ast.Name)
-                and node.value.id == target_name
-                and isinstance(node.value.ctx, ast.Load)
-            )
-        )
+    def receiver_root_name(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Call):
+            return receiver_root_name(node.func)
+        if isinstance(node, ast.Attribute | ast.Subscript):
+            return receiver_root_name(node.value)
+        return None
+
+    def receiver_load_count(stmt: ast.stmt, target_name: str) -> int:
+        if not isinstance(stmt, ast.Assign):
+            return 0
+        load_count = _statement_load_count(stmt, target_name)
+        if receiver_root_name(stmt.value) == target_name:
+            return load_count
+        if load_count == 1:
+            return 1
+        return 0
 
     while True:
         for idx, stmt in enumerate(module.body[:-1]):
@@ -1556,19 +1881,60 @@ def _inline_simple_name_aliases(code: str) -> str:
             if target_name == source_name:
                 continue
 
+            later_statements = module.body[idx + 1 :]
+            load_indices = [
+                later_idx
+                for later_idx, later_stmt in enumerate(
+                    later_statements,
+                    start=idx + 1,
+                )
+                if _statement_load_count(later_stmt, target_name)
+            ]
+            if len(load_indices) == 1:
+                use_idx = load_indices[0]
+                preceding = module.body[idx + 1 : use_idx]
+                if not any(
+                    _statement_store_count(item, target_name)
+                    or _statement_store_count(item, source_name)
+                    for item in preceding
+                ):
+                    inlined_code = _inline_standalone_alias(
+                        code,
+                        stmt,
+                        module.body[use_idx],
+                        target_name=target_name,
+                        source_name=source_name,
+                    )
+                    if inlined_code is not None:
+                        code = inlined_code
+                        module = ast.parse(code, mode="exec")
+                    else:
+                        inliner = SimpleAliasInliner(target_name, source_name)
+                        cloned = ast.parse(
+                            ast.unparse(module.body[use_idx]), mode="exec"
+                        ).body[0]
+                        module.body[use_idx] = ast.fix_missing_locations(
+                            typing.cast("ast.stmt", inliner.visit(cloned))
+                        )
+                        del module.body[idx]
+                        code = ast.unparse(ast.fix_missing_locations(module))
+                        module = ast.parse(code, mode="exec")
+                    changed = True
+                    break
+
             rewrite_end: int | None = None
             can_rewrite = True
             for later_idx, later_stmt in enumerate(
                 module.body[idx + 1 :],
                 start=idx + 1,
             ):
-                if _provenance_framework._statement_store_count(
+                if _statement_store_count(
                     later_stmt,
                     source_name,
                 ):
                     can_rewrite = False
                     break
-                if not _provenance_framework._statement_store_count(
+                if not _statement_store_count(
                     later_stmt,
                     target_name,
                 ):
@@ -1578,7 +1944,7 @@ def _inline_simple_name_aliases(code: str) -> str:
                     and len(later_stmt.targets) == 1
                     and isinstance(later_stmt.targets[0], ast.Name)
                     and later_stmt.targets[0].id == target_name
-                    and _provenance_framework._statement_load_count(
+                    and _statement_load_count(
                         later_stmt,
                         target_name,
                     )
@@ -1587,10 +1953,10 @@ def _inline_simple_name_aliases(code: str) -> str:
                 else:
                     can_rewrite = False
                 break
-            if rewrite_end is None or not can_rewrite:
+            if rewrite_end != idx + 1 or not can_rewrite:
                 continue
             if any(
-                _provenance_framework._statement_store_count(
+                _statement_store_count(
                     intervening,
                     target_name,
                 )
@@ -1599,11 +1965,24 @@ def _inline_simple_name_aliases(code: str) -> str:
                 continue
             rewrite_statements = module.body[idx + 1 : rewrite_end + 1]
             if any(
-                _provenance_framework._statement_load_count(item, target_name)
-                != kspace_receiver_load_count(item, target_name)
+                _statement_load_count(item, target_name)
+                != receiver_load_count(item, target_name)
                 for item in rewrite_statements
             ):
                 continue
+
+            inlined_code = _inline_standalone_alias(
+                code,
+                stmt,
+                rewrite_statements[0],
+                target_name=target_name,
+                source_name=source_name,
+            )
+            if inlined_code is not None:
+                code = inlined_code
+                module = ast.parse(code, mode="exec")
+                changed = True
+                break
 
             inliner = SimpleAliasInliner(target_name, source_name)
             rewritten: list[ast.stmt] = []
@@ -1616,6 +1995,8 @@ def _inline_simple_name_aliases(code: str) -> str:
                 )
             module.body[idx + 1 : rewrite_end + 1] = rewritten
             del module.body[idx]
+            code = ast.unparse(ast.fix_missing_locations(module))
+            module = ast.parse(code, mode="exec")
             changed = True
             break
         else:
@@ -1623,7 +2004,7 @@ def _inline_simple_name_aliases(code: str) -> str:
 
     if not changed:
         return code
-    return ast.unparse(ast.fix_missing_locations(module))
+    return code
 
 
 def _compact_replay_temp_names(code: str) -> str:
@@ -1658,15 +2039,8 @@ def _compact_replay_temp_names(code: str) -> str:
     if not replacements or all(key == value for key, value in replacements.items()):
         return code
 
-    class ReplayTempCompactor(ast.NodeTransformer):
-        def visit_Name(self, node: ast.Name) -> ast.Name:
-            replacement = replacements.get(node.id)
-            if replacement is None:
-                return node
-            return ast.copy_location(ast.Name(replacement, ctx=node.ctx), node)
-
-    compacted = typing.cast("ast.Module", ReplayTempCompactor().visit(module))
-    return ast.unparse(ast.fix_missing_locations(compacted))
+    renamed = _replace_ast_names(code, module, replacements)
+    return _format_long_call_assignments(renamed)
 
 
 def _code_has_scoped_definition(code: str) -> bool:
@@ -1682,13 +2056,96 @@ def _code_has_scoped_definition(code: str) -> bool:
     )
 
 
-def _cleanup_emitted_replay_code(code: str) -> str:
+def _is_receiver_assignment_chain(codes: Sequence[str], active_name: str) -> bool:
+    """Return whether code chunks are a side-effect-free receiver transform chain."""
+
+    def receiver_root_name(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Call):
+            return receiver_root_name(node.func)
+        if isinstance(node, ast.Attribute | ast.Subscript):
+            return receiver_root_name(node.value)
+        return None
+
+    if len(codes) < 2:
+        return False
+    for index, code in enumerate(codes):
+        try:
+            module = ast.parse(code, mode="exec")
+        except SyntaxError:
+            return False
+        if len(module.body) != 1 or not isinstance(module.body[0], ast.Assign):
+            return False
+        statement = module.body[0]
+        if (
+            len(statement.targets) != 1
+            or not isinstance(statement.targets[0], ast.Name)
+            or statement.targets[0].id != active_name
+        ):
+            return False
+        if index and (
+            receiver_root_name(statement.value) != active_name
+            or _statement_load_count(statement, active_name) != 1
+        ):
+            return False
+    return True
+
+
+def _remove_unused_generated_copies(code: str, names: set[str]) -> str:
+    if not names:
+        return code
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return code
+    retained: list[ast.stmt] = []
+    changed = False
+    for index, statement in enumerate(module.body):
+        target_name = (
+            statement.targets[0].id
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            else None
+        )
+        if target_name not in names:
+            retained.append(statement)
+            continue
+        later_code = ast.unparse(
+            ast.Module(body=module.body[index + 1 :], type_ignores=[])
+        )
+        if _code_uses_name(later_code, target_name):
+            retained.append(statement)
+            continue
+        changed = True
+    if not changed:
+        return code
+    module.body = retained
+    return ast.unparse(ast.fix_missing_locations(module))
+
+
+def _cleanup_emitted_replay_code(
+    code: str,
+    *,
+    generated_copy_names: set[str],
+    compact_temporaries: bool = True,
+) -> str:
+    """Simplify replay code while optionally preserving graph-owned temp names.
+
+    Display emission preserves the original temporary identifiers until semantic
+    renaming can associate each surviving binding with the graph node that owns it.
+    """
     code = _remove_noop_assignments(code)
     code = _inline_simple_name_aliases(code)
     code = _inline_adjacent_replay_assignments(code)
-    code = _inline_single_use_replay_expressions(code)
+    code = _inline_single_use_replay_names(code)
+    code = _inline_adjacent_replay_assignments(code)
     code = _remove_noop_assignments(code)
-    return _compact_replay_temp_names(code)
+    code = _remove_unused_generated_copies(code, generated_copy_names)
+    if compact_temporaries:
+        return _compact_replay_temp_names(code)
+    return code
 
 
 def _leading_top_level_imports(code: str) -> tuple[list[tuple[str, str]], str]:
@@ -1835,6 +2292,9 @@ def _code_name_accesses(code: str) -> tuple[set[str], set[str]]:
             accessed.add(node.id)
             if isinstance(node.ctx, ast.Store | ast.Del):
                 rebound.add(node.id)
+        elif isinstance(node, ast.arg):
+            accessed.add(node.arg)
+            rebound.add(node.arg)
         elif isinstance(node, ast.AsyncFunctionDef | ast.ClassDef | ast.FunctionDef):
             accessed.add(node.name)
             rebound.add(node.name)
@@ -1993,7 +2453,7 @@ def _dynamic_nonuniform_restore_name(
             unavailable.update(accesses)
             unavailable.update(rebindings)
 
-    base_name = _provenance_framework._NONUNIFORM_RESTORE_FUNCTION_NAME
+    base_name = _NONUNIFORM_RESTORE_FUNCTION_NAME
     function_name = base_name
     suffix = 2
     while function_name in unavailable:
@@ -2002,14 +2462,106 @@ def _dynamic_nonuniform_restore_name(
     return function_name
 
 
-def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> str:
+def _rename_display_replay_temps(
+    graph: ReplayGraph,
+    names: Mapping[str, str],
+    code: str,
+) -> str:
+    """Replace surviving graph temporaries with collision-safe semantic names."""
+    if not graph.display or _REPLAY_TEMP_PREFIX not in code:
+        return code
+
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:  # pragma: no cover - emitted code is validated upstream.
+        return code
+    surviving_temps = {
+        node.id
+        for node in ast.walk(module)
+        if isinstance(node, ast.Name) and node.id.startswith(_REPLAY_TEMP_PREFIX)
+    }
+    if not surviving_temps:
+        return code
+
+    accessed, rebound = _code_name_accesses(code)
+    used_names = {
+        name
+        for name in graph.reserved_names | accessed | rebound
+        if not name.startswith(_REPLAY_TEMP_PREFIX)
+    }
+    replacements: dict[str, str] = {}
+    for node in graph.nodes:
+        temporary_name = names.get(node.key)
+        if temporary_name not in surviving_temps or temporary_name in replacements:
+            continue
+        if node.kind == "file_load":
+            base_name = "loaded_data"
+        elif node.kind == "source_view":
+            base_name = "source_data"
+        elif node.kind == "operation":
+            preferred_output_method = getattr(
+                node.payload["operation"],
+                "preferred_replay_output_name",
+                None,
+            )
+            preferred_output = (
+                preferred_output_method() if callable(preferred_output_method) else None
+            )
+            base_name = preferred_output or "processed_data"
+        else:
+            base_name = "script_result"
+
+        candidate = base_name
+        suffix = 2
+        while candidate in used_names:
+            candidate = f"{base_name}_{suffix}"
+            suffix += 1
+        replacements[temporary_name] = candidate
+        used_names.add(candidate)
+
+    renamed = _replace_ast_names(code, module, replacements)
+    return _format_long_call_assignments(renamed)
+
+
+def emit_replay_code(
+    graph: ReplayGraph,
+    *,
+    output_name: str | None = None,
+    include_all_aliases: bool = False,
+) -> str:
     names = _node_names(graph, output_name=output_name)
     node_by_key = {node.key: node for node in graph.nodes}
+    copied_script_bindings = _copied_script_bindings(graph)
     chunks: list[tuple[str, bool]] = []
+    materialized_aliases: dict[str, str] = {}
+    generated_copy_names: set[str] = set()
+    materialized_binding_names = set(names.values())
+    reserved_binding_names: set[str] = set()
+    for replay_node in graph.nodes:
+        for code in replay_node.payload.get("codes", ()):
+            if isinstance(code, str):
+                accesses, rebindings = _code_name_accesses(code)
+                reserved_binding_names.update(accesses)
+                reserved_binding_names.update(rebindings)
     active_setup_key: str | None = None
 
     def append_code(code: str, *, group_imports: bool = False) -> None:
         chunks.append((code, graph.display and group_imports))
+
+    def copied_binding_name(input_name: str) -> str:
+        if input_name not in materialized_binding_names:
+            materialized_binding_names.add(input_name)
+            return input_name
+        suffix = 2
+        while True:
+            candidate = f"{input_name}_{suffix}"
+            if (
+                candidate not in materialized_binding_names
+                and candidate not in reserved_binding_names
+            ):
+                materialized_binding_names.add(candidate)
+                return candidate
+            suffix += 1
 
     dynamic_restore_needed = any(
         (node.kind == "source_view" and _source_view_emits_code(graph, node))
@@ -2025,7 +2577,7 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
         else None
     )
     dynamic_restore_support = (
-        _provenance_framework._nonuniform_restore_support_code(dynamic_restore_name)
+        _nonuniform_restore_support_code(dynamic_restore_name)
         if dynamic_restore_name is not None
         else None
     )
@@ -2048,12 +2600,10 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
                 )
                 active_setup_key = setup_key
             try:
-                code = _provenance_framework._replace_code_identifiers(
-                    load_code, {active_name: name}
-                )
+                code = _replace_code_identifiers(load_code, {active_name: name})
             except SyntaxError as exc:
                 raise ReplayGraphError("File replay code is not valid Python") from exc
-            if not _provenance_framework._code_stores_name(code, name):
+            if not _code_stores_name(code, name):
                 raise ReplayGraphError("File replay code does not assign its output")
             append_code(code, group_imports=True)
         elif node.kind == "live_input":
@@ -2087,6 +2637,11 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
                         active_name=name,
                         context_name=context_name,
                         parent_name=parent_name,
+                        reserved_names=(
+                            graph.reserved_names
+                            | reserved_binding_names
+                            | set(names.values())
+                        ),
                     )
                 )
         elif node.kind == "script":
@@ -2105,32 +2660,38 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
             ):
                 input_names.add(input_name)
                 input_value_name = names[input_key]
+                if (node.key, input_name, input_key) in copied_script_bindings:
+                    generated_input_name = copied_binding_name(input_name)
+                    append_code(
+                        f"{generated_input_name} = {input_value_name}.copy(deep=True)"
+                    )
+                    generated_copy_names.add(generated_input_name)
+                    if generated_input_name != input_name:
+                        input_replacements[input_name] = generated_input_name
+                    materialized_aliases[input_name] = input_value_name
+                    continue
                 if input_name == input_value_name:
                     continue
                 if (
                     graph.display
-                    and not _is_semantic_replay_name(input_name)
                     and not any(_code_has_scoped_definition(code) for code in codes)
-                    and not any(
-                        _provenance_framework._code_stores_name(code, input_name)
-                        for code in codes
-                    )
+                    and not any(_code_stores_name(code, input_name) for code in codes)
                 ):
                     input_replacements[input_name] = input_value_name
                 else:
                     append_code(f"{input_name} = {input_value_name}")
+                    materialized_aliases[input_name] = input_value_name
             if input_replacements:
                 try:
                     codes = [
-                        _provenance_framework._replace_code_identifiers(
-                            code, input_replacements
-                        )
+                        _replace_code_identifiers(code, input_replacements)
                         for code in codes
                     ]
                 except SyntaxError as exc:
                     raise ReplayGraphError(
                         "Script replay code is not valid Python"
                     ) from exc
+                active_name = input_replacements.get(active_name, active_name)
             if (
                 graph.display
                 and active_name != name
@@ -2139,9 +2700,7 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
             ):
                 try:
                     codes = [
-                        _provenance_framework._replace_code_identifiers(
-                            code, {active_name: name}
-                        )
+                        _replace_code_identifiers(code, {active_name: name})
                         for code in codes
                     ]
                 except SyntaxError as exc:
@@ -2149,6 +2708,18 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
                         "Script replay code is not valid Python"
                     ) from exc
                 active_name = name
+            if (
+                graph.display
+                and not any(hoist_imports)
+                and _is_receiver_assignment_chain(codes, active_name)
+            ):
+                codes = [
+                    _simplify_display_code(
+                        "\n".join(codes),
+                        inline_targets={active_name},
+                    )
+                ]
+                hoist_imports = [False]
             for code, group_imports in zip(codes, hoist_imports, strict=True):
                 append_code(code, group_imports=group_imports)
             if active_name != name:
@@ -2157,7 +2728,7 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
         else:
             raise ReplayGraphError(f"Unknown replay graph node kind {node.kind!r}")
 
-    aliases = graph.aliases
+    aliases = list(graph.aliases) if include_all_aliases else []
     if output_name is not None:
         if graph.output_key is None:
             raise ReplayGraphError("Replay graph has no output")
@@ -2166,15 +2737,34 @@ def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> s
             aliases = [*aliases, output_alias]
     for public_name, key in aliases:
         planned_name = names[key]
-        if public_name != planned_name:
+        if (
+            public_name != planned_name
+            and materialized_aliases.get(public_name) != planned_name
+        ):
             append_code(f"{public_name} = {planned_name}")
     code = _group_framework_imports(chunks)
     if dynamic_restore_support is None:
-        return _cleanup_emitted_replay_code(code)
+        return _rename_display_replay_temps(
+            graph,
+            names,
+            _cleanup_emitted_replay_code(
+                code,
+                generated_copy_names=generated_copy_names,
+                compact_temporaries=not graph.display,
+            ),
+        )
 
     module_prologue, code = _split_module_prologue(code)
     leading_imports, body = _leading_top_level_imports(code)
-    cleaned_body = _cleanup_emitted_replay_code(body)
+    cleaned_body = _rename_display_replay_temps(
+        graph,
+        names,
+        _cleanup_emitted_replay_code(
+            body,
+            generated_copy_names=generated_copy_names,
+            compact_temporaries=not graph.display,
+        ),
+    )
     import_prefix = "\n".join(source for _canonical, source in leading_imports)
     return "\n\n\n".join(
         part
@@ -2200,7 +2790,7 @@ def script_inputs_code(script_inputs: Sequence[typing.Any], *, display: bool) ->
         input_spec = script_input.parsed_provenance_spec()
         if input_spec is None:
             raise ReplayGraphError(
-                f"{_provenance_framework._script_input_reference_text(script_input)} "
+                f"{_script_input_reference_text(script_input)} "
                 "does not contain recorded source provenance"
             )
         input_key = _compile_spec(
@@ -2212,362 +2802,4 @@ def script_inputs_code(script_inputs: Sequence[typing.Any], *, display: bool) ->
             live_input_resolver=None,
         )
         graph.add_alias(script_input.name, input_key)
-    return emit_replay_code(graph)
-
-
-def _shares_array_memory(first: xr.DataArray, second: xr.DataArray) -> bool:
-    try:
-        return bool(np.shares_memory(first.data, second.data))
-    except (TypeError, ValueError):
-        return False
-
-
-def execute_replay_graph(
-    graph: ReplayGraph,
-    *,
-    cache: dict[str, xr.DataArray] | None = None,
-) -> xr.DataArray:
-    # Replay runs from manager actions; avoid optional native reduction accelerators
-    # that can crash PySide6/Python 3.14 while Qt threads are alive.
-    with xr.set_options(use_numbagg=False):
-        return _execute_replay_graph(graph, cache=cache)
-
-
-def _execute_replay_graph(
-    graph: ReplayGraph,
-    *,
-    cache: dict[str, xr.DataArray] | None = None,
-) -> xr.DataArray:
-    replay_cache = {} if cache is None else cache
-    values: dict[str, xr.DataArray] = {}
-
-    for node in graph.nodes:
-        if node.cacheable and node.key in replay_cache:
-            values[node.key] = replay_cache[node.key].copy(deep=False)
-            continue
-
-        if node.kind == "file_load":
-            data = _provenance_framework._load_file_source_data(
-                node.payload["load_source"]
-            )
-        elif node.kind == "setup":
-            continue
-        elif node.kind == "live_input":
-            data = typing.cast("xr.DataArray", node.payload["data"]).copy(deep=False)
-        elif node.kind == "relay":
-            data = values[node.parents[0]].copy(deep=False)
-        elif node.kind == "source_view":
-            parent_data = values[node.parents[0]]
-            data = _provenance_framework.ToolProvenanceSpec._starting_data_for_kind(
-                node.payload["source_kind"],
-                parent_data,
-            )
-        elif node.kind == "operation":
-            data = node.payload["operation"].apply(
-                values[node.parents[0]],
-                parent_data=values[node.parents[1]],
-            )
-        elif node.kind == "script":
-            codes = typing.cast("tuple[str, ...]", node.payload["codes"])
-            compiled_codes = tuple(
-                compile(code, "<ImageTool script provenance>", "exec")
-                if graph.trusted_user_code
-                else _provenance_framework._compile_untrusted_script_replay_code(code)
-                for code in codes
-            )
-            replay_builtins = (
-                vars(builtins)
-                if graph.trusted_user_code
-                else _provenance_framework._SCRIPT_REPLAY_ALLOWED_BUILTINS
-            )
-            namespace: dict[str, typing.Any] = {
-                "__builtins__": replay_builtins,
-                "erlab": erlab,
-                "np": np,
-                "numpy": np,
-                "xr": xr,
-                "xarray": xr,
-                "__erlab_replay_import_erlab": erlab,
-                "__erlab_replay_import_numpy": np,
-                "__erlab_replay_import_xarray": xr,
-            }
-            for alias, target in _REPLAY_ALIASES.items():
-                if not any(_code_uses_name(code, alias) for code in codes):
-                    continue
-                value: typing.Any = erlab
-                for attr in target.split(".")[1:]:
-                    value = getattr(value, attr)
-                namespace[alias] = value
-            for input_name, input_key in typing.cast(
-                "tuple[tuple[str, str], ...]", node.payload["bindings"]
-            ):
-                namespace[input_name] = values[input_key].copy(deep=True)
-            for compiled in compiled_codes:
-                exec(compiled, namespace, namespace)  # noqa: S102
-            active_name = typing.cast("str", node.payload["active_name"])
-            if active_name not in namespace:
-                raise ReplayGraphError(
-                    f"Script provenance did not create active variable {active_name!r}"
-                )
-            result = namespace[active_name]
-            if not isinstance(result, xr.DataArray):
-                raise ReplayGraphError(
-                    "Script provenance did not produce an xarray.DataArray for "
-                    f"{active_name!r}"
-                )
-            data = result
-        else:
-            raise ReplayGraphError(f"Unknown replay graph node kind {node.kind!r}")
-
-        if node.cacheable:
-            replay_cache[node.key] = data.copy(deep=False)
-        values[node.key] = data
-
-    if graph.output_key is None:
-        raise ReplayGraphError("Replay graph has no output")
-    output = values[graph.output_key]
-    if any(
-        node.kind == "live_input" and _shares_array_memory(output, values[node.key])
-        for node in graph.nodes
-    ):
-        return output.copy(deep=True)
-    return output
-
-
-def replay_file_provenance(
-    spec: typing.Any,
-    *,
-    cache: dict[str, xr.DataArray] | None = None,
-) -> xr.DataArray:
-    graph = compile_replay_graph(spec)
-    return execute_replay_graph(graph, cache=cache)
-
-
-def script_provenance_replayable(spec: typing.Any) -> bool:
-    parsed = _provenance_framework.parse_tool_provenance_spec(spec)
-    if parsed is None:
-        return False
-    try:
-        _validate_script_provenance(parsed)
-    except (ReplayGraphError, TypeError, ValueError):
-        return False
-    return True
-
-
-def _script_provenance_validates(
-    spec: typing.Any,
-    *,
-    external_input_names: set[str] | None = None,
-    strict_replay_code: bool,
-) -> bool:
-    parsed = _provenance_framework.parse_tool_provenance_spec(spec)
-    if parsed is None or parsed.kind != "script":
-        return False
-    try:
-        _validate_script_provenance(
-            parsed,
-            external_input_names=external_input_names,
-            strict_replay_code=strict_replay_code,
-        )
-    except (ReplayGraphError, TypeError, ValueError):
-        return False
-    return True
-
-
-def script_provenance_requires_trust(
-    spec: typing.Any,
-    *,
-    external_input_names: set[str] | None = None,
-) -> bool:
-    parsed = _provenance_framework.parse_tool_provenance_spec(spec)
-    if parsed is None or parsed.kind != "script":
-        return False
-    strict_replayable = _script_provenance_validates(
-        parsed,
-        external_input_names=external_input_names,
-        strict_replay_code=True,
-    )
-    trusted_replayable = _script_provenance_validates(
-        parsed,
-        external_input_names=external_input_names,
-        strict_replay_code=False,
-    )
-    current_requires_trust = not strict_replayable and trusted_replayable
-    if current_requires_trust:
-        return True
-    if not strict_replayable:
-        return False
-    for script_input in parsed.script_inputs:
-        input_spec = script_input.parsed_provenance_spec()
-        if script_provenance_requires_trust(input_spec):
-            return True
-    return False
-
-
-def _script_trust_payload(spec: typing.Any) -> dict[str, typing.Any] | None:
-    parsed = _provenance_framework.parse_tool_provenance_spec(spec)
-    if parsed is None or parsed.kind != "script":
-        return None
-    operations = []
-    for operation in parsed.operations:
-        if getattr(operation, "op", None) != "script_code":
-            continue
-        operations.append(
-            {
-                "code": getattr(operation, "code", None),
-                "copyable": bool(getattr(operation, "copyable", False)),
-            }
-        )
-    inputs = []
-    for script_input in parsed.script_inputs:
-        input_payload = _script_trust_payload(script_input.parsed_provenance_spec())
-        if input_payload is None:
-            continue
-        inputs.append({"name": script_input.name, "payload": input_payload})
-    return {
-        "active_name": parsed.active_name,
-        "inputs": inputs,
-        "operations": operations,
-        "seed_code": parsed.seed_code,
-    }
-
-
-def script_provenance_trust_key(spec: typing.Any) -> str | None:
-    payload = _script_trust_payload(spec)
-    if payload is None:
-        return None
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def replay_script_provenance(
-    spec: typing.Any,
-    inputs: Mapping[str, xr.DataArray],
-    *,
-    trusted_user_code: bool = False,
-) -> xr.DataArray:
-    graph = compile_replay_graph(
-        spec,
-        external_inputs=inputs,
-        trusted_user_code=trusted_user_code,
-    )
-    return execute_replay_graph(graph)
-
-
-def rebuild_script_provenance(
-    spec: typing.Any,
-    *,
-    live_input_resolver: LiveInputResolver | None = None,
-    cache: dict[str, xr.DataArray] | None = None,
-    depth: int = 0,
-    trusted_user_code: bool = False,
-) -> tuple[xr.DataArray, typing.Any]:
-    parsed = _provenance_framework.parse_tool_provenance_spec(spec)
-    if parsed is None or parsed.kind != "script":
-        raise ReplayGraphError("Selected provenance is not script-derived")
-    if depth > 20:
-        raise ReplayGraphError(
-            "Nested script provenance exceeded the maximum reload depth"
-        )
-    if trusted_user_code:
-        replayable = _script_provenance_validates(
-            parsed,
-            strict_replay_code=False,
-        )
-    else:
-        replayable = script_provenance_replayable(parsed)
-    if not replayable:
-        raise ReplayGraphError(
-            "The recorded operation cannot be replayed automatically"
-        )
-
-    live_results: dict[tuple[str, str | None], tuple[xr.DataArray, typing.Any]] = {}
-    live_misses: set[tuple[str, str | None]] = set()
-
-    def resolve_live(
-        script_input: typing.Any,
-    ) -> tuple[xr.DataArray, typing.Any] | None:
-        if live_input_resolver is None:
-            return None
-        key = (script_input.name, script_input.node_uid)
-        if key in live_results:
-            return live_results[key]
-        if key in live_misses:
-            return None
-        resolved = live_input_resolver(script_input)
-        if resolved is None:
-            live_misses.add(key)
-            return None
-        live_results[key] = resolved
-        return resolved
-
-    def resolve_inputs(current: typing.Any, current_depth: int) -> typing.Any:
-        if current_depth > 20:
-            raise ReplayGraphError(
-                "Nested script provenance exceeded the maximum reload depth"
-            )
-        resolved_inputs = []
-        for script_input in current.script_inputs:
-            resolved = resolve_live(script_input)
-            if resolved is not None:
-                resolved_inputs.append(resolved[1])
-                continue
-
-            input_spec = script_input.parsed_provenance_spec()
-            if input_spec is None:
-                input_reference = _provenance_framework._script_input_reference_text(
-                    script_input
-                )
-                raise ReplayGraphError(
-                    f"{input_reference} "
-                    "is not open and "
-                    "does not contain recorded source provenance."
-                )
-            if input_spec.kind == "file":
-                resolved_inputs.append(
-                    script_input.model_copy(
-                        update={
-                            "node_uid": None,
-                            "node_snapshot_token": None,
-                            "provenance_spec": input_spec.model_dump(mode="json"),
-                        }
-                    )
-                )
-                continue
-            if input_spec.kind == "script":
-                if trusted_user_code:
-                    input_replayable = _script_provenance_validates(
-                        input_spec,
-                        strict_replay_code=False,
-                    )
-                else:
-                    input_replayable = script_provenance_replayable(input_spec)
-                if not input_replayable:
-                    raise ReplayGraphError(
-                        "The recorded operation cannot be replayed automatically"
-                    )
-                rebuilt_input = resolve_inputs(input_spec, current_depth + 1)
-                resolved_inputs.append(
-                    script_input.model_copy(
-                        update={
-                            "node_uid": None,
-                            "node_snapshot_token": None,
-                            "provenance_spec": rebuilt_input.model_dump(mode="json"),
-                        }
-                    )
-                )
-                continue
-            raise ReplayGraphError(
-                f"{_provenance_framework._script_input_reference_text(script_input)} "
-                "is not open and "
-                "does not contain reloadable script or file provenance."
-            )
-        return current.model_copy(update={"script_inputs": tuple(resolved_inputs)})
-
-    rebuilt_spec = resolve_inputs(parsed, depth)
-    graph = compile_replay_graph(
-        rebuilt_spec,
-        live_input_resolver=resolve_live,
-        trusted_user_code=trusted_user_code,
-    )
-    return execute_replay_graph(graph, cache=cache), rebuilt_spec
+    return emit_replay_code(graph, include_all_aliases=True)

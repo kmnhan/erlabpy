@@ -20,7 +20,12 @@ from erlab.interactive._figurecomposer import (
     FigureMethodPlotValueState,
 )
 from erlab.interactive._fit2d import Fit2DTool
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool._provenance._execution import replay_script_provenance
+from erlab.interactive.imagetool._provenance._model import script
+from erlab.interactive.imagetool._provenance._operations import (
+    ModelFitOperation,
+    ScriptCodeOperation,
+)
 from tests._qt_helpers import signal_receiver_count
 
 
@@ -2071,15 +2076,43 @@ def test_fit2d_parameter_output_provenance_uses_distinct_active_names(qtbot) -> 
     assert stderr_spec is not None
     assert values_spec.active_name == "parameter_values"
     assert stderr_spec.active_name == "parameter_stderr"
+    assert isinstance(values_spec.operations[-1], ModelFitOperation)
+    assert isinstance(stderr_spec.operations[-1], ModelFitOperation)
 
     values_code = values_spec.display_code()
     stderr_code = stderr_spec.display_code()
     assert values_code is not None
     assert stderr_code is not None
-    assert ".modelfit_coefficients.sel(param='p0_center')" in values_code
-    assert ".modelfit_stderr.sel(param='p0_center')" in stderr_code
-    assert ".rename(" not in values_code
-    assert ".rename(" not in stderr_code
+    assert ".modelfit_coefficients.sel(" in values_code
+    assert ".modelfit_stderr.sel(" in stderr_code
+    assert "param='p0_center'" in values_code
+    assert "param='p0_center'" in stderr_code
+    assert "fit_data = " in values_code
+    assert "fit_data = " in stderr_code
+    assert "_itool_replay_" not in values_code
+    assert "_itool_replay_" not in stderr_code
+    assert "result =" not in values_code
+    assert "result =" not in stderr_code
+    assert "imagetool" not in values_code
+    assert "imagetool" not in stderr_code
+    assert max(map(len, values_code.splitlines())) <= 88
+    assert max(map(len, stderr_code.splitlines())) <= 88
+
+    fit_data = data.isel(y=slice(0, 3))
+    expected_values = values_spec.operations[-1].apply(
+        fit_data,
+        parent_data=fit_data,
+    )
+    expected_stderr = stderr_spec.operations[-1].apply(
+        fit_data,
+        parent_data=fit_data,
+    )
+    values_namespace = {"data": data, "era": erlab.analysis, "xr": xr}
+    stderr_namespace = {"data": data, "era": erlab.analysis, "xr": xr}
+    exec(values_code, values_namespace)  # noqa: S102
+    exec(stderr_code, stderr_namespace)  # noqa: S102
+    xr.testing.assert_identical(values_namespace["parameter_values"], expected_values)
+    xr.testing.assert_identical(stderr_namespace["parameter_stderr"], expected_stderr)
 
     win.param_plot_combo.setCurrentText("p0_width")
     bound_values = win.output_imagetool_data(values_output_id)
@@ -2093,8 +2126,8 @@ def test_fit2d_parameter_output_provenance_uses_distinct_active_names(qtbot) -> 
     assert bound_values_spec is not None
     bound_values_code = bound_values_spec.display_code()
     assert bound_values_code is not None
-    assert ".modelfit_coefficients.sel(param='p0_center')" in bound_values_code
-    assert ".modelfit_coefficients.sel(param='p0_width')" not in bound_values_code
+    assert "param='p0_center'" in bound_values_code
+    assert "param='p0_width'" not in bound_values_code
 
     malformed_id = f"{Fit2DTool.Output.PARAMETER_VALUES.value}:"
     missing_id = Fit2DTool._parameter_output_id(
@@ -2139,10 +2172,10 @@ def test_fit2d_parameter_output_resolution_edges(qtbot, monkeypatch) -> None:
         win.output_imagetool_provenance("other.output", values)
 
     with monkeypatch.context() as patch:
-        patch.setattr(win, "_full_fit_expression", lambda **_kwargs: "")
+        patch.setattr(win, "_full_fit_parameter_specs", lambda **_kwargs: None)
         assert win.output_imagetool_provenance(values_output_id, values) is None
 
-    direct_input = provenance.script(
+    direct_input = script(
         start_label="Start from watched data",
         seed_code="derived = watched_data",
         active_name="derived",
@@ -2151,11 +2184,30 @@ def test_fit2d_parameter_output_resolution_edges(qtbot, monkeypatch) -> None:
     direct_spec = win.output_imagetool_provenance(values_output_id, values)
     assert direct_spec is not None
     assert direct_spec.start_label == "Start from watched data"
+    direct_code = direct_spec.display_code()
+    assert direct_code is not None
+    assert "watched_data.isel" in direct_code
+    direct_namespace = {
+        "watched_data": data,
+        "era": erlab.analysis,
+        "xr": xr,
+    }
+    exec(direct_code, direct_namespace)  # noqa: S102
+    expected_direct = direct_spec.operations[-1].apply(
+        data.isel(y=slice(0, 3)),
+        parent_data=data,
+    )
+    xr.testing.assert_identical(direct_namespace["parameter_values"], expected_direct)
 
     with monkeypatch.context() as patch:
-        patch.setattr(provenance, "to_replay_provenance_spec", lambda _spec: None)
-        with pytest.raises(RuntimeError, match="Could not convert local provenance"):
-            win.output_imagetool_provenance(values_output_id, values)
+        patch.setattr(win, "_infer_model_choice", lambda _model: "ExpressionModel")
+        fallback_spec = win.output_imagetool_provenance(values_output_id, values)
+    assert fallback_spec is not None
+    assert isinstance(fallback_spec.operations[-1], ScriptCodeOperation)
+    fallback_code = fallback_spec.display_code()
+    assert fallback_code is not None
+    assert "import lmfit" in fallback_code
+    assert "imagetool" not in fallback_code
 
     win.param_plot_combo.clear()
     assert win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES) is None
@@ -2168,6 +2220,110 @@ def test_fit2d_parameter_output_resolution_edges(qtbot, monkeypatch) -> None:
         win.output_imagetool_provenance(Fit2DTool.Output.PARAMETER_STDERR, values)
         is None
     )
+
+
+def test_fit2d_parameter_output_provenance_preserves_standalone_data_name(
+    qtbot,
+) -> None:
+    source_spectrum = _make_2d_data()
+    win = erlab.interactive.ftool(
+        source_spectrum,
+        data_name="source_spectrum",
+        execute=False,
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    center_name = "p0_center"
+    params = win._params.copy()
+    _seed_fit2d_param_results(
+        win,
+        [params.copy() for _ in range(len(win._params_full))],
+    )
+    win.param_plot_combo.setCurrentText(center_name)
+    values = win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES)
+    assert values is not None
+
+    spec = win.output_imagetool_provenance(
+        Fit2DTool._parameter_output_id(
+            Fit2DTool.Output.PARAMETER_VALUES,
+            center_name,
+        ),
+        values,
+    )
+    assert spec is not None
+    code = spec.display_code()
+    assert code is not None
+    assert "source_spectrum.isel" in code
+
+    namespace = {
+        "source_spectrum": source_spectrum,
+        "era": erlab.analysis,
+        "xr": xr,
+    }
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        exec(code, namespace)  # noqa: S102
+    assert spec.active_name is not None
+    actual = namespace[spec.active_name]
+    assert isinstance(actual, xr.DataArray)
+    xr.testing.assert_allclose(actual, values)
+
+
+def test_fit2d_expression_model_parameter_output_provenance_executes(qtbot) -> None:
+    x = np.linspace(-1.0, 1.0, 11)
+    y = np.arange(3)
+    slopes = np.array([2.0, 4.0, 6.0])
+    intercepts = np.array([1.0, 2.0, 3.0])
+    data = xr.DataArray(
+        intercepts[:, None] + slopes[:, None] * x,
+        dims=("y", "x"),
+        coords={"y": y, "x": x},
+    )
+    model = lmfit.models.ExpressionModel("slope * x + intercept")
+    win = erlab.interactive.ftool(
+        data,
+        model=model,
+        data_name="source_spectrum",
+        execute=False,
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    params_list = []
+    for slope, intercept in zip(slopes, intercepts, strict=True):
+        params = win._params.copy()
+        params["slope"].set(value=slope)
+        params["intercept"].set(value=intercept)
+        params_list.append(params)
+    _seed_fit2d_param_results(win, params_list)
+    win.param_plot_combo.setCurrentText("slope")
+
+    values = win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES)
+    assert values is not None
+    spec = win.output_imagetool_provenance(
+        Fit2DTool.Output.PARAMETER_VALUES,
+        values,
+    )
+    assert spec is not None
+    assert isinstance(spec.operations[-1], ScriptCodeOperation)
+    code = spec.display_code()
+    assert code is not None
+    assert "import lmfit" in code
+    assert "source_spectrum.isel" in code
+    assert "imagetool" not in code
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        replayed = replay_script_provenance(spec, {"source_spectrum": data})
+    xr.testing.assert_allclose(replayed, values)
+
+    namespace = {"source_spectrum": data, "xr": xr}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        exec(code, namespace)  # noqa: S102
+    actual = namespace["parameter_values"]
+    assert isinstance(actual, xr.DataArray)
+    xr.testing.assert_allclose(actual, values)
 
 
 def test_fit2d_show_dataarray_in_itool_uses_detached_launcher(
@@ -2292,7 +2448,7 @@ class _FakeFigureManager:
     def _figure_uids(self) -> tuple[str, ...]:
         return self._figure_uids_value
 
-    def _prompt_append_figure_target(self, operation):
+    def _choose_figure_append_target(self, operation):
         self.prompt_calls.append(operation)
         return self._prompt_return
 

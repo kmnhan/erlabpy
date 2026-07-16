@@ -104,7 +104,10 @@ from erlab.interactive._figurecomposer._ui._line_transform import (
     add_line_transform_controls,
 )
 from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
-from erlab.interactive.imagetool import provenance
+from erlab.interactive.imagetool._provenance._operations import (
+    CoarsenOperation,
+    ThinOperation,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -1379,13 +1382,16 @@ def _reduced_line_iter_data(
 
 def _line_reduce_operations(
     operation: FigureOperationState,
-) -> tuple[provenance.CoarsenOperation | provenance.ThinOperation, ...]:
+) -> tuple[
+    CoarsenOperation | ThinOperation,
+    ...,
+]:
     if operation.line_iter_dim is None:
         return ()
-    operations: list[provenance.CoarsenOperation | provenance.ThinOperation] = []
+    operations: list[CoarsenOperation | ThinOperation] = []
     if operation.line_reduce in {"coarsen", "both"}:
         operations.append(
-            provenance.CoarsenOperation(
+            CoarsenOperation(
                 dim={operation.line_iter_dim: operation.line_reduce_coarsen},
                 boundary="trim",
                 side="left",
@@ -1395,7 +1401,7 @@ def _line_reduce_operations(
         )
     if operation.line_reduce in {"thin", "both"}:
         operations.append(
-            provenance.ThinOperation(
+            ThinOperation(
                 mode="per_dim",
                 factors={operation.line_iter_dim: operation.line_reduce_thin},
             )

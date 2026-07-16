@@ -103,10 +103,14 @@ def test_figure_composer_state_serializes_slice_values() -> None:
         name="data",
         isel={"kx": slice(1, 5, 2)},
         qsel={"eV": slice(-0.5, 0.5)},
+        node_uid="source-node",
+        data_role="source",
     )
     restored_source = FigureSourceState.model_validate_json(source.model_dump_json())
     assert restored_source.isel["kx"] == slice(1, 5, 2)
     assert restored_source.qsel["eV"] == slice(-0.5, 0.5)
+    assert restored_source.data_role == "source"
+    assert restored_source.to_script_input().data_role == "source"
 
     selection = FigureDataSelectionState(
         source="data",

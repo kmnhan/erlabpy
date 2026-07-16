@@ -27,7 +27,30 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import _history, _kspace_conversion, provenance
+from erlab.interactive.imagetool import _history, _kspace_conversion
+from erlab.interactive.imagetool._load_source import (
+    _LoadFunc,
+    _parse_serialized_file_data_selection,
+)
+from erlab.interactive.imagetool._provenance._execution import (
+    _select_replay_input,
+    _semantic_file_data_selection,
+    can_reload_without_trust,
+    file_load_source_status,
+    replay_file_provenance,
+    replay_script_provenance,
+    script_provenance_requires_trust,
+)
+from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
+    ToolProvenanceOperation,
+    ToolProvenanceSpec,
+    compose_full_provenance,
+    full_data,
+    has_file_load_source,
+    parse_tool_provenance_operation,
+    require_live_source_spec,
+)
 from erlab.interactive.imagetool._viewer_dialogs import (
     _AssociatedCoordsDialog,
     _CursorColorCoordDialog,
@@ -67,14 +90,6 @@ from erlab.interactive.imagetool.viewer_state import (
 )
 
 logger = logging.getLogger(__name__)
-
-_FileDataSelection = provenance.FileDataSelection
-_FileSelection: typing.TypeAlias = int | dict[str, typing.Any] | _FileDataSelection
-_LoadFunc: typing.TypeAlias = tuple[
-    collections.abc.Callable[..., typing.Any] | str,
-    dict[str, typing.Any],
-    _FileSelection,
-]
 
 
 class ImageSlicerArea(QtWidgets.QWidget):
@@ -162,10 +177,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def provenance_spec(
         self,
-    ) -> provenance.ToolProvenanceSpec | None:
+    ) -> ToolProvenanceSpec | None:
         """Canonical replay provenance for the current ImageTool data."""
         return typing.cast(
-            "provenance.ToolProvenanceSpec | None",
+            "ToolProvenanceSpec | None",
             getattr(self.parent(), "provenance_spec", None),
         )
 
@@ -194,6 +209,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigCursorColorsChanged = QtCore.Signal()  #: :meta private:
     sigDataEdited = QtCore.Signal()  #: :meta private:
     sigDataBackingChanged = QtCore.Signal()  #: :meta private:
+    sigSourceDataChanged = QtCore.Signal()  #: :meta private:
     sigSourceDataReplaced = QtCore.Signal(object)  #: :meta private:
     sigPointValueChanged = QtCore.Signal(float)  #: :meta private:
 
@@ -239,9 +255,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         state: ImageSlicerState | None = None,
         file_path: str | os.PathLike | None = None,
         load_func: _LoadFunc | None = None,
-        preparation_operations: collections.abc.Sequence[
-            provenance.ToolProvenanceOperation
-        ] = (),
+        preparation_operations: collections.abc.Sequence[ToolProvenanceOperation] = (),
         auto_compute: bool = True,
         image_cls=None,
         plotdata_cls=None,
@@ -295,12 +309,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         # Current plot filter. Accepted filters are represented by the operation below.
         self._applied_func: Callable[[xr.DataArray], xr.DataArray] | None = None
-        self._applied_provenance_operation: (
-            provenance.ToolProvenanceOperation | None
-        ) = None
-        self._accepted_filter_provenance_operation: (
-            provenance.ToolProvenanceOperation | None
-        ) = None
+        self._applied_provenance_operation: ToolProvenanceOperation | None = None
+        self._accepted_filter_provenance_operation: ToolProvenanceOperation | None = (
+            None
+        )
         self._accepted_filter_data: xr.DataArray | None = None
         # `_data` is the public/source array, while `ArraySlicer._obj` is the internal
         # validated view used for slicing. The two share values by default and detach
@@ -396,9 +408,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self._file_path: pathlib.Path | None = None
         self._load_func: _LoadFunc | None = None
-        self._load_preparation_operations: tuple[
-            provenance.ToolProvenanceOperation, ...
-        ] = ()
+        self._load_preparation_operations: tuple[ToolProvenanceOperation, ...] = ()
         self._source_input_dtype: np.dtype[typing.Any] | None = None
         self.current_cursor: int = 0
         self._data: xr.DataArray
@@ -728,9 +738,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if load_func is not None:
             fn = load_func[0]
             func_name = f"{fn.__module__}:{fn.__qualname__}" if callable(fn) else fn
-            selection = load_func[2]
-            if isinstance(selection, _FileDataSelection):
-                selection = selection.model_dump(mode="json")
+            selection = load_func[2].model_dump(mode="json")
             load_func = (func_name, load_func[1], selection)
         state: ImageSlicerState = {
             "color": self.colormap_properties,
@@ -832,22 +840,28 @@ class ImageSlicerArea(QtWidgets.QWidget):
             load_func = state.get("load_func", None)
             if load_func is not None:
                 fn: str = load_func[0]
+                try:
+                    selection = _parse_serialized_file_data_selection(load_func[2])
+                except Exception:
+                    self._load_func = None
+                    selection = None
                 if ":" in fn:
-                    self._load_func = load_func
                     try:
                         mod_name, qual = fn.split(":")
                         mod = importlib.import_module(mod_name)
                         func_obj = mod
                         for attr in qual.split("."):
                             func_obj = getattr(func_obj, attr)
-                        self._load_func = (
-                            typing.cast("Callable", func_obj),
-                            *load_func[1:],
-                        )
+                        if selection is not None:
+                            self._load_func = (
+                                typing.cast("Callable", func_obj),
+                                load_func[1],
+                                selection,
+                            )
                     except Exception:
                         self._load_func = None
-                elif fn in erlab.io.loaders:
-                    self._load_func = (fn, *load_func[1:])
+                elif fn in erlab.io.loaders and selection is not None:
+                    self._load_func = (fn, load_func[1], selection)
                 else:
                     self._load_func = None
 
@@ -1064,9 +1078,51 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def displayed_data(self) -> xr.DataArray:
         """Return the public data values committed for derived outputs."""
-        return erlab.utils.array._restore_nonuniform_dims(
-            self._accepted_data_for_dims(tuple(self._data.dims)).copy(deep=False)
+        accepted = self._accepted_data_for_dims(tuple(self.data.dims))
+        return self._restore_public_source_layout(accepted)
+
+    def _public_source_dims_for_current_layout(self) -> tuple[Hashable, ...]:
+        """Merge the saved slicer order with source-only singleton dimensions."""
+        layout = erlab.utils.array._restore_nonuniform_dims(self.data)
+        layout = erlab.interactive.imagetool.slicer._drop_unmatched_stack_dim(
+            layout, self._data
         )
+        layout_dims = tuple(layout.dims)
+        if any(dim not in self._data.dims for dim in layout_dims):
+            raise ValueError(
+                "Slicer layout contains a dimension absent from source data"
+            )
+        layout_dim_set = set(layout_dims)
+        ordered_layout_dims = iter(layout_dims)
+        return tuple(
+            next(ordered_layout_dims) if dim in layout_dim_set else dim
+            for dim in self._data.dims
+        )
+
+    def _restore_public_source_layout(self, data: xr.DataArray) -> xr.DataArray:
+        """Undo slicer-only dimension normalization for a public data result."""
+        public = erlab.utils.array._restore_nonuniform_dims(data)
+        public = erlab.interactive.imagetool.slicer._drop_unmatched_stack_dim(
+            public, self._data
+        )
+        target_dims = self._public_source_dims_for_current_layout()
+        missing_dims = tuple(dim for dim in target_dims if dim not in public.dims)
+        if any(self._data.sizes[dim] != 1 for dim in missing_dims):
+            raise ValueError(
+                "Public data result is missing a non-singleton source dimension"
+            )
+        if missing_dims:
+            public = public.expand_dims(missing_dims)
+            source_coords = {
+                name: coord
+                for name, coord in self._data.coords.items()
+                if any(dim in missing_dims for dim in coord.dims)
+            }
+            if source_coords:
+                public = public.assign_coords(source_coords)
+        if public.dims != target_dims:
+            public = public.transpose(*target_dims, transpose_coords=True)
+        return public.copy(deep=False)
 
     def _tool_source_parent_data(self) -> xr.DataArray:
         """Return the current slicer view used for source-bound child tools."""
@@ -1080,15 +1136,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
 
     def persistence_data_and_state(self) -> tuple[xr.DataArray, ImageSlicerState]:
-        """Return data/state for save and clone paths."""
-        return self._data, self.state
+        """Return public source data in the saved slicer layout and its state."""
+        source = self._data_aligned_to_dims(self._data, tuple(self.data.dims))
+        return self._restore_public_source_layout(source), self.state
 
     def displayed_live_source_spec(
         self,
-        base_spec: provenance.ToolProvenanceSpec | None,
-    ) -> provenance.ToolProvenanceSpec | None:
+        base_spec: ToolProvenanceSpec | None,
+    ) -> ToolProvenanceSpec | None:
         """Return live source provenance including the accepted display filter."""
-        source_spec = provenance.require_live_source_spec(base_spec)
+        source_spec = require_live_source_spec(base_spec)
         operation = self._accepted_filter_provenance_operation
         if source_spec is None or operation is None:
             return source_spec
@@ -1143,7 +1200,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         missing_dims = tuple(dim for dim in dims if dim not in data.dims)
         if missing_dims and any(str(dim).endswith("_idx") for dim in missing_dims):
             data = erlab.utils.array._make_dims_uniform(data)
-            missing_dims = tuple(dim for dim in dims if dim not in data.dims)
+        extra_dims = tuple(dim for dim in data.dims if dim not in dims)
+        if extra_dims and all(data.sizes[dim] == 1 for dim in extra_dims):
+            data = data.squeeze(extra_dims)
+        missing_dims = tuple(dim for dim in dims if dim not in data.dims)
         if missing_dims == ("stack_dim",):
             data = data.expand_dims("stack_dim", axis=dims.index("stack_dim"))
         if data.dims != dims:
@@ -1163,7 +1223,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _filter_operation_result_for_data(
         self,
         data: xr.DataArray,
-        operation: provenance.ToolProvenanceOperation,
+        operation: ToolProvenanceOperation,
         dims: tuple[Hashable, ...],
     ) -> xr.DataArray:
         return self._normalize_filter_result_for_source_dims(
@@ -1187,7 +1247,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _filter_operation_result_for_replacement(
         self,
         data: xr.DataArray,
-        operation: provenance.ToolProvenanceOperation,
+        operation: ToolProvenanceOperation,
     ) -> xr.DataArray:
         return self._filter_operation_result_for_data(
             data,
@@ -1197,7 +1257,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @staticmethod
     def _filter_func_from_operation(
-        operation: provenance.ToolProvenanceOperation,
+        operation: ToolProvenanceOperation,
     ) -> Callable[[xr.DataArray], xr.DataArray]:
         def _apply_filter(darr: xr.DataArray) -> xr.DataArray:
             return operation.apply(darr, parent_data=darr)
@@ -1207,10 +1267,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _parse_filter_operation_state(
         self,
         payload: dict[str, typing.Any] | None,
-    ) -> provenance.ToolProvenanceOperation | None:
+    ) -> ToolProvenanceOperation | None:
         if payload is None:
             return None
-        return provenance.parse_tool_provenance_operation(payload)
+        return parse_tool_provenance_operation(payload)
 
     def _restore_filter_operation_from_state(
         self,
@@ -1289,6 +1349,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.refresh_all(only_plots=True)
             self.lock_levels(self.levels_locked)
             if updated and emit_signals:
+                self.sigSourceDataChanged.emit()
                 self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
                 self.sigDataEdited.emit()
 
@@ -2061,9 +2122,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         rad2deg: bool | Iterable[str] = False,
         file_path: str | os.PathLike | None = None,
         load_func: _LoadFunc | None = None,
-        preparation_operations: collections.abc.Sequence[
-            provenance.ToolProvenanceOperation
-        ] = (),
+        preparation_operations: collections.abc.Sequence[ToolProvenanceOperation] = (),
         auto_compute: bool = True,
         *,
         source_replaced: bool = False,
@@ -2112,10 +2171,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         if load_func is not None:
             func: Callable | str = load_func[0]
+            selection = load_func[2]
+            if not isinstance(selection, FileDataSelection):
+                raise TypeError("load_func selection must be a FileDataSelection")
             func_instance = getattr(func, "__self__", None)
             if isinstance(func_instance, erlab.io.dataloader.LoaderBase):
                 func = func_instance.name
-            self._load_func = (func, *load_func[1:])
+            self._load_func = (func, load_func[1], selection)
         else:
             self._load_func = None
         self._load_preparation_operations = tuple(preparation_operations)
@@ -2253,6 +2315,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         ):
             typing.cast("typing.Any", parent)._sync_file_load_provenance()
         if source_replaced:
+            self.sigSourceDataChanged.emit()
             self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
 
     def replace_source_data(
@@ -2261,9 +2324,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         rad2deg: bool | Iterable[str] = False,
         file_path: str | os.PathLike | None = None,
         load_func: _LoadFunc | None = None,
-        preparation_operations: collections.abc.Sequence[
-            provenance.ToolProvenanceOperation
-        ] = (),
+        preparation_operations: collections.abc.Sequence[ToolProvenanceOperation] = (),
         auto_compute: bool = True,
         *,
         emit_edited: bool = False,
@@ -2345,7 +2406,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _provenance_reloadable(self) -> bool:
         """Return whether replay provenance can rebuild the displayed data from file."""
-        return provenance.can_reload_without_trust(self.provenance_spec)
+        return can_reload_without_trust(self.provenance_spec)
 
     def _direct_reload_unavailable_reason(self) -> str | None:
         """Return why direct file metadata cannot reload, if it is relevant."""
@@ -2381,10 +2442,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         provenance_spec = self.provenance_spec
         if provenance_spec is None:
             return None
-        source_status = provenance.file_load_source_status(provenance_spec)
-        if provenance_spec.kind == "file" or provenance.has_file_load_source(
-            provenance_spec
-        ):
+        source_status = file_load_source_status(provenance_spec)
+        if provenance_spec.kind == "file" or has_file_load_source(provenance_spec):
             load_source = provenance_spec.file_load_source
             if source_status == "no-file-load-source" or load_source is None:
                 return (
@@ -2414,10 +2473,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 )
             if provenance_spec.kind == "file":
                 return None
-        if provenance.can_reload_without_trust(provenance_spec):
+        if can_reload_without_trust(provenance_spec):
             return None
         if provenance_spec.kind == "script":
-            if provenance.script_provenance_requires_trust(provenance_spec):
+            if script_provenance_requires_trust(provenance_spec):
                 return (
                     "This data includes recorded script code that needs trust "
                     "confirmation before replay. Reload it in ImageTool Manager, "
@@ -2475,9 +2534,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "xr.DataArray | xr.Dataset | xr.DataTree",
             func(file_path, **load_func[1]),
         )
-        return provenance._select_replay_input(
+        selection = _semantic_file_data_selection(reloaded, load_func[2])
+        if selection != load_func[2]:
+            self._load_func = (load_func[0], load_func[1], selection)
+        return _select_replay_input(
             reloaded,
-            load_func[2],
+            selection,
         )
 
     def _fetch_for_provenance_reload(self) -> xr.DataArray:
@@ -2486,15 +2548,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if provenance_spec is None:
             raise RuntimeError("Data cannot be reloaded from provenance")
         load_source = provenance_spec.file_load_source
-        source_status = provenance.file_load_source_status(provenance_spec)
+        source_status = file_load_source_status(provenance_spec)
         if load_source is not None and source_status == "missing-file":
             raise FileNotFoundError(pathlib.Path(load_source.path))
-        if not provenance.can_reload_without_trust(provenance_spec):
+        if not can_reload_without_trust(provenance_spec):
             raise RuntimeError("Data cannot be reloaded from provenance")
         if provenance_spec.kind == "file":
-            return provenance.replay_file_provenance(provenance_spec)
+            return replay_file_provenance(provenance_spec)
         if provenance_spec.kind == "script":
-            return provenance.replay_script_provenance(provenance_spec, {})
+            return replay_script_provenance(provenance_spec, {})
         raise RuntimeError("Data cannot be reloaded from provenance")
 
     def _fetch_reload_data(self) -> tuple[xr.DataArray, dict[str, typing.Any]]:
@@ -2572,6 +2634,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             accepted_filter_operation,
         )
         self.set_data(data, **kwargs)
+        self.sigSourceDataChanged.emit()
         self._apply_filter_result(
             filtered,
             self._filter_func_from_operation(accepted_filter_operation),
@@ -2663,17 +2726,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def displayed_provenance_spec(
         self,
-        base_spec: provenance.ToolProvenanceSpec | None = None,
-    ) -> provenance.ToolProvenanceSpec | None:
+        base_spec: ToolProvenanceSpec | None = None,
+    ) -> ToolProvenanceSpec | None:
         """Return provenance for the currently displayed data values."""
         if base_spec is None:
             base_spec = self.provenance_spec
         operation = self._accepted_filter_provenance_operation
         if operation is None:
             return base_spec
-        return provenance.compose_full_provenance(
+        return compose_full_provenance(
             base_spec,
-            provenance.full_data(operation),
+            full_data(operation),
         )
 
     def apply_func(
@@ -2681,7 +2744,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         func: Callable[[xr.DataArray], xr.DataArray] | None,
         update: bool = True,
         *,
-        operation: (provenance.ToolProvenanceOperation | None) = None,
+        operation: (ToolProvenanceOperation | None) = None,
         emit_edited: bool = False,
         preview: bool = True,
     ) -> None:
@@ -2728,7 +2791,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         func: Callable[[xr.DataArray], xr.DataArray] | None,
         update: bool = True,
         *,
-        operation: (provenance.ToolProvenanceOperation | None) = None,
+        operation: (ToolProvenanceOperation | None) = None,
         accept: bool = False,
         emit_edited: bool = False,
     ) -> None:
@@ -2760,7 +2823,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         func: Callable[[xr.DataArray], xr.DataArray],
         update: bool = True,
         *,
-        operation: (provenance.ToolProvenanceOperation | None) = None,
+        operation: (ToolProvenanceOperation | None) = None,
         accept: bool = False,
         emit_edited: bool = False,
     ) -> None:
@@ -2798,7 +2861,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def apply_filter_operation(
         self,
-        operation: (provenance.ToolProvenanceOperation | None),
+        operation: (ToolProvenanceOperation | None),
         update: bool = True,
         *,
         emit_edited: bool = False,
@@ -3519,7 +3582,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             execute=False,
         )
         if isinstance(tool, erlab.interactive.utils.ToolWindow):
-            tool.set_source_binding(provenance.full_data())
+            tool.set_source_binding(full_data())
         self.add_tool_window(tool)
 
     @QtCore.Slot()
@@ -3529,7 +3592,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.data, data_name=self.watched_data_name, execute=False
         )
         if isinstance(tool, erlab.interactive.utils.ToolWindow):
-            tool.set_source_binding(provenance.full_data())
+            tool.set_source_binding(full_data())
         self.add_tool_window(tool)
 
     def adjust_layout(

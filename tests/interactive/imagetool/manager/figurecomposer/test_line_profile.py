@@ -1,17 +1,58 @@
-# ruff: noqa: F403, F405
+import typing
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pytest
+import xarray as xr
+from matplotlib import colors as mcolors
+from matplotlib.figure import Figure
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive._figurecomposer._labels as figurecomposer_labels
+import erlab.interactive._figurecomposer._line_colormap as figurecomposer_line_colormap
+import erlab.interactive._figurecomposer._line_transform as _line_transform
+import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
+import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
 import erlab.interactive._figurecomposer._ui._color_widgets as color_widgets
+import erlab.interactive._stylesheets
 import erlab.interactive.imagetool._figurecomposer_adapter as figurecomposer_adapter
+from erlab.interactive._figurecomposer import (
+    FigureAxesSelectionState,
+    FigureComposerTool,
+    FigureDataSelectionState,
+    FigureMethodFamily,
+    FigureOperationKind,
+    FigureOperationState,
+    FigureRecipeState,
+    FigureSourceState,
+    FigureSubplotsState,
+)
+from erlab.interactive._figurecomposer._model import (
+    _operation_metadata as figurecomposer_operation_metadata,
+)
 from erlab.interactive._figurecomposer._model._document import FigureDocument
+from erlab.interactive._figurecomposer._operations import (
+    _line_profile as figurecomposer_line_profile,
+)
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _codegen as plot_slices_codegen,
 )
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _model as plot_slices_model,
 )
+from erlab.interactive._figurecomposer._ui import (
+    _toolbar_dialogs as figurecomposer_toolbar_dialogs,
+)
+from tests.interactive.imagetool.manager.helpers import _exec_generated_code
 
-from ._common import *
+from ._common import (
+    _activate_combo_text,
+    _expected_line_colormap_colors,
+    _figure_composer_line_slice_source,
+    _operation_section_button,
+    _select_operation_rows,
+    _selected_operation_rows,
+)
 
 
 def test_figure_composer_line_migrates_single_map_selection_to_source_alias(

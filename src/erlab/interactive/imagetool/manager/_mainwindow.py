@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import functools
 import gc
 import logging
 import sys
@@ -19,9 +18,18 @@ from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
-from erlab.interactive.imagetool.manager._figure_manager import _FigureManagerController
+from erlab.interactive.imagetool.manager._figurecomposer._collection import (
+    _FigureCollectionController,
+)
+from erlab.interactive.imagetool.manager._figurecomposer._controller import (
+    _FigureComposerWorkflowController,
+)
 from erlab.interactive.imagetool.manager._heartbeat import _RegistryHeartbeatController
 from erlab.interactive.imagetool.manager._interaction import _ManagerInteractionGate
+from erlab.interactive.imagetool.manager._io import (
+    _DataIngressController,
+    _MultiFileHandler,
+)
 from erlab.interactive.imagetool.manager._lineage import _LineageController
 from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
 from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
@@ -38,7 +46,6 @@ from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._widgets import (
     _LINKER_COLORS,
     _SHM_NAME,
-    _WORKSPACE_REBIND_KEEP_CHUNKS,
     _ApplicationQuitFilter,
     _ElidedValueLabel,
     _HeightForWidthFrame,
@@ -50,8 +57,10 @@ from erlab.interactive.imagetool.manager._widgets import (
     _WarningNotificationHandler,
     _WidgetsController,
 )
-from erlab.interactive.imagetool.manager._workspace_io import _WorkspaceIOController
-from erlab.interactive.imagetool.manager._workspace_state import _ManagerWorkspaceState
+from erlab.interactive.imagetool.manager._workspace._controller import (
+    _WorkspaceController,
+)
+from erlab.interactive.imagetool.manager._workspace._state import _ManagerWorkspaceState
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
@@ -63,7 +72,6 @@ if typing.TYPE_CHECKING:
     import pathlib
     from collections.abc import (
         Callable,
-        Collection,
         Hashable,
         Iterable,
         Iterator,
@@ -74,14 +82,23 @@ if typing.TYPE_CHECKING:
     import numpy as np
     import xarray as xr
 
-    from erlab.interactive._figurecomposer._model._document import FigureSourceAddResult
-    from erlab.interactive._options.schema import WorkspaceCompressionMode
-    from erlab.interactive.imagetool import provenance
+    from erlab.interactive._figurecomposer import (
+        FigureAxesSelectionState,
+        FigureOperationState,
+    )
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool._mainwindow import ImageTool
-    from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
+    from erlab.interactive.imagetool._provenance._model import (
+        ScriptInput,
+        ScriptInputDataRole,
+        ScriptInputDependencyRef,
+        ToolProvenanceSpec,
+        _ProvenanceDisplayRow,
+    )
+    from erlab.interactive.imagetool._provenance._operations import (
+        ImageToolSelectionSourceBinding,
+    )
     from erlab.interactive.imagetool.manager._dependency import _DependencyStatus
-    from erlab.interactive.imagetool.manager._io import _MultiFileHandler
     from erlab.interactive.imagetool.manager._server import (
         _ManagerServer,
         _WatcherServer,
@@ -89,9 +106,6 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._widgets import (
         _ScriptRebuildResult,
         _WorkspaceDocumentAccess,
-    )
-    from erlab.interactive.imagetool.manager._workspace_state import (
-        _WorkspaceStateSnapshot,
     )
     from erlab.interactive.imagetool.manager._wrapper import _MetadataField
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
@@ -229,6 +243,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._details_panel = _DetailsPanelController(self)
         self._actions_controller = _ActionsController(self)
         self._widgets_controller = _WidgetsController(self)
+        self._data_ingress = _DataIngressController(self)
 
         try:
             (
@@ -266,7 +281,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._workspace_state = _ManagerWorkspaceState()
         self._interaction_gate = _ManagerInteractionGate(self)
         self._interaction_gate.register_window(self)
-        self._workspace_controller = _WorkspaceIOController(self)
+        self._workspace_controller = _WorkspaceController(self)
         self._tool_metadata_queue = _ManagerToolMetadataQueue(
             self,
             self._flush_pending_tool_metadata_updates,
@@ -920,9 +935,12 @@ class ImageToolManager(_ImageToolManagerBase):
         self._note_commit_timer.setSingleShot(True)
         self._note_commit_timer.setInterval(_NOTE_COMMIT_DELAY_MS)
         self._note_commit_timer.timeout.connect(self._commit_note_editor)
-        self._figure_controller = _FigureManagerController(self, self)
+        self._figure_collection = _FigureCollectionController(self, self)
+        self._figure_workflows = _FigureComposerWorkflowController(
+            self, self._figure_collection, self
+        )
         self.tree_view._selection_model.selectionChanged.connect(
-            self._figure_controller.clear_selection_from_tree
+            self._figure_collection.clear_selection_from_tree
         )
         self._metadata_copy_selected_action = QtGui.QAction("Copy", self)
         self._metadata_copy_selected_action.setObjectName(
@@ -1157,16 +1175,6 @@ class ImageToolManager(_ImageToolManagerBase):
         if node.tool_window is not None:
             node.tool_window._refresh_reload_data_action()
 
-    def _configure_materialized_figure_tool(
-        self, node: _ManagedWindowNode, tool: erlab.interactive.utils.ToolWindow
-    ) -> None:
-        from erlab.interactive._figurecomposer import FigureComposerTool
-
-        tool._refresh_reload_data_action()
-        if isinstance(tool, FigureComposerTool):
-            tool.set_options_getter(lambda: self.effective_interactive_options)
-            self._install_figure_source_refresh_callbacks(node.uid, tool)
-
     def _unregister_node(self, uid: str) -> None:
         node = self._tool_graph.unregister_node(uid)
         if node is None:
@@ -1174,7 +1182,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._dependency_tracker.clear_uid(uid)
         if not self._workspace_state.closing_document:
             self._refresh_dependency_dependents(uid)
-            self._refresh_figure_source_controls()
+            self._figure_workflows._refresh_figure_source_controls()
 
     def _iter_descendant_uids(self, uid: str) -> list[str]:
         return self._tool_graph.descendant_uids(uid)
@@ -1269,1173 +1277,84 @@ class ImageToolManager(_ImageToolManagerBase):
     def _deselect_tree(self) -> None:
         self.tree_view.deselect_all()
 
-    @staticmethod
-    def _figure_all_axes(nrows: int, ncols: int) -> tuple[tuple[int, int], ...]:
-        return tuple((row, col) for row in range(nrows) for col in range(ncols))
-
-    @staticmethod
-    def _figure_middle_coordinate_value(data: xr.DataArray, dim: str) -> float | None:
-        coord = data.coords.get(dim)
-        if coord is None or coord.size == 0:
-            return None
-        with contextlib.suppress(TypeError, ValueError):
-            return float(coord.values[int(coord.size // 2)])
-        return None
-
-    def _figure_default_slice_selection(
-        self, data: xr.DataArray
-    ) -> tuple[str | None, tuple[float, ...]]:
-        slice_dim = None
-        slice_values: tuple[float, ...] = ()
-        if data.ndim > 2:
-            slice_dim = str(data.dims[0])
-            value = self._figure_middle_coordinate_value(data, slice_dim)
-            if value is not None:
-                slice_values = (value,)
-        return slice_dim, slice_values
-
-    def _make_figure_operations_for_sources(
-        self,
-        source_data: Mapping[str, xr.DataArray],
-        *,
-        setup: typing.Any,
-    ) -> tuple[typing.Any, ...]:
-        from erlab.interactive._figurecomposer import (
-            FigureAxesSelectionState,
-            FigureOperationState,
-        )
-        from erlab.interactive._figurecomposer._model._sources import (
-            _public_source_data,
-        )
-
-        if not source_data:
-            return ()
-
-        source_names = tuple(source_data)
-        all_axes = FigureAxesSelectionState(
-            axes=self._figure_all_axes(setup.nrows, setup.ncols)
-        )
-        squeezed = [
-            _public_source_data(data).squeeze(drop=True)
-            for data in source_data.values()
-        ]
-
-        if all(data.ndim == 2 for data in squeezed):
-            operations = []
-            for index, source_name in enumerate(source_names):
-                row = min(index, setup.nrows - 1)
-                operations.append(
-                    FigureOperationState.plot_array(
-                        label=source_name,
-                        source=source_name,
-                        axes=FigureAxesSelectionState(axes=((row, 0),)),
-                    )
-                )
-            return tuple(operations)
-
-        if all(data.ndim > 1 for data in squeezed):
-            first = squeezed[0]
-            slice_dim, slice_values = self._figure_default_slice_selection(first)
-            operation = FigureOperationState.plot_slices(
-                label="plot_slices",
-                sources=source_names,
-                axes=all_axes,
-                slice_dim=slice_dim,
-                slice_values=slice_values,
-            ).model_copy(update={"order": "F"} if len(source_names) > 1 else {})
-            return (operation,)
-
-        operations = []
-        for index, (source_name, data) in enumerate(
-            zip(source_names, squeezed, strict=True)
-        ):
-            row = min(index, setup.nrows - 1)
-            if data.ndim == 1:
-                operations.append(
-                    FigureOperationState.line(
-                        label=source_name,
-                        source=source_name,
-                        axes=FigureAxesSelectionState(axes=((row, 0),)),
-                    )
-                )
-            elif data.ndim == 2:
-                operations.append(
-                    FigureOperationState.plot_array(
-                        label=source_name,
-                        source=source_name,
-                        axes=FigureAxesSelectionState(axes=((row, 0),)),
-                    )
-                )
-            else:
-                slice_dim, slice_values = self._figure_default_slice_selection(data)
-                operations.append(
-                    FigureOperationState.plot_slices(
-                        label=source_name,
-                        sources=(source_name,),
-                        axes=FigureAxesSelectionState(axes=((row, 0),)),
-                        slice_dim=slice_dim,
-                        slice_values=slice_values,
-                    )
-                )
-        return tuple(operations)
-
-    def _figure_operations_from_image_targets(
-        self, targets: tuple[int | str, ...], source_names: tuple[str, ...]
-    ) -> tuple[typing.Any, ...] | None:
-        from erlab.interactive._figurecomposer import (
-            FigureOperationKind,
-            FigureOperationState,
-        )
-        from erlab.interactive._figurecomposer._seeding import (
-            plot_slices_operation_with_source_styles,
-        )
-        from erlab.interactive.imagetool._figurecomposer_adapter import (
-            build_figure_composer_operation,
-        )
-
-        if not source_names:
-            return None
-        source_operations: list[typing.Any] = []
-        for index, target in enumerate(targets):
-            if index >= len(source_names):
-                break
-            tool = self.get_imagetool(target)
-            if not tool.slicer_area.axes:
-                return None
-            plot = typing.cast("typing.Any", tool.slicer_area.axes[0])
-            if not plot.is_image:
-                return None
-            source_operation = build_figure_composer_operation(
-                plot, source_name=source_names[index]
-            )
-            if source_operation.kind not in {
-                FigureOperationKind.PLOT_ARRAY,
-                FigureOperationKind.PLOT_SLICES,
-            }:
-                return None
-            source_operations.append(source_operation)
-        if not source_operations:
-            return None
-        if all(
-            operation.kind == FigureOperationKind.PLOT_ARRAY
-            for operation in source_operations
-        ):
-            if len(source_operations) > 1 and all(
-                len(operation.map_selections) == 1 for operation in source_operations
-            ):
-                first_operation = source_operations[0]
-                plot_array_updates = {
-                    "transpose": first_operation.transpose,
-                    "xlim": first_operation.xlim,
-                    "ylim": first_operation.ylim,
-                    "crop": first_operation.crop,
-                    "axis": first_operation.axis,
-                    "colorbar": first_operation.colorbar,
-                    "hide_colorbar_ticks": first_operation.hide_colorbar_ticks,
-                    "annotate": first_operation.annotate,
-                    "cmap": first_operation.cmap,
-                    "gamma": first_operation.gamma,
-                    "norm_name": first_operation.norm_name,
-                    "norm_gamma": first_operation.norm_gamma,
-                    "norm_clip": first_operation.norm_clip,
-                    "norm_kwargs": dict(first_operation.norm_kwargs),
-                    "vmin": first_operation.vmin,
-                    "vmax": first_operation.vmax,
-                    "vcenter": first_operation.vcenter,
-                    "halfrange": first_operation.halfrange,
-                    "colorbar_kw": dict(first_operation.colorbar_kw),
-                    "extra_kwargs": dict(first_operation.extra_kwargs),
-                }
-                operation = FigureOperationState.plot_slices(
-                    label="plot_slices",
-                    sources=source_names,
-                    map_selections=tuple(
-                        selection
-                        for source_operation in source_operations
-                        for selection in source_operation.map_selections
-                    ),
-                ).model_copy(update=plot_array_updates)
-                if len(source_names) > 1:
-                    operation = operation.model_copy(update={"order": "F"})
-                return (
-                    plot_slices_operation_with_source_styles(
-                        operation,
-                        tuple(source_operations),
-                        selections_per_source=1,
-                    ),
-                )
-            return tuple(source_operations)
-        if any(
-            operation.kind != FigureOperationKind.PLOT_SLICES
-            for operation in source_operations
-        ):
-            return None
-
-        if any(operation.map_selections for operation in source_operations):
-            from erlab.interactive._figurecomposer._exceptions import (
-                FigureComposerPlotSlicesSelectionError,
-            )
-
-            raise FigureComposerPlotSlicesSelectionError
-        operation = source_operations[0]
-        source_updates: dict[str, typing.Any] = {"sources": source_names}
-        if len(source_names) > 1:
-            source_updates["order"] = "F"
-        expanded_operation = operation.model_copy(update=source_updates)
-        return (
-            plot_slices_operation_with_source_styles(
-                expanded_operation,
-                tuple(source_operations),
-                selections_per_source=1,
-            ),
-        )
-
-    def _figure_bz_overlay_operation_from_target(
-        self,
-        target: int | str,
-        data: xr.DataArray,
-        *,
-        axes: typing.Any,
-    ) -> typing.Any | None:
-        from erlab.interactive._figurecomposer._seeding import (
-            bz_overlay_operation_from_ktool,
-            bz_overlay_operation_from_momentum_data,
-        )
-        from erlab.interactive.kspace import KspaceTool
-
-        node = self._node_for_target(target)
-        if node.output_id == KspaceTool.Output.CONVERTED.value:
-            parent = self._parent_node(node)
-            if isinstance(parent.tool_window, KspaceTool):
-                return bz_overlay_operation_from_ktool(
-                    parent.tool_window,
-                    data,
-                    axes=axes,
-                )
-            return None
-        return bz_overlay_operation_from_momentum_data(data, axes=axes)
-
-    def _figure_bz_overlay_operation_from_targets(
-        self,
-        targets: tuple[int | str, ...],
-        source_data: Mapping[str, xr.DataArray],
-        *,
-        axes: typing.Any,
-    ) -> typing.Any | None:
-        if len(targets) != 1 or len(source_data) != 1:
-            return None
-        target = targets[0]
-        data = next(iter(source_data.values()))
-        return self._figure_bz_overlay_operation_from_target(target, data, axes=axes)
-
-    def _show_figure_plot_slices_selection_error(self, error: Exception) -> None:
-        from erlab.interactive._figurecomposer._exceptions import (
-            PLOT_SLICES_SELECTION_ERROR_TITLE,
-        )
-
-        QtWidgets.QMessageBox.warning(
-            self, PLOT_SLICES_SELECTION_ERROR_TITLE, str(error)
-        )
-
-    @staticmethod
-    def _figure_plot_slices_grid_shape(operation: typing.Any) -> tuple[int, int]:
-        map_count = (
-            len(operation.map_selections)
-            if operation.map_selections
-            else len(operation.sources)
-        )
-        map_count = max(map_count, 1)
-        slice_count = max(len(operation.slice_values), 1)
-        if operation.order == "F":
-            return slice_count, map_count
-        return map_count, slice_count
-
-    def _figure_setup_for_operation(
-        self, operation: typing.Any | None, source_data: Mapping[str, xr.DataArray]
-    ) -> typing.Any:
-        from erlab.interactive._figurecomposer import (
-            FigureOperationKind,
-            FigureSubplotsState,
-        )
-        from erlab.interactive._figurecomposer._model._sources import (
-            _public_source_data,
-        )
-
-        if operation is not None and operation.kind == FigureOperationKind.PLOT_SLICES:
-            nrows, ncols = self._figure_plot_slices_grid_shape(operation)
-            return FigureSubplotsState(nrows=nrows, ncols=ncols)
-
-        squeezed = [
-            _public_source_data(data).squeeze(drop=True)
-            for data in source_data.values()
-        ]
-        if squeezed and all(data.ndim > 1 for data in squeezed):
-            return FigureSubplotsState(
-                nrows=max(len(squeezed), 1),
-                ncols=1,
-            )
-        return FigureSubplotsState(nrows=max(len(squeezed), 1), ncols=1)
-
-    def _figure_source_from_node(
-        self,
-        node: _ImageToolWrapper | _ManagedWindowNode,
-        data: xr.DataArray,
-        reserved: set[str],
-    ) -> typing.Any:
-        from erlab.interactive._figurecomposer import FigureSourceState
-        from erlab.interactive._figurecomposer._model._sources import (
-            _source_alias_candidate,
-            _source_unique_name,
-        )
-
-        source = FigureSourceState.from_script_input(self._script_input_for_node(node))
-        alias = _source_unique_name(
-            _source_alias_candidate(data) or source.name, reserved
-        )
-        return source.model_copy(update={"name": alias})
-
-    def _figure_sources_from_targets(
-        self,
-        targets: Iterable[int | str],
-        *,
-        reserved_sources: Iterable[str] = (),
-    ) -> tuple[tuple[int | str, ...], tuple[typing.Any, ...], dict[str, xr.DataArray]]:
-        resolved_targets = self._figure_imagetool_targets(targets)
-        source_data: dict[str, xr.DataArray] = {}
-        sources = []
-        reserved = set(reserved_sources)
-        for target in resolved_targets:
-            node = self._node_for_target(target)
-            data = node.current_source_data()
-            source = self._figure_source_from_node(node, data, reserved)
-            source_data[source.name] = data
-            sources.append(source)
-        return resolved_targets, tuple(sources), source_data
-
-    def _figure_source_name_map_for_targets(
-        self, targets: Iterable[int | str], sources: Iterable[typing.Any]
-    ) -> dict[str, str]:
-        source_name_map: dict[str, str] = {}
-        for target, source in zip(targets, sources, strict=True):
-            old_name = self._script_input_name_for_node(self._node_for_target(target))
-            if old_name != source.name:
-                source_name_map[old_name] = source.name
-        return source_name_map
-
-    @staticmethod
-    def _figure_operation_with_source_names(
-        operation: typing.Any, source_name_map: Mapping[str, str]
-    ) -> typing.Any:
-        if not source_name_map:
-            return operation
-        from erlab.interactive._figurecomposer._model._operation_metadata import (
-            rename_operation_sources,
-        )
-
-        return rename_operation_sources(operation, source_name_map)
-
-    def _figure_source_uid_for_target(self, target: int | str) -> str | None:
-        try:
-            node = self._node_for_target(target)
-        except KeyError:
-            return None
-        return node.uid if node.is_imagetool else None
-
-    def _figure_imagetool_targets(
-        self, targets: Iterable[int | str]
-    ) -> tuple[int | str, ...]:
-        resolved: list[int | str] = []
-        seen_uids: set[str] = set()
-        for target in targets:
-            uid = self._figure_source_uid_for_target(target)
-            if uid is None or uid in seen_uids:
-                continue
-            resolved.append(target)
-            seen_uids.add(uid)
-        return tuple(resolved)
-
-    def _selected_figure_source_uids(self) -> tuple[str, ...]:
-        uids: list[str] = []
-        for target in self._selected_imagetool_targets():
-            uid = self._figure_source_uid_for_target(target)
-            if uid is not None and uid not in uids:
-                uids.append(uid)
-        return tuple(uids)
-
-    def _figure_source_uids_from_mime(
-        self, mime: QtCore.QMimeData | None
-    ) -> tuple[str, ...]:
-        uids = self.tree_view.figure_source_uids_from_mime(mime)
-        return tuple(
-            uid
-            for uid in uids
-            if (node := self._tool_graph.nodes.get(uid)) is not None
-            and node.is_imagetool
-        )
-
-    def _selected_figure_uid_for_figure_dialog(self) -> str | None:
-        selected_uids = self._selected_figure_uids()
-        if len(selected_uids) == 1:
-            return selected_uids[0]
-        return None
-
-    def _add_sources_to_figure(
-        self,
-        figure_uid: str,
-        sources: tuple[typing.Any, ...],
-        source_data: Mapping[str, xr.DataArray],
-        *,
-        show: bool = True,
-    ) -> FigureSourceAddResult | None:
-        """Add or update figure sources without appending recipe operations."""
-        from erlab.interactive._figurecomposer import FigureComposerTool
-
-        if not self._is_figure_uid(figure_uid):
-            return None
-        node = self._child_node(figure_uid)
-        tool = node.tool_window
-        if not isinstance(tool, FigureComposerTool):
-            return None
-        result = tool.add_sources(sources, source_data)
-        if not result:
-            return result
-        self._mark_workspace_dirty(uid=figure_uid, state=True)
-        self._figure_controller.select_uid(figure_uid)
-        if show:
-            node.show()
-        return result
-
-    def _add_imagetool_sources_to_figure(
-        self,
-        figure_uid: str,
-        targets: Iterable[int | str],
-        *,
-        show: bool = False,
-    ) -> bool:
-        requested_targets = tuple(targets)
-        skipped_targets = sum(
-            1
-            for target in requested_targets
-            if self._figure_source_uid_for_target(target) is None
-        )
-        resolved_targets, sources, source_data = self._figure_sources_from_targets(
-            requested_targets
-        )
-        if not resolved_targets:
-            return False
-        node = self._child_node(figure_uid) if self._is_figure_uid(figure_uid) else None
-        from erlab.interactive._figurecomposer import FigureComposerTool
-
-        result = self._add_sources_to_figure(
-            figure_uid, sources, source_data, show=show
-        )
-        if not result:
-            return False
-        tool = node.tool_window if node is not None else None
-        if isinstance(tool, FigureComposerTool):
-            source_error = (
-                "Could not update source data for: "
-                + ", ".join(detail for _name, detail in result.skipped)
-                if result.skipped
-                else ""
-            )
-            added = len(result.added)
-            updated = len(result.updated)
-            parts: list[str] = []
-            if added:
-                suffix = "source" if added == 1 else "sources"
-                parts.append(f"Added {added} ImageTool {suffix}")
-            if updated:
-                suffix = "source" if updated == 1 else "sources"
-                parts.append(f"Updated {updated} ImageTool {suffix}")
-            if result.skipped:
-                skipped = len(result.skipped)
-                suffix = "update" if skipped == 1 else "updates"
-                parts.append(f"Skipped {skipped} ImageTool source {suffix}")
-            if skipped_targets:
-                suffix = "selection" if skipped_targets == 1 else "selections"
-                parts.append(f"Skipped {skipped_targets} unsupported {suffix}")
-            status = "; ".join(parts) + "."
-            if source_error:
-                status = f"{status} {source_error}"
-            tool._set_source_panel_status(status)
-        return True
-
-    def _replace_figure_source(
-        self,
-        figure_uid: str,
-        alias: str,
-        sources: tuple[typing.Any, ...],
-        source_data: Mapping[str, xr.DataArray],
-        *,
-        show: bool = True,
-    ) -> bool:
-        """Replace one stored figure source with one selected ImageTool source."""
-        from erlab.interactive._figurecomposer import FigureComposerTool
-
-        if len(sources) != 1 or not self._is_figure_uid(figure_uid):
-            return False
-        replacement = sources[0]
-        data = source_data.get(replacement.name)
-        if data is None:
-            return False
-        node = self._child_node(figure_uid)
-        tool = node.tool_window
-        if not isinstance(tool, FigureComposerTool):
-            return False
-        if not tool.replace_source(alias, replacement, data):
-            return False
-        self._mark_workspace_dirty(uid=figure_uid, state=True)
-        self._figure_controller.select_uid(figure_uid)
-        if show:
-            node.show()
-        return True
-
-    def _install_figure_source_refresh_callbacks(
-        self, figure_uid: str, tool: typing.Any
-    ) -> None:
-        """Connect Figure Composer source refresh controls to live manager nodes."""
-        tool._set_source_refresh_callbacks(
-            can_refresh_source=lambda source_name: self._can_refresh_figure_source(
-                figure_uid, source_name
-            ),
-            refresh_source=lambda source_name: self._refresh_figure_source(
-                figure_uid, source_name
-            ),
-            source_label=lambda source_name: self._figure_source_refresh_label(
-                figure_uid, source_name
-            ),
-        )
-        tool._set_source_reveal_callbacks(
-            can_reveal_source=lambda source_name: self._can_reveal_figure_source(
-                figure_uid, source_name
-            ),
-            reveal_sources=lambda source_names: self._reveal_figure_sources(
-                figure_uid, source_names
-            ),
-        )
-        tool._set_source_add_callbacks(
-            can_add_sources=functools.partial(
-                self._can_request_add_sources_to_figure, figure_uid
-            ),
-            add_sources=functools.partial(
-                self._request_add_sources_to_figure, figure_uid
-            ),
-            can_drop_sources=functools.partial(
-                self._can_add_figure_sources_from_mime, figure_uid
-            ),
-            drop_sources=functools.partial(
-                self._add_figure_sources_from_mime, figure_uid
-            ),
-        )
-
-    def _can_request_add_sources_to_figure(self, figure_uid: str) -> bool:
-        return self._is_figure_uid(figure_uid) and any(
-            node.is_imagetool for node in self._tool_graph.nodes.values()
-        )
-
-    def _request_add_sources_to_figure(self, figure_uid: str) -> bool:
-        from erlab.interactive.imagetool.manager import _figure_dialogs
-
-        if not self._is_figure_uid(figure_uid):
-            return False
-        dialog = _figure_dialogs._FigureSourcePickerDialog(
-            self, prechecked_uids=self._selected_figure_source_uids()
-        )
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            return False
-        return self._add_imagetool_sources_to_figure(
-            figure_uid, dialog.selected_targets(), show=False
-        )
-
-    def _can_add_figure_sources_from_mime(
-        self, figure_uid: str, mime: QtCore.QMimeData | None
-    ) -> bool:
-        return self._is_figure_uid(figure_uid) and bool(
-            self._figure_source_uids_from_mime(mime)
-        )
-
-    def _add_figure_sources_from_mime(
-        self, figure_uid: str, mime: QtCore.QMimeData | None
-    ) -> bool:
-        targets = self._figure_source_uids_from_mime(mime)
-        if not targets:
-            return False
-        return self._add_imagetool_sources_to_figure(figure_uid, targets, show=False)
-
-    @staticmethod
-    def _figure_source_state(tool: typing.Any, source_name: str) -> typing.Any | None:
-        for source in tool.source_states():
-            if source.name == source_name:
-                return source
-        return None
-
-    def _figure_source_node(
-        self, figure_uid: str, source_name: str
-    ) -> _ImageToolWrapper | _ManagedWindowNode | None:
-        from erlab.interactive._figurecomposer import FigureComposerTool
-
-        if not self._is_figure_uid(figure_uid):
-            return None
-        figure_node = self._child_node(figure_uid)
-        tool = figure_node.tool_window
-        if not isinstance(tool, FigureComposerTool):
-            return None
-        source = self._figure_source_state(tool, source_name)
-        if source is None or source.node_uid is None:
-            return None
-        return self._tool_graph.nodes.get(source.node_uid)
-
-    def _figure_source_live_node(
-        self, figure_uid: str, source_name: str
-    ) -> _ImageToolWrapper | _ManagedWindowNode | None:
-        node = self._figure_source_node(figure_uid, source_name)
-        if node is None:
-            return None
-        window = node.window
-        if window is None or not erlab.interactive.utils.qt_is_valid(window):
-            # Invalid Qt wrappers are binding- and lifetime-dependent.
-            return None  # pragma: no cover
-        return node
-
-    def _can_reveal_figure_source(self, figure_uid: str, source_name: str) -> bool:
-        node = self._figure_source_node(figure_uid, source_name)
-        return node is not None and node.is_imagetool
-
-    def _reveal_figure_sources(
-        self, figure_uid: str, source_names: Sequence[str]
-    ) -> bool:
-        if not self._is_figure_uid(figure_uid):
-            return False
-        uids = tuple(
-            dict.fromkeys(
-                node.uid
-                for source_name in source_names
-                if (node := self._figure_source_node(figure_uid, source_name))
-                is not None
-                and node.is_imagetool
-            )
-        )
-        return self.reveal_nodes(uids)
-
-    def _can_refresh_figure_source(self, figure_uid: str, source_name: str) -> bool:
-        return self._figure_source_live_node(figure_uid, source_name) is not None
-
-    def _figure_source_refresh_label(
-        self, figure_uid: str, source_name: str
-    ) -> str | None:
-        node = self._figure_source_node(figure_uid, source_name)
-        return None if node is None else node.display_text
-
-    def _refresh_figure_source(self, figure_uid: str, source_name: str) -> bool:
-        """Refresh one figure source from its linked open ImageTool window."""
-        from erlab.interactive._figurecomposer import (
-            FigureComposerTool,
-            FigureSourceState,
-        )
-
-        source_node = self._figure_source_live_node(figure_uid, source_name)
-        if source_node is None or not self._is_figure_uid(figure_uid):
-            return False
-        figure_node = self._child_node(figure_uid)
-        tool = figure_node.tool_window
-        if not isinstance(tool, FigureComposerTool):
-            return False
-
-        data = source_node.current_source_data()
-        source = FigureSourceState.from_script_input(
-            self._script_input_for_node(source_node)
-        )
-        if not tool.replace_source(source_name, source, data):
-            return False
-        self._mark_workspace_dirty(uid=figure_uid, data=True, state=True)
-        self._figure_controller.update_gallery_icon(figure_uid)
-        return True
-
-    def _refresh_figure_source_controls(self) -> None:
-        if self._workspace_ui_refresh_defer_depth > 0:
-            self._deferred_workspace_source_controls_refresh = True
-            return
-
-        from erlab.interactive._figurecomposer import FigureComposerTool
-
-        for figure_uid in self._figure_uids():
-            node = self._tool_graph.nodes.get(figure_uid)
-            if not isinstance(node, _ManagedWindowNode):
-                continue
-            tool = node.tool_window
-            if isinstance(tool, FigureComposerTool):
-                tool.refresh_source_controls()
-
     def create_figure_from_targets(
         self,
         targets: Iterable[int | str],
         *,
-        operation: typing.Any | None = None,
+        operation: FigureOperationState | None = None,
         custom_code: str | None = None,
         title: str | None = None,
         show: bool = True,
     ) -> str | None:
-        from erlab.interactive._figurecomposer import (
-            FigureAxesSelectionState,
-            FigureComposerTool,
-            FigureOperationKind,
-            FigureOperationState,
-        )
-        from erlab.interactive._figurecomposer._defaults import figure_options_context
-        from erlab.interactive._figurecomposer._model._sources import (
-            _public_source_data,
-        )
-
-        resolved_targets, sources, source_data = self._figure_sources_from_targets(
-            targets
-        )
-        if not resolved_targets:
-            return None
-        source_name_map = self._figure_source_name_map_for_targets(
-            resolved_targets, sources
-        )
-        if operation is not None:
-            operation = self._figure_operation_with_source_names(
-                operation,
-                source_name_map,
-            )
-
-        primary_source = sources[0].name
-        source_names = tuple(source.name for source in sources)
-        auto_operations: tuple[FigureOperationState, ...] = ()
-        if (
-            operation is None
-            and custom_code is None
-            and all(
-                _public_source_data(data).squeeze(drop=True).ndim > 1
-                for data in source_data.values()
-            )
-        ):
-            from erlab.interactive._figurecomposer._exceptions import (
-                FigureComposerPlotSlicesSelectionError,
-            )
-
-            try:
-                auto_operations = typing.cast(
-                    "tuple[FigureOperationState, ...]",
-                    self._figure_operations_from_image_targets(
-                        resolved_targets, source_names
-                    )
-                    or (),
-                )
-            except FigureComposerPlotSlicesSelectionError as exc:
-                self._show_figure_plot_slices_selection_error(exc)
-                return None
-        with figure_options_context(self.effective_interactive_options):
-            setup_operation = None if custom_code is not None else operation
-            if setup_operation is None and len(auto_operations) == 1:
-                setup_operation = auto_operations[0]
-            setup = self._figure_setup_for_operation(
-                setup_operation,
-                source_data,
-            )
-            all_axes = FigureAxesSelectionState(
-                axes=self._figure_all_axes(setup.nrows, setup.ncols)
-            )
-            bz_operation = (
-                None
-                if operation is not None or custom_code is not None
-                else self._figure_bz_overlay_operation_from_targets(
-                    resolved_targets,
-                    source_data,
-                    axes=all_axes,
-                )
-            )
-            operations: tuple[FigureOperationState, ...]
-            if operation is not None:
-                if (
-                    operation.kind
-                    in {FigureOperationKind.PLOT_ARRAY, FigureOperationKind.PLOT_SLICES}
-                    and not operation.axes.expression
-                ):
-                    operation = operation.model_copy(update={"axes": all_axes})
-                operations = (operation,)
-            elif custom_code is not None:
-                custom_operation = self._figure_operation_with_source_names(
-                    FigureOperationState.custom(
-                        label=title or "custom code",
-                        code=custom_code,
-                        trusted=True,
-                    ),
-                    source_name_map,
-                )
-                operations = (custom_operation,)
-            elif auto_operations:
-                operations = self._figure_operations_with_append_axes(
-                    auto_operations, all_axes
-                )
-            else:
-                operations = typing.cast(
-                    "tuple[FigureOperationState, ...]",
-                    self._make_figure_operations_for_sources(
-                        source_data,
-                        setup=setup,
-                    ),
-                )
-            if bz_operation is not None:
-                operations = (*operations, bz_operation)
-
-            tool = FigureComposerTool.from_sources(
-                source_data,
-                sources=tuple(sources),
-                operations=operations,
-                setup=setup,
-                primary_source=primary_source,
-            )
-        tool._tool_display_name = (
-            title if title is not None else self._figure_controller.next_display_name()
-        )
-        uid = self.add_figuretool(tool, show=show)
-        self._figure_controller.select_uid(uid)
-        return uid
-
-    @QtCore.Slot()
-    def create_figure_from_selection(self) -> None:
-        from erlab.interactive.imagetool.manager import _figure_dialogs
-
-        targets = self._selected_figure_source_targets()
-        if not targets:
-            return
-        resolved_targets, sources, source_data = self._figure_sources_from_targets(
-            targets
-        )
-        if not resolved_targets:
-            return
-        figure_uids = tuple(self._figure_uids())
-        if not figure_uids:
-            self.create_figure_from_targets(resolved_targets)
-            return
-
-        dialog = _figure_dialogs._AppendFigureTargetDialog(
-            self,
-            figure_uids,
-            None,
-            allow_new_figure=True,
-            source_count=len(sources),
-            selected_figure_uid=self._selected_figure_uid_for_figure_dialog(),
-        )
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            return
-        action = dialog.selected_action()
-        if action == _figure_dialogs._FIGURE_DIALOG_NEW:
-            self.create_figure_from_targets(resolved_targets)
-            return
-        if action == _figure_dialogs._FIGURE_DIALOG_ADD_SOURCE:
-            self._add_sources_to_figure(dialog.figure_uid(), sources, source_data)
-            return
-        if action == _figure_dialogs._FIGURE_DIALOG_REPLACE_SOURCE:
-            alias = dialog.selected_source_alias()
-            if alias is None:
-                return
-            self._replace_figure_source(
-                dialog.figure_uid(),
-                alias,
-                sources,
-                source_data,
-            )
-            return
-        target = dialog.selected_target()
-        if target is None:
-            return
-        figure_uid, axes_selection = target
-        self.append_figure_from_targets(
-            resolved_targets,
-            figure_uid=figure_uid,
-            axes_selection=axes_selection,
-        )
-
-    def create_figure_from_slicer_area(
-        self,
-        slicer_area: ImageSlicerArea,
-        *,
-        operation: typing.Any | None = None,
-        custom_code: str | None = None,
-        title: str | None = None,
-        show: bool = True,
-    ) -> str | None:
-        target = self.target_from_slicer_area(slicer_area)
-        if target is None:
-            return None
-        return self.create_figure_from_targets(
-            (target,),
+        return self._figure_workflows.create_figure_from_targets(
+            targets,
             operation=operation,
             custom_code=custom_code,
             title=title,
             show=show,
         )
 
-    def _append_single_axis_selection(self, figure_uid: str) -> typing.Any | None:
-        from erlab.interactive._figurecomposer import FigureAxesSelectionState
-        from erlab.interactive._figurecomposer._model._gridspec import (
-            _gridspec_all_axes_ids,
-            _gridspec_valid_axes_ids,
+    def _choose_figure_append_target(
+        self, operation: FigureOperationState | None
+    ) -> tuple[str, FigureAxesSelectionState] | None:
+        """Choose the destination figure and axes for an external tool workflow."""
+        return self._figure_workflows._prompt_append_figure_target(operation)
+
+    def _configure_figure_tool(
+        self,
+        node: _ManagedWindowNode,
+        tool: erlab.interactive.utils.ToolWindow,
+    ) -> None:
+        """Attach manager services to a newly created or restored figure tool."""
+        self._figure_workflows._configure_materialized_figure_tool(node, tool)
+
+    @QtCore.Slot()
+    def create_figure_from_selection(self) -> None:
+        self._figure_workflows.create_figure_from_selection()
+
+    def create_figure_from_slicer_area(
+        self,
+        slicer_area: ImageSlicerArea,
+        *,
+        operation: FigureOperationState | None = None,
+        custom_code: str | None = None,
+        title: str | None = None,
+        show: bool = True,
+    ) -> str | None:
+        return self._figure_workflows.create_figure_from_slicer_area(
+            slicer_area,
+            operation=operation,
+            custom_code=custom_code,
+            title=title,
+            show=show,
         )
-
-        tool = self._child_node(figure_uid).tool_window
-        if tool is None:
-            return None
-        setup = tool.tool_status.setup
-        if setup.layout_mode == "gridspec":
-            axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
-            if len(axes_ids) == 1:
-                return FigureAxesSelectionState(axes_ids=axes_ids)
-            return None
-        all_axes = self._figure_all_axes(setup.nrows, setup.ncols)
-        if len(all_axes) == 1:
-            return FigureAxesSelectionState(axes=all_axes)
-        return None
-
-    def _prompt_append_figure_target(
-        self, operation: typing.Any | None, *, figure_uid: str | None = None
-    ) -> tuple[str, typing.Any] | None:
-        from erlab.interactive.imagetool.manager import _figure_dialogs
-
-        figure_uids = self._figure_uids()
-        if not figure_uids:
-            return None
-        if figure_uid is not None:
-            if not self._is_figure_uid(figure_uid):
-                return None
-            automatic = self._append_single_axis_selection(figure_uid)
-            if automatic is not None:
-                return figure_uid, automatic
-            figure_uids = (figure_uid,)
-        elif len(figure_uids) == 1:
-            automatic = self._append_single_axis_selection(figure_uids[0])
-            if automatic is not None:
-                return figure_uids[0], automatic
-
-        dialog = _figure_dialogs._AppendFigureTargetDialog(
-            self, tuple(figure_uids), operation
-        )
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            return None
-        return dialog.selected_target()
 
     def append_figure_from_targets(
         self,
         targets: Iterable[int | str],
         *,
         figure_uid: str | None = None,
-        axes_selection: typing.Any | None = None,
-        operation: typing.Any | None = None,
+        axes_selection: FigureAxesSelectionState | None = None,
+        operation: FigureOperationState | None = None,
         show: bool = True,
     ) -> bool:
-        from erlab.interactive._figurecomposer import (
-            FigureAxesSelectionState,
-            FigureComposerTool,
-            FigureOperationState,
-        )
-        from erlab.interactive._figurecomposer._defaults import figure_options_context
-        from erlab.interactive._figurecomposer._model._sources import (
-            _public_source_data,
-        )
-
-        resolved_targets = self._figure_imagetool_targets(targets)
-        if not resolved_targets:
-            return False
-
-        _, sources, source_data = self._figure_sources_from_targets(resolved_targets)
-        prompt_operation = (
-            None
-            if operation is None
-            else self._figure_operation_with_source_names(
-                operation,
-                self._figure_source_name_map_for_targets(resolved_targets, sources),
-            )
-        )
-
-        source_names = tuple(source.name for source in sources)
-        auto_operations: tuple[FigureOperationState, ...] = ()
-        if operation is None and all(
-            _public_source_data(data).squeeze(drop=True).ndim > 1
-            for data in source_data.values()
-        ):
-            from erlab.interactive._figurecomposer._exceptions import (
-                FigureComposerPlotSlicesSelectionError,
-            )
-
-            try:
-                auto_operations = typing.cast(
-                    "tuple[FigureOperationState, ...]",
-                    self._figure_operations_from_image_targets(
-                        resolved_targets, source_names
-                    )
-                    or (),
-                )
-            except FigureComposerPlotSlicesSelectionError as exc:
-                self._show_figure_plot_slices_selection_error(exc)
-                return False
-        if prompt_operation is None and len(auto_operations) == 1:
-            prompt_operation = auto_operations[0]
-
-        if axes_selection is None:
-            prompt = self._prompt_append_figure_target(
-                prompt_operation, figure_uid=figure_uid
-            )
-            if prompt is None:
-                return False
-            resolved_figure_uid, axes_selection = prompt
-        else:
-            if figure_uid is None or not self._is_figure_uid(figure_uid):
-                return False
-            resolved_figure_uid = figure_uid
-
-        node = self._child_node(resolved_figure_uid)
-        tool = node.tool_window
-        if not isinstance(tool, FigureComposerTool):
-            return False
-
-        existing_source_names = tuple(tool.source_data()) + tuple(
-            source.name for source in tool.source_states()
-        )
-        _, sources, source_data = self._figure_sources_from_targets(
-            resolved_targets,
-            reserved_sources=existing_source_names,
-        )
-        append_operation = (
-            None
-            if operation is None
-            else self._figure_operation_with_source_names(
-                operation,
-                self._figure_source_name_map_for_targets(resolved_targets, sources),
-            )
-        )
-        source_names = tuple(source.name for source in sources)
-        auto_operations = ()
-        if operation is None and all(
-            _public_source_data(data).squeeze(drop=True).ndim > 1
-            for data in source_data.values()
-        ):
-            from erlab.interactive._figurecomposer._exceptions import (
-                FigureComposerPlotSlicesSelectionError,
-            )
-
-            try:
-                auto_operations = typing.cast(
-                    "tuple[FigureOperationState, ...]",
-                    self._figure_operations_from_image_targets(
-                        resolved_targets, source_names
-                    )
-                    or (),
-                )
-            except FigureComposerPlotSlicesSelectionError as exc:
-                self._show_figure_plot_slices_selection_error(exc)
-                return False
-
-        add_result = tool.add_sources(tuple(sources), source_data)
-        if not add_result:
-            return False
-        if add_result.skipped:
-            self._mark_workspace_dirty(uid=resolved_figure_uid, state=True)
-            self._figure_controller.select_uid(resolved_figure_uid)
-            if show:
-                node.show()
-            return True
-        with figure_options_context(self.effective_interactive_options):
-            operations = (
-                (append_operation,)
-                if append_operation is not None
-                else auto_operations
-                or self._make_figure_operations_for_sources(
-                    source_data, setup=tool.tool_status.setup
-                )
-            )
-            if operation is None:
-                bz_operation = self._figure_bz_overlay_operation_from_targets(
-                    resolved_targets,
-                    source_data,
-                    axes=axes_selection,
-                )
-                if bz_operation is not None:
-                    operations = (*operations, bz_operation)
-        source_name_map = {
-            requested: stored
-            for requested, stored in add_result.name_map.items()
-            if requested != stored
-        }
-        if source_name_map:
-            operations = tuple(
-                self._figure_operation_with_source_names(appended, source_name_map)
-                for appended in operations
-            )
-        for appended in self._figure_operations_with_append_axes(
-            operations,
-            typing.cast("FigureAxesSelectionState", axes_selection),
-        ):
-            tool.add_operation(appended)
-
-        self._mark_workspace_dirty(uid=resolved_figure_uid, state=True)
-        self._figure_controller.select_uid(resolved_figure_uid)
-        if show:
-            node.show()
-        return True
-
-    @staticmethod
-    def _figure_operations_with_append_axes(
-        operations: tuple[typing.Any, ...],
-        axes_selection: typing.Any,
-    ) -> tuple[typing.Any, ...]:
-        from erlab.interactive._figurecomposer import (
-            FigureAxesSelectionState,
-            FigureOperationKind,
-        )
-
-        if (
-            len(operations) > 1
-            and not axes_selection.expression
-            and all(
-                operation.kind == FigureOperationKind.PLOT_ARRAY
-                for operation in operations
-            )
-        ):
-            if axes_selection.axes and len(axes_selection.axes) >= len(operations):
-                return tuple(
-                    operation.model_copy(
-                        update={
-                            "axes": FigureAxesSelectionState(
-                                axes=(axes_selection.axes[index],)
-                            )
-                        }
-                    )
-                    for index, operation in enumerate(operations)
-                )
-            if axes_selection.axes_ids and len(axes_selection.axes_ids) >= len(
-                operations
-            ):
-                return tuple(
-                    operation.model_copy(
-                        update={
-                            "axes": FigureAxesSelectionState(
-                                axes_ids=(axes_selection.axes_ids[index],)
-                            )
-                        }
-                    )
-                    for index, operation in enumerate(operations)
-                )
-        return tuple(
-            operation.model_copy(update={"axes": axes_selection})
-            for operation in operations
+        return self._figure_workflows.append_figure_from_targets(
+            targets,
+            figure_uid=figure_uid,
+            axes_selection=axes_selection,
+            operation=operation,
+            show=show,
         )
 
     def append_figure_from_slicer_area(
         self,
         slicer_area: ImageSlicerArea,
         *,
-        operation: typing.Any,
+        operation: FigureOperationState,
         show: bool = True,
     ) -> bool:
-        target = self.target_from_slicer_area(slicer_area)
-        if target is None:
-            return False
-        return self.append_figure_from_targets(
-            (target,), operation=operation, show=show
+        return self._figure_workflows.append_figure_from_slicer_area(
+            slicer_area, operation=operation, show=show
         )
 
     @QtCore.Slot()
@@ -2466,7 +1385,7 @@ class ImageToolManager(_ImageToolManagerBase):
         if not self._workspace_state.closing_document:
             self._mark_singleton_workspace_link_groups_dirty(removed_link_keys)
             self._refresh_dependency_dependents(wrapper.uid)
-            self._refresh_figure_source_controls()
+            self._figure_workflows._refresh_figure_source_controls()
         wrapper.dispose()
         wrapper.deleteLater()
 
@@ -2659,7 +1578,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _selected_derivation_row(
         self,
-    ) -> provenance._ProvenanceDisplayRow | None:
+    ) -> _ProvenanceDisplayRow | None:
         return self._details_panel._selected_derivation_row()
 
     def _build_metadata_derivation_menu(
@@ -2824,12 +1743,6 @@ class ImageToolManager(_ImageToolManagerBase):
     def check_for_updates(self) -> None:
         self._widgets_controller.check_for_updates()
 
-    @staticmethod
-    def _normalize_recent_workspace_paths(
-        paths: Iterable[str | os.PathLike[str]],
-    ) -> list[pathlib.Path]:
-        return _WorkspaceIOController._normalize_recent_workspace_paths(paths)
-
     def open_recent_workspace(self, fname: str | os.PathLike[str]) -> bool:
         return self._workspace_controller.open_recent_workspace(fname)
 
@@ -2847,11 +1760,6 @@ class ImageToolManager(_ImageToolManagerBase):
     def _registry_heartbeat_tick(self) -> None:
         self._workspace_controller._refresh_manager_record(coalesce_if_busy=False)
 
-    def _refresh_manager_record(self, *, coalesce_if_busy: bool = True) -> None:
-        self._workspace_controller._refresh_manager_record(
-            coalesce_if_busy=coalesce_if_busy
-        )
-
     def _update_workspace_window_title(self, *, force: bool = True) -> None:
         self._workspace_controller._update_workspace_window_title(force=force)
 
@@ -2863,30 +1771,6 @@ class ImageToolManager(_ImageToolManagerBase):
             fname
         ) as access:
             yield access
-
-    def _set_workspace_path(
-        self,
-        fname: str | os.PathLike[str] | None,
-        *,
-        workspace_lock: QtCore.QLockFile | None = None,
-    ) -> None:
-        self._workspace_controller._set_workspace_path(
-            fname, workspace_lock=workspace_lock
-        )
-
-    def _adopt_workspace_path(self, fname: str | os.PathLike[str]) -> None:
-        self._workspace_controller._adopt_workspace_path(fname)
-
-    def _active_managed_window(self) -> QtWidgets.QWidget | None:
-        return self._workspace_controller._active_managed_window()
-
-    def _restore_focus_after_workspace_save(
-        self, origin: QtWidgets.QWidget | None
-    ) -> None:
-        self._workspace_controller._restore_focus_after_workspace_save(origin)
-
-    def _dirty_details_text(self) -> str:
-        return self._workspace_controller._dirty_details_text()
 
     def _set_node_window_modified(self, uid: str, modified: bool) -> None:
         self._workspace_controller._set_node_window_modified(uid, modified)
@@ -2925,118 +1809,50 @@ class ImageToolManager(_ImageToolManagerBase):
     def _mark_workspace_structure_dirty(self, reason: str) -> bool:
         return self._workspace_controller._mark_workspace_structure_dirty(reason)
 
-    def _mark_workspace_clean(self) -> None:
-        self._workspace_controller._mark_workspace_clean()
-
     @contextlib.contextmanager
     def _workspace_load_context(self) -> Iterator[None]:
         with self._workspace_controller._workspace_load_context():
             yield
 
-    def _drain_workspace_deferred_events(self) -> None:
-        self._workspace_controller._drain_workspace_deferred_events()
-
-    def _drain_workspace_restore_events(self) -> None:
-        self._workspace_controller._drain_workspace_restore_events()
-
-    def _workspace_state_snapshot(self) -> _WorkspaceStateSnapshot:
-        return self._workspace_controller._workspace_state_snapshot()
-
     def _install_workspace_save_shortcut(self, widget: QtWidgets.QWidget) -> None:
         self._workspace_controller._install_workspace_save_shortcut(widget)
-
-    def _serialize_workspace_node(
-        self,
-        constructor: dict[str, xr.Dataset],
-        node: _ImageToolWrapper | _ManagedWindowNode,
-        path: str,
-        *,
-        include_children: bool,
-    ) -> None:
-        self._workspace_controller._serialize_workspace_node(
-            constructor,
-            node,
-            path,
-            include_children=include_children,
-        )
-
-    def _to_datatree(
-        self, close: bool = False, include_children: bool = True
-    ) -> xr.DataTree:
-        return self._workspace_controller._to_datatree(close, include_children)
-
-    def _load_workspace_figures(
-        self,
-        tree: xr.DataTree,
-        *,
-        root_item: QtWidgets.QTreeWidgetItem | None = None,
-        manifest: dict[str, typing.Any] | None = None,
-        workspace_file_path: str | os.PathLike[str] | None = None,
-        loaded_targets_by_uid: dict[str, int | str] | None = None,
-    ) -> int:
-        return self._workspace_controller._load_workspace_figures(
-            tree,
-            root_item=root_item,
-            manifest=manifest,
-            workspace_file_path=workspace_file_path,
-            loaded_targets_by_uid=loaded_targets_by_uid,
-        )
-
-    def _load_workspace_imagetool_dataset(
-        self,
-        ds: xr.Dataset,
-        *,
-        parent_target: int | str | None,
-        node_path: str | None,
-        loaded_targets_by_uid: dict[str, int | str] | None = None,
-        profiler: typing.Any | None = None,
-        pending_workspace_memory_payload: tuple[os.PathLike[str] | str, str]
-        | None = None,
-    ) -> int | str:
-        return self._workspace_controller._load_workspace_imagetool_dataset(
-            ds,
-            parent_target=parent_target,
-            node_path=node_path,
-            loaded_targets_by_uid=loaded_targets_by_uid,
-            profiler=profiler,
-            pending_workspace_memory_payload=pending_workspace_memory_payload,
-        )
 
     def _materialize_pending_workspace_payload(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> bool:
-        return self._workspace_controller._materialize_pending_workspace_payload(node)
+        pending = self._workspace_controller.loading.pending
+        return pending._materialize_pending_workspace_payload(node)
 
     def _pending_workspace_info_text(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> str | None:
-        return self._workspace_controller._pending_workspace_info_text(node)
+        return self._workspace_controller.loading.pending._pending_workspace_info_text(
+            node
+        )
 
     def _pending_workspace_imagetool_preview_image(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> tuple[float, QtGui.QPixmap] | None:
-        return self._workspace_controller._pending_workspace_imagetool_preview_image(
-            node
-        )
+        loader = self._workspace_controller.loading
+        return loader.pending._pending_workspace_imagetool_preview_image(node)
 
     def _pending_workspace_imagetool_preview_curve(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> tuple[np.ndarray, np.ndarray] | None:
-        return self._workspace_controller._pending_workspace_imagetool_preview_curve(
-            node
-        )
+        loader = self._workspace_controller.loading
+        return loader.pending._pending_workspace_imagetool_preview_curve(node)
 
     def _pending_workspace_tool_preview_image(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> tuple[float, QtGui.QPixmap] | None:
-        return self._workspace_controller._pending_workspace_tool_preview_image(node)
+        pending = self._workspace_controller.loading.pending
+        return pending._pending_workspace_tool_preview_image(node)
 
     def _has_pending_workspace_linked_slicers(
         self, source: ImageSlicerArea, *, color: bool
     ) -> bool:
-        return self._workspace_controller._has_pending_workspace_linked_slicers(
-            source, color=color
-        )
+        pending = self._workspace_controller.loading.pending
+        return pending._has_pending_workspace_linked_slicers(source, color=color)
 
     def _sync_pending_workspace_linked_slicers(
         self,
@@ -3050,7 +1866,7 @@ class ImageToolManager(_ImageToolManagerBase):
         transaction_id: str | None,
         keep_pending: bool,
     ) -> None:
-        self._workspace_controller._sync_pending_workspace_linked_slicers(
+        self._workspace_controller.loading.pending._sync_pending_workspace_linked_slicers(
             source,
             funcname,
             arguments,
@@ -3067,74 +1883,12 @@ class ImageToolManager(_ImageToolManagerBase):
         source: ImageSlicerArea,
         manual_limits: Mapping[str, Sequence[typing.Any]],
     ) -> None:
-        self._workspace_controller._sync_pending_workspace_linked_manual_limits(
+        self._workspace_controller.loading.pending._sync_pending_workspace_linked_manual_limits(
             source, manual_limits
         )
 
-    def _load_workspace_tool_dataset(
-        self,
-        ds: xr.Dataset,
-        *,
-        parent_target: int | str | None,
-        loaded_targets_by_uid: dict[str, int | str] | None = None,
-        profiler: typing.Any | None = None,
-        pending_workspace_tool_payload: tuple[os.PathLike[str] | str, str]
-        | None = None,
-    ) -> int | str:
-        return self._workspace_controller._load_workspace_tool_dataset(
-            ds,
-            parent_target=parent_target,
-            loaded_targets_by_uid=loaded_targets_by_uid,
-            profiler=profiler,
-            pending_workspace_tool_payload=pending_workspace_tool_payload,
-        )
-
-    @staticmethod
-    def _workspace_saved_uid_from_dataset(ds: xr.Dataset) -> str | None:
-        return _WorkspaceIOController._workspace_saved_uid_from_dataset(ds)
-
-    def _load_workspace_node(
-        self,
-        node_tree: xr.DataTree,
-        *,
-        parent_target: int | str | None = None,
-        selection_item: QtWidgets.QTreeWidgetItem | None = None,
-        manifest: dict[str, typing.Any] | None = None,
-        node_path: str | None = None,
-        workspace_file_path: str | os.PathLike[str] | None = None,
-        loaded_targets_by_uid: dict[str, int | str] | None = None,
-    ) -> int | str:
-        return self._workspace_controller._load_workspace_node(
-            node_tree,
-            parent_target=parent_target,
-            selection_item=selection_item,
-            manifest=manifest,
-            node_path=node_path,
-            workspace_file_path=workspace_file_path,
-            loaded_targets_by_uid=loaded_targets_by_uid,
-        )
-
     def _finish_workspace_file_load(self, loaded: bool) -> bool:
-        return self._workspace_controller._finish_workspace_file_load(loaded)
-
-    def _from_h5py_workspace_file(
-        self,
-        fname: str | os.PathLike[str],
-        manifest: Mapping[str, typing.Any],
-        *,
-        replace: bool,
-        mark_dirty: bool,
-        selected_paths: set[str] | None = None,
-        profiler: typing.Any | None = None,
-    ) -> bool:
-        return self._workspace_controller._from_h5py_workspace_file(
-            fname,
-            manifest,
-            replace=replace,
-            mark_dirty=mark_dirty,
-            selected_paths=selected_paths,
-            profiler=profiler,
-        )
+        return self._workspace_controller.loading._finish_workspace_file_load(loaded)
 
     def _from_datatree(
         self,
@@ -3146,7 +1900,7 @@ class ImageToolManager(_ImageToolManagerBase):
         workspace_file_path: str | os.PathLike[str] | None = None,
         profiler: typing.Any | None = None,
     ) -> bool:
-        return self._workspace_controller._from_datatree(
+        return self._workspace_controller.loading._from_datatree(
             tree,
             replace=replace,
             mark_dirty=mark_dirty,
@@ -3156,113 +1910,7 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
     def _is_datatree_workspace(self, tree: xr.DataTree) -> bool:
-        return self._workspace_controller._is_datatree_workspace(tree)
-
-    def _workspace_payload_path(self, uid: str) -> str:
-        return self._workspace_controller._workspace_payload_path(uid)
-
-    def _workspace_root_indices(self) -> tuple[int, ...]:
-        return self._workspace_controller._workspace_root_indices()
-
-    def _workspace_node_manifest_entries(self) -> list[dict[str, typing.Any]]:
-        return self._workspace_controller._workspace_node_manifest_entries()
-
-    @staticmethod
-    def _tree_item_child_by_key(
-        item: QtWidgets.QTreeWidgetItem | None, key: str
-    ) -> QtWidgets.QTreeWidgetItem | None:
-        return _WorkspaceIOController._tree_item_child_by_key(item, key)
-
-    def _workspace_root_attrs_payload(
-        self,
-        *,
-        delta_save_count: int | None = None,
-        estimated_obsolete_bytes: int | None = None,
-        replacement_delta_count: int | None = None,
-        repack_estimate_known: bool | None = None,
-    ) -> dict[str, typing.Any]:
-        return self._workspace_controller._workspace_root_attrs_payload(
-            delta_save_count=delta_save_count,
-            estimated_obsolete_bytes=estimated_obsolete_bytes,
-            replacement_delta_count=replacement_delta_count,
-            repack_estimate_known=repack_estimate_known,
-        )
-
-    def _workspace_compression_mode(self) -> WorkspaceCompressionMode:
-        return self._workspace_controller._workspace_compression_mode()
-
-    def _workspace_layout_snapshot(self) -> dict[str, typing.Any]:
-        return self._workspace_controller._workspace_layout_snapshot()
-
-    def _restore_workspace_layout(
-        self, manifest: Mapping[str, typing.Any] | None
-    ) -> None:
-        self._workspace_controller._restore_workspace_layout(manifest)
-
-    def _write_full_workspace_file(
-        self,
-        fname: str | os.PathLike[str],
-        *,
-        reuse_unchanged_groups: bool = True,
-        require_matching_compression: bool = False,
-    ) -> None:
-        self._workspace_controller._write_full_workspace_file(
-            fname,
-            reuse_unchanged_groups=reuse_unchanged_groups,
-            require_matching_compression=require_matching_compression,
-        )
-
-    def _workspace_highest_dirty_data_roots(self) -> list[str]:
-        return self._workspace_controller._workspace_highest_dirty_data_roots()
-
-    def _save_workspace_delta(self, fname: str | os.PathLike[str]) -> None:
-        self._workspace_controller._save_workspace_delta(fname)
-
-    def _save_workspace_document(
-        self,
-        fname: str | os.PathLike[str],
-        *,
-        force_full: bool = False,
-        document_access: _WorkspaceDocumentAccess | None = None,
-        reuse_unchanged_groups: bool = True,
-        require_matching_compression: bool = False,
-        mark_clean: bool = True,
-    ) -> None:
-        self._workspace_controller._save_workspace_document(
-            fname,
-            force_full=force_full,
-            document_access=document_access,
-            reuse_unchanged_groups=reuse_unchanged_groups,
-            require_matching_compression=require_matching_compression,
-            mark_clean=mark_clean,
-        )
-
-    def _workspace_save_dialog(
-        self,
-        *,
-        native: bool = True,
-        caption: str = "Save Workspace",
-        selected_file: str | os.PathLike[str] | None = None,
-    ) -> str | None:
-        return self._workspace_controller._workspace_save_dialog(
-            native=native, caption=caption, selected_file=selected_file
-        )
-
-    def _show_legacy_workspace_upgrade_message(
-        self, fname: str | os.PathLike[str]
-    ) -> None:
-        self._workspace_controller._show_legacy_workspace_upgrade_message(fname)
-
-    def _save_legacy_workspace_as_v4(
-        self,
-        fname: str | os.PathLike[str],
-        *,
-        native: bool = True,
-        existing_access: _WorkspaceDocumentAccess | None = None,
-    ) -> tuple[str, QtCore.QLockFile | None] | None:
-        return self._workspace_controller._save_legacy_workspace_as_v4(
-            fname, native=native, existing_access=existing_access
-        )
+        return self._workspace_controller.loading._is_datatree_workspace(tree)
 
     def _associate_loaded_workspace_file(
         self,
@@ -3289,64 +1937,10 @@ class ImageToolManager(_ImageToolManagerBase):
             rebind_data=rebind_data,
         )
 
-    def _workspace_rebind_data_for_uid(
-        self, fname: str | os.PathLike[str], uid: str, *, chunks: typing.Any
-    ) -> xr.DataArray:
-        return self._workspace_controller._workspace_rebind_data_for_uid(
-            fname, uid, chunks=chunks
-        )
-
-    def _workspace_data_backing_snapshot(
-        self,
-    ) -> dict[str, tuple[str, tuple[str, ...]]]:
-        return self._workspace_controller._workspace_data_backing_snapshot()
-
-    def _rebind_workspace_backed_imagetools(
-        self,
-        fname: str | os.PathLike[str],
-        *,
-        targets: Iterable[int | str] | None = None,
-        chunks: typing.Any = _WORKSPACE_REBIND_KEEP_CHUNKS,
-        backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]] | None = None,
-        old_workspace_path: str | os.PathLike[str] | None = None,
-        exclude_uids: Collection[str] = frozenset(),
-    ) -> None:
-        self._workspace_controller._rebind_workspace_backed_imagetools(
-            fname,
-            targets=targets,
-            chunks=chunks,
-            backing_snapshot=backing_snapshot,
-            old_workspace_path=old_workspace_path,
-            exclude_uids=exclude_uids,
-        )
-
     def offload_to_workspace(
         self, targets: Iterable[int | str], *, native: bool = True
     ) -> bool:
         return self._workspace_controller.offload_to_workspace(targets, native=native)
-
-    def _workspace_requires_full_save(self, fname: str | os.PathLike[str]) -> bool:
-        return self._workspace_controller._workspace_requires_full_save(fname)
-
-    def _workspace_attr_update_snapshot(
-        self, uid: str
-    ) -> tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]] | None:
-        return self._workspace_controller._workspace_attr_update_snapshot(uid)
-
-    def _workspace_delta_save_snapshot(
-        self,
-        generation: int,
-        root_attrs: dict[str, typing.Any],
-        delta_save_count: int,
-    ) -> _manager_workspace._WorkspaceSaveSnapshot:
-        return self._workspace_controller._workspace_delta_save_snapshot(
-            generation, root_attrs, delta_save_count
-        )
-
-    def _workspace_save_snapshot(
-        self, fname: str | os.PathLike[str]
-    ) -> _manager_workspace._WorkspaceSaveSnapshot:
-        return self._workspace_controller._workspace_save_snapshot(fname)
 
     @QtCore.Slot()
     def save(self, *, native: bool = True) -> None:
@@ -3362,28 +1956,6 @@ class ImageToolManager(_ImageToolManagerBase):
         self._commit_note_editor()
         return self._workspace_controller.compact_workspace()
 
-    def _save_to_file(self, fname: str) -> None:
-        self._workspace_controller._save_to_file(fname)
-
-    def _load_workspace_file(
-        self,
-        fname: str | os.PathLike[str],
-        *,
-        replace: bool,
-        associate: bool,
-        mark_dirty: bool,
-        select: bool,
-        native: bool = True,
-    ) -> bool:
-        return self._workspace_controller._load_workspace_file(
-            fname,
-            replace=replace,
-            associate=associate,
-            mark_dirty=mark_dirty,
-            select=select,
-            native=native,
-        )
-
     def load(self, *, native: bool = True) -> bool:
         self._commit_note_editor()
         return self._workspace_controller.load(native=native)
@@ -3392,28 +1964,11 @@ class ImageToolManager(_ImageToolManagerBase):
         return self._workspace_controller.import_workspace(native=native)
 
     def open(self, *, native: bool = True) -> None:
-        self._workspace_controller.open(native=native)
-
-    def _data_recv(
-        self,
-        data: list[xr.DataArray] | list[xr.Dataset],
-        kwargs: dict[str, typing.Any],
-        *,
-        watched_var: tuple[str, str] | None = None,
-        watched_metadata: Mapping[str, typing.Any] | None = None,
-        show: bool | None = None,
-    ) -> list[bool]:
-        return self._workspace_controller._data_recv(
-            data,
-            kwargs,
-            watched_var=watched_var,
-            watched_metadata=watched_metadata,
-            show=show,
-        )
+        self._data_ingress.open(native=native)
 
     def _dependency_refs_for_uid(
         self, uid: str
-    ) -> tuple[provenance.ScriptInputDependencyRef, ...]:
+    ) -> tuple[ScriptInputDependencyRef, ...]:
         return self._lineage_controller._dependency_refs_for_uid(uid)
 
     def dependency_status_for_uid(self, uid: str) -> _DependencyStatus | None:
@@ -3435,13 +1990,15 @@ class ImageToolManager(_ImageToolManagerBase):
         self._lineage_controller._show_dependency_reload_dialog(target)
 
     @staticmethod
-    def _script_input_has_recorded_file(script_input: provenance.ScriptInput) -> bool:
+    def _script_input_has_recorded_file(
+        script_input: ScriptInput,
+    ) -> bool:
         return _LineageController._script_input_has_recorded_file(script_input)
 
     @staticmethod
     def _dependency_ref_has_recorded_file(
-        spec: provenance.ToolProvenanceSpec | None,
-        ref: provenance.ScriptInputDependencyRef,
+        spec: ToolProvenanceSpec | None,
+        ref: ScriptInputDependencyRef,
     ) -> bool:
         return _LineageController._dependency_ref_has_recorded_file(spec, ref)
 
@@ -3491,13 +2048,13 @@ class ImageToolManager(_ImageToolManagerBase):
         self._deferred_workspace_actions_refresh = False
 
         if figure_refresh:
-            self._figure_controller.sync(select_uid=figure_select_uid)
+            self._figure_collection.sync(select_uid=figure_select_uid)
         for uid in dependency_uids:
             self._refresh_dependency_dependents(uid)
         if source_controls:
-            self._refresh_figure_source_controls()
+            self._figure_workflows._refresh_figure_source_controls()
         for uid in gallery_icon_uids:
-            self._figure_controller.update_gallery_icon(uid)
+            self._figure_collection.update_gallery_icon(uid)
         if actions_refresh:
             self._update_actions()
         if info_uids:
@@ -3514,12 +2071,12 @@ class ImageToolManager(_ImageToolManagerBase):
         node: _ImageToolWrapper | _ManagedWindowNode,
         *,
         detached_input_uid: str | None = None,
-        use_displayed_provenance: bool = True,
-    ) -> provenance.ScriptInput:
+        data_role: ScriptInputDataRole = "displayed",
+    ) -> ScriptInput:
         return self._lineage_controller._script_input_for_node(
             node,
             detached_input_uid=detached_input_uid,
-            use_displayed_provenance=use_displayed_provenance,
+            data_role=data_role,
         )
 
     def _multi_input_script_provenance(
@@ -3531,8 +2088,8 @@ class ImageToolManager(_ImageToolManagerBase):
         active_name: str = "derived",
         start_label: str = "Run ImageTool manager action",
         detached_input_uid: str | None = None,
-        use_displayed_provenance: bool = True,
-    ) -> provenance.ToolProvenanceSpec:
+        data_role: ScriptInputDataRole = "displayed",
+    ) -> ToolProvenanceSpec:
         return self._lineage_controller._multi_input_script_provenance(
             input_targets,
             operation_label=operation_label,
@@ -3540,7 +2097,7 @@ class ImageToolManager(_ImageToolManagerBase):
             active_name=active_name,
             start_label=start_label,
             detached_input_uid=detached_input_uid,
-            use_displayed_provenance=use_displayed_provenance,
+            data_role=data_role,
         )
 
     def _show_multi_input_script_result(
@@ -3550,27 +2107,25 @@ class ImageToolManager(_ImageToolManagerBase):
         *,
         operation_label: str,
         operation_code: str,
-        use_displayed_provenance: bool = True,
+        data_role: ScriptInputDataRole = "displayed",
     ) -> int | None:
         return self._lineage_controller._show_multi_input_script_result(
             data,
             input_targets,
             operation_label=operation_label,
             operation_code=operation_code,
-            use_displayed_provenance=use_displayed_provenance,
+            data_role=data_role,
         )
 
-    def _script_provenance_inputs_current(
-        self, spec: provenance.ToolProvenanceSpec
-    ) -> bool:
+    def _script_provenance_inputs_current(self, spec: ToolProvenanceSpec) -> bool:
         return self._lineage_controller._script_provenance_inputs_current(spec)
 
     def _resolve_live_script_input_for_reload(
         self,
-        script_input: provenance.ScriptInput,
+        script_input: ScriptInput,
         *,
         target_node_uid: str | None = None,
-    ) -> tuple[xr.DataArray, provenance.ScriptInput] | None:
+    ) -> tuple[xr.DataArray, ScriptInput] | None:
         return self._lineage_controller._resolve_live_script_input_for_reload(
             script_input,
             target_node_uid=target_node_uid,
@@ -3578,7 +2133,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _script_input_can_reload(
         self,
-        script_input: provenance.ScriptInput,
+        script_input: ScriptInput,
         *,
         target_node_uid: str | None = None,
     ) -> bool:
@@ -3589,7 +2144,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _script_input_unavailable_reason(
         self,
-        script_input: provenance.ScriptInput,
+        script_input: ScriptInput,
         *,
         target_node_uid: str | None = None,
     ) -> str | None:
@@ -3600,7 +2155,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _rebuild_script_provenance(
         self,
-        spec: provenance.ToolProvenanceSpec,
+        spec: ToolProvenanceSpec,
         *,
         target_node_uid: str | None = None,
     ) -> _ScriptRebuildResult:
@@ -3611,7 +2166,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _ensure_script_provenance_trusted(
         self,
-        spec: provenance.ToolProvenanceSpec,
+        spec: ToolProvenanceSpec,
         *,
         reason: str,
         external_input_names: set[str] | None = None,
@@ -3721,16 +2276,16 @@ class ImageToolManager(_ImageToolManagerBase):
         ]
         focus_widget: QtWidgets.QWidget
         if first_is_figure:
-            self._figure_controller.sync()
+            self._figure_collection.sync()
             self.tree_view.deselect_all()
-            pane = self._figure_controller.pane
+            pane = self._figure_collection.pane
             if pane is None:
                 return False
             pane.list_widget.clearSelection()
             items = [
                 typing.cast(
                     "QtWidgets.QListWidgetItem",
-                    self._figure_controller.item_for_uid(node.uid),
+                    self._figure_collection.item_for_uid(node.uid),
                 )
                 for node in nodes
             ]
@@ -3973,45 +2528,11 @@ class ImageToolManager(_ImageToolManagerBase):
     def _handle_dropped_files(self, file_paths: list[pathlib.Path]) -> None:
         self._actions_controller._handle_dropped_files(file_paths)
 
-    def _show_loaded_info(
-        self,
-        loaded: list[pathlib.Path],
-        canceled: list[pathlib.Path],
-        failed: list[pathlib.Path],
-        retry_callback: Callable[[list[pathlib.Path]], typing.Any],
-    ) -> None:
-        self._actions_controller._show_loaded_info(
-            loaded, canceled, failed, retry_callback
-        )
-
-    def open_multiple_files(
-        self, queued: list[pathlib.Path], try_workspace: bool = False
-    ) -> None:
-        self._actions_controller.open_multiple_files(
-            queued, try_workspace=try_workspace
-        )
-
-    def _error_creating_imagetool(self) -> None:
-        self._actions_controller._error_creating_imagetool()
-
     def _show_operation_error(self, log_message: str, text: str) -> None:
         self._actions_controller._show_operation_error(log_message, text)
 
     def _show_workspace_save_worker_error(self, error_text: str) -> None:
         self._actions_controller._show_workspace_save_worker_error(error_text)
-
-    def _add_from_multiple_files(
-        self,
-        loaded: list[pathlib.Path],
-        queued: list[pathlib.Path],
-        failed: list[pathlib.Path],
-        func: Callable[..., typing.Any],
-        kwargs: dict[str, typing.Any],
-        retry_callback: Callable[..., typing.Any],
-    ) -> None:
-        self._actions_controller._add_from_multiple_files(
-            loaded, queued, failed, func, kwargs, retry_callback
-        )
 
     def add_widget(self, widget: QtWidgets.QWidget) -> None:
         self._actions_controller.add_widget(widget)
@@ -4024,6 +2545,7 @@ class ImageToolManager(_ImageToolManagerBase):
         show: bool = True,
         uid: str | None = None,
         snapshot_token: str | None = None,
+        source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
@@ -4033,6 +2555,7 @@ class ImageToolManager(_ImageToolManagerBase):
             show=show,
             uid=uid,
             snapshot_token=snapshot_token,
+            source_snapshot_token=source_snapshot_token,
             created_time=created_time,
             note=note,
         )
@@ -4044,6 +2567,7 @@ class ImageToolManager(_ImageToolManagerBase):
         show: bool = True,
         uid: str | None = None,
         snapshot_token: str | None = None,
+        source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
@@ -4053,15 +2577,16 @@ class ImageToolManager(_ImageToolManagerBase):
             None,
             tool,
             snapshot_token=snapshot_token,
+            source_snapshot_token=source_snapshot_token,
             created_time=created_time,
             note=note,
         )
         if not tool._tool_display_name:
-            tool._tool_display_name = self._figure_controller.next_display_name()
+            tool._tool_display_name = self._figure_collection.next_display_name()
         self._register_figure_node(node)
-        self._configure_materialized_figure_tool(node, tool)
+        self._configure_figure_tool(node, tool)
         self._mark_node_added(node.uid)
-        self._figure_controller.sync(select_uid=node.uid if show else None)
+        self._figure_collection.sync(select_uid=node.uid if show else None)
         if show:
             node.show()
         return node.uid
@@ -4074,13 +2599,14 @@ class ImageToolManager(_ImageToolManagerBase):
         show: bool = True,
         activate: bool = False,
         uid: str | None = None,
-        provenance_spec: provenance.ToolProvenanceSpec | None = None,
-        source_spec: provenance.ToolProvenanceSpec | None = None,
-        source_binding: provenance.ImageToolSelectionSourceBinding | None = None,
+        provenance_spec: ToolProvenanceSpec | None = None,
+        source_spec: ToolProvenanceSpec | None = None,
+        source_binding: ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
         snapshot_token: str | None = None,
+        source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> str:
@@ -4097,6 +2623,7 @@ class ImageToolManager(_ImageToolManagerBase):
             source_state=source_state,
             output_id=output_id,
             snapshot_token=snapshot_token,
+            source_snapshot_token=source_snapshot_token,
             created_time=created_time,
             note=note,
         )
@@ -4159,13 +2686,14 @@ class ImageToolManager(_ImageToolManagerBase):
         source_input_ndim: int | None = None,
         source_input_dtype: np.dtype[typing.Any] | str | None = None,
         uid: str | None = None,
-        provenance_spec: provenance.ToolProvenanceSpec | None = None,
-        source_spec: provenance.ToolProvenanceSpec | None = None,
-        source_binding: provenance.ImageToolSelectionSourceBinding | None = None,
+        provenance_spec: ToolProvenanceSpec | None = None,
+        source_spec: ToolProvenanceSpec | None = None,
+        source_binding: ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         index: int | None = None,
         snapshot_token: str | None = None,
+        source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
         note: str | bytes | None = None,
     ) -> int:
@@ -4215,6 +2743,7 @@ class ImageToolManager(_ImageToolManagerBase):
             source_auto_update=source_auto_update,
             source_state=source_state,
             snapshot_token=snapshot_token,
+            source_snapshot_token=source_snapshot_token,
             created_time=created_time,
             note=note,
         )

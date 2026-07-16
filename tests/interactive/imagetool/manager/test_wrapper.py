@@ -1,6 +1,7 @@
 import datetime
 import logging
 import pathlib
+import types
 import typing
 from collections.abc import Callable
 
@@ -17,6 +18,7 @@ from erlab.interactive.imagetool._load_source import (
     _load_source_label_and_text,
     _loader_callable_text,
 )
+from erlab.interactive.imagetool._provenance._model import FileDataSelection
 from erlab.interactive.imagetool.manager._wrapper import (
     _coerce_added_time,
     _coerce_note,
@@ -238,33 +240,82 @@ def test_wrapper_loader_code_and_metadata_helper_branches(
 
     _missing_attr_loader.__module__ = "math"
     _missing_attr_loader.__qualname__ = "missing_loader"
-    dataarray_selection = erlab.interactive.imagetool.provenance.FileDataSelection(
-        kind="dataarray"
-    )
+    dataarray_selection = FileDataSelection(kind="dataarray")
 
     assert _load_code_from_file_details(file_path, None) is None
     assert _load_provenance_from_file_details(file_path, None) is None
+    with pytest.raises(TypeError, match="FileDataSelection"):
+        _load_code_from_file_details(
+            file_path,
+            typing.cast("typing.Any", ("example", {}, 0)),
+        )
     provenance = _load_provenance_from_file_details(
         file_path,
-        (xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        (
+            xr.load_dataarray,
+            {"engine": "h5netcdf"},
+            FileDataSelection(kind="dataarray"),
+        ),
     )
     assert provenance is not None
     assert provenance.kind == "file"
     assert provenance.file_load_source is not None
     assert provenance.file_load_source.replay_call is not None
     assert provenance.file_load_source.replay_call.target == "xarray.load_dataarray"
-    selected_code = _load_code_from_file_details(file_path, ("example", {}, 1))
-    assert selected_code == (
-        "erlab.io.set_loader('example')\n"
-        "data = erlab.interactive.imagetool.viewer_state._parse_input("
-        f"erlab.io.load({str(file_path)!r}))[1]"
+    selected_code = _load_code_from_file_details(
+        file_path,
+        ("example", {}, FileDataSelection(kind="sequence_index", value=1)),
     )
-    assert _load_code_from_file_details(file_path, (_local_loader, {}, 0)) is None
-    assert _load_provenance_from_file_details(file_path, (_local_loader, {}, 0)) is None
+    assert selected_code is not None
+    assert "data_loaded" not in selected_code
+    assert "isinstance" not in selected_code
+    assert "imagetool" not in selected_code
+
+    expected = xr.DataArray([3.0, 4.0], dims="x")
+    selected_loaders: list[str] = []
+    fake_io = types.SimpleNamespace(
+        set_loader=selected_loaders.append,
+        load=lambda _path: [xr.DataArray([1.0, 2.0], dims="x"), expected],
+    )
+    namespace = {"erlab": types.SimpleNamespace(io=fake_io)}
+    exec(selected_code, namespace)  # noqa: S102
+    assert selected_loaders == ["example"]
+    xr.testing.assert_identical(namespace["data"], expected)
+    assert (
+        _load_code_from_file_details(
+            file_path,
+            ("example", {}, FileDataSelection(kind="parsed_index", value=0)),
+        )
+        is None
+    )
+    assert (
+        _load_provenance_from_file_details(
+            file_path,
+            ("example", {}, FileDataSelection(kind="parsed_index", value=0)),
+        )
+        is None
+    )
+    assert (
+        _load_code_from_file_details(
+            file_path,
+            (_local_loader, {}, dataarray_selection),
+        )
+        is None
+    )
+    assert (
+        _load_provenance_from_file_details(
+            file_path,
+            (_local_loader, {}, dataarray_selection),
+        )
+        is None
+    )
     assert _loader_callable_text(_local_loader) is None
     assert _load_source_label_and_text(None) == ("Loader", "(unavailable)")
-    assert _load_source_label_and_text(("example", {}, 0)) == ("Loader", "example")
-    assert _load_source_label_and_text((_local_loader, {}, 0)) == (
+    assert _load_source_label_and_text(("example", {}, dataarray_selection)) == (
+        "Loader",
+        "example",
+    )
+    assert _load_source_label_and_text((_local_loader, {}, dataarray_selection)) == (
         "Load Function",
         repr(_local_loader),
     )
@@ -376,4 +427,5 @@ def test_wrapper_source_data_replaced_uses_parent_fallback_and_skips_missing_chi
 
         wrapper._handle_source_data_replaced(object())
 
-        assert handled == [updated]
+        assert len(handled) == 1
+        xr.testing.assert_identical(handled[0], updated)

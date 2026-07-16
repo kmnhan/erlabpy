@@ -15,6 +15,7 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool._provenance._operations import RemoveMeshOperation
 
 
 class MeshTool(erlab.interactive.utils.ToolWindow):
@@ -22,10 +23,9 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
     COPY_PROVENANCE: typing.ClassVar = (
         erlab.interactive.utils.ToolScriptProvenanceDefinition(
             start_label="Start from current meshtool input data",
-            label="Remove mesh from current data",
-            expression_method="_mesh_expression",
-            assign=("corrected", "mesh"),
+            operations_method="_corrected_provenance",
             active_name="corrected",
+            seed_code_method="_provenance_seed_code",
         )
     )
 
@@ -38,20 +38,18 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
             data_method="_corrected_output",
             provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
                 start_label="Start from current meshtool input data",
-                label="Compute mesh-corrected output",
-                expression_method="_mesh_expression",
-                assign=("corrected", "mesh"),
+                operations_method="_corrected_provenance",
                 active_name="corrected",
+                seed_code_method="_provenance_seed_code",
             ),
         ),
         Output.MESH: erlab.interactive.utils.ToolImageOutputDefinition(
             data_method="_mesh_output",
             provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
                 start_label="Start from current meshtool input data",
-                label="Compute extracted mesh output",
-                expression_method="_mesh_expression",
-                assign=("corrected", "mesh"),
+                operations_method="_mesh_provenance",
                 active_name="mesh",
+                seed_code_method="_provenance_seed_code",
             ),
         ),
     }
@@ -65,6 +63,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
         self._write_state()
 
     class StateModel(pydantic.BaseModel):
+        data_name: str = "data"
         first_order_peaks: list[list[int]]
         order: int
         n_pad: int
@@ -77,6 +76,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
     @property
     def tool_status(self) -> StateModel:
         return self.StateModel(
+            data_name=self.data_name,
             first_order_peaks=[
                 [self._data.alpha.size // 2, self._data.eV.size // 2],
                 [self.p0_spin0.value(), self.p0_spin1.value()],
@@ -93,6 +93,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
 
     @tool_status.setter
     def tool_status(self, status: StateModel) -> None:
+        self.data_name = status.data_name
         self.p0_spin0.setValue(int(status.first_order_peaks[1][0]))
         self.p0_spin1.setValue(int(status.first_order_peaks[1][1]))
         self.p1_spin0.setValue(int(status.first_order_peaks[2][0]))
@@ -424,7 +425,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
             target.setPos(pos[1], pos[0])
 
     def get_params_dict(self) -> dict[str, typing.Any]:
-        return self.tool_status.model_dump()
+        return self.tool_status.model_dump(exclude={"data_name"})
 
     @staticmethod
     def reduce_to_cut(darr: xr.DataArray) -> xr.DataArray:
@@ -556,20 +557,42 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
             if tool is not None:
                 self._itool_mesh = tool
 
-    def _mesh_expression(
+    def _mesh_provenance_operation(
+        self,
+        *,
+        output: typing.Literal["corrected", "mesh"],
+    ) -> RemoveMeshOperation:
+        return RemoveMeshOperation(
+            **self.get_params_dict(),
+            output=output,
+        )
+
+    def _provenance_seed_code(
         self,
         *,
         input_name: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
-        return erlab.interactive.utils.generate_code(
-            erlab.analysis.mesh.remove_mesh,
-            args=[f"|{input_name or self.data_name}|"],
-            kwargs=self.get_params_dict(),
-            module="era.mesh",
-            remove_defaults=False,
-            copy=False,
-        )
+        del data
+        return f"derived = {input_name or self.data_name}"
+
+    def _corrected_provenance(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> RemoveMeshOperation:
+        del input_name, data
+        return self._mesh_provenance_operation(output="corrected")
+
+    def _mesh_provenance(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> RemoveMeshOperation:
+        del input_name, data
+        return self._mesh_provenance_operation(output="mesh")
 
     def _corrected_output(self) -> xr.DataArray | None:
         return self._corrected

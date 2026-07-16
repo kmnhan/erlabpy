@@ -1,13 +1,43 @@
-# ruff: noqa: F403, F405
+import typing
+import warnings
 
+import matplotlib.pyplot as plt
+import matplotlib.scale as mscale
+import matplotlib.transforms as mtransforms
+import numpy as np
+import pytest
+import xarray as xr
+from matplotlib.figure import Figure
+from qtpy import QtWidgets
+
+import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
+import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
+import erlab.interactive._stylesheets
+import erlab.plotting as eplt
+from erlab.interactive._figurecomposer import (
+    FigureAxesSelectionState,
+    FigureComposerTool,
+    FigureMethodFamily,
+    FigureOperationState,
+    FigureRecipeState,
+    FigureSourceState,
+    FigureSubplotsState,
+)
 from erlab.interactive._figurecomposer._operations._method import (
     _catalog as method_catalog,
 )
 from erlab.interactive._figurecomposer._operations._method import (
     _execution as method_execution,
 )
+from erlab.interactive._figurecomposer._ui import (
+    _operation_panel as figurecomposer_operation_panel,
+)
 
-from ._common import *
+from ._common import (
+    _activate_combo_text,
+    _operation_status_codes,
+    _select_operation_rows,
+)
 
 
 def test_figure_composer_method_framework_dispatch_policies(qtbot, monkeypatch) -> None:

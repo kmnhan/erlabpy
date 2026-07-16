@@ -6,6 +6,7 @@ import logging
 import subprocess
 import sys
 import threading
+import types
 import typing
 from collections.abc import Callable
 
@@ -24,8 +25,10 @@ from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._magic import _normalize_manager_target_args
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch
 from erlab.interactive.imagetool.manager._server import Response, _WatcherServer
-
-from .helpers import _use_isolated_manager_registry
+from tests.interactive.imagetool.manager.helpers import (
+    _use_isolated_manager_registry,
+    adopt_workspace_path,
+)
 
 
 class _ReadyPoller:
@@ -64,7 +67,7 @@ def test_manager_selection_info_single_manager(
         assert info["managers"][0]["workspace_path"] is None
 
         workspace_path = tmp_path / "selected.itws"
-        manager._adopt_workspace_path(workspace_path)
+        adopt_workspace_path(manager, workspace_path)
         qtbot.waitUntil(
             lambda: not manager._registry_heartbeat.is_busy,
             timeout=5000,
@@ -1461,12 +1464,12 @@ def test_widgets_controller_stop_servers_disconnects_and_deletes() -> None:
             self.server = _ServerDouble()
             self.watcher_server = _WatcherDouble()
             self.calls: list[tuple[str, object]] = []
+            self._data_ingress = types.SimpleNamespace(
+                receive_data=lambda *args: self._record("data_recv", *args)
+            )
 
         def _record(self, name: str, *args) -> None:
             self.calls.append((name, args))
-
-        def _data_recv(self, *args) -> None:
-            self._record("data_recv", *args)
 
         def _data_load(self, *args) -> None:
             self._record("data_load", *args)
@@ -1503,7 +1506,7 @@ def test_widgets_controller_stop_servers_disconnects_and_deletes() -> None:
     watcher_server = manager.watcher_server
 
     for signal, slot in (
-        (server.sigReceived, manager._data_recv),
+        (server.sigReceived, manager._data_ingress.receive_data),
         (server.sigLoadRequested, manager._data_load),
         (server.sigReplaceRequested, manager._data_replace),
         (server.sigDataRequested, manager._send_imagetool_data),

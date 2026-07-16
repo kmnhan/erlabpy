@@ -431,7 +431,7 @@ def manager_context() -> Callable[
                     manager._close_standalone_apps()
                     _drain_qt_events()
                     manager.remove_all_tools()
-                    manager._mark_workspace_clean()
+                    manager._workspace_controller._mark_workspace_clean()
                     manager.close()
                     deadline = time.perf_counter() + 5.0
                     while (
@@ -446,7 +446,7 @@ def manager_context() -> Callable[
                 finally:
                     if qt_is_valid(manager):
                         manager._workspace_state.loading_depth -= 1
-                        manager._mark_workspace_clean()
+                        manager._workspace_controller._mark_workspace_clean()
                 if qt_is_valid(manager):
                     manager.deleteLater()
                     delete_deadline = time.perf_counter() + 1.0

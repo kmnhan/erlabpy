@@ -1,148 +1,99 @@
-# ruff: noqa: F401
-
-import ast
-import builtins
-import contextlib
 import functools
-import gc
-import json
-import sys
-import types
 import typing
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-import matplotlib.scale as mscale
-import matplotlib.transforms as mtransforms
 import numpy as np
+import pydantic
 import pytest
 import xarray as xr
 from matplotlib import colors as mcolors
-from matplotlib import style as mpl_style
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.container import ErrorbarContainer
 from matplotlib.figure import Figure
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-import erlab.accessors.general as accessor_general
-import erlab.interactive._figurecomposer._code as figurecomposer_code
 import erlab.interactive._figurecomposer._defaults as figurecomposer_defaults
-import erlab.interactive._figurecomposer._line_colormap as figurecomposer_line_colormap
-import erlab.interactive._figurecomposer._line_style as figurecomposer_line_style
-import erlab.interactive._figurecomposer._line_transform as _line_transform
-import erlab.interactive._figurecomposer._model._axes as figurecomposer_axes
-import erlab.interactive._figurecomposer._model._gridspec as figurecomposer_gridspec
-import erlab.interactive._figurecomposer._model._sources as figurecomposer_sources
-import erlab.interactive._figurecomposer._norms as figurecomposer_norms
-import erlab.interactive._figurecomposer._provenance as figurecomposer_provenance
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
-import erlab.interactive._figurecomposer._seeding as figurecomposer_seeding
-import erlab.interactive._figurecomposer._text as figurecomposer_text
-import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
-import erlab.interactive._figurecomposer._ui._editor_controls as _editor_controls
-import erlab.interactive._figurecomposer._ui._line_style as figurecomposer_line_style_ui
 import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
 import erlab.interactive._stylesheets
-import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
-import erlab.interactive.imagetool.manager._workspace as manager_workspace
-import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
-import erlab.interactive.imagetool.plot_items as imagetool_plot_items
-import erlab.plotting as eplt
 from erlab.interactive._figurecomposer import (
-    FigureAxesSelectionState,
     FigureComposerTool,
-    FigureCubehelixPaletteState,
-    FigureDataSelectionState,
-    FigureDivergingPaletteState,
-    FigureExportState,
-    FigureGridSpecAxesState,
-    FigureGridSpecGridState,
-    FigureGridSpecLayoutState,
-    FigureGridSpecSpanState,
     FigureMethodFamily,
-    FigureMethodPlotValueState,
     FigureOperationKind,
     FigureOperationState,
-    FigurePlotSlicesPanelStyleState,
     FigureRecipeState,
-    FigureSequentialPaletteState,
     FigureSourceState,
     FigureSubplotsState,
-)
-from erlab.interactive._figurecomposer import (
-    _subplot_adjust as figurecomposer_subplot_adjust,
-)
-from erlab.interactive._figurecomposer._exceptions import (
-    FigureComposerPlotSlicesSelectionError,
-)
-from erlab.interactive._figurecomposer._model import (
-    _custom_code as figurecomposer_custom_code,
-)
-from erlab.interactive._figurecomposer._model import (
-    _operation_metadata as figurecomposer_operation_metadata,
-)
-from erlab.interactive._figurecomposer._operations import (
-    _bz_overlay as figurecomposer_bz_overlay,
-)
-from erlab.interactive._figurecomposer._operations import (
-    _custom_code as figurecomposer_custom_code_operation,
-)
-from erlab.interactive._figurecomposer._operations import (
-    _line_profile as figurecomposer_line_profile,
-)
-from erlab.interactive._figurecomposer._operations import (
-    _photon_energy as figurecomposer_photon_energy,
-)
-from erlab.interactive._figurecomposer._operations import (
-    _plot_array as figurecomposer_plot_array,
-)
-from erlab.interactive._figurecomposer._operations import (
-    _set_palette as figurecomposer_set_palette,
-)
-from erlab.interactive._figurecomposer._seeding import (
-    bz_overlay_operation_from_ktool,
-    bz_overlay_operation_from_momentum_data,
-    plot_slices_operation_with_source_styles,
 )
 from erlab.interactive._figurecomposer._ui import (
     _operation_panel as figurecomposer_operation_panel,
 )
-from erlab.interactive._figurecomposer._ui import (
-    _source_inspector as figurecomposer_source_inspector,
-)
-from erlab.interactive._figurecomposer._ui import (
-    _toolbar_dialogs as figurecomposer_toolbar_dialogs,
-)
-from erlab.interactive._figurecomposer._ui._toolbar_dialogs import (
-    _connect_panel_editor_signal,
-)
 from erlab.interactive._options import options
-from erlab.interactive._options.schema import AppOptions, FigureOptions
-from erlab.interactive.imagetool import (
-    _provenance_framework,
-    _replay_graph,
-    itool,
-    provenance,
+from erlab.interactive._options.schema import FigureOptions
+from erlab.interactive.imagetool._provenance._graph import (
+    ReplayGraphError,
+    compile_replay_graph,
+    emit_replay_code,
+)
+from erlab.interactive.imagetool._provenance._model import (
+    FileLoadSource,
+    FileReplayCall,
+    ToolProvenanceSpec,
+    file_load,
+    script,
 )
 from erlab.io.exampledata import generate_hvdep_cuts
-from tests.interactive.imagetool.manager.helpers import (
-    InMemoryClipboard,
-    _exec_generated_code,
-    activate_widget_shortcut,
-    install_in_memory_clipboard,
-    select_child_tool,
-    select_tools,
-    trigger_menu_action,
-)
+from tests.interactive.imagetool.manager.helpers import InMemoryClipboard
 
 _COLLAPSED_LAYOUT_WARNING = (
     "constrained_layout not applied because axes sizes collapsed to zero.  "
     "Try making figure larger or Axes decorations smaller."
 )
+
+
+class _SourcePickerDummyState(pydantic.BaseModel):
+    value: int = 0
+
+
+class _SourcePickerDummyTool(
+    erlab.interactive.utils.ToolWindow[_SourcePickerDummyState]
+):
+    StateModel = _SourcePickerDummyState
+    tool_name = "source-picker-dummy"
+
+    def __init__(self, data: xr.DataArray) -> None:
+        super().__init__()
+        self._data = data
+        self._status = _SourcePickerDummyState()
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self._data
+
+    @property
+    def tool_status(self) -> _SourcePickerDummyState:
+        return self._status
+
+    @tool_status.setter
+    def tool_status(self, status: _SourcePickerDummyState) -> None:
+        self._status = status
+
+
+def _materialized_figure_tool(
+    manager: erlab.interactive.imagetool.manager.ImageToolManager, figure_uid: str
+) -> FigureComposerTool:
+    node = manager._child_node(figure_uid)
+    if not node.materialize_pending_workspace_payload():
+        raise AssertionError("figure did not materialize")
+    tool = node.tool_window
+    if not isinstance(tool, FigureComposerTool):
+        raise TypeError("materialized window is not a Figure Composer")
+    return tool
 
 
 def _operation_section_button(
@@ -161,22 +112,6 @@ def _operation_section_buttons(
         _operation_section_button(tool, key)
         for key in tool.operation_editor.section_keys
     )
-
-
-@pytest.fixture(autouse=True)
-def restore_interactive_options():
-    old_options = options.model
-    options.model = AppOptions()
-    try:
-        yield
-    finally:
-        options.model = old_options
-        plt.close("all")
-
-
-@pytest.fixture(autouse=True)
-def isolate_qt_clipboard(monkeypatch: pytest.MonkeyPatch) -> InMemoryClipboard:
-    return install_in_memory_clipboard(monkeypatch)
 
 
 def _set_figure_stylesheets(stylesheets: list[str]) -> None:
@@ -285,16 +220,16 @@ def _set_unsupported_plot_slices_cursor_state(
     tool.slicer_area.set_value(axis=3, value=1.0, cursor=1)
 
 
-def _file_load_provenance(path: Path) -> provenance.ToolProvenanceSpec:
-    return provenance.file_load(
+def _file_load_provenance(path: Path) -> ToolProvenanceSpec:
+    return file_load(
         start_label=f"Load data from file '{path.name}'",
         seed_code=f"import xarray\n\nderived = xarray.load_dataarray({str(path)!r})",
-        file_load_source=provenance.FileLoadSource(
+        file_load_source=FileLoadSource(
             path=str(path),
             loader_label="xarray.load_dataarray",
             loader_text="xarray.load_dataarray",
             kwargs_text="",
-            replay_call=provenance.FileReplayCall(
+            replay_call=FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 selected_index=0,
@@ -585,7 +520,7 @@ def _figure_composer_replay_source_state(
     name: str,
     label: str | None = None,
 ) -> FigureSourceState:
-    source_spec = provenance.script(
+    source_spec = script(
         start_label=f"Build {label or name}",
         seed_code="derived = xr.DataArray([0.0], dims=('x',))",
         active_name="derived",
@@ -605,9 +540,9 @@ def _assert_figure_composer_provenance_replayable(
     spec = tool.current_provenance_spec()
     assert spec is not None
     try:
-        graph = _replay_graph.compile_replay_graph(spec, display=True)
-        return _replay_graph.emit_replay_code(graph, output_name="fig")
-    except _replay_graph.ReplayGraphError as exc:
+        graph = compile_replay_graph(spec, display=True)
+        return emit_replay_code(graph, output_name="fig")
+    except ReplayGraphError as exc:
         pytest.fail(
             f"{case_label} generated Figure Composer provenance is not replayable: "
             f"{exc}\n\nGenerated code:\n{tool.generated_code()}"
@@ -755,6 +690,3 @@ def _selection_shortcut_sequences(widget: QtWidgets.QWidget) -> set[str]:
         for shortcut in widget.findChildren(QtWidgets.QShortcut)
         if shortcut.parent() is widget
     }
-
-
-__all__ = tuple(name for name in globals() if not name.startswith("__"))
