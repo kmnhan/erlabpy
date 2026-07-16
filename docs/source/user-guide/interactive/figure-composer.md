@@ -112,10 +112,6 @@ There are several step types:
 - {guilabel}`Figure Method` for a subset of Matplotlib `fig.*` methods.
 - {guilabel}`Python` for arbitrary code snippets.
 
-```{versionadded} 3.25.0
-Set Palette includes generated cubehelix, diverging, light, and dark palette choices.
-```
-
 ### Editing steps
 
 Selecting a step opens its controls, which vary based on the step type. Each control is
