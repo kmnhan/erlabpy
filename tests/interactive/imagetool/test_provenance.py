@@ -6880,6 +6880,94 @@ def test_model_fit_operation_replays_selected_parameter_as_dataarray() -> None:
     assert np.isfinite(stderr.values).all()
 
 
+def test_model_fit_operation_replays_fixed_and_expression_parameters() -> None:
+    x = np.linspace(-1.0, 1.0, 21)
+    data = xr.DataArray(
+        1.0 + 4.0 * x + 2.0 * x**2,
+        dims=("x",),
+        coords={"x": x},
+    )
+    operation = ModelFitOperation(
+        fit_dim="x",
+        model="PolynomialModel",
+        model_kwargs={"degree": 2},
+        parameters={
+            "c0": _ModelFitParameterSpec(value=1.0, vary=False),
+            "c1": _ModelFitParameterSpec(expr="2 * c2"),
+            "c2": _ModelFitParameterSpec(value=1.0),
+        },
+        method="leastsq",
+        parameter="c2",
+    )
+
+    expected = operation.apply(data, parent_data=data)
+    np.testing.assert_allclose(expected, 2.0)
+
+    code = f"derived = {operation.expression_code('data')}"
+    namespace = _exec_generated_code(code, {"data": data})
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+
+@pytest.mark.parametrize(
+    ("parameter", "message"),
+    [
+        ({"expr": " "}, "expressions must not be empty"),
+        ({"value": 1.0, "expr": "c0"}, "cannot define values or bounds"),
+        ({"vary": False, "expr": "c0"}, "cannot define vary=False"),
+        ({}, "must define a value or expression"),
+        ({"value": ()}, "arrays must not be empty"),
+        ({"value": np.nan}, "must not contain NaN"),
+        ({"value": np.inf}, "values must be finite"),
+        (
+            {"value": (1.0, 2.0), "minimum": (0.0,)},
+            "arrays must have equal lengths",
+        ),
+    ],
+)
+def test_model_fit_parameter_spec_rejects_invalid_state(
+    parameter: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _ModelFitParameterSpec.model_validate(parameter)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error", "message"),
+    [
+        ({"fit_dim": ""}, ValueError, "dimension must not be empty"),
+        ({"broadcast_dim": "x"}, ValueError, "dimensions must differ"),
+        ({"method": " "}, ValueError, "method must not be empty"),
+        ({"parameter": ""}, ValueError, "output parameter must not be empty"),
+        ({"parameters": {}}, ValueError, "parameters must not be empty"),
+        (
+            {"parameters": {"": _ModelFitParameterSpec(value=1.0)}},
+            ValueError,
+            "parameter names must not be empty",
+        ),
+        (
+            {"model_kwargs": {1: 1}},
+            TypeError,
+            "constructor kwargs must use string keys",
+        ),
+    ],
+)
+def test_model_fit_operation_rejects_invalid_state(
+    overrides: dict[str, object], error: type[Exception], message: str
+) -> None:
+    arguments: dict[str, object] = {
+        "fit_dim": "x",
+        "model": "PolynomialModel",
+        "model_kwargs": {"degree": 1},
+        "parameters": {"c1": _ModelFitParameterSpec(value=1.0)},
+        "method": "leastsq",
+        "parameter": "c1",
+    }
+    arguments.update(overrides)
+
+    with pytest.raises(error, match=message):
+        ModelFitOperation.model_validate(arguments)
+
+
 def test_model_fit_operation_rejects_ambiguous_parameter_shapes() -> None:
     parameters = {
         "c0": _ModelFitParameterSpec(value=(0.0, 1.0)),
@@ -6919,3 +7007,22 @@ def test_model_fit_operation_rejects_ambiguous_parameter_shapes() -> None:
     )
     with pytest.raises(ValueError, match="does not match dimension"):
         operation.apply(data, parent_data=data)
+
+    data_without_broadcast_dim = xr.DataArray(
+        np.ones(5),
+        dims=("x",),
+        coords={"x": np.arange(5)},
+    )
+    with pytest.raises(ValueError, match="was not found in data"):
+        operation.apply(
+            data_without_broadcast_dim,
+            parent_data=data_without_broadcast_dim,
+        )
+
+    data_without_fit_dim = xr.DataArray(
+        np.ones(2),
+        dims=("y",),
+        coords={"y": np.arange(2)},
+    )
+    with pytest.raises(ValueError, match="was not found in data"):
+        operation.apply(data_without_fit_dim, parent_data=data_without_fit_dim)
