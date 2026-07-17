@@ -188,6 +188,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _metadata_delete_step_action: QtGui.QAction
     _metadata_edit_step_action: QtGui.QAction
     _metadata_paste_steps_action: QtGui.QAction
+    _metadata_reorder_steps_action: QtGui.QAction
     _metadata_revert_step_action: QtGui.QAction
     _metadata_detail_labels: dict[str, QtWidgets.QLabel]
     _metadata_full_code_available: bool

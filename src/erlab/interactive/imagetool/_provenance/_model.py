@@ -195,6 +195,43 @@ class _ProvenanceDisplayRow:
 
 
 @dataclass(frozen=True)
+class _ProvenanceReorderBlockRef:
+    """Original operation or replay-stage range represented by one dialog row."""
+
+    stage_index: int | None
+    start: int
+    stop: int
+    kind: typing.Literal["operation", "stage"] = "operation"
+
+
+@dataclass(frozen=True)
+class _ProvenanceReorderBlock:
+    """One atomic provenance block exposed by the reorder dialog."""
+
+    ref: _ProvenanceReorderBlockRef
+    entries: tuple[DerivationEntry, ...]
+
+
+@dataclass(frozen=True)
+class _ProvenanceReorderSectionRef:
+    """Contiguous operation or replay-stage range that may be permuted."""
+
+    stage_index: int | None
+    start: int
+    stop: int
+    kind: typing.Literal["operation", "stage"] = "operation"
+
+
+@dataclass(frozen=True)
+class _ProvenanceReorderSection:
+    """Movable operation blocks bounded by fixed provenance semantics."""
+
+    ref: _ProvenanceReorderSectionRef
+    label: str
+    blocks: tuple[_ProvenanceReorderBlock, ...]
+
+
+@dataclass(frozen=True)
 class _ProvenanceDisplayContext:
     """Cheap metadata known while streamlining provenance display rows."""
 
@@ -2490,6 +2527,382 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             update={"operations": tuple(operations)}
         )
         return self.model_copy(update={"replay_stages": tuple(stages)})
+
+    def _operations_for_stage_index(
+        self,
+        stage_index: int | None,
+    ) -> tuple[ToolProvenanceOperation, ...]:
+        if stage_index is None:
+            return self.operations
+        if not 0 <= stage_index < len(self.replay_stages):
+            raise IndexError("Provenance replay stage is not available")
+        return self.replay_stages[stage_index].operations
+
+    @staticmethod
+    def _operation_is_reorderable(operation: ToolProvenanceOperation) -> bool:
+        if not _operation_is(operation, "script_code"):
+            return operation.live_applicable
+        return bool(
+            getattr(operation, "copyable", False) and getattr(operation, "code", None)
+        )
+
+    def _reorderable_operation_blocks(
+        self,
+        *,
+        fixed_refs: Collection[_ProvenanceStepRef] = (),
+    ) -> dict[int | None, tuple[_ProvenanceReorderBlock, ...]]:
+        """Return displayed atomic operation blocks grouped by their container."""
+        fixed_ref_set = set(fixed_refs)
+        block_entries: dict[
+            _ProvenanceReorderBlockRef,
+            list[DerivationEntry],
+        ] = {}
+
+        for row in self.display_rows():
+            ref = row.replay_ref
+            if (
+                row.script_input_path
+                or ref is None
+                or ref.kind != "operation"
+                or ref.operation_index is None
+            ):
+                continue
+            try:
+                operations = self._operations_for_stage_index(ref.stage_index)
+            except IndexError:
+                continue
+            if not 0 <= ref.operation_index < len(operations):
+                continue
+
+            operation = operations[ref.operation_index]
+            group_range = operation_group_range(operations, ref.operation_index)
+            if operation.group is not None and group_range is None:
+                continue
+            start, stop = (
+                (ref.operation_index, ref.operation_index + 1)
+                if group_range is None
+                else group_range
+            )
+            block_refs = {
+                _ProvenanceStepRef(
+                    "operation",
+                    operation_index=index,
+                    stage_index=ref.stage_index,
+                )
+                for index in range(start, stop)
+            }
+            if block_refs & fixed_ref_set or any(
+                not self._operation_is_reorderable(item)
+                for item in operations[start:stop]
+            ):
+                continue
+
+            block_ref = _ProvenanceReorderBlockRef(ref.stage_index, start, stop)
+            block_entries.setdefault(block_ref, []).append(row.entry)
+
+        blocks_by_container: dict[int | None, list[_ProvenanceReorderBlock]] = {}
+        for ref, entries in block_entries.items():
+            blocks_by_container.setdefault(ref.stage_index, []).append(
+                _ProvenanceReorderBlock(ref, tuple(entries))
+            )
+        return {
+            stage_index: tuple(sorted(blocks, key=lambda block: block.ref.start))
+            for stage_index, blocks in blocks_by_container.items()
+        }
+
+    def _reorder_sections(
+        self,
+        *,
+        fixed_refs: Collection[_ProvenanceStepRef] = (),
+    ) -> tuple[_ProvenanceReorderSection, ...]:
+        """Return contiguous displayed provenance sections safe to permute.
+
+        Complete replay stages are movable as atomic blocks. This preserves the
+        stage's source and parent-data semantics while supporting the normal manager
+        representation where each user action is stored in its own stage. Inside an
+        isolated or fixed stage, contiguous operation blocks may still be reordered.
+        Hidden operations, non-replayable code, malformed groups, and caller-provided
+        fixed references remain boundaries.
+        """
+        blocks_by_container = self._reorderable_operation_blocks(fixed_refs=fixed_refs)
+
+        eligible_stage_blocks: dict[int, _ProvenanceReorderBlock] = {}
+        for stage_index, stage in enumerate(self.replay_stages):
+            blocks = blocks_by_container.get(stage_index, ())
+            cursor = 0
+            complete_partition = True
+            for block in blocks:
+                if block.ref.start != cursor:
+                    complete_partition = False
+                    break
+                cursor = block.ref.stop
+            if (
+                not stage.operations
+                or not complete_partition
+                or cursor != len(stage.operations)
+            ):
+                continue
+            eligible_stage_blocks[stage_index] = _ProvenanceReorderBlock(
+                _ProvenanceReorderBlockRef(
+                    None,
+                    stage_index,
+                    stage_index + 1,
+                    kind="stage",
+                ),
+                tuple(entry for block in blocks for entry in block.entries),
+            )
+
+        stage_segments: list[list[_ProvenanceReorderBlock]] = []
+        current_segment: list[_ProvenanceReorderBlock] = []
+        for stage_index in range(len(self.replay_stages)):
+            block = eligible_stage_blocks.get(stage_index)
+            if block is None:
+                if current_segment:
+                    stage_segments.append(current_segment)
+                    current_segment = []
+                continue
+            current_segment.append(block)
+        if current_segment:
+            stage_segments.append(current_segment)
+
+        movable_stage_segments = [
+            segment for segment in stage_segments if len(segment) >= 2
+        ]
+        movable_stage_indices = {
+            block.ref.start for segment in movable_stage_segments for block in segment
+        }
+        stage_sections = {
+            segment[0].ref.start: _ProvenanceReorderSection(
+                ref=_ProvenanceReorderSectionRef(
+                    None,
+                    segment[0].ref.start,
+                    segment[-1].ref.stop,
+                    kind="stage",
+                ),
+                label=(
+                    "Recorded steps"
+                    if len(movable_stage_segments) == 1
+                    else f"Recorded steps — section {segment_index}"
+                ),
+                blocks=tuple(segment),
+            )
+            for segment_index, segment in enumerate(movable_stage_segments, start=1)
+        }
+
+        def operation_sections(
+            stage_index: int | None,
+        ) -> list[_ProvenanceReorderSection]:
+            blocks = blocks_by_container.get(stage_index, ())
+            segments: list[list[_ProvenanceReorderBlock]] = []
+            for block in blocks:
+                if not segments or segments[-1][-1].ref.stop != block.ref.start:
+                    segments.append([block])
+                else:
+                    segments[-1].append(block)
+
+            if stage_index is None:
+                base_label = "Steps"
+            else:
+                source_kind = self.replay_stages[stage_index].source_kind
+                base_label = {
+                    "full_data": "Steps from current data",
+                    "public_data": "Steps from current public data",
+                    "selection": "Steps from selected data",
+                }[source_kind]
+            movable_segments = [segment for segment in segments if len(segment) >= 2]
+            return [
+                _ProvenanceReorderSection(
+                    ref=_ProvenanceReorderSectionRef(
+                        stage_index,
+                        segment[0].ref.start,
+                        segment[-1].ref.stop,
+                    ),
+                    label=(
+                        base_label
+                        if len(movable_segments) == 1
+                        else f"{base_label} — section {segment_index}"
+                    ),
+                    blocks=tuple(segment),
+                )
+                for segment_index, segment in enumerate(movable_segments, start=1)
+            ]
+
+        output: list[_ProvenanceReorderSection] = []
+        for stage_index in range(len(self.replay_stages)):
+            if stage_index in stage_sections:
+                output.append(stage_sections[stage_index])
+            if stage_index not in movable_stage_indices:
+                output.extend(operation_sections(stage_index))
+        output.extend(operation_sections(None))
+        return tuple(output)
+
+    def _reorder_operation_blocks(
+        self,
+        sections: Sequence[_ProvenanceReorderSection],
+        orders: Mapping[
+            _ProvenanceReorderSectionRef,
+            Sequence[_ProvenanceReorderBlockRef],
+        ],
+    ) -> ToolProvenanceSpec:
+        """Return a validated spec with allowed provenance blocks permuted."""
+        expected_section_refs = tuple(section.ref for section in sections)
+        if len(set(expected_section_refs)) != len(expected_section_refs):
+            raise ValueError("Provenance reorder sections must be unique")
+        if set(orders) != set(expected_section_refs):
+            raise ValueError("Provenance reorder plan does not match its sections")
+
+        allowed_operation_block_refs = {
+            block.ref
+            for blocks in self._reorderable_operation_blocks().values()
+            for block in blocks
+        }
+        allowed_stage_block_refs = {
+            block.ref
+            for allowed_section in self._reorder_sections()
+            if allowed_section.ref.kind == "stage"
+            for block in allowed_section.blocks
+        }
+        allowed_block_refs = allowed_operation_block_refs | allowed_stage_block_refs
+
+        index_orders: dict[int | None, list[int]] = {
+            None: list(range(len(self.operations)))
+        }
+        for stage_index, stage in enumerate(self.replay_stages):
+            index_orders[stage_index] = list(range(len(stage.operations)))
+        stage_order = list(range(len(self.replay_stages)))
+
+        occupied_ranges: dict[
+            tuple[typing.Literal["operation", "stage"], int | None],
+            list[tuple[int, int]],
+        ] = {}
+        for section in sections:
+            section_ref = section.ref
+            if section_ref.kind == "stage":
+                if section_ref.stage_index is not None:
+                    raise ValueError(
+                        "Replay-stage reorder sections cannot target an operation "
+                        "container"
+                    )
+                container_size = len(self.replay_stages)
+                operations = None
+            else:
+                operations = self._operations_for_stage_index(section_ref.stage_index)
+                container_size = len(operations)
+            if not (0 <= section_ref.start < section_ref.stop <= container_size):
+                raise ValueError("Provenance reorder section is out of range")
+            range_key = (section_ref.kind, section_ref.stage_index)
+            ranges = occupied_ranges.setdefault(range_key, [])
+            if any(
+                section_ref.start < stop and start < section_ref.stop
+                for start, stop in ranges
+            ):
+                raise ValueError("Provenance reorder sections must not overlap")
+            ranges.append((section_ref.start, section_ref.stop))
+
+            expected_blocks = tuple(block.ref for block in section.blocks)
+            if not set(expected_blocks) <= allowed_block_refs:
+                raise ValueError(
+                    "Provenance reorder blocks must represent movable displayed steps"
+                )
+            cursor = section_ref.start
+            for block_ref in expected_blocks:
+                if (
+                    block_ref.kind != section_ref.kind
+                    or block_ref.stage_index != section_ref.stage_index
+                    or block_ref.start != cursor
+                    or not block_ref.start < block_ref.stop <= section_ref.stop
+                ):
+                    raise ValueError(
+                        "Provenance reorder blocks must partition their section"
+                    )
+                if section_ref.kind == "stage":
+                    if block_ref.stop != block_ref.start + 1:
+                        raise ValueError(
+                            "Replay-stage blocks must contain one complete stage"
+                        )
+                else:
+                    operation = typing.cast(
+                        "tuple[ToolProvenanceOperation, ...]", operations
+                    )[block_ref.start]
+                    group_range = operation_group_range(
+                        typing.cast("tuple[ToolProvenanceOperation, ...]", operations),
+                        block_ref.start,
+                    )
+                    if operation.group is None:
+                        if block_ref.stop != block_ref.start + 1:
+                            raise ValueError(
+                                "Ungrouped provenance blocks must contain one operation"
+                            )
+                    elif group_range != (block_ref.start, block_ref.stop):
+                        raise ValueError(
+                            "Grouped provenance blocks must contain the complete group"
+                        )
+                cursor = block_ref.stop
+            if cursor != section_ref.stop or len(set(expected_blocks)) != len(
+                expected_blocks
+            ):
+                raise ValueError(
+                    "Provenance reorder blocks must partition their section"
+                )
+
+            requested_blocks = tuple(orders[section_ref])
+            if len(requested_blocks) != len(expected_blocks) or set(
+                requested_blocks
+            ) != set(expected_blocks):
+                raise ValueError(
+                    "Provenance reorder plan must contain every block exactly once"
+                )
+            if section_ref.kind == "stage":
+                stage_order[section_ref.start : section_ref.stop] = [
+                    block_ref.start for block_ref in requested_blocks
+                ]
+            else:
+                reordered_indices = [
+                    index
+                    for block_ref in requested_blocks
+                    for index in range(block_ref.start, block_ref.stop)
+                ]
+                index_orders[section_ref.stage_index][
+                    section_ref.start : section_ref.stop
+                ] = reordered_indices
+
+        main_index_order = index_orders[None]
+        updates: dict[str, typing.Any] = {
+            "operations": tuple(self.operations[index] for index in main_index_order)
+        }
+        stages = list(self.replay_stages)
+        for stage_index, stage in enumerate(self.replay_stages):
+            stages[stage_index] = stage.model_copy(
+                update={
+                    "operations": tuple(
+                        stage.operations[index] for index in index_orders[stage_index]
+                    )
+                }
+            )
+        updates["replay_stages"] = tuple(stages[index] for index in stage_order)
+
+        if self.kind == "script" and self.script_context_bindings:
+            old_to_new = {
+                old_index: new_index
+                for new_index, old_index in enumerate(main_index_order)
+            }
+            rebound = [
+                (
+                    old_to_new[binding.operation_index],
+                    original_index,
+                    binding.model_copy(
+                        update={"operation_index": old_to_new[binding.operation_index]}
+                    ),
+                )
+                for original_index, binding in enumerate(self.script_context_bindings)
+            ]
+            rebound.sort(key=lambda item: (item[0], item[1]))
+            updates["script_context_bindings"] = tuple(
+                binding for _index, _original_index, binding in rebound
+            )
+
+        candidate = self.model_copy(update=updates)
+        return type(self).model_validate(candidate.model_dump(mode="python"))
 
     def _prefix_through_ref(self, ref: _ProvenanceStepRef) -> ToolProvenanceSpec:
         """Return a spec replaying through the referenced displayed row."""

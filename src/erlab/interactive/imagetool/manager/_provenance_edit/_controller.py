@@ -16,6 +16,7 @@ import erlab.interactive.imagetool.slicer
 import erlab.interactive.utils
 from erlab.interactive.imagetool import dialogs
 from erlab.interactive.imagetool._provenance._execution import (
+    file_load_source_status,
     replay_file_provenance,
     replay_script_provenance,
     script_provenance_replayable,
@@ -26,6 +27,7 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
+    _ProvenanceReorderSection,
     _ProvenanceStepRef,
     compose_display_provenance,
     compose_full_provenance,
@@ -34,6 +36,7 @@ from erlab.interactive.imagetool._provenance._model import (
     require_live_source_spec,
     restamp_operation_groups,
     script,
+    script_input_dependency_refs,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AffineCoordOperation,
@@ -64,6 +67,9 @@ from erlab.interactive.imagetool.manager._provenance_edit._files import (
     _replace_file_load_fields,
     _same_replay_loader,
 )
+from erlab.interactive.imagetool.manager._provenance_edit._reorder import (
+    _ProvenanceReorderDialog,
+)
 from erlab.interactive.imagetool.manager._widgets import _TrustedScriptReplayCancelled
 
 if typing.TYPE_CHECKING:
@@ -87,6 +93,24 @@ class _ValidatedProvenanceEdit:
     filter_operation: ToolProvenanceOperation | None
 
 
+@dataclasses.dataclass(frozen=True)
+class _ProvenanceReorderSession:
+    node_uid: str
+    scope: typing.Literal["display", "source"]
+    spec: ToolProvenanceSpec
+    sections: tuple[_ProvenanceReorderSection, ...]
+    node_snapshot_token: str
+    parent_snapshot_token: str | None
+    dependency_snapshot_tokens: tuple[
+        tuple[
+            str,
+            typing.Literal["source", "displayed"],
+            str | None,
+        ],
+        ...,
+    ]
+
+
 class _ProvenanceReplayFailure(RuntimeError):
     def __init__(self, where: str, cause: Exception) -> None:
         super().__init__(f"{where}: {cause}")
@@ -102,6 +126,256 @@ class _ProvenanceReplayFailure(RuntimeError):
 class _ProvenanceEditController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
+
+    def _reorder_target(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+    ) -> tuple[
+        typing.Literal["display", "source"],
+        ToolProvenanceSpec | None,
+    ]:
+        if node.parent_uid is not None and node.source_spec is not None:
+            return "source", node.displayed_source_spec
+        return "display", node.displayed_provenance_spec
+
+    def _dependency_snapshot_tokens(
+        self,
+        spec: ToolProvenanceSpec,
+    ) -> tuple[
+        tuple[
+            str,
+            typing.Literal["source", "displayed"],
+            str | None,
+        ],
+        ...,
+    ]:
+        tokens: list[
+            tuple[
+                str,
+                typing.Literal["source", "displayed"],
+                str | None,
+            ]
+        ] = []
+        seen: set[tuple[str, typing.Literal["source", "displayed"]]] = set()
+        for ref in script_input_dependency_refs(spec):
+            key = (ref.node_uid, ref.data_role)
+            if key in seen:
+                continue
+            seen.add(key)
+            dependency = self._manager._tool_graph.nodes.get(ref.node_uid)
+            token = (
+                None
+                if dependency is None
+                else dependency.snapshot_token_for_role(ref.data_role)
+            )
+            tokens.append((ref.node_uid, ref.data_role, token))
+        return tuple(tokens)
+
+    def _reorder_sections(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        spec: ToolProvenanceSpec,
+    ) -> tuple[_ProvenanceReorderSection, ...]:
+        active_filter_ref = self._active_filter_ref(node, spec)
+        return spec._reorder_sections(
+            fixed_refs=(() if active_filter_ref is None else (active_filter_ref,))
+        )
+
+    def _reorder_replay_unavailable_reason(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        scope: typing.Literal["display", "source"],
+        spec: ToolProvenanceSpec,
+    ) -> str | None:
+        source_status = file_load_source_status(spec)
+        if source_status not in {"no-file-load-source", "loadable"}:
+            return {
+                "missing-file": "The recorded source file is not available.",
+                "no-replay-call": (
+                    "The recorded source does not include replay loader information."
+                ),
+                "missing-loader": "The recorded source loader is not available.",
+            }[source_status]
+
+        if spec.kind == "file":
+            if source_status != "loadable":
+                return "This file provenance does not have a replayable source."
+            return None
+
+        if spec.kind == "script":
+            if not (
+                script_provenance_replayable(spec)
+                or script_provenance_requires_trust(spec)
+            ):
+                return "This provenance contains recorded code that cannot be replayed."
+            for script_input in spec.script_inputs:
+                reason = self._manager._script_input_unavailable_reason(
+                    script_input,
+                    target_node_uid=node.uid,
+                )
+                if reason is not None:
+                    return reason
+            return None
+
+        external_input_names = {"data", "derived", "parent_data"}
+        for operation in spec.operations:
+            if not isinstance(operation, ScriptCodeOperation):
+                continue
+            step_spec = self._live_script_step_spec(operation)
+            if not (
+                script_provenance_replayable(
+                    step_spec,
+                    external_input_names=external_input_names,
+                )
+                or script_provenance_requires_trust(
+                    step_spec,
+                    external_input_names=external_input_names,
+                )
+            ):
+                return (
+                    "This live provenance contains recorded code that cannot be "
+                    "replayed."
+                )
+
+        if scope == "source":
+            if (
+                node.parent_uid is None
+                or node.parent_uid not in self._manager._tool_graph.nodes
+            ):
+                return "The parent ImageTool source is no longer available."
+            return None
+        if node.detached_live_parent_data is None:
+            return "This live provenance no longer has its parent source data."
+        return None
+
+    def can_reorder_steps(self) -> tuple[bool, str]:
+        node = self._metadata_node()
+        if not self._node_editable(node):
+            return False, "Select an available ImageTool row to reorder provenance."
+        node = typing.cast("_ImageToolWrapper | _ManagedWindowNode", node)
+        scope, spec = self._reorder_target(node)
+        if spec is None:
+            return False, "This ImageTool does not have replayable provenance."
+        if not self._reorder_sections(node, spec):
+            return (
+                False,
+                "There are no two movable steps inside the same provenance section.",
+            )
+        if reason := self._reorder_replay_unavailable_reason(node, scope, spec):
+            return False, reason
+        return True, ""
+
+    def open_reorder_dialog(self) -> None:
+        available, reason = self.can_reorder_steps()
+        if not available:
+            self._show_unavailable(reason)
+            return
+        node = typing.cast(
+            "_ImageToolWrapper | _ManagedWindowNode",
+            self._metadata_node(),
+        )
+        scope, spec = self._reorder_target(node)
+        if spec is None:  # pragma: no cover - guarded by can_reorder_steps.
+            self._show_unavailable("No provenance spec is available.")
+            return
+        sections = self._reorder_sections(node, spec)
+        parent_snapshot_token = None
+        if scope == "source":
+            parent_snapshot_token = self._manager._parent_node(node).snapshot_token
+        session = _ProvenanceReorderSession(
+            node_uid=node.uid,
+            scope=scope,
+            spec=spec,
+            sections=sections,
+            node_snapshot_token=node.snapshot_token,
+            parent_snapshot_token=parent_snapshot_token,
+            dependency_snapshot_tokens=self._dependency_snapshot_tokens(spec),
+        )
+        rows = spec.display_rows()
+        start_label = rows[0].entry.label if rows else "Recorded source"
+        dialog = _ProvenanceReorderDialog(
+            start_label=start_label,
+            sections=sections,
+            parent=self._manager,
+        )
+        dialog.apply_requested.connect(
+            lambda: self._apply_reorder_dialog(dialog, session)
+        )
+        dialog.exec()
+
+    def _reorder_session_current(
+        self,
+        session: _ProvenanceReorderSession,
+    ) -> tuple[_ImageToolWrapper | _ManagedWindowNode | None, str]:
+        node = self._manager._tool_graph.nodes.get(session.node_uid)
+        if not self._node_editable(node):
+            return None, "The selected ImageTool is no longer available."
+        node = typing.cast("_ImageToolWrapper | _ManagedWindowNode", node)
+        scope, spec = self._reorder_target(node)
+        if scope != session.scope or spec != session.spec:
+            return None, "The provenance changed while the reorder dialog was open."
+        if node.snapshot_token != session.node_snapshot_token:
+            return None, "The ImageTool data changed while the dialog was open."
+        if session.scope == "source":
+            parent = self._manager._parent_node(node)
+            if parent.snapshot_token != session.parent_snapshot_token:
+                return (
+                    None,
+                    "The parent ImageTool data changed while the dialog was open.",
+                )
+        if self._dependency_snapshot_tokens(spec) != session.dependency_snapshot_tokens:
+            return None, "A provenance input changed while the dialog was open."
+        if self._reorder_sections(node, spec) != session.sections:
+            return (
+                None,
+                "The available provenance steps changed while the dialog was open.",
+            )
+        return node, ""
+
+    def _apply_reorder_dialog(
+        self,
+        dialog: _ProvenanceReorderDialog,
+        session: _ProvenanceReorderSession,
+    ) -> None:
+        node, stale_reason = self._reorder_session_current(session)
+        if node is None:
+            QtWidgets.QMessageBox.information(
+                dialog,
+                "Provenance Changed",
+                f"{stale_reason}\n\nClose this dialog and reopen it to reorder the "
+                "current provenance.",
+            )
+            return
+
+        dialog.set_busy(True)
+        try:
+            candidate = session.spec._reorder_operation_blocks(
+                session.sections,
+                dialog.reorder_plan(),
+            )
+            self._validate_and_replace(
+                node,
+                session.scope,
+                candidate,
+                where="validating the reordered provenance",
+            )
+        except _TrustedScriptReplayCancelled:
+            dialog.set_busy(False)
+            return
+        except Exception as exc:
+            dialog.set_busy(False)
+            self._show_failed(
+                "Could Not Apply Reordered Provenance",
+                exc,
+                text="The reordered provenance could not be applied.",
+                unchanged_reason=(
+                    "The complete reordered recipe could not be replayed, so the "
+                    "ImageTool data and recorded provenance were left unchanged. "
+                    "Adjust the order or cancel the dialog."
+                ),
+            )
+            return
+        dialog.finish_success()
 
     def can_paste_steps(
         self,
@@ -1602,12 +1876,7 @@ class _ProvenanceEditController:
             ):
                 data = operation.apply(data, parent_data=parent_data)
                 continue
-            step_spec = script(
-                operation,
-                start_label=operation.label,
-                seed_code="derived = data",
-                active_name="derived",
-            )
+            step_spec = self._live_script_step_spec(operation)
             replay_inputs = {
                 "data": data,
                 "derived": data,
@@ -1629,6 +1898,17 @@ class _ProvenanceEditController:
                 trusted_user_code=trusted_user_code,
             )
         return data
+
+    @staticmethod
+    def _live_script_step_spec(
+        operation: ScriptCodeOperation,
+    ) -> ToolProvenanceSpec:
+        return script(
+            operation,
+            start_label=operation.label,
+            seed_code="derived = data",
+            active_name="derived",
+        )
 
     def _replay_file_candidate(
         self,

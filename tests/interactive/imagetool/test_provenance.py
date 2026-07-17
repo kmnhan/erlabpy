@@ -4266,6 +4266,160 @@ def test_tool_provenance_group_ref_helpers_cover_invalid_and_stage_refs() -> Non
     )
 
 
+def test_tool_provenance_reorder_blocks_replays_generated_code() -> None:
+    data = xr.DataArray(
+        [[1.0, 2.0], [3.0, 6.0], [10.0, 20.0]],
+        dims=("x", "y"),
+        name="scan",
+    )
+    spec = full_data(
+        IselOperation(kwargs={"x": slice(0, 2)}),
+        NormalizeOperation(dims=("x",), mode="area"),
+    )
+    sections = spec._reorder_sections()
+    assert len(sections) == 1
+    section = sections[0]
+    reordered = spec._reorder_operation_blocks(
+        sections,
+        {section.ref: tuple(reversed(tuple(block.ref for block in section.blocks)))},
+    )
+
+    assert [operation.op for operation in reordered.operations] == [
+        "normalize",
+        "isel",
+    ]
+    original_result = spec.apply(data)
+    reordered_result = reordered.apply(data)
+    assert not np.allclose(original_result.values, reordered_result.values)
+
+    code = reordered.display_code(parent_data=data)
+    assert code is not None
+    namespace = _exec_generated_code(code, {"data": data})
+    xr.testing.assert_identical(namespace["derived"], reordered_result)
+
+
+def test_tool_provenance_reorder_keeps_groups_and_script_bindings_atomic() -> None:
+    grouped = stamp_operation_group(
+        (
+            ScriptCodeOperation(label="Copy result", code="result = derived + 2"),
+            AverageOperation(dims=("x",)),
+        ),
+        kind="demo",
+        group_id="reorder-group",
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="result",
+        operations=(
+            ScriptCodeOperation(label="Initial result", code="result = derived + 1"),
+            *grouped,
+            AssignAttrsOperation(attrs={"reordered": True}),
+        ),
+        script_context_bindings=[
+            {"operation_index": 1, "names": ["data", "derived"]},
+        ],
+    )
+    sections = spec._reorder_sections()
+    assert len(sections) == 1
+    section = sections[0]
+    assert [(block.ref.start, block.ref.stop) for block in section.blocks] == [
+        (0, 1),
+        (1, 3),
+        (3, 4),
+    ]
+
+    grouped_block = section.blocks[1].ref
+    reordered = spec._reorder_operation_blocks(
+        sections,
+        {
+            section.ref: (
+                grouped_block,
+                section.blocks[2].ref,
+                section.blocks[0].ref,
+            )
+        },
+    )
+
+    assert [operation.op for operation in reordered.operations] == [
+        "script_code",
+        "average",
+        "assign_attrs",
+        "script_code",
+    ]
+    assert operation_group_range(reordered.operations, 0, kind="demo") == (0, 2)
+    assert [
+        binding.model_dump(mode="json") for binding in reordered.script_context_bindings
+    ] == [{"operation_index": 0, "names": ["data", "derived"]}]
+
+
+def test_tool_provenance_reorder_sections_respect_hidden_and_stage_boundaries() -> None:
+    hidden_boundary = full_data(
+        IselOperation(kwargs={"x": slice(0, 2)}),
+        ScriptCodeOperation(
+            label="Hidden boundary",
+            code="derived = derived.copy(deep=False)",
+            visible=False,
+        ),
+        NormalizeOperation(dims=("x",)),
+    )
+    assert hidden_boundary._reorder_sections() == ()
+
+    fixed_middle = full_data(
+        IselOperation(kwargs={"x": slice(0, 2)}),
+        NormalizeOperation(dims=("x",)),
+        AssignAttrsOperation(attrs={"done": True}),
+    )
+    assert (
+        fixed_middle._reorder_sections(
+            fixed_refs=(_ProvenanceStepRef("operation", operation_index=1),)
+        )
+        == ()
+    )
+
+    staged = (
+        _file_provenance_spec()
+        .append_replay_stage(
+            full_data(
+                IselOperation(kwargs={"x": slice(0, 2)}),
+                NormalizeOperation(dims=("x",)),
+            )
+        )
+        .append_replay_stage(
+            full_data(
+                AssignAttrsOperation(attrs={"first": True}),
+                AssignAttrsOperation(attrs={"second": True}),
+            )
+        )
+    )
+    sections = staged._reorder_sections()
+    assert len(sections) == 1
+    section = sections[0]
+    assert section.ref.kind == "stage"
+    assert [(block.ref.start, block.ref.stop) for block in section.blocks] == [
+        (0, 1),
+        (1, 2),
+    ]
+
+    reordered = staged._reorder_operation_blocks(
+        sections,
+        {section.ref: tuple(reversed([block.ref for block in section.blocks]))},
+    )
+    assert [
+        [operation.op for operation in stage.operations]
+        for stage in reordered.replay_stages
+    ] == [["assign_attrs", "assign_attrs"], ["isel", "normalize"]]
+
+    with pytest.raises(ValueError, match="every block exactly once"):
+        staged._reorder_operation_blocks(
+            sections,
+            {
+                section.ref: (section.blocks[0].ref, section.blocks[0].ref),
+            },
+        )
+
+
 def test_tool_provenance_script_context_names_are_validation_only() -> None:
     parent = script(
         ScriptCodeOperation(

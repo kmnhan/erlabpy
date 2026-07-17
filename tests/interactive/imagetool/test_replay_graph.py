@@ -442,6 +442,20 @@ class Child(Base, metaclass=data_5):
     with pytest.raises(ReplayGraphError, match="non-replayable"):
         _validate_script_provenance(invalid_stage_spec)
     assert not script_provenance_replayable(None)
+    external_input_spec = script(
+        ScriptCodeOperation(
+            label="Use external input",
+            code="derived = data + 1",
+        ),
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+    assert not script_provenance_replayable(external_input_spec)
+    assert script_provenance_replayable(
+        external_input_spec,
+        external_input_names={"data"},
+    )
     assert not _script_provenance_validates(
         script(
             start_label="Run script",

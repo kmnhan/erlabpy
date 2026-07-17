@@ -1000,6 +1000,13 @@ class ImageToolManager(_ImageToolManagerBase):
         self._metadata_edit_step_action.triggered.connect(
             self._edit_selected_derivation_step
         )
+        self._metadata_reorder_steps_action = QtGui.QAction("Reorder Steps…", self)
+        self._metadata_reorder_steps_action.setObjectName(
+            "manager_reorder_provenance_steps_action"
+        )
+        self._metadata_reorder_steps_action.triggered.connect(
+            self._provenance_edit_controller.open_reorder_dialog
+        )
         self._metadata_revert_step_action = QtGui.QAction("Revert to This Step…", self)
         self._metadata_revert_step_action.setObjectName(
             "manager_revert_provenance_step_action"

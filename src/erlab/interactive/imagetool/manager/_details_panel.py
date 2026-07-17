@@ -887,8 +887,13 @@ class _DetailsPanelController:
         delete_enabled, delete_reason = (
             self._manager._provenance_edit_controller.can_delete_row(row)
         )
+        reorder_enabled, reorder_reason = (
+            self._manager._provenance_edit_controller.can_reorder_steps()
+        )
         self._manager._metadata_edit_step_action.setEnabled(edit_enabled)
         self._manager._metadata_edit_step_action.setToolTip(edit_reason)
+        self._manager._metadata_reorder_steps_action.setEnabled(reorder_enabled)
+        self._manager._metadata_reorder_steps_action.setToolTip(reorder_reason)
         self._manager._metadata_revert_step_action.setEnabled(revert_enabled)
         self._manager._metadata_revert_step_action.setToolTip(revert_reason)
         self._manager._metadata_delete_step_action.setEnabled(delete_enabled)
@@ -896,6 +901,7 @@ class _DetailsPanelController:
         menu.addAction(self._manager._metadata_edit_step_action)
         if edit_enabled:
             menu.setDefaultAction(self._manager._metadata_edit_step_action)
+        menu.addAction(self._manager._metadata_reorder_steps_action)
         menu.addAction(self._manager._metadata_revert_step_action)
         menu.addSeparator()
 

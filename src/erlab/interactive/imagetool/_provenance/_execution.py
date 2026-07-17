@@ -436,12 +436,19 @@ def can_reload_without_trust(
     return True
 
 
-def script_provenance_replayable(spec: typing.Any) -> bool:
+def script_provenance_replayable(
+    spec: typing.Any,
+    *,
+    external_input_names: set[str] | None = None,
+) -> bool:
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None:
         return False
     try:
-        _validate_script_provenance(parsed)
+        _validate_script_provenance(
+            parsed,
+            external_input_names=external_input_names,
+        )
     except (ReplayGraphError, TypeError, ValueError):
         return False
     return True
