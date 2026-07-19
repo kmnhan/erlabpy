@@ -53,11 +53,14 @@ from ._common import (
 
 def _composed_reorder_file_spec(file_path: pathlib.Path) -> ToolProvenanceSpec:
     spec = _manager_replay_file_spec(file_path)
-    for operation in (
-        IselOperation(kwargs={"x": slice(0, 2)}),
-        NormalizeOperation(dims=("x",), mode="area"),
+    for source in (
+        full_data(
+            IselOperation(kwargs={"x": slice(0, 2)}),
+            NormalizeOperation(dims=("x",), mode="area"),
+        ),
+        full_data(AssignAttrsOperation(attrs={"recorded_stage": "second"})),
     ):
-        composed = compose_full_provenance(spec, full_data(operation))
+        composed = compose_full_provenance(spec, source)
         assert composed is not None
         spec = composed
     return spec
@@ -849,7 +852,7 @@ def test_manager_provenance_reorder_dialog_controls_and_drop_boundaries(
         replay_stages=staged.replay_stages,
     )
     sections = spec._reorder_sections()
-    assert len(sections) == 2
+    assert len(sections) == 4
 
     dialog = _ProvenanceReorderDialog(
         start_label="Recorded source",
@@ -983,6 +986,10 @@ def test_manager_provenance_reorder_dialog_is_transactional(
         def _cancel_reordered(dialog: QtWidgets.QDialog) -> None:
             assert isinstance(dialog, _ProvenanceReorderDialog)
             assert dialog.tree.move_current(1)
+            operation_section = dialog.tree.topLevelItem(1)
+            assert operation_section is not None
+            dialog.tree.setCurrentItem(operation_section.child(0))
+            assert dialog.tree.move_current(1)
             assert replay_calls == 0
             assert root.provenance_spec == before_spec
             xr.testing.assert_identical(root.slicer_area._data, before_data)
@@ -999,6 +1006,10 @@ def test_manager_provenance_reorder_dialog_is_transactional(
         def _apply_reordered(dialog: QtWidgets.QDialog) -> None:
             assert isinstance(dialog, _ProvenanceReorderDialog)
             assert dialog.tree.move_current(1)
+            operation_section = dialog.tree.topLevelItem(1)
+            assert operation_section is not None
+            dialog.tree.setCurrentItem(operation_section.child(0))
+            assert dialog.tree.move_current(1)
             assert replay_calls == 0
             dialog.apply_button.click()
 
@@ -1011,7 +1022,7 @@ def test_manager_provenance_reorder_dialog_is_transactional(
         assert [
             [operation.op for operation in stage.operations]
             for stage in root.provenance_spec.replay_stages
-        ] == [["normalize"], ["isel"]]
+        ] == [["assign_attrs"], ["normalize", "isel"]]
         xr.testing.assert_identical(
             root.slicer_area._data,
             replay_file_provenance(root.provenance_spec),
@@ -1024,7 +1035,7 @@ def test_manager_provenance_reorder_dialog_is_transactional(
         assert [
             [operation["op"] for operation in stage["operations"]]
             for stage in saved_spec["replay_stages"]
-        ] == [["normalize"], ["isel"]]
+        ] == [["assign_attrs"], ["normalize", "isel"]]
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
@@ -1039,7 +1050,7 @@ def test_manager_provenance_reorder_dialog_is_transactional(
         assert [
             [operation.op for operation in stage.operations]
             for stage in restored.provenance_spec.replay_stages
-        ] == [["normalize"], ["isel"]]
+        ] == [["assign_attrs"], ["normalize", "isel"]]
         xr.testing.assert_identical(
             restored.slicer_area._data,
             replay_file_provenance(restored.provenance_spec),

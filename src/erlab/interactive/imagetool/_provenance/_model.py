@@ -210,6 +210,8 @@ class _ProvenanceReorderBlock:
 
     ref: _ProvenanceReorderBlockRef
     entries: tuple[DerivationEntry, ...]
+    label: str | None = None
+    tooltip: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2546,69 +2548,101 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             getattr(operation, "copyable", False) and getattr(operation, "code", None)
         )
 
+    @staticmethod
+    def _operation_reorder_entry(
+        operation: ToolProvenanceOperation,
+    ) -> DerivationEntry | None:
+        """Return the stable reorder-dialog entry for one stored operation.
+
+        This intentionally excludes only operations that are structurally internal or
+        explicitly hidden. Context-dependent display cleanup, such as eliding a no-op
+        transpose or squeeze, must not change reorder boundaries.
+        """
+        entry = operation.derivation_entry()
+        if _operation_is(operation, "script_code"):
+            if not getattr(operation, "visible", True):
+                return None
+            if entry.code in {
+                "derived = derived.isel()",
+                "derived = derived.qsel()",
+                "derived = derived.sel()",
+            } or _is_internal_sort_coord_order_entry(entry):
+                return None
+        elif _operation_is(operation, "qsel", "isel", "sel"):
+            if not getattr(operation, "decoded_kwargs", {}):
+                return None
+        elif _operation_is(operation, "rename", "sort_coord_order", "source_view"):
+            return None
+        return entry
+
     def _reorderable_operation_blocks(
         self,
         *,
         fixed_refs: Collection[_ProvenanceStepRef] = (),
     ) -> dict[int | None, tuple[_ProvenanceReorderBlock, ...]]:
-        """Return displayed atomic operation blocks grouped by their container."""
+        """Return structural atomic operation blocks grouped by their container.
+
+        Operation identity, grouping, and reorder visibility come directly from the
+        stored provenance. Display streamlining and the hierarchical ``display_rows()``
+        representation are deliberately not part of reorder planning.
+        """
         fixed_ref_set = set(fixed_refs)
-        block_entries: dict[
-            _ProvenanceReorderBlockRef,
-            list[DerivationEntry],
-        ] = {}
+        containers: list[tuple[int | None, tuple[ToolProvenanceOperation, ...]]] = [
+            (None, self.operations)
+        ]
+        containers.extend(
+            (stage_index, stage.operations)
+            for stage_index, stage in enumerate(self.replay_stages)
+        )
 
-        for row in self.display_rows():
-            ref = row.replay_ref
-            if (
-                row.script_input_path
-                or ref is None
-                or ref.kind != "operation"
-                or ref.operation_index is None
-            ):
-                continue
-            try:
-                operations = self._operations_for_stage_index(ref.stage_index)
-            except IndexError:
-                continue
-            if not 0 <= ref.operation_index < len(operations):
-                continue
-
-            operation = operations[ref.operation_index]
-            group_range = operation_group_range(operations, ref.operation_index)
-            if operation.group is not None and group_range is None:
-                continue
-            start, stop = (
-                (ref.operation_index, ref.operation_index + 1)
-                if group_range is None
-                else group_range
+        blocks_by_container: dict[int | None, tuple[_ProvenanceReorderBlock, ...]] = {}
+        for stage_index, operations in containers:
+            reorder_entries = tuple(
+                self._operation_reorder_entry(operation) for operation in operations
             )
-            block_refs = {
-                _ProvenanceStepRef(
-                    "operation",
-                    operation_index=index,
-                    stage_index=ref.stage_index,
+            blocks: list[_ProvenanceReorderBlock] = []
+            operation_index = 0
+            while operation_index < len(operations):
+                operation = operations[operation_index]
+                group_range = operation_group_range(operations, operation_index)
+                if operation.group is not None and group_range is None:
+                    operation_index += 1
+                    continue
+                start, stop = (
+                    (operation_index, operation_index + 1)
+                    if group_range is None
+                    else group_range
                 )
-                for index in range(start, stop)
-            }
-            if block_refs & fixed_ref_set or any(
-                not self._operation_is_reorderable(item)
-                for item in operations[start:stop]
-            ):
-                continue
-
-            block_ref = _ProvenanceReorderBlockRef(ref.stage_index, start, stop)
-            block_entries.setdefault(block_ref, []).append(row.entry)
-
-        blocks_by_container: dict[int | None, list[_ProvenanceReorderBlock]] = {}
-        for ref, entries in block_entries.items():
-            blocks_by_container.setdefault(ref.stage_index, []).append(
-                _ProvenanceReorderBlock(ref, tuple(entries))
-            )
-        return {
-            stage_index: tuple(sorted(blocks, key=lambda block: block.ref.start))
-            for stage_index, blocks in blocks_by_container.items()
-        }
+                operation_index = stop
+                entries = tuple(
+                    entry
+                    for index in range(start, stop)
+                    if (entry := reorder_entries[index]) is not None
+                )
+                if not entries:
+                    continue
+                block_refs = {
+                    _ProvenanceStepRef(
+                        "operation",
+                        operation_index=index,
+                        stage_index=stage_index,
+                    )
+                    for index in range(start, stop)
+                }
+                if block_refs & fixed_ref_set or any(
+                    not self._operation_is_reorderable(item)
+                    for item in operations[start:stop]
+                ):
+                    continue
+                blocks.append(
+                    _ProvenanceReorderBlock(
+                        _ProvenanceReorderBlockRef(stage_index, start, stop),
+                        entries,
+                    )
+                )
+            if blocks:
+                blocks_by_container[stage_index] = tuple(blocks)
+        return blocks_by_container
 
     def _reorder_sections(
         self,
@@ -2619,12 +2653,23 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
         Complete replay stages are movable as atomic blocks. This preserves the
         stage's source and parent-data semantics while supporting the normal manager
-        representation where each user action is stored in its own stage. Inside an
-        isolated or fixed stage, contiguous operation blocks may still be reordered.
-        Hidden operations, non-replayable code, malformed groups, and caller-provided
-        fixed references remain boundaries.
+        representation where each user action is stored in its own stage. Independently,
+        contiguous operation blocks inside every stage remain reorderable. Hidden
+        operations, non-replayable code, malformed groups, and caller-provided fixed
+        references remain boundaries at both levels.
         """
         blocks_by_container = self._reorderable_operation_blocks(fixed_refs=fixed_refs)
+        source_labels = {
+            "full_data": "current data",
+            "public_data": "current public data",
+            "selection": "selected data",
+        }
+        stage_labels = {
+            stage_index: (
+                f"Recorded step {stage_index + 1} — {source_labels[stage.source_kind]}"
+            )
+            for stage_index, stage in enumerate(self.replay_stages)
+        }
 
         eligible_stage_blocks: dict[int, _ProvenanceReorderBlock] = {}
         for stage_index, stage in enumerate(self.replay_stages):
@@ -2650,6 +2695,12 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     kind="stage",
                 ),
                 tuple(entry for block in blocks for entry in block.entries),
+                label=stage_labels[stage_index],
+                tooltip=(
+                    "This recorded step starts from "
+                    f"{source_labels[stage.source_kind]}. Its operations move with it; "
+                    "use the corresponding operations section to arrange them."
+                ),
             )
 
         stage_segments: list[list[_ProvenanceReorderBlock]] = []
@@ -2668,9 +2719,6 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         movable_stage_segments = [
             segment for segment in stage_segments if len(segment) >= 2
         ]
-        movable_stage_indices = {
-            block.ref.start for segment in movable_stage_segments for block in segment
-        }
         stage_sections = {
             segment[0].ref.start: _ProvenanceReorderSection(
                 ref=_ProvenanceReorderSectionRef(
@@ -2703,12 +2751,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             if stage_index is None:
                 base_label = "Steps"
             else:
-                source_kind = self.replay_stages[stage_index].source_kind
-                base_label = {
-                    "full_data": "Steps from current data",
-                    "public_data": "Steps from current public data",
-                    "selection": "Steps from selected data",
-                }[source_kind]
+                base_label = f"Operations within {stage_labels[stage_index]}"
             movable_segments = [segment for segment in segments if len(segment) >= 2]
             return [
                 _ProvenanceReorderSection(
@@ -2731,8 +2774,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         for stage_index in range(len(self.replay_stages)):
             if stage_index in stage_sections:
                 output.append(stage_sections[stage_index])
-            if stage_index not in movable_stage_indices:
-                output.extend(operation_sections(stage_index))
+            output.extend(operation_sections(stage_index))
         output.extend(operation_sections(None))
         return tuple(output)
 

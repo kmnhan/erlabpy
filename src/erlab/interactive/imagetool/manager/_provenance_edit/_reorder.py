@@ -72,9 +72,12 @@ class _ProvenanceReorderTree(QtWidgets.QTreeWidget):
             if block.ref.kind == "stage"
             else block.ref.stop - block.ref.start
         )
-        label = entries[0].label
+        label = block.label or entries[0].label
         if linked_count > 1:
-            label = f"{label} (+{linked_count - 1} linked steps)"
+            if block.ref.kind == "stage":
+                label = f"{label} ({linked_count} operations)"
+            else:
+                label = f"{label} (+{linked_count - 1} linked steps)"
         item = QtWidgets.QTreeWidgetItem([label])
         item.setData(0, _REORDER_BLOCK_ROLE, block.ref)
         item.setFlags(
@@ -82,7 +85,9 @@ class _ProvenanceReorderTree(QtWidgets.QTreeWidget):
             | QtCore.Qt.ItemFlag.ItemIsSelectable
             | QtCore.Qt.ItemFlag.ItemIsDragEnabled
         )
-        if linked_count > 1:
+        if block.tooltip is not None:
+            item.setToolTip(0, block.tooltip)
+        elif linked_count > 1:
             item.setToolTip(
                 0,
                 "This is one atomic operation group:\n"

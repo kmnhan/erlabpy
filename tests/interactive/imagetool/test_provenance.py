@@ -4394,30 +4394,107 @@ def test_tool_provenance_reorder_sections_respect_hidden_and_stage_boundaries() 
         )
     )
     sections = staged._reorder_sections()
-    assert len(sections) == 1
-    section = sections[0]
-    assert section.ref.kind == "stage"
-    assert [(block.ref.start, block.ref.stop) for block in section.blocks] == [
+    assert len(sections) == 3
+    stage_section = sections[0]
+    assert stage_section.ref.kind == "stage"
+    assert [(block.ref.start, block.ref.stop) for block in stage_section.blocks] == [
         (0, 1),
         (1, 2),
     ]
+    stage_identity = tuple(
+        (block.label, block.tooltip) for block in stage_section.blocks
+    )
+    assert all(
+        label is not None and tooltip is not None for label, tooltip in stage_identity
+    )
+    operation_sections = {
+        section.ref.stage_index: section
+        for section in sections
+        if section.ref.kind == "operation"
+    }
+    assert set(operation_sections) == {0, 1}
+    assert all(
+        [(block.ref.start, block.ref.stop) for block in section.blocks]
+        == [(0, 1), (1, 2)]
+        for section in operation_sections.values()
+    )
 
+    internal_orders = {
+        section.ref: tuple(block.ref for block in section.blocks)
+        for section in sections
+    }
+    first_operation_section = operation_sections[0]
+    internal_orders[first_operation_section.ref] = tuple(
+        reversed([block.ref for block in first_operation_section.blocks])
+    )
+    internally_reordered = staged._reorder_operation_blocks(sections, internal_orders)
+    internally_reordered_stage_section = next(
+        section
+        for section in internally_reordered._reorder_sections()
+        if section.ref.kind == "stage"
+    )
+    assert (
+        tuple(
+            (block.label, block.tooltip)
+            for block in internally_reordered_stage_section.blocks
+        )
+        == stage_identity
+    )
+
+    orders = {
+        section.ref: tuple(block.ref for block in section.blocks)
+        for section in sections
+    }
+    orders[stage_section.ref] = tuple(
+        reversed([block.ref for block in stage_section.blocks])
+    )
+    for section in operation_sections.values():
+        orders[section.ref] = tuple(reversed([block.ref for block in section.blocks]))
     reordered = staged._reorder_operation_blocks(
         sections,
-        {section.ref: tuple(reversed([block.ref for block in section.blocks]))},
+        orders,
     )
-    assert [
-        [operation.op for operation in stage.operations]
-        for stage in reordered.replay_stages
-    ] == [["assign_attrs", "assign_attrs"], ["isel", "normalize"]]
+    assert reordered.replay_stages[0].operations == tuple(
+        reversed(staged.replay_stages[1].operations)
+    )
+    assert reordered.replay_stages[1].operations == tuple(
+        reversed(staged.replay_stages[0].operations)
+    )
 
+    invalid_orders = dict(orders)
+    invalid_orders[stage_section.ref] = (
+        stage_section.blocks[0].ref,
+        stage_section.blocks[0].ref,
+    )
     with pytest.raises(ValueError, match="every block exactly once"):
         staged._reorder_operation_blocks(
             sections,
-            {
-                section.ref: (section.blocks[0].ref, section.blocks[0].ref),
-            },
+            invalid_orders,
         )
+
+
+def test_tool_provenance_reorder_planning_is_independent_of_display_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = full_data(
+        IselOperation(kwargs={"x": slice(0, 2)}),
+        NormalizeOperation(dims=("x",)),
+    )
+
+    def fail_display_projection(*args, **kwargs):
+        raise AssertionError(
+            "structural reorder planning must not use display projection"
+        )
+
+    monkeypatch.setattr(ToolProvenanceSpec, "display_rows", fail_display_projection)
+    monkeypatch.setattr(
+        ToolProvenanceSpec,
+        "_streamlined_operation_refs",
+        fail_display_projection,
+    )
+    sections = spec._reorder_sections()
+    assert len(sections) == 1
+    assert [block.ref.start for block in sections[0].blocks] == [0, 1]
 
 
 def test_tool_provenance_script_context_names_are_validation_only() -> None:
