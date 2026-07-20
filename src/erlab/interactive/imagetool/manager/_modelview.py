@@ -442,7 +442,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 link_color = self.manager.color_for_workspace_link_key(
                     tool_wrapper.workspace_link_key
                 )
-            elif tool_wrapper.imagetool is not None:
+            else:
                 proxy = tool_wrapper.slicer_area._linking_proxy
                 if proxy is not None:
                     link_color = self.manager.color_for_linker(proxy)

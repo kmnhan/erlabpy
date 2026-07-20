@@ -101,6 +101,59 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def test_register_linked_nodes_invalidates_workspace_link_color_cache() -> None:
+    registered: list[tuple[str, object]] = []
+    graph = types.SimpleNamespace(
+        register_root=lambda node: registered.append(("root", node)),
+        register_child=lambda node: registered.append(("child", node)),
+        register_figure=lambda node: registered.append(("figure", node)),
+    )
+    manager = types.SimpleNamespace(
+        _tool_graph=graph,
+        _workspace_link_color_cache_dirty=False,
+    )
+    manager._invalidate_workspace_link_color_cache = types.MethodType(
+        manager_mainwindow.ImageToolManager._invalidate_workspace_link_color_cache,
+        manager,
+    )
+    nodes = {
+        "root": types.SimpleNamespace(workspace_link_key="root-link"),
+        "child": types.SimpleNamespace(
+            workspace_link_key="child-link", tool_window=None
+        ),
+        "figure": types.SimpleNamespace(
+            workspace_link_key="figure-link", tool_window=None
+        ),
+    }
+
+    for kind, method_name in (
+        ("root", "_register_root_wrapper"),
+        ("child", "_register_child_node"),
+        ("figure", "_register_figure_node"),
+    ):
+        manager._workspace_link_color_cache_dirty = False
+        getattr(manager_mainwindow.ImageToolManager, method_name)(manager, nodes[kind])
+        assert manager._workspace_link_color_cache_dirty
+
+    assert registered == [(kind, nodes[kind]) for kind in nodes]
+
+
+def test_color_for_linker_falls_back_without_structural_link_key() -> None:
+    child = object()
+    linker = types.SimpleNamespace(children=(child,))
+    manager = types.SimpleNamespace(
+        node_from_slicer_area=lambda slicer_area: types.SimpleNamespace(
+            workspace_link_key=None
+        ),
+        _link_registry=types.SimpleNamespace(index=lambda candidate: 1),
+    )
+
+    assert (
+        manager_mainwindow.ImageToolManager.color_for_linker(manager, linker)
+        == manager_mainwindow._LINKER_COLORS[1]
+    )
+
+
 def _record_reload_unavailable_dialog(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     reasons: list[str] = []
     monkeypatch.setattr(

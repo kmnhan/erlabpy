@@ -210,6 +210,76 @@ def test_childtool_hover_preview_hides_missing_imageitem_pixmap(
     assert not delegate.preview_popup.isVisible()
 
 
+def test_link_badge_falls_back_to_live_linker(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for offset in (0.0, 10.0):
+            tool = itool(
+                xr.DataArray(
+                    np.arange(offset, offset + 16).reshape(4, 4),
+                    dims=("x", "y"),
+                ),
+                manager=False,
+                execute=False,
+            )
+            assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(tool, show=False)
+        manager.link_imagetools(0, 1, link_colors=False)
+
+        wrapper = manager._tool_graph.root_wrappers[0]
+        proxy = wrapper.slicer_area._linking_proxy
+        assert proxy is not None
+        link_key = wrapper.workspace_link_key
+        assert link_key is not None
+        linker_calls: list[object] = []
+        original_color_for_linker = manager.color_for_linker
+
+        def _record_linker(candidate):
+            linker_calls.append(candidate)
+            return original_color_for_linker(candidate)
+
+        monkeypatch.setattr(manager, "color_for_linker", _record_linker)
+        monkeypatch.setattr(
+            _ImageToolWrapper,
+            "workspace_linked",
+            property(lambda _wrapper: True),
+        )
+        index = manager.tree_view._model.index(0, 0)
+
+        def _paint() -> None:
+            option = manager.tree_view._delegate._option_for_index(
+                manager.tree_view, index
+            )
+            canvas = QtGui.QPixmap(200, 32)
+            canvas.fill(QtGui.QColor("white"))
+            painter = QtGui.QPainter(canvas)
+            try:
+                manager.tree_view._delegate.paint(painter, option, index)
+            finally:
+                painter.end()
+
+        wrapper._workspace_link_key = None
+        try:
+            _paint()
+            assert linker_calls == [proxy]
+
+            wrapper.slicer_area._linking_proxy = None
+            try:
+                _paint()
+            finally:
+                wrapper.slicer_area._linking_proxy = proxy
+        finally:
+            wrapper._workspace_link_key = link_key
+
+        assert linker_calls == [proxy]
+
+
 def test_drop_mimedata(
     qtbot,
     accept_dialog,

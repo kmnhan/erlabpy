@@ -1362,7 +1362,89 @@ def test_pending_workspace_link_payload_helper_fallbacks(
             )
             updated_state = json.loads(node.attrs["itool_state"])
             assert updated_state["slice"]["indices"][0][0] == 1
+
+            cached_slicer = node._pending_workspace_link_slicer_cache[2]
+            updated_state["slice"]["indices"][0][0] = 4
+            updated_state["slice"]["values"][0][0] = 4.0
+            resynced_state_json = json.dumps(updated_state)
+            node.attrs = {"itool_state": resynced_state_json}
+            assert not loader.pending._apply_pending_workspace_link_operation(
+                source,
+                node,
+                "unknown_operation",
+                {},
+                tuple(data.dims),
+                True,
+                False,
+                None,
+                False,
+            )
+            cache = node._pending_workspace_link_slicer_cache
+            assert cache == (
+                node.pending_workspace_memory_payload,
+                resynced_state_json,
+                cached_slicer,
+            )
+            assert cached_slicer.get_index(0, 0) == 4
+
+            node._clear_pending_workspace_link_slicer_cache()
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    controller.loading,
+                    "_read_workspace_imagetool_payload_dataset",
+                    lambda *_args, **_kwargs: xr.Dataset({"other": data}),
+                )
+                assert not loader.pending._apply_pending_workspace_link_operation(
+                    source,
+                    node,
+                    "set_index",
+                    {"axis": 0, "value": 1},
+                    tuple(data.dims),
+                    True,
+                    False,
+                    None,
+                    False,
+                )
+            assert node._pending_workspace_link_slicer_cache is None
+
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy,
+                    "convert_args",
+                    lambda _self, *_args, **_kwargs: None,
+                )
+                assert not loader.pending._apply_pending_workspace_link_operation(
+                    source,
+                    node,
+                    "set_index",
+                    {"axis": 0, "value": 1},
+                    tuple(data.dims),
+                    True,
+                    False,
+                    None,
+                    False,
+                )
+
+            node._clear_pending_workspace_link_slicer_cache()
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    loader.pending,
+                    "_update_pending_link_state_for_operation",
+                    lambda *_args, **_kwargs: True,
+                )
+                assert not loader.pending._apply_pending_workspace_link_operation(
+                    source,
+                    node,
+                    "set_index",
+                    {"axis": 0, "value": 1},
+                    tuple(data.dims),
+                    True,
+                    False,
+                    None,
+                    False,
+                )
         finally:
+            node._clear_pending_workspace_link_slicer_cache()
             target_slicer.deleteLater()
 
 
