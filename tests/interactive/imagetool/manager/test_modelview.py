@@ -951,6 +951,7 @@ def test_remove_imagetool_removes_childtools() -> None:
         def __init__(self):
             self.uid = "root-uid-0"
             self._childtool_indices = [uid]
+            self.workspace_link_key = None
             self.disposed = False
             self.deleted = False
 

@@ -102,14 +102,33 @@ def test_manager_save_updates_pending_linked_partner_state(
         )
 
         loaded = manager.get_imagetool(0).slicer_area
-        loaded.set_index(0, 3)
+        loader = manager._workspace_controller.loading
+        read_calls = 0
+        original_read = loader._read_workspace_imagetool_payload_dataset
+
+        def _count_read(*args, **kwargs):
+            nonlocal read_calls
+            read_calls += 1
+            return original_read(*args, **kwargs)
+
+        monkeypatch.setattr(
+            loader,
+            "_read_workspace_imagetool_payload_dataset",
+            _count_read,
+        )
+        for value in (-0.5, 0.0, 0.5):
+            loaded.set_value(0, value, update=False, uniform=True)
         qtbot.wait_until(
             lambda: wrappers[1].uid in manager._workspace_state.dirty_state,
             timeout=5000,
         )
 
         assert materialized_calls == 1
+        assert read_calls == 1
         assert wrappers[1].pending_workspace_memory_payload is not None
+        cache = wrappers[1]._pending_workspace_link_slicer_cache
+        assert cache is not None
+        cached_slicer = cache[2]
         assert _request_workspace_save_and_wait(qtbot, manager)
         assert materialized_calls == 1
         assert wrappers[1].pending_workspace_memory_payload is not None
@@ -117,6 +136,13 @@ def test_manager_save_updates_pending_linked_partner_state(
         with h5py.File(fname, "r") as h5_file:
             saved_state = json.loads(h5_file["1/imagetool"].attrs["itool_state"])
         assert saved_state["slice"]["indices"][0][0] == 3
+
+        manager.get_imagetool(1)
+        assert wrappers[1]._pending_workspace_link_slicer_cache is None
+        qtbot.wait_until(
+            lambda: not erlab.interactive.utils.qt_is_valid(cached_slicer),
+            timeout=5000,
+        )
 
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
@@ -247,10 +273,12 @@ def test_pending_link_state_operation_variants_update_saved_state(
                 state, array_slicer, source, "toggle_snap", {}
             )
             assert state["slice"]["snap_to_data"] is True
+            assert array_slicer.snap_to_data is True
             assert loader.pending._update_pending_link_state_for_operation(
                 state, array_slicer, source, "toggle_snap", {"value": False}
             )
             assert state["slice"]["snap_to_data"] is False
+            assert array_slicer.snap_to_data is False
             assert not loader.pending._update_pending_link_state_for_operation(
                 state, array_slicer, source, "unknown_operation", {}
             )
@@ -1055,6 +1083,153 @@ def test_manager_duplicate_pending_memory_uses_saved_payload(
         duplicated = manager.get_imagetool(duplicate_index).slicer_area
         assert workspace_arrays.dataarray_is_numpy_backed(duplicated._data)
         np.testing.assert_array_equal(duplicated._data.values, data.values)
+
+
+def test_manager_duplicate_pending_child_tool_uses_saved_payload(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=("x", "y"),
+            name="source",
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        root.hide()
+
+        child_data = (data + 10.0).rename("child")
+        child = _AddedTimeChildTool(child_data)
+        child.tool_status = child.StateModel(value=7)
+        child_uid = manager.add_childtool(
+            child, 0, show=False, note="pending child note"
+        )
+        child.hide()
+
+        fname = tmp_path / "duplicate-hidden-child-tool.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            fname, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+
+        root_node = manager._tool_graph.root_wrappers[0]
+        child_node = manager._child_node(child_uid)
+        assert root_node.pending_workspace_memory_payload is not None
+        assert child_node.pending_workspace_tool_payload is not None
+        assert child_node.tool_window is None
+
+        duplicate_uid = manager.duplicate_childtool(child_uid)
+
+        assert root_node.pending_workspace_memory_payload is not None
+        assert child_node.pending_workspace_tool_payload is None
+        loaded_child = child_node.tool_window
+        assert isinstance(loaded_child, _AddedTimeChildTool)
+        duplicate_node = manager._child_node(duplicate_uid)
+        duplicate = duplicate_node.tool_window
+        assert isinstance(duplicate, _AddedTimeChildTool)
+        xr.testing.assert_identical(duplicate.tool_data, loaded_child.tool_data)
+        assert duplicate.tool_status == loaded_child.tool_status
+        assert duplicate_node.parent_uid == root_node.uid
+        assert duplicate_node.note == "pending child note"
+        assert duplicate_uid in manager._workspace_state.dirty_added
+        assert child_uid not in manager._workspace_state.dirty_added
+
+
+def test_manager_duplicate_pending_mixed_subtree_is_complete(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=("x", "y"),
+            name="root",
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        image_data = (data + 10.0).rename("image child")
+        image_child = itool(image_data, manager=False, execute=False)
+        assert isinstance(image_child, erlab.interactive.imagetool.ImageTool)
+        image_uid = manager.add_imagetool_child(image_child, 0, show=False)
+
+        tool_data = (data + 20.0).rename("tool child")
+        tool_child = _AddedTimeChildTool(tool_data)
+        tool_child.tool_status = tool_child.StateModel(value=9)
+        tool_uid = manager.add_childtool(tool_child, 0, show=False)
+
+        for window in (root, image_child, tool_child):
+            window.hide()
+        fname = tmp_path / "duplicate-pending-mixed-subtree.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            fname, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+
+        original_root = manager._tool_graph.root_wrappers[0]
+        original_image = manager._child_node(image_uid)
+        original_tool = manager._child_node(tool_uid)
+        assert original_root.pending_workspace_memory_payload is not None
+        assert original_image.pending_workspace_memory_payload is not None
+        assert original_tool.pending_workspace_tool_payload is not None
+
+        duplicate_index = manager.duplicate_imagetool(0)
+
+        assert isinstance(duplicate_index, int)
+        assert manager.ntools == 2
+        assert len(manager._tool_graph.nodes) == 6
+        assert original_root.pending_workspace_memory_payload is None
+        assert original_image.pending_workspace_memory_payload is None
+        assert original_tool.pending_workspace_tool_payload is None
+
+        duplicate_root = manager._tool_graph.root_wrappers[duplicate_index]
+        assert len(duplicate_root._childtool_indices) == 2
+        duplicate_children = [
+            manager._child_node(uid) for uid in duplicate_root._childtool_indices
+        ]
+        duplicate_image = next(node for node in duplicate_children if node.is_imagetool)
+        duplicate_tool_node = next(
+            node for node in duplicate_children if not node.is_imagetool
+        )
+        original_root_tool = manager.get_imagetool(0)
+        original_image_tool = manager.get_imagetool(original_image.uid)
+        xr.testing.assert_identical(
+            manager.get_imagetool(duplicate_index).slicer_area.data,
+            original_root_tool.slicer_area.data,
+        )
+        xr.testing.assert_identical(
+            manager.get_imagetool(duplicate_image.uid).slicer_area.data,
+            original_image_tool.slicer_area.data,
+        )
+        loaded_tool = original_tool.tool_window
+        assert isinstance(loaded_tool, _AddedTimeChildTool)
+        duplicate_tool = duplicate_tool_node.tool_window
+        assert isinstance(duplicate_tool, _AddedTimeChildTool)
+        xr.testing.assert_identical(duplicate_tool.tool_data, loaded_tool.tool_data)
+        assert duplicate_tool.tool_status == loaded_tool.tool_status
+        assert set(manager._tool_graph.subtree_uids(duplicate_root.uid)) <= (
+            manager._workspace_state.dirty_added
+        )
+        assert {
+            original_root.uid,
+            original_image.uid,
+            original_tool.uid,
+        }.isdisjoint(manager._workspace_state.dirty_added)
 
 
 def test_manager_promote_pending_child_memory_uses_saved_payload(

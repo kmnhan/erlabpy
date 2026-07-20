@@ -59,6 +59,7 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
 
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
+    from erlab.interactive.imagetool.slicer import ArraySlicer
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
     from erlab.interactive.imagetool.viewer_state import ImageSlicerState
 
@@ -469,6 +470,9 @@ class _ManagedWindowNode(QtCore.QObject):
             ]
             | None
         ) = None
+        self._pending_workspace_link_slicer_cache: (
+            tuple[tuple[pathlib.Path, str], str, ArraySlicer] | None
+        ) = None
         self._workspace_link_key: str | None = None
         self._workspace_link_colors: bool = True
         self._snapshot_token = (
@@ -806,6 +810,7 @@ class _ManagedWindowNode(QtCore.QObject):
         payload_path: str,
         payload_attrs: Mapping[str, typing.Any] | None = None,
     ) -> None:
+        self._clear_pending_workspace_link_slicer_cache()
         self._pending_workspace_payload_kind = kind
         self._pending_workspace_payload = (
             pathlib.Path(workspace_path),
@@ -831,7 +836,14 @@ class _ManagedWindowNode(QtCore.QObject):
             payload_attrs=payload_attrs,
         )
 
+    def _clear_pending_workspace_link_slicer_cache(self) -> None:
+        cache = self._pending_workspace_link_slicer_cache
+        self._pending_workspace_link_slicer_cache = None
+        if cache is not None and erlab.interactive.utils.qt_is_valid(cache[2]):
+            cache[2].deleteLater()
+
     def clear_pending_workspace_payload(self) -> None:
+        self._clear_pending_workspace_link_slicer_cache()
         self._pending_workspace_payload = None
         self._pending_workspace_payload_kind = None
         self._pending_workspace_payload_attrs = None
@@ -923,10 +935,14 @@ class _ManagedWindowNode(QtCore.QObject):
         return self._workspace_link_key is not None
 
     def set_workspace_link_state(self, key: str, *, link_colors: bool) -> None:
+        if self._workspace_link_key != key:
+            self.manager._invalidate_workspace_link_color_cache()
         self._workspace_link_key = key
         self._workspace_link_colors = bool(link_colors)
 
     def clear_workspace_link_state(self) -> None:
+        if self._workspace_link_key is not None:
+            self.manager._invalidate_workspace_link_color_cache()
         self._workspace_link_key = None
         self._workspace_link_colors = True
 
@@ -1990,6 +2006,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def dispose(self) -> None:
+        self._clear_pending_workspace_link_slicer_cache()
         self.window = None
 
     @QtCore.Slot()

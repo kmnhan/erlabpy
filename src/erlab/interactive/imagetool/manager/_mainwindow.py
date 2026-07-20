@@ -236,6 +236,8 @@ class ImageToolManager(_ImageToolManagerBase):
         self._manager_record = reserve_manager_record(host=_manager_server.HOST_IP)
         self.manager_index = self._manager_record.index
         self._tool_graph = _ManagerToolGraph()
+        self._workspace_link_color_indices: dict[str, int] = {}
+        self._workspace_link_color_cache_dirty = True
         self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
         self._trusted_script_replay_keys: set[str] = set()
         self._lineage_controller = _LineageController(self)
@@ -1164,14 +1166,20 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _register_root_wrapper(self, wrapper: _ImageToolWrapper) -> None:
         self._tool_graph.register_root(wrapper)
+        if wrapper.workspace_link_key is not None:
+            self._invalidate_workspace_link_color_cache()
 
     def _register_child_node(self, node: _ManagedWindowNode) -> None:
         self._tool_graph.register_child(node)
+        if node.workspace_link_key is not None:
+            self._invalidate_workspace_link_color_cache()
         if node.tool_window is not None:
             node.tool_window._refresh_reload_data_action()
 
     def _register_figure_node(self, node: _ManagedWindowNode) -> None:
         self._tool_graph.register_figure(node)
+        if node.workspace_link_key is not None:
+            self._invalidate_workspace_link_color_cache()
         if node.tool_window is not None:
             node.tool_window._refresh_reload_data_action()
 
@@ -1179,6 +1187,8 @@ class ImageToolManager(_ImageToolManagerBase):
         node = self._tool_graph.unregister_node(uid)
         if node is None:
             return
+        if node.workspace_link_key is not None:
+            self._invalidate_workspace_link_color_cache()
         self._dependency_tracker.clear_uid(uid)
         if not self._workspace_state.closing_document:
             self._refresh_dependency_dependents(uid)
@@ -1382,6 +1392,8 @@ class ImageToolManager(_ImageToolManagerBase):
             self._remove_uid_target(uid)
 
         self._tool_graph.unregister_root(index)
+        if wrapper.workspace_link_key is not None:
+            self._invalidate_workspace_link_color_cache()
         if not self._workspace_state.closing_document:
             self._mark_singleton_workspace_link_groups_dirty(removed_link_keys)
             self._refresh_dependency_dependents(wrapper.uid)
@@ -1482,26 +1494,62 @@ class ImageToolManager(_ImageToolManagerBase):
         self, linker: erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy
     ) -> QtGui.QColor:
         """Get the color that should represent the given linker."""
+        for slicer_area in linker.children:
+            node = self.node_from_slicer_area(slicer_area)
+            if node is not None and node.workspace_link_key is not None:
+                return self.color_for_workspace_link_key(node.workspace_link_key)
         idx = self._link_registry.index(linker)
         return _LINKER_COLORS[idx % len(_LINKER_COLORS)]
 
-    def color_for_workspace_link_key(self, link_key: str) -> QtGui.QColor:
-        """Get the color that should represent a restored structural link group."""
-        for linker in self._link_registry.linkers:
-            for slicer_area in linker.children:
-                node = self.node_from_slicer_area(slicer_area)
-                if node is not None and node.workspace_link_key == link_key:
-                    return self.color_for_linker(linker)
+    def _invalidate_workspace_link_color_cache(self) -> None:
+        self._workspace_link_color_cache_dirty = True
 
-        link_keys: list[str] = []
+    def _reconcile_workspace_link_color_cache(self) -> dict[str, int]:
+        """Preserve surviving colors and allocate free slots to active link groups."""
+        active_keys: list[str] = []
+        active_key_set: set[str] = set()
         for node in self._tool_graph.nodes.values():
-            node_link_key = node.workspace_link_key
-            if node_link_key is not None and node_link_key not in link_keys:
-                link_keys.append(node_link_key)
-        try:
-            idx = link_keys.index(link_key)
-        except ValueError:
-            idx = 0
+            link_key = node.workspace_link_key
+            if link_key is not None and link_key not in active_key_set:
+                active_keys.append(link_key)
+                active_key_set.add(link_key)
+
+        color_indices: dict[str, int] = {}
+        color_counts = [0] * len(_LINKER_COLORS)
+        unassigned_keys: list[str] = []
+        for link_key, color_index in self._workspace_link_color_indices.items():
+            if link_key not in active_key_set:
+                continue
+            color_index %= len(_LINKER_COLORS)
+            if color_counts[color_index] == 0:
+                color_indices[link_key] = color_index
+                color_counts[color_index] = 1
+            else:
+                unassigned_keys.append(link_key)
+
+        unassigned_keys.extend(
+            link_key
+            for link_key in active_keys
+            if link_key not in self._workspace_link_color_indices
+        )
+        for link_key in unassigned_keys:
+            color_index = min(
+                range(len(_LINKER_COLORS)),
+                key=lambda index: (color_counts[index], index),
+            )
+            color_indices[link_key] = color_index
+            color_counts[color_index] += 1
+
+        self._workspace_link_color_indices = color_indices
+        self._workspace_link_color_cache_dirty = False
+        return color_indices
+
+    def color_for_workspace_link_key(self, link_key: str) -> QtGui.QColor:
+        """Get the color that should represent a managed link group."""
+        color_indices = self._workspace_link_color_indices
+        if self._workspace_link_color_cache_dirty:
+            color_indices = self._reconcile_workspace_link_color_cache()
+        idx = color_indices.get(link_key, 0)
         return _LINKER_COLORS[idx % len(_LINKER_COLORS)]
 
     def _clear_singleton_workspace_link_groups(

@@ -20,6 +20,7 @@ from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
 )
+from tests.interactive.imagetool.manager.workspace._support import _AddedTimeChildTool
 
 from .helpers import _UnserializableChildTool, select_child_tool
 
@@ -190,6 +191,172 @@ def test_manager_duplicate_unserializable_child_shows_error(
             "An error occurred while duplicating the selected window."
         )
         assert "data_corr" in critical_calls[0][1]["detailed_text"]
+
+
+def test_manager_duplicate_failure_rolls_back_partial_subtree(
+    qtbot,
+    gold,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root = itool(gold, link=False, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        serializable_uid = manager.add_childtool(
+            _AddedTimeChildTool(gold.rename("serializable child")),
+            0,
+            show=False,
+        )
+        manager.add_childtool(
+            _UnserializableChildTool(gold.copy(deep=True)),
+            serializable_uid,
+            show=False,
+        )
+        original_uids = set(manager._tool_graph.nodes)
+        original_dirty_events = tuple(manager._workspace_state.dirty_events)
+
+        with pytest.raises(
+            ValueError,
+            match="unsupported when `data_corr` is provided separately",
+        ):
+            manager.duplicate_imagetool(0)
+
+        assert manager.ntools == 1
+        assert set(manager._tool_graph.nodes) == original_uids
+        assert tuple(manager._workspace_state.dirty_events) == original_dirty_events
+
+
+def test_manager_duplicate_finish_failure_rolls_back_subtree(
+    qtbot,
+    gold,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root = itool(gold, link=False, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        original_uids = set(manager._tool_graph.nodes)
+        original_dirty_events = tuple(manager._workspace_state.dirty_events)
+
+        def _fail_finish(_target: int | str) -> None:
+            raise RuntimeError("finish failed")
+
+        monkeypatch.setattr(
+            manager._actions_controller,
+            "_finish_duplicated_subtree",
+            _fail_finish,
+        )
+
+        with pytest.raises(RuntimeError, match="finish failed"):
+            manager.duplicate_imagetool(0)
+
+        assert manager.ntools == 1
+        assert set(manager._tool_graph.nodes) == original_uids
+        assert tuple(manager._workspace_state.dirty_events) == original_dirty_events
+
+
+def test_manager_duplicate_mark_failure_restores_workspace_state(
+    qtbot,
+    gold,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root = itool(gold, link=False, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        manager.add_childtool(
+            _AddedTimeChildTool(gold.rename("child")),
+            0,
+            show=False,
+        )
+        original_uids = set(manager._tool_graph.nodes)
+        original_workspace_state = manager._workspace_state.snapshot(
+            node_uid_counter=manager._tool_graph.uid_counter
+        )
+        original_mark_node_added = manager._mark_node_added
+        mark_calls = 0
+
+        def _fail_after_mark(uid: str) -> bool:
+            nonlocal mark_calls
+            marked = original_mark_node_added(uid)
+            mark_calls += 1
+            if mark_calls == 2:
+                raise RuntimeError("mark failed")
+            return marked
+
+        monkeypatch.setattr(manager, "_mark_node_added", _fail_after_mark)
+
+        with pytest.raises(RuntimeError, match="mark failed"):
+            manager.duplicate_imagetool(0)
+
+        current_workspace_state = manager._workspace_state.snapshot(
+            node_uid_counter=manager._tool_graph.uid_counter
+        )
+        current_workspace_state["node_uid_counter"] = original_workspace_state[
+            "node_uid_counter"
+        ]
+        assert mark_calls == 2
+        assert manager.ntools == 1
+        assert set(manager._tool_graph.nodes) == original_uids
+        assert current_workspace_state == original_workspace_state
+
+
+def test_manager_duplicate_materialization_failure_is_not_reported_twice(
+    qtbot,
+    gold,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root = itool(gold, link=False, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        child_uid = manager.add_childtool(
+            _UnserializableChildTool(gold.copy(deep=True)),
+            0,
+            show=False,
+        )
+        original_uids = set(manager._tool_graph.nodes)
+        reported_errors: list[str] = []
+
+        def _fail_materialization() -> bool:
+            reported_errors.append("saved payload")
+            return False
+
+        monkeypatch.setattr(
+            manager._child_node(child_uid),
+            "materialize_pending_workspace_payload",
+            _fail_materialization,
+        )
+        monkeypatch.setattr(
+            manager,
+            "_show_operation_error",
+            lambda *_args, **_kwargs: reported_errors.append("duplicate"),
+        )
+
+        select_child_tool(manager, child_uid)
+        manager.duplicate_selected()
+
+        assert reported_errors == ["saved payload"]
+        assert set(manager._tool_graph.nodes) == original_uids
 
 
 def test_manager_save_unserializable_child_shows_error(

@@ -460,6 +460,70 @@ def test_manager_duplicate_figure_assigns_unique_display_name_and_keeps_state(
         assert manager._selected_figure_uids() == [second_custom_copy_uid]
 
 
+def test_manager_duplicate_deferred_figure_materializes_saved_payload(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        data = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="map",
+        )
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure_node = manager._child_node(figure_uid)
+        figure_node.name = "Band map"
+        figure_tool = figure_node.tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        manager.get_imagetool(0).hide()
+
+        workspace_path = tmp_path / "deferred-figure-duplicate.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+
+        source_node = manager._tool_graph.root_wrappers[0]
+        loaded_node = manager._child_node(figure_uid)
+        assert source_node.pending_workspace_memory_payload is not None
+        assert loaded_node.pending_workspace_tool_payload is not None
+        assert loaded_node.tool_window is None
+
+        manager._figure_collection.select_uid(figure_uid)
+        manager.duplicate_selected()
+
+        assert source_node.pending_workspace_memory_payload is not None
+        assert loaded_node.pending_workspace_tool_payload is None
+        loaded_tool = loaded_node.tool_window
+        assert isinstance(loaded_tool, FigureComposerTool)
+        duplicate_uid = next(
+            uid for uid in manager._tool_graph.figure_uids if uid != figure_uid
+        )
+        duplicate_node = manager._child_node(duplicate_uid)
+        duplicate_tool = duplicate_node.tool_window
+        assert isinstance(duplicate_tool, FigureComposerTool)
+        assert duplicate_node.display_text == "Band map copy"
+        assert duplicate_tool.tool_status == loaded_tool.tool_status
+        xr.testing.assert_identical(duplicate_tool.tool_data, loaded_tool.tool_data)
+        assert manager._selected_figure_uids() == [duplicate_uid]
+        assert duplicate_uid in manager._workspace_state.dirty_added
+        assert figure_uid not in manager._workspace_state.dirty_added
+
+
 def test_manager_create_figure_uses_first_selected_main_image_state(
     qtbot,
     manager_context: Callable[

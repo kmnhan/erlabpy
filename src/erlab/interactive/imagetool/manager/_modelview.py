@@ -438,17 +438,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         if link_rect:
             link_color: QtGui.QColor | None = None
-            proxy = (
-                None
-                if tool_wrapper.imagetool is None
-                else tool_wrapper.slicer_area._linking_proxy
-            )
-            if proxy is not None:
-                link_color = self.manager.color_for_linker(proxy)
-            elif tool_wrapper.workspace_link_key is not None:
+            if tool_wrapper.workspace_link_key is not None:
                 link_color = self.manager.color_for_workspace_link_key(
                     tool_wrapper.workspace_link_key
                 )
+            elif tool_wrapper.imagetool is not None:
+                proxy = tool_wrapper.slicer_area._linking_proxy
+                if proxy is not None:
+                    link_color = self.manager.color_for_linker(proxy)
             if link_color is not None:
                 link_icon = qta.icon("mdi6.link-variant", color=link_color)
                 self._paint_icon(painter, option, link_rect, link_icon)
