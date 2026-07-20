@@ -3145,7 +3145,7 @@ def test_ptable_multi_select_summary_and_plot_picker(
     assert (
         2 * CompactElementChip._DETAILED_HEIGHT
         + win.inspector.summary_cards_grid.verticalSpacing()
-        == 3 * CompactElementChip._COMPACT_SIZE.height()
+        == 3 * CompactElementChip._COMPACT_SIZE[1]
         + 2 * win.inspector.summary_cards_grid.verticalSpacing()
     )
 

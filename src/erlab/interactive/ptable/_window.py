@@ -425,7 +425,7 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
     sigStateChanged = QtCore.Signal()
 
     _MAX_HARMONIC = 10
-    _LEGACY_MINIMUM_WINDOW_SIZE = QtCore.QSize(1180, 760)
+    _LEGACY_MINIMUM_WINDOW_SIZE = (1180, 760)
     _LEGACY_TOP_SPLITTER_RATIO = 560 / (560 + 340)
 
     def __init__(
@@ -1131,11 +1131,11 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
 
         margins = root_layout.contentsMargins()
         available_width = max(
-            self._LEGACY_MINIMUM_WINDOW_SIZE.width() - margins.left() - margins.right(),
+            self._LEGACY_MINIMUM_WINDOW_SIZE[0] - margins.left() - margins.right(),
             0,
         )
         available_height = max(
-            self._LEGACY_MINIMUM_WINDOW_SIZE.height()
+            self._LEGACY_MINIMUM_WINDOW_SIZE[1]
             - margins.top()
             - margins.bottom()
             - self.header.sizeHint().height()

@@ -1001,7 +1001,7 @@ class _ActionsController:
             )
         )
         idx = all_source_keys.index(source_key)
-        return _WATCHED_VAR_COLORS[idx % len(_WATCHED_VAR_COLORS)]
+        return QtGui.QColor(*_WATCHED_VAR_COLORS[idx % len(_WATCHED_VAR_COLORS)])
 
     def _remove_watched(self, uid: str) -> None:
         """Remove the ImageTool corresponding to the given watched variable UID."""

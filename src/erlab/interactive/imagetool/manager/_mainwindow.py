@@ -1539,7 +1539,7 @@ class ImageToolManager(_ImageToolManagerBase):
             if node is not None and node.workspace_link_key is not None:
                 return self.color_for_workspace_link_key(node.workspace_link_key)
         idx = self._link_registry.index(linker)
-        return _LINKER_COLORS[idx % len(_LINKER_COLORS)]
+        return QtGui.QColor(*_LINKER_COLORS[idx % len(_LINKER_COLORS)])
 
     def _invalidate_workspace_link_color_cache(self) -> None:
         self._workspace_link_color_cache_dirty = True
@@ -1590,7 +1590,7 @@ class ImageToolManager(_ImageToolManagerBase):
         if self._workspace_link_color_cache_dirty:
             color_indices = self._reconcile_workspace_link_color_cache()
         idx = color_indices.get(link_key, 0)
-        return _LINKER_COLORS[idx % len(_LINKER_COLORS)]
+        return QtGui.QColor(*_LINKER_COLORS[idx % len(_LINKER_COLORS)])
 
     def _clear_singleton_workspace_link_groups(
         self, link_keys: Iterable[str]

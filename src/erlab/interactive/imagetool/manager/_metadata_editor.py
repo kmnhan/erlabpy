@@ -45,7 +45,6 @@ if typing.TYPE_CHECKING:
 MetadataFieldKind = typing.Literal["coordinate", "attribute"]
 MetadataOrigin = typing.Literal["source", "assigned", "missing"]
 _MISSING = object()
-_INVALID_INDEX = QtCore.QModelIndex()
 
 
 def _values_equal(left: typing.Any, right: typing.Any) -> bool:
@@ -345,11 +344,11 @@ class _MetadataTableModel(QtCore.QAbstractTableModel):
                     editable=_stable_edit_value(field, reference),
                 )
 
-    def rowCount(self, parent: QtCore.QModelIndex = _INVALID_INDEX) -> int:
-        return 0 if parent.isValid() else len(self.targets)
+    def rowCount(self, parent: QtCore.QModelIndex | None = None) -> int:
+        return 0 if parent is not None and parent.isValid() else len(self.targets)
 
-    def columnCount(self, parent: QtCore.QModelIndex = _INVALID_INDEX) -> int:
-        return 0 if parent.isValid() else 1 + len(self.fields)
+    def columnCount(self, parent: QtCore.QModelIndex | None = None) -> int:
+        return 0 if parent is not None and parent.isValid() else 1 + len(self.fields)
 
     def field_at(self, column: int) -> MetadataField | None:
         if column <= 0 or column > len(self.fields):

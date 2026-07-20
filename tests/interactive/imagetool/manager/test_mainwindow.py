@@ -166,7 +166,9 @@ def test_color_for_linker_falls_back_without_structural_link_key() -> None:
     )
 
     assert (
-        manager_mainwindow.ImageToolManager.color_for_linker(manager, linker)
+        manager_mainwindow.ImageToolManager.color_for_linker(manager, linker).getRgb()[
+            :3
+        ]
         == manager_mainwindow._LINKER_COLORS[1]
     )
 
@@ -1292,6 +1294,8 @@ def test_metadata_editor_table_model_tracks_origin_and_pending_state(
             },
         )
 
+        assert model.rowCount() == 1
+        assert model.columnCount() == 6
         assert model.rowCount(model.index(0, 0)) == 0
         assert model.columnCount(model.index(0, 0)) == 0
         assert model.cell_at(model.index(0, 0)) is None

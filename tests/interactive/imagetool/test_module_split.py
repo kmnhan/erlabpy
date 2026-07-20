@@ -1,3 +1,4 @@
+import ast
 import importlib
 import multiprocessing
 import pathlib
@@ -11,6 +12,54 @@ import warnings
 import erlab
 import erlab.interactive.imagetool.plot_items
 import erlab.interactive.imagetool.viewer
+
+
+def test_interactive_modules_do_not_construct_global_qt_values() -> None:
+    interactive_root = pathlib.Path(erlab.__file__).resolve().parent / "interactive"
+    offenders: list[str] = []
+
+    def qt_constructors(node: ast.AST | None) -> list[ast.Call]:
+        if node is None:
+            return []
+        return [
+            child
+            for child in ast.walk(node)
+            if isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Attribute)
+            and child.func.attr.startswith("Q")
+            and isinstance(child.func.value, ast.Name)
+            and child.func.value.id in {"QtCore", "QtGui", "QtWidgets"}
+        ]
+
+    def inspect_definition_body(path: pathlib.Path, body: list[ast.stmt]) -> None:
+        for node in body:
+            values: list[ast.AST | None] = []
+            if isinstance(node, ast.Assign | ast.AnnAssign):
+                values.append(node.value)
+            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                values.extend(node.args.defaults)
+                values.extend(
+                    default for default in node.args.kw_defaults if default is not None
+                )
+            elif isinstance(node, ast.ClassDef):
+                inspect_definition_body(path, node.body)
+                continue
+            for value in values:
+                for call in qt_constructors(value):
+                    function = call.func
+                    if not isinstance(function, ast.Attribute) or not isinstance(
+                        function.value, ast.Name
+                    ):
+                        raise TypeError("Invalid Qt constructor expression")
+                    relative = path.relative_to(interactive_root)
+                    offenders.append(
+                        f"{relative}:{call.lineno} {function.value.id}.{function.attr}"
+                    )
+
+    for path in interactive_root.rglob("*.py"):
+        inspect_definition_body(path, ast.parse(path.read_text()).body)
+
+    assert offenders == []
 
 
 def test_core_shim_export_identity_and_deprecation_warning() -> None:

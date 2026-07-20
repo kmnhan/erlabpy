@@ -105,7 +105,7 @@ _SEABORN_SPECIAL_PALETTES = (
 _HIDDEN_PALETTE_OPTIONS = frozenset({"jet", "jet_r"})
 _DESAT_AUTO_VALUE = -0.01
 _PALETTE_COUNT_MAX = 256
-_PALETTE_ICON_SIZE = QtCore.QSize(72, 14)
+_PALETTE_ICON_SIZE = (72, 14)
 _PALETTE_ICON_COLORS = 8
 _PALETTE_MODE_LABELS = {
     "named": "Named palette",
@@ -493,8 +493,8 @@ def _palette_icon(
 @functools.lru_cache(maxsize=512)
 def _palette_pixmap(
     hex_colors: tuple[str, ...],
-    width: int = _PALETTE_ICON_SIZE.width(),
-    height: int = _PALETTE_ICON_SIZE.height(),
+    width: int = _PALETTE_ICON_SIZE[0],
+    height: int = _PALETTE_ICON_SIZE[1],
 ) -> QtGui.QPixmap:
     pixmap = QtGui.QPixmap(width, height)
     pixmap.fill(QtCore.Qt.GlobalColor.transparent)
@@ -519,7 +519,7 @@ def _apply_palette_combo_icons(
     combo: QtWidgets.QComboBox,
     sns: typing.Any | None,
 ) -> None:
-    combo.setIconSize(_PALETTE_ICON_SIZE)
+    combo.setIconSize(QtCore.QSize(*_PALETTE_ICON_SIZE))
     for index in range(combo.count()):
         icon = _palette_icon(sns, combo.itemText(index))
         if not icon.isNull():
