@@ -269,7 +269,7 @@ def test_manager_terminal_current_data_edit_opens_without_replay(
     dialog_cls: type[imagetool_dialogs._DataManipulationDialog],
 ) -> None:
     base = _native_current_seed_data()
-    current = operation.apply(base, parent_data=base)
+    current = operation.apply(base)
     spec = _manager_replay_file_spec(tmp_path / "source.h5", operation)
     node = _fake_edit_node(spec)
     node.current_source_data = lambda: current
@@ -355,7 +355,7 @@ def test_manager_terminal_current_data_edit_accept_still_replays_for_validation(
         mode="minmax",
         denominator_rtol=1e-7,
     )
-    current = operation.apply(base, parent_data=base)
+    current = operation.apply(base)
     spec = _manager_replay_file_spec(tmp_path / "source.h5", operation)
     node = _fake_edit_node(spec)
     node.current_source_data = lambda: current
@@ -506,7 +506,7 @@ def test_manager_affine_coord_edit_opens_without_replay(
         scale=2.0,
         offset=0.5,
     )
-    current = operation.apply(base, parent_data=base)
+    current = operation.apply(base)
     spec = _manager_replay_file_spec(tmp_path / "source.h5", operation)
     node = _fake_edit_node(spec)
     node.current_source_data = lambda: current
@@ -573,7 +573,7 @@ def test_manager_affine_coord_edit_accept_still_replays_for_validation(
         scale=2.0,
         offset=0.5,
     )
-    current = operation.apply(base, parent_data=base)
+    current = operation.apply(base)
     spec = _manager_replay_file_spec(tmp_path / "source.h5", operation)
     node = _fake_edit_node(spec)
     node.current_source_data = lambda: current
@@ -816,7 +816,7 @@ def test_manager_terminal_current_data_edit_falls_back_to_replay(
             operation,
             TransposeOperation(dims=("eV", "x")),
         )
-        current_data = operation.apply(replay_data, parent_data=replay_data).transpose(
+        current_data = operation.apply(replay_data).transpose(
             "eV",
             "x",
         )
@@ -833,7 +833,7 @@ def test_manager_terminal_current_data_edit_falls_back_to_replay(
             direction="negative",
         )
         operations = (operation,)
-        current_data = operation.apply(replay_data, parent_data=replay_data)
+        current_data = operation.apply(replay_data)
         dialog_cls = imagetool_dialogs.LeadingEdgeDialog
 
     spec = _manager_replay_file_spec(tmp_path / "source.h5", *operations)
@@ -1282,21 +1282,20 @@ def test_manager_provenance_edit_controller_active_filter_refs_and_split() -> No
     ) == _ProvenanceStepRef(
         "operation",
         operation_index=0,
-        stage_index=0,
     )
     base_spec, split_operation = controller._split_active_filter(
         typing.cast("typing.Any", node),
         file_spec,
     )
     assert split_operation == active
-    assert base_spec.replay_stages == ()
+    assert base_spec.steps == ()
 
     script_file_spec = script(
         start_label="Load source",
         seed_code=typing.cast("str", file_spec.seed_code),
         active_name="derived",
         file_load_source=file_spec.file_load_source,
-        replay_stages=file_spec.replay_stages,
+        steps=file_spec.steps,
     )
     assert controller._active_filter_ref(
         typing.cast("typing.Any", node),
@@ -1304,7 +1303,6 @@ def test_manager_provenance_edit_controller_active_filter_refs_and_split() -> No
     ) == _ProvenanceStepRef(
         "operation",
         operation_index=0,
-        stage_index=0,
     )
     base_spec, split_operation = controller._split_active_filter(
         typing.cast("typing.Any", node),
@@ -1312,7 +1310,7 @@ def test_manager_provenance_edit_controller_active_filter_refs_and_split() -> No
     )
     assert split_operation == active
     assert base_spec.kind == "script"
-    assert base_spec.replay_stages == ()
+    assert base_spec.steps == ()
 
     node.slicer_area._accepted_filter_provenance_operation = None
     assert controller._split_active_filter(
@@ -1352,19 +1350,7 @@ def test_tool_provenance_spec_row_reference_helpers_cover_edge_branches() -> Non
     stage_ref = _ProvenanceStepRef(
         "operation",
         operation_index=1,
-        stage_index=0,
     )
     assert file_spec._operation_for_ref(stage_ref) == sel
-    assert (
-        file_spec._operation_for_ref(
-            _ProvenanceStepRef("operation", operation_index=1, stage_index=2)
-        )
-        is None
-    )
-    assert (
-        file_spec._prefix_through_ref(_ProvenanceStepRef("file_load")).replay_stages
-        == ()
-    )
-    assert file_spec._prefix_before_ref(stage_ref).replay_stages[0].operations == (
-        isel,
-    )
+    assert file_spec._prefix_through_ref(_ProvenanceStepRef("file_load")).steps == ()
+    assert file_spec._prefix_before_ref(stage_ref).operations == (isel,)

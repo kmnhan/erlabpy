@@ -2879,6 +2879,49 @@ def test_update_info_handles_legacy_imagetool_preview_attribute(
         assert manager.preview_widget.isVisible()
 
 
+def test_manager_summary_sorts_coordinate_order_at_presentation_boundary(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={
+            "x": [0.0, 1.0],
+            "y": [0.0, 1.0, 2.0],
+            "aux": ("x", [10.0, 20.0]),
+        },
+    )
+    unsorted = erlab.utils.array.sort_coord_order(
+        data,
+        ("aux", "y", "x"),
+        dims_first=False,
+    )
+    assert tuple(unsorted.coords) == ("aux", "y", "x")
+    formatted_coord_orders: list[tuple[typing.Any, ...]] = []
+
+    def format_darr_html(value: xr.DataArray, **_kwargs: typing.Any) -> str:
+        formatted_coord_orders.append(tuple(value.coords))
+        return "<p>summary</p>"
+
+    with manager_context() as manager:
+        tool = itool(data, manager=False, execute=False)
+        manager.add_imagetool(tool, show=False)
+        node = manager._tool_graph.root_wrappers[0]
+        monkeypatch.setattr(type(node), "_metadata_data", lambda _self: unsorted)
+        monkeypatch.setattr(
+            erlab.utils.formatting,
+            "format_darr_html",
+            format_darr_html,
+        )
+
+        assert "summary" in node.info_text
+
+    assert formatted_coord_orders == [("x", "y", "aux")]
+
+
 def test_details_panel_update_info_hides_missing_child_preview_pixmap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

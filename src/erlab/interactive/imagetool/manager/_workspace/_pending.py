@@ -148,7 +148,7 @@ class _PendingWorkspacePayloads:
             raise TypeError("Invalid pending filter operation")
         operation = parse_tool_provenance_operation(filter_payload)
         source_shape = tuple(data.sizes[dim] for dim in data.dims)
-        filtered = operation.apply(data, parent_data=data)
+        filtered = operation.apply(data)
         if filtered.ndim != data.ndim or set(filtered.dims) != set(data.dims):
             raise ValueError("Pending filter changed data dimensions")
         expected_shape = tuple(data.sizes[dim] for dim in filtered.dims)
@@ -243,6 +243,7 @@ class _PendingWorkspacePayloads:
                     attrs = ds.attrs
                 data = self._pending_workspace_data_with_saved_dim_order(data, attrs)
                 data = erlab.utils.array._restore_nonuniform_dims(data)
+                data = erlab.utils.array.sort_coord_order(data)
                 additional_info = [f"Added {node.added_time_display}"]
                 try:
                     metadata_data = self._pending_workspace_data_with_loaded_coords(

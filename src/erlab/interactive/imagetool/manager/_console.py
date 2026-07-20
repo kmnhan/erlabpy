@@ -510,10 +510,7 @@ class _ConsoleAccessorProxy:
         )
         operation = _structured_operation_from_call(call)
         if operation is not None and operation.console_applies_to_receiver:
-            result = operation.apply(
-                source_operand.value,
-                parent_data=source_operand.value,
-            )
+            result = operation.apply(source_operand.value)
         else:
             result = func(*raw_args, **raw_kwargs)
         inputs, copyable, code_prelude = _merge_operands(

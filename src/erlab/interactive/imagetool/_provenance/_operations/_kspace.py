@@ -38,7 +38,7 @@ class KspaceConfigurationOperation(ToolProvenanceOperation):
     def _validate_configuration(cls, value: int) -> int:
         return int(erlab.constants.AxesConfiguration(int(value)))
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return data.kspace.as_configuration(self.configuration)
 
     def derivation_label(self) -> str:
@@ -56,7 +56,7 @@ class _MutatingKspaceOperation(ToolProvenanceOperation):
     console_applies_to_receiver: typing.ClassVar[bool] = True
     statement_mutates_input: typing.ClassVar[bool] = True
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         out = data.copy(deep=False)
         self._apply_kspace_statement(out)
         return out
@@ -184,7 +184,7 @@ class KspaceConvertOperation(ToolProvenanceOperation):
             kwargs["silent"] = self.silent
         return kwargs
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return data.kspace.convert(
             bounds=self.bounds,
             resolution=self.resolution,
@@ -224,7 +224,7 @@ class SliceAlongPathOperation(ToolProvenanceOperation):
             "dim_name": self.dim_name,
         }
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.interpolate.slice_along_path(data, **self.kwargs)
 
     def derivation_label(self) -> str:
@@ -276,7 +276,7 @@ class MaskWithPolygonOperation(ToolProvenanceOperation):
             "drop": self.drop,
         }
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.mask.mask_with_polygon(data, **self.kwargs)
 
     def derivation_label(self) -> str:

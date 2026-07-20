@@ -11,7 +11,7 @@ import erlab.interactive.imagetool.manager._widgets as manager_widgets
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
     FileLoadSource,
-    ReplayStage,
+    ReplayStep,
     ScriptInput,
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
@@ -1433,9 +1433,9 @@ def test_manager_provenance_nested_file_load_batch_replaces_one_root_candidate(
             self,
             *,
             active_name: str,
-            replay_stages: tuple[ReplayStage, ...],
+            replay_steps: tuple[ReplayStep, ...],
         ) -> ToolProvenanceSpec:
-            del active_name, replay_stages
+            del active_name, replay_steps
             return replacement_first
 
         def selected_batch_peers(
@@ -1553,9 +1553,9 @@ def test_manager_provenance_file_load_batch_replaces_nested_peer_root(
             self,
             *,
             active_name: str,
-            replay_stages: tuple[ReplayStage, ...],
+            replay_steps: tuple[ReplayStep, ...],
         ) -> ToolProvenanceSpec:
-            del active_name, replay_stages
+            del active_name, replay_steps
             return replacement_current
 
         def selected_batch_peers(
@@ -1638,7 +1638,6 @@ def test_manager_provenance_revert_rejects_current_prefixes(
         replay_ref=_ProvenanceStepRef(
             "operation",
             operation_index=0,
-            stage_index=0,
         ),
     )
     latest_stage_row = _ProvenanceDisplayRow(
@@ -1646,7 +1645,6 @@ def test_manager_provenance_revert_rejects_current_prefixes(
         replay_ref=_ProvenanceStepRef(
             "operation",
             operation_index=1,
-            stage_index=0,
         ),
     )
     controller = _fake_edit_controller(_fake_edit_node(file_stage_spec))
@@ -1796,9 +1794,9 @@ def test_manager_provenance_file_load_batch_partial_failure_decision(
             self,
             *,
             active_name: str,
-            replay_stages: tuple[ReplayStage, ...],
+            replay_steps: tuple[ReplayStep, ...],
         ) -> ToolProvenanceSpec:
-            del active_name, replay_stages
+            del active_name, replay_steps
             return current_spec
 
         def selected_batch_peers(
@@ -1894,9 +1892,9 @@ def test_manager_provenance_file_load_batch_current_failure_aborts_all(
             self,
             *,
             active_name: str,
-            replay_stages: tuple[ReplayStage, ...],
+            replay_steps: tuple[ReplayStep, ...],
         ) -> ToolProvenanceSpec:
-            del active_name, replay_stages
+            del active_name, replay_steps
             return current_spec
 
         def selected_batch_peers(
@@ -2141,12 +2139,10 @@ def test_manager_provenance_missing_source_after_edit_ok_opens_file_load_editor(
         edit_ref=_ProvenanceStepRef(
             "operation",
             operation_index=0,
-            stage_index=0,
         ),
         replay_ref=_ProvenanceStepRef(
             "operation",
             operation_index=0,
-            stage_index=0,
         ),
     )
     dialogs: list[dict[str, typing.Any]] = []
@@ -2254,7 +2250,7 @@ def test_manager_provenance_missing_source_revert_repairs_revert_target(
 
     assert len(opened) == 1
     assert opened[0].kind == "file"
-    assert opened[0].replay_stages == ()
+    assert opened[0].steps == ()
 
 
 def test_manager_provenance_script_file_revert_reports_missing_source(
@@ -2275,7 +2271,7 @@ def test_manager_provenance_script_file_revert_reports_missing_source(
         seed_code=file_spec.seed_code,
         active_name=file_spec.active_name,
         file_load_source=file_spec.file_load_source,
-        replay_stages=file_spec.replay_stages,
+        steps=file_spec.steps,
     )
     node = _fake_edit_node(script_spec)
     controller = _fake_edit_controller(node)
@@ -2621,9 +2617,9 @@ def test_manager_provenance_missing_nested_repair_relinks_nonmatching_inputs(
             self,
             *,
             active_name: str,
-            replay_stages: tuple[ReplayStage, ...],
+            replay_steps: tuple[ReplayStep, ...],
         ) -> ToolProvenanceSpec:
-            del active_name, replay_stages
+            del active_name, replay_steps
             return _manager_replay_file_spec(new_a_path)
 
         def selected_batch_peers(
@@ -2683,7 +2679,7 @@ def test_manager_provenance_missing_nested_repair_relinks_nonmatching_inputs(
     assert second_relinked.file_load_source is not None
     assert pathlib.Path(first_relinked.file_load_source.path) == new_a_path
     assert pathlib.Path(second_relinked.file_load_source.path) == new_b_path
-    assert second_relinked.replay_stages == second_spec.replay_stages
+    assert second_relinked.steps == second_spec.steps
     second_replay_call = second_relinked.file_load_source.replay_call
     assert second_replay_call is not None
     assert second_replay_call.kwargs == {"engine": "scipy"}
@@ -2769,9 +2765,9 @@ def test_manager_provenance_missing_nested_repair_partial_selection_fails(
             self,
             *,
             active_name: str,
-            replay_stages: tuple[ReplayStage, ...],
+            replay_steps: tuple[ReplayStep, ...],
         ) -> ToolProvenanceSpec:
-            del active_name, replay_stages
+            del active_name, replay_steps
             return _manager_replay_file_spec(new_a_path)
 
         def selected_batch_peers(
@@ -2960,9 +2956,9 @@ def test_manager_provenance_missing_source_repair_relinks_repair_root_candidate(
             self,
             *,
             active_name: str,
-            replay_stages: tuple[ReplayStage, ...],
+            replay_steps: tuple[ReplayStep, ...],
         ) -> ToolProvenanceSpec:
-            del active_name, replay_stages
+            del active_name, replay_steps
             return new_file_spec
 
         def selected_batch_peers(

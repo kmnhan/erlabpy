@@ -46,7 +46,7 @@ class SwapDimsOperation(ToolProvenanceOperation):
     )
     mapping: ProvenanceHashableMapping = pydantic.Field(default_factory=dict)
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return data.swap_dims(self.mapping)
 
     def derivation_label(self) -> str:
@@ -86,7 +86,7 @@ class RenameDimsCoordsOperation(ToolProvenanceOperation):
             return cls(mapping=mapping)
         return None
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return data.rename(self.mapping)
 
     def derivation_label(self) -> str:
@@ -115,7 +115,7 @@ class AffineCoordOperation(ToolProvenanceOperation):
             raise ValueError("affine coordinate scale and offset must be finite")
         return value
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         coord = data.coords[self.coord_name]
         return erlab.utils.array.sort_coord_order(
             data.assign_coords(
@@ -206,7 +206,7 @@ class AssignCoordsOperation(ToolProvenanceOperation):
     def decoded_values(self) -> np.ndarray:
         return np.asarray(self._decode_stored_field(self.values))
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.utils.array.sort_coord_order(
             data.assign_coords(
                 {self.coord_name: data[self.coord_name].copy(data=self.decoded_values)}
@@ -265,7 +265,7 @@ class AssignScalarCoordOperation(ToolProvenanceOperation):
     def decoded_value(self) -> typing.Any:
         return self._decode_stored_field(self.value)
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.utils.array.sort_coord_order(
             data.assign_coords({self.coord_name: self.decoded_value}),
             keys=data.coords.keys(),
@@ -332,7 +332,7 @@ class AssignCoord1DOperation(ToolProvenanceOperation):
     def decoded_values(self) -> np.ndarray:
         return np.asarray(self._decode_stored_field(self.values))
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         values = self.decoded_values
         if values.ndim != 1:
             raise ValueError("1D coordinate values must be one-dimensional.")
@@ -377,7 +377,7 @@ class AssignAttrsOperation(ToolProvenanceOperation):
     )
     attrs: ProvenanceMapping = pydantic.Field(default_factory=dict)
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return data.assign_attrs(self.attrs)
 
     def derivation_label(self) -> str:

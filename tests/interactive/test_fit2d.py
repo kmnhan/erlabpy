@@ -2099,14 +2099,8 @@ def test_fit2d_parameter_output_provenance_uses_distinct_active_names(qtbot) -> 
     assert max(map(len, stderr_code.splitlines())) <= 88
 
     fit_data = data.isel(y=slice(0, 3))
-    expected_values = values_spec.operations[-1].apply(
-        fit_data,
-        parent_data=fit_data,
-    )
-    expected_stderr = stderr_spec.operations[-1].apply(
-        fit_data,
-        parent_data=fit_data,
-    )
+    expected_values = values_spec.operations[-1].apply(fit_data)
+    expected_stderr = stderr_spec.operations[-1].apply(fit_data)
     values_namespace = {"data": data, "era": erlab.analysis, "xr": xr}
     stderr_namespace = {"data": data, "era": erlab.analysis, "xr": xr}
     exec(values_code, values_namespace)  # noqa: S102
@@ -2193,10 +2187,7 @@ def test_fit2d_parameter_output_resolution_edges(qtbot, monkeypatch) -> None:
         "xr": xr,
     }
     exec(direct_code, direct_namespace)  # noqa: S102
-    expected_direct = direct_spec.operations[-1].apply(
-        data.isel(y=slice(0, 3)),
-        parent_data=data,
-    )
+    expected_direct = direct_spec.operations[-1].apply(data.isel(y=slice(0, 3)))
     xr.testing.assert_identical(direct_namespace["parameter_values"], expected_direct)
 
     with monkeypatch.context() as patch:

@@ -20,7 +20,7 @@ from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
     FileLoadSource,
     FileReplayCall,
-    ReplayStage,
+    ReplayStep,
     ToolProvenanceSpec,
     encode_provenance_value,
 )
@@ -411,13 +411,13 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self,
         *,
         active_name: str,
-        replay_stages: tuple[ReplayStage, ...],
+        replay_steps: tuple[ReplayStep, ...],
     ) -> ToolProvenanceSpec:
         return self._provenance_spec_for(
             path=self.file_path(),
             selection=self._selection,
             active_name=active_name,
-            replay_stages=replay_stages,
+            replay_steps=replay_steps,
         )
 
     def peer_provenance_spec(
@@ -434,7 +434,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
             path=self._peer_path(peer),
             selection=replay_call.selection,
             active_name=_file_load_edit_active_name(peer.spec),
-            replay_stages=peer.spec.replay_stages,
+            replay_steps=peer.spec.steps,
         )
 
     def _provenance_spec_for(
@@ -443,7 +443,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         path: pathlib.Path,
         selection: FileDataSelection,
         active_name: str,
-        replay_stages: tuple[ReplayStage, ...],
+        replay_steps: tuple[ReplayStep, ...],
     ) -> ToolProvenanceSpec:
         _filter_name, func, kwargs = self.loader_options.checked_filter()
         if selection.kind == "parsed_index":
@@ -460,7 +460,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         return spec.model_copy(
             update={
                 "active_name": active_name,
-                "replay_stages": replay_stages,
+                "steps": replay_steps,
             }
         )
 
@@ -567,7 +567,7 @@ def _replace_file_load_fields(
             "start_label": replacement.start_label,
             "seed_code": replacement.seed_code,
             "file_load_source": replacement.file_load_source,
-            "replay_stages": replacement.replay_stages,
+            "steps": replacement.steps,
         }
     )
 

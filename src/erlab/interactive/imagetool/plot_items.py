@@ -33,7 +33,6 @@ from erlab.interactive.imagetool._provenance._operations import (
     QSelOperation,
     SelectCoordOperation,
     SelOperation,
-    SortCoordOrderOperation,
     SqueezeOperation,
     TransposeOperation,
 )
@@ -1389,7 +1388,6 @@ class ItoolPlotItem(pg.PlotItem):
         if crop_isel_indexers:
             operations.append(IselOperation(kwargs=crop_isel_indexers))
 
-        operations.append(SortCoordOrderOperation())
         if transpose:
             operations.append(
                 TransposeOperation(dims=tuple(reversed(self.current_data.dims)))

@@ -850,7 +850,7 @@ class DataTransformDialog(_DataManipulationDialog):
         operation = self.source_transform_operation()
         if operation is None:
             return data
-        return operation.apply(data, parent_data=data)
+        return operation.apply(data)
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         return self._apply_source_transform(data)
@@ -4238,7 +4238,7 @@ class _BaseCropDialog(DataTransformDialog):
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         for operation in self.source_operations():
-            data = operation.apply(data, parent_data=data)
+            data = operation.apply(data)
         return data
 
 
@@ -4446,7 +4446,7 @@ class NormalizeDialog(DataFilterDialog):
         operation = self.filter_operation()
         if operation is None:
             return data
-        return operation.apply(data, parent_data=data)
+        return operation.apply(data)
 
     def filter_operation(
         self,
@@ -4841,7 +4841,7 @@ class _BoxcarFilterDialog(DataFilterDialog):
         operation = self.filter_operation()
         if operation is None:
             return data
-        return operation.apply(data, parent_data=data)
+        return operation.apply(data)
 
     def filter_operation(self) -> ToolProvenanceOperation | None:
         if not (sizes := self._sizes):

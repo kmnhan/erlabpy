@@ -405,7 +405,7 @@ def test_manager_console_handles_use_filtered_display_data(
         dims=("x",),
         mode="min",
     )
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
 
     with manager_context() as manager:
         manager.show()
@@ -715,7 +715,7 @@ def test_tool_namespace_set_filtered_data_item_uses_displayed_data(
 ) -> None:
     data = test_data.astype(float)
     operation = GaussianFilterOperation(sigma={data.dims[0]: 1.0})
-    filtered = operation.apply(data, parent_data=data)
+    filtered = operation.apply(data)
 
     with manager_context() as manager:
         manager.show()
@@ -796,7 +796,7 @@ def test_tool_namespace_set_filtered_data_item_updates_child_provenance(
         coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
     )
     operation = GaussianFilterOperation(sigma={"x": 1.0})
-    filtered = operation.apply(data, parent_data=data)
+    filtered = operation.apply(data)
     expected = filtered.copy(deep=True)
     expected[(0, 0)] = -5.0
 
@@ -2438,7 +2438,7 @@ def test_manager_console_derived_reload_reapplies_filter(
         )
 
         raw_expected = updated0 + data1
-        expected = operation.apply(raw_expected, parent_data=raw_expected)
+        expected = operation.apply(raw_expected)
         xr.testing.assert_identical(derived.slicer_area.data, expected)
         xr.testing.assert_identical(derived.slicer_area.displayed_data, expected)
         display_spec = manager._tool_graph.root_wrappers[2].displayed_provenance_spec
@@ -2861,7 +2861,7 @@ def test_manager_displayed_script_inputs_track_and_reload_filters(
     )
     data1 = data0 + 10.0
     operation = NormalizeOperation(dims=("x",), mode="min")
-    filtered0 = operation.apply(data0, parent_data=data0)
+    filtered0 = operation.apply(data0)
 
     with manager_context() as manager:
         manager.show()

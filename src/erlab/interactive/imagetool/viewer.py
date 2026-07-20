@@ -1228,7 +1228,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ) -> xr.DataArray:
         return self._normalize_filter_result_for_source_dims(
             data,
-            operation.apply(data, parent_data=data),
+            operation.apply(data),
             dims,
         )
 
@@ -1260,7 +1260,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         operation: ToolProvenanceOperation,
     ) -> Callable[[xr.DataArray], xr.DataArray]:
         def _apply_filter(darr: xr.DataArray) -> xr.DataArray:
-            return operation.apply(darr, parent_data=darr)
+            return operation.apply(darr)
 
         return _apply_filter
 
@@ -2564,9 +2564,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         provenance_spec = self.provenance_spec
         if (
             provenance_spec is not None
-            and (
-                provenance_spec.kind == "script" or bool(provenance_spec.replay_stages)
-            )
+            and (provenance_spec.kind == "script" or bool(provenance_spec.steps))
             and self._provenance_reloadable()
         ):
             return self._fetch_for_provenance_reload(), {}

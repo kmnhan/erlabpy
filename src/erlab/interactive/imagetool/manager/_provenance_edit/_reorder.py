@@ -21,7 +21,7 @@ _REORDER_MIME_TYPE = "application/x-erlab-provenance-reorder"
 
 
 def _block_label(block: _ProvenanceReorderBlock) -> str:
-    """Return a user-facing summary without exposing replay-stage terminology."""
+    """Return a compact user-facing summary of an atomic operation block."""
     if not block.entries:
         return block.label or "Recorded action"
     labels = tuple(entry.label for entry in block.entries)
@@ -29,11 +29,7 @@ def _block_label(block: _ProvenanceReorderBlock) -> str:
     label = " → ".join(visible_labels)
     if len(labels) > len(visible_labels):
         label = f"{label} → … (+{len(labels) - len(visible_labels)} more)"
-    linked_count = (
-        len(block.entries)
-        if block.ref.kind == "stage"
-        else block.ref.stop - block.ref.start
-    )
+    linked_count = block.ref.stop - block.ref.start
     hidden_count = linked_count - len(labels)
     return (
         label if hidden_count <= 0 else f"{label} (+{hidden_count} linked operations)"
@@ -51,18 +47,6 @@ def _block_tooltip(block: _ProvenanceReorderBlock) -> str:
     if block.tooltip is None:
         return details
     return f"{details}\n\n{block.tooltip}"
-
-
-def _section_label(section: _ProvenanceReorderSection) -> str:
-    """Return a semantic scope label for the optional section selector."""
-    if section.ref.kind == "stage":
-        return "Recorded actions"
-    labels = tuple(_block_label(block) for block in section.blocks)
-    if section.ref.stage_index is None:
-        return "Steps"
-    if len(labels) == 1:
-        return f"Operations: {labels[0]}"
-    return f"Operations: {labels[0]} and {len(labels) - 1} more"
 
 
 class _ProvenanceReorderListModel(QtCore.QAbstractListModel):
@@ -396,7 +380,7 @@ class _ProvenanceReorderDialog(QtWidgets.QDialog):
     def _disambiguated_scope_labels(
         sections: Sequence[_ProvenanceReorderSection],
     ) -> tuple[str, ...]:
-        base_labels = tuple(_section_label(section) for section in sections)
+        base_labels = tuple(section.label for section in sections)
         totals = {label: base_labels.count(label) for label in base_labels}
         seen: dict[str, int] = {}
         output: list[str] = []

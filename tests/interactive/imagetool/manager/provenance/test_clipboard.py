@@ -668,7 +668,6 @@ def test_manager_can_delete_row_reports_unavailable_branches(
     operation_ref = _ProvenanceStepRef(
         "operation",
         operation_index=0,
-        stage_index=0,
     )
     row = _ProvenanceDisplayRow(
         DerivationEntry("Average", None),
@@ -700,7 +699,6 @@ def test_manager_can_delete_row_reports_unavailable_branches(
         replay_ref=_ProvenanceStepRef(
             "operation",
             operation_index=99,
-            stage_index=0,
         ),
     )
     controller = _fake_edit_controller(
@@ -712,6 +710,12 @@ def test_manager_can_delete_row_reports_unavailable_branches(
 
     broken_script_spec = types.SimpleNamespace(
         kind="script",
+        operations=(
+            ScriptCodeOperation(
+                label="Broken",
+                code="derived = data",
+            ),
+        ),
         _operation_for_ref=lambda _ref: ScriptCodeOperation(
             label="Broken",
             code="derived = data",
@@ -772,7 +776,6 @@ def test_manager_delete_row_error_branches(
         replay_ref=_ProvenanceStepRef(
             "operation",
             operation_index=0,
-            stage_index=0,
         ),
     )
     node = _fake_edit_node(full_data(AverageOperation(dims=("x",))))
@@ -877,7 +880,6 @@ def test_manager_delete_provenance_step_preserves_later_operations(
             _ProvenanceStepRef(
                 "operation",
                 operation_index=0,
-                stage_index=0,
             ),
             (),
         )
@@ -1965,7 +1967,7 @@ def test_manager_affine_coord_child_refreshes_from_formula(
             scale=2.0,
             offset=0.5,
         )
-        expected = operation.apply(data, parent_data=data).rename("scan")
+        expected = operation.apply(data).rename("scan")
         xr.testing.assert_identical(child_tool.slicer_area._data, expected)
 
         assert child_node.source_spec is not None
@@ -1983,7 +1985,7 @@ def test_manager_affine_coord_child_refreshes_from_formula(
         assert child_node._update_from_parent_source() is True
         xr.testing.assert_identical(
             child_tool.slicer_area._data.rename(None),
-            operation.apply(updated, parent_data=updated).rename(None),
+            operation.apply(updated).rename(None),
         )
 
 
@@ -2036,7 +2038,7 @@ def test_manager_assign_attrs_child_refreshes_from_operation(
         child_tool = manager.get_imagetool(child_uid)
 
         operation = AssignAttrsOperation(attrs={"source": "new", "flag": True})
-        expected = operation.apply(data, parent_data=data).rename("scan")
+        expected = operation.apply(data).rename("scan")
         xr.testing.assert_identical(child_tool.slicer_area._data, expected)
 
         assert child_node.source_spec is not None
@@ -2053,5 +2055,5 @@ def test_manager_assign_attrs_child_refreshes_from_operation(
         assert child_node._update_from_parent_source() is True
         xr.testing.assert_identical(
             child_tool.slicer_area._data.rename(None),
-            operation.apply(updated, parent_data=updated).rename(None),
+            operation.apply(updated).rename(None),
         )

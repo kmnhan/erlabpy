@@ -9,7 +9,6 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
     compose_display_provenance,
-    full_data,
     mark_promoted_1d_source,
     parse_tool_provenance_spec,
     require_live_source_spec,
@@ -17,7 +16,6 @@ from erlab.interactive.imagetool._provenance._model import (
 )
 from erlab.interactive.imagetool._provenance._operations import (
     ImageToolSelectionSourceBinding,
-    RenameOperation,
 )
 
 __all__ = ["_ImageToolWrapper", "_ManagedWindowNode"]
@@ -356,32 +354,6 @@ def _compact_file_suffix(paths: Sequence[pathlib.Path]) -> str:
     if len(stems) <= 2:
         return f" ({', '.join(stems)})"
     return f" ({', '.join(stems[:2])}, +{len(stems) - 2})"
-
-
-def _spec_with_final_data_name(
-    spec: ToolProvenanceSpec,
-    name: str,
-) -> ToolProvenanceSpec:
-    rename = RenameOperation(name=name)
-    if spec.operations:
-        return spec.append_final_rename(name)
-
-    stages = list(spec.replay_stages)
-    if stages:
-        last_stage = stages[-1]
-        operations = tuple(last_stage.operations)
-        if operations and isinstance(
-            operations[-1],
-            RenameOperation,
-        ):
-            stages[-1] = last_stage.model_copy(
-                update={"operations": (*operations[:-1], rename)}
-            )
-            return spec.model_copy(update={"replay_stages": tuple(stages)})
-
-    if spec.kind == "file" or (stages and spec.kind == "script"):
-        return spec.append_replay_stage(full_data(rename))
-    return spec.append_final_rename(name)
 
 
 class _ManagedWindowNode(QtCore.QObject):
@@ -1001,12 +973,12 @@ class _ManagedWindowNode(QtCore.QObject):
     def _record_data_rename_provenance(self, name: str) -> None:
         spec = self.provenance_spec
         if spec is not None:
-            self._provenance_spec = _spec_with_final_data_name(spec, name)
+            self._provenance_spec = spec.append_final_rename(name)
             if self.imagetool is not None:
                 self.imagetool.set_provenance_spec(self._provenance_spec)
         if self._source_spec is not None:
             self._source_spec = require_live_source_spec(
-                _spec_with_final_data_name(self._source_spec, name)
+                self._source_spec.append_final_rename(name)
             )
 
     def _file_label_paths(self) -> tuple[pathlib.Path, ...]:
@@ -1066,6 +1038,7 @@ class _ManagedWindowNode(QtCore.QObject):
             return erlab.interactive.utils._apply_qt_accent_color(
                 f"Added {self.added_time_display}"
             )
+        data = erlab.utils.array.sort_coord_order(data)
         text = erlab.utils.formatting.format_darr_html(
             data,
             show_size=True,

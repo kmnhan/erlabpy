@@ -51,7 +51,6 @@ from erlab.interactive.imagetool.manager._provenance_edit._editors import (
     _dialog_match_for_operation_ref,
     _editable_group_range_for_ref,
     _OperationDialogMatch,
-    _operations_for_ref,
     _ScriptCodeEditDialog,
     _uneditable_operation_reason,
 )
@@ -824,16 +823,6 @@ class _ProvenanceEditController:
                     group[1],
                     (),
                 )
-            if candidate.kind in {"file", "script"}:
-                candidate = candidate.model_copy(
-                    update={
-                        "replay_stages": tuple(
-                            stage
-                            for stage in candidate.replay_stages
-                            if stage.operations
-                        )
-                    }
-                )
             repair_root_candidate = self._root_candidate_for_row(node, row, candidate)
             self._validate_and_replace(
                 node,
@@ -1272,7 +1261,7 @@ class _ProvenanceEditController:
             return
         candidate = dialog.provenance_spec(
             active_name=_file_load_edit_active_name(spec),
-            replay_stages=spec.replay_stages,
+            replay_steps=spec.steps,
         )
         if spec.kind == "script":
             candidate = _replace_file_load_fields(spec, candidate)
@@ -1419,15 +1408,12 @@ class _ProvenanceEditController:
         ref: _ProvenanceStepRef,
         dialog_match: _OperationDialogMatch,
     ) -> list[ToolProvenanceOperation] | None:
-        operations = tuple(
-            _operations_for_ref(spec, ref)[dialog_match.start : dialog_match.stop]
-        )
+        operations = tuple(spec.operations[dialog_match.start : dialog_match.stop])
         if not operations:
             raise ValueError("No provenance operations were provided for editing")
         start_ref = _ProvenanceStepRef(
             "operation",
             operation_index=dialog_match.start,
-            stage_index=ref.stage_index,
         )
         prefix_data = self._native_edit_seed_data_without_replay(
             node,
@@ -1506,7 +1492,7 @@ class _ProvenanceEditController:
     ) -> xr.DataArray | None:
         if len(operations) != 1:
             return None
-        if dialog_match.stop != len(_operations_for_ref(spec, ref)):
+        if dialog_match.stop != len(spec.operations):
             return None
         operation = operations[0]
         if not any(
@@ -1591,7 +1577,7 @@ class _ProvenanceEditController:
         if operation.scale == 0.0:
             return None
 
-        if dialog_match.stop != len(_operations_for_ref(spec, ref)):
+        if dialog_match.stop != len(spec.operations):
             return None
 
         try:
@@ -1721,7 +1707,7 @@ class _ProvenanceEditController:
             if node.imagetool is not None and callable(filter_result):
                 filter_result(data, operation)
                 return
-            operation.apply(data, parent_data=data)
+            operation.apply(data)
         except Exception as exc:
             raise _ProvenanceReplayFailure(
                 f"{where}: validating the active display filter",
@@ -1874,7 +1860,7 @@ class _ProvenanceEditController:
                 operation,
                 ScriptCodeOperation,
             ):
-                data = operation.apply(data, parent_data=parent_data)
+                data = operation._apply_schema_v2(data, parent_data=parent_data)
                 continue
             step_spec = self._live_script_step_spec(operation)
             replay_inputs = {
@@ -2010,11 +1996,6 @@ class _ProvenanceEditController:
         if active_operation is None:
             return spec, None
         base_spec = spec._replace_operation_ref(active_ref, ())
-        if base_spec.kind in {"file", "script"}:
-            stages = tuple(
-                stage for stage in base_spec.replay_stages if stage.operations
-            )
-            base_spec = base_spec.model_copy(update={"replay_stages": stages})
         return base_spec, active_operation
 
     def _confirm_revert(self) -> bool:

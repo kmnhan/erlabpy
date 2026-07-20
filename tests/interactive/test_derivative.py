@@ -259,7 +259,7 @@ def test_dtool_nan_input_records_fill_operation(qtbot, monkeypatch) -> None:
     )
     assert fill_operation.derivation_label() == "Fill missing values with 0.0"
     xr.testing.assert_identical(
-        fill_operation.apply(data, parent_data=data),
+        fill_operation.apply(data),
         data.fillna(0.0),
     )
 

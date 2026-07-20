@@ -186,7 +186,7 @@ def test_file_load_edit_dialog_allows_loader_change(
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", erlab.io.dataloader.ValidationWarning)
-        spec = dialog.provenance_spec(active_name="derived", replay_stages=())
+        spec = dialog.provenance_spec(active_name="derived", replay_steps=())
 
     assert spec.file_load_source is not None
     replay_call = spec.file_load_source.replay_call
@@ -429,7 +429,7 @@ def test_file_load_edit_dialog_repair_checks_required_and_preserves_peer_loader(
     relinked = dialog.peer_provenance_spec(required_peer)
 
     assert relinked.active_name == required_spec.active_name
-    assert relinked.replay_stages == required_spec.replay_stages
+    assert relinked.steps == required_spec.steps
     assert relinked.file_load_source is not None
     relinked_replay_call = relinked.file_load_source.replay_call
     assert relinked_replay_call is not None
@@ -970,8 +970,6 @@ def test_manager_source_bound_derivation_rows_are_metadata_only(
     def record_apply(
         self: ToolProvenanceOperation,
         data: xr.DataArray,
-        *,
-        parent_data: xr.DataArray,
     ) -> xr.DataArray:
         calls.append(self.op)
         return data

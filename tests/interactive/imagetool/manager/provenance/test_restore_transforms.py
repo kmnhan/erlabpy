@@ -69,15 +69,12 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
         provenance_payload = json.loads(
             tree["1/imagetool"].attrs["manager_node_provenance_spec"]
         )
-        assert provenance_payload["schema_version"] == 2
+        assert provenance_payload["schema_version"] == 3
         assert provenance_payload["kind"] == "file"
         assert provenance_payload["operations"] == []
-        assert len(provenance_payload["replay_stages"]) == 1
-        assert provenance_payload["replay_stages"][0]["source_kind"] == "full_data"
-        assert [
-            operation["op"]
-            for operation in provenance_payload["replay_stages"][0]["operations"]
-        ] == ["qsel_aggregate"]
+        assert len(provenance_payload["steps"]) == 1
+        assert provenance_payload["steps"][0]["input_policy"] == "current"
+        assert provenance_payload["steps"][0]["operation"]["op"] == "qsel_aggregate"
         assert (
             provenance_payload["file_load_source"]["replay_call"]["target"]
             == "xarray.load_dataarray"
@@ -196,7 +193,7 @@ def test_manager_workspace_loads_legacy_321_provenance_payload(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         loaded = manager._tool_graph.root_wrappers[0]
         assert loaded.provenance_spec is not None
-        assert loaded.provenance_spec.schema_version == 2
+        assert loaded.provenance_spec.schema_version == 3
         assert loaded.provenance_spec.kind == "script"
         assert loaded.provenance_spec.file_load_source is not None
         assert loaded.provenance_spec.file_load_source.replay_call is None

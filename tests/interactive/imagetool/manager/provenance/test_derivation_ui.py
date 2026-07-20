@@ -20,6 +20,7 @@ from erlab.interactive.imagetool._provenance._execution import (
 )
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
+    ReplayStep,
     ScriptInput,
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
@@ -532,10 +533,7 @@ def test_manager_provenance_context_menu_preserves_extended_selection(
         QSelAggregationOperation(dims=("alpha",), func="mean"),
         operation,
     )
-    displayed = operation.apply(
-        test_data.qsel.mean("alpha"),
-        parent_data=test_data.qsel.mean("alpha"),
-    )
+    displayed = operation.apply(test_data.qsel.mean("alpha"))
 
     with manager_context() as manager:
         manager.show()
@@ -1161,16 +1159,30 @@ def test_manager_provenance_reorder_dialog_controls_and_drop_boundaries(
             AssignAttrsOperation(attrs={"second": True}),
         )
     )
+    hidden_boundary = ScriptCodeOperation(
+        label="Internal boundary",
+        code="derived = derived.copy(deep=False)",
+        visible=False,
+    )
     spec = script(
-        AssignAttrsOperation(attrs={"third": True}),
-        AssignAttrsOperation(attrs={"fourth": True}),
         start_label="Run script",
         seed_code="derived = data",
         active_name="derived",
-        replay_stages=staged.replay_stages,
+        steps=(
+            *staged.steps[:2],
+            ReplayStep(operation=hidden_boundary),
+            *staged.steps[2:],
+            ReplayStep(
+                operation=hidden_boundary.model_copy(
+                    update={"label": "Second internal boundary"}
+                )
+            ),
+            ReplayStep(operation=AssignAttrsOperation(attrs={"third": True})),
+            ReplayStep(operation=AssignAttrsOperation(attrs={"fourth": True})),
+        ),
     )
     sections = spec._reorder_sections()
-    assert len(sections) == 4
+    assert len(sections) == 3
 
     dialog = _ProvenanceReorderDialog(
         start_label="Recorded source",
@@ -1399,21 +1411,21 @@ def test_manager_provenance_reorder_flat_presentation_edge_cases(qtbot) -> None:
     )
     blocks = (
         _ProvenanceReorderBlock(
-            _ProvenanceReorderBlockRef(None, 0, 1, kind="stage"),
+            _ProvenanceReorderBlockRef(0, 1),
             entries,
             tooltip="Stage source details",
         ),
         _ProvenanceReorderBlock(
-            _ProvenanceReorderBlockRef(None, 1, 2),
+            _ProvenanceReorderBlockRef(1, 2),
             (),
         ),
         _ProvenanceReorderBlock(
-            _ProvenanceReorderBlockRef(None, 2, 5),
+            _ProvenanceReorderBlockRef(2, 5),
             entries[:1],
         ),
     )
     section = _ProvenanceReorderSection(
-        _ProvenanceReorderSectionRef(None, 0, 3),
+        _ProvenanceReorderSectionRef(0, 3),
         "Presentation test",
         blocks,
     )
@@ -1432,7 +1444,7 @@ def test_manager_provenance_reorder_flat_presentation_edge_cases(qtbot) -> None:
     assert not model.mimeData([QtCore.QModelIndex()]).formats()
 
     empty_section = _ProvenanceReorderSection(
-        _ProvenanceReorderSectionRef(None, 0, 0),
+        _ProvenanceReorderSectionRef(0, 0),
         "Empty",
         (),
     )
@@ -1443,7 +1455,7 @@ def test_manager_provenance_reorder_flat_presentation_edge_cases(qtbot) -> None:
     empty_view.select_block(blocks[0].ref)
 
     single_operation_section = _ProvenanceReorderSection(
-        _ProvenanceReorderSectionRef(0, 0, 1),
+        _ProvenanceReorderSectionRef(0, 1),
         "Single operation",
         blocks[:1],
     )
@@ -1513,7 +1525,6 @@ def test_manager_provenance_reorder_dialog_is_transactional(
         def _cancel_reordered(dialog: QtWidgets.QDialog) -> None:
             assert isinstance(dialog, _ProvenanceReorderDialog)
             assert dialog.current_view.move_current(1)
-            dialog.scope_combo.setCurrentIndex(1)
             assert dialog.current_view.move_current(1)
             assert replay_calls == 0
             assert root.provenance_spec == before_spec
@@ -1531,7 +1542,6 @@ def test_manager_provenance_reorder_dialog_is_transactional(
         def _apply_reordered(dialog: QtWidgets.QDialog) -> None:
             assert isinstance(dialog, _ProvenanceReorderDialog)
             assert dialog.current_view.move_current(1)
-            dialog.scope_combo.setCurrentIndex(1)
             assert dialog.current_view.move_current(1)
             assert replay_calls == 0
             dialog.apply_button.click()
@@ -1542,10 +1552,11 @@ def test_manager_provenance_reorder_dialog_is_transactional(
         )
         assert replay_calls == 1
         assert root.provenance_spec is not None
-        assert [
-            [operation.op for operation in stage.operations]
-            for stage in root.provenance_spec.replay_stages
-        ] == [["assign_attrs"], ["normalize", "isel"]]
+        assert [operation.op for operation in root.provenance_spec.operations] == [
+            "normalize",
+            "assign_attrs",
+            "isel",
+        ]
         xr.testing.assert_identical(
             root.slicer_area._data,
             replay_file_provenance(root.provenance_spec),
@@ -1555,10 +1566,11 @@ def test_manager_provenance_reorder_dialog_is_transactional(
         saved_spec = json.loads(
             tree["0/imagetool"].attrs["manager_node_provenance_spec"]
         )
-        assert [
-            [operation["op"] for operation in stage["operations"]]
-            for stage in saved_spec["replay_stages"]
-        ] == [["assign_attrs"], ["normalize", "isel"]]
+        assert [step["operation"]["op"] for step in saved_spec["steps"]] == [
+            "normalize",
+            "assign_attrs",
+            "isel",
+        ]
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
@@ -1570,10 +1582,11 @@ def test_manager_provenance_reorder_dialog_is_transactional(
 
         restored = manager._tool_graph.root_wrappers[0]
         assert restored.provenance_spec is not None
-        assert [
-            [operation.op for operation in stage.operations]
-            for stage in restored.provenance_spec.replay_stages
-        ] == [["assign_attrs"], ["normalize", "isel"]]
+        assert [operation.op for operation in restored.provenance_spec.operations] == [
+            "normalize",
+            "assign_attrs",
+            "isel",
+        ]
         xr.testing.assert_identical(
             restored.slicer_area._data,
             replay_file_provenance(restored.provenance_spec),
@@ -1895,8 +1908,9 @@ def test_manager_provenance_structured_operation_edit_accept_and_cancel(
         accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_aggregate)
 
         assert root.provenance_spec is not None
-        stage = root.provenance_spec.replay_stages[0]
-        assert stage.operations == (QSelAggregationOperation(dims=("x",), func="sum"),)
+        assert root.provenance_spec.operations == (
+            QSelAggregationOperation(dims=("x",), func="sum"),
+        )
         xr.testing.assert_identical(
             tool.slicer_area._data.rename(None),
             data.qsel.sum("x").rename(None),
@@ -2117,7 +2131,7 @@ def test_manager_provenance_edit_rejects_incompatible_downstream_and_reverts(
         )
 
         assert root.provenance_spec is not None
-        assert root.provenance_spec.replay_stages[0].operations == (
+        assert root.provenance_spec.operations == (
             QSelAggregationOperation(dims=("x",), func="mean"),
         )
         xr.testing.assert_identical(

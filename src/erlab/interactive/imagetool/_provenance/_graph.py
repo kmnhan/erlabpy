@@ -36,9 +36,7 @@ from erlab.interactive.imagetool._provenance._code import (
     _validate_script_replay_code,
 )
 from erlab.interactive.imagetool._provenance._model import (
-    ToolProvenanceSpec,
     _assignment_code,
-    _is_internal_sort_coord_order_entry,
     _script_input_reference_text,
     parse_tool_provenance_spec,
 )
@@ -493,6 +491,10 @@ def _validate_script_provenance(
     }
     if spec.script_inputs:
         available_names.update(script_input.name for script_input in spec.script_inputs)
+    elif allow_free_seed_names:
+        # Display-only provenance rooted at an ImageTool may use the conventional
+        # external ``data`` name without serializing it as a ScriptInput.
+        available_names.add("data")
     elif external_input_names is not None:
         available_names.update(external_input_names)
     function_dependencies: dict[str, set[str]] = {}
@@ -539,16 +541,6 @@ def _validate_script_provenance(
         context_bindings_by_index.setdefault(binding.operation_index, []).extend(
             binding.names
         )
-    for stage in spec.replay_stages:
-        if current_name is None:
-            raise ReplayGraphError("Script provenance has no replay code")
-        if any(not operation.live_applicable for operation in stage.operations):
-            raise ReplayGraphError(
-                "Script provenance contains non-replayable operation"
-            )
-        has_replay_step = True
-        available_names.add(current_name)
-        active_available = active_available or current_name == spec.active_name
     for index, operation in enumerate(spec.operations):
         if context_names := context_bindings_by_index.get(index):
             if current_name is None:
@@ -749,44 +741,69 @@ def _add_file_load_node(
     )
 
 
-def _compile_replay_stages(
+def _compile_replay_steps(
     graph: ReplayGraph,
     current_key: str,
-    replay_stages: Sequence[typing.Any],
+    replay_steps: Sequence[typing.Any],
     *,
     display: bool,
 ) -> str:
-    for stage in replay_stages:
-        source_parent_key = current_key
-        current_key = graph.add_node(
-            _canonical_key(
-                "source_view",
-                {"parent": source_parent_key, "source_kind": stage.source_kind},
-            ),
-            "source_view",
-            parents=(source_parent_key,),
-            payload={"source_kind": stage.source_kind},
-        )
-        operations = stage.operations
-        if display:
-            operations = ToolProvenanceSpec._streamlined_operations(
-                stage.source_kind,
-                operations,
-            )
-        for operation in operations:
+    legacy_context_keys: dict[int, str] = {}
+    previous_input_policy: str | None = None
+    for step in replay_steps:
+        operation = step.operation
+        context_key = current_key
+        input_policy = step.input_policy
+        if step.legacy_context is not None:
+            legacy_index = step.legacy_context.index
+            if legacy_index not in legacy_context_keys:
+                legacy_context_keys[legacy_index] = current_key
+                input_policy = step.legacy_context.input_policy
+            else:
+                input_policy = None
+            context_key = legacy_context_keys[legacy_index]
+        if input_policy in {"current", "restored"} and (
+            step.legacy_context is not None or previous_input_policy != input_policy
+        ):
+            source_kind = "full_data" if input_policy == "current" else "public_data"
             current_key = graph.add_node(
                 _canonical_key(
-                    "operation",
-                    {
-                        "context": source_parent_key,
-                        "operation": operation.model_dump(mode="json"),
-                        "parent": current_key,
-                    },
+                    "source_view",
+                    {"parent": current_key, "source_kind": source_kind},
                 ),
-                "operation",
-                parents=(current_key, source_parent_key),
-                payload={"operation": operation},
+                "source_view",
+                parents=(current_key,),
+                payload={"source_kind": source_kind},
             )
+            if step.legacy_context is None:
+                context_key = current_key
+        if display:
+            entry = operation.derivation_entry()
+            if entry.code in {
+                "derived = derived.isel()",
+                "derived = derived.qsel()",
+                "derived = derived.sel()",
+            }:
+                previous_input_policy = step.input_policy
+                continue
+        current_key = graph.add_node(
+            _canonical_key(
+                "operation",
+                {
+                    "context": context_key,
+                    "legacy_parent_context": step.legacy_context is not None,
+                    "operation": operation.model_dump(mode="json"),
+                    "parent": current_key,
+                },
+            ),
+            "operation",
+            parents=(current_key, context_key),
+            payload={
+                "operation": operation,
+                "legacy_parent_context": step.legacy_context is not None,
+            },
+        )
+        previous_input_policy = step.input_policy
     return current_key
 
 
@@ -899,10 +916,10 @@ def _compile_spec(
             load_code=load_code,
             active_name=parsed.active_name,
         )
-        return _compile_replay_stages(
+        return _compile_replay_steps(
             graph,
             current_key,
-            parsed.replay_stages,
+            parsed.steps,
             display=display,
         )
 
@@ -1112,35 +1129,14 @@ def _compile_spec(
                 )
                 current_name = seed_output_name
                 current_bindings = bind_name(seed_output_name, script_current_key)
-        if parsed.replay_stages:
-            ensure_script_current_key()
-            script_current_key = _compile_replay_stages(
-                graph,
-                typing.cast("str", script_current_key),
-                parsed.replay_stages,
-                display=display,
-            )
-            current_bindings = bind_name(
-                typing.cast("str", current_name),
-                script_current_key,
-            )
         operations = tuple(parsed.operations)
-        context_bindings_by_index: dict[int, list[str]] = {}
-        for binding in parsed.script_context_bindings:
-            context_bindings_by_index.setdefault(binding.operation_index, []).extend(
-                binding.names
-            )
-        for index, operation in enumerate(operations):
-            if context_names := context_bindings_by_index.get(index):
-                apply_context_binding(context_names)
-            if display:
-                entry = operation.derivation_entry()
-                if entry.code in {
-                    "derived = derived.isel()",
-                    "derived = derived.qsel()",
-                    "derived = derived.sel()",
-                } or _is_internal_sort_coord_order_entry(entry):
-                    continue
+        legacy_context_keys: dict[int, str] = {}
+        previous_input_policy: str | None = None
+        for index, (step, operation) in enumerate(
+            zip(parsed.steps, operations, strict=True)
+        ):
+            if step.context_names:
+                apply_context_binding(step.context_names)
             if getattr(operation, "op", None) == "script_code":
                 operation_code = typing.cast(
                     "str | None", getattr(operation, "code", None)
@@ -1154,7 +1150,57 @@ def _compile_spec(
                     pending_code_hoist_imports.append(
                         bool(getattr(operation, "hoist_imports", False))
                     )
+                previous_input_policy = None
                 continue
+
+            if step.input_policy is not None or step.legacy_context is not None:
+                flush_script()
+                ensure_script_current_key()
+                current_key = typing.cast("str", script_current_key)
+                context_key = current_key
+                input_policy = step.input_policy
+                if step.legacy_context is not None:
+                    legacy_index = step.legacy_context.index
+                    if legacy_index not in legacy_context_keys:
+                        legacy_context_keys[legacy_index] = current_key
+                        input_policy = step.legacy_context.input_policy
+                    else:
+                        input_policy = None
+                    context_key = legacy_context_keys[legacy_index]
+                if input_policy in {"current", "restored"} and (
+                    step.legacy_context is not None
+                    or previous_input_policy != input_policy
+                ):
+                    source_kind = (
+                        "full_data" if input_policy == "current" else "public_data"
+                    )
+                    current_key = graph.add_node(
+                        _canonical_key(
+                            "source_view",
+                            {"parent": current_key, "source_kind": source_kind},
+                        ),
+                        "source_view",
+                        parents=(current_key,),
+                        payload={"source_kind": source_kind},
+                    )
+                    if step.legacy_context is None:
+                        context_key = current_key
+                script_current_key = current_key
+                current_bindings = bind_name(
+                    typing.cast("str", current_name), script_current_key
+                )
+            else:
+                context_key = script_current_key or ""
+
+            if display:
+                entry = operation.derivation_entry()
+                if entry.code in {
+                    "derived = derived.isel()",
+                    "derived = derived.qsel()",
+                    "derived = derived.sel()",
+                }:
+                    previous_input_policy = step.input_policy
+                    continue
 
             preferred_name = operation.preferred_replay_output_name()
             if pending_codes and preferred_name is not None:
@@ -1181,6 +1227,8 @@ def _compile_spec(
 
             ensure_script_current_key()
             current_key = typing.cast("str", script_current_key)
+            if step.input_policy is None and step.legacy_context is None:
+                context_key = current_key
             if preferred_name is not None:
                 operation_name = preferred_name
             elif index == len(operations) - 1:
@@ -1191,15 +1239,20 @@ def _compile_spec(
                 _canonical_key(
                     "operation",
                     {
-                        "context": current_key,
+                        "context": context_key,
+                        "legacy_parent_context": step.legacy_context is not None,
                         "operation": operation.model_dump(mode="json"),
                         "parent": current_key,
                     },
                 ),
                 "operation",
-                parents=(current_key, current_key),
-                payload={"operation": operation},
+                parents=(current_key, context_key),
+                payload={
+                    "operation": operation,
+                    "legacy_parent_context": step.legacy_context is not None,
+                },
             )
+            previous_input_policy = step.input_policy
             current_name = operation_name
             current_bindings = bind_name(operation_name, script_current_key)
 
@@ -1428,6 +1481,59 @@ def _node_names(
         else:
             names[node.key] = next_temp()
 
+    for node in graph.nodes:
+        if node.kind == "relay" or (
+            node.kind == "source_view" and not _source_view_emits_code(graph, node)
+        ):
+            names[node.key] = names[emitted_key(node.key)]
+
+    data_consumer_counts = Counter(
+        emitted_key(node.parents[0])
+        for node in graph.nodes
+        if node.parents
+        and node.kind not in {"setup", "relay"}
+        and not (
+            node.kind == "source_view" and not _source_view_emits_code(graph, node)
+        )
+    )
+    for node in graph.nodes:
+        if node.kind != "operation" or not node.parents:
+            continue
+        if not getattr(node.payload["operation"], "statement_mutates_input", False):
+            continue
+        parent_key = emitted_key(node.parents[0])
+        if data_consumer_counts[parent_key] == 1:
+            names[node.key] = names[parent_key]
+
+    if output_name is not None and graph.output_key is not None:
+        current_key = emitted_key(graph.output_key)
+        while True:
+            current_node = node_by_key[current_key]
+            if current_node.kind != "operation" or not current_node.parents:
+                break
+            parent_key = emitted_key(current_node.parents[0])
+            parent_node = node_by_key[parent_key]
+            current_mutates = bool(
+                getattr(
+                    current_node.payload["operation"],
+                    "statement_mutates_input",
+                    False,
+                )
+            )
+            parent_mutates = parent_node.kind == "operation" and bool(
+                getattr(
+                    parent_node.payload["operation"],
+                    "statement_mutates_input",
+                    False,
+                )
+            )
+            if data_consumer_counts[parent_key] != 1 or not (
+                current_mutates or parent_mutates
+            ):
+                break
+            names[current_key] = output_name
+            names[parent_key] = output_name
+            current_key = parent_key
     for node in graph.nodes:
         if node.kind == "relay" or (
             node.kind == "source_view" and not _source_view_emits_code(graph, node)

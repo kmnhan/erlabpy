@@ -32,11 +32,9 @@ from erlab.interactive.imagetool._provenance._model import (
     selection,
 )
 from erlab.interactive.imagetool._provenance._operations import (
-    AverageOperation,
     GaussianFilterOperation,
     IselOperation,
     QSelOperation,
-    RenameOperation,
     ScriptCodeOperation,
 )
 from erlab.interactive.imagetool.dialogs import SelectionDialog
@@ -63,7 +61,6 @@ from tests.interactive.imagetool.manager.helpers import (
 )
 
 from ._common import (
-    _manager_provenance_file_spec,
     _seed_fit2d_param_results,
     _set_selection_point,
     _set_selection_range,
@@ -231,7 +228,7 @@ def test_manager_metadata_derivation_list_has_visible_splitter(
         assert manager.metadata_derivation_list.height() > before_list_height
 
 
-def test_manager_file_label_helpers_and_file_replay_rename_update(tmp_path) -> None:
+def test_manager_compact_file_suffix(tmp_path) -> None:
     paths = [
         tmp_path / "scan_a.h5",
         tmp_path / "scan_b.h5",
@@ -239,32 +236,6 @@ def test_manager_file_label_helpers_and_file_replay_rename_update(tmp_path) -> N
     ]
 
     assert manager_wrapper._compact_file_suffix(paths) == " (scan_a, scan_b, +1)"
-
-    spec = _manager_provenance_file_spec(paths[0]).append_replay_stage(
-        full_data(AverageOperation(dims=("x",))).append_final_rename("old")
-    )
-    renamed = manager_wrapper._spec_with_final_data_name(spec, "new")
-
-    assert renamed.kind == "file"
-    assert renamed.replay_stages
-    assert renamed.replay_stages[-1].operations[-1] == RenameOperation(name="new")
-    assert renamed.replay_stages[-1].operations[:-1] == (AverageOperation(dims=("x",)),)
-
-    script_spec = script(
-        start_label="Load source",
-        seed_code=typing.cast("str", spec.seed_code),
-        active_name="derived",
-        file_load_source=spec.file_load_source,
-        replay_stages=spec.replay_stages,
-    )
-    script_renamed = manager_wrapper._spec_with_final_data_name(script_spec, "newer")
-
-    assert script_renamed.kind == "script"
-    assert script_renamed.replay_stages
-    assert script_renamed.operations == ()
-    script_stage_operations = script_renamed.replay_stages[-1].operations
-    assert script_stage_operations[-1] == RenameOperation(name="newer")
-    assert script_stage_operations[:-1] == (AverageOperation(dims=("x",)),)
 
 
 def test_manager_childtool_from_filtered_parent_uses_display_provenance(
@@ -279,7 +250,7 @@ def test_manager_childtool_from_filtered_parent_uses_display_provenance(
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
     operation = GaussianFilterOperation(sigma={"alpha": 1.0})
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
 
     with manager_context() as manager:
         manager.show()
@@ -323,7 +294,7 @@ def test_manager_filtered_parent_updates_source_bound_child(
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
     operation = GaussianFilterOperation(sigma={"alpha": 1.0})
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
 
     with manager_context() as manager:
         manager.show()
@@ -374,7 +345,7 @@ def test_manager_filtered_source_bound_child_refresh_keeps_filter(
     )
     updated = data + 100.0
     operation = GaussianFilterOperation(sigma={"alpha": 1.0})
-    expected = operation.apply(updated, parent_data=updated)
+    expected = operation.apply(updated)
 
     with manager_context() as manager:
         manager.show()
@@ -435,7 +406,7 @@ def test_manager_filtered_source_bound_child_failed_refresh_keeps_filter(
         coords={"u": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
     )
     operation = GaussianFilterOperation(sigma={"x": 1.0})
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
 
     with manager_context() as manager:
         manager.show()
@@ -480,7 +451,7 @@ def test_manager_duplicate_filtered_child_records_filter_once(
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
     operation = GaussianFilterOperation(sigma={"alpha": 1.0})
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
 
     with manager_context() as manager:
         manager.show()
@@ -573,7 +544,7 @@ def test_manager_workspace_roundtrip_filtered_child_records_filter_once(
         updated = data + 10.0
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated)
-        expected = operation.apply(updated, parent_data=updated)
+        expected = operation.apply(updated)
         qtbot.wait_until(
             lambda: fetch(child_uid).identical(expected),
             timeout=5000,
@@ -661,7 +632,7 @@ def test_manager_operation_filter_preserves_output_binding(
         )
         operation = GaussianFilterOperation(sigma={"x": 1.0})
         output_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
-        expected = operation.apply(initial_output, parent_data=initial_output)
+        expected = operation.apply(initial_output)
 
         duplicated_uid = manager.duplicate_childtool(output_uid)
         duplicated_node = manager._child_node(duplicated_uid)
@@ -2630,7 +2601,7 @@ def test_manager_replace_transform_on_filtered_source_child_keeps_live_source(
 
         accept_dialog(child_tool.mnb._average, pre_call=_replace_average)
 
-        filtered = operation.apply(data, parent_data=data)
+        filtered = operation.apply(data)
         expected = filtered.qsel.mean("x")
         xr.testing.assert_identical(fetch(child_uid), expected)
         assert child_node.source_spec is not None
@@ -2644,7 +2615,7 @@ def test_manager_replace_transform_on_filtered_source_child_keeps_live_source(
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated)
 
-        updated_filtered = operation.apply(updated, parent_data=updated)
+        updated_filtered = operation.apply(updated)
         updated_expected = updated_filtered.qsel.mean("x")
         qtbot.wait_until(
             lambda: (
@@ -2703,11 +2674,8 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
 
         assert root.provenance_spec is not None
         assert root.provenance_spec.kind == "file"
-        assert len(root.provenance_spec.replay_stages) == 1
-        assert root.provenance_spec.replay_stages[0].source_kind == "full_data"
-        assert [op.op for op in root.provenance_spec.replay_stages[0].operations] == [
-            "qsel_aggregate",
-        ]
+        assert [op.op for op in root.provenance_spec.operations] == ["qsel_aggregate"]
+        assert [step.input_policy for step in root.provenance_spec.steps] == ["current"]
         entries = root.provenance_spec.display_entries()
         assert entries[0].label == "Load data from file 'scan.h5'"
         assert any("Aggregate" in entry.label for entry in entries)

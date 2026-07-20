@@ -2067,7 +2067,7 @@ def test_pending_workspace_data_roles_match_materialized_filtered_nonuniform_dat
         )
         xr.testing.assert_identical(
             restored.slicer_area.displayed_data,
-            operation.apply(materialized_source, parent_data=materialized_source),
+            operation.apply(materialized_source),
         )
     finally:
         loaded_ds.close()
@@ -2162,10 +2162,8 @@ def test_pending_workspace_filter_validation(monkeypatch) -> None:
         def __init__(self, result: xr.DataArray) -> None:
             self._result = result
 
-        def apply(
-            self, _data: xr.DataArray, *, parent_data: xr.DataArray
-        ) -> xr.DataArray:
-            assert parent_data is data
+        def apply(self, _data: xr.DataArray) -> xr.DataArray:
+            assert _data is data
             return self._result
 
     def _set_filter_result(result: xr.DataArray) -> None:

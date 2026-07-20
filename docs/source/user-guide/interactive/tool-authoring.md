@@ -715,7 +715,7 @@ which ImageTool data and selection opened it:
 - If none of the existing models represents the transformation, implement a
   ``erlab.interactive.imagetool.provenance.ToolProvenanceOperation`` subclass. Give it
   a unique literal ``op`` value and Pydantic fields for every argument needed to repeat
-  the operation. Implement ``apply(...)``, ``derivation_label()``, and either
+  the operation. Implement ``apply(data)``, ``derivation_label()``, and either
   ``expression_code(...)`` for expression-based APIs or ``statement_code(...)`` for a
   mutating API. Generated code must use public APIs and caller-provided variable names.
   Test both ``apply(...)`` and the executed generated code against the same expected
