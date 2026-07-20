@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import xarray as xr
 from IPython.core.interactiveshell import InteractiveShell
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._console as manager_console
@@ -63,6 +63,7 @@ from .helpers import (
 if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._modelview import (
         _ImageToolWrapperItemDelegate,
+        _ImageToolWrapperItemModel,
     )
 
 
@@ -1432,7 +1433,7 @@ def test_manager_console_tree_namespace_helper_branches() -> None:
 
     class FakeManager:
         def __init__(self) -> None:
-            self._tool_graph = types.SimpleNamespace(root_wrappers={}, nodes={})
+            self._tool_graph = _ManagerToolGraph()
 
         def get_imagetool(self, uid: str) -> object:
             return self._tool_graph.nodes[uid].imagetool
@@ -1847,6 +1848,51 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         )
 
         shell = manager.console._console_widget.kernel_manager.kernel.shell
+        console_widget = manager.console._console_widget
+        tree_model = typing.cast(
+            "_ImageToolWrapperItemModel", manager.tree_view.model()
+        )
+        child_mime = tree_model.mimeData([tree_model._row_index(child_uid)])
+        assert child_mime.text() == "tools[0].children[0].children[0]"
+
+        qtbot.wait_until(
+            lambda: (
+                not console_widget._executing
+                and not console_widget._reading
+                and not console_widget._control.isReadOnly()
+                and console_widget._prompt_pos > 0
+                and console_widget._prompt_pos == console_widget._get_end_pos()
+            ),
+            timeout=5000,
+        )
+        console_widget.input_buffer = "dropped =  + 1"
+        qtbot.wait_until(
+            lambda: console_widget.input_buffer == "dropped =  + 1", timeout=5000
+        )
+        cursor = console_widget._control.textCursor()
+        cursor.setPosition(console_widget._prompt_pos + len("dropped = "))
+        console_widget._control.setTextCursor(cursor)
+        child_order_before_drop = list(intermediate_node._childtool_indices)
+        drop_event = QtGui.QDropEvent(
+            QtCore.QPointF(console_widget._control.cursorRect(cursor).center()),
+            QtCore.Qt.DropAction.CopyAction,
+            child_mime,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+        )
+
+        console_widget.dropEvent(drop_event)
+
+        assert (
+            console_widget.input_buffer
+            == "dropped = tools[0].children[0].children[0] + 1"
+        )
+        assert "dropped" not in shell.user_ns
+        assert intermediate_node._childtool_indices == child_order_before_drop
+        console_widget.input_buffer = ""
+        console_widget.execute(f"dropped = {child_mime.text()}")
+        assert shell.user_ns["dropped"].uid == child_uid
+        console_widget.execute("del dropped", hidden=True)
 
         manager.console._console_widget.execute("child_handles = tools[0].children")
         child_handles = shell.user_ns["child_handles"]

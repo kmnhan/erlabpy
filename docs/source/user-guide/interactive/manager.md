@@ -512,6 +512,12 @@ many of the same operations and keep track of the manager history. For example:
   tools[0].data = tools[0].assign_coords(time=tools[1].time)
   ```
 
+:::{tip}
+Drag one row from the {guilabel}`Data/Tools` tree into the console to insert its
+`tools[...]` expression where you drop it. Nested rows insert their full
+`.children[...]` path automatically.
+:::
+
 Run standard Python, `%magic` commands, or inspect objects with `?` exactly as you would
 in a notebook.
 

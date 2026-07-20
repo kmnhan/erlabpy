@@ -3870,7 +3870,7 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
     assert model.parent(child_index).internalPointer() is parent_node
     assert model.rowCount(nonzero_column_index) == 0
     assert not model.hasChildren(nonzero_column_index)
-    assert model.mimeTypes() == [_MIME, _FIGURE_SOURCE_MIME]
+    assert model.mimeTypes() == [_MIME, _FIGURE_SOURCE_MIME, "text/plain"]
     with pytest.raises(KeyError):
         model._childtool_uid(0, "missing-parent")
 
