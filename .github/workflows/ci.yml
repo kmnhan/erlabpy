@@ -183,9 +183,6 @@ jobs:
           if [[ "${{ matrix.use-xdist }}" == "true" ]]; then
             pytest_args+=(-n auto --dist=loadgroup)
           fi
-          if [[ "${{ matrix.group }}" == "cov-qt-manager-provenance-console" ]]; then
-            pytest_args+=(-vv)
-          fi
           uv run pytest "${pytest_args[@]}" "${targets[@]}"
 
       - name: Package shard artifacts
