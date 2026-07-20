@@ -267,7 +267,6 @@ class _ProvenanceReorderDialog(QtWidgets.QDialog):
     def __init__(
         self,
         *,
-        start_label: str,
         sections: Sequence[_ProvenanceReorderSection],
         parent: QtWidgets.QWidget | None = None,
     ) -> None:
@@ -288,18 +287,11 @@ class _ProvenanceReorderDialog(QtWidgets.QDialog):
 
         layout = QtWidgets.QVBoxLayout(self)
         description = QtWidgets.QLabel(
-            "Arrange the steps, then choose Apply Order to replay the complete "
-            "provenance once. No ImageTool data changes while you arrange rows.",
+            "Drag steps to reorder them.",
             self,
         )
         description.setWordWrap(True)
         layout.addWidget(description)
-
-        source_label = QtWidgets.QLabel(f"Fixed source: {start_label}", self)
-        source_label.setObjectName("manager_provenance_reorder_source_label")
-        source_label.setEnabled(False)
-        source_label.setWordWrap(True)
-        layout.addWidget(source_label)
 
         scope_layout = QtWidgets.QHBoxLayout()
         self.scope_label = QtWidgets.QLabel("Reorder:", self)

@@ -1185,7 +1185,6 @@ def test_manager_provenance_reorder_dialog_controls_and_drop_boundaries(
     assert len(sections) == 3
 
     dialog = _ProvenanceReorderDialog(
-        start_label="Recorded source",
         sections=sections,
     )
     qtbot.addWidget(dialog)
@@ -1391,7 +1390,6 @@ def test_manager_provenance_reorder_list_models_keep_atomic_rows(
         model.reset_order(original[:1])
 
     dialog = _ProvenanceReorderDialog(
-        start_label="Recorded source",
         sections=(section,),
     )
     qtbot.addWidget(dialog)
@@ -1460,14 +1458,12 @@ def test_manager_provenance_reorder_flat_presentation_edge_cases(qtbot) -> None:
         blocks[:1],
     )
     dialog = _ProvenanceReorderDialog(
-        start_label="Recorded source",
         sections=(single_operation_section,),
     )
     qtbot.addWidget(dialog)
     dialog._set_current_scope(-1)
 
     empty_dialog = _ProvenanceReorderDialog(
-        start_label="Recorded source",
         sections=(),
     )
     qtbot.addWidget(empty_dialog)

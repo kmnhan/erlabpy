@@ -290,10 +290,7 @@ class _ProvenanceEditController:
             parent_snapshot_token=parent_snapshot_token,
             dependency_snapshot_tokens=self._dependency_snapshot_tokens(spec),
         )
-        rows = spec.display_rows()
-        start_label = rows[0].entry.label if rows else "Recorded source"
         dialog = _ProvenanceReorderDialog(
-            start_label=start_label,
             sections=sections,
             parent=self._manager,
         )
