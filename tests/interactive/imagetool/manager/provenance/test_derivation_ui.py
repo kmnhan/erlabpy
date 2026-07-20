@@ -51,7 +51,8 @@ from erlab.interactive.imagetool.manager._provenance_edit._controller import (
 from erlab.interactive.imagetool.manager._provenance_edit._reorder import (
     _REORDER_BLOCK_ROLE,
     _ProvenanceReorderDialog,
-    _ProvenanceReorderTree,
+    _ProvenanceReorderListModel,
+    _ProvenanceReorderListView,
 )
 from erlab.interactive.imagetool.manager._widgets import _TrustedScriptReplayCancelled
 from tests.interactive.imagetool.manager.helpers import (
@@ -1177,155 +1178,134 @@ def test_manager_provenance_reorder_dialog_controls_and_drop_boundaries(
     )
     qtbot.addWidget(dialog)
     dialog.show()
-    tree = dialog.tree
-    first_section = tree.topLevelItem(0)
-    second_section = tree.topLevelItem(1)
-    assert first_section is not None
-    assert second_section is not None
+    assert dialog.list_stack.count() == len(sections)
+    assert dialog.scope_combo.isVisible()
+    first_view = dialog.current_view
+    second_view = dialog.view_for_section(sections[1].ref)
+    assert isinstance(first_view, _ProvenanceReorderListView)
+    assert first_view.reorder_model.rowCount() == len(sections[0].blocks)
+    assert second_view.reorder_model.rowCount() == len(sections[1].blocks)
 
-    assert not tree.move_current(0)
-    tree.setCurrentItem(first_section)
-    assert tree.current_block_item() is None
-    assert not tree.move_current(1)
-    first_item = first_section.child(0)
-    assert first_item is not None
-    tree.setCurrentItem(first_item)
-    assert not tree.move_current(-1)
-    detached_block = QtWidgets.QTreeWidgetItem()
-    detached_block.setData(
-        0,
-        _REORDER_BLOCK_ROLE,
-        first_item.data(0, _REORDER_BLOCK_ROLE),
-    )
-    tree.addTopLevelItem(detached_block)
-    tree.setCurrentItem(detached_block)
-    assert not tree.move_current(1)
-    assert (
-        tree.takeTopLevelItem(tree.indexOfTopLevelItem(detached_block))
-        is detached_block
-    )
+    original_first_order = first_view.reorder_model.order()
+    original_second_order = second_view.reorder_model.order()
+    assert not first_view.move_current(0)
+    assert not first_view.move_current(-1)
+    first_view.clearSelection()
+    first_view.setCurrentIndex(QtCore.QModelIndex())
+    assert not first_view.move_current(1)
+    first_view.setCurrentIndex(first_view.reorder_model.index(0, 0))
 
     class _InternalDropEvent(QtGui.QDropEvent):
+        def __init__(self, source: QtCore.QObject) -> None:
+            super().__init__(
+                QtCore.QPointF(),
+                QtCore.Qt.DropAction.MoveAction,
+                QtCore.QMimeData(),
+                QtCore.Qt.MouseButton.LeftButton,
+                QtCore.Qt.KeyboardModifier.NoModifier,
+            )
+            self._source = source
+
         def source(self) -> QtCore.QObject:
-            return tree
+            return self._source
 
-    def drop_event() -> _InternalDropEvent:
-        return _InternalDropEvent(
-            QtCore.QPointF(),
-            QtCore.Qt.DropAction.MoveAction,
-            QtCore.QMimeData(),
-            QtCore.Qt.MouseButton.LeftButton,
-            QtCore.Qt.KeyboardModifier.NoModifier,
-        )
+    def drop_event(source: QtCore.QObject = first_view) -> _InternalDropEvent:
+        return _InternalDropEvent(source)
 
-    class _ExternalDropEvent(_InternalDropEvent):
-        def source(self) -> QtCore.QObject:
-            return dialog
-
-    tree.dropEvent(None)
-    external_drop = _ExternalDropEvent(
-        QtCore.QPointF(),
-        QtCore.Qt.DropAction.MoveAction,
-        QtCore.QMimeData(),
-        QtCore.Qt.MouseButton.LeftButton,
-        QtCore.Qt.KeyboardModifier.NoModifier,
-    )
-    tree.dropEvent(external_drop)
+    first_view.dropEvent(None)
+    external_drop = drop_event(dialog)
+    first_view.dropEvent(external_drop)
     assert not external_drop.isAccepted()
 
-    tree.setCurrentItem(first_section)
+    first_view.setCurrentIndex(QtCore.QModelIndex())
     no_source_drop = drop_event()
-    tree.dropEvent(no_source_drop)
+    first_view.dropEvent(no_source_drop)
     assert not no_source_drop.isAccepted()
+    first_view.setCurrentIndex(first_view.reorder_model.index(0, 0))
 
-    tree.setCurrentItem(first_item)
-    monkeypatch.setattr(tree, "itemAt", lambda _position: None)
-    no_target_drop = drop_event()
-    tree.dropEvent(no_target_drop)
-    assert not no_target_drop.isAccepted()
-
+    monkeypatch.setattr(first_view, "indexAt", lambda _position: QtCore.QModelIndex())
     monkeypatch.setattr(
-        tree,
-        "dropIndicatorPosition",
-        lambda: QtWidgets.QAbstractItemView.DropIndicatorPosition.BelowItem,
-    )
-
-    monkeypatch.setattr(tree, "itemAt", lambda _position: first_section)
-    invalid_parent_drop = drop_event()
-    tree.dropEvent(invalid_parent_drop)
-    assert not invalid_parent_drop.isAccepted()
-
-    source_item = first_section.child(0)
-    cross_section_target = second_section.child(0)
-    assert source_item is not None
-    assert cross_section_target is not None
-    tree.setCurrentItem(source_item)
-    monkeypatch.setattr(tree, "itemAt", lambda _position: cross_section_target)
-    cross_section_drop = drop_event()
-    tree.dropEvent(cross_section_drop)
-    assert not cross_section_drop.isAccepted()
-    assert not dialog.order_changed()
-
-    same_section_target = first_section.child(1)
-    assert same_section_target is not None
-    monkeypatch.setattr(tree, "itemAt", lambda _position: same_section_target)
-    native_drop_calls = 0
-
-    def _native_drop(
-        widget: QtWidgets.QTreeWidget,
-        event: QtGui.QDropEvent,
-    ) -> None:
-        nonlocal native_drop_calls
-        native_drop_calls += 1
-        parent = source_item.parent()
-        assert parent is first_section
-        moved = parent.takeChild(parent.indexOfChild(source_item))
-        assert moved is source_item
-        parent.addChild(moved)
-        event.accept()
-
-    monkeypatch.setattr(QtWidgets.QTreeWidget, "dropEvent", _native_drop)
-    same_section_drop = drop_event()
-    tree.dropEvent(same_section_drop)
-    assert same_section_drop.isAccepted()
-    assert native_drop_calls == 1
-    qtbot.wait_until(dialog.apply_button.isEnabled)
-    assert first_section.childCount() == 2
-    assert first_section.child(0) is same_section_target
-    assert first_section.child(1) is source_item
-    assert dialog.order_changed()
-
-    monkeypatch.setattr(
-        tree,
-        "dropIndicatorPosition",
-        lambda: QtWidgets.QAbstractItemView.DropIndicatorPosition.OnItem,
-    )
-    monkeypatch.setattr(tree, "itemAt", lambda _position: first_section)
-    tree.setCurrentItem(source_item)
-    on_parent_drop = drop_event()
-    tree.dropEvent(on_parent_drop)
-    assert on_parent_drop.isAccepted()
-
-    def _rejected_native_drop(
-        _widget: QtWidgets.QTreeWidget,
-        event: QtGui.QDropEvent,
-    ) -> None:
-        event.ignore()
-
-    monkeypatch.setattr(QtWidgets.QTreeWidget, "dropEvent", _rejected_native_drop)
-    monkeypatch.setattr(
-        tree,
+        first_view,
         "dropIndicatorPosition",
         lambda: QtWidgets.QAbstractItemView.DropIndicatorPosition.AboveItem,
     )
-    monkeypatch.setattr(tree, "itemAt", lambda _position: same_section_target)
-    rejected_drop = drop_event()
-    tree.dropEvent(rejected_drop)
-    assert not rejected_drop.isAccepted()
+    invalid_target_drop = drop_event()
+    first_view.dropEvent(invalid_target_drop)
+    assert not invalid_target_drop.isAccepted()
 
+    target_index = first_view.reorder_model.index(1, 0)
+    monkeypatch.setattr(first_view, "indexAt", lambda _position: target_index)
+    monkeypatch.setattr(
+        first_view,
+        "dropIndicatorPosition",
+        lambda: QtWidgets.QAbstractItemView.DropIndicatorPosition.BelowItem,
+    )
+    moved_drop = drop_event()
+    first_view.dropEvent(moved_drop)
+    assert moved_drop.isAccepted()
+    assert first_view.reorder_model.rowCount() == len(original_first_order)
+    assert set(first_view.reorder_model.order()) == set(original_first_order)
+    assert first_view.reorder_model.order() == tuple(reversed(original_first_order))
+    assert dialog.order_changed()
+
+    monkeypatch.setattr(first_view, "indexAt", lambda _position: QtCore.QModelIndex())
+    monkeypatch.setattr(
+        first_view,
+        "dropIndicatorPosition",
+        lambda: QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport,
+    )
+    viewport_drop = drop_event()
+    first_view.dropEvent(viewport_drop)
+    assert viewport_drop.isAccepted()
+    assert first_view.reorder_model.order() == tuple(reversed(original_first_order))
+
+    monkeypatch.setattr(
+        first_view,
+        "indexAt",
+        lambda _position: first_view.reorder_model.index(0, 0),
+    )
+    monkeypatch.setattr(
+        first_view,
+        "dropIndicatorPosition",
+        lambda: QtWidgets.QAbstractItemView.DropIndicatorPosition.AboveItem,
+    )
+    above_drop = drop_event()
+    first_view.dropEvent(above_drop)
+    assert above_drop.isAccepted()
+    assert first_view.reorder_model.order() == original_first_order
+
+    monkeypatch.setattr(
+        first_view,
+        "dropIndicatorPosition",
+        lambda: QtWidgets.QAbstractItemView.DropIndicatorPosition.OnItem,
+    )
+    on_item_drop = drop_event()
+    first_view.dropEvent(on_item_drop)
+    assert not on_item_drop.isAccepted()
+    assert first_view.move_current(1)
+    assert first_view.reorder_model.order() == tuple(reversed(original_first_order))
+
+    second_view.setCurrentIndex(second_view.reorder_model.index(0, 0))
+    monkeypatch.setattr(
+        second_view,
+        "indexAt",
+        lambda _position: second_view.reorder_model.index(1, 0),
+    )
+    monkeypatch.setattr(
+        second_view,
+        "dropIndicatorPosition",
+        lambda: QtWidgets.QAbstractItemView.DropIndicatorPosition.BelowItem,
+    )
+    cross_scope_drop = drop_event(first_view)
+    second_view.dropEvent(cross_scope_drop)
+    assert not cross_scope_drop.isAccepted()
+    assert second_view.reorder_model.order() == original_second_order
+
+    first_view.setCurrentIndex(first_view.reorder_model.index(0, 0))
     dialog.set_busy(False)
     dialog.set_busy(True)
-    assert not dialog.tree.isEnabled()
+    assert not dialog.list_stack.isEnabled()
+    assert not dialog.scope_combo.isEnabled()
     assert not dialog.apply_button.isEnabled()
     assert not dialog.cancel_button.isEnabled()
     dialog.reject()
@@ -1337,19 +1317,18 @@ def test_manager_provenance_reorder_dialog_controls_and_drop_boundaries(
     assert dialog.apply_button.isEnabled()
     assert dialog.cancel_button.isEnabled()
 
-    rogue_section = QtWidgets.QTreeWidgetItem()
-    tree.addTopLevelItem(rogue_section)
+    dialog.scope_combo.setCurrentIndex(1)
+    assert dialog.current_view is second_view
+    assert second_view.move_current(1)
+    assert dialog.order_changed()
     dialog.reset_order()
+    assert first_view.reorder_model.order() == original_first_order
+    assert second_view.reorder_model.order() == original_second_order
     assert not dialog.order_changed()
     assert not dialog.apply_button.isEnabled()
-    tree.setCurrentItem(first_section.child(0))
-    assert tree.move_current(1)
-    tree.setCurrentItem(None)
-    dialog.reset_order()
-    assert not dialog.order_changed()
 
 
-def test_manager_provenance_reorder_tree_handles_atomic_and_invalid_rows(
+def test_manager_provenance_reorder_list_models_keep_atomic_rows(
     qtbot,
 ) -> None:
     grouped = stamp_operation_group(
@@ -1364,41 +1343,126 @@ def test_manager_provenance_reorder_tree_handles_atomic_and_invalid_rows(
         *grouped,
         AssignAttrsOperation(attrs={"third": True}),
     )
-    operation_section = operation_spec._reorder_sections()[0]
-    stage_block = _ProvenanceReorderBlock(
-        _ProvenanceReorderBlockRef(None, 0, 1, kind="stage"),
-        tuple(operation.derivation_entry() for operation in grouped),
-        label="Recorded stage",
-        tooltip="Atomic recorded stage",
+    section = operation_spec._reorder_sections()[0]
+    model = _ProvenanceReorderListModel(section)
+    assert model.rowCount() == 2
+    assert model.rowCount(model.index(0, 0)) == 0
+    assert model.data(QtCore.QModelIndex()) is None
+    assert model.data(model.index(0, 0), _REORDER_BLOCK_ROLE) == section.blocks[0].ref
+    assert model.flags(QtCore.QModelIndex()) & QtCore.Qt.ItemFlag.ItemIsDropEnabled
+    assert model.supportedDropActions() == QtCore.Qt.DropAction.MoveAction
+    mime_data = model.mimeData([model.index(0, 0)])
+    assert mime_data.hasFormat(model.mimeTypes()[0])
+    assert model.canDropMimeData(
+        mime_data,
+        QtCore.Qt.DropAction.MoveAction,
+        1,
+        -1,
+        QtCore.QModelIndex(),
     )
-    stage_section = _ProvenanceReorderSection(
-        _ProvenanceReorderSectionRef(None, 0, 1, kind="stage"),
-        "Recorded stages",
-        (stage_block,),
-    )
-
-    tree = _ProvenanceReorderTree((operation_section, stage_section))
-    qtbot.addWidget(tree)
-    assert tree.topLevelItem(0).childCount() == 2
-    assert tree.topLevelItem(1).child(0).toolTip(0)
-
-    invalid_section = QtWidgets.QTreeWidgetItem()
-    tree.addTopLevelItem(invalid_section)
-    assert set(tree.section_orders()) == {operation_section.ref, stage_section.ref}
-
-    invalid_block = QtWidgets.QTreeWidgetItem()
-    first_section = tree.topLevelItem(0)
-    first_section.addChild(invalid_block)
-    with pytest.raises(TypeError, match="invalid step row"):
-        tree.section_orders()
-    assert (
-        first_section.takeChild(first_section.indexOfChild(invalid_block))
-        is invalid_block
+    assert not model.canDropMimeData(
+        QtCore.QMimeData(),
+        QtCore.Qt.DropAction.MoveAction,
+        1,
+        -1,
+        QtCore.QModelIndex(),
     )
 
-    empty_tree = _ProvenanceReorderTree(())
-    qtbot.addWidget(empty_tree)
-    assert empty_tree.current_block_item() is None
+    original = model.order()
+    assert model.move_row(0, 1)
+    assert model.order() == tuple(reversed(original))
+    assert not model.move_row(1, 1)
+    assert not model.move_row(-1, 0)
+    assert model.reset_order(original)
+    assert not model.reset_order(original)
+    with pytest.raises(ValueError, match="every provenance block once"):
+        model.reset_order(original[:1])
+
+    dialog = _ProvenanceReorderDialog(
+        start_label="Recorded source",
+        sections=(section,),
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    assert not dialog.scope_combo.isVisible()
+    assert dialog.list_stack.count() == 1
+    assert dialog.current_view.reorder_model.rowCount() == len(section.blocks)
+    assert dialog.current_view.move_current(1)
+    dialog.reset_order()
+    assert dialog.reorder_plan()[section.ref] == original
+
+
+def test_manager_provenance_reorder_flat_presentation_edge_cases(qtbot) -> None:
+    entries = tuple(
+        AssignAttrsOperation(attrs={f"value_{index}": index}).derivation_entry()
+        for index in range(4)
+    )
+    blocks = (
+        _ProvenanceReorderBlock(
+            _ProvenanceReorderBlockRef(None, 0, 1, kind="stage"),
+            entries,
+            tooltip="Stage source details",
+        ),
+        _ProvenanceReorderBlock(
+            _ProvenanceReorderBlockRef(None, 1, 2),
+            (),
+        ),
+        _ProvenanceReorderBlock(
+            _ProvenanceReorderBlockRef(None, 2, 5),
+            entries[:1],
+        ),
+    )
+    section = _ProvenanceReorderSection(
+        _ProvenanceReorderSectionRef(None, 0, 3),
+        "Presentation test",
+        blocks,
+    )
+    model = _ProvenanceReorderListModel(section)
+    for row in range(model.rowCount()):
+        index = model.index(row, 0)
+        assert isinstance(
+            model.data(index, int(QtCore.Qt.ItemDataRole.DisplayRole)),
+            str,
+        )
+        assert isinstance(
+            model.data(index, int(QtCore.Qt.ItemDataRole.ToolTipRole)),
+            str,
+        )
+    assert model.data(model.index(0, 0), 9999) is None
+    assert not model.mimeData([QtCore.QModelIndex()]).formats()
+
+    empty_section = _ProvenanceReorderSection(
+        _ProvenanceReorderSectionRef(None, 0, 0),
+        "Empty",
+        (),
+    )
+    empty_view = _ProvenanceReorderListView(empty_section)
+    qtbot.addWidget(empty_view)
+    assert not empty_view.currentIndex().isValid()
+    empty_view.select_block(None)
+    empty_view.select_block(blocks[0].ref)
+
+    single_operation_section = _ProvenanceReorderSection(
+        _ProvenanceReorderSectionRef(0, 0, 1),
+        "Single operation",
+        blocks[:1],
+    )
+    dialog = _ProvenanceReorderDialog(
+        start_label="Recorded source",
+        sections=(single_operation_section,),
+    )
+    qtbot.addWidget(dialog)
+    dialog._set_current_scope(-1)
+
+    empty_dialog = _ProvenanceReorderDialog(
+        start_label="Recorded source",
+        sections=(),
+    )
+    qtbot.addWidget(empty_dialog)
+    assert not empty_dialog.move_up_button.isEnabled()
+    assert not empty_dialog.move_down_button.isEnabled()
+    with pytest.raises(TypeError, match="current step list"):
+        _ = empty_dialog.current_view
 
 
 def test_manager_provenance_reorder_dialog_is_transactional(
@@ -1448,11 +1512,9 @@ def test_manager_provenance_reorder_dialog_is_transactional(
 
         def _cancel_reordered(dialog: QtWidgets.QDialog) -> None:
             assert isinstance(dialog, _ProvenanceReorderDialog)
-            assert dialog.tree.move_current(1)
-            operation_section = dialog.tree.topLevelItem(1)
-            assert operation_section is not None
-            dialog.tree.setCurrentItem(operation_section.child(0))
-            assert dialog.tree.move_current(1)
+            assert dialog.current_view.move_current(1)
+            dialog.scope_combo.setCurrentIndex(1)
+            assert dialog.current_view.move_current(1)
             assert replay_calls == 0
             assert root.provenance_spec == before_spec
             xr.testing.assert_identical(root.slicer_area._data, before_data)
@@ -1468,11 +1530,9 @@ def test_manager_provenance_reorder_dialog_is_transactional(
 
         def _apply_reordered(dialog: QtWidgets.QDialog) -> None:
             assert isinstance(dialog, _ProvenanceReorderDialog)
-            assert dialog.tree.move_current(1)
-            operation_section = dialog.tree.topLevelItem(1)
-            assert operation_section is not None
-            dialog.tree.setCurrentItem(operation_section.child(0))
-            assert dialog.tree.move_current(1)
+            assert dialog.current_view.move_current(1)
+            dialog.scope_combo.setCurrentIndex(1)
+            assert dialog.current_view.move_current(1)
             assert replay_calls == 0
             dialog.apply_button.click()
 
@@ -1565,7 +1625,7 @@ def test_manager_provenance_reorder_failure_keeps_dialog_and_data(
 
         def _apply_invalid(dialog: QtWidgets.QDialog) -> None:
             assert isinstance(dialog, _ProvenanceReorderDialog)
-            assert dialog.tree.move_current(1)
+            assert dialog.current_view.move_current(1)
             dialog.apply_button.click()
             assert dialog.isVisible()
             assert dialog.apply_button.isEnabled()
@@ -1628,7 +1688,7 @@ def test_manager_provenance_reorder_rejects_stale_dialog(
 
         def _apply_after_data_change(dialog: QtWidgets.QDialog) -> None:
             assert isinstance(dialog, _ProvenanceReorderDialog)
-            assert dialog.tree.move_current(1)
+            assert dialog.current_view.move_current(1)
             root.replace_with_detached_data(replacement, spec)
             dialog.apply_button.click()
             assert dialog.isVisible()

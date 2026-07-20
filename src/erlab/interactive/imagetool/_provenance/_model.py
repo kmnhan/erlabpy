@@ -2699,7 +2699,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 tooltip=(
                     "This recorded step starts from "
                     f"{source_labels[stage.source_kind]}. Its operations move with it; "
-                    "use the corresponding operations section to arrange them."
+                    "choose its operations scope to arrange them."
                 ),
             )
 
