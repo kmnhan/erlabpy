@@ -51,6 +51,10 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class _DuplicateMaterializationError(RuntimeError):
+    """A workspace payload already reported its materialization failure."""
+
+
 class _ActionsController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
@@ -129,6 +133,8 @@ class _ActionsController:
                     QtCore.QItemSelection(qmodelindex, qmodelindex),
                     QtCore.QItemSelectionModel.SelectionFlag.Select,
                 )
+        except _DuplicateMaterializationError:
+            return
         except Exception:
             self._manager._show_operation_error(
                 "Error while duplicating selected windows",
@@ -713,70 +719,123 @@ class _ActionsController:
         """Rename the ImageTool window corresponding to the given index."""
         self._manager._tool_graph.root_wrappers[index].name = str(new_name)
 
+    def _materialize_duplicate_subtree(self, target: int | str) -> None:
+        node = self._manager._node_for_target(target)
+        if not node.materialize_pending_workspace_payload():
+            raise _DuplicateMaterializationError(
+                f"Could not materialize {node.display_text!r} for duplication"
+            )
+        for child_uid in tuple(node._childtool_indices):
+            self._materialize_duplicate_subtree(child_uid)
+
+    def _discard_duplicated_subtree(self, target: int | str) -> None:
+        if isinstance(target, int):
+            self._manager.remove_imagetool(target)
+        else:
+            self._manager._remove_childtool(target)
+
+    def _finish_duplicated_subtree(self, target: int | str) -> None:
+        node = self._manager._node_for_target(target)
+        duplicated_uids = self._manager._tool_graph.subtree_uids(node.uid)
+        if self._manager._is_figure_node(node):
+            self._manager._figure_collection.select_uid(node.uid)
+        for uid in duplicated_uids:
+            self._manager._tool_graph.nodes[uid].show()
+        for uid in duplicated_uids:
+            self._manager._mark_node_added(uid)
+
+    def _duplicate_target(self, target: int | str) -> int | str:
+        self._materialize_duplicate_subtree(target)
+        workspace_state_snapshot = self._manager._workspace_state.snapshot(
+            node_uid_counter=self._manager._tool_graph.uid_counter
+        )
+        duplicated: int | str | None = None
+        try:
+            with self._manager._workspace_load_context():
+                duplicated = self._manager._duplicate_subtree(target)
+            self._finish_duplicated_subtree(duplicated)
+        except Exception:
+            try:
+                if duplicated is not None:
+                    with self._manager._workspace_load_context():
+                        self._discard_duplicated_subtree(duplicated)
+            finally:
+                self._manager._workspace_state.restore(workspace_state_snapshot)
+                self._manager._update_workspace_window_title()
+            raise
+        return duplicated
+
     def _duplicate_subtree(
         self, target: int | str, *, parent_override: int | str | None = None
     ) -> int | str:
         node = self._manager._node_for_target(target)
-        if node.is_imagetool:
-            persistence = node.persistence_view()
-            duplicated_window = self._manager.get_imagetool(target).duplicate(
-                _in_manager=True
-            )
-            if isinstance(node, _ImageToolWrapper):
-                new_target: int | str = self._manager.add_imagetool(
-                    duplicated_window,
-                    activate=True,
-                    source_input_ndim=node.source_input_ndim,
-                    provenance_spec=persistence.provenance_spec,
-                    source_spec=persistence.source_spec,
-                    source_binding=persistence.source_binding,
-                    source_auto_update=persistence.source_auto_update,
-                    source_state=persistence.source_state,
-                    note=node.note,
+        new_target: int | str | None = None
+        try:
+            if node.is_imagetool:
+                persistence = node.persistence_view()
+                duplicated_window = self._manager.get_imagetool(target).duplicate(
+                    _in_manager=True
                 )
-            else:
-                parent_target = (
-                    parent_override
-                    if parent_override is not None
-                    else (self._manager._parent_node(node).uid)
-                )
-                new_target = self._manager.add_imagetool_child(
-                    duplicated_window,
-                    parent_target,
-                    activate=True,
-                    provenance_spec=persistence.provenance_spec,
-                    source_spec=persistence.source_spec,
-                    source_binding=persistence.source_binding,
-                    source_auto_update=persistence.source_auto_update,
-                    source_state=persistence.source_state,
-                    output_id=persistence.output_id,
-                    note=node.note,
-                )
-        else:
-            tool = typing.cast("erlab.interactive.utils.ToolWindow", node.tool_window)
-            if node.parent_uid is None and self._manager._is_figure_node(node):
-                duplicated_tool = tool.duplicate()
-                duplicated_tool._tool_display_name = (
-                    self._manager._figure_collection.duplicated_display_name(
-                        node.display_text
+                if isinstance(node, _ImageToolWrapper):
+                    new_target = self._manager.add_imagetool(
+                        duplicated_window,
+                        show=False,
+                        source_input_ndim=node.source_input_ndim,
+                        provenance_spec=persistence.provenance_spec,
+                        source_spec=persistence.source_spec,
+                        source_binding=persistence.source_binding,
+                        source_auto_update=persistence.source_auto_update,
+                        source_state=persistence.source_state,
+                        note=node.note,
                     )
-                )
-                new_target = self._manager.add_figuretool(
-                    duplicated_tool, note=node.note
-                )
+                else:
+                    parent_target = (
+                        parent_override
+                        if parent_override is not None
+                        else (self._manager._parent_node(node).uid)
+                    )
+                    new_target = self._manager.add_imagetool_child(
+                        duplicated_window,
+                        parent_target,
+                        show=False,
+                        provenance_spec=persistence.provenance_spec,
+                        source_spec=persistence.source_spec,
+                        source_binding=persistence.source_binding,
+                        source_auto_update=persistence.source_auto_update,
+                        source_state=persistence.source_state,
+                        output_id=persistence.output_id,
+                        note=node.note,
+                    )
             else:
-                parent_target = (
-                    parent_override
-                    if parent_override is not None
-                    else self._manager._parent_node(node).uid
-                )
-                new_target = self._manager.add_childtool(
-                    tool.duplicate(), parent_target, note=node.note
-                )
+                tool = self._manager.get_childtool(node.uid)
+                if node.parent_uid is None and self._manager._is_figure_node(node):
+                    duplicated_tool = tool.duplicate()
+                    duplicated_tool._tool_display_name = (
+                        self._manager._figure_collection.duplicated_display_name(
+                            node.display_text
+                        )
+                    )
+                    new_target = self._manager.add_figuretool(
+                        duplicated_tool, show=False, note=node.note
+                    )
+                else:
+                    parent_target = (
+                        parent_override
+                        if parent_override is not None
+                        else self._manager._parent_node(node).uid
+                    )
+                    new_target = self._manager.add_childtool(
+                        tool.duplicate(), parent_target, show=False, note=node.note
+                    )
 
-        for child_uid in node._childtool_indices:
-            self._manager._duplicate_subtree(child_uid, parent_override=new_target)
-        return new_target
+            for child_uid in tuple(node._childtool_indices):
+                self._manager._duplicate_subtree(child_uid, parent_override=new_target)
+        except Exception:
+            if new_target is not None:
+                self._discard_duplicated_subtree(new_target)
+            raise
+        else:
+            return new_target
 
     def duplicate_imagetool(self, index: int | str) -> int | str:
         """Duplicate the ImageTool window corresponding to the given index.
@@ -792,7 +851,7 @@ class _ActionsController:
             Index of the newly created ImageTool window.
         """
         self._manager._commit_note_editor()
-        return self._manager._duplicate_subtree(index)
+        return self._duplicate_target(index)
 
     def duplicate_childtool(self, uid: str) -> str:
         """Duplicate the child tool corresponding to the given UID.
@@ -808,7 +867,7 @@ class _ActionsController:
             UID of the newly created child tool.
         """
         self._manager._commit_note_editor()
-        duplicated = self._manager._duplicate_subtree(uid)
+        duplicated = self._duplicate_target(uid)
         if isinstance(duplicated, str):
             return duplicated
         raise TypeError("Expected duplicated child target to remain nested")

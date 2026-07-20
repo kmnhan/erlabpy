@@ -1208,60 +1208,88 @@ class _PendingWorkspacePayloads:
         if pending is None:
             return False
         workspace_path, payload_path = pending
-        array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer | None = None
         try:
-            ds = self._loader._read_workspace_imagetool_payload_dataset(
-                workspace_path, payload_path, load_data=False
+            cache = node._pending_workspace_link_slicer_cache
+            if (
+                cache is not None
+                and cache[0] == pending
+                and erlab.interactive.utils.qt_is_valid(cache[2])
+            ):
+                _, cached_state, array_slicer = cache
+                if cached_state != raw_state:
+                    array_slicer.state = copy.deepcopy(state["slice"])
+                    node._pending_workspace_link_slicer_cache = (
+                        pending,
+                        raw_state,
+                        array_slicer,
+                    )
+            else:
+                node._clear_pending_workspace_link_slicer_cache()
+                ds = self._loader._read_workspace_imagetool_payload_dataset(
+                    workspace_path, payload_path, load_data=False
+                )
+                try:
+                    ds = _serialization.restore_private_coords(ds, _ITOOL_DATA_NAME)
+                    if _ITOOL_DATA_NAME not in ds:
+                        return False
+                    target_data = ds[_ITOOL_DATA_NAME]
+                    target_data = self._pending_workspace_data_with_saved_dim_order(
+                        target_data, attrs
+                    )
+                    array_slicer = erlab.interactive.imagetool.slicer.ArraySlicer(
+                        target_data,
+                        node,
+                        display_value_abs_limit=(
+                            source.array_slicer.display_value_abs_limit
+                        ),
+                    )
+                    node._pending_workspace_link_slicer_cache = (
+                        pending,
+                        raw_state,
+                        array_slicer,
+                    )
+                    array_slicer.state = copy.deepcopy(state["slice"])
+                finally:
+                    ds.close()
+
+            target = _PendingWorkspaceLinkTarget(array_slicer)
+            converter = erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy()
+            converted_args = converter.convert_args(
+                source,
+                typing.cast("typing.Any", target),
+                dict(arguments),
+                source_dims,
+                indices,
+                steps,
+                transaction_id,
+                keep_pending,
             )
-            try:
-                ds = _serialization.restore_private_coords(ds, _ITOOL_DATA_NAME)
-                if _ITOOL_DATA_NAME not in ds:
-                    return False
-                target_data = ds[_ITOOL_DATA_NAME]
-                target_data = self._pending_workspace_data_with_saved_dim_order(
-                    target_data, attrs
-                )
-                array_slicer = erlab.interactive.imagetool.slicer.ArraySlicer(
-                    target_data,
-                    self._manager,
-                    display_value_abs_limit=source.array_slicer.display_value_abs_limit,
-                )
-                array_slicer.state = copy.deepcopy(state["slice"])
-                target = _PendingWorkspaceLinkTarget(array_slicer)
-                converter = erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy()
-                converted_args = converter.convert_args(
-                    source,
-                    typing.cast("typing.Any", target),
-                    dict(arguments),
-                    source_dims,
-                    indices,
-                    steps,
-                    transaction_id,
-                    keep_pending,
-                )
-                if converted_args is None:
-                    return False
-                for key in (
-                    "__slicer_skip_sync",
-                    "__slicer_transaction_id",
-                    "__slicer_keep_pending",
-                ):
-                    converted_args.pop(key, None)
-                original_state_json = json.dumps(state)
-                if not self._update_pending_link_state_for_operation(
-                    state, array_slicer, source, funcname, converted_args
-                ):
-                    return False
-                state_json = json.dumps(state)
-                if state_json == original_state_json:
-                    return False
-                updated_attrs = dict(attrs)
-                updated_attrs["itool_state"] = state_json
-                node.update_pending_workspace_payload_attrs(updated_attrs)
-                return True
-            finally:
-                ds.close()
+            if converted_args is None:
+                return False
+            for key in (
+                "__slicer_skip_sync",
+                "__slicer_transaction_id",
+                "__slicer_keep_pending",
+            ):
+                converted_args.pop(key, None)
+            original_state_json = json.dumps(state)
+            if not self._update_pending_link_state_for_operation(
+                state, array_slicer, source, funcname, converted_args
+            ):
+                return False
+            state_json = json.dumps(state)
+            if state_json == original_state_json:
+                return False
+            updated_attrs = dict(attrs)
+            updated_attrs["itool_state"] = state_json
+            node.update_pending_workspace_payload_attrs(updated_attrs)
+            node._pending_workspace_link_slicer_cache = (
+                pending,
+                state_json,
+                array_slicer,
+            )
         except Exception:
+            node._clear_pending_workspace_link_slicer_cache()
             logger.debug(
                 "Could not apply linked operation %s to pending workspace payload %s "
                 "from %s",
@@ -1271,9 +1299,8 @@ class _PendingWorkspacePayloads:
                 exc_info=True,
             )
             return False
-        finally:
-            if array_slicer is not None:
-                array_slicer.deleteLater()
+        else:
+            return True
 
     def _update_pending_link_state_for_operation(
         self,
@@ -1415,11 +1442,13 @@ class _PendingWorkspacePayloads:
         if funcname == "toggle_snap":
             slice_state = dict(state["slice"])
             value = arguments.get("value")
-            slice_state["snap_to_data"] = (
+            snap_to_data = (
                 not bool(slice_state.get("snap_to_data", False))
                 if value is None
                 else bool(value)
             )
+            array_slicer.snap_to_data = snap_to_data
+            slice_state["snap_to_data"] = snap_to_data
             state["slice"] = slice_state
             return True
         return False

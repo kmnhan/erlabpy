@@ -24,9 +24,27 @@ from erlab.interactive.imagetool.manager._wrapper import (
     _coerce_note,
     _format_added_time,
     _format_chunk_summary,
+    _ManagedWindowNode,
     _preview_from_imagetool,
     _preview_image_for_node,
 )
+
+
+def test_reapplying_workspace_link_state_keeps_color_cache_valid() -> None:
+    invalidated: list[None] = []
+    node = types.SimpleNamespace(
+        _workspace_link_key="link-group",
+        _workspace_link_colors=True,
+        manager=types.SimpleNamespace(
+            _invalidate_workspace_link_color_cache=lambda: invalidated.append(None)
+        ),
+    )
+
+    _ManagedWindowNode.set_workspace_link_state(node, "link-group", link_colors=False)
+
+    assert invalidated == []
+    assert node._workspace_link_key == "link-group"
+    assert node._workspace_link_colors is False
 
 
 def test_wrapper_preview_fallback_branches(monkeypatch) -> None:

@@ -11,7 +11,7 @@ import h5py
 import numpy as np
 import pytest
 import xarray as xr
-from qtpy import QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool._serialization as imagetool_serialization
@@ -216,6 +216,227 @@ def test_manager_workspace_mixed_pending_link_badge_uses_group_color(
         assert icon_colors
         assert icon_colors[-1] == manager.color_for_workspace_link_key(link_key)
         assert icon_colors[-1] != option.palette.color(QtGui.QPalette.ColorRole.Mid)
+
+
+def test_manager_workspace_link_badge_colors_do_not_depend_on_materialization(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        for offset in (0, 100, 200, 300):
+            data = xr.DataArray(
+                np.arange(offset, offset + 25, dtype=np.float64).reshape((5, 5)),
+                dims=["x", "y"],
+            )
+            root = itool(data, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+            root.hide()
+        manager.link_imagetools(0, 1, link_colors=False)
+        manager.link_imagetools(2, 3, link_colors=False)
+
+        fname = tmp_path / "pending-link-badge-colors.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            fname, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+
+        wrappers = [manager._tool_graph.root_wrappers[index] for index in range(4)]
+        first_key = wrappers[0].workspace_link_key
+        second_key = wrappers[2].workspace_link_key
+        assert first_key is not None
+        assert second_key is not None
+        assert first_key != second_key
+        first_color = manager.color_for_workspace_link_key(first_key)
+        second_color = manager.color_for_workspace_link_key(second_key)
+        color_cache = manager._workspace_link_color_indices
+        assert first_color != second_color
+        assert color_cache is not None
+
+        manager.get_imagetool(2)
+        manager.get_imagetool(3)
+
+        assert wrappers[0].pending_workspace_memory_payload is not None
+        assert wrappers[1].pending_workspace_memory_payload is not None
+        second_proxy = wrappers[2].slicer_area._linking_proxy
+        assert second_proxy is not None
+        assert manager.color_for_workspace_link_key(first_key) == first_color
+        assert manager.color_for_workspace_link_key(second_key) == second_color
+        assert manager.color_for_linker(second_proxy) == second_color
+        assert manager._workspace_link_color_indices is color_cache
+
+
+def test_manager_workspace_link_badge_color_cache_reuses_and_invalidates(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        for offset in (0, 100, 200, 300):
+            data = xr.DataArray(
+                np.arange(offset, offset + 25, dtype=np.float64).reshape((5, 5)),
+                dims=["x", "y"],
+            )
+            root = itool(data, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+        manager.link_imagetools(0, 1, link_colors=False)
+        manager.link_imagetools(2, 3, link_colors=False)
+
+        wrappers = [manager._tool_graph.root_wrappers[index] for index in range(4)]
+        first_key = wrappers[0].workspace_link_key
+        second_key = wrappers[2].workspace_link_key
+        assert first_key is not None
+        assert second_key is not None
+
+        reconcile_calls = 0
+        original_reconcile = manager._reconcile_workspace_link_color_cache
+
+        def _count_reconcile() -> dict[str, int]:
+            nonlocal reconcile_calls
+            reconcile_calls += 1
+            return original_reconcile()
+
+        monkeypatch.setattr(
+            manager,
+            "_reconcile_workspace_link_color_cache",
+            _count_reconcile,
+        )
+        manager._invalidate_workspace_link_color_cache()
+
+        first_color = manager.color_for_workspace_link_key(first_key)
+        second_color = manager.color_for_workspace_link_key(second_key)
+        color_cache = manager._workspace_link_color_indices
+        assert first_color != second_color
+        assert reconcile_calls == 1
+        assert color_cache is not None
+        for _ in range(3):
+            assert manager.color_for_workspace_link_key(first_key) == first_color
+            assert manager.color_for_workspace_link_key(second_key) == second_color
+        assert manager._workspace_link_color_indices is color_cache
+        assert reconcile_calls == 1
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                manager,
+                "color_for_linker",
+                lambda _proxy: pytest.fail(
+                    "managed badge painting should use its structural link key"
+                ),
+            )
+            index = manager.tree_view._model.index(2, 0)
+            option = manager.tree_view._delegate._option_for_index(
+                manager.tree_view, index
+            )
+            canvas = QtGui.QPixmap(200, 32)
+            canvas.fill(QtGui.QColor("white"))
+            painter = QtGui.QPainter(canvas)
+            try:
+                manager.tree_view._delegate.paint(painter, option, index)
+            finally:
+                painter.end()
+        assert manager._workspace_link_color_indices is color_cache
+        assert reconcile_calls == 1
+
+        manager._actions_controller.unlink_imagetool_nodes(wrappers[:2])
+        assert manager._workspace_link_color_cache_dirty
+        assert manager.color_for_workspace_link_key(second_key) == second_color
+        assert reconcile_calls == 2
+
+        manager.link_imagetools(0, 1, link_colors=False)
+        first_key = wrappers[0].workspace_link_key
+        assert first_key is not None
+        assert manager._workspace_link_color_cache_dirty
+        assert manager.color_for_workspace_link_key(
+            first_key
+        ) != manager.color_for_workspace_link_key(second_key)
+        assert reconcile_calls == 3
+
+
+def test_manager_workspace_link_badge_colors_survive_member_removal(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        for offset in range(5):
+            data = xr.DataArray(
+                np.arange(offset, offset + 25, dtype=np.float64).reshape((5, 5)),
+                dims=["x", "y"],
+            )
+            root = itool(data, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+        manager.link_imagetools(0, 2, 4, link_colors=False)
+        manager.link_imagetools(1, 3, link_colors=False)
+
+        first_key = manager._tool_graph.root_wrappers[0].workspace_link_key
+        second_key = manager._tool_graph.root_wrappers[1].workspace_link_key
+        assert first_key is not None
+        assert second_key is not None
+        first_color = manager.color_for_workspace_link_key(first_key)
+        second_color = manager.color_for_workspace_link_key(second_key)
+        assert first_color != second_color
+
+        manager.remove_imagetool(0)
+
+        assert manager._tool_graph.root_wrappers[2].workspace_link_key == first_key
+        assert manager._tool_graph.root_wrappers[4].workspace_link_key == first_key
+        assert manager._workspace_link_color_cache_dirty
+        assert manager.color_for_workspace_link_key(first_key) == first_color
+        assert manager.color_for_workspace_link_key(second_key) == second_color
+        assert not manager._workspace_link_color_cache_dirty
+
+
+def test_manager_workspace_link_badge_palette_exhaustion_recovers_free_color() -> None:
+    palette_size = len(manager_mainwindow._LINKER_COLORS)
+    assert palette_size > 1
+    link_keys = [f"group-{index}" for index in range(palette_size + 1)]
+    nodes = {
+        f"node-{index}": types.SimpleNamespace(workspace_link_key=link_key)
+        for index, link_key in enumerate(link_keys)
+    }
+    manager = types.SimpleNamespace(
+        _tool_graph=types.SimpleNamespace(nodes=nodes),
+        _workspace_link_color_indices={},
+        _workspace_link_color_cache_dirty=True,
+    )
+
+    initial_indices = (
+        manager_mainwindow.ImageToolManager._reconcile_workspace_link_color_cache(
+            manager
+        )
+    )
+
+    assert len(set(initial_indices.values())) == palette_size
+    assert initial_indices[link_keys[0]] == initial_indices[link_keys[-1]]
+
+    nodes.pop("node-1")
+    recovered_indices = (
+        manager_mainwindow.ImageToolManager._reconcile_workspace_link_color_cache(
+            manager
+        )
+    )
+
+    assert len(set(recovered_indices.values())) == palette_size
+    assert recovered_indices[link_keys[-1]] == initial_indices[link_keys[1]]
+    assert recovered_indices[link_keys[0]] == initial_indices[link_keys[0]]
+    for link_key in link_keys[2:-1]:
+        assert recovered_indices[link_key] == initial_indices[link_key]
 
 
 def test_manager_update_actions_for_pending_memory_link_state_does_not_materialize(
@@ -867,6 +1088,20 @@ def test_manager_remove_pending_linked_child_prunes_partner_without_materializin
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
 
+        removed_node = manager._child_node(child_uids[0])
+        pending = removed_node.pending_workspace_memory_payload
+        attrs = removed_node.pending_workspace_payload_attrs
+        assert pending is not None
+        assert attrs is not None
+        cached_slicer = erlab.interactive.imagetool.slicer.ArraySlicer(
+            root_data, removed_node
+        )
+        removed_node._pending_workspace_link_slicer_cache = (
+            pending,
+            str(attrs["itool_state"]),
+            cached_slicer,
+        )
+
         def _fail_materialize_pending_payload(_node) -> bool:
             pytest.fail(
                 "removing linked children should not materialize hidden memory data"
@@ -881,6 +1116,11 @@ def test_manager_remove_pending_linked_child_prunes_partner_without_materializin
         manager._remove_childtool(child_uids[0])
         survivor = manager._child_node(child_uids[1])
         assert child_uids[0] not in manager._tool_graph.nodes
+        assert removed_node._pending_workspace_link_slicer_cache is None
+        qtbot.wait_until(
+            lambda: not erlab.interactive.utils.qt_is_valid(cached_slicer),
+            timeout=5000,
+        )
         assert survivor.pending_workspace_memory_payload is not None
         assert not survivor.workspace_linked
         assert survivor.workspace_link_key is None
@@ -954,16 +1194,18 @@ def test_pending_workspace_link_payload_helper_fallbacks(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    class PendingNode:
+    class PendingNode(QtCore.QObject):
         uid = "pending"
         is_imagetool = True
 
-        def __init__(self) -> None:
+        def __init__(self, parent: QtCore.QObject) -> None:
+            super().__init__(parent)
             self.attrs: dict[str, typing.Any] | None = None
             self.pending_workspace_memory_payload: tuple[pathlib.Path, str] | None = (
                 tmp_path / "source.itws",
                 "0/imagetool",
             )
+            self._pending_workspace_link_slicer_cache = None
 
         @property
         def pending_workspace_payload_attrs(self) -> dict[str, typing.Any] | None:
@@ -973,6 +1215,12 @@ def test_pending_workspace_link_payload_helper_fallbacks(
             self, attrs: Mapping[str, typing.Any]
         ) -> None:
             self.attrs = dict(attrs)
+
+        def _clear_pending_workspace_link_slicer_cache(self) -> None:
+            cache = self._pending_workspace_link_slicer_cache
+            self._pending_workspace_link_slicer_cache = None
+            if cache is not None and erlab.interactive.utils.qt_is_valid(cache[2]):
+                cache[2].deleteLater()
 
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
@@ -989,7 +1237,7 @@ def test_pending_workspace_link_payload_helper_fallbacks(
         source = root.slicer_area
         source.array_slicer.set_index(0, 0, 2, update=False)
 
-        node = PendingNode()
+        node = PendingNode(manager)
         assert not loader.pending._update_pending_workspace_manual_limits(
             node, {"x": [0.0, 1.0]}
         )
@@ -1114,7 +1362,89 @@ def test_pending_workspace_link_payload_helper_fallbacks(
             )
             updated_state = json.loads(node.attrs["itool_state"])
             assert updated_state["slice"]["indices"][0][0] == 1
+
+            cached_slicer = node._pending_workspace_link_slicer_cache[2]
+            updated_state["slice"]["indices"][0][0] = 4
+            updated_state["slice"]["values"][0][0] = 4.0
+            resynced_state_json = json.dumps(updated_state)
+            node.attrs = {"itool_state": resynced_state_json}
+            assert not loader.pending._apply_pending_workspace_link_operation(
+                source,
+                node,
+                "unknown_operation",
+                {},
+                tuple(data.dims),
+                True,
+                False,
+                None,
+                False,
+            )
+            cache = node._pending_workspace_link_slicer_cache
+            assert cache == (
+                node.pending_workspace_memory_payload,
+                resynced_state_json,
+                cached_slicer,
+            )
+            assert cached_slicer.get_index(0, 0) == 4
+
+            node._clear_pending_workspace_link_slicer_cache()
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    controller.loading,
+                    "_read_workspace_imagetool_payload_dataset",
+                    lambda *_args, **_kwargs: xr.Dataset({"other": data}),
+                )
+                assert not loader.pending._apply_pending_workspace_link_operation(
+                    source,
+                    node,
+                    "set_index",
+                    {"axis": 0, "value": 1},
+                    tuple(data.dims),
+                    True,
+                    False,
+                    None,
+                    False,
+                )
+            assert node._pending_workspace_link_slicer_cache is None
+
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy,
+                    "convert_args",
+                    lambda _self, *_args, **_kwargs: None,
+                )
+                assert not loader.pending._apply_pending_workspace_link_operation(
+                    source,
+                    node,
+                    "set_index",
+                    {"axis": 0, "value": 1},
+                    tuple(data.dims),
+                    True,
+                    False,
+                    None,
+                    False,
+                )
+
+            node._clear_pending_workspace_link_slicer_cache()
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    loader.pending,
+                    "_update_pending_link_state_for_operation",
+                    lambda *_args, **_kwargs: True,
+                )
+                assert not loader.pending._apply_pending_workspace_link_operation(
+                    source,
+                    node,
+                    "set_index",
+                    {"axis": 0, "value": 1},
+                    tuple(data.dims),
+                    True,
+                    False,
+                    None,
+                    False,
+                )
         finally:
+            node._clear_pending_workspace_link_slicer_cache()
             target_slicer.deleteLater()
 
 
