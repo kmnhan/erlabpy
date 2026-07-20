@@ -81,6 +81,24 @@ class _ManagerToolGraph:
             node = self.parent(node)
         return node
 
+    def node_path(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> tuple[int, ...] | None:
+        """Return the root index and child rows that currently address a node."""
+        child_rows: list[int] = []
+        current = node
+        while current.parent_uid is not None:
+            parent = self.nodes.get(current.parent_uid)
+            if parent is None or current.uid not in parent._childtool_indices:
+                return None
+            child_rows.append(parent._childtool_indices.index(current.uid))
+            current = parent
+
+        for root_index, wrapper in self.root_wrappers.items():
+            if wrapper is current:
+                return (root_index, *reversed(child_rows))
+        return None
+
     def uid_from_window(self, widget: object) -> str | None:
         for uid, node in self.nodes.items():
             if node.window is widget:

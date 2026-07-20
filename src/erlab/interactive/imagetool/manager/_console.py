@@ -1806,21 +1806,8 @@ class ToolsNamespace:
     def _node_path(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> list[int] | None:
-        path: list[int] = []
-        current = node
-        while current.parent_uid is not None:
-            parent = self._manager._tool_graph.nodes.get(current.parent_uid)
-            if parent is None:
-                return None
-            if current.uid not in parent._childtool_indices:
-                return None
-            child_index = parent._childtool_indices.index(current.uid)
-            path.append(child_index)
-            current = parent
-        for root_index, wrapper in self._manager._tool_graph.root_wrappers.items():
-            if wrapper.uid == current.uid:
-                return [root_index, *reversed(path)]
-        return None
+        path = self._manager._tool_graph.node_path(node)
+        return None if path is None else list(path)
 
     def _child_nodes(
         self, node: _ImageToolWrapper | _ManagedWindowNode
@@ -2192,7 +2179,9 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
             return out
 
         info_str = (
-            _command_ansi(
+            "\033[1mTip:\033[0m Drag a row here to insert its tools[...] "
+            "expression.\n\n"
+            + _command_ansi(
                 "Access raw data",
                 [
                     "tools[<index>].data",

@@ -1412,11 +1412,12 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         return False
 
     def mimeTypes(self) -> list[str]:
-        return [_MIME, _FIGURE_SOURCE_MIME]
+        return [_MIME, _FIGURE_SOURCE_MIME, "text/plain"]
 
     def mimeData(self, indexes: Iterable[QtCore.QModelIndex]) -> QtCore.QMimeData:
         # Collect unique sibling rows from a single parent.
         rows: list[int] = []
+        dragged_uids: list[str] = []
         source_uids: list[str] = []
         internal_move_valid = True
         parent_pointer: str | None = None
@@ -1426,16 +1427,16 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 continue
             node = idx.internalPointer()
             if isinstance(node, _ImageToolWrapper):
+                dragged_uid = node.uid
                 if node.uid not in source_uids:
                     source_uids.append(node.uid)
                 current_parent_pointer = None
             else:
                 child_node = self._node_from_uid(typing.cast("str", node))
-                if (
-                    child_node is not None
-                    and child_node.is_imagetool
-                    and child_node.uid not in source_uids
-                ):
+                if child_node is None:
+                    internal_move_valid = False
+                    continue
+                if child_node.is_imagetool and child_node.uid not in source_uids:
                     source_uids.append(child_node.uid)
                 parent_index = self.parent(idx)
                 if not parent_index.isValid():
@@ -1449,6 +1450,10 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 else:
                     internal_move_valid = False
                     continue
+                dragged_uid = child_node.uid
+
+            if dragged_uid not in dragged_uids:
+                dragged_uids.append(dragged_uid)
 
             if parent_pointer is None and current_parent_pointer is None:
                 parent_pointer = None
@@ -1483,6 +1488,16 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                     json.dumps({"uids": tuple(source_uids)}).encode("utf-8")
                 ),
             )
+        if len(dragged_uids) == 1:
+            dragged_node = self.manager._tool_graph.nodes.get(dragged_uids[0])
+            if dragged_node is not None:
+                path = self.manager._tool_graph.node_path(dragged_node)
+                if path:
+                    expression = f"tools[{path[0]}]"
+                    expression += "".join(
+                        f".children[{child_row}]" for child_row in path[1:]
+                    )
+                    mime_data.setText(expression)
         return mime_data
 
     @staticmethod

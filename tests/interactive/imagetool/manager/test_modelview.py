@@ -321,6 +321,7 @@ def test_drop_mimedata(
 
         # Check mimedata
         model = typing.cast("_ImageToolWrapperItemModel", manager.tree_view.model())
+        assert model.mimeTypes() == [_MIME, _FIGURE_SOURCE_MIME, "text/plain"]
         assert (
             model.supportedDragActions()
             == QtCore.Qt.DropAction.MoveAction | QtCore.Qt.DropAction.CopyAction
@@ -367,6 +368,7 @@ def test_drop_mimedata(
 
         # Test single selection, top-level drops
         mime_single = model.mimeData([model.index(0, 0)])
+        assert mime_single.text() == "tools[0]"
         assert manager.tree_view.figure_source_uids_from_mime(mime_single) == (
             model.index(0, 0).internalPointer().uid,
         )
@@ -389,6 +391,7 @@ def test_drop_mimedata(
 
         # Check new order
         assert manager._tool_graph.displayed_indices == [1, 2, 0]
+        assert model.mimeData([model.index(0, 0)]).text() == "tools[1]"
 
         # No-op drop (drop on itself)
         assert not model.dropMimeData(
@@ -408,6 +411,7 @@ def test_drop_mimedata(
         old_order = list(parent_wrapper._childtool_indices)
         parent_index: QtCore.QModelIndex = model._row_index(0)
         child_index: QtCore.QModelIndex = model._row_index(child_uid)
+        assert model.mimeData([child_index]).text() == "tools[0].children[0]"
         assert (
             manager.tree_view.figure_source_uids_from_mime(
                 model.mimeData([child_index])
@@ -440,10 +444,15 @@ def test_drop_mimedata(
             old_order[0],
             old_order[2],
         ]
+        assert (
+            model.mimeData([model._row_index(child_uid)]).text()
+            == "tools[0].children[1]"
+        )
 
         # Test multiple selection
         logger.info("Testing multiple selection drop")
-        mime_multiple = model.mimeData([model.index(0, 0), model.index(0, 1)])
+        mime_multiple = model.mimeData([model.index(0, 0), model.index(1, 0)])
+        assert not mime_multiple.hasText()
         assert model.canDropMimeData(
             mime_multiple, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
         )
@@ -456,6 +465,7 @@ def test_drop_mimedata(
         parent_wrapper = model.manager._tool_graph.root_wrappers[0]
         child_uid: str = parent_wrapper._childtool_indices[0]
         mime_mixed = model.mimeData([model._row_index(0), model._row_index(child_uid)])
+        assert not mime_mixed.hasText()
         assert not model.dropMimeData(
             mime_mixed, QtCore.Qt.DropAction.MoveAction, 0, 0, QtCore.QModelIndex()
         )
@@ -495,6 +505,7 @@ def test_drop_mimedata(
         missing_child_index = model.createIndex(0, 0, "missing-child")
         missing_child_mime = model.mimeData([missing_child_index])
         assert _MIME not in missing_child_mime.formats()
+        assert not missing_child_mime.hasText()
 
 
 def test_figure_source_mime_filters_duplicates_and_malformed_rows(
@@ -511,11 +522,10 @@ def test_figure_source_mime_filters_duplicates_and_malformed_rows(
         uid="root-source",
         tool=None,
     )
-    manager._tool_graph = types.SimpleNamespace(
-        displayed_indices=[0],
-        root_wrappers={0: wrapper},
-        nodes={"root-source": wrapper},
-    )
+    manager._tool_graph = _ManagerToolGraph()
+    manager._tool_graph.displayed_indices = [0]
+    manager._tool_graph.root_wrappers[0] = wrapper
+    manager._tool_graph.nodes["root-source"] = wrapper
     model = _ImageToolWrapperItemModel(
         typing.cast("ImageToolManager", manager), manager
     )
@@ -524,6 +534,7 @@ def test_figure_source_mime_filters_duplicates_and_malformed_rows(
 
     duplicate_source_mime = model.mimeData([root_index, root_index])
     assert model.decode_figure_source_mime(duplicate_source_mime) == (root_uid,)
+    assert duplicate_source_mime.text() == "tools[0]"
 
     mixed_source_mime = QtCore.QMimeData()
     mixed_source_mime.setData(
