@@ -71,6 +71,10 @@ from erlab.interactive.imagetool._provenance._model import (
     _is_whole_array_rename_entry,
     _normalize_provenance_hashable,
     _ProvenanceDisplayContext,
+    _ProvenanceReorderBlock,
+    _ProvenanceReorderBlockRef,
+    _ProvenanceReorderSection,
+    _ProvenanceReorderSectionRef,
     _ProvenanceStepRef,
     _SourceViewOperation,
     compose_display_provenance,
@@ -4495,6 +4499,258 @@ def test_tool_provenance_reorder_planning_is_independent_of_display_projection(
     sections = spec._reorder_sections()
     assert len(sections) == 1
     assert [block.ref.start for block in sections[0].blocks] == [0, 1]
+
+
+def test_tool_provenance_reorder_planning_preserves_structural_boundaries() -> None:
+    malformed_group = AssignAttrsOperation(attrs={"malformed": True}).model_copy(
+        update={
+            "group": OperationGroupMarker(
+                kind="test",
+                id="incomplete",
+                index=0,
+                size=2,
+            )
+        }
+    )
+    spec = _file_provenance_spec().model_copy(
+        update={
+            "operations": (
+                malformed_group,
+                AssignAttrsOperation(attrs={"root_a": True}),
+                AssignAttrsOperation(attrs={"root_b": True}),
+            )
+        }
+    )
+    hidden_boundary = ScriptCodeOperation(
+        label="Internal boundary",
+        code="derived = derived.copy(deep=False)",
+        visible=False,
+    )
+    for stage in (
+        full_data(RenameOperation(name="initial_boundary")),
+        full_data(AssignAttrsOperation(attrs={"stage_0": True})),
+        full_data(AssignAttrsOperation(attrs={"stage_1": True})),
+        full_data(
+            RenameOperation(name="stage_boundary"),
+            AssignAttrsOperation(attrs={"stage_2a": True}),
+            AssignAttrsOperation(attrs={"stage_2b": True}),
+        ),
+        full_data(AssignAttrsOperation(attrs={"stage_3": True})),
+        full_data(AssignAttrsOperation(attrs={"stage_4": True})),
+    ):
+        spec = spec.append_replay_stage(stage)
+
+    stage_sections = [
+        section for section in spec._reorder_sections() if section.ref.kind == "stage"
+    ]
+    assert [(section.ref.start, section.ref.stop) for section in stage_sections] == [
+        (1, 3),
+        (4, 6),
+    ]
+    assert spec._operations_for_stage_index(3) == spec.replay_stages[3].operations
+    with pytest.raises(IndexError, match="stage is not available"):
+        spec._operations_for_stage_index(99)
+
+    hidden_operations = (
+        hidden_boundary,
+        ScriptCodeOperation(label="Empty selection", code="derived = derived.isel()"),
+        IselOperation(),
+        RenameOperation(name="renamed"),
+        SortCoordOrderOperation(),
+    )
+    assert all(
+        spec._operation_reorder_entry(operation) is None
+        for operation in hidden_operations
+    )
+
+
+def test_tool_provenance_reorder_rejects_malformed_plans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = full_data(
+        AssignAttrsOperation(attrs={"a": True}),
+        AssignAttrsOperation(attrs={"b": True}),
+        AssignAttrsOperation(attrs={"c": True}),
+    )
+    section = spec._reorder_sections()[0]
+    identity = {section.ref: tuple(block.ref for block in section.blocks)}
+
+    with pytest.raises(ValueError, match="sections must be unique"):
+        spec._reorder_operation_blocks((section, section), identity)
+    with pytest.raises(ValueError, match="does not match its sections"):
+        spec._reorder_operation_blocks((section,), {})
+
+    out_of_range_ref = _ProvenanceReorderSectionRef(None, 0, 4)
+    out_of_range = _ProvenanceReorderSection(
+        out_of_range_ref,
+        "Invalid range",
+        section.blocks,
+    )
+    with pytest.raises(ValueError, match="section is out of range"):
+        spec._reorder_operation_blocks(
+            (out_of_range,),
+            {out_of_range_ref: identity[section.ref]},
+        )
+
+    overlapping = (
+        _ProvenanceReorderSection(
+            _ProvenanceReorderSectionRef(None, 0, 2),
+            "First overlap",
+            section.blocks[:2],
+        ),
+        _ProvenanceReorderSection(
+            _ProvenanceReorderSectionRef(None, 1, 3),
+            "Second overlap",
+            section.blocks[1:],
+        ),
+    )
+    with pytest.raises(ValueError, match="sections must not overlap"):
+        spec._reorder_operation_blocks(
+            overlapping,
+            {
+                item.ref: tuple(block.ref for block in item.blocks)
+                for item in overlapping
+            },
+        )
+
+    unknown_block = _ProvenanceReorderBlock(
+        _ProvenanceReorderBlockRef(None, 0, 2),
+        tuple(entry for block in section.blocks[:2] for entry in block.entries),
+    )
+    unknown_section = _ProvenanceReorderSection(
+        _ProvenanceReorderSectionRef(None, 0, 2),
+        "Unknown block",
+        (unknown_block,),
+    )
+    with pytest.raises(ValueError, match="movable displayed steps"):
+        spec._reorder_operation_blocks(
+            (unknown_section,),
+            {unknown_section.ref: (unknown_block.ref,)},
+        )
+
+    reversed_section = _ProvenanceReorderSection(
+        section.ref,
+        section.label,
+        tuple(reversed(section.blocks)),
+    )
+    with pytest.raises(ValueError, match="partition their section"):
+        spec._reorder_operation_blocks(
+            (reversed_section,),
+            {
+                reversed_section.ref: tuple(
+                    block.ref for block in reversed_section.blocks
+                )
+            },
+        )
+
+    incomplete_section = _ProvenanceReorderSection(
+        section.ref,
+        section.label,
+        section.blocks[:2],
+    )
+    with pytest.raises(ValueError, match="partition their section"):
+        spec._reorder_operation_blocks(
+            (incomplete_section,),
+            {
+                incomplete_section.ref: tuple(
+                    block.ref for block in incomplete_section.blocks
+                )
+            },
+        )
+
+    staged = _file_provenance_spec()
+    for operation in spec.operations[:2]:
+        staged = staged.append_replay_stage(full_data(operation))
+    stage_section = next(
+        item for item in staged._reorder_sections() if item.ref.kind == "stage"
+    )
+    invalid_stage_ref = _ProvenanceReorderSectionRef(
+        0,
+        stage_section.ref.start,
+        stage_section.ref.stop,
+        kind="stage",
+    )
+    invalid_stage = _ProvenanceReorderSection(
+        invalid_stage_ref,
+        stage_section.label,
+        stage_section.blocks,
+    )
+    with pytest.raises(ValueError, match="cannot target an operation container"):
+        staged._reorder_operation_blocks(
+            (invalid_stage,),
+            {invalid_stage_ref: tuple(block.ref for block in invalid_stage.blocks)},
+        )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            ToolProvenanceSpec,
+            "_reorderable_operation_blocks",
+            lambda self, **_kwargs: {None: (unknown_block,)},
+        )
+        patch.setattr(
+            ToolProvenanceSpec,
+            "_reorder_sections",
+            lambda self, **_kwargs: (),
+        )
+        with pytest.raises(ValueError, match="Ungrouped provenance blocks"):
+            spec._reorder_operation_blocks(
+                (unknown_section,),
+                {unknown_section.ref: (unknown_block.ref,)},
+            )
+
+    grouped_spec = full_data(
+        *stamp_operation_group(
+            spec.operations[:2],
+            kind="test",
+            group_id="validation-group",
+        )
+    )
+    partial_group_block = _ProvenanceReorderBlock(
+        _ProvenanceReorderBlockRef(None, 0, 1),
+        (grouped_spec.operations[0].derivation_entry(),),
+    )
+    partial_group_section = _ProvenanceReorderSection(
+        _ProvenanceReorderSectionRef(None, 0, 1),
+        "Partial group",
+        (partial_group_block,),
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            ToolProvenanceSpec,
+            "_reorderable_operation_blocks",
+            lambda self, **_kwargs: {None: (partial_group_block,)},
+        )
+        patch.setattr(
+            ToolProvenanceSpec,
+            "_reorder_sections",
+            lambda self, **_kwargs: (),
+        )
+        with pytest.raises(ValueError, match="complete group"):
+            grouped_spec._reorder_operation_blocks(
+                (partial_group_section,),
+                {partial_group_section.ref: (partial_group_block.ref,)},
+            )
+
+    oversized_stage_block = _ProvenanceReorderBlock(
+        _ProvenanceReorderBlockRef(None, 0, 2, kind="stage"),
+        tuple(entry for block in stage_section.blocks for entry in block.entries),
+    )
+    oversized_stage_section = _ProvenanceReorderSection(
+        stage_section.ref,
+        stage_section.label,
+        (oversized_stage_block,),
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            ToolProvenanceSpec,
+            "_reorder_sections",
+            lambda self, **_kwargs: (oversized_stage_section,),
+        )
+        with pytest.raises(ValueError, match="one complete stage"):
+            staged._reorder_operation_blocks(
+                (oversized_stage_section,),
+                {stage_section.ref: (oversized_stage_block.ref,)},
+            )
 
 
 def test_tool_provenance_script_context_names_are_validation_only() -> None:
