@@ -167,12 +167,10 @@ class _RegistryHeartbeatController(QtCore.QObject):
                 return False
             app = QtCore.QCoreApplication.instance()
             if app is not None:
+                # The worker completion is a queued metacall. Processing every event
+                # here can re-enter unrelated UI teardown while the controller stops.
                 QtCore.QCoreApplication.sendPostedEvents(
                     None, int(QtCore.QEvent.Type.MetaCall.value)
-                )
-                app.processEvents(
-                    QtCore.QEventLoop.ProcessEventsFlag.AllEvents,
-                    min(10, remaining_ms),
                 )
             QtCore.QThread.msleep(min(10, remaining_ms))
         return True

@@ -869,6 +869,36 @@ def test_manager_registry_heartbeat_controller_edge_paths(
         controller.stop()
 
 
+def test_manager_registry_heartbeat_idle_wait_does_not_dispatch_unrelated_events(
+    qapp,
+) -> None:
+    class _EventReceiver(QtCore.QObject):
+        def __init__(self) -> None:
+            super().__init__()
+            self.received = False
+
+        def event(self, event: QtCore.QEvent) -> bool:
+            if event.type() == QtCore.QEvent.Type.User:
+                self.received = True
+                return True
+            return super().event(event)
+
+    controller = manager_heartbeat._RegistryHeartbeatController("manager-id")
+    receiver = _EventReceiver()
+    QtCore.QCoreApplication.postEvent(
+        receiver,
+        QtCore.QEvent(QtCore.QEvent.Type.User),
+    )
+    try:
+        controller._in_flight_generation = 1
+        assert not controller._wait_until_idle(20)
+        assert not receiver.received
+    finally:
+        QtCore.QCoreApplication.removePostedEvents(receiver)
+        controller._in_flight_generation = None
+        controller.stop()
+
+
 def test_manager_registry_heartbeat_retains_orphan_until_thread_finishes(
     qtbot,
 ) -> None:
