@@ -12,6 +12,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive._figurecomposer._ui._panel_controls import _step_toolbar_button
+from erlab.interactive._figurecomposer._ui._reorder_list import ReorderList
 from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceOperation,
     decode_provenance_value,
@@ -394,19 +395,30 @@ class AcquisitionContextDialog(QtWidgets.QDialog):
         self.enabled_check.setChecked(state.enabled)
         layout.addWidget(self.enabled_check)
 
-        self.table = QtWidgets.QTableWidget(self)
+        self.table = ReorderList(0, self)
         self.table.setObjectName("manager_acquisition_context_table")
         self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(
-            ["Kind", "Name", "Type", "Value", "If Present"]
-        )
+        self.table.setHeaderLabels(["Kind", "Name", "Type", "Value", "If Present"])
+        self.table.setRootIsDecorated(False)
+        self.table.setItemsExpandable(False)
+        self.table.setIndentation(0)
+        self.table.setUniformRowHeights(True)
+        self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
         )
         self.table.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
         )
-        self.table.doubleClicked.connect(self._edit_field)
+        self.table.itemDoubleClicked.connect(self._edit_field)
+        self.table.rows_reordered.connect(self._rows_reordered)
+
+        header = typing.cast("QtWidgets.QHeaderView", self.table.header())
+        for column in (0, 1, 2, 4):
+            header.setSectionResizeMode(
+                column, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+            )
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Stretch)
 
         field_buttons = QtWidgets.QHBoxLayout()
         field_buttons.setSpacing(4)
@@ -492,9 +504,24 @@ class AcquisitionContextDialog(QtWidgets.QDialog):
             enabled=self.enabled_check.isChecked(), fields=tuple(self._fields)
         )
 
+    @staticmethod
+    def _field_row_id(field: AcquisitionContextField) -> str:
+        return json.dumps(field.key, ensure_ascii=False, separators=(",", ":"))
+
+    def _current_row(self) -> int:
+        item = self.table.currentItem()
+        return -1 if item is None else self.table.indexOfTopLevelItem(item)
+
+    def _select_row(self, row: int) -> None:
+        item = self.table.topLevelItem(row)
+        if item is None:
+            self.table.setCurrentIndex(QtCore.QModelIndex())
+        else:
+            self.table.setCurrentItem(item)
+
     def _populate_table(self) -> None:
-        self.table.setRowCount(len(self._fields))
-        for row, field in enumerate(self._fields):
+        self.table.clear()
+        for field in self._fields:
             values = (
                 "Coordinate" if field.kind == "coordinate" else "Attribute",
                 field.name,
@@ -502,26 +529,22 @@ class AcquisitionContextDialog(QtWidgets.QDialog):
                 field.display_value(),
                 "Replace" if field.replace_existing else "Keep",
             )
-            for column, value in enumerate(values):
-                item = QtWidgets.QTableWidgetItem(value)
-                item.setFlags(
-                    QtCore.Qt.ItemFlag.ItemIsEnabled
-                    | QtCore.Qt.ItemFlag.ItemIsSelectable
-                )
-                if column == 0:
-                    item.setData(QtCore.Qt.ItemDataRole.UserRole, field)
-                self.table.setItem(row, column, item)
-        header = self.table.horizontalHeader()
-        if header is not None:
-            for column in (0, 1, 2, 4):
-                header.setSectionResizeMode(
-                    column, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
-                )
-            header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Stretch)
+            item = QtWidgets.QTreeWidgetItem(values)
+            item.setFlags(
+                QtCore.Qt.ItemFlag.ItemIsEnabled
+                | QtCore.Qt.ItemFlag.ItemIsSelectable
+                | QtCore.Qt.ItemFlag.ItemIsDragEnabled
+            )
+            item.setData(
+                0,
+                QtCore.Qt.ItemDataRole.UserRole,
+                self._field_row_id(field),
+            )
+            self.table.addTopLevelItem(item)
 
     @QtCore.Slot()
     def _sync_buttons(self) -> None:
-        has_row = self.table.currentRow() >= 0
+        has_row = self._current_row() >= 0
         self.edit_button.setEnabled(has_row)
         self.remove_button.setEnabled(has_row)
         targets = self._manager._selected_imagetool_targets()
@@ -538,6 +561,24 @@ class AcquisitionContextDialog(QtWidgets.QDialog):
                 self._fields.append(field)
         self._populate_table()
         self._sync_buttons()
+
+    @QtCore.Slot(object, object, object)
+    def _rows_reordered(
+        self,
+        row_ids: object,
+        _selected_ids: object,
+        _current_id: object,
+    ) -> None:
+        if not isinstance(row_ids, tuple) or not all(
+            isinstance(row_id, str) for row_id in row_ids
+        ):
+            return
+        fields_by_id = {self._field_row_id(field): field for field in self._fields}
+        if len(row_ids) != len(fields_by_id) or set(row_ids) != set(fields_by_id):
+            self._populate_table()
+            self._sync_buttons()
+            return
+        self._fields = [fields_by_id[row_id] for row_id in row_ids]
 
     @QtCore.Slot()
     def _show_add_menu(self) -> None:
@@ -561,9 +602,13 @@ class AcquisitionContextDialog(QtWidgets.QDialog):
             self._merge_fields((dialog.field,))
 
     @QtCore.Slot()
-    @QtCore.Slot(QtCore.QModelIndex)
-    def _edit_field(self, _index: QtCore.QModelIndex | None = None) -> None:
-        row = self.table.currentRow()
+    @QtCore.Slot(QtWidgets.QTreeWidgetItem, int)
+    def _edit_field(
+        self,
+        _item: QtWidgets.QTreeWidgetItem | None = None,
+        _column: int = 0,
+    ) -> None:
+        row = self._current_row()
         if row < 0:
             return
         dialog = _ContextFieldDialog(self, field=self._fields[row])
@@ -586,11 +631,11 @@ class AcquisitionContextDialog(QtWidgets.QDialog):
             return
         self._fields[row] = dialog.field
         self._populate_table()
-        self.table.selectRow(row)
+        self._select_row(row)
 
     @QtCore.Slot()
     def _remove_field(self) -> None:
-        row = self.table.currentRow()
+        row = self._current_row()
         if row < 0:
             return
         del self._fields[row]
@@ -735,6 +780,9 @@ class _AcquisitionContextController(QtCore.QObject):
                 if field.kind == "attribute":
                     attrs[field.name] = desired
                 else:
+                    if attrs:
+                        operations.append(AssignAttrsOperation(attrs=attrs))
+                        attrs = {}
                     operations.append(operation)
                 statuses.append("replace" if present else "add")
             except Exception as exc:

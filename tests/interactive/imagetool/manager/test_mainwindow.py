@@ -680,9 +680,93 @@ def test_acquisition_context_field_actions_use_toolbar_and_add_menu(
         qtbot.wait_until(dialog.add_menu.isVisible)
         dialog.add_menu.hide()
 
-        dialog.table.selectRow(0)
+        dialog.table.setCurrentItem(dialog.table.topLevelItem(0))
         assert dialog.edit_button.isEnabled()
         assert dialog.remove_button.isEnabled()
+
+
+def test_acquisition_context_drag_order_controls_provenance_order(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    sample = AcquisitionContextField.from_value(
+        kind="attribute", name="sample", value="reference"
+    )
+    photon_energy = AcquisitionContextField.from_value(
+        kind="coordinate", name="photon_energy", value=21.2
+    )
+    run = AcquisitionContextField.from_value(kind="attribute", name="run", value=4)
+    initial_state = AcquisitionContextState(
+        enabled=True,
+        fields=(sample, photon_energy, run),
+    )
+    source = _batch_data("scan")
+
+    with manager_context() as manager:
+        manager._acquisition_context.set_state(initial_state, mark_dirty=False)
+        initial = manager._acquisition_context.resolve(source)
+        assert [type(operation) for operation in initial.operations] == [
+            AssignAttrsOperation,
+            AssignScalarCoordOperation,
+            AssignAttrsOperation,
+        ]
+
+        dialog = AcquisitionContextDialog(manager, manager._acquisition_context)
+        qtbot.addWidget(dialog)
+        assert (
+            dialog.table.dragDropMode()
+            == QtWidgets.QAbstractItemView.DragDropMode.InternalMove
+        )
+        assert dialog.table.defaultDropAction() == QtCore.Qt.DropAction.MoveAction
+        assert dialog.table.showDropIndicator()
+        assert not dialog.table.dragDropOverwriteMode()
+        assert all(
+            bool(
+                typing.cast(
+                    "QtWidgets.QTreeWidgetItem", dialog.table.topLevelItem(row)
+                ).flags()
+                & QtCore.Qt.ItemFlag.ItemIsDragEnabled
+            )
+            and not bool(
+                typing.cast(
+                    "QtWidgets.QTreeWidgetItem", dialog.table.topLevelItem(row)
+                ).flags()
+                & QtCore.Qt.ItemFlag.ItemIsDropEnabled
+            )
+            for row in range(dialog.table.topLevelItemCount())
+        )
+
+        moved = dialog.table.takeTopLevelItem(1)
+        assert moved is not None
+        dialog.table.insertTopLevelItem(0, moved)
+        dialog.table.setCurrentItem(moved)
+        dialog.table._queue_rows_reordered()
+        qtbot.waitUntil(
+            lambda: dialog._fields == [photon_energy, sample, run],
+        )
+
+        dialog._save()
+
+        assert manager._acquisition_context.state.fields == (
+            photon_energy,
+            sample,
+            run,
+        )
+        assert manager._workspace_state.context_modified
+        processed, operations, resolution = (
+            manager._acquisition_context.apply_to_file_data(source)
+        )
+        assert not resolution.errors
+        assert [type(operation) for operation in operations] == [
+            AssignScalarCoordOperation,
+            AssignAttrsOperation,
+        ]
+        attrs_operation = typing.cast("AssignAttrsOperation", operations[1])
+        assert tuple(attrs_operation.attrs) == ("sample", "run")
+        assert processed.coords["photon_energy"].item() == 21.2
+        assert processed.attrs == {"sample": "reference", "run": 4}
 
 
 def test_saving_unchanged_default_acquisition_context_keeps_workspace_clean(
@@ -6033,6 +6117,10 @@ def test_acquisition_context_persists_on_open_but_not_workspace_import(
             AcquisitionContextField.from_value(
                 kind="attribute", name="operator", value="current user"
             ),
+            AcquisitionContextField.from_value(
+                kind="coordinate", name="photon_energy", value=21.2
+            ),
+            AcquisitionContextField.from_value(kind="attribute", name="run", value=4),
         ),
     )
     transient_state = AcquisitionContextState(
