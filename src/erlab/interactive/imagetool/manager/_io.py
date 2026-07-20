@@ -20,6 +20,9 @@ from qtpy import QtCore, QtWidgets
 import erlab
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._model import FileDataSelection
+from erlab.interactive.imagetool.manager._acquisition_context import (
+    ContextIngressSummary,
+)
 from erlab.interactive.imagetool.manager._dialogs import _is_loader_func
 
 logger = logging.getLogger(__name__)
@@ -89,9 +92,12 @@ class _DataIngressController:
         watched_var: tuple[str, str] | None = None,
         watched_metadata: Mapping[str, typing.Any] | None = None,
         show: bool | None = None,
+        _context_summary: ContextIngressSummary | None = None,
     ) -> list[bool]:
         """Construct manager-owned ImageTools from received arrays or datasets."""
         flags: list[bool] = []
+        report_context_status = _context_summary is None
+        context_summary = _context_summary or ContextIngressSummary()
         if erlab.utils.misc.is_sequence_of(data, xr.Dataset):
             for ds in data:
                 try:
@@ -221,35 +227,47 @@ class _DataIngressController:
                 if source_input_dtypes is not None
                 else prepared.source_dtype
             )
-            try:
-                indices.append(
-                    self._manager.add_imagetool(
-                        ImageTool(
-                            prepared.data,
-                            **kwargs,
-                            load_func=this_load_func,
-                            preparation_operations=preparation_operations,
-                        ),
-                        show=show,
-                        activate=show,
-                        watched_var=watched_var,
-                        watched_workspace_link_id=typing.cast(
-                            "str | None",
-                            watched_metadata.get("workspace_link_id"),
-                        ),
-                        watched_source_label=typing.cast(
-                            "str | None", watched_metadata.get("source_label")
-                        ),
-                        watched_source_uid=typing.cast(
-                            "str | None", watched_metadata.get("source_uid")
-                        ),
-                        watched_connected=bool(
-                            watched_metadata.get("connected", watched_var is not None)
-                        ),
-                        source_input_ndim=source_input_ndim,
-                        source_input_dtype=source_input_dtype,
-                    )
+            source_data = prepared.data
+            context_data = source_data
+            context_operations: tuple[ToolProvenanceOperation, ...] = ()
+            context_resolution = None
+            if this_load_func is not None:
+                context_data, context_operations, context_resolution = (
+                    self._manager._acquisition_context.apply_to_file_data(source_data)
                 )
+                context_summary.add_resolution(context_resolution)
+            preparation_operations = (
+                *preparation_operations,
+                *context_operations,
+            )
+            try:
+                new_index = self._manager.add_imagetool(
+                    ImageTool(
+                        context_data,
+                        **kwargs,
+                        load_func=this_load_func,
+                        preparation_operations=preparation_operations,
+                    ),
+                    show=show,
+                    activate=show,
+                    watched_var=watched_var,
+                    watched_workspace_link_id=typing.cast(
+                        "str | None",
+                        watched_metadata.get("workspace_link_id"),
+                    ),
+                    watched_source_label=typing.cast(
+                        "str | None", watched_metadata.get("source_label")
+                    ),
+                    watched_source_uid=typing.cast(
+                        "str | None", watched_metadata.get("source_uid")
+                    ),
+                    watched_connected=bool(
+                        watched_metadata.get("connected", watched_var is not None)
+                    ),
+                    source_input_ndim=source_input_ndim,
+                    source_input_dtype=source_input_dtype,
+                )
+                indices.append(new_index)
                 if watched_var is not None:
                     node = self._manager._node_for_target(indices[-1])
                     if node.imagetool is not None:
@@ -267,7 +285,29 @@ class _DataIngressController:
         if link:
             self._manager.link_imagetools(*indices, link_colors=link_colors)
 
+        if report_context_status:
+            context_status = self._context_status(context_summary)
+            if context_status:
+                self._manager._status_bar.showMessage(
+                    f"Loaded data · {context_status}", 5000
+                )
+
         return flags
+
+    @staticmethod
+    def _context_status(summary: ContextIngressSummary) -> str:
+        parts: list[str] = []
+        if summary.added:
+            parts.append(f"context added {summary.added} values")
+        if summary.replaced:
+            parts.append(f"replaced {summary.replaced} values")
+        if summary.kept:
+            parts.append(f"kept {summary.kept} existing values")
+        if summary.identical:
+            parts.append(f"{summary.identical} values already matched")
+        if summary.failed:
+            parts.append(f"skipped {summary.failed} incompatible targets")
+        return " · ".join(parts)
 
     def _show_loaded_info(
         self,
@@ -275,6 +315,7 @@ class _DataIngressController:
         canceled: list[pathlib.Path],
         failed: list[pathlib.Path],
         retry_callback: Callable[[list[pathlib.Path]], typing.Any],
+        context_summary: ContextIngressSummary,
     ) -> None:
         """Report aggregate file-loading results and offer to retry failures."""
         loaded, canceled, failed = (
@@ -283,9 +324,10 @@ class _DataIngressController:
             list(dict.fromkeys(failed)),
         )
         n_done, n_fail = len(loaded), len(failed)
-        self._manager._status_bar.showMessage(
-            f"Loaded {n_done} {'file' if n_done == 1 else 'files'}", 5000
-        )
+        status = f"Loaded {n_done} {'file' if n_done == 1 else 'files'}"
+        if context_status := self._context_status(context_summary):
+            status += f" · {context_status}"
+        self._manager._status_bar.showMessage(status, 5000)
         if n_fail == 0:
             return
 
@@ -421,6 +463,7 @@ class _DataIngressController:
                 aborted,
                 failed + failed_new,
                 retry_callback=retry_callback,
+                context_summary=handler.context_summary,
             )
             self._manager._file_handlers.remove(handler)
 
@@ -528,6 +571,7 @@ class _MultiFileHandler(QtCore.QObject):
         self.loaded: list[pathlib.Path] = []
         self.canceled: list[pathlib.Path] = []
         self.failed: list[pathlib.Path] = []
+        self.context_summary = ContextIngressSummary()
 
         self._abort: bool = False
 
@@ -626,6 +670,7 @@ class _MultiFileHandler(QtCore.QObject):
                 ),
             },
             show=(self.n_total == 1),
+            _context_summary=self.context_summary,
         )
         erlab.interactive.utils.single_shot(self, 0, self._load_next)
 

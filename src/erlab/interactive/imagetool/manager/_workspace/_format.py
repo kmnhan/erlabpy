@@ -275,6 +275,7 @@ def _workspace_root_attrs_payload(
     loader_state: Mapping[str, typing.Any] | None = None,
     standalone_apps: Mapping[str, typing.Any] | None = None,
     option_overrides: Mapping[str, typing.Any] | None = None,
+    acquisition_context: Mapping[str, typing.Any] | None = None,
     estimated_obsolete_bytes: int = 0,
     replacement_delta_count: int = 0,
     repack_estimate_known: bool = True,
@@ -302,6 +303,9 @@ def _workspace_root_attrs_payload(
     if option_overrides is not None:
         # Sparse interactive settings overrides portable with this workspace.
         manifest["interactive_option_overrides"] = dict(option_overrides)
+    if acquisition_context is not None:
+        # Context defaults are workspace-scoped and independent of loader choices.
+        manifest["acquisition_context"] = dict(acquisition_context)
     if delta_save_count > 0:
         # Marks files written through the recoverable in-place delta-save protocol.
         manifest["transaction_protocol"] = _WORKSPACE_TRANSACTION_PROTOCOL

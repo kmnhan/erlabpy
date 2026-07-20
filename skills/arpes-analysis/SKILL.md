@@ -64,6 +64,7 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   `Reconnect Watched Variables`, `.itws`, `standalone application`,
   `recent documents`, `Jump List`, `Dock menu`, `Result Placement`, `stale`,
   `automatic updates`, `Auto`, `Changed`, `Missing`, `Reload Data`,
+  `Acquisition Context`, `Metadata Editor`, `missing acquisition metadata`,
   `Concatenate`, `tools[0] - tools[1]`, `tools[0].children`,
   `tools.selected`, `tools[0].qsel`, `era.transform.rotate(tools[0])`,
   `xr.concat([tools[0], tools[1]])`, `my_func(tools[0])`,

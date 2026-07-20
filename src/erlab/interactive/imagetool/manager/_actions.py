@@ -505,9 +505,8 @@ class _ActionsController:
         ) in preflight_plan:
             try:
                 processed = source_spec.apply(slicer_area.data).rename(input_name)
-                erlab.interactive.imagetool.slicer.ArraySlicer.validate_array(
-                    processed,
-                    copy_values=False,
+                erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(
+                    processed
                 )
 
                 parent_provenance = node.displayed_provenance_spec
@@ -934,16 +933,45 @@ class _ActionsController:
         )
         if prepared_data is None:
             return
+
+        plans: list[
+            tuple[
+                bool,
+                int | str,
+                xr.DataArray,
+                tuple[xr.DataArray, ToolProvenanceSpec | None] | None,
+            ]
+        ] = []
+        planned_next_idx = self._manager.next_idx
         for prepared, idx in zip(prepared_data, indices, strict=True):
             darr = prepared.data
             if isinstance(idx, int) and idx < 0:
                 # Negative index counts from the end
                 idx = sorted(self._manager._tool_graph.root_wrappers.keys())[idx]
-            elif isinstance(idx, int) and idx == self._manager.next_idx:
-                # If not yet created, add new tool
-                self._manager._data_ingress.receive_data([darr], {})
+            add_new = isinstance(idx, int) and idx == planned_next_idx
+            if add_new:
+                erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(darr)
+                plans.append((True, idx, darr, None))
+                planned_next_idx += 1
                 continue
-            self._manager.get_imagetool(idx).slicer_area.replace_source_data(darr)
+            replacement = self._manager._metadata_editor.prepare_replacement(
+                idx, darr, source_input_dtype=prepared.source_dtype
+            )
+            if replacement is None:
+                erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(darr)
+            plans.append((False, idx, darr, replacement))
+
+        for add_new, idx, darr, replacement in plans:
+            if add_new:
+                # If not yet created, add new tool.
+                self._manager._data_ingress.receive_data([darr], {})
+            elif replacement is None:
+                self._manager.get_imagetool(idx).slicer_area.replace_source_data(darr)
+            else:
+                processed, provenance = replacement
+                self._manager._metadata_editor.commit_replacement(
+                    idx, darr, processed, provenance
+                )
         self._manager._sigDataReplaced.emit()
 
     def _find_watched_idx(self, uid: str) -> int | None:
@@ -1066,11 +1094,36 @@ class _ActionsController:
             if prepared_data is None:  # pragma: no cover - no dialog is shown here
                 return
             prepared = prepared_data[0]
+            try:
+                replacement = self._manager._metadata_editor.prepare_replacement(
+                    idx,
+                    prepared.data,
+                    source_input_dtype=prepared.source_dtype,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Could not preserve metadata assignments on watched variable "
+                    "update",
+                    extra={"suppress_ui_alert": True},
+                )
+                erlab.interactive.utils.MessageDialog.critical(
+                    self._manager,
+                    "Watched Data Update Failed",
+                    f"Could not update watched variable {varname!r} in ImageTool.",
+                    str(exc),
+                )
+                return
             wrapper.set_source_input_ndim(prepared.source_ndim)
             wrapper.set_source_input_dtype(prepared.source_dtype)
-            self._manager.get_imagetool(idx).slicer_area.replace_source_data(
-                prepared.data
-            )
+            if replacement is None:
+                self._manager.get_imagetool(idx).slicer_area.replace_source_data(
+                    prepared.data
+                )
+            else:
+                processed, provenance = replacement
+                self._manager._metadata_editor.commit_replacement(
+                    idx, prepared.data, processed, provenance
+                )
 
     def _data_unwatch(self, uid: str) -> None:
         idx = self._manager._find_watched_idx(uid)

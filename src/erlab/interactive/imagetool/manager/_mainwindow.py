@@ -14,6 +14,9 @@ import erlab.interactive.imagetool.slicer
 from erlab.interactive._dask import DaskMenu
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager import _server as _manager_server
+from erlab.interactive.imagetool.manager._acquisition_context import (
+    _AcquisitionContextController,
+)
 from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
@@ -33,6 +36,9 @@ from erlab.interactive.imagetool.manager._io import (
 from erlab.interactive.imagetool.manager._lineage import _LineageController
 from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
 from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
+from erlab.interactive.imagetool.manager._metadata_editor import (
+    _MetadataEditorController,
+)
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _ProvenanceEditController,
@@ -284,6 +290,8 @@ class ImageToolManager(_ImageToolManagerBase):
         self._interaction_gate = _ManagerInteractionGate(self)
         self._interaction_gate.register_window(self)
         self._workspace_controller = _WorkspaceController(self)
+        self._acquisition_context = _AcquisitionContextController(self)
+        self._metadata_editor = _MetadataEditorController(self)
         self._tool_metadata_queue = _ManagerToolMetadataQueue(
             self,
             self._flush_pending_tool_metadata_updates,
@@ -517,6 +525,26 @@ class ImageToolManager(_ImageToolManagerBase):
         self.batch_action.triggered.connect(self.show_batch_operations)
         self.batch_action.setToolTip("Apply an operation to multiple ImageTools")
 
+        self.acquisition_context_action = QtWidgets.QAction(
+            "Acquisition Context…", self
+        )
+        self.acquisition_context_action.setObjectName(
+            "manager_acquisition_context_action"
+        )
+        self.acquisition_context_action.setToolTip(
+            "Configure coordinates and attributes applied while loading data files"
+        )
+        self.acquisition_context_action.triggered.connect(
+            self._acquisition_context.show_editor
+        )
+
+        self.metadata_editor_action = QtWidgets.QAction("Metadata Editor…", self)
+        self.metadata_editor_action.setObjectName("manager_metadata_editor_action")
+        self.metadata_editor_action.setToolTip(
+            "Edit scalar coordinates and attributes across selected ImageTools"
+        )
+        self.metadata_editor_action.triggered.connect(self._metadata_editor.show_editor)
+
         self.create_figure_action = QtWidgets.QAction("Add to Figure…", self)
         self.create_figure_action.setObjectName("manager_figure_action")
         self.create_figure_action.triggered.connect(self.create_figure_from_selection)
@@ -610,6 +638,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.file_menu.addAction(self.open_action)
         self.file_menu.addAction(self.import_workspace_action)
         self.file_menu.addAction(self.explorer_action)
+        self.file_menu.addAction(self.acquisition_context_action)
         self.file_menu.addSeparator()
         self.file_menu.addAction(self.new_manager_action)
         self.file_menu.addSeparator()
@@ -634,6 +663,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.edit_menu.addAction(self.reindex_action)
         self.edit_menu.addSeparator()
         self.edit_menu.addAction(self.concat_action)
+        self.edit_menu.addAction(self.metadata_editor_action)
         self.edit_menu.addAction(self.batch_action)
         self.edit_menu.addAction(self.create_figure_action)
         self.edit_menu.addAction(self.duplicate_action)
@@ -1009,6 +1039,16 @@ class ImageToolManager(_ImageToolManagerBase):
         self._file_handlers: set[_MultiFileHandler] = set()
 
         # Initialize status bar
+        self.acquisition_context_status_button = QtWidgets.QToolButton(self)
+        self.acquisition_context_status_button.setObjectName(
+            "manager_acquisition_context_status_button"
+        )
+        self.acquisition_context_status_button.setAutoRaise(True)
+        self.acquisition_context_status_button.setVisible(False)
+        self._status_bar.addPermanentWidget(self.acquisition_context_status_button)
+        self._acquisition_context.bind_status_button(
+            self.acquisition_context_status_button
+        )
         self._status_bar.showMessage("")
         self._manager_layout_tracking_enabled = True
 
@@ -1889,6 +1929,12 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> tuple[np.ndarray, np.ndarray] | None:
         loader = self._workspace_controller.loading
         return loader.pending._pending_workspace_imagetool_preview_curve(node)
+
+    def _pending_workspace_imagetool_metadata_data(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> xr.DataArray:
+        pending = self._workspace_controller.loading.pending
+        return pending._pending_workspace_imagetool_metadata_data(node)
 
     def _pending_workspace_tool_preview_image(
         self, node: _ImageToolWrapper | _ManagedWindowNode

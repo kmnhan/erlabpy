@@ -201,10 +201,7 @@ class _ProvenanceEditController:
                     "source",
                     candidate,
                 )
-                data = erlab.interactive.imagetool.slicer.ArraySlicer.validate_array(
-                    data,
-                    copy_values=False,
-                )
+                erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
             except Exception as exc:
                 raise _ProvenanceReplayFailure(
                     "validating the pasted provenance steps: "
@@ -229,7 +226,7 @@ class _ProvenanceEditController:
         *,
         where: str,
     ) -> None:
-        current_data = node.current_source_data()
+        current_data = node.current_public_data()
         try:
             if local.kind == "script":
                 trusted_user_code = script_provenance_requires_trust(local)
@@ -248,10 +245,7 @@ class _ProvenanceEditController:
                 )
             else:
                 data = local.apply(current_data)
-            data = erlab.interactive.imagetool.slicer.ArraySlicer.validate_array(
-                data,
-                copy_values=False,
-            )
+            erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
         except _TrustedScriptReplayCancelled:
             raise
         except Exception as exc:

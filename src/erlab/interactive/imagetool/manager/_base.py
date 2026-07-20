@@ -25,6 +25,9 @@ if typing.TYPE_CHECKING:
     from erlab.interactive._options.schema import AppOptions
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool._mainwindow import ImageTool
+    from erlab.interactive.imagetool.manager._acquisition_context import (
+        _AcquisitionContextController,
+    )
     from erlab.interactive.imagetool.manager._actions import _ActionsController
     from erlab.interactive.imagetool.manager._console import (
         _ImageToolManagerJupyterConsole,
@@ -49,6 +52,9 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._lineage import _LineageController
     from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
     from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
+    from erlab.interactive.imagetool.manager._metadata_editor import (
+        _MetadataEditorController,
+    )
     from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
     from erlab.interactive.imagetool.manager._provenance_edit import (
         _ProvenanceEditController,
@@ -108,6 +114,9 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
 
     # Actions and widgets installed by ImageToolManager.__init__.
     console: _ImageToolManagerJupyterConsole
+    acquisition_context_action: QtGui.QAction
+    acquisition_context_status_button: QtWidgets.QToolButton
+    metadata_editor_action: QtGui.QAction
     concat_action: QtGui.QAction
     compact_workspace_action: QtGui.QAction
     create_figure_action: QtGui.QAction
@@ -160,6 +169,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _alert_dialogs: list[erlab.interactive.utils.MessageDialog]
     _application_quit_filter: QtCore.QObject | None
     _actions_controller: _ActionsController
+    _acquisition_context: _AcquisitionContextController
     _bulk_remove_depth: int
     _dask_menu: DaskMenu
     _dependency_tracker: _ManagerDependencyTracker
@@ -182,6 +192,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _metadata_detail_labels: dict[str, QtWidgets.QLabel]
     _metadata_full_code_available: bool
     _metadata_monospace_font: QtGui.QFont
+    _metadata_editor: _MetadataEditorController
     _metadata_node_uid: str | None
     _notes_node_uid: str | None
     _note_commit_timer: QtCore.QTimer

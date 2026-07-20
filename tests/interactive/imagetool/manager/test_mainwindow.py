@@ -17,6 +17,7 @@ import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.interactive.imagetool.manager._metadata_editor as metadata_editor
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.utils
@@ -38,17 +39,20 @@ from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import _kspace_conversion, itool
 from erlab.interactive.imagetool._load_source import _LoadSourceDetails
+from erlab.interactive.imagetool._provenance._execution import replay_file_provenance
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
     ScriptInput,
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     full_data,
+    iter_operation_refs,
     public_data,
     selection,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AssignAttrsOperation,
+    AssignScalarCoordOperation,
     ImageDerivativeOperation,
     ImageToolSelectionSourceBinding,
     IselOperation,
@@ -59,6 +63,13 @@ from erlab.interactive.imagetool._provenance._operations import (
     TransposeOperation,
 )
 from erlab.interactive.imagetool.manager import fetch, replace_data
+from erlab.interactive.imagetool.manager._acquisition_context import (
+    AcquisitionContextDialog,
+    AcquisitionContextField,
+    AcquisitionContextState,
+    ContextIngressSummary,
+    _ContextSourcePickerDialog,
+)
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._dialogs import (
     _batch_operation_dialog_classes,
@@ -67,6 +78,12 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _RenameDialog,
 )
 from erlab.interactive.imagetool.manager._figurecomposer import _dialogs
+from erlab.interactive.imagetool.manager._metadata_editor import (
+    MetadataCellEdit,
+    MetadataEditorDialog,
+    MetadataField,
+    _MetadataTableModel,
+)
 from erlab.interactive.imagetool.manager._modelview import (
     _TOOL_TYPE_ROLE,
     _ImageToolWrapperItemDelegate,
@@ -571,6 +588,1556 @@ class _BatchFilterStub:
 
     def filter_operation(self) -> ToolProvenanceOperation | None:
         return self._operation
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        [1.0, 2.0],
+        (1.0, 2.0),
+        {"start": 1.0},
+        {1.0, 2.0},
+        frozenset({1.0, 2.0}),
+        np.array([1.0, 2.0]),
+    ],
+)
+def test_acquisition_context_coordinates_are_scalar_only(value) -> None:
+    with pytest.raises(ValueError, match="Coordinates require a scalar value"):
+        AcquisitionContextField.from_value(kind="coordinate", name="angle", value=value)
+    scalar_field = AcquisitionContextField.from_value(
+        kind="coordinate", name="angle", value=1.0
+    )
+    with pytest.raises(ValueError, match="Coordinates require a scalar value"):
+        scalar_field.with_value(value)
+
+
+def test_acquisition_context_values_are_serialization_stable() -> None:
+    with pytest.raises(ValueError, match="stable serializable representation"):
+        AcquisitionContextField.from_value(
+            kind="attribute", name="labels", value={"sample", "reference"}
+        )
+    field = AcquisitionContextField.from_value(
+        kind="attribute", name="range", value=(1.0, 2.0)
+    )
+    payload = AcquisitionContextState(fields=(field,)).model_dump(mode="json")
+    restored = AcquisitionContextState.model_validate(payload)
+    assert restored.fields[0].decoded_value == (1.0, 2.0)
+
+
+def test_acquisition_context_field_actions_use_toolbar_and_add_menu(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    field = AcquisitionContextField.from_value(
+        kind="attribute", name="sample", value="reference"
+    )
+
+    with manager_context() as manager:
+        _add_batch_tools(qtbot, manager, _batch_data("scan"))
+        select_tools(manager, [0])
+        manager._acquisition_context.set_state(
+            AcquisitionContextState(fields=(field,)), mark_dirty=False
+        )
+        dialog = AcquisitionContextDialog(manager, manager._acquisition_context)
+        qtbot.addWidget(dialog)
+
+        assert isinstance(dialog.add_button, QtWidgets.QToolButton)
+        assert isinstance(dialog.edit_button, QtWidgets.QToolButton)
+        assert isinstance(dialog.remove_button, QtWidgets.QToolButton)
+        for button in (
+            dialog.add_button,
+            dialog.edit_button,
+            dialog.remove_button,
+        ):
+            assert button.toolButtonStyle() == (
+                QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly
+            )
+            assert button.icon().isNull()
+        assert dialog.add_button.property("uses_inline_menu_arrow") is True
+        assert dialog.add_menu.actions() == [
+            dialog.add_field_action,
+            dialog.from_selected_action,
+        ]
+        assert dialog.from_selected_action.isEnabled()
+        assert not dialog.edit_button.isEnabled()
+        assert not dialog.remove_button.isEnabled()
+
+        root_layout = dialog.layout()
+        assert root_layout is not None
+        assert root_layout.indexOf(dialog.table) == 2
+        toolbar_layout = root_layout.itemAt(1).layout()
+        assert toolbar_layout is not None
+        assert toolbar_layout.indexOf(dialog.add_button) == 0
+        assert toolbar_layout.indexOf(dialog.edit_button) == 1
+        assert toolbar_layout.indexOf(dialog.remove_button) == 2
+
+        dialog.show()
+        qtbot.mouseClick(dialog.add_button, QtCore.Qt.MouseButton.LeftButton)
+        qtbot.wait_until(dialog.add_menu.isVisible)
+        dialog.add_menu.hide()
+
+        dialog.table.selectRow(0)
+        assert dialog.edit_button.isEnabled()
+        assert dialog.remove_button.isEnabled()
+
+
+def test_saving_unchanged_default_acquisition_context_keeps_workspace_clean(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._workspace_controller._mark_workspace_clean()
+        generation = manager._workspace_state.dirty_generation
+        dialog = AcquisitionContextDialog(manager, manager._acquisition_context)
+        qtbot.addWidget(dialog)
+
+        dialog._save()
+
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+        assert not manager._workspace_state.context_modified
+        assert manager._workspace_state.dirty_generation == generation
+        assert not manager._workspace_state.is_modified(has_nodes=False)
+
+
+def test_acquisition_context_is_hidden_until_active_and_enriches_file_data(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data("scan").assign_coords(temperature=12.0)
+    file_path = tmp_path / "scan.h5"
+    source.to_netcdf(file_path, engine="h5netcdf")
+    fields = (
+        AcquisitionContextField.from_value(
+            kind="coordinate", name="temperature", value=20.0
+        ),
+        AcquisitionContextField.from_value(
+            kind="coordinate",
+            name="photon_energy",
+            value=21.2,
+        ),
+        AcquisitionContextField.from_value(
+            kind="attribute", name="sample", value="reference"
+        ),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        assert manager.acquisition_context_status_button.isHidden()
+        file_actions = manager.file_menu.actions()
+        assert manager.acquisition_context_action in file_actions
+        assert manager.acquisition_context_action not in manager.edit_menu.actions()
+        assert manager.metadata_editor_action in manager.edit_menu.actions()
+        assert manager.metadata_editor_action not in file_actions
+        assert not manager.metadata_editor_action.isEnabled()
+        assert file_actions.index(manager.acquisition_context_action) == (
+            file_actions.index(manager.explorer_action) + 1
+        )
+
+        manager._workspace_controller._mark_workspace_clean()
+        manager._acquisition_context.set_state(
+            AcquisitionContextState(enabled=True, fields=fields)
+        )
+        assert manager._workspace_state.context_modified
+        qtbot.wait_until(manager.acquisition_context_status_button.isVisible)
+
+        assert manager._data_ingress.receive_data(
+            [source],
+            {
+                "file_path": file_path,
+                "load_func": (
+                    xr.load_dataarray,
+                    {"engine": "h5netcdf"},
+                    FileDataSelection(kind="dataarray"),
+                ),
+            },
+            show=False,
+        ) == [True]
+        actual = manager.get_imagetool(0).slicer_area._data
+        assert actual.coords["temperature"].item() == 12.0
+        assert actual.coords["photon_energy"].item() == 21.2
+        assert actual.attrs["sample"] == "reference"
+        assert "photon_energy" not in source.coords
+        assert "sample" not in source.attrs
+        select_tools(manager, [0])
+        assert manager.metadata_editor_action.isEnabled()
+
+        provenance = manager._tool_graph.root_wrappers[0].displayed_provenance_spec
+        assert provenance is not None
+        xr.testing.assert_identical(replay_file_provenance(provenance), actual)
+        code = provenance.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {"data": source.copy(deep=True)})
+        xr.testing.assert_identical(namespace["derived"], actual)
+
+        manager._acquisition_context.set_state(AcquisitionContextState())
+        assert manager.acquisition_context_status_button.isHidden()
+
+        replacement = _batch_data("replacement", offset=100.0)
+        with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
+            replace_data(0, replacement)
+        replaced = manager.get_imagetool(0).slicer_area.data
+        assert replaced.coords["photon_energy"].item() == 21.2
+        assert replaced.attrs["sample"] == "reference"
+
+
+def test_acquisition_context_collision_policy_and_incompatible_input_are_atomic(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data("scan").assign_coords(temperature=12.0)
+    keep = AcquisitionContextField.from_value(
+        kind="coordinate", name="temperature", value=20.0
+    )
+    replace = keep.model_copy(update={"replace_existing": True})
+    identical = keep.with_value(12.0)
+    incompatible_fields = (
+        AcquisitionContextField.from_value(
+            kind="attribute", name="sample", value="reference"
+        ),
+        AcquisitionContextField.from_value(
+            kind="coordinate",
+            name="x",
+            value=1.0,
+            replace_existing=True,
+        ),
+    )
+
+    with manager_context() as manager:
+        identical_resolution = manager._acquisition_context.resolve(
+            source, (identical,)
+        )
+        assert identical_resolution.identical == 1
+        assert identical_resolution.operations == ()
+
+        keep_resolution = manager._acquisition_context.resolve(source, (keep,))
+        assert keep_resolution.kept == 1
+        assert keep_resolution.operations == ()
+
+        replace_resolution = manager._acquisition_context.resolve(source, (replace,))
+        assert replace_resolution.replaced == 1
+        replaced = full_data(*replace_resolution.operations).apply(source)
+        assert replaced.coords["temperature"].item() == 20.0
+
+        manager._acquisition_context.set_state(
+            AcquisitionContextState(enabled=True, fields=incompatible_fields),
+            mark_dirty=False,
+        )
+        processed, operations, resolution = (
+            manager._acquisition_context.apply_to_file_data(source)
+        )
+        assert operations == ()
+        assert resolution.errors
+        assert resolution.added == 1
+        summary = ContextIngressSummary()
+        summary.add_resolution(resolution)
+        assert summary.added == 0
+        assert summary.replaced == 0
+        assert summary.failed == 1
+        xr.testing.assert_identical(processed, source)
+        assert "sample" not in processed.attrs
+
+
+def test_metadata_assignments_survive_live_replacement_and_update_provenance(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data("scan").assign_coords(temperature=12.0)
+    edits = (
+        MetadataCellEdit(
+            MetadataField(kind="coordinate", name="temperature"), value=20.0
+        ),
+        MetadataCellEdit(MetadataField(kind="coordinate", name="angle"), value=1.5),
+        MetadataCellEdit(
+            MetadataField(kind="attribute", name="sample"), value="reference"
+        ),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        assert manager._data_ingress.receive_data([source], {}, show=False) == [True]
+        assert manager._metadata_editor.apply_edits({0: edits})
+
+        replacement = _batch_data("replacement", offset=100.0)
+        replacement_payloads: list[xr.DataArray] = []
+        manager.get_imagetool(0).slicer_area.sigSourceDataReplaced.connect(
+            replacement_payloads.append
+        )
+        with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
+            replace_data(0, replacement)
+
+        actual = manager.get_imagetool(0).slicer_area.data
+        expected = replacement.assign_coords(temperature=20.0, angle=1.5)
+        expected = expected.assign_attrs(sample="reference")
+        xr.testing.assert_identical(actual, expected)
+        assert replacement_payloads
+        xr.testing.assert_identical(replacement_payloads[-1], expected)
+
+        node = manager._tool_graph.root_wrappers[0]
+        assert node.detached_live_parent_data is not None
+        xr.testing.assert_identical(node.detached_live_parent_data, replacement)
+        provenance = node.displayed_provenance_spec
+        assert provenance is not None
+        xr.testing.assert_identical(
+            provenance.apply(node.detached_live_parent_data), actual
+        )
+
+        incompatible = xr.DataArray(
+            np.arange(16.0).reshape(4, 4),
+            dims=("angle", "y"),
+            name="incompatible",
+        )
+        before = actual.copy(deep=True)
+        with pytest.raises(ValueError, match="angle"):
+            replace_data(0, incompatible)
+        xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, before)
+        xr.testing.assert_identical(node.detached_live_parent_data, replacement)
+
+
+def test_metadata_edits_and_replacement_preserve_nonuniform_public_data(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data(
+        "scan",
+        dims=("sample_temp", "eV"),
+        first_coord=[20.0, 22.0, 25.0],
+    )
+    field = MetadataField(kind="attribute", name="sample")
+
+    with manager_context() as manager:
+        tool = itool(source.copy(deep=True), manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        index = manager.add_imagetool(
+            tool,
+            show=False,
+            provenance_spec=full_data(),
+        )
+        assert manager._metadata_editor.apply_edits(
+            {index: (MetadataCellEdit(field, value="reference"),)}
+        )
+
+        expected = source.assign_attrs(sample="reference")
+        xr.testing.assert_identical(tool.slicer_area._data, expected)
+        assert tuple(tool.slicer_area.data.dims) == ("sample_temp_idx", "eV")
+        xr.testing.assert_identical(tool.slicer_area.displayed_data, expected)
+
+        replacement = _batch_data(
+            "replacement",
+            dims=("sample_temp", "eV"),
+            offset=100.0,
+            first_coord=[30.0, 32.0, 35.0],
+        )
+        replace_data(index, replacement)
+
+        replaced_expected = replacement.assign_attrs(sample="reference")
+        xr.testing.assert_identical(tool.slicer_area._data, replaced_expected)
+        assert tuple(tool.slicer_area.data.dims) == ("sample_temp_idx", "eV")
+        xr.testing.assert_identical(tool.slicer_area.displayed_data, replaced_expected)
+        node = manager._tool_graph.root_wrappers[index]
+        assert node.detached_live_parent_data is not None
+        xr.testing.assert_identical(node.detached_live_parent_data, replacement)
+        assert node.displayed_provenance_spec is not None
+        xr.testing.assert_identical(
+            node.displayed_provenance_spec.apply(node.detached_live_parent_data),
+            replaced_expected,
+        )
+
+
+def test_multi_target_replacement_preflights_preserved_metadata_atomically(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source0 = _batch_data("scan0")
+    source1 = _batch_data("scan1", offset=100.0)
+    angle = MetadataField(kind="coordinate", name="angle")
+
+    with manager_context() as manager:
+        _add_batch_tools(qtbot, manager, source0, source1)
+        assert manager._metadata_editor.apply_edits(
+            {1: (MetadataCellEdit(angle, value=1.5),)}
+        )
+        before0 = manager.get_imagetool(0).slicer_area._data.copy(deep=True)
+        before1 = manager.get_imagetool(1).slicer_area._data.copy(deep=True)
+        replacements = [
+            _batch_data("replacement0", offset=200.0),
+            _batch_data(
+                "replacement1",
+                dims=("angle", "y"),
+                offset=300.0,
+            ),
+        ]
+        replacement_signals: list[None] = []
+        manager._sigDataReplaced.connect(lambda: replacement_signals.append(None))
+
+        with pytest.raises(ValueError, match="angle"):
+            manager._data_replace(replacements, [0, 1])
+
+        assert not replacement_signals
+        xr.testing.assert_identical(manager.get_imagetool(0).slicer_area._data, before0)
+        xr.testing.assert_identical(manager.get_imagetool(1).slicer_area._data, before1)
+
+        valid_replacements = [
+            replacements[0],
+            _batch_data("replacement1", offset=300.0),
+        ]
+        manager._data_replace(valid_replacements, [0, 1])
+
+        assert replacement_signals == [None]
+        xr.testing.assert_identical(
+            manager.get_imagetool(0).slicer_area._data,
+            valid_replacements[0],
+        )
+        xr.testing.assert_identical(
+            manager.get_imagetool(1).slicer_area._data,
+            valid_replacements[1].assign_coords(angle=1.5),
+        )
+
+
+def test_multi_target_replacement_adds_consecutive_new_indices(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    replacements = [
+        _batch_data("replacement0"),
+        _batch_data("replacement1", offset=100.0),
+    ]
+
+    with manager_context() as manager:
+        first_new_idx = manager.next_idx
+        replacement_signals: list[None] = []
+        manager._sigDataReplaced.connect(lambda: replacement_signals.append(None))
+
+        manager._data_replace(
+            replacements,
+            [first_new_idx, first_new_idx + 1],
+        )
+
+        assert replacement_signals == [None]
+        assert manager.next_idx == first_new_idx + 2
+        for offset, replacement in enumerate(replacements):
+            xr.testing.assert_identical(
+                manager.get_imagetool(first_new_idx + offset).slicer_area._data,
+                replacement,
+            )
+
+
+def test_metadata_assignments_survive_watched_variable_updates(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data("scan")
+    edits = (
+        MetadataCellEdit(
+            MetadataField(kind="attribute", name="sample"), value="reference"
+        ),
+        MetadataCellEdit(MetadataField(kind="coordinate", name="angle"), value=1.5),
+    )
+    messages = _block_message_dialog(monkeypatch)
+
+    with manager_context() as manager:
+        manager._data_watched_update("scan", "watched-uid", source)
+        xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, source)
+        assert manager._metadata_editor.apply_edits({0: edits})
+
+        replacement = _batch_data("scan", offset=100.0)
+        manager._data_watched_update("scan", "watched-uid", replacement)
+
+        actual = manager.get_imagetool(0).slicer_area.data
+        expected = replacement.assign_coords(angle=1.5)
+        expected = expected.assign_attrs(sample="reference")
+        xr.testing.assert_identical(actual, expected)
+        node = manager._tool_graph.root_wrappers[0]
+        provenance = node.displayed_provenance_spec
+        assert provenance is not None
+        code = provenance.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {"scan": replacement})
+        xr.testing.assert_identical(namespace["derived"], actual)
+
+        incompatible = xr.DataArray(
+            np.arange(16.0).reshape(4, 4), dims=("angle", "y"), name="scan"
+        )
+        manager._data_watched_update("scan", "watched-uid", incompatible)
+        assert messages
+        xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
+
+
+def test_acquisition_context_does_not_apply_when_child_is_promoted(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    field = AcquisitionContextField.from_value(
+        kind="attribute", name="sample", value="reference"
+    )
+    child_data = _batch_data("child", offset=100.0)
+
+    with manager_context() as manager:
+        manager._acquisition_context.set_state(
+            AcquisitionContextState(enabled=True, fields=(field,)), mark_dirty=False
+        )
+        _add_batch_tools(qtbot, manager, _batch_data("root"))
+        child_tool = itool(child_data, manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(child_tool, 0, show=False)
+
+        promoted_index = manager.promote_child_imagetool(child_uid)
+
+        xr.testing.assert_identical(
+            manager.get_imagetool(promoted_index).slicer_area.data, child_data
+        )
+
+
+def test_live_replacement_preserves_explicit_assignment_when_source_matches(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    field = MetadataField(kind="coordinate", name="temperature")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        assert manager._data_ingress.receive_data(
+            [_batch_data("scan")], {}, show=False
+        ) == [True]
+        assert manager._metadata_editor.apply_edits(
+            {0: (MetadataCellEdit(field, value=20.0),)}
+        )
+
+        replacement = _batch_data("replacement", offset=100.0).assign_coords(
+            temperature=12.0
+        )
+        with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
+            replace_data(0, replacement)
+
+        xr.testing.assert_identical(
+            manager.get_imagetool(0).slicer_area.data,
+            replacement.assign_coords(temperature=20.0),
+        )
+        node = manager._tool_graph.root_wrappers[0]
+        assert node.displayed_provenance_spec is not None
+        assert node.detached_live_parent_data is not None
+
+
+def test_acquisition_context_can_copy_selected_coordinates_and_attributes(
+    qtbot,
+) -> None:
+    data = _batch_data("scan").assign_coords(temperature=20.0)
+    data = data.assign_coords(grid=(("x", "y"), np.zeros(data.shape)))
+    data.attrs.update({"sample": "reference", "run": 4})
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = _ContextSourcePickerDialog(parent, data)
+
+    selected_keys = {("coordinate", "temperature"), ("attribute", "sample")}
+    root = dialog.tree.invisibleRootItem()
+    assert root is not None
+    available: dict[tuple[str, str], QtWidgets.QTreeWidgetItem] = {}
+    for group_index in range(root.childCount()):
+        group = root.child(group_index)
+        assert group is not None
+        for row in range(group.childCount()):
+            item = group.child(row)
+            assert item is not None
+            field = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            assert isinstance(field, AcquisitionContextField)
+            available[field.key] = item
+    assert (
+        not {("coordinate", "x"), ("coordinate", "y"), ("coordinate", "grid")}
+        & available.keys()
+    )
+    for key in selected_keys:
+        available[key].setCheckState(0, QtCore.Qt.CheckState.Checked)
+
+    dialog.accept()
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+    assert {field.key for field in dialog.selected_fields} == selected_keys
+
+
+def test_metadata_editor_scalar_value_and_operation_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BadArray:
+        def __array__(self, *_args, **_kwargs):
+            raise RuntimeError("not array-like")
+
+    assert metadata_editor._values_equal(np.nan, np.nan)
+    assert metadata_editor._values_equal(np.int64(1), 1)
+    assert metadata_editor._values_equal(np.float64(1.0), 1.0)
+    assert not metadata_editor._values_equal(1, 1.0)
+    assert not metadata_editor._values_equal(1, True)
+    assert not metadata_editor._values_equal([1], [1.0])
+    assert not metadata_editor._values_equal({"value": 1}, {"value": True})
+    assert not metadata_editor._values_equal([1, 2], [1])
+    assert not metadata_editor._values_equal(_BadArray(), 1)
+
+    original_array_equal = np.array_equal
+    calls = 0
+
+    def _array_equal(left, right, *, equal_nan=False):
+        nonlocal calls
+        calls += 1
+        if equal_nan:
+            raise TypeError
+        return original_array_equal(left, right)
+
+    monkeypatch.setattr(metadata_editor.np, "array_equal", _array_equal)
+    assert metadata_editor._values_equal(1, 1)
+    assert calls == 2
+
+    for value, expected in (
+        (True, "Bool"),
+        (np.int64(1), "Int"),
+        (np.float64(1.0), "Float"),
+        ("value", "String"),
+        ([1, 2], "Python literal"),
+    ):
+        assert metadata_editor._value_type_name(value) == expected
+    assert metadata_editor._parse_typed_value("String", " value ") == " value "
+    assert metadata_editor._parse_typed_value("Int", " 4 ") == 4
+    assert metadata_editor._parse_typed_value("Float", " 4.5 ") == 4.5
+    assert metadata_editor._parse_typed_value("Bool", "yes") is True
+    assert metadata_editor._parse_typed_value("Bool", "0") is False
+    assert metadata_editor._parse_typed_value("Python literal", "[1, 2]") == [1, 2]
+    assert metadata_editor._parse_editor_value(20, "20.5") == 20.5
+    assert metadata_editor._parse_editor_value(20.0, "20") == 20.0
+    assert metadata_editor._parse_editor_value(False, "0") is False
+    assert metadata_editor._parse_editor_value(True, "1") is True
+    assert metadata_editor._parse_editor_value("20", "20") == "20"
+    assert metadata_editor._parse_editor_value("20", "21") == "21"
+    assert metadata_editor._parse_editor_value("sample", "reference") == "reference"
+    with pytest.raises(ValueError, match="Boolean"):
+        metadata_editor._parse_typed_value("Bool", "sometimes")
+    with pytest.raises(ValueError, match="Unknown value type"):
+        metadata_editor._parse_typed_value("unknown", "1")
+    with pytest.raises(ValueError, match="Metadata field names cannot be empty"):
+        MetadataField(kind="attribute", name=" ")
+
+    coord = MetadataField(kind="coordinate", name="temperature")
+    attr = MetadataField(kind="attribute", name="sample")
+    assert isinstance(coord.operation(20), AssignScalarCoordOperation)
+    assert isinstance(attr.operation("reference"), AssignAttrsOperation)
+    data = _batch_data("scan").assign_coords(temperature=np.int64(20))
+    assert metadata_editor._field_value(data, coord) == 20
+    assert metadata_editor._field_value(data, attr) is metadata_editor._MISSING
+    assert metadata_editor._operation_value(coord.operation(20), coord) == 20
+    assert (
+        metadata_editor._operation_value(attr.operation("reference"), coord)
+        is metadata_editor._MISSING
+    )
+    assert metadata_editor._editable_attribute([1, 2])
+    assert metadata_editor._editable_attribute({"range": (1, 2)})
+    assert not metadata_editor._editable_attribute({1, 2})
+    assert not metadata_editor._editable_attribute(frozenset({1, 2}))
+    assert not metadata_editor._editable_attribute(np.array([1, 2]))
+    assert not metadata_editor._editable_attribute(object())
+    assert metadata_editor._primitive_value(np.float64(1.0))
+    assert not metadata_editor._primitive_value([1.0])
+
+
+def test_metadata_editor_table_model_tracks_origin_and_pending_state(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    temperature = MetadataField(kind="coordinate", name="temperature")
+    angle = MetadataField(kind="coordinate", name="angle")
+    sample = MetadataField(kind="attribute", name="sample")
+    enabled = MetadataField(kind="attribute", name="enabled")
+    acquired = MetadataField(kind="coordinate", name="acquired")
+    source = _batch_data("scan").assign_coords(
+        temperature=np.int64(20), acquired=np.datetime64("2024-01-01")
+    )
+    source.attrs["sample"] = "source"
+
+    with manager_context() as manager:
+        _add_batch_tools(qtbot, manager, source)
+        assert manager._metadata_editor.apply_edits(
+            {0: (MetadataCellEdit(angle, value=1.5),)}
+        )
+        model = _MetadataTableModel(
+            manager._metadata_editor,
+            (0,),
+            (temperature, angle, sample, enabled, acquired),
+            {
+                temperature: 0,
+                angle: 0.0,
+                sample: "",
+                enabled: False,
+                acquired: np.datetime64("2024-01-01"),
+            },
+        )
+
+        assert model.rowCount(model.index(0, 0)) == 0
+        assert model.columnCount(model.index(0, 0)) == 0
+        assert model.cell_at(model.index(0, 0)) is None
+        assert model.field_at(-1) is None
+        assert model.field_at(model.columnCount()) is None
+        assert model.data(QtCore.QModelIndex()) is None
+        foreign_model = QtGui.QStandardItemModel(1, 1)
+        foreign_index = foreign_model.index(0, 0)
+        assert model.cell_at(foreign_index) is None
+        assert model.data(foreign_index) is None
+        assert model.flags(foreign_index) == QtCore.Qt.ItemFlag.NoItemFlags
+        assert not model.setData(foreign_index, "ignored")
+        assert (
+            model.headerData(
+                -1,
+                QtCore.Qt.Orientation.Horizontal,
+                QtCore.Qt.ItemDataRole.DisplayRole,
+            )
+            is None
+        )
+        assert (
+            model.headerData(
+                model.columnCount(),
+                QtCore.Qt.Orientation.Horizontal,
+                QtCore.Qt.ItemDataRole.DisplayRole,
+            )
+            is None
+        )
+        assert isinstance(model.index(0, 0).data(), str)
+        assert model.index(0, 0).data(_MetadataTableModel.TargetRole) == 0
+        assert model.index(0, 1).data(_MetadataTableModel.OriginRole) == "source"
+        assert model.index(0, 2).data(_MetadataTableModel.OriginRole) == "assigned"
+        assert model.index(0, 3).data(_MetadataTableModel.OriginRole) == "source"
+        assert model.index(0, 4).data(_MetadataTableModel.OriginRole) == "missing"
+        assert model.index(0, 1).data(_MetadataTableModel.FieldRole) == temperature
+        assert model.index(0, 1).data(_MetadataTableModel.TargetRole) == 0
+        assert not model.index(0, 1).data(_MetadataTableModel.DirtyRole)
+        assert not model.index(0, 1).data(_MetadataTableModel.RevertRole)
+        assert isinstance(
+            model.index(0, 2).data(QtCore.Qt.ItemDataRole.ToolTipRole), str
+        )
+        assert isinstance(
+            model.index(0, 4).data(QtCore.Qt.ItemDataRole.ToolTipRole), str
+        )
+        assert isinstance(
+            model.index(0, 1).data(QtCore.Qt.ItemDataRole.TextAlignmentRole), int
+        )
+        assert (
+            model.headerData(
+                1, QtCore.Qt.Orientation.Horizontal, _MetadataTableModel.FieldRole
+            )
+            == temperature
+        )
+        assert not (model.flags(model.index(0, 0)) & QtCore.Qt.ItemFlag.ItemIsEditable)
+        assert model.flags(model.index(0, 1)) & QtCore.Qt.ItemFlag.ItemIsEditable
+        assert not model.setData(model.index(0, 0), "ignored")
+        assert not model.setData(
+            model.index(0, 1), "21", QtCore.Qt.ItemDataRole.DisplayRole
+        )
+        assert not model.setData(model.index(0, 1), "not-an-int")
+        assert model.setData(model.index(0, 1), "20")
+        assert not model.has_changes
+        assert model.setData(model.index(0, 1), "20.0")
+        assert model.edited_values[(0, temperature)] == 20.0
+        assert isinstance(model.edited_values[(0, temperature)], float)
+        model.undo_stack.undo()
+        assert not model.has_changes
+        assert model.setData(model.index(0, 1), "20.5")
+        assert model.edited_values[(0, temperature)] == 20.5
+        assert isinstance(model.edited_values[(0, temperature)], float)
+        model.undo_stack.undo()
+        assert not model.has_changes
+        assert model.setData(model.index(0, 1), "21")
+        assert model.has_changes
+
+        acquired_index = model.index(0, 5)
+        rejected: list[str] = []
+        model.editRejected.connect(rejected.append)
+        assert not (model.flags(acquired_index) & QtCore.Qt.ItemFlag.ItemIsEditable)
+        assert not model.setData(acquired_index, "2024-01-02")
+        assert rejected
+
+        model.revert_indexes((model.index(0, 0), model.index(0, 3)))
+        assert not model.index(0, 3).data(_MetadataTableModel.RevertRole)
+        model.revert_indexes((model.index(0, 2),))
+        assert model.index(0, 2).data(_MetadataTableModel.RevertRole)
+        assert model.index(0, 2).data(_MetadataTableModel.DirtyRole)
+        assert isinstance(
+            model.index(0, 2).data(QtCore.Qt.ItemDataRole.ToolTipRole), str
+        )
+        model.undo_stack.undo()
+        assert not model.index(0, 2).data(_MetadataTableModel.RevertRole)
+        assert model.index(0, 1).data(_MetadataTableModel.DirtyRole)
+        model.undo_stack.redo()
+        assert model.index(0, 2).data(_MetadataTableModel.RevertRole)
+
+        model.add_field(enabled, False)
+        enabled_index = model.index(0, model.fields.index(enabled) + 1)
+        assert model.setData(enabled_index, "yes")
+        edits = model.edits_by_target()[0]
+        assert {edit.field for edit in edits} == {temperature, angle, enabled}
+
+        delegate = metadata_editor._MetadataCellDelegate(manager)
+        pixmap = QtGui.QPixmap(180, 36)
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+        option = QtWidgets.QStyleOptionViewItem()
+        option.rect = QtCore.QRect(0, 0, 180, 36)
+        painter = QtGui.QPainter(pixmap)
+        delegate.paint(painter, option, model.index(0, 0))
+        delegate.paint(painter, option, model.index(0, 1))
+        delegate.paint(painter, option, model.index(0, 2))
+        painter.end()
+
+        model.set_fields((sample,), model.field_defaults)
+        assert model.has_changes
+        assert {edit.field for edit in model.edits_by_target()[0]} == {
+            temperature,
+            angle,
+            enabled,
+        }
+
+
+def test_metadata_editor_supports_paste_and_per_row_values(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = _batch_data("scan0")
+    data1 = _batch_data("scan1", offset=100.0)
+    temperature = MetadataField(kind="coordinate", name="temperature")
+    sample = MetadataField(kind="attribute", name="sample")
+
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, data0, data1)
+        dialog = MetadataEditorDialog(manager, manager._metadata_editor, (0, 1))
+        qtbot.addWidget(dialog)
+        dialog.model.add_field(temperature, 20.0)
+        dialog.model.add_field(sample, "unknown")
+        dialog.table.setCurrentIndex(dialog.model.index(0, 1))
+        clipboard = QtWidgets.QApplication.clipboard()
+        clipboard.setText("15.0\tA\n25.0\tB")
+        dialog.table._paste_clipboard()
+
+        temperature_column = dialog.model.fields.index(temperature) + 1
+        temperature_selection = QtCore.QItemSelection(
+            dialog.model.index(0, temperature_column),
+            dialog.model.index(1, temperature_column),
+        )
+        dialog.table.setCurrentIndex(dialog.model.index(0, temperature_column))
+        selection_model = typing.cast(
+            "QtCore.QItemSelectionModel", dialog.table.selectionModel()
+        )
+        selection_model.select(
+            temperature_selection,
+            QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect,
+        )
+        series_values = iter(((30.0, True), (5.0, True)))
+        monkeypatch.setattr(
+            QtWidgets.QInputDialog,
+            "getDouble",
+            staticmethod(lambda *_args, **_kwargs: next(series_values)),
+        )
+        dialog._fill_series()
+
+        sample_column = dialog.model.fields.index(sample) + 1
+        sample_selection = QtCore.QItemSelection(
+            dialog.model.index(0, sample_column),
+            dialog.model.index(1, sample_column),
+        )
+        dialog.table.setCurrentIndex(dialog.model.index(0, sample_column))
+        selection_model.select(
+            sample_selection,
+            QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect,
+        )
+        dialog._fill_down()
+
+        with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
+            dialog._apply()
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+
+        for index, temperature, sample, source in (
+            (0, 30.0, "A", data0),
+            (1, 35.0, "A", data1),
+        ):
+            actual = manager.get_imagetool(index).slicer_area._data
+            assert actual.coords["temperature"].item() == temperature
+            assert actual.attrs["sample"] == sample
+            provenance = manager._tool_graph.root_wrappers[
+                index
+            ].displayed_provenance_spec
+            assert provenance is not None
+            xr.testing.assert_identical(provenance.apply(source), actual)
+
+
+def test_metadata_editor_fill_series_rejects_boolean_columns(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    enabled = MetadataField(kind="attribute", name="enabled")
+    sources = tuple(
+        _batch_data(f"scan{index}", offset=100.0 * index).assign_attrs(
+            enabled=bool(index % 2)
+        )
+        for index in range(3)
+    )
+
+    with manager_context() as manager:
+        _add_batch_tools(qtbot, manager, *sources)
+        dialog = MetadataEditorDialog(manager, manager._metadata_editor, (0, 1, 2))
+        qtbot.addWidget(dialog)
+        column = dialog.model.fields.index(enabled) + 1
+        selection = QtCore.QItemSelection(
+            dialog.model.index(0, column), dialog.model.index(2, column)
+        )
+        dialog.table.setCurrentIndex(dialog.model.index(0, column))
+        selection_model = typing.cast(
+            "QtCore.QItemSelectionModel", dialog.table.selectionModel()
+        )
+        selection_model.select(
+            selection, QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect
+        )
+        dialog._refresh_summary()
+        assert not dialog.fill_series_button.isEnabled()
+        monkeypatch.setattr(
+            QtWidgets.QInputDialog,
+            "getDouble",
+            staticmethod(
+                lambda *_args, **_kwargs: pytest.fail(
+                    "Boolean columns must not open the numeric series dialog"
+                )
+            ),
+        )
+
+        dialog._fill_series()
+
+        assert not dialog.model.has_changes
+
+
+def test_metadata_editor_copies_selection_and_undoes_bulk_edits(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    temperature = MetadataField(kind="coordinate", name="temperature")
+    sample = MetadataField(kind="attribute", name="sample")
+    sources = (
+        _batch_data("scan0").assign_coords(temperature=10.0).assign_attrs(sample="A"),
+        _batch_data("scan1", offset=100.0)
+        .assign_coords(temperature=20.0)
+        .assign_attrs(sample="B"),
+    )
+
+    with manager_context() as manager:
+        _add_batch_tools(qtbot, manager, *sources)
+        dialog = MetadataEditorDialog(manager, manager._metadata_editor, (0, 1))
+        qtbot.addWidget(dialog)
+        temperature_column = dialog.model.fields.index(temperature) + 1
+        sample_column = dialog.model.fields.index(sample) + 1
+        header = dialog.table.horizontalHeader()
+        header.moveSection(header.visualIndex(sample_column), 1)
+
+        selection = QtCore.QItemSelection(
+            dialog.model.index(0, temperature_column),
+            dialog.model.index(1, sample_column),
+        )
+        selection_model = typing.cast(
+            "QtCore.QItemSelectionModel", dialog.table.selectionModel()
+        )
+        selection_model.select(
+            selection, QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect
+        )
+        dialog.table._copy_selection()
+        clipboard = QtWidgets.QApplication.clipboard()
+        assert clipboard.text() == "A\t10.0\nB\t20.0"
+
+        undo_shortcuts = {
+            shortcut.toString(QtGui.QKeySequence.SequenceFormat.PortableText)
+            for shortcut in dialog.undo_action.shortcuts()
+        }
+        redo_shortcuts = {
+            shortcut.toString(QtGui.QKeySequence.SequenceFormat.PortableText)
+            for shortcut in dialog.redo_action.shortcuts()
+        }
+        assert undo_shortcuts == {
+            shortcut.toString(QtGui.QKeySequence.SequenceFormat.PortableText)
+            for shortcut in QtGui.QKeySequence.keyBindings(
+                QtGui.QKeySequence.StandardKey.Undo
+            )
+        }
+        assert redo_shortcuts == {
+            shortcut.toString(QtGui.QKeySequence.SequenceFormat.PortableText)
+            for shortcut in QtGui.QKeySequence.keyBindings(
+                QtGui.QKeySequence.StandardKey.Redo
+            )
+        }
+
+        dialog.table.setCurrentIndex(dialog.model.index(0, sample_column))
+        clipboard.setText("C\t30\nD\t40")
+        dialog.table._paste_clipboard()
+        assert dialog.model.has_changes
+        assert dialog.model.cell_at(dialog.model.index(0, sample_column)).value == "A"
+        assert dialog.model.index(0, sample_column).data() == "C"
+        assert dialog.model.index(1, temperature_column).data() == "40.0"
+
+        dialog.undo_action.trigger()
+        assert not dialog.model.has_changes
+        assert dialog.model.index(0, sample_column).data() == "A"
+        assert dialog.model.index(1, temperature_column).data() == "20.0"
+
+        dialog.redo_action.trigger()
+        assert dialog.model.has_changes
+        assert dialog.model.index(0, sample_column).data() == "C"
+        assert dialog.model.index(1, temperature_column).data() == "40.0"
+
+
+def test_metadata_editor_bulk_edits_are_atomic_for_mixed_cell_types(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    mixed = MetadataField(kind="attribute", name="mixed")
+    sources = (
+        _batch_data("scan0").assign_attrs(mixed=2),
+        _batch_data("scan1", offset=100.0).assign_attrs(mixed=1.0 + 2.0j),
+    )
+
+    with manager_context() as manager:
+        _add_batch_tools(qtbot, manager, *sources)
+        dialog = MetadataEditorDialog(manager, manager._metadata_editor, (0, 1))
+        qtbot.addWidget(dialog)
+        column = dialog.model.fields.index(mixed) + 1
+        current = dialog.model.index(0, column)
+        selection = QtCore.QItemSelection(current, dialog.model.index(1, column))
+        dialog.table.setCurrentIndex(current)
+        selection_model = typing.cast(
+            "QtCore.QItemSelectionModel", dialog.table.selectionModel()
+        )
+        selection_model.select(
+            selection, QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect
+        )
+        messages = _block_message_dialog(monkeypatch)
+
+        dialog._fill_down()
+        assert messages
+        assert not dialog.model.has_changes
+
+        messages.clear()
+        series_values = iter(((2.0, True), (1.0, True)))
+        monkeypatch.setattr(
+            QtWidgets.QInputDialog,
+            "getDouble",
+            staticmethod(lambda *_args, **_kwargs: next(series_values)),
+        )
+        dialog._fill_series()
+        assert messages
+        assert not dialog.model.has_changes
+
+        messages.clear()
+        clipboard = QtWidgets.QApplication.clipboard()
+        clipboard.setText("3\n2")
+        dialog.table._paste_clipboard()
+        assert messages
+        assert not dialog.model.has_changes
+
+
+def test_metadata_editor_field_chooser_and_frozen_data_column(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = _batch_data("scan0").assign_coords(temperature=20.0)
+    data0.attrs.update({"sample": "A", "temperature": "measured"})
+    data1 = _batch_data("scan1", offset=100.0).assign_attrs(sample="B")
+
+    with manager_context() as manager:
+        _add_batch_tools(qtbot, manager, data0, data1)
+        dialog = MetadataEditorDialog(manager, manager._metadata_editor, (0, 1))
+        qtbot.addWidget(dialog)
+        dialog.show()
+        qtbot.mouseClick(dialog.fields_button, QtCore.Qt.MouseButton.LeftButton)
+        qtbot.wait_until(dialog.fields_menu.isVisible)
+        dialog.fields_menu.hide()
+
+        coord = MetadataField(kind="coordinate", name="temperature")
+        attr = MetadataField(kind="attribute", name="temperature")
+        sample = MetadataField(kind="attribute", name="sample")
+        assert {coord, attr, sample} <= set(dialog.available_fields)
+        assert dialog.fields_widget._coverage[coord] == 1
+        assert dialog.fields_widget._coverage[attr] == 1
+        assert dialog.fields_widget._coverage[sample] == 2
+        assert dialog.table.frozen_view.model() is dialog.model
+        assert not dialog.table.frozen_view.isColumnHidden(0)
+        assert all(
+            dialog.table.frozen_view.isColumnHidden(column)
+            for column in range(1, dialog.model.columnCount())
+        )
+        assert dialog.table.alternatingRowColors()
+        assert dialog.table.frozen_view.alternatingRowColors()
+        qtbot.wait_until(
+            lambda: (
+                dialog.table.horizontalHeader().height()
+                == dialog.table.frozen_view.horizontalHeader().height()
+            )
+        )
+        assert (
+            dialog.table.viewport().mapToGlobal(QtCore.QPoint()).y()
+            == dialog.table.frozen_view.viewport().mapToGlobal(QtCore.QPoint()).y()
+        )
+        metadata_widths = {
+            dialog.table.columnWidth(column)
+            for column in range(1, dialog.model.columnCount())
+        }
+        assert len(metadata_widths) > 1
+
+        chooser = dialog.fields_widget
+        chooser.search_edit.setText("sample")
+        root = chooser.tree.invisibleRootItem()
+        assert root is not None
+        chooser_items: dict[MetadataField, QtWidgets.QTreeWidgetItem] = {}
+        for group_index in range(root.childCount()):
+            group = root.child(group_index)
+            assert group is not None
+            for row in range(group.childCount()):
+                item = group.child(row)
+                assert item is not None
+                field = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+                if isinstance(field, MetadataField):
+                    chooser_items[field] = item
+        assert not chooser_items[sample].isHidden()
+        assert chooser_items[coord].isHidden()
+        chooser.search_edit.clear()
+
+        visible_field_sets: list[tuple[MetadataField, ...]] = []
+        chooser.visible_fields_changed.connect(visible_field_sets.append)
+        chooser._preset("common")
+        assert visible_field_sets[-1] == (sample,)
+        assert dialog.model.fields == [sample]
+        chooser._preset("incomplete")
+        assert set(visible_field_sets[-1]) == {coord, attr}
+        assert set(dialog.model.fields) == {coord, attr}
+        clear_button = chooser.findChild(
+            QtWidgets.QToolButton, "manager_metadata_editor_fields_clear_button"
+        )
+        assert clear_button is not None
+        chooser._preset("clear")
+        assert visible_field_sets[-1] == ()
+        assert dialog.model.columnCount() == 1
+        chooser._preset("all")
+        assert set(dialog.model.fields) == {coord, attr, sample}
+
+        messages = _block_message_dialog(monkeypatch)
+        chooser.name_edit.clear()
+        chooser._add_field()
+        assert messages
+        added: list[tuple[MetadataField, object]] = []
+        chooser.field_added.connect(lambda field, value: added.append((field, value)))
+        chooser.kind_combo.setCurrentIndex(1)
+        chooser.name_edit.setText("run")
+        chooser.type_combo.setCurrentText("Int")
+        chooser.value_edit.setText("4")
+        chooser._add_field()
+        run = MetadataField(kind="attribute", name="run")
+        assert added[-1] == (run, 4)
+        assert run in dialog.model.fields
+        chooser.add_field(run)
+
+        dialog._set_field_visible(coord, False)
+        assert coord not in dialog.model.fields
+        assert coord not in manager._metadata_editor.layout_state.fields
+        dialog._set_field_visible(coord, True)
+        assert coord in dialog.model.fields
+        assert manager._metadata_editor.layout_state.fields[-1] == coord
+        dialog._set_field_visible(sample, True)
+
+        index = dialog.model.index(0, dialog.model.fields.index(sample) + 1)
+        assert dialog.model.setData(index, "changed")
+
+        dialog.table.setColumnWidth(0, 210)
+        dialog.table.setRowHeight(0, 38)
+        assert dialog.table.frozen_view.columnWidth(0) == 210
+        assert dialog.table.frozen_view.rowHeight(0) == 38
+
+        dialog._show_header_menu(QtCore.QPoint(1, 1))
+        dialog._set_field_visible(run, False)
+        assert run not in dialog.model.fields
+
+        dialog.table.setCurrentIndex(QtCore.QModelIndex())
+        dialog._refresh_summary()
+        assert not dialog.fill_down_button.isEnabled()
+        assert not dialog.fill_series_button.isEnabled()
+        dialog._fill_down()
+        dialog._fill_series()
+        dialog.table._paste_clipboard()
+        dialog.reject()
+        assert manager.get_imagetool(0).slicer_area.data.attrs["sample"] == "A"
+
+
+def test_metadata_editor_shows_file_source_and_cell_origin(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data("scan")
+    file_path = tmp_path / "scan.h5"
+    source.to_netcdf(file_path, engine="h5netcdf")
+    first_field = MetadataField(kind="attribute", name="sample")
+    next_field = MetadataField(kind="coordinate", name="temperature")
+
+    with manager_context() as manager:
+        assert manager._data_ingress.receive_data(
+            [source],
+            {
+                "file_path": file_path,
+                "load_func": (
+                    xr.load_dataarray,
+                    {"engine": "h5netcdf"},
+                    FileDataSelection(kind="dataarray"),
+                ),
+            },
+            show=False,
+        ) == [True]
+        assert manager._metadata_editor.apply_edits(
+            {0: (MetadataCellEdit(first_field, value="reference"),)}
+        )
+        assert manager.get_imagetool(0).slicer_area._file_path is None
+
+        dialog = MetadataEditorDialog(manager, manager._metadata_editor, (0,))
+        qtbot.addWidget(dialog)
+        dialog.model.set_fields(
+            (first_field, next_field),
+            {first_field: "reference", next_field: 20.0},
+        )
+        assert dialog.model.index(0, 0).data(QtCore.Qt.ItemDataRole.ToolTipRole) == str(
+            file_path
+        )
+        assert dialog.model.index(0, 1).data(_MetadataTableModel.OriginRole) == (
+            "assigned"
+        )
+        assert dialog.model.index(0, 2).data(_MetadataTableModel.OriginRole) == (
+            "missing"
+        )
+
+
+def test_metadata_editor_layout_discovery_and_action_dispatch(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    context_field = AcquisitionContextField.from_value(
+        kind="coordinate", name="photon_energy", value=21.2
+    )
+    saved_field = MetadataField(kind="attribute", name="operator")
+    complex_field = MetadataField(kind="attribute", name="history")
+    invalid_field = MetadataField(kind="attribute", name="unserializable")
+    source = _batch_data("scan").assign_coords(temperature=20.0)
+    source.attrs.update(
+        {
+            "sample": "reference",
+            complex_field.name: [1, 2],
+            invalid_field.name: object(),
+        }
+    )
+
+    with manager_context() as manager:
+        controller = manager._metadata_editor
+        controller.restore_layout_payload(None)
+        manager._acquisition_context.set_state(
+            AcquisitionContextState(fields=(context_field,)), mark_dirty=False
+        )
+        controller.set_layout_fields((saved_field,))
+
+        _add_batch_tools(qtbot, manager, source)
+        fields, coverage, defaults = controller.discover_fields((0,))
+        context_key = MetadataField(kind="coordinate", name="photon_energy")
+        sample = MetadataField(kind="attribute", name="sample")
+        temperature = MetadataField(kind="coordinate", name="temperature")
+        assert {context_key, saved_field, complex_field, sample, temperature} <= set(
+            fields
+        )
+        assert invalid_field not in fields
+        assert coverage[context_key] == 0
+        assert defaults[context_key] == 21.2
+        assert controller.visible_fields(fields, defaults) == (saved_field,)
+        assert controller.layout_payload()["initialized"] is True
+
+        dirty_calls = 0
+
+        def _mark_dirty() -> None:
+            nonlocal dirty_calls
+            dirty_calls += 1
+
+        monkeypatch.setattr(
+            manager._workspace_controller, "_mark_workspace_layout_dirty", _mark_dirty
+        )
+        controller.set_layout_fields((saved_field,))
+        assert dirty_calls == 0
+        controller.set_layout_fields((sample,))
+        assert dirty_calls == 1
+
+        with pytest.warns(UserWarning, match="metadata editor layout"):
+            controller.restore_layout_payload({"fields": [{"kind": "invalid"}]})
+        assert not controller.layout_state.initialized
+        manager._workspace_state.metadata_editor_layout = "invalid"  # type: ignore[assignment]
+        assert not controller.layout_state.initialized
+        controller.restore_layout_payload(None)
+
+        calls: list[tuple[int | str, ...]] = []
+        monkeypatch.setattr(
+            metadata_editor.MetadataEditorDialog,
+            "exec",
+            lambda dialog: (
+                calls.append(dialog.targets)
+                or int(QtWidgets.QDialog.DialogCode.Rejected)
+            ),
+        )
+        manager.tree_view.clearSelection()
+        controller.show_editor()
+        assert not calls
+        select_tools(manager, [0])
+        controller.show_editor()
+        assert calls == [(0,)]
+
+
+def test_metadata_editor_updates_child_source_assignments(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    parent = _batch_data("parent")
+    child = parent.assign_attrs(seed=1)
+    field = MetadataField(kind="attribute", name="sample")
+
+    with manager_context() as manager:
+        _add_batch_tools(qtbot, manager, parent)
+        child_tool = itool(child, manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=full_data(AssignAttrsOperation(attrs={"seed": 1})),
+        )
+        child_node = manager._node_for_target(child_uid)
+        assert child_node.displayed_source_spec is not None
+
+        assert manager._metadata_editor.apply_edits(
+            {child_uid: (MetadataCellEdit(field, value="reference"),)}
+        )
+
+        assert manager.get_imagetool(child_uid).slicer_area.data.attrs["sample"] == (
+            "reference"
+        )
+        assert "sample" not in manager.get_imagetool(0).slicer_area.data.attrs
+
+
+def test_metadata_preserving_replacement_keeps_child_source_binding(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    parent = _batch_data("parent")
+    source_spec = full_data(
+        AssignAttrsOperation(attrs={"sample": "reference", "seed": 1})
+    )
+
+    with manager_context() as manager:
+        _add_batch_tools(qtbot, manager, parent)
+        child_tool = itool(source_spec.apply(parent), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=source_spec,
+            source_auto_update=True,
+        )
+        child_node = manager._child_node(child_uid)
+
+        manual = _batch_data("manual", offset=100.0)
+        replace_data(child_uid, manual)
+
+        assert child_node.has_source_binding
+        assert child_node.source_auto_update
+        assert child_node.source_spec == source_spec
+        xr.testing.assert_identical(
+            child_tool.slicer_area._data,
+            manual.assign_attrs(sample="reference", seed=1),
+        )
+
+        updated_parent = _batch_data("updated", offset=200.0)
+        replace_data(0, updated_parent)
+        qtbot.wait_until(
+            lambda: (
+                child_tool.slicer_area._data.attrs.get("sample") == "reference"
+                and np.array_equal(
+                    child_tool.slicer_area._data.values,
+                    updated_parent.values,
+                )
+            )
+        )
+        xr.testing.assert_identical(
+            child_tool.slicer_area._data,
+            updated_parent.assign_attrs(sample="reference", seed=1),
+        )
+
+
+def test_metadata_editor_replaces_assignments_in_place_and_reverts(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data("scan")
+    file_path = tmp_path / "scan.h5"
+    source.to_netcdf(file_path, engine="h5netcdf")
+    context_fields = (
+        AcquisitionContextField.from_value(
+            kind="coordinate", name="temperature", value=20.0
+        ),
+        AcquisitionContextField.from_value(
+            kind="attribute", name="sample", value="reference"
+        ),
+        AcquisitionContextField.from_value(kind="attribute", name="run", value=1),
+    )
+    fields = (
+        MetadataField(kind="coordinate", name="temperature"),
+        MetadataField(kind="attribute", name="sample"),
+        MetadataField(kind="attribute", name="run"),
+    )
+    edits = tuple(
+        MetadataCellEdit(field, value=value)
+        for field, value in zip(fields, (25.0, "edited", 2), strict=True)
+    )
+
+    with manager_context() as manager:
+        manager._acquisition_context.set_state(
+            AcquisitionContextState(enabled=True, fields=context_fields),
+            mark_dirty=False,
+        )
+        assert manager._data_ingress.receive_data(
+            [source],
+            {
+                "file_path": file_path,
+                "load_func": (
+                    xr.load_dataarray,
+                    {"engine": "h5netcdf"},
+                    FileDataSelection(kind="dataarray"),
+                ),
+            },
+            show=False,
+        ) == [True]
+        node = manager._tool_graph.root_wrappers[0]
+        before_spec = node.displayed_provenance_spec
+        assert before_spec is not None
+        before_assignments = tuple(
+            operation
+            for _ref, operation in iter_operation_refs(before_spec)
+            if isinstance(operation, AssignScalarCoordOperation | AssignAttrsOperation)
+        )
+        assert len(before_assignments) == 2
+
+        file_path.unlink()
+        with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
+            assert manager._metadata_editor.apply_edits({0: edits})
+
+        actual = manager.get_imagetool(0).slicer_area.data
+        assert actual.coords["temperature"].item() == 25.0
+        assert actual.attrs["sample"] == "edited"
+        assert actual.attrs["run"] == 2
+        edited_spec = node.displayed_provenance_spec
+        assert edited_spec is not None
+        edited_assignments = tuple(
+            operation
+            for _ref, operation in iter_operation_refs(edited_spec)
+            if isinstance(operation, AssignScalarCoordOperation | AssignAttrsOperation)
+        )
+        assert len(edited_assignments) == len(before_assignments)
+        scalar_operation = next(
+            operation
+            for operation in edited_assignments
+            if isinstance(operation, AssignScalarCoordOperation)
+        )
+        attrs_operation = next(
+            operation
+            for operation in edited_assignments
+            if isinstance(operation, AssignAttrsOperation)
+        )
+        assert scalar_operation.decoded_value == 25.0
+        assert attrs_operation.attrs == {"sample": "edited", "run": 2}
+
+        source.to_netcdf(file_path, engine="h5netcdf")
+        with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
+            assert manager._metadata_editor.apply_edits(
+                {0: tuple(MetadataCellEdit(field, revert=True) for field in fields)}
+            )
+        xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, source)
+        deactivated_spec = node.displayed_provenance_spec
+        assert deactivated_spec is not None
+        assert not any(
+            isinstance(operation, AssignScalarCoordOperation | AssignAttrsOperation)
+            for _ref, operation in iter_operation_refs(deactivated_spec)
+        )
+
+
+def test_metadata_editor_preflights_every_target(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    messages = _block_message_dialog(monkeypatch)
+    compatible = _batch_data("compatible")
+    incompatible = _batch_data("incompatible", dims=("angle", "y"))
+    field = MetadataField(kind="coordinate", name="angle")
+    edit = MetadataCellEdit(field, value=1.5)
+
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, compatible, incompatible)
+        assert not manager._metadata_editor.apply_edits({0: (edit,), 1: (edit,)})
+        assert messages
+        xr.testing.assert_identical(
+            manager.get_imagetool(0).slicer_area.data, compatible
+        )
+        xr.testing.assert_identical(
+            manager.get_imagetool(1).slicer_area.data, incompatible
+        )
 
 
 def test_batch_operation_metadata_matches_launcher() -> None:
@@ -4088,6 +5655,62 @@ def test_managed_child_imagetool_file_menu_reload_refreshes_file_parent(
         xr.testing.assert_identical(fetch(child_uid), updated)
 
 
+def test_acquisition_context_is_replayed_when_file_data_reloads(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data("scan")
+    file_path = tmp_path / "scan.h5"
+    source.to_netcdf(file_path, engine="h5netcdf")
+    state = AcquisitionContextState(
+        enabled=True,
+        fields=(
+            AcquisitionContextField.from_value(
+                kind="coordinate", name="temperature", value=20.0
+            ),
+            AcquisitionContextField.from_value(
+                kind="attribute", name="sample", value="reference"
+            ),
+        ),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager._acquisition_context.set_state(state, mark_dirty=False)
+        assert manager._data_ingress.receive_data(
+            [source],
+            {
+                "file_path": file_path,
+                "load_func": (
+                    xr.load_dataarray,
+                    {"engine": "h5netcdf"},
+                    FileDataSelection(kind="dataarray"),
+                ),
+            },
+            show=False,
+        ) == [True]
+        select_tools(manager, [0])
+
+        updated = (source + 100.0).rename("updated")
+        updated.to_netcdf(file_path, engine="h5netcdf")
+        with qtbot.wait_signal(
+            manager.get_imagetool(0).slicer_area.sigDataChanged, timeout=5000
+        ):
+            manager.reload_selected()
+
+        actual = manager.get_imagetool(0).slicer_area.data
+        assert actual.coords["temperature"].item() == 20.0
+        assert actual.attrs["sample"] == "reference"
+        xr.testing.assert_identical(
+            actual,
+            updated.assign_coords(temperature=20.0).assign_attrs(sample="reference"),
+        )
+
+
 def test_imagetool_source_chain_reload_target_falls_back_without_managed_source(
     qtbot,
     test_data,
@@ -4373,6 +5996,233 @@ def test_manager_notes_persist_workspace_roundtrip(
         assert manager._child_node(figure_uid).note == "figure note"
 
 
+def test_acquisition_context_persists_on_open_but_not_workspace_import(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    saved_state = AcquisitionContextState(
+        enabled=True,
+        fields=(
+            AcquisitionContextField.from_value(
+                kind="coordinate", name="temperature", value=20.0
+            ),
+            AcquisitionContextField.from_value(
+                kind="attribute", name="sample", value="reference"
+            ),
+        ),
+    )
+    delta_saved_state = AcquisitionContextState(
+        enabled=True,
+        fields=(
+            AcquisitionContextField.from_value(
+                kind="attribute", name="operator", value="current user"
+            ),
+        ),
+    )
+    transient_state = AcquisitionContextState(
+        enabled=True,
+        fields=(
+            AcquisitionContextField.from_value(kind="attribute", name="run", value=4),
+        ),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, _batch_data("scan"))
+        manager._acquisition_context.set_state(saved_state, mark_dirty=False)
+        workspace_path = tmp_path / "acquisition-context.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+
+        manager._acquisition_context.set_state(delta_saved_state)
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=False
+        )
+        assert manager._workspace_state.delta_save_count == 1
+
+        manager._acquisition_context.set_state(transient_state, mark_dirty=False)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=False,
+            associate=False,
+            mark_dirty=True,
+            select=False,
+        )
+        assert manager._acquisition_context.state == transient_state
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        assert manager._acquisition_context.state == delta_saved_state
+        assert manager.acquisition_context_status_button.isVisible()
+
+
+def test_metadata_assignment_provenance_persists_for_live_replacement(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    field = MetadataField(kind="attribute", name="sample")
+    source = _batch_data("scan")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        assert manager._data_ingress.receive_data([source], {}, show=False) == [True]
+        assert manager._metadata_editor.apply_edits(
+            {0: (MetadataCellEdit(field, value="reference"),)}
+        )
+
+        workspace_path = tmp_path / "metadata-assignment.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        assert manager._acquisition_context.state == AcquisitionContextState()
+        spec = manager._tool_graph.root_wrappers[0].displayed_provenance_spec
+        assert spec is not None
+        assert any(
+            isinstance(operation, AssignAttrsOperation)
+            for _ref, operation in iter_operation_refs(spec)
+        )
+
+        replacement = _batch_data("replacement", offset=100.0)
+        with qtbot.wait_signal(manager._sigDataReplaced, timeout=5000):
+            replace_data(0, replacement)
+        xr.testing.assert_identical(
+            manager.get_imagetool(0).slicer_area.data,
+            replacement.assign_attrs(sample="reference"),
+        )
+
+
+def test_metadata_editor_layout_persists_with_workspace(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    field = MetadataField(kind="attribute", name="sample")
+    transient = MetadataField(kind="coordinate", name="temperature")
+
+    with manager_context() as manager:
+        _add_batch_tools(qtbot, manager, _batch_data("scan"))
+        manager._metadata_editor.set_layout_fields((field,))
+        workspace_path = tmp_path / "metadata-layout.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+        manager._metadata_editor.set_layout_fields((transient,))
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        assert manager._metadata_editor.layout_state.fields == (field,)
+
+
+def test_metadata_editor_reads_deferred_workspace_metadata_without_materializing(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    temperature = MetadataField(kind="coordinate", name="temperature")
+    sample = MetadataField(kind="attribute", name="sample")
+
+    with manager_context() as manager:
+        manager.show()
+        for index in range(2):
+            data = _batch_data(f"deferred{index}").assign_coords(
+                temperature=20.0 + index
+            )
+            data.attrs["sample"] = f"sample-{index}"
+            tool = typing.cast(
+                "erlab.interactive.imagetool.ImageTool",
+                itool(data, manager=False, execute=False),
+            )
+            manager.add_imagetool(tool, show=False)
+            tool.hide()
+
+        workspace_path = tmp_path / "deferred-metadata-editor.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        wrappers = tuple(manager._tool_graph.root_wrappers.values())
+        assert all(
+            wrapper.pending_workspace_memory_payload is not None for wrapper in wrappers
+        )
+
+        def _fail_materialize_pending_payload(_node) -> bool:
+            pytest.fail("opening the metadata editor materialized deferred data")
+
+        monkeypatch.setattr(
+            manager,
+            "_materialize_pending_workspace_payload",
+            _fail_materialize_pending_payload,
+        )
+        dialog = MetadataEditorDialog(manager, manager._metadata_editor, (0, 1))
+        qtbot.addWidget(dialog)
+
+        temperature_column = dialog.model.fields.index(temperature) + 1
+        sample_column = dialog.model.fields.index(sample) + 1
+        assert (
+            dialog.model.cell_at(dialog.model.index(0, temperature_column)).value
+            == 20.0
+        )
+        assert (
+            dialog.model.cell_at(dialog.model.index(1, temperature_column)).value
+            == 21.0
+        )
+        assert dialog.model.cell_at(dialog.model.index(0, sample_column)).value == (
+            "sample-0"
+        )
+        assert dialog.model.cell_at(dialog.model.index(1, sample_column)).value == (
+            "sample-1"
+        )
+        assert all(
+            wrapper.pending_workspace_memory_payload is not None for wrapper in wrappers
+        )
+
+        select_tools(manager, [0])
+        context_dialog = AcquisitionContextDialog(manager, manager._acquisition_context)
+        qtbot.addWidget(context_dialog)
+        selected_data = context_dialog._selected_data()
+        assert selected_data is not None
+        assert selected_data.coords["temperature"].item() == 20.0
+        assert selected_data.attrs["sample"] == "sample-0"
+        assert all(
+            wrapper.pending_workspace_memory_payload is not None for wrapper in wrappers
+        )
+
+
 def test_manager_notes_preserved_by_duplicate_and_promote(
     qtbot,
     monkeypatch,
@@ -4398,7 +6248,6 @@ def test_manager_notes_preserved_by_duplicate_and_promote(
             source_spec=full_data(),
             note="child note",
         )
-
         select_tools(manager, [0])
         manager.edit_note_action.trigger()
         manager.notes_editor.setPlainText("pending duplicate root note")
@@ -4425,7 +6274,6 @@ def test_manager_notes_preserved_by_duplicate_and_promote(
         assert (
             manager._tool_graph.nodes[child_uid].note == "pending promoted child note"
         )
-
         figure_uid = manager.add_figuretool(
             FigureComposerTool(test_data),
             show=False,
