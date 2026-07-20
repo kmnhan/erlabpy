@@ -1909,6 +1909,15 @@ def test_metadata_editor_layout_discovery_and_action_dispatch(
         assert dirty_calls == 0
         controller.set_layout_fields((sample,))
         assert dirty_calls == 1
+        controller.set_column_width(None, 237)
+        controller.set_column_width(sample, 119)
+        assert dirty_calls == 3
+        controller.set_column_width(sample, 119)
+        assert dirty_calls == 3
+        controller.set_layout_fields((saved_field,))
+        assert dirty_calls == 4
+        assert controller.saved_column_width(None) == 237
+        assert controller.saved_column_width(sample) == 119
 
         with pytest.warns(UserWarning, match="metadata editor layout"):
             controller.restore_layout_payload({"fields": [{"kind": "invalid"}]})
@@ -6122,17 +6131,51 @@ def test_metadata_editor_layout_persists_with_workspace(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    field = MetadataField(kind="attribute", name="sample")
+    sample = MetadataField(kind="attribute", name="sample")
+    operator = MetadataField(kind="attribute", name="operator")
     transient = MetadataField(kind="coordinate", name="temperature")
 
     with manager_context() as manager:
-        _add_batch_tools(qtbot, manager, _batch_data("scan"))
-        manager._metadata_editor.set_layout_fields((field,))
+        _add_batch_tools(
+            qtbot,
+            manager,
+            _batch_data("scan").assign_attrs(sample="reference", operator="user"),
+        )
+        manager._metadata_editor.set_layout_fields((sample, operator))
+        dialog = MetadataEditorDialog(manager, manager._metadata_editor, (0,))
+        qtbot.addWidget(dialog)
+        dialog.show()
+        dialog.table.frozen_view.setColumnWidth(0, 237)
+        assert dialog.table.columnWidth(0) == 237
+        dialog.table.setColumnWidth(dialog.model.fields.index(sample) + 1, 119)
+        dialog.table.setColumnWidth(dialog.model.fields.index(operator) + 1, 173)
+        assert manager._metadata_editor.saved_column_width(None) == 237
+        assert manager._metadata_editor.saved_column_width(sample) == 119
+        assert manager._metadata_editor.saved_column_width(operator) == 173
+
+        dialog._set_visible_fields((operator, sample))
+        assert dialog.table.columnWidth(dialog.model.fields.index(sample) + 1) == 119
+        assert dialog.table.columnWidth(dialog.model.fields.index(operator) + 1) == 173
+        dialog.reject()
+
+        reopened = MetadataEditorDialog(manager, manager._metadata_editor, (0,))
+        qtbot.addWidget(reopened)
+        assert reopened.table.columnWidth(0) == 237
+        assert (
+            reopened.table.columnWidth(reopened.model.fields.index(sample) + 1) == 119
+        )
+        assert (
+            reopened.table.columnWidth(reopened.model.fields.index(operator) + 1) == 173
+        )
+        reopened.reject()
+
         workspace_path = tmp_path / "metadata-layout.itws"
         manager._workspace_controller.saving._save_workspace_document(
             workspace_path, force_full=True
         )
         manager._metadata_editor.set_layout_fields((transient,))
+        manager._metadata_editor.set_column_width(None, 301)
+        manager._metadata_editor.set_column_width(transient, 181)
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,
@@ -6140,7 +6183,21 @@ def test_metadata_editor_layout_persists_with_workspace(
             mark_dirty=False,
             select=False,
         )
-        assert manager._metadata_editor.layout_state.fields == (field,)
+        assert manager._metadata_editor.layout_state.fields == (operator, sample)
+        assert manager._metadata_editor.saved_column_width(None) == 237
+        assert manager._metadata_editor.saved_column_width(sample) == 119
+        assert manager._metadata_editor.saved_column_width(operator) == 173
+        assert manager._metadata_editor.saved_column_width(transient) is None
+
+        restored = MetadataEditorDialog(manager, manager._metadata_editor, (0,))
+        qtbot.addWidget(restored)
+        assert restored.table.columnWidth(0) == 237
+        assert (
+            restored.table.columnWidth(restored.model.fields.index(sample) + 1) == 119
+        )
+        assert (
+            restored.table.columnWidth(restored.model.fields.index(operator) + 1) == 173
+        )
 
 
 def test_metadata_editor_reads_deferred_workspace_metadata_without_materializing(

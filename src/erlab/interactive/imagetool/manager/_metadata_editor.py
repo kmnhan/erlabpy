@@ -31,7 +31,7 @@ from erlab.interactive.imagetool._provenance._operations import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Hashable, Iterable, Mapping, Sequence
+    from collections.abc import Hashable, Iterable, Iterator, Mapping, Sequence
 
     import xarray as xr
 
@@ -149,12 +149,23 @@ class MetadataField(pydantic.BaseModel):
         return AssignScalarCoordOperation(coord_name=self.name, value=value)
 
 
+class MetadataFieldWidth(pydantic.BaseModel):
+    """Saved width for a metadata column with a stable field identity."""
+
+    field: MetadataField
+    width: int = pydantic.Field(ge=1, le=10_000)
+
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
+
+
 class MetadataEditorLayout(pydantic.BaseModel):
     """Workspace-scoped logbook column layout."""
 
-    schema_version: int = 1
+    schema_version: int = 2
     initialized: bool = False
     fields: tuple[MetadataField, ...] = ()
+    data_column_width: int | None = pydantic.Field(default=None, ge=1, le=10_000)
+    field_widths: tuple[MetadataFieldWidth, ...] = ()
 
     model_config = pydantic.ConfigDict(frozen=True, extra="ignore")
 
@@ -721,7 +732,7 @@ class _MetadataTableView(QtWidgets.QTableView):
         )
         frozen_vertical_header.hide()
         frozen_horizontal_header.setSectionResizeMode(
-            QtWidgets.QHeaderView.ResizeMode.Fixed
+            QtWidgets.QHeaderView.ResizeMode.Interactive
         )
         self.frozen_view.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -749,6 +760,7 @@ class _MetadataTableView(QtWidgets.QTableView):
             "QtWidgets.QScrollBar", self.frozen_view.verticalScrollBar()
         )
         horizontal_header.sectionResized.connect(self._sync_frozen_width)
+        frozen_horizontal_header.sectionResized.connect(self._sync_main_width)
         horizontal_header.geometriesChanged.connect(self._update_frozen_geometry)
         vertical_header.sectionResized.connect(self._sync_frozen_row_height)
         vertical_header.geometriesChanged.connect(self._update_frozen_geometry)
@@ -804,6 +816,11 @@ class _MetadataTableView(QtWidgets.QTableView):
         if logical == 0:
             self.frozen_view.setColumnWidth(0, new)
             self._update_frozen_geometry()
+
+    @QtCore.Slot(int, int, int)
+    def _sync_main_width(self, logical: int, _old: int, new: int) -> None:
+        if logical == 0 and self.columnWidth(0) != new:
+            self.setColumnWidth(0, new)
 
     @QtCore.Slot(int, int, int)
     def _sync_frozen_row_height(self, logical: int, _old: int, new: int) -> None:
@@ -1200,6 +1217,7 @@ class MetadataEditorDialog(QtWidgets.QDialog):
         self.setObjectName("manager_metadata_editor_dialog")
         self.controller = controller
         self.targets = tuple(targets)
+        self._column_width_tracking_enabled = False
         metadata_by_target = controller.metadata_for_targets(targets)
         self.available_fields, coverage, defaults = controller.discover_fields(
             targets, metadata_by_target=metadata_by_target
@@ -1286,7 +1304,9 @@ class MetadataEditorDialog(QtWidgets.QDialog):
         header.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         header.customContextMenuRequested.connect(self._show_header_menu)
         header.sectionMoved.connect(self._column_moved)
-        self.table.resize_columns_to_contents()
+        self._resize_and_restore_columns()
+        header.sectionResized.connect(self._column_resized)
+        self._column_width_tracking_enabled = True
         layout.addWidget(self.table)
 
         self.summary_label = QtWidgets.QLabel(self)
@@ -1355,6 +1375,38 @@ class MetadataEditorDialog(QtWidgets.QDialog):
             )
         )
 
+    @contextlib.contextmanager
+    def _suspend_column_width_tracking(self) -> Iterator[None]:
+        enabled = self._column_width_tracking_enabled
+        self._column_width_tracking_enabled = False
+        try:
+            yield
+        finally:
+            self._column_width_tracking_enabled = enabled
+
+    def _resize_and_restore_columns(self) -> None:
+        with self._suspend_column_width_tracking():
+            self.table.resize_columns_to_contents()
+            data_width = self.controller.saved_column_width(None)
+            if data_width is not None:
+                self.table.setColumnWidth(0, data_width)
+            for column in range(1, self.model.columnCount()):
+                field = self.model.field_at(column)
+                if field is None:
+                    continue
+                width = self.controller.saved_column_width(field)
+                if width is not None:
+                    self.table.setColumnWidth(column, width)
+
+    @QtCore.Slot(int, int, int)
+    def _column_resized(self, logical: int, _old: int, new: int) -> None:
+        if not self._column_width_tracking_enabled:
+            return
+        field = self.model.field_at(logical)
+        if logical != 0 and field is None:
+            return
+        self.controller.set_column_width(field, new)
+
     @QtCore.Slot(object, bool)
     def _set_field_visible(self, field: object, visible: bool) -> None:
         if not isinstance(field, MetadataField):
@@ -1364,8 +1416,9 @@ class MetadataEditorDialog(QtWidgets.QDialog):
             fields.append(field)
         elif not visible and field in fields:
             fields.remove(field)
-        self.model.set_fields(fields, self.model.field_defaults)
-        self.table.resize_columns_to_contents()
+        with self._suspend_column_width_tracking():
+            self.model.set_fields(fields, self.model.field_defaults)
+            self._resize_and_restore_columns()
         self.fields_widget.set_field_visible(field, visible)
         self.controller.set_layout_fields(fields)
 
@@ -1376,8 +1429,9 @@ class MetadataEditorDialog(QtWidgets.QDialog):
         ):
             return
         visible = typing.cast("tuple[MetadataField, ...]", fields)
-        self.model.set_fields(visible, self.model.field_defaults)
-        self.table.resize_columns_to_contents()
+        with self._suspend_column_width_tracking():
+            self.model.set_fields(visible, self.model.field_defaults)
+            self._resize_and_restore_columns()
         for field in self.available_fields:
             self.fields_widget.set_field_visible(field, field in visible)
         self.controller.set_layout_fields(visible)
@@ -1388,9 +1442,10 @@ class MetadataEditorDialog(QtWidgets.QDialog):
             return
         if field not in self.available_fields:
             self.available_fields = (*self.available_fields, field)
-        self.model.set_fields(self._visual_fields(), self.model.field_defaults)
-        self.model.add_field(field, value)
-        self.table.resize_columns_to_contents()
+        with self._suspend_column_width_tracking():
+            self.model.set_fields(self._visual_fields(), self.model.field_defaults)
+            self.model.add_field(field, value)
+            self._resize_and_restore_columns()
         self.fields_widget.add_field(field)
         self.controller.set_layout_fields(self.model.fields)
         self.fields_menu.close()
@@ -1561,7 +1616,53 @@ class _MetadataEditorController(QtCore.QObject):
         )
 
     def set_layout_fields(self, fields: Sequence[MetadataField]) -> None:
-        state = MetadataEditorLayout(initialized=True, fields=tuple(fields))
+        state = self.layout_state.model_copy(
+            update={
+                "schema_version": 2,
+                "initialized": True,
+                "fields": tuple(fields),
+            }
+        )
+        self._set_layout_state(state)
+
+    def saved_column_width(self, field: MetadataField | None) -> int | None:
+        state = self.layout_state
+        if field is None:
+            return state.data_column_width
+        return next(
+            (
+                saved.width
+                for saved in reversed(state.field_widths)
+                if saved.field == field
+            ),
+            None,
+        )
+
+    def set_column_width(self, field: MetadataField | None, width: int) -> None:
+        state = self.layout_state
+        if field is None:
+            if state.data_column_width == width:
+                return
+            state = state.model_copy(
+                update={"schema_version": 2, "data_column_width": width}
+            )
+        else:
+            widths = {saved.field: saved.width for saved in state.field_widths}
+            if widths.get(field) == width:
+                return
+            widths[field] = width
+            state = state.model_copy(
+                update={
+                    "schema_version": 2,
+                    "field_widths": tuple(
+                        MetadataFieldWidth(field=saved_field, width=saved_width)
+                        for saved_field, saved_width in widths.items()
+                    ),
+                }
+            )
+        self._set_layout_state(state)
+
+    def _set_layout_state(self, state: MetadataEditorLayout) -> None:
         payload = state.model_dump(mode="json")
         if payload == self.manager._workspace_state.metadata_editor_layout:
             return
