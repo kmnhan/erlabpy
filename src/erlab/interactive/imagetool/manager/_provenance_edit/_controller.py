@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import keyword
 import pathlib
 import traceback
 import typing
@@ -202,11 +203,26 @@ class _ProvenanceEditController:
             return None
 
         if spec.kind == "script":
+            external_input_name = self._detached_script_replay_input_name(node, spec)
+            external_input_names = (
+                None if external_input_name is None else {external_input_name}
+            )
             if not (
-                script_provenance_replayable(spec)
-                or script_provenance_requires_trust(spec)
+                script_provenance_replayable(
+                    spec,
+                    external_input_names=external_input_names,
+                )
+                or script_provenance_requires_trust(
+                    spec,
+                    external_input_names=external_input_names,
+                )
             ):
                 return "This provenance contains recorded code that cannot be replayed."
+            if (
+                external_input_name is not None
+                and node.detached_replay_source_data is None
+            ):
+                return "The original replay source is no longer available."
             for script_input in spec.script_inputs:
                 reason = self._manager._script_input_unavailable_reason(
                     script_input,
@@ -243,9 +259,31 @@ class _ProvenanceEditController:
             ):
                 return "The parent ImageTool source is no longer available."
             return None
-        if node.detached_live_parent_data is None:
+        if node.detached_replay_source_data is None:
             return "This live provenance no longer has its parent source data."
         return None
+
+    @staticmethod
+    def _detached_script_replay_input_name(
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        spec: ToolProvenanceSpec,
+    ) -> str | None:
+        """Return the external seed name for a detached watched-variable recipe."""
+        if (
+            spec.kind != "script"
+            or spec.script_inputs
+            or script_provenance_replayable(spec)
+            or script_provenance_requires_trust(spec)
+        ):
+            return None
+        name = getattr(node, "_watched_varname", None)
+        if (
+            not isinstance(name, str)
+            or not name.isidentifier()
+            or keyword.iskeyword(name)
+        ):
+            return None
+        return name
 
     def can_reorder_steps(self) -> tuple[bool, str]:
         node = self._metadata_node()
@@ -634,7 +672,7 @@ class _ProvenanceEditController:
             spec.kind in {"full_data", "public_data", "selection"}
             and row.scope != "source"
             and active_filter_ref != row.edit_ref
-            and node.detached_live_parent_data is None
+            and node.detached_replay_source_data is None
         ):
             return False, "This live row needs a parent source to replay."
         if script_operation is not None:
@@ -1820,11 +1858,35 @@ class _ProvenanceEditController:
             if scope == "source" and node.parent_uid is not None:
                 parent = self._manager._parent_node(node)
                 return spec.apply(parent.current_source_data()), spec
-            parent_data = node.detached_live_parent_data
+            parent_data = node.detached_replay_source_data
             if parent_data is None:
                 raise RuntimeError("Live provenance needs a parent source to replay")
             return spec.apply(parent_data), spec
         if spec.kind == "script":
+            external_input_name = self._detached_script_replay_input_name(node, spec)
+            if external_input_name is not None:
+                source_data = node.detached_replay_source_data
+                if source_data is None:
+                    raise RuntimeError("Script provenance needs its replay source")
+                replay_inputs = {external_input_name: source_data}
+                trusted_user_code = script_provenance_requires_trust(
+                    spec,
+                    external_input_names=set(replay_inputs),
+                )
+                if trusted_user_code:
+                    self._manager._ensure_script_provenance_trusted(
+                        spec,
+                        reason="apply this provenance order",
+                        external_input_names=set(replay_inputs),
+                    )
+                return (
+                    replay_script_provenance(
+                        spec,
+                        replay_inputs,
+                        trusted_user_code=trusted_user_code,
+                    ),
+                    spec,
+                )
             result = self._manager._rebuild_script_provenance(
                 spec,
                 target_node_uid=node.uid,
@@ -1842,7 +1904,7 @@ class _ProvenanceEditController:
             parent = self._manager._parent_node(node)
             parent_data = parent.current_source_data()
         else:
-            parent_data = node.detached_live_parent_data
+            parent_data = node.detached_replay_source_data
             if parent_data is None:
                 raise RuntimeError("Live provenance needs a parent source to replay")
         data = ToolProvenanceSpec._starting_data_for_kind(
@@ -1953,14 +2015,12 @@ class _ProvenanceEditController:
                 preserve_filter=preserve_filter,
             )
             return
-        live_parent_data = None
-        if spec.kind in {"full_data", "public_data", "selection"}:
-            live_parent_data = node.detached_live_parent_data
+        replay_source_data = node.detached_replay_source_data
         node.replace_with_detached_data(
             data,
             spec,
             preserve_filter=preserve_filter,
-            live_parent_data=live_parent_data,
+            replay_source_data=replay_source_data,
         )
 
     def _active_filter_ref(

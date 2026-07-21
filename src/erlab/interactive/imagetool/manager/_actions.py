@@ -19,7 +19,6 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     compose_display_provenance,
     compose_full_provenance,
-    require_live_source_spec,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AssignCoord1DOperation,
@@ -524,7 +523,7 @@ class _ActionsController:
 
                 replace_kind = ""
                 replace_provenance = None
-                replace_live_parent_data = None
+                replace_replay_source_data = None
                 if launch_mode == "replace":
                     displayed_source = node.displayed_source_spec
                     if displayed_source is not None:
@@ -545,13 +544,11 @@ class _ActionsController:
                         replace_kind = "detached"
                         replace_provenance = detached_provenance
                     if replace_kind == "detached":
-                        with contextlib.suppress(TypeError):
-                            if require_live_source_spec(replace_provenance) is not None:
-                                replace_live_parent_data = (
-                                    node.detached_live_parent_data
-                                    if node.detached_live_parent_data is not None
-                                    else slicer_area.data
-                                )
+                        replace_replay_source_data = (
+                            node.detached_replay_source_data
+                            if node.detached_replay_source_data is not None
+                            else slicer_area.data
+                        )
 
                 plan.append(
                     (
@@ -564,7 +561,7 @@ class _ActionsController:
                         detached_provenance,
                         replace_kind,
                         replace_provenance,
-                        replace_live_parent_data,
+                        replace_replay_source_data,
                     )
                 )
             except Exception as exc:
@@ -586,7 +583,7 @@ class _ActionsController:
                 detached_provenance,
                 replace_kind,
                 replace_provenance,
-                replace_live_parent_data,
+                replace_replay_source_data,
             ) in plan:
                 if launch_mode == "replace":
                     if replace_provenance is not None:
@@ -599,7 +596,7 @@ class _ActionsController:
                         else:
                             node.set_detached_provenance(
                                 replace_provenance,
-                                live_parent_data=replace_live_parent_data,
+                                replay_source_data=replace_replay_source_data,
                             )
                     slicer_area.replace_source_data(processed, emit_edited=True)
                     continue
@@ -1122,10 +1119,15 @@ class _ActionsController:
             wrapper.set_source_input_ndim(prepared.source_ndim)
             wrapper.set_source_input_dtype(prepared.source_dtype)
             if replacement is None:
+                # A notebook-side update replaces the watched variable itself, so
+                # prior ImageTool operations no longer describe the displayed array.
+                wrapper.set_displayed_provenance(None)
                 self._manager.get_imagetool(idx).slicer_area.replace_source_data(
                     prepared.data
                 )
             else:
+                # Rebuild provenance from the updated watched source and only the
+                # metadata assignments that still apply to it.
                 processed, provenance = replacement
                 self._manager._metadata_editor.commit_replacement(
                     idx, prepared.data, processed, provenance

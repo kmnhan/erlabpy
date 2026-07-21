@@ -1075,6 +1075,44 @@ def test_tool_provenance_migrates_legacy_top_level_operation_context(
     xr.testing.assert_identical(seen_contexts[0][1], data)
 
 
+def test_tool_provenance_replays_external_schema_v2_operation_contract() -> None:
+    class LegacyPluginOperation(ToolProvenanceOperation):
+        op: typing.Literal["test_legacy_plugin_parent_data"] = (
+            "test_legacy_plugin_parent_data"
+        )
+
+        def apply(  # type: ignore[override]
+            self,
+            data: xr.DataArray,
+            *,
+            parent_data: xr.DataArray,
+        ) -> xr.DataArray:
+            return data + parent_data
+
+    _OPERATION_TYPES["test_legacy_plugin_parent_data"] = LegacyPluginOperation
+    try:
+        spec = parse_tool_provenance_spec(
+            {
+                "schema_version": 2,
+                "kind": "script",
+                "start_label": "Run saved plugin operation",
+                "seed_code": "derived = data",
+                "active_name": "derived",
+                "operations": [{"op": "test_legacy_plugin_parent_data"}],
+            }
+        )
+
+        assert spec is not None
+        assert spec.steps[0].legacy_context is not None
+        data = xr.DataArray([1.0, 2.0], dims=("x",))
+        xr.testing.assert_identical(
+            replay_script_provenance(spec, {"data": data}),
+            data + data,
+        )
+    finally:
+        _OPERATION_TYPES.pop("test_legacy_plugin_parent_data", None)
+
+
 def test_tool_provenance_discards_saved_cosmetic_coordinate_sorting() -> None:
     spec = parse_tool_provenance_spec(
         {
@@ -3085,6 +3123,20 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
         ToolProvenanceSpec(kind="script", active_name="derived")
     with pytest.raises(ValidationError, match="Only script or file provenance specs"):
         ToolProvenanceSpec(kind="full_data", start_label="bad")
+    with pytest.raises(ValidationError, match="live-applicable operations"):
+        file_load(
+            start_label="Load source",
+            seed_code="derived = xr.load_dataarray('scan.h5')",
+            file_load_source=_file_replay_source(),
+            steps=(
+                ReplayStep(
+                    operation=ScriptCodeOperation(
+                        label="Run script-only step",
+                        code="derived = derived + 1",
+                    )
+                ),
+            ),
+        )
     with pytest.raises(TypeError, match="Script and file provenance use"):
         script(start_label="Start", active_name="derived")._display_operations()
 

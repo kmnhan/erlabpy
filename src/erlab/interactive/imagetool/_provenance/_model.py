@@ -1172,12 +1172,18 @@ class ToolProvenanceOperation(pydantic.BaseModel):
     ) -> xr.DataArray:
         """Apply an operation deserialized from a schema-v2 parent-data context.
 
-        All current operations are unary and the default ignores the legacy context.
-        Third-party operations saved under schema v2 may have overridden this method,
-        so migrated steps retain the original ``parent_data`` call contract. Remove
-        this method, ``ReplayStep.legacy_context``, and the schema-v2 migration
-        together when old saved workspace support is retired.
+        All current operations are unary and ignore the legacy context. Third-party
+        operation classes written against schema v2 may still implement
+        ``apply(data, *, parent_data)``. Keep that signature adaptation isolated here
+        so normal operation replay remains unary. Remove this method,
+        ``ReplayStep.legacy_context``, and the schema-v2 migration together when old
+        saved workspace support is retired.
         """
+        if "parent_data" in inspect.signature(self.apply).parameters:
+            # Schema-v2 compatibility shim for operation classes defined outside
+            # ERLab. Do not broaden the current unary apply() contract.
+            legacy_apply = typing.cast("Callable[..., xr.DataArray]", self.apply)
+            return legacy_apply(data, parent_data=parent_data)
         return self.apply(data)
 
     def derivation_entry(self) -> DerivationEntry:
@@ -2647,6 +2653,10 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 raise ValueError("file provenance specs must define replay steps")
             if any(step.context_names for step in self.steps):
                 raise ValueError("file provenance steps cannot define script context")
+            if any(not step.operation.live_applicable for step in self.steps):
+                raise ValueError(
+                    "file provenance steps must contain live-applicable operations"
+                )
             return self
         if (
             self.start_label is not None

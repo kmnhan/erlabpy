@@ -824,7 +824,7 @@ def test_manager_provenance_reorder_requires_available_replay(
             manager._update_info()
             assert not manager._provenance_edit_controller.can_reorder_steps()[0]
 
-        root.set_detached_provenance(opaque_live, live_parent_data=data)
+        root.set_detached_provenance(opaque_live, replay_source_data=data)
         manager._update_info()
         assert not manager._provenance_edit_controller.can_reorder_steps()[0]
 
@@ -832,7 +832,7 @@ def test_manager_provenance_reorder_requires_available_replay(
         assert menu is not None
         assert not manager._metadata_reorder_steps_action.isEnabled()
 
-        root.set_detached_provenance(detached_live, live_parent_data=data)
+        root.set_detached_provenance(detached_live, replay_source_data=data)
         manager._update_info()
         assert manager._provenance_edit_controller.can_reorder_steps()[0]
 
@@ -985,7 +985,7 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
     )
     replay_node = types.SimpleNamespace(
         parent_uid=None,
-        detached_live_parent_data=data,
+        detached_replay_source_data=data,
     )
     xr.testing.assert_identical(
         controller._replay_live_script_candidate(replay_node, "display", live_script),
@@ -1007,6 +1007,62 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
         )
         is None
     )
+
+
+def test_manager_watched_provenance_reorder_uses_retained_source(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = xr.DataArray([1.0, 2.0], dims=("x",), name="scan")
+    spec = script(
+        AssignAttrsOperation(attrs={"order": "first"}),
+        AssignAttrsOperation(attrs={"order": "second"}),
+        start_label="Start from watched variable 'my_data'",
+        seed_code="derived = my_data",
+        active_name="derived",
+    )
+    displayed = replay_script_provenance(spec, {"my_data": source})
+
+    with manager_context() as manager:
+        tool = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(displayed, manager=False, execute=False),
+        )
+        manager.add_imagetool(
+            tool,
+            show=False,
+            provenance_spec=spec,
+            watched_var=("my_data", "kernel-0"),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        root = manager._tool_graph.root_wrappers[0]
+        root.set_detached_provenance(spec, replay_source_data=source)
+        select_tools(manager, [0])
+        manager._update_info()
+
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+
+        def _apply_reordered(dialog: QtWidgets.QDialog) -> None:
+            assert isinstance(dialog, _ProvenanceReorderDialog)
+            assert dialog.current_view.move_current(1)
+            dialog.apply_button.click()
+
+        accept_dialog(
+            manager._provenance_edit_controller.open_reorder_dialog,
+            accept_call=_apply_reordered,
+        )
+
+        assert root.provenance_spec is not None
+        assert [
+            typing.cast("AssignAttrsOperation", operation).attrs["order"]
+            for operation in root.provenance_spec.operations
+        ] == ["second", "first"]
+        assert root.slicer_area._data.attrs["order"] == "first"
+        assert root.detached_replay_source_data is not None
+        xr.testing.assert_identical(root.detached_replay_source_data, source)
 
 
 def test_manager_provenance_reorder_session_rejects_each_stale_input(

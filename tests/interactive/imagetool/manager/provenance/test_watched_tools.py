@@ -106,6 +106,11 @@ def test_manager_data_watched_update_replaces_existing_tool_source_data(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         tool = manager.get_imagetool(0)
+        wrapper = manager._tool_graph.root_wrappers[0]
+        wrapper.set_detached_provenance(
+            full_data(AverageOperation(dims=("alpha",))),
+            replay_source_data=test_data,
+        )
         updated = test_data.copy(deep=True)
         updated.data = np.asarray(updated.data) * 11
 
@@ -113,6 +118,9 @@ def test_manager_data_watched_update_replaces_existing_tool_source_data(
             manager._data_watched_update("data", "kernel-0", updated)
 
         xr.testing.assert_identical(tool.slicer_area.data, updated)
+        assert wrapper.provenance_spec is not None
+        assert wrapper.provenance_spec.operations == ()
+        assert wrapper.detached_replay_source_data is None
 
 
 def test_manager_high_dimensional_watched_data_errors_without_reduction_dialog(

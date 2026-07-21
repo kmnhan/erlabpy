@@ -260,7 +260,7 @@ def _fake_edit_node(
         imagetool=object(),
         pending_workspace_memory_payload=None,
         parent_uid=parent_uid,
-        detached_live_parent_data=None,
+        detached_replay_source_data=None,
         source_spec=source_spec,
         displayed_provenance_spec=spec,
         displayed_source_spec=source_display_spec,
