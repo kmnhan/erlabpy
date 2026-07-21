@@ -14,6 +14,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
+import erlab.interactive.imagetool.manager._acquisition_context as acquisition_context
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._io as manager_io
@@ -69,6 +70,7 @@ from erlab.interactive.imagetool.manager._acquisition_context import (
     AcquisitionContextField,
     AcquisitionContextState,
     ContextIngressSummary,
+    _ContextFieldDialog,
     _ContextSourcePickerDialog,
 )
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
@@ -625,6 +627,269 @@ def test_acquisition_context_values_are_serialization_stable() -> None:
     payload = AcquisitionContextState(fields=(field,)).model_dump(mode="json")
     restored = AcquisitionContextState.model_validate(payload)
     assert restored.fields[0].decoded_value == (1.0, 2.0)
+    assert not AcquisitionContextState(enabled=True).enabled
+    with pytest.raises(ValueError, match="unique by kind"):
+        AcquisitionContextState(fields=(field, field))
+
+
+def test_acquisition_context_field_dialog_validates_and_restores(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = _ContextFieldDialog(parent)
+
+    with pytest.raises(RuntimeError, match="was not accepted"):
+        _ = dialog.field
+
+    messages = _block_message_dialog(monkeypatch)
+    dialog.accept()
+    assert messages
+    assert dialog.result() != QtWidgets.QDialog.DialogCode.Accepted
+
+    dialog.kind_combo.setCurrentIndex(
+        dialog.kind_combo.findData("attribute", QtCore.Qt.ItemDataRole.UserRole)
+    )
+    dialog.name_edit.setText("run")
+    dialog.type_combo.setCurrentText("Int")
+    dialog.value_edit.setText("4")
+    dialog.existing_combo.setCurrentIndex(
+        dialog.existing_combo.findData(True, QtCore.Qt.ItemDataRole.UserRole)
+    )
+    dialog.accept()
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+    assert dialog.field == AcquisitionContextField.from_value(
+        kind="attribute", name="run", value=4, replace_existing=True
+    )
+
+    restored = _ContextFieldDialog(parent, field=dialog.field)
+    assert restored.kind_combo.currentData() == "attribute"
+    assert restored.name_edit.text() == "run"
+    assert restored.type_combo.currentText() == "Int"
+    assert restored.value_edit.text() == "4"
+    assert restored.existing_combo.currentData() is True
+
+
+def test_acquisition_context_dialog_commands_are_atomic(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    sample = AcquisitionContextField.from_value(
+        kind="attribute", name="sample", value="A"
+    )
+    run = AcquisitionContextField.from_value(kind="attribute", name="run", value=1)
+    changed_sample = sample.with_value("B")
+
+    with manager_context() as manager:
+        _add_batch_tools(qtbot, manager, _batch_data("scan"))
+        manager._acquisition_context.set_state(
+            AcquisitionContextState(fields=(sample, run)), mark_dirty=False
+        )
+        dialog = AcquisitionContextDialog(manager, manager._acquisition_context)
+
+        select_tools(manager, [])
+        assert dialog._selected_data() is None
+        dialog._select_row(-1)
+        assert dialog._current_row() == -1
+        dialog._remove_field()
+        dialog._edit_field()
+
+        dialog._merge_fields((changed_sample,))
+        assert dialog._fields == [changed_sample, run]
+        dialog._rows_reordered(["invalid"], None, None)
+        assert dialog._fields == [changed_sample, run]
+        dialog._rows_reordered((dialog._field_row_id(run),), None, None)
+        assert dialog.table.topLevelItemCount() == 2
+        dialog._rows_reordered(
+            (dialog._field_row_id(run), dialog._field_row_id(changed_sample)),
+            None,
+            None,
+        )
+        assert dialog._fields == [run, changed_sample]
+
+        dialog._select_row(0)
+        dialog._remove_field()
+        assert dialog._fields == [changed_sample]
+
+        select_tools(manager, [0])
+
+        class _AcceptedSourcePicker:
+            selected_fields = (run,)
+
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def exec(self) -> QtWidgets.QDialog.DialogCode:
+                return QtWidgets.QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr(
+            acquisition_context, "_ContextSourcePickerDialog", _AcceptedSourcePicker
+        )
+        dialog._from_selected()
+        assert dialog._fields == [changed_sample, run]
+
+        temperature = AcquisitionContextField.from_value(
+            kind="coordinate", name="temperature", value=20.0
+        )
+
+        class _AcceptedFieldDialog:
+            next_field = temperature
+            result = QtWidgets.QDialog.DialogCode.Accepted
+
+            def __init__(self, *_args, **_kwargs) -> None:
+                self.field = self.next_field
+
+            def exec(self) -> QtWidgets.QDialog.DialogCode:
+                return self.result
+
+        monkeypatch.setattr(
+            acquisition_context, "_ContextFieldDialog", _AcceptedFieldDialog
+        )
+        dialog._add_field()
+        assert dialog._fields[-1] == temperature
+
+        warnings: list[tuple[object, ...]] = []
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "warning",
+            staticmethod(lambda *args, **_kwargs: warnings.append(args)),
+        )
+        dialog._select_row(0)
+        _AcceptedFieldDialog.next_field = run
+        dialog._edit_field()
+        assert warnings
+        assert dialog._fields[0] == changed_sample
+
+        replacement = changed_sample.with_value("C")
+        _AcceptedFieldDialog.next_field = replacement
+        dialog._edit_field()
+        assert dialog._fields[0] == replacement
+
+        messages = _block_message_dialog(monkeypatch)
+
+        def _fail_set_state(*_args, **_kwargs):
+            raise ValueError("invalid state")
+
+        monkeypatch.setattr(dialog._controller, "set_state", _fail_set_state)
+        dialog._save()
+        assert messages
+        assert dialog.result() != QtWidgets.QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "question",
+            staticmethod(
+                lambda *_args, **_kwargs: QtWidgets.QMessageBox.StandardButton.Cancel
+            ),
+        )
+        dialog._clear()
+        assert dialog.result() != QtWidgets.QDialog.DialogCode.Accepted
+
+        saved: list[AcquisitionContextState] = []
+        monkeypatch.setattr(
+            dialog._controller,
+            "set_state",
+            lambda state, **_kwargs: saved.append(state),
+        )
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "question",
+            staticmethod(
+                lambda *_args, **_kwargs: QtWidgets.QMessageBox.StandardButton.Yes
+            ),
+        )
+        dialog._clear()
+        assert saved == [AcquisitionContextState()]
+        assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+
+
+def test_acquisition_context_source_picker_rejects_empty_selection(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = _batch_data("scan").assign_coords(
+        temperature=20.0,
+        unsupported=xr.Variable((), object()),
+    )
+    data.attrs["unsupported"] = {1, 2}
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = _ContextSourcePickerDialog(parent, data)
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        staticmethod(lambda *args, **_kwargs: warnings.append(args)),
+    )
+
+    dialog.accept()
+
+    assert warnings
+    assert dialog.result() != QtWidgets.QDialog.DialogCode.Accepted
+    root = dialog.tree.invisibleRootItem()
+    assert root is not None
+    assert all(
+        child.text(0) != "unsupported"
+        for group_index in range(root.childCount())
+        if (group := root.child(group_index)) is not None
+        for row in range(group.childCount())
+        if (child := group.child(row)) is not None
+    )
+
+
+def test_acquisition_context_controller_recovers_from_invalid_state(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        controller = manager._acquisition_context
+        warnings: list[str] = []
+        monkeypatch.setattr(
+            erlab.utils.misc,
+            "emit_user_level_warning",
+            lambda message, *_args, **_kwargs: warnings.append(message),
+        )
+        controller.restore_state_payload({"fields": [{"kind": "invalid"}]})
+        assert warnings
+        assert controller.state == AcquisitionContextState()
+
+        button = controller._status_button
+        controller._status_button = None
+        controller.refresh_ui()
+        controller._status_button = button
+
+        shown: list[object] = []
+
+        class _Editor:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def exec(self) -> None:
+                shown.append(self)
+
+        monkeypatch.setattr(acquisition_context, "AcquisitionContextDialog", _Editor)
+        controller.show_editor()
+        assert shown
+
+        class _InvalidField:
+            name = "invalid"
+            kind = "attribute"
+            replace_existing = False
+            decoded_value = "value"
+
+            def operation(self):
+                raise RuntimeError("cannot create operation")
+
+        resolution = controller.resolve(
+            _batch_data("scan"), typing.cast("typing.Any", (_InvalidField(),))
+        )
+        assert resolution.operations == ()
+        assert resolution.errors == ("invalid: cannot create operation",)
 
 
 def test_acquisition_context_field_actions_use_toolbar_and_add_menu(
@@ -1369,8 +1634,11 @@ def test_metadata_editor_scalar_value_and_operation_helpers(
     assert not metadata_editor._values_equal(1, 1.0)
     assert not metadata_editor._values_equal(1, True)
     assert not metadata_editor._values_equal([1], [1.0])
+    assert not metadata_editor._values_equal({"value": 1}, {"other": 1})
     assert not metadata_editor._values_equal({"value": 1}, {"value": True})
     assert not metadata_editor._values_equal([1, 2], [1])
+    assert not metadata_editor._values_equal(np.ones((1, 2)), np.ones((2, 1)))
+    assert not metadata_editor._values_equal(np.array([1]), np.array(["1"]))
     assert not metadata_editor._values_equal(_BadArray(), 1)
 
     original_array_equal = np.array_equal
@@ -1408,6 +1676,15 @@ def test_metadata_editor_scalar_value_and_operation_helpers(
     assert metadata_editor._parse_editor_value("20", "20") == "20"
     assert metadata_editor._parse_editor_value("20", "21") == "21"
     assert metadata_editor._parse_editor_value("sample", "reference") == "reference"
+    assert metadata_editor._parse_editor_value(
+        metadata_editor._UNKNOWN_REFERENCE, "[1, 2]"
+    ) == [1, 2]
+    assert (
+        metadata_editor._parse_editor_value(
+            metadata_editor._UNKNOWN_REFERENCE, "unquoted text"
+        )
+        == "unquoted text"
+    )
     with pytest.raises(ValueError, match="Boolean"):
         metadata_editor._parse_typed_value("Bool", "sometimes")
     with pytest.raises(ValueError, match="Unknown value type"):
@@ -1755,6 +2032,34 @@ def test_metadata_editor_copies_selection_and_undoes_bulk_edits(
         clipboard = QtWidgets.QApplication.clipboard()
         assert clipboard.text() == "A\t10.0\nB\t20.0"
 
+        selection_model.clearSelection()
+        for index in (
+            dialog.model.index(0, sample_column),
+            dialog.model.index(1, temperature_column),
+        ):
+            selection_model.select(
+                index, QtCore.QItemSelectionModel.SelectionFlag.Select
+            )
+        dialog.table._copy_selection()
+        assert clipboard.text() == "A\t\n\t20.0"
+
+        copy_combination = QtGui.QKeySequence.keyBindings(
+            QtGui.QKeySequence.StandardKey.Copy
+        )[0][0]
+        copy_event = QtGui.QKeyEvent(
+            QtCore.QEvent.Type.KeyPress,
+            copy_combination.key(),
+            copy_combination.keyboardModifiers(),
+        )
+        dialog.table.keyPressEvent(copy_event)
+        assert copy_event.isAccepted()
+
+        dialog.table.setCurrentIndex(dialog.model.index(0, sample_column))
+        dialog.table.moveCursor(
+            QtWidgets.QAbstractItemView.CursorAction.MoveRight,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+        )
+
         undo_shortcuts = {
             shortcut.toString(QtGui.QKeySequence.SequenceFormat.PortableText)
             for shortcut in dialog.undo_action.shortcuts()
@@ -1778,7 +2083,16 @@ def test_metadata_editor_copies_selection_and_undoes_bulk_edits(
 
         dialog.table.setCurrentIndex(dialog.model.index(0, sample_column))
         clipboard.setText("C\t30\nD\t40")
-        dialog.table._paste_clipboard()
+        paste_combination = QtGui.QKeySequence.keyBindings(
+            QtGui.QKeySequence.StandardKey.Paste
+        )[0][0]
+        paste_event = QtGui.QKeyEvent(
+            QtCore.QEvent.Type.KeyPress,
+            paste_combination.key(),
+            paste_combination.keyboardModifiers(),
+        )
+        dialog.table.keyPressEvent(paste_event)
+        assert paste_event.isAccepted()
         assert dialog.model.has_changes
         assert dialog.model.cell_at(dialog.model.index(0, sample_column)).value == "A"
         assert dialog.model.index(0, sample_column).data() == "C"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections.abc
 import contextlib
 import dataclasses
 import json
@@ -138,13 +139,22 @@ class AcquisitionContextState(pydantic.BaseModel):
 
     model_config = pydantic.ConfigDict(frozen=True, extra="ignore")
 
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def _disable_empty_context(cls, value: typing.Any) -> typing.Any:
+        if (
+            isinstance(value, collections.abc.Mapping)
+            and value.get("enabled")
+            and not value.get("fields")
+        ):
+            value = {**value, "enabled": False}
+        return value
+
     @pydantic.model_validator(mode="after")
     def _validate_fields(self) -> typing.Self:
         keys = [field.key for field in self.fields]
         if len(keys) != len(set(keys)):
             raise ValueError("Acquisition context field names must be unique by kind.")
-        if self.enabled and not self.fields:
-            return self.model_copy(update={"enabled": False})
         return self
 
 
