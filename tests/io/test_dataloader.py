@@ -61,6 +61,20 @@ class _SignatureRoutingLoader(LoaderBase):
         return xr.DataArray(np.array(1), name=pathlib.Path(file_path).stem)
 
 
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("scan_0001", 1),
+        ("sample42", 42),
+        ("0007", 7),
+        ("scan", None),
+        ("scan_1_region", None),
+    ],
+)
+def test_default_infer_index(example_loader, name: str, expected: int | None) -> None:
+    assert LoaderBase.infer_index(example_loader, name) == (expected, {})
+
+
 def test_loader(example_loader, example_data_dir: pathlib.Path, monkeypatch) -> None:
     wrong_file = example_data_dir / "data_010.nc"
 

@@ -60,16 +60,6 @@ class _StrictMetadataLoader(LoaderBase):
         )
 
 
-class _InferringMetadataLoader(_StrictMetadataLoader):
-    name = "_inferring_metadata"
-
-    def infer_index(self, name: str) -> tuple[int | None, dict[str, typing.Any]]:
-        prefix, separator, number = name.rpartition("_")
-        if prefix == "scan" and separator and number.isdigit():
-            return int(number), {}
-        return None, {}
-
-
 class _FakeResponse:
     def __init__(
         self,
@@ -778,7 +768,7 @@ def test_loader_infers_spreadsheet_file_number_from_path(
         attribute_mapping={"Configuration": "configuration"},
     )
 
-    result = _InferringMetadataLoader().load(path, metadata=source)
+    result = _StrictMetadataLoader().load(path, metadata=source)
 
     assert result["hv"].item() == 21.2
     assert result["sample_temp"].item() == 30.0
@@ -841,21 +831,27 @@ def test_concurrent_loads_keep_metadata_isolated(
 
 
 def test_loader_metadata_arguments(tmp_path: pathlib.Path) -> None:
-    (tmp_path / "scan_1.nc").touch()
+    numbered_path = tmp_path / "scan_1.nc"
+    unnumbered_path = tmp_path / "scan.nc"
+    numbered_path.touch()
+    unnumbered_path.touch()
     source = _RowsMetadataSource(
         [["File", "Energy"], [1, 21.2]],
         file_name_column="File",
         coordinate_mapping={"Energy": "hv"},
     )
     loader = _StrictMetadataLoader()
+    loader.skip_validate = True
 
     with pytest.raises(ValueError, match="file_number requires"):
-        loader.load(tmp_path / "scan_1.nc", file_number=1)
+        loader.load(numbered_path, file_number=1)
+    result = loader.load(numbered_path, metadata=source)
+    assert result["hv"].item() == 21.2
     with pytest.raises(
         ValueError,
         match=r"file_number is required.*_strict_metadata.*could not infer",
     ):
-        loader.load(tmp_path / "scan_1.nc", metadata=source)
+        loader.load(unnumbered_path, metadata=source)
     with pytest.raises(ValueError, match="must be omitted"):
         loader.load(1, tmp_path, metadata=source, file_number=1)
     with pytest.raises(TypeError, match="SpreadsheetMetadataSource"):

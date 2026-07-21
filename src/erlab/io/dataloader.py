@@ -635,11 +635,14 @@ class LoaderBase(metaclass=_Loader):
             Integer identifiers provide the file number automatically. For paths, the
             file name without its path or final extension is matched directly and
             case-sensitively against whitespace-trimmed spreadsheet cells before the
-            loader tries :meth:`infer_index`.
+            loader tries to match the file number through :meth:`infer_index
+            <erlab.io.dataloader.LoaderBase.infer_index>`. The default implementation
+            recognizes file names ending in decimal digits. Pass ``file_number`` to use
+            an explicit value instead.
         file_number
             Explicit file number used for spreadsheet metadata when `identifier` is a
             path, bypassing direct file-name matching and inference. This must be
-            omitted for integer identifiers and when `metadata` is not given.
+            omitted for integer identifiers and when ``metadata`` is not given.
         **kwargs
             Additional keyword arguments are passed to :meth:`identify
             <erlab.io.dataloader.LoaderBase.identify>` and :meth:`load_single
@@ -656,7 +659,7 @@ class LoaderBase(metaclass=_Loader):
 
         .. versionchanged:: 3.25.0
 
-           Added spreadsheet metadata enrichment with `metadata` and `file_number`.
+           Added spreadsheet metadata enrichment with ``metadata`` and ``file_number``.
 
         Notes
         -----
@@ -1682,12 +1685,19 @@ class LoaderBase(metaclass=_Loader):
     def infer_index(self, name: str) -> tuple[int | None, dict[str, typing.Any]]:
         """Infer the index for the given file name.
 
-        This method takes a file name with the path and extension stripped, and tries to
-        infer the scan index from it. If the index can be inferred, it is returned along
-        with additional keyword arguments that should be passed to :meth:`load
-        <erlab.io.dataloader.LoaderBase.load>`. If the index is not found, `None` should
-        be returned for the index, and an empty dictionary for additional keyword
-        arguments.
+        This method takes a file name with its path and extension stripped and recovers
+        its scan index. During normal path-based loading, a successfully inferred index
+        and its additional keyword arguments are passed back to :meth:`load
+        <erlab.io.dataloader.LoaderBase.load>`, which uses :meth:`identify
+        <erlab.io.dataloader.LoaderBase.identify>` to resolve the scan. If the name is
+        not recognized, return `None` and an empty dictionary.
+
+        The default implementation converts a trailing run of decimal digits in a bare
+        file name to an integer. For example, ``scan_0004`` resolves to ``4``. Override
+        this method when the index appears elsewhere in the name, when loading by index
+        requires additional keyword arguments, or when one scan spans multiple files.
+        For multi-file data, every file in the scan should resolve to the same scan
+        index rather than to a per-file sequence number.
 
         Parameters
         ----------
@@ -1701,16 +1711,25 @@ class LoaderBase(metaclass=_Loader):
         additional_kwargs
             Additional keyword arguments to be passed to :meth:`identify
             <erlab.io.dataloader.LoaderBase.identify>` when the index is found. This
-            argument is useful when the index alone is not enough to load the data.
+            argument is useful when the index alone is not enough to load the data. The
+            default implementation returns an empty dictionary.
 
-        Note
-        ----
-        For loaders with :attr:`always_single
-        <erlab.io.dataloader.LoaderBase.always_single>` set to `True`, this method is
-        unused.
+        Notes
+        -----
+        Path-based loads use this method when they need to recover a numeric identifier,
+        including when a spreadsheet metadata lookup falls back from direct file-name
+        matching to numeric matching. It may therefore be called even when
+        :attr:`always_single <erlab.io.dataloader.LoaderBase.always_single>` is `True`.
 
+        .. versionchanged:: 3.25.0
+
+           Added default parsing for file names ending in decimal digits.
         """
-        raise NotImplementedError("method must be implemented in the subclass")
+        prefix = name.rstrip("0123456789")
+        numeric_suffix = name[len(prefix) :]
+        if numeric_suffix:
+            return int(numeric_suffix), {}
+        return None, {}
 
     def files_for_summary(self, data_dir: str | os.PathLike) -> list[str | os.PathLike]:
         """Return a list of files that can be loaded by the loader.
