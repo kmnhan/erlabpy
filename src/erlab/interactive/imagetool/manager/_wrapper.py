@@ -1363,12 +1363,23 @@ class _ManagedWindowNode(QtCore.QObject):
             raise ValueError(
                 "Could not read this node's saved data from the workspace file."
             )
+        provenance_spec = self.provenance_spec
+        replay_source_data = self.replay_source_data
+        if (
+            isinstance(self, _ImageToolWrapper)
+            and self.watched
+            and self._provenance_spec is None
+        ):
+            # A watched root's seed is reconstructed from its watched binding, and its
+            # unmodified source is already the main ImageTool workspace payload.
+            provenance_spec = None
+            replay_source_data = None
         if self.imagetool is None:
             return _NodePersistenceView(
                 data=None,
                 state=None,
-                provenance_spec=self.provenance_spec,
-                replay_source_data=self.replay_source_data,
+                provenance_spec=provenance_spec,
+                replay_source_data=replay_source_data,
                 source_spec=self.source_spec,
                 source_binding=self.source_binding,
                 output_id=self.output_id,
@@ -1382,8 +1393,8 @@ class _ManagedWindowNode(QtCore.QObject):
         return _NodePersistenceView(
             data=data,
             state=state,
-            provenance_spec=self.provenance_spec,
-            replay_source_data=self.replay_source_data,
+            provenance_spec=provenance_spec,
+            replay_source_data=replay_source_data,
             source_spec=self.source_spec,
             source_binding=self.source_binding,
             output_id=self.output_id,
@@ -1444,14 +1455,37 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def has_replay_source(self) -> bool:
         """Whether replay source data is materialized or saved for deferred loading."""
-        return self._replay_source_data is not None or self._replay_source_pending
+        return (
+            self._replay_source_data is not None
+            or self._replay_source_pending
+            or (
+                isinstance(self, _ImageToolWrapper)
+                and self.watched
+                and self._provenance_spec is None
+                and (
+                    self.imagetool is not None
+                    or self.pending_workspace_payload is not None
+                )
+            )
+        )
 
-    def replay_source_for_detached_output(self) -> xr.DataArray | None:
-        """Return the original seed that a detached copy of this node must retain."""
+    def resolved_replay_source_data(self) -> xr.DataArray | None:
+        """Return the original seed available for replay or detached output."""
         if self._replay_source_data is not None:
             return self._replay_source_data
         if self.parent_uid is not None and self.source_spec is not None:
-            return self.manager._parent_node(self).replay_source_for_detached_output()
+            return self.manager._parent_node(self).resolved_replay_source_data()
+        if (
+            isinstance(self, _ImageToolWrapper)
+            and self.watched
+            and self._provenance_spec is None
+        ):
+            if not self.materialize_pending_workspace_payload():
+                return None
+            if self.imagetool is None:
+                return None
+            data, _state = self.slicer_area.persistence_data_and_state()
+            return self._finalize_script_input_data(data)
         if self.displayed_provenance_spec is None:
             return self.current_source_data()
         return None
@@ -2317,17 +2351,6 @@ class _ImageToolWrapper(_ManagedWindowNode):
                 source_uid=watched_source_uid,
                 connected=watched_connected,
             )
-
-        if (
-            replay_source_data is None
-            and not replay_source_pending
-            and watched_var is not None
-            and watched_connected
-            and provenance_spec is None
-            and tool is not None
-            and tool.provenance_spec is None
-        ):
-            replay_source_data = tool.slicer_area.data
 
         super().__init__(
             manager,

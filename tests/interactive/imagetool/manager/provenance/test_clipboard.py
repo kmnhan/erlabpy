@@ -653,7 +653,7 @@ def test_manager_paste_detached_steps_uses_replay_spec_fallback(
         uid="node",
         displayed_provenance_spec=full_data(),
         current_public_data=lambda: data,
-        replay_source_for_detached_output=lambda: replay_source,
+        resolved_replay_source_data=lambda: replay_source,
         replace_with_detached_data=_replace_with_detached_data,
     )
     monkeypatch.setattr(

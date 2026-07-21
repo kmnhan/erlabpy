@@ -817,7 +817,7 @@ class DataTransformDialog(_DataManipulationDialog):
             )
             return True
         displayed_provenance = node.displayed_provenance_spec
-        replay_source_data = node.replay_source_for_detached_output()
+        replay_source_data = node.resolved_replay_source_data()
         if displayed_provenance is not None:
             node.set_detached_provenance(
                 self._compose_replace_source_spec(displayed_provenance, new_name),
@@ -1061,7 +1061,7 @@ class DataTransformDialog(_DataManipulationDialog):
                             if target is not None:
                                 replay_source_data = manager._node_for_target(
                                     target
-                                ).replay_source_for_detached_output()
+                                ).resolved_replay_source_data()
                             manager.add_imagetool(
                                 tool,
                                 activate=True,

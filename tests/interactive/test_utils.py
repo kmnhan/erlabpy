@@ -3621,14 +3621,17 @@ def test_managed_tool_window_node_detached_update_branches(
             provenance_spec=typing.cast("object", {"kind": "full_data"}),
         )
     with pytest.raises(TypeError, match="provenance_spec must be"):
-        node.set_detached_provenance(typing.cast("object", {"kind": "script"}))
+        node.set_detached_provenance(
+            typing.cast("object", {"kind": "script"}),
+            replay_source_data=None,
+        )
 
     display_spec = script(
         ScriptCodeOperation(label="Use output", code="result = data + 1"),
         start_label="Start from data",
         active_name="result",
     )
-    node.set_detached_provenance(display_spec)
+    node.set_detached_provenance(display_spec, replay_source_data=None)
     assert node._provenance_spec == display_spec
 
     assert node._resolved_output_payload() is None
@@ -3644,7 +3647,7 @@ def test_managed_tool_window_node_detached_update_branches(
     xr.testing.assert_identical(payload[0], parent_tool.output_data)
 
     node.window = None
-    node.set_detached_provenance(display_spec)
+    node.set_detached_provenance(display_spec, replay_source_data=None)
     assert node.derivation_lines == ["Start from data", "Use output"]
     node._handle_tool_data_changed()
     node.show()
@@ -3660,7 +3663,7 @@ def test_managed_tool_window_node_detached_update_branches(
     assert not node._update_from_parent_source()
     assert node.source_state == "unavailable"
 
-    node.set_detached_provenance(None)
+    node.set_detached_provenance(None, replay_source_data=None)
     assert not node._update_from_parent_source()
 
     parent_tool.output_data = xr.DataArray(np.arange(4.0) + 2.0, dims=("x",))
@@ -3677,7 +3680,7 @@ def test_managed_tool_window_node_detached_update_branches(
     assert not node.handle_parent_source_replaced(parent_data)
     assert node.source_state == "stale"
 
-    node.set_detached_provenance(None)
+    node.set_detached_provenance(None, replay_source_data=None)
     assert not node.handle_parent_source_replaced(parent_data)
 
     node.set_source_binding(
@@ -3691,7 +3694,7 @@ def test_managed_tool_window_node_detached_update_branches(
     assert not node.handle_parent_source_replaced(parent_data)
     assert node.source_state == "stale"
 
-    node.set_detached_provenance(None)
+    node.set_detached_provenance(None, replay_source_data=None)
     assert node.show_source_update_dialog(parent=manager) == int(
         QtWidgets.QDialog.DialogCode.Rejected
     )

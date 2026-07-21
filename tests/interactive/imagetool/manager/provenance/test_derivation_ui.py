@@ -847,9 +847,8 @@ def test_manager_provenance_reorder_requires_available_replay(
 
         root.set_detached_provenance(detached_script, replay_source_data=data)
         manager._update_info()
-        assert manager._provenance_edit_controller._detached_script_replay_input_names(
-            root,
-            detached_script,
+        assert manager._provenance_edit_controller._script_replay_source_input_names(
+            detached_script
         ) == ("data",)
         assert manager._provenance_edit_controller.can_reorder_steps()[0]
 
@@ -1004,6 +1003,7 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
     replay_node = types.SimpleNamespace(
         parent_uid=None,
         replay_source_data=data,
+        resolved_replay_source_data=lambda: data,
         has_replay_source=True,
     )
     xr.testing.assert_identical(
@@ -1028,19 +1028,24 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
     )
 
 
-def test_manager_watched_provenance_reorder_uses_retained_source(
+@pytest.mark.parametrize(
+    "seed_code",
+    ["derived = my_data", "derived = my_data.astype(np.float64)"],
+)
+def test_manager_detached_watched_provenance_reorder_uses_retained_source(
     qtbot,
     accept_dialog,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
+    seed_code: str,
 ) -> None:
     source = xr.DataArray([1.0, 2.0], dims=("x",), name="scan")
     spec = script(
         AssignAttrsOperation(attrs={"order": "first"}),
         AssignAttrsOperation(attrs={"order": "second"}),
         start_label="Start from watched variable 'my_data'",
-        seed_code="derived = my_data",
+        seed_code=seed_code,
         active_name="derived",
     )
     displayed = replay_script_provenance(spec, {"my_data": source})
@@ -1054,11 +1059,11 @@ def test_manager_watched_provenance_reorder_uses_retained_source(
             tool,
             show=False,
             provenance_spec=spec,
-            watched_var=("my_data", "kernel-0"),
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         root = manager._tool_graph.root_wrappers[0]
         root.set_detached_provenance(spec, replay_source_data=source)
+        assert not root.watched
         select_tools(manager, [0])
         manager._update_info()
 

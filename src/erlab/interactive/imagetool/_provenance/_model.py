@@ -3859,6 +3859,37 @@ def direct_replay_input_name(
     return name
 
 
+def _direct_replay_source_name(spec: ToolProvenanceSpec) -> str | None:
+    """Return the external array name used by a direct script replay seed."""
+    if spec.kind != "script" or spec.script_inputs or spec.seed_code is None:
+        return None
+    try:
+        module = ast.parse(spec.seed_code, mode="exec")
+    except SyntaxError:
+        return None
+    if len(module.body) != 1:
+        return None
+    statement = module.body[0]
+    if not (
+        isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and statement.targets[0].id == spec.active_name
+    ):
+        return None
+    value = statement.value
+    if isinstance(value, ast.Name):
+        return value.id
+    if (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "astype"
+        and isinstance(value.func.value, ast.Name)
+    ):
+        return value.func.value.id
+    return None
+
+
 def replay_input_name(
     value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
 ) -> str | None:

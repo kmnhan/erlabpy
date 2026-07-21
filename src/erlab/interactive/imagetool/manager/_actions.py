@@ -175,7 +175,7 @@ class _ActionsController:
             raise RuntimeError(
                 "Could not read this ImageTool's saved data from the workspace file."
             )
-        replay_source_data = node.replay_source_for_detached_output()
+        replay_source_data = node.resolved_replay_source_data()
 
         row_index = self._manager.tree_view._model._row_index(uid)
         was_expanded = row_index.isValid() and self._manager.tree_view.isExpanded(
@@ -525,7 +525,7 @@ class _ActionsController:
 
                 replace_kind = ""
                 replace_provenance = None
-                replay_source_data = node.replay_source_for_detached_output()
+                replay_source_data = node.resolved_replay_source_data()
                 if launch_mode == "replace":
                     displayed_source = node.displayed_source_spec
                     if displayed_source is not None:
@@ -773,12 +773,12 @@ class _ActionsController:
                         duplicated_window,
                         show=False,
                         source_input_ndim=node.source_input_ndim,
-                        provenance_spec=persistence.provenance_spec,
+                        provenance_spec=node.provenance_spec,
                         source_spec=persistence.source_spec,
                         source_binding=persistence.source_binding,
                         source_auto_update=persistence.source_auto_update,
                         source_state=persistence.source_state,
-                        replay_source_data=persistence.replay_source_data,
+                        replay_source_data=node.resolved_replay_source_data(),
                         note=node.note,
                     )
                 else:
@@ -1121,7 +1121,7 @@ class _ActionsController:
                 # prior ImageTool operations no longer describe the displayed array.
                 wrapper.set_detached_provenance(
                     None,
-                    replay_source_data=prepared.data,
+                    replay_source_data=None,
                 )
                 self._manager.get_imagetool(idx).slicer_area.replace_source_data(
                     prepared.data

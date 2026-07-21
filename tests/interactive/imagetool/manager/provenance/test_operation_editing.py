@@ -1181,7 +1181,9 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
         parent_uid="parent",
         source_display_spec=selection(),
     )
-    replaced: list[tuple[xr.DataArray, ToolProvenanceSpec, bool, bool]] = []
+    replaced: list[
+        tuple[xr.DataArray, ToolProvenanceSpec, bool, xr.DataArray | None, bool]
+    ] = []
     source_bindings: list[
         tuple[
             ToolProvenanceSpec,
@@ -1190,11 +1192,26 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
             ToolProvenanceSpec,
         ]
     ] = []
-    node._replace_imagetool_data = (
-        lambda data, spec, *, propagate_descendants, preserve_filter: replaced.append(
-            (data, spec, propagate_descendants, preserve_filter)
+
+    def replace_imagetool_data(
+        data,
+        spec,
+        *,
+        propagate_descendants,
+        replay_source_data,
+        preserve_filter,
+    ) -> None:
+        replaced.append(
+            (
+                data,
+                spec,
+                propagate_descendants,
+                replay_source_data,
+                preserve_filter,
+            )
         )
-    )
+
+    node._replace_imagetool_data = replace_imagetool_data
     node.set_source_binding = lambda spec, *, auto_update, state, provenance_spec: (
         source_bindings.append((spec, auto_update, state, provenance_spec))
     )
@@ -1228,7 +1245,7 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
             parent_data=parent_data,
         ),
     )
-    assert replaced[-1][2:] == (True, True)
+    assert replaced[-1][2:] == (True, None, True)
 
     with pytest.raises(RuntimeError, match="Live provenance"):
         controller._replay_candidate_result(
