@@ -1089,6 +1089,60 @@ def test_manager_detached_watched_provenance_reorder_uses_retained_source(
         xr.testing.assert_identical(root.replay_source_data, source)
 
 
+def test_manager_filtered_root_retains_source_when_provenance_becomes_durable(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = xr.DataArray(
+        np.arange(12.0).reshape(3, 4) + 1.0,
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(4)},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        tool = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(source, manager=False, execute=False),
+        )
+        manager.add_imagetool(tool, show=False)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        root = manager._tool_graph.root_wrappers[0]
+
+        tool.slicer_area.apply_filter_operation(
+            NormalizeOperation(dims=("x",), mode="area")
+        )
+        assert root.provenance_spec is None
+        assert root.displayed_provenance_spec is not None
+
+        replay_source = root.resolved_replay_source_data()
+        assert replay_source is not None
+        xr.testing.assert_identical(replay_source, source)
+
+        manager._provenance_edit_controller._paste_structured_steps(
+            root,
+            (AssignAttrsOperation(attrs={"pasted": True}),),
+        )
+
+        assert root.replay_source_data is not None
+        xr.testing.assert_identical(root.replay_source_data, source)
+        assert root.provenance_spec is not None
+        xr.testing.assert_identical(
+            manager._provenance_edit_controller._replay_candidate(
+                root,
+                "display",
+                root.provenance_spec,
+            ),
+            tool.slicer_area._data,
+        )
+
+        select_tools(manager, [0])
+        manager._update_info(uid=root.uid)
+        assert manager._provenance_edit_controller.can_reorder_steps() == (True, "")
+
+
 def test_manager_provenance_reorder_session_rejects_each_stale_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

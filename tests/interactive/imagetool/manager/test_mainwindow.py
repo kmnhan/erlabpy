@@ -1311,13 +1311,11 @@ def test_metadata_assignments_survive_live_replacement_and_update_provenance(
         xr.testing.assert_identical(replacement_payloads[-1], expected)
 
         node = manager._tool_graph.root_wrappers[0]
-        assert node.detached_live_parent_data is not None
-        xr.testing.assert_identical(node.detached_live_parent_data, replacement)
+        assert node.replay_source_data is not None
+        xr.testing.assert_identical(node.replay_source_data, replacement)
         provenance = node.displayed_provenance_spec
         assert provenance is not None
-        xr.testing.assert_identical(
-            provenance.apply(node.detached_live_parent_data), actual
-        )
+        xr.testing.assert_identical(provenance.apply(node.replay_source_data), actual)
 
         incompatible = xr.DataArray(
             np.arange(16.0).reshape(4, 4),
@@ -1328,7 +1326,47 @@ def test_metadata_assignments_survive_live_replacement_and_update_provenance(
         with pytest.raises(ValueError, match="angle"):
             replace_data(0, incompatible)
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, before)
-        xr.testing.assert_identical(node.detached_live_parent_data, replacement)
+        xr.testing.assert_identical(node.replay_source_data, replacement)
+
+
+def test_metadata_editor_rejects_unreplayable_live_provenance_atomically(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data("source")
+    provenance = full_data(TransposeOperation(dims=("y", "x")))
+    displayed = provenance.apply(source)
+    messages = _block_message_dialog(monkeypatch)
+
+    with manager_context() as manager:
+        tool = itool(displayed, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        index = manager.add_imagetool(
+            tool,
+            show=False,
+            provenance_spec=provenance,
+        )
+        node = manager._tool_graph.root_wrappers[index]
+        before = tool.slicer_area._data.copy(deep=True)
+
+        assert not manager._metadata_editor.apply_edits(
+            {
+                index: (
+                    MetadataCellEdit(
+                        MetadataField(kind="attribute", name="sample"),
+                        value="reference",
+                    ),
+                )
+            }
+        )
+
+        assert messages
+        xr.testing.assert_identical(tool.slicer_area._data, before)
+        assert node.provenance_spec == provenance
+        assert node.replay_source_data is None
 
 
 def test_metadata_edits_and_replacement_preserve_nonuniform_public_data(
@@ -1373,11 +1411,11 @@ def test_metadata_edits_and_replacement_preserve_nonuniform_public_data(
         assert tuple(tool.slicer_area.data.dims) == ("sample_temp_idx", "eV")
         xr.testing.assert_identical(tool.slicer_area.displayed_data, replaced_expected)
         node = manager._tool_graph.root_wrappers[index]
-        assert node.detached_live_parent_data is not None
-        xr.testing.assert_identical(node.detached_live_parent_data, replacement)
+        assert node.replay_source_data is not None
+        xr.testing.assert_identical(node.replay_source_data, replacement)
         assert node.displayed_provenance_spec is not None
         xr.testing.assert_identical(
-            node.displayed_provenance_spec.apply(node.detached_live_parent_data),
+            node.displayed_provenance_spec.apply(node.replay_source_data),
             replaced_expected,
         )
 
@@ -1604,7 +1642,7 @@ def test_live_replacement_preserves_explicit_assignment_when_source_matches(
         )
         node = manager._tool_graph.root_wrappers[0]
         assert node.displayed_provenance_spec is not None
-        assert node.detached_live_parent_data is not None
+        assert node.replay_source_data is not None
 
 
 def test_acquisition_context_can_copy_selected_coordinates_and_attributes(

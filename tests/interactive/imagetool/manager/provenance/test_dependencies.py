@@ -2472,7 +2472,7 @@ def test_manager_promote_live_child_retains_replay_source(
         assert isinstance(parent_tool, erlab.interactive.imagetool.ImageTool)
         parent_index = manager.add_imagetool(parent_tool, show=False)
         expected_source = (
-            manager._node_for_target(parent_index).current_source_data().copy(deep=True)
+            manager._node_for_target(parent_index).current_public_data().copy(deep=True)
         )
 
         child_tool = itool(source_spec.apply(source), manager=False, execute=False)

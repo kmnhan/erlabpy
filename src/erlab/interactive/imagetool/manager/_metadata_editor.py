@@ -220,7 +220,7 @@ class _MetadataTargetEdit:
     kind: typing.Literal["none", "direct", "validated"]
     data: xr.DataArray | None = None
     spec: ToolProvenanceSpec | None = None
-    live_parent_data: xr.DataArray | None = None
+    replay_source_data: xr.DataArray | None = None
     validated: _ValidatedProvenanceEdit | None = None
 
 
@@ -1901,15 +1901,6 @@ class _MetadataEditorController(QtCore.QObject):
             raise RuntimeError("Could not compose metadata provenance.")
         return composed
 
-    @staticmethod
-    def _clean_empty_replay_stages(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
-        if spec.kind not in {"file", "script"}:
-            return spec
-        stages = tuple(stage for stage in spec.replay_stages if stage.operations)
-        if stages == spec.replay_stages:
-            return spec
-        return spec.model_copy(update={"replay_stages": stages})
-
     def _plan_target_edit(
         self,
         target: int | str,
@@ -1953,7 +1944,7 @@ class _MetadataEditorController(QtCore.QObject):
                 continue
 
             operation = edit.field.operation(edit.value)
-            operation.apply(current, parent_data=current)
+            operation.apply(current)
             if match is not None:
                 ref, original = match
                 replacement = replacements.get(ref, original)
@@ -1983,17 +1974,13 @@ class _MetadataEditorController(QtCore.QObject):
                 raise RuntimeError("Matching metadata assignments are unavailable.")
             for ref in sorted(
                 replacements,
-                key=lambda item: (
-                    -1 if item.stage_index is None else item.stage_index,
-                    typing.cast("int", item.operation_index),
-                ),
+                key=lambda item: typing.cast("int", item.operation_index),
                 reverse=True,
             ):
                 replacement = replacements[ref]
                 candidate = candidate._replace_operation_ref(
                     ref, () if replacement is None else (replacement,)
                 )
-            candidate = self._clean_empty_replay_stages(candidate)
 
         added_operations = [*added_coords]
         if added_attrs:
@@ -2017,18 +2004,20 @@ class _MetadataEditorController(QtCore.QObject):
             )
         slicer_area = self.manager.get_imagetool(target).slicer_area
         terminal_edit = terminal_edit and not slicer_area.has_active_filter
+        replay_source_data = None
+        if candidate.kind in {"full_data", "public_data", "selection"}:
+            replay_source_data = node.resolved_replay_source_data()
+            if replay_source_data is None and (
+                spec is None or not tuple(iter_operation_refs(spec))
+            ):
+                replay_source_data = current
+            elif replay_source_data is None:
+                terminal_edit = False
 
         if terminal_edit:
             processed = full_data(*patch_operations, *added_operations).apply(current)
             processed = processed.rename(current.name)
             erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(processed)
-            live_parent_data = None
-            if candidate.kind in {"full_data", "public_data", "selection"}:
-                live_parent_data = (
-                    node.detached_live_parent_data
-                    if node.detached_live_parent_data is not None
-                    else current
-                )
             return _MetadataTargetEdit(
                 target,
                 node,
@@ -2036,7 +2025,7 @@ class _MetadataEditorController(QtCore.QObject):
                 "direct",
                 data=processed,
                 spec=candidate,
-                live_parent_data=live_parent_data,
+                replay_source_data=replay_source_data,
             )
 
         validated = self.manager._provenance_edit_controller._validated_edit(
@@ -2078,7 +2067,9 @@ class _MetadataEditorController(QtCore.QObject):
                         )
                     else:
                         plan.node.replace_with_detached_data(
-                            data, spec, live_parent_data=plan.live_parent_data
+                            data,
+                            spec,
+                            replay_source_data=plan.replay_source_data,
                         )
                     self.manager._update_info(uid=plan.node.uid)
                     data_changed = True
@@ -2175,16 +2166,15 @@ class _MetadataEditorController(QtCore.QObject):
         source_data: xr.DataArray,
         processed: xr.DataArray,
         provenance: ToolProvenanceSpec | None,
-        *,
-        emit_edited: bool = False,
     ) -> None:
         node = self.manager._node_for_target(target)
         if node.has_source_binding:
             self.manager.get_imagetool(target).slicer_area.replace_source_data(
-                processed, emit_edited=emit_edited
+                processed
             )
             return
-        node.set_detached_provenance(provenance, live_parent_data=source_data)
-        self.manager.get_imagetool(target).slicer_area.replace_source_data(
-            processed, emit_edited=emit_edited
+        node.replace_with_detached_data(
+            processed,
+            provenance,
+            replay_source_data=source_data,
         )

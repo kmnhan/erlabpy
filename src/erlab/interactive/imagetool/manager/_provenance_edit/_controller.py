@@ -1737,6 +1737,13 @@ class _ProvenanceEditController:
                 f"{where}: replaying {replay_target}",
                 exc,
             ) from exc
+        try:
+            erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(source_data)
+        except Exception as exc:
+            raise _ProvenanceReplayFailure(
+                f"{where}: validating the replayed ImageTool data",
+                exc,
+            ) from exc
         if filter_operation is not None:
             self._validate_filter_operation(
                 node,

@@ -30,6 +30,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     NormalizeOperation,
     QSelAggregationOperation,
     QSelOperation,
+    ScriptCodeOperation,
     SelOperation,
     SortByOperation,
     TransposeOperation,
@@ -1098,6 +1099,58 @@ def test_manager_provenance_validation_preserves_active_filter_with_one_replay(
     assert edit.data is data
     assert edit.spec == base_candidate
     assert edit.filter_operation == filter_operation
+
+
+def test_manager_provenance_validation_rejects_highdim_reorder_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+    )
+    expand = ScriptCodeOperation(
+        label="Expand dimensions",
+        code="derived = derived.expand_dims(a=2, b=2, c=2)",
+    )
+    reduce = ScriptCodeOperation(
+        label="Reduce added dimensions",
+        code=(
+            "derived = derived.mean([dim for dim in ('a', 'b', 'c') "
+            "if dim in derived.dims])"
+        ),
+    )
+    original = script(
+        expand,
+        reduce,
+        start_label="Start from source",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+    reordered = original.model_copy(update={"steps": tuple(reversed(original.steps))})
+    manager = types.SimpleNamespace(
+        _ensure_script_provenance_trusted=lambda *_args, **_kwargs: None,
+    )
+    controller = provenance_edit_controller._ProvenanceEditController(
+        typing.cast("typing.Any", manager)
+    )
+    node = types.SimpleNamespace(
+        imagetool=None,
+        resolved_replay_source_data=lambda: source,
+    )
+    applied_edits: list[typing.Any] = []
+    monkeypatch.setattr(controller, "_apply_validated_edit", applied_edits.append)
+
+    with pytest.raises(
+        provenance_edit_controller._ProvenanceReplayFailure,
+        match="validating the replayed ImageTool data",
+    ):
+        controller._validate_and_replace(
+            typing.cast("typing.Any", node),
+            "display",
+            reordered,
+            where="validating the reordered provenance",
+        )
+    assert applied_edits == []
 
 
 def test_manager_provenance_filter_validation_uses_live_slicer_result() -> None:

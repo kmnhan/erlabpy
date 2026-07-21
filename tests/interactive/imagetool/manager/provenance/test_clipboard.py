@@ -1214,14 +1214,14 @@ def test_manager_paste_steps_starts_from_public_target_data(
     displayed_expected: xr.DataArray
     if case == "nonuniform_attr":
         operations = (AssignAttrsOperation(attrs={"sample": "reference"}),)
-        expected = operations[0].apply(data, parent_data=data)
+        expected = operations[0].apply(data)
     elif case == "nonuniform_transpose":
         operations = (TransposeOperation(dims=("eV", "sample_temp")),)
-        expected = operations[0].apply(data, parent_data=data)
+        expected = operations[0].apply(data)
     elif case == "nonuniform_sort":
         data = data.assign_coords(sample_temp=[25.0, 20.0, 22.0])
         operations = (SortByOperation(variables=("sample_temp",)),)
-        expected = operations[0].apply(data, parent_data=data)
+        expected = operations[0].apply(data)
     elif case == "nonuniform_script":
         operations = (
             ScriptCodeOperation(label="Offset data", code="derived = derived + 1.0"),
@@ -1231,11 +1231,11 @@ def test_manager_paste_steps_starts_from_public_target_data(
     elif case == "promoted_1d":
         data = data.isel(eV=0, drop=True)
         operations = (AssignAttrsOperation(attrs={"sample": "reference"}),)
-        expected = operations[0].apply(data, parent_data=data)
+        expected = operations[0].apply(data)
     else:
         data = data.expand_dims(a=[1.0], b=[2.0], c=[3.0])
         operations = (AssignAttrsOperation(attrs={"sample": "reference"}),)
-        expected = operations[0].apply(data, parent_data=data)
+        expected = operations[0].apply(data)
     displayed_expected = expected.transpose(*data.dims, transpose_coords=True)
 
     with manager_context() as manager:

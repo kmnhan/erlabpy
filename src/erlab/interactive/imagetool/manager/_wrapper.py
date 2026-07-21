@@ -1487,7 +1487,12 @@ class _ManagedWindowNode(QtCore.QObject):
             data, _state = self.slicer_area.persistence_data_and_state()
             return self._finalize_script_input_data(data)
         if self.displayed_provenance_spec is None:
-            return self.current_source_data()
+            return self.current_public_data()
+        if self.provenance_spec is None and self.imagetool is not None:
+            # An accepted display filter contributes transient displayed provenance,
+            # but persistence still retains the unfiltered source needed for replay.
+            data, _state = self.slicer_area.persistence_data_and_state()
+            return self._finalize_script_input_data(data)
         return None
 
     def _restore_replay_source_data(self, data: xr.DataArray | None) -> None:
