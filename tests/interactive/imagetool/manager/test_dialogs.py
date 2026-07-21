@@ -16,6 +16,8 @@ from erlab.interactive.imagetool._load_source import (
     _resolve_identified_path,
     _scan_number_load_call_args,
     _serialize_loader_kwargs,
+    _spreadsheet_metadata_source_code,
+    _spreadsheet_metadata_source_from_config,
 )
 from erlab.interactive.imagetool._provenance._execution import _load_file_source_object
 from erlab.interactive.imagetool._provenance._model import (
@@ -199,6 +201,7 @@ def test_spreadsheet_metadata_loader_kwargs_roundtrip_and_code(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
     example_loader,
+    example_data_dir: pathlib.Path,
 ) -> None:
     source = erlab.io.metadata.ExcelMetadataSource(
         tmp_path / "metadata.xlsx",
@@ -231,24 +234,37 @@ def test_spreadsheet_metadata_loader_kwargs_roundtrip_and_code(
             calls.append((identifier, kwargs)) or xr.DataArray([1.0], dims="x")
         ),
     )
-    file_path = tmp_path / "metadata-target.h5"
-    code = _load_code_from_file_details(
-        file_path,
-        (
-            "example",
-            {"metadata": source},
-            FileDataSelection(kind="dataarray"),
-        ),
-    )
-    assert code is not None
     namespace = {"erlab": erlab}
-    exec(code, namespace)  # noqa: S102
+    file_path = example_data_dir / "data_002.h5"
+    for kwargs in (
+        {"metadata": source},
+        {"metadata": source, "file_number": 42},
+    ):
+        code = _load_code_from_file_details(
+            file_path,
+            (
+                "example",
+                kwargs,
+                FileDataSelection(kind="dataarray"),
+            ),
+        )
+        if code is None:
+            raise RuntimeError("Spreadsheet metadata load code was not generated")
+        exec(code, namespace)  # noqa: S102
 
     assert namespace["data"].identical(xr.DataArray([1.0], dims="x"))
-    assert calls[0][0] == str(file_path)
-    generated_source = calls[0][1]["metadata"]
-    assert isinstance(generated_source, erlab.io.metadata.ExcelMetadataSource)
-    assert generated_source.coordinate_mapping == {"Temperature\n(K)": "sample_temp"}
+    assert [identifier for identifier, _kwargs in calls] == [
+        str(file_path),
+        str(file_path),
+    ]
+    assert "file_number" not in calls[0][1]
+    assert calls[1][1]["file_number"] == 42
+    for _identifier, generated_kwargs in calls:
+        generated_source = generated_kwargs["metadata"]
+        assert isinstance(generated_source, erlab.io.metadata.ExcelMetadataSource)
+        assert generated_source.coordinate_mapping == {
+            "Temperature\n(K)": "sample_temp"
+        }
 
     replay_calls: list[tuple[pathlib.Path, dict[str, typing.Any]]] = []
 
@@ -284,6 +300,97 @@ def test_spreadsheet_metadata_loader_kwargs_roundtrip_and_code(
         replay_calls[0][1]["metadata"],
         erlab.io.metadata.ExcelMetadataSource,
     )
+
+
+def test_google_spreadsheet_metadata_loader_kwargs_roundtrip_and_code() -> None:
+    source = erlab.io.metadata.GoogleSheetsMetadataSource(
+        "https://docs.google.com/spreadsheets/d/test-sheet/edit?usp=sharing",
+        sheet_name="Measurements",
+        file_name_column="File Name",
+        coordinate_mapping={"Temperature": "sample_temp"},
+        overwrite=True,
+        row_range=(2, 10),
+        timeout=2.5,
+    )
+
+    serialized = _serialize_loader_kwargs({"metadata": source})
+    restored = _deserialize_loader_kwargs(json.loads(json.dumps(serialized)))[
+        "metadata"
+    ]
+
+    assert isinstance(restored, erlab.io.metadata.GoogleSheetsMetadataSource)
+    assert restored.share_url == source.share_url
+    assert restored.sheet_name == "Measurements"
+    assert restored.file_name_column == "File Name"
+    assert restored.coordinate_mapping == {"Temperature": "sample_temp"}
+    assert restored.overwrite
+    assert restored.row_range == (2, 10)
+    assert restored.timeout == 2.5
+
+    namespace = {"erlab": erlab}
+    exec(  # noqa: S102
+        f"metadata_source = {_spreadsheet_metadata_source_code(source)}",
+        namespace,
+    )
+    generated = namespace["metadata_source"]
+    assert isinstance(generated, erlab.io.metadata.GoogleSheetsMetadataSource)
+    assert generated.share_url == source.share_url
+    assert generated.sheet_name == "Measurements"
+    assert generated.coordinate_mapping == {"Temperature": "sample_temp"}
+    assert generated.row_range == (2, 10)
+    assert generated.timeout == 2.5
+
+
+@pytest.mark.parametrize("row_range", [42, "2-3", [2]])
+def test_spreadsheet_metadata_rejects_invalid_saved_row_range(
+    row_range: object,
+) -> None:
+    with pytest.raises(ValueError, match="row range"):
+        _spreadsheet_metadata_source_from_config(
+            {"type": "excel", "path": "metadata.xlsx", "row_range": row_range}
+        )
+
+
+@pytest.mark.parametrize(
+    ("config", "error", "match"),
+    [
+        ({"type": "excel", "path": None}, TypeError, "Excel metadata path"),
+        (
+            {"type": "google_sheets", "share_url": None},
+            TypeError,
+            "Google Sheets metadata link",
+        ),
+        ({"type": "unsupported"}, ValueError, "Unknown spreadsheet metadata"),
+    ],
+)
+def test_spreadsheet_metadata_rejects_invalid_saved_source_config(
+    config: dict[str, object],
+    error: type[Exception],
+    match: str,
+) -> None:
+    with pytest.raises(error, match=match):
+        _spreadsheet_metadata_source_from_config(config)
+
+
+def test_custom_spreadsheet_metadata_source_is_not_serialized() -> None:
+    class CustomSpreadsheetMetadataSource(erlab.io.metadata.SpreadsheetMetadataSource):
+        @property
+        def source_name(self) -> str:
+            return "custom"
+
+        def _read_rows(self) -> list[list[object]]:
+            return [["File Name", "Temperature"]]
+
+    source = CustomSpreadsheetMetadataSource(
+        file_name_column="File Name",
+        coordinate_mapping={"Temperature": "sample_temp"},
+    )
+
+    serialized = _serialize_loader_kwargs({"metadata": source})
+    assert serialized["metadata"] is source
+    assert _deserialize_loader_kwargs(serialized)["metadata"] is source
+    with pytest.raises(TypeError, match="Cannot generate code"):
+        _spreadsheet_metadata_source_code(source)
 
 
 def test_spreadsheet_column_labels_preserve_exact_line_break_names() -> None:
@@ -481,7 +588,7 @@ def test_spreadsheet_metadata_dialog_replaces_missing_excel_without_losing_setti
 
     def get_sheet_names(self) -> list[str]:
         sheet_requests.append(self.path)
-        return ["Overview", "Measurements"]
+        return ["Overview", "Replacement Data"]
 
     monkeypatch.setattr(
         erlab.io.metadata.ExcelMetadataSource,
@@ -491,7 +598,9 @@ def test_spreadsheet_metadata_dialog_replaces_missing_excel_without_losing_setti
     monkeypatch.setattr(
         erlab.io.metadata.ExcelMetadataSource,
         "get_selected_sheet_name",
-        lambda self: typing.cast("str", self.sheet_name),
+        lambda _self: (_ for _ in ()).throw(
+            ValueError("the previously selected worksheet is missing")
+        ),
     )
     monkeypatch.setattr(
         erlab.io.metadata.ExcelMetadataSource,
@@ -515,7 +624,7 @@ def test_spreadsheet_metadata_dialog_replaces_missing_excel_without_losing_setti
     )
 
     assert sheet_requests == [new_path]
-    assert dialog.sheet_combo.currentData() == "Measurements"
+    assert dialog.sheet_combo.currentData() == "Overview"
     assert dialog.file_name_combo.currentData() == "File"
     assert dialog._mappings() == (
         {"Temperature": "sample_temp"},
@@ -526,7 +635,7 @@ def test_spreadsheet_metadata_dialog_replaces_missing_excel_without_losing_setti
     replacement = dialog.selected_source()
     assert isinstance(replacement, erlab.io.metadata.ExcelMetadataSource)
     assert replacement.path == new_path
-    assert replacement.sheet_name == "Measurements"
+    assert replacement.sheet_name == "Overview"
     assert replacement.row_range == (20, 27)
     assert replacement.overwrite
 

@@ -257,10 +257,14 @@ class _SpreadsheetDiscoveryWorker(QtCore.QRunnable):
     def run(self) -> None:
         try:
             if self.operation == "sheets":
-                result: object = (
-                    self.source.get_sheet_names(),
-                    self.source.get_selected_sheet_name(),
-                )
+                sheet_names = self.source.get_sheet_names()
+                try:
+                    selected_sheet: str | None = self.source.get_selected_sheet_name()
+                except ValueError:
+                    # Worksheet discovery must remain usable when a previously
+                    # selected worksheet has been removed or renamed.
+                    selected_sheet = None
+                result: object = (sheet_names, selected_sheet)
             else:
                 result = self.source.get_column_names()
         except Exception as exc:
@@ -644,9 +648,11 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
     def _request_sheets(self) -> None:
         try:
             selected_sheet = self.sheet_combo.currentData()
-            if not isinstance(selected_sheet, str):
-                selected_sheet = self._preferred_sheet
-            source = self._make_source(sheet_name=selected_sheet)
+            if isinstance(selected_sheet, str):
+                self._preferred_sheet = selected_sheet
+            # Discover the workbook independently of the previous worksheet. This
+            # keeps replacement workbooks usable when their worksheet names differ.
+            source = self._make_source()
         except Exception as exc:
             self._show_error(f"{type(exc).__name__}: {exc}")
             return
@@ -694,14 +700,23 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         if request_id != self._request_id:
             return
         if operation == "sheets":
-            names, selected = typing.cast("tuple[list[str], str]", result)
+            names, selected = typing.cast("tuple[list[str], str | None]", result)
             self.sheet_combo.blockSignals(True)
             self.sheet_combo.clear()
             for name in names:
                 self.sheet_combo.addItem(name.replace("\n", " "), name)
-            selected_index = self.sheet_combo.findData(selected)
+            preferred = self._preferred_sheet
+            if isinstance(preferred, int) and 0 <= preferred < len(names):
+                preferred = names[preferred]
+            if not isinstance(preferred, str) or preferred not in names:
+                preferred = selected
+            selected_index = self.sheet_combo.findData(preferred)
             self.sheet_combo.setCurrentIndex(max(0, selected_index))
             self.sheet_combo.setEnabled(bool(names))
+            current_sheet = self.sheet_combo.currentData()
+            self._preferred_sheet = (
+                current_sheet if isinstance(current_sheet, str) else None
+            )
             self.sheet_combo.blockSignals(False)
             self._sheet_changed()
             return

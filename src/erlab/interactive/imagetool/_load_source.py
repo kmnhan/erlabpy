@@ -368,7 +368,12 @@ def _scan_number_load_call_args(
     keeps generated provenance code closer to the code users would normally write,
     but only when identifying the inferred scan resolves back to ``file_path``.
     """
-    if kwargs.get("single", False) or "data_dir" in kwargs:
+    if (
+        kwargs.get("single", False)
+        or "data_dir" in kwargs
+        or kwargs.get("metadata") is not None
+        or kwargs.get("file_number") is not None
+    ):
         return None
     if any(not isinstance(key, str) for key in kwargs):
         return None
