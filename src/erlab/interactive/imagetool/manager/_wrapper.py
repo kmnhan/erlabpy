@@ -1471,6 +1471,11 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def resolved_replay_source_data(self) -> xr.DataArray | None:
         """Return the original seed available for replay or detached output."""
+        if (
+            self._replay_source_pending
+            and not self.materialize_pending_workspace_payload()
+        ):
+            return None
         if self._replay_source_data is not None:
             return self._replay_source_data
         if self.parent_uid is not None and self.source_spec is not None:

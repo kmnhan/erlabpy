@@ -175,7 +175,17 @@ class _ActionsController:
             raise RuntimeError(
                 "Could not read this ImageTool's saved data from the workspace file."
             )
+        replay_source_expected = (
+            node.parent_uid is not None
+            and node.source_spec is not None
+            and self._manager._parent_node(node).has_replay_source
+        )
         replay_source_data = node.resolved_replay_source_data()
+        if replay_source_expected and replay_source_data is None:
+            raise RuntimeError(
+                "Could not read this ImageTool's saved replay source from the "
+                "workspace file."
+            )
 
         row_index = self._manager.tree_view._model._row_index(uid)
         was_expanded = row_index.isValid() and self._manager.tree_view.isExpanded(

@@ -1585,6 +1585,60 @@ def test_metadata_assignments_survive_watched_variable_updates(
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
 
 
+def test_watched_metadata_assignments_retain_workspace_replay_source(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data("scan")
+    edits = (
+        MetadataCellEdit(
+            MetadataField(kind="attribute", name="sample"), value="reference"
+        ),
+        MetadataCellEdit(MetadataField(kind="coordinate", name="angle"), value=1.5),
+    )
+    expected = source.assign_coords(angle=1.5).assign_attrs(sample="reference")
+
+    with manager_context() as manager:
+        manager._data_watched_update("scan", "watched-uid", source)
+        assert manager._metadata_editor.apply_edits({0: edits})
+
+        node = manager._tool_graph.root_wrappers[0]
+        xr.testing.assert_identical(node.replay_source_data, source)
+        select_tools(manager, [0])
+        manager._update_info(uid=node.uid)
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+
+        workspace_path = tmp_path / "watched-metadata-replay.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+
+        restored = manager._tool_graph.root_wrappers[0]
+        assert restored.watched
+        assert restored.has_replay_source
+        xr.testing.assert_identical(restored.resolved_replay_source_data(), source)
+        assert restored.provenance_spec is not None
+        xr.testing.assert_identical(
+            manager._provenance_edit_controller._replay_candidate(
+                restored, "display", restored.provenance_spec
+            ),
+            expected,
+        )
+        select_tools(manager, [0])
+        manager._update_info(uid=restored.uid)
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+
+
 def test_acquisition_context_does_not_apply_when_child_is_promoted(
     qtbot,
     manager_context: Callable[

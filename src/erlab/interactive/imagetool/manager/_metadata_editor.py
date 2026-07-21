@@ -2004,9 +2004,8 @@ class _MetadataEditorController(QtCore.QObject):
             )
         slicer_area = self.manager.get_imagetool(target).slicer_area
         terminal_edit = terminal_edit and not slicer_area.has_active_filter
-        replay_source_data = None
+        replay_source_data = node.resolved_replay_source_data()
         if candidate.kind in {"full_data", "public_data", "selection"}:
-            replay_source_data = node.resolved_replay_source_data()
             if replay_source_data is None and (
                 spec is None or not tuple(iter_operation_refs(spec))
             ):
