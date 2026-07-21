@@ -2158,7 +2158,7 @@ class ReplayStep(pydantic.BaseModel):
             "current" if live_source.kind == "full_data" else "restored"
         )
         if not live_source.operations:
-            if live_source.kind in {"full_data", "public_data"}:
+            if live_source.kind == "full_data":
                 return ()
             return (
                 cls(
@@ -3350,8 +3350,12 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             entries.append(entry)
         return entries
 
-    def _script_graph_code(self, *, display: bool) -> str | None:
-        if not self.operations:
+    def _graph_code(self, *, display: bool) -> str | None:
+        if self.kind not in {"script", "file"} or not self.operations:
+            return None
+        if self.kind == "file" and not any(
+            _operation_is(operation, "source_view") for operation in self.operations
+        ):
             return None
         from erlab.interactive.imagetool._provenance._graph import (
             ReplayGraphError,
@@ -3407,9 +3411,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
     def derivation_code(self) -> str | None:
         prefix: str | None = None
-        if self.kind == "script" and (
-            graph_code := self._script_graph_code(display=True)
-        ):
+        if graph_code := self._graph_code(display=True):
             return graph_code
         if self.kind in {"script", "file"}:
             prefix = self.seed_code
@@ -3581,9 +3583,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         no-op and normalization steps from copied provenance code.
         """
         prefix: str | None = None
-        if self.kind == "script" and (
-            graph_code := self._script_graph_code(display=True)
-        ):
+        if graph_code := self._graph_code(display=True):
             return graph_code
         if self.kind in {"script", "file"}:
             prefix = self.seed_code
@@ -3943,7 +3943,7 @@ def compose_full_provenance(
     with contextlib.suppress(TypeError):
         local_live = require_live_source_spec(local_value)
         if local_live is not None:
-            if not local_live.operations:
+            if local_live.kind == "full_data" and not local_live.operations:
                 return parent_replay
             prefix_steps: tuple[ReplayStep, ...] = ()
             if parent_replay.kind == "script" and parent_replay.active_name not in {

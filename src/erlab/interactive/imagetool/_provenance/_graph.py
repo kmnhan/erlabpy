@@ -2525,11 +2525,11 @@ def _operation_uses_dynamic_nonuniform_restore(
     operation = node.payload["operation"]
     operation_name = getattr(operation, "op", None)
     if operation_name == "source_view":
-        if getattr(operation, "source_kind", None) == "full_data":
-            return False
-        return not graph.display or _node_may_contain_image_tool_dimensions(
-            graph, node.parents[0]
-        )
+        # An explicit source-view operation is the complete durable representation
+        # of an operation-free public/selection source. Unlike an input-policy view
+        # before another operation, it cannot be omitted from copied code without
+        # dropping the source transformation itself.
+        return getattr(operation, "source_kind", None) != "full_data"
     return (
         operation_name == "restore_nonuniform_dims"
         and getattr(operation, "dimension_mapping", None) is None

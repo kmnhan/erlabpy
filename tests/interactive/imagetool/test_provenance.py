@@ -5398,6 +5398,59 @@ def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
     ) == to_replay_provenance_spec(watched_parent)
 
 
+@pytest.mark.parametrize("parent_kind", ["script", "file"])
+@pytest.mark.parametrize("source_builder", [public_data, selection])
+def test_compose_operation_free_restored_source_preserves_nonuniform_dimensions(
+    parent_kind: str,
+    source_builder: collections.abc.Callable[[], ToolProvenanceSpec],
+    tmp_path: pathlib.Path,
+) -> None:
+    public = xr.DataArray(
+        np.arange(20.0).reshape(5, 4),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4)},
+        name="scan",
+    )
+    internal = erlab.utils.array._make_dims_uniform(public)
+
+    if parent_kind == "file":
+        path = tmp_path / "nonuniform.nc"
+        internal.to_netcdf(path)
+        parent = file_load(
+            start_label="Load nonuniform data",
+            seed_code=(
+                f"import xarray\n\nderived = xarray.load_dataarray({str(path)!r})"
+            ),
+            file_load_source=_file_replay_source(path),
+        )
+        replay_inputs: dict[str, xr.DataArray] = {}
+    else:
+        parent = script(
+            start_label="Start from data",
+            seed_code="derived = data",
+            active_name="derived",
+        )
+        replay_inputs = {"data": internal}
+
+    composed = compose_full_provenance(parent, source_builder())
+
+    assert composed is not None
+    assert len(composed.steps) == 1
+    assert isinstance(composed.steps[0].operation, _SourceViewOperation)
+    if composed.kind == "file":
+        replayed = replay_file_provenance(composed)
+    else:
+        replayed = replay_script_provenance(composed, replay_inputs)
+    xr.testing.assert_identical(replayed, public)
+
+    code = composed.display_code()
+    assert code is not None
+    namespace = _exec_generated_code(code, replay_inputs)
+    xr.testing.assert_identical(
+        namespace[typing.cast("str", composed.active_name)], public
+    )
+
+
 def test_script_provenance_supports_named_console_inputs() -> None:
     left = script(
         ScriptCodeOperation(
@@ -5825,9 +5878,7 @@ derived = data
         )
 
     assert (
-        script(start_label="Run", active_name="derived")._script_graph_code(
-            display=True
-        )
+        script(start_label="Run", active_name="derived")._graph_code(display=True)
         is None
     )
     assert (
