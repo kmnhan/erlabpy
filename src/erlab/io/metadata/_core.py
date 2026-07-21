@@ -60,6 +60,7 @@ def _normalize_mapping(
         return {}
 
     normalized: dict[str, str] = {}
+    destination_sources: dict[str, str] = {}
     for source, destination in mapping.items():
         source_name = _normalize_column_name(
             source, description=f"{description} source column"
@@ -69,7 +70,14 @@ def _normalize_mapping(
         )
         if source_name in normalized:
             raise ValueError(f"Duplicate {description} source column {source_name!r}")
+        if destination_name in destination_sources:
+            raise ValueError(
+                f"Duplicate {description} destination {destination_name!r} for "
+                f"source columns {destination_sources[destination_name]!r} and "
+                f"{source_name!r}"
+            )
         normalized[source_name] = destination_name
+        destination_sources[destination_name] = source_name
     return normalized
 
 

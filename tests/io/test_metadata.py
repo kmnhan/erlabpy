@@ -588,6 +588,19 @@ def test_source_rejects_invalid_mappings() -> None:
             coordinate_mapping={" A": "first", "A": "second"},
         )
 
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Duplicate coordinate mapping destination 'value' for source columns "
+            "'A' and 'B'"
+        ),
+    ):
+        _RowsMetadataSource(
+            [["File", "A", "B"]],
+            file_name_column="File",
+            coordinate_mapping={"A": "value", "B": "value"},
+        )
+
 
 @pytest.mark.parametrize(
     ("kwargs", "error"),

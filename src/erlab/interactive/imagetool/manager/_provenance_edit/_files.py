@@ -360,6 +360,18 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
     def _update_loader_options_for_path(self) -> None:
         path = self.file_path()
         current_filter = self._checked_filter_name()
+        current_func = (
+            self.loader_options._valid_loaders[current_filter][0]
+            if current_filter is not None
+            else None
+        )
+        current_loader = getattr(current_func, "__self__", None)
+        current_loader_name = (
+            current_loader.name
+            if isinstance(current_loader, erlab.io.dataloader.LoaderBase)
+            else None
+        )
+        current_metadata = self.loader_options.spreadsheet_metadata_source()
         valid_loaders = erlab.interactive.utils.file_loaders(path)
         if not valid_loaders:
             valid_loaders = erlab.interactive.utils.file_loaders()
@@ -384,12 +396,34 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         old_options.deleteLater()
 
         selected_filter = self._checked_filter_name()
-        if selected_filter == current_filter:
+        selected_func = (
+            self.loader_options._valid_loaders[selected_filter][0]
+            if selected_filter is not None
+            else None
+        )
+        selected_loader = getattr(selected_func, "__self__", None)
+        same_loader = (
+            current_loader_name is not None
+            and isinstance(selected_loader, erlab.io.dataloader.LoaderBase)
+            and selected_loader.name == current_loader_name
+        )
+        if selected_filter == current_filter or same_loader:
             self.kwargs_edit.setText(current_kwargs_text)
             for key, text in current_extensions_text.items():
                 line = self.loader_options.loader_extension_lines.get(key)
                 if line is not None:
                     line.setText(text)
+        if same_loader and selected_filter is not None:
+            if current_metadata is None:
+                self.loader_options._spreadsheet_metadata_by_filter.pop(
+                    selected_filter, None
+                )
+            else:
+                self.loader_options._spreadsheet_metadata_by_filter[selected_filter] = (
+                    current_metadata
+                )
+            self.loader_options._clear_checked_values()
+            self.loader_options._update_spreadsheet_metadata_controls()
         self.updateGeometry()
 
     def selected_batch_peers(self) -> tuple[_FileLoadBatchPeer, ...]:

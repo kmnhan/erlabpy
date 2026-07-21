@@ -919,7 +919,8 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
     def _mappings(self) -> tuple[dict[str, str], dict[str, str]]:
         coordinate_mapping: dict[str, str] = {}
         attribute_mapping: dict[str, str] = {}
-        seen: set[tuple[str, str]] = set()
+        source_rows: dict[tuple[str, str], int] = {}
+        destination_rows: dict[tuple[str, str], int] = {}
         for row in range(self.mapping_table.topLevelItemCount()):
             item = self.mapping_table.topLevelItem(row)
             if item is None:  # pragma: no cover - bounded QTreeWidget access.
@@ -933,13 +934,20 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
                 raise ValueError(f"Mapping row {row + 1} has no mapping type")
             if not name:
                 raise ValueError(f"Mapping row {row + 1} has no destination name")
-            key = kind, column
-            if key in seen:
+            source_key = kind, column
+            if source_key in source_rows:
                 raise ValueError(
                     f"Spreadsheet column {column!r} is mapped more than once as "
-                    f"a {kind}"
+                    f"a {kind} (mapping rows {source_rows[source_key]} and {row + 1})"
                 )
-            seen.add(key)
+            destination_key = kind, name
+            if destination_key in destination_rows:
+                raise ValueError(
+                    f"Destination name {name!r} is used more than once as a {kind} "
+                    f"(mapping rows {destination_rows[destination_key]} and {row + 1})"
+                )
+            source_rows[source_key] = row + 1
+            destination_rows[destination_key] = row + 1
             target = coordinate_mapping if kind == "coordinate" else attribute_mapping
             target[column] = name
         return coordinate_mapping, attribute_mapping

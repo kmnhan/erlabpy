@@ -33,6 +33,7 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _text_to_loader_extension_value,
 )
 from erlab.interactive.imagetool.manager._spreadsheet_metadata import (
+    _MAPPING_VALUE_ROLE,
     _column_display_entries,
     _SpreadsheetMetadataDialog,
 )
@@ -791,6 +792,18 @@ def test_spreadsheet_metadata_dialog_validates_mappings(
     item.setText(2, "sample_temp")
     dialog.add_mapping_row("Temperature", name="other_temp")
     with pytest.raises(ValueError, match="mapped more than once"):
+        dialog._mappings()
+    duplicate_item = dialog.mapping_table.topLevelItem(1)
+    assert duplicate_item is not None
+    duplicate_item.setData(
+        0,
+        _MAPPING_VALUE_ROLE,
+        "File",
+    )
+    duplicate_item.setText(2, "sample_temp")
+    with pytest.raises(
+        ValueError, match=r"Destination name 'sample_temp'.*rows 1 and 2"
+    ):
         dialog._mappings()
     dialog.accept()
     assert len(messages) == 5

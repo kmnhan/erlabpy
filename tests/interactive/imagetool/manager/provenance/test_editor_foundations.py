@@ -289,6 +289,86 @@ def test_file_load_edit_dialog_updates_loader_options_for_replacement_path(
     assert any("*.nc" in name for name in loader_filters)
 
 
+def test_file_load_edit_dialog_preserves_edited_metadata_across_filter_rebuild(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    example_loader,
+) -> None:
+    loader = example_loader()
+    pxt_filter = "Example Single File (*.pxt)"
+    zip_filter = "Example Data (*.zip)"
+
+    def file_loaders(path=None):
+        suffix = pathlib.Path(path).suffix if path is not None else ""
+        if suffix == ".pxt":
+            return {pxt_filter: (loader.load, {"single": True})}
+        if suffix == ".zip":
+            return {zip_filter: (loader.load, {})}
+        return {
+            pxt_filter: (loader.load, {"single": True}),
+            zip_filter: (loader.load, {}),
+        }
+
+    monkeypatch.setattr(erlab.interactive.utils, "file_loaders", file_loaders)
+    original_source = erlab.io.metadata.ExcelMetadataSource(
+        tmp_path / "original.xlsx",
+        sheet_name="Measurements",
+        file_name_column="File",
+    )
+    replacement_source = erlab.io.metadata.ExcelMetadataSource(
+        tmp_path / "replacement.xlsx",
+        sheet_name="Measurements",
+        file_name_column="File",
+    )
+    load_source = FileLoadSource(
+        path=str(tmp_path / "scan.pxt"),
+        loader_label="Loader",
+        loader_text="example",
+        kwargs_text="",
+        replay_call=FileReplayCall(
+            kind="erlab_loader",
+            target="example",
+            kwargs=_serialize_loader_kwargs(
+                {
+                    "single": True,
+                    "metadata": original_source,
+                    "loader_extensions": {"coordinate_attrs": ("old",)},
+                }
+            ),
+            selected_index=0,
+        ),
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = provenance_edit_files._FileLoadEditDialog(load_source, parent)
+    qtbot.addWidget(dialog)
+
+    dialog.loader_options._spreadsheet_metadata_by_filter[pxt_filter] = (
+        replacement_source
+    )
+    dialog.loader_options._update_spreadsheet_metadata_controls()
+    dialog.kwargs_edit.setText("single=True, custom='edited'")
+    dialog.loader_options.loader_extension_lines["coordinate_attrs"].setText(
+        "('edited',)"
+    )
+    dialog.path_edit.setText(str(tmp_path / "scan.zip"))
+
+    assert dialog._checked_filter_name() == zip_filter
+    assert dialog.loader_options.spreadsheet_metadata_source() is replacement_source
+    assert dialog.kwargs_edit.text() == "single=True, custom='edited'"
+    assert (
+        dialog.loader_options.loader_extension_lines["coordinate_attrs"].text()
+        == "('edited',)"
+    )
+
+    dialog.loader_options._clear_spreadsheet_metadata()
+    dialog.path_edit.setText(str(tmp_path / "scan.pxt"))
+
+    assert dialog._checked_filter_name() == pxt_filter
+    assert dialog.loader_options.spreadsheet_metadata_source() is None
+
+
 def test_file_load_edit_dialog_batch_targets_and_path_mapping(
     qtbot,
     tmp_path: pathlib.Path,

@@ -1039,10 +1039,7 @@ def test_manager_and_explorer_share_loader_options(
             assert (
                 tab.loader_kwargs_by_name()[loader_name]["metadata"] is explorer_source
             )
-        assert (
-            manager._recent_loader_kwargs_by_filter[name_filter]["metadata"]
-            is explorer_source
-        )
+        assert name_filter not in manager._recent_loader_kwargs_by_filter
 
         class _AcceptNameFilterDialog:
             def __init__(
@@ -1099,6 +1096,19 @@ def test_manager_and_explorer_share_loader_options(
             assert tab.loader_extensions_by_name()[loader_name] == {
                 "coordinate_attrs": ["from_manager"]
             }
+
+
+def test_shared_loader_kwargs_exclude_file_dialog_method_defaults() -> None:
+    metadata = object()
+
+    assert manager_base._loader_kwargs_without_filter_defaults(
+        {"single": True, "metadata": metadata},
+        {"single": True},
+    ) == {"metadata": metadata}
+    assert manager_base._loader_kwargs_without_filter_defaults(
+        {"single": False},
+        {"single": True},
+    ) == {"single": False}
 
 
 def test_explorer_loader_options_dialog_updates_kwargs(

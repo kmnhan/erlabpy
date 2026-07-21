@@ -114,6 +114,17 @@ def _loader_name_for_callable(func: Callable) -> str | None:
     return loader.name if isinstance(loader, erlab.io.dataloader.LoaderBase) else None
 
 
+def _loader_kwargs_without_filter_defaults(
+    kwargs: Mapping[str, typing.Any], defaults: Mapping[str, typing.Any]
+) -> dict[str, typing.Any]:
+    """Return loader-wide overrides, excluding file-dialog method defaults."""
+    return {
+        key: value
+        for key, value in kwargs.items()
+        if key not in defaults or value != defaults[key]
+    }
+
+
 class _ImageToolManagerBase(QtWidgets.QMainWindow):
     """Concrete Qt core for ImageToolManager."""
 
@@ -466,7 +477,10 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
                 continue
             loader_name = _loader_name_for_callable(loader_entry[0])
             if loader_name is not None:
-                shared_kwargs.setdefault(loader_name, dict(kwargs))
+                shared_kwargs.setdefault(
+                    loader_name,
+                    _loader_kwargs_without_filter_defaults(kwargs, loader_entry[1]),
+                )
         for name_filter, extensions in self._recent_loader_extensions_by_filter.items():
             loader_entry = valid_loaders.get(name_filter)
             if loader_entry is None:
@@ -494,18 +508,19 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         state.explorer_loader_kwargs_by_name = shared_kwargs
         state.explorer_loader_extensions_by_name = shared_extensions
 
-        for loader_name, kwargs in shared_kwargs.items():
-            if loader_name not in erlab.io.loaders:
-                continue
-            for name_filter in erlab.io.loaders[loader_name].file_dialog_methods:
-                self._recent_loader_kwargs_by_filter[name_filter] = kwargs.copy()
-        for loader_name, extensions in shared_extensions.items():
-            if loader_name not in erlab.io.loaders:
-                continue
-            for name_filter in erlab.io.loaders[loader_name].file_dialog_methods:
-                self._recent_loader_extensions_by_filter[name_filter] = (
-                    extensions.copy()
-                )
+        recent_filter = self._recent_name_filter
+        if recent_filter is not None:
+            loader_entry = erlab.interactive.utils.file_loaders().get(recent_filter)
+            if loader_entry is not None:
+                loader_name = _loader_name_for_callable(loader_entry[0])
+                if loader_name is not None and loader_name in shared_kwargs:
+                    self._recent_loader_kwargs_by_filter[recent_filter] = (
+                        dict(loader_entry[1]) | shared_kwargs[loader_name]
+                    )
+                if loader_name is not None and loader_name in shared_extensions:
+                    self._recent_loader_extensions_by_filter[recent_filter] = dict(
+                        shared_extensions[loader_name]
+                    )
 
         if not apply_explorer:
             return
@@ -631,7 +646,9 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         if loader_name is not None:
             self._set_shared_loader_options(
                 loader_name,
-                selected_kwargs,
+                _loader_kwargs_without_filter_defaults(
+                    selected_kwargs, valid_loaders[selected_filter][1]
+                ),
                 loader_extensions if isinstance(loader_extensions, dict) else {},
             )
         self._mark_workspace_layout_dirty()
