@@ -961,10 +961,14 @@ class _ActionsController:
                 erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(darr)
             plans.append((False, idx, darr, replacement))
 
+        data_changed = False
         for add_new, idx, darr, replacement in plans:
             if add_new:
                 # If not yet created, add new tool.
-                self._manager._data_ingress.receive_data([darr], {})
+                if idx != self._manager.next_idx:
+                    break
+                if self._manager._data_ingress.receive_data([darr], {}) != [True]:
+                    break
             elif replacement is None:
                 self._manager.get_imagetool(idx).slicer_area.replace_source_data(darr)
             else:
@@ -972,7 +976,9 @@ class _ActionsController:
                 self._manager._metadata_editor.commit_replacement(
                     idx, darr, processed, provenance
                 )
-        self._manager._sigDataReplaced.emit()
+            data_changed = True
+        if data_changed:
+            self._manager._sigDataReplaced.emit()
 
     def _find_watched_idx(self, uid: str) -> int | None:
         """Find the index of the watched ImageTool corresponding to the given UID."""

@@ -1177,6 +1177,46 @@ def test_multi_target_replacement_adds_consecutive_new_indices(
             )
 
 
+@pytest.mark.parametrize(("fail_on", "expected_tools"), [(1, 0), (2, 1)])
+def test_multi_target_replacement_stops_when_new_tool_creation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    fail_on: int,
+    expected_tools: int,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    replacements = [
+        _batch_data(f"replacement{index}", offset=100.0 * index) for index in range(3)
+    ]
+
+    with manager_context() as manager:
+        original_receive_data = manager._data_ingress.receive_data
+        receive_calls = 0
+
+        def receive_data(data, kwargs):
+            nonlocal receive_calls
+            receive_calls += 1
+            if receive_calls == fail_on:
+                return [False]
+            return original_receive_data(data, kwargs, show=False)
+
+        monkeypatch.setattr(manager._data_ingress, "receive_data", receive_data)
+        replacement_signals: list[None] = []
+        manager._sigDataReplaced.connect(lambda: replacement_signals.append(None))
+
+        manager._data_replace(replacements, [0, 1, 2])
+
+        assert receive_calls == fail_on
+        assert manager.ntools == expected_tools
+        assert manager.next_idx == expected_tools
+        assert replacement_signals == ([None] if expected_tools else [])
+        if expected_tools:
+            xr.testing.assert_identical(
+                manager.get_imagetool(0).slicer_area._data, replacements[0]
+            )
+
+
 def test_metadata_assignments_survive_watched_variable_updates(
     qtbot,
     monkeypatch,
@@ -2078,6 +2118,38 @@ def test_metadata_editor_layout_discovery_and_action_dispatch(
         select_tools(manager, [0])
         controller.show_editor()
         assert calls == [(0,)]
+
+
+@pytest.mark.parametrize("remember_type", [False, True])
+def test_metadata_editor_parses_remembered_missing_numeric_fields(
+    qtbot,
+    remember_type: bool,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    field = MetadataField(kind="coordinate", name="temperature")
+    payload: dict[str, object] = {
+        "schema_version": 3 if remember_type else 2,
+        "initialized": True,
+        "fields": [field.model_dump(mode="json")],
+    }
+    if remember_type:
+        payload["field_types"] = [
+            {"field": field.model_dump(mode="json"), "value_type": "Float"}
+        ]
+
+    with manager_context() as manager:
+        _add_batch_tools(qtbot, manager, _batch_data("scan"))
+        manager._metadata_editor.restore_layout_payload(payload)
+        dialog = MetadataEditorDialog(manager, manager._metadata_editor, (0,))
+        qtbot.addWidget(dialog)
+        column = dialog.model.fields.index(field) + 1
+
+        assert dialog.model.setData(dialog.model.index(0, column), "20.5")
+        value = dialog.model.edited_values[(0, field)]
+        assert value == 20.5
+        assert isinstance(value, float)
 
 
 def test_metadata_editor_updates_child_source_assignments(
@@ -6282,7 +6354,11 @@ def test_metadata_editor_layout_persists_with_workspace(
             manager,
             _batch_data("scan").assign_attrs(sample="reference", operator="user"),
         )
-        manager._metadata_editor.set_layout_fields((sample, operator))
+        manager._metadata_editor.set_layout_fields(
+            (sample, operator), {sample: "reference", operator: "user"}
+        )
+        assert manager._metadata_editor.saved_field_type(sample) == "String"
+        assert manager._metadata_editor.saved_field_type(operator) == "String"
         dialog = MetadataEditorDialog(manager, manager._metadata_editor, (0,))
         qtbot.addWidget(dialog)
         dialog.show()
@@ -6329,6 +6405,8 @@ def test_metadata_editor_layout_persists_with_workspace(
         assert manager._metadata_editor.saved_column_width(sample) == 119
         assert manager._metadata_editor.saved_column_width(operator) == 173
         assert manager._metadata_editor.saved_column_width(transient) is None
+        assert manager._metadata_editor.saved_field_type(sample) == "String"
+        assert manager._metadata_editor.saved_field_type(operator) == "String"
 
         restored = MetadataEditorDialog(manager, manager._metadata_editor, (0,))
         qtbot.addWidget(restored)

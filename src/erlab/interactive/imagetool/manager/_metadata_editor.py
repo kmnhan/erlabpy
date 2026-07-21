@@ -44,7 +44,9 @@ if typing.TYPE_CHECKING:
 
 MetadataFieldKind = typing.Literal["coordinate", "attribute"]
 MetadataOrigin = typing.Literal["source", "assigned", "missing"]
+MetadataValueType = typing.Literal["String", "Int", "Float", "Bool", "Python literal"]
 _MISSING = object()
+_UNKNOWN_REFERENCE = object()
 
 
 def _values_equal(left: typing.Any, right: typing.Any) -> bool:
@@ -76,7 +78,7 @@ def _values_equal(left: typing.Any, right: typing.Any) -> bool:
         return bool(np.array_equal(left_array, right_array))
 
 
-def _value_type_name(value: typing.Any) -> str:
+def _value_type_name(value: typing.Any) -> MetadataValueType:
     if isinstance(value, bool):
         return "Bool"
     if isinstance(value, int | np.integer):
@@ -118,6 +120,11 @@ def _parse_typed_value(type_name: str, text: str) -> typing.Any:
 
 def _parse_editor_value(reference: typing.Any, text: str) -> typing.Any:
     """Parse table input while allowing deliberate metadata type changes."""
+    if reference is _UNKNOWN_REFERENCE:
+        try:
+            return ast.literal_eval(text.strip())
+        except (SyntaxError, ValueError):
+            return text
     try:
         return _parse_typed_value(_value_type_name(reference), text)
     except (SyntaxError, TypeError, ValueError) as typed_error:
@@ -158,14 +165,24 @@ class MetadataFieldWidth(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 
 
+class MetadataFieldType(pydantic.BaseModel):
+    """Saved parse type for a metadata field that may be absent later."""
+
+    field: MetadataField
+    value_type: MetadataValueType
+
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
+
+
 class MetadataEditorLayout(pydantic.BaseModel):
     """Workspace-scoped logbook column layout."""
 
-    schema_version: int = 2
+    schema_version: int = 3
     initialized: bool = False
     fields: tuple[MetadataField, ...] = ()
     data_column_width: int | None = pydantic.Field(default=None, ge=1, le=10_000)
     field_widths: tuple[MetadataFieldWidth, ...] = ()
+    field_types: tuple[MetadataFieldType, ...] = ()
 
     model_config = pydantic.ConfigDict(frozen=True, extra="ignore")
 
@@ -345,14 +362,21 @@ class _MetadataTableModel(QtCore.QAbstractTableModel):
                 value = _field_value(data, field)
                 match = matches.get(field)
                 present = value is not _MISSING
-                reference = value if present else self.field_defaults.get(field, "")
+                reference = (
+                    value
+                    if present
+                    else self.field_defaults.get(field, _UNKNOWN_REFERENCE)
+                )
                 self.cells[row, field] = MetadataCell(
                     field=field,
                     present=present,
                     value=None if not present else value,
                     assignment_ref=None if match is None else match[0],
                     assignment=None if match is None else match[1],
-                    editable=_stable_edit_value(field, reference),
+                    editable=(
+                        reference is _UNKNOWN_REFERENCE
+                        or _stable_edit_value(field, reference)
+                    ),
                 )
 
     def rowCount(self, parent: QtCore.QModelIndex | None = None) -> int:
@@ -498,7 +522,11 @@ class _MetadataTableModel(QtCore.QAbstractTableModel):
             raise ValueError("This value type cannot be edited reliably in the table.")
         reference = self.edited_values.get(
             key,
-            cell.value if cell.present else self.field_defaults.get(field, ""),
+            (
+                cell.value
+                if cell.present
+                else self.field_defaults.get(field, _UNKNOWN_REFERENCE)
+            ),
         )
         try:
             parsed = _parse_editor_value(reference, str(value))
@@ -1420,7 +1448,7 @@ class MetadataEditorDialog(QtWidgets.QDialog):
             self.model.set_fields(fields, self.model.field_defaults)
             self._resize_and_restore_columns()
         self.fields_widget.set_field_visible(field, visible)
-        self.controller.set_layout_fields(fields)
+        self.controller.set_layout_fields(fields, self.model.field_defaults)
 
     @QtCore.Slot(object)
     def _set_visible_fields(self, fields: object) -> None:
@@ -1434,7 +1462,7 @@ class MetadataEditorDialog(QtWidgets.QDialog):
             self._resize_and_restore_columns()
         for field in self.available_fields:
             self.fields_widget.set_field_visible(field, field in visible)
-        self.controller.set_layout_fields(visible)
+        self.controller.set_layout_fields(visible, self.model.field_defaults)
 
     @QtCore.Slot(object, object)
     def _add_field(self, field: object, value: object) -> None:
@@ -1447,7 +1475,7 @@ class MetadataEditorDialog(QtWidgets.QDialog):
             self.model.add_field(field, value)
             self._resize_and_restore_columns()
         self.fields_widget.add_field(field)
-        self.controller.set_layout_fields(self.model.fields)
+        self.controller.set_layout_fields(self.model.fields, self.model.field_defaults)
         self.fields_menu.close()
 
     @QtCore.Slot(QtCore.QPoint)
@@ -1467,7 +1495,7 @@ class MetadataEditorDialog(QtWidgets.QDialog):
     def _column_moved(self, _logical: int, _old: int, _new: int) -> None:
         ordered = self._visual_fields()
         if len(ordered) == len(self.model.fields):
-            self.controller.set_layout_fields(ordered)
+            self.controller.set_layout_fields(ordered, self.model.field_defaults)
 
     def _visual_fields(self) -> list[MetadataField]:
         header = typing.cast("QtWidgets.QHeaderView", self.table.horizontalHeader())
@@ -1615,15 +1643,40 @@ class _MetadataEditorController(QtCore.QObject):
             mode="json"
         )
 
-    def set_layout_fields(self, fields: Sequence[MetadataField]) -> None:
-        state = self.layout_state.model_copy(
+    def set_layout_fields(
+        self,
+        fields: Sequence[MetadataField],
+        field_defaults: Mapping[MetadataField, typing.Any] | None = None,
+    ) -> None:
+        state = self.layout_state
+        field_types = {saved.field: saved.value_type for saved in state.field_types}
+        if field_defaults is not None:
+            for field in fields:
+                value = field_defaults.get(field, _UNKNOWN_REFERENCE)
+                if value is not _UNKNOWN_REFERENCE:
+                    field_types[field] = _value_type_name(value)
+        state = state.model_copy(
             update={
-                "schema_version": 2,
+                "schema_version": 3,
                 "initialized": True,
                 "fields": tuple(fields),
+                "field_types": tuple(
+                    MetadataFieldType(field=field, value_type=value_type)
+                    for field, value_type in field_types.items()
+                ),
             }
         )
         self._set_layout_state(state)
+
+    def saved_field_type(self, field: MetadataField) -> MetadataValueType | None:
+        return next(
+            (
+                saved.value_type
+                for saved in reversed(self.layout_state.field_types)
+                if saved.field == field
+            ),
+            None,
+        )
 
     def saved_column_width(self, field: MetadataField | None) -> int | None:
         state = self.layout_state
@@ -1644,7 +1697,7 @@ class _MetadataEditorController(QtCore.QObject):
             if state.data_column_width == width:
                 return
             state = state.model_copy(
-                update={"schema_version": 2, "data_column_width": width}
+                update={"schema_version": 3, "data_column_width": width}
             )
         else:
             widths = {saved.field: saved.width for saved in state.field_widths}
@@ -1653,7 +1706,7 @@ class _MetadataEditorController(QtCore.QObject):
             widths[field] = width
             state = state.model_copy(
                 update={
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "field_widths": tuple(
                         MetadataFieldWidth(field=saved_field, width=saved_width)
                         for saved_field, saved_width in widths.items()
@@ -1742,7 +1795,22 @@ class _MetadataEditorController(QtCore.QObject):
             if saved_field not in seen:
                 ordered.append(saved_field)
                 seen.add(saved_field)
-            defaults.setdefault(saved_field, "")
+            saved_type = self.saved_field_type(saved_field)
+            default_by_type: dict[MetadataValueType, typing.Any] = {
+                "String": "",
+                "Int": 0,
+                "Float": 0.0,
+                "Bool": False,
+                "Python literal": None,
+            }
+            defaults.setdefault(
+                saved_field,
+                (
+                    _UNKNOWN_REFERENCE
+                    if saved_type is None
+                    else default_by_type[saved_type]
+                ),
+            )
             coverage.setdefault(saved_field, 0)
         ordered.sort(
             key=lambda field: (
