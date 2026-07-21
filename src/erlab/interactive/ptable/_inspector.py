@@ -44,7 +44,7 @@ class _LevelsTableRow:
 
 
 class CompactElementChip(QtWidgets.QFrame):
-    _COMPACT_SIZE = QtCore.QSize(92, 58)
+    _COMPACT_SIZE = (92, 58)
     _DETAILED_HEIGHT = 90
     _COMPACT_CONTENT_MARGINS = (6, 4, 6, 4)
     _DETAILED_CONTENT_MARGINS = (6, 4, 6, 7)
@@ -132,7 +132,7 @@ class CompactElementChip(QtWidgets.QFrame):
 
         self.mass_label.setVisible(self._detailed)
         self.config_label.setVisible(self._detailed)
-        self.set_chip_width(self._COMPACT_SIZE.width())
+        self.set_chip_width(self._COMPACT_SIZE[0])
         self.set_record(record)
         self.apply_theme(self._theme)
 
@@ -354,9 +354,7 @@ class CompactElementChip(QtWidgets.QFrame):
         )
 
     def set_chip_width(self, width: int) -> None:
-        height = (
-            self._DETAILED_HEIGHT if self._detailed else self._COMPACT_SIZE.height()
-        )
+        height = self._DETAILED_HEIGHT if self._detailed else self._COMPACT_SIZE[1]
         self.setFixedSize(width, height)
         self._update_text_fonts()
 
@@ -967,7 +965,7 @@ class ElementInspector(QtWidgets.QWidget):
             card_height = CompactElementChip._DETAILED_HEIGHT
         else:
             visible_rows = self._SUMMARY_COMPACT_VISIBLE_ROWS
-            card_height = CompactElementChip._COMPACT_SIZE.height()
+            card_height = CompactElementChip._COMPACT_SIZE[1]
         row_spacing = self.summary_cards_grid.verticalSpacing()
         rows_height = (visible_rows * card_height) + (
             row_spacing * max(visible_rows - 1, 0)

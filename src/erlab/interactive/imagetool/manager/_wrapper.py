@@ -1920,6 +1920,25 @@ class _ManagedWindowNode(QtCore.QObject):
             return self.tool_window.tool_data.copy(deep=False)
         raise ValueError("Managed node is not available")
 
+    def current_public_data(self) -> xr.DataArray:
+        """Return current public data in canonical source dimension order."""
+        if (
+            self.pending_workspace_payload is not None
+            and not self.materialize_pending_workspace_payload()
+        ):
+            raise ValueError(
+                "Could not read this node's saved data from the workspace file."
+            )
+        if self.imagetool is not None:
+            data = self.slicer_area.displayed_data
+            source_dims = tuple(self.slicer_area._data.dims)
+            if data.dims != source_dims:
+                data = data.transpose(*source_dims, transpose_coords=True)
+            return data.copy(deep=False)
+        if self.tool_window is not None:
+            return self.tool_window.tool_data.copy(deep=False)
+        raise ValueError("Managed node is not available")
+
     def parent_source_data(self) -> xr.DataArray:
         return self.manager._parent_source_data_for_uid(self.uid)
 
@@ -2364,21 +2383,26 @@ class _ImageToolWrapper(_ManagedWindowNode):
     def _load_source_input_dtype(self) -> np.dtype[typing.Any] | None:
         return self._source_input_dtype
 
-    def _watched_root_provenance_spec(
+    def _watched_input_provenance_spec(
         self,
+        *,
+        source_input_dtype: np.dtype[typing.Any] | str | None = None,
     ) -> ToolProvenanceSpec | None:
         varname = self._watched_varname
         if (
             not self.watched
-            or self._provenance_spec is not None
-            or self._source_spec is not None
             or varname is None
             or not varname.isidentifier()
             or keyword.iskeyword(varname)
         ):
             return None
         seed_source = varname
-        if self._source_input_dtype not in (
+        input_dtype = (
+            self._source_input_dtype
+            if source_input_dtype is None
+            else np.dtype(source_input_dtype)
+        )
+        if input_dtype not in (
             None,
             np.dtype(np.float32),
             np.dtype(np.float64),
@@ -2389,6 +2413,11 @@ class _ImageToolWrapper(_ManagedWindowNode):
             seed_code=f"derived = {seed_source}",
             active_name="derived",
         )
+
+    def _watched_root_provenance_spec(self) -> ToolProvenanceSpec | None:
+        if self._provenance_spec is not None or self._source_spec is not None:
+            return None
+        return self._watched_input_provenance_spec()
 
     @property
     def provenance_spec(

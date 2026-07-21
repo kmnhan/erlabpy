@@ -496,11 +496,11 @@ def test_figure_composer_persists_compact_preview_cache_without_rendering(
     xr.testing.assert_identical(restored.source_data()["second"], second)
     assert (
         restored_preview.width()
-        <= figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE.width()
+        <= figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE[0]
     )
     assert (
         restored_preview.height()
-        <= figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE.height()
+        <= figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE[1]
     )
     thumbnail = restored._preview_thumbnail_pixmap(QtCore.QSize(64, 64))
     assert thumbnail is not None

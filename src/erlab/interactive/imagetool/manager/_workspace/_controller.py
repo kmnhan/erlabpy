@@ -864,6 +864,12 @@ class _WorkspaceController:
                 if self._manager._workspace_state.options_modified
                 else (),
             ),
+            (
+                "Acquisition context modified",
+                ("Acquisition context",)
+                if self._manager._workspace_state.context_modified
+                else (),
+            ),
         )
         blocks: list[str] = []
         for label, items in sections:
@@ -1019,6 +1025,16 @@ class _WorkspaceController:
         ):
             return
         if self._manager._workspace_state.mark_options_dirty():
+            self._update_workspace_window_title(force=False)
+
+    def _mark_workspace_context_dirty(self) -> None:
+        if (
+            self._manager._workspace_state.loading_depth > 0
+            or self._manager._workspace_state.saving_depth > 0
+            or self._manager._workspace_state.closing_document
+        ):
+            return
+        if self._manager._workspace_state.mark_context_dirty():
             self._update_workspace_window_title(force=False)
 
     def _mark_workspace_clean(self) -> None:

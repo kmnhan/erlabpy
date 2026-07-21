@@ -421,6 +421,7 @@ class _WorkspaceSaver:
             loader_state=self._workspace_loader_state_snapshot(),
             standalone_apps=self._workspace_standalone_apps_snapshot(),
             option_overrides=self._workspace_option_overrides_snapshot(),
+            acquisition_context=(self._manager._acquisition_context.state_payload()),
             estimated_obsolete_bytes=estimated_obsolete_bytes,
             replacement_delta_count=replacement_delta_count,
             repack_estimate_known=repack_estimate_known,
@@ -439,6 +440,7 @@ class _WorkspaceSaver:
             "right_splitter": erlab.interactive.utils._qt_bytearray_to_base64(
                 self._manager.right_splitter.saveState()
             ),
+            "metadata_editor": self._manager._metadata_editor.layout_payload(),
         }
 
     def _workspace_option_overrides_snapshot(self) -> dict[str, typing.Any]:
@@ -1122,6 +1124,7 @@ class _WorkspaceSaver:
         return (
             self._manager._workspace_state.layout_modified
             or self._manager._workspace_state.options_modified
+            or self._manager._workspace_state.context_modified
         ) and not self._workspace_has_non_layout_modifications()
 
     def _workspace_rewrite_group_snapshot(

@@ -852,6 +852,11 @@ class ArraySlicer(QtCore.QObject):
 
         return erlab.utils.array._make_dims_uniform(data)
 
+    @classmethod
+    def preflight_array(cls, data: xr.DataArray) -> None:
+        """Check display compatibility without exposing renderer normalization."""
+        cls.validate_array(data, copy_values=False)
+
     def _reset_property_cache(self, propname: str) -> None:
         self.__dict__.pop(propname, None)
 

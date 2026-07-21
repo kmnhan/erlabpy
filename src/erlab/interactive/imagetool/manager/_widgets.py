@@ -1051,26 +1051,26 @@ _ICON_PATH = os.path.join(
 """Path to the icon file for the manager window."""
 
 
-_LINKER_COLORS: tuple[QtGui.QColor, ...] = (
-    QtGui.QColor(76, 114, 176),
-    QtGui.QColor(221, 132, 82),
-    QtGui.QColor(85, 168, 104),
-    QtGui.QColor(196, 78, 82),
-    QtGui.QColor(129, 114, 179),
-    QtGui.QColor(147, 120, 96),
-    QtGui.QColor(218, 139, 195),
-    QtGui.QColor(140, 140, 140),
-    QtGui.QColor(204, 185, 116),
-    QtGui.QColor(100, 181, 205),
+_LINKER_COLORS: tuple[tuple[int, int, int], ...] = (
+    (76, 114, 176),
+    (221, 132, 82),
+    (85, 168, 104),
+    (196, 78, 82),
+    (129, 114, 179),
+    (147, 120, 96),
+    (218, 139, 195),
+    (140, 140, 140),
+    (204, 185, 116),
+    (100, 181, 205),
 )
 """Colors for different linkers."""
 
-_WATCHED_VAR_COLORS: tuple[QtGui.QColor, ...] = (
-    QtGui.QColor(72, 120, 208),
-    QtGui.QColor(238, 133, 74),
-    QtGui.QColor(106, 204, 100),
-    QtGui.QColor(214, 95, 95),
-    QtGui.QColor(149, 108, 180),
+_WATCHED_VAR_COLORS: tuple[tuple[int, int, int], ...] = (
+    (72, 120, 208),
+    (238, 133, 74),
+    (106, 204, 100),
+    (214, 95, 95),
+    (149, 108, 180),
 )
 """Colors for watched variables from different kernels."""
 

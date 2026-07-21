@@ -9,6 +9,7 @@ __all__ = [
 ]
 
 import contextlib
+import copy
 import typing
 import uuid
 from dataclasses import dataclass
@@ -50,6 +51,9 @@ class _WorkspaceStateSnapshot(typing.TypedDict):
     layout_modified: bool
     options_modified: bool
     option_overrides: dict[str, typing.Any]
+    context_modified: bool
+    acquisition_context: dict[str, typing.Any]
+    metadata_editor_layout: dict[str, typing.Any]
     dirty_generation: int
     dirty_events: tuple[_WorkspaceDirtyEvent, ...]
     delta_save_count: int
@@ -77,6 +81,9 @@ class _ManagerWorkspaceState:
         self.layout_modified: bool = False
         self.options_modified: bool = False
         self.option_overrides: dict[str, typing.Any] = {}
+        self.context_modified: bool = False
+        self.acquisition_context: dict[str, typing.Any] = {}
+        self.metadata_editor_layout: dict[str, typing.Any] = {}
         self.needs_full_save: bool = False
         self.dirty_generation: int = 0
         self.dirty_events: list[_WorkspaceDirtyEvent] = []
@@ -90,7 +97,7 @@ class _ManagerWorkspaceState:
         self.closing_document: bool = False
 
     def is_modified(self, *, has_nodes: bool) -> bool:
-        if self.path is None and not has_nodes:
+        if self.path is None and not has_nodes and not self.context_modified:
             return False
         return (
             self.structure_modified
@@ -100,6 +107,7 @@ class _ManagerWorkspaceState:
             or bool(self.dirty_state)
             or bool(self.dirty_removed)
             or self.options_modified
+            or self.context_modified
         )
 
     def apply_dirty_event(self, event: _WorkspaceDirtyEvent) -> bool:
@@ -162,10 +170,21 @@ class _ManagerWorkspaceState:
         self.dirty_generation += 1
         return True
 
+    def mark_context_dirty(self) -> bool:
+        if self.context_modified:
+            if self.save_in_progress:
+                self.dirty_generation += 1
+                return True
+            return False
+        self.context_modified = True
+        self.dirty_generation += 1
+        return True
+
     def mark_clean(self) -> None:
         self.structure_modified = False
         self.layout_modified = False
         self.options_modified = False
+        self.context_modified = False
         self.dirty_added.clear()
         self.dirty_data.clear()
         self.dirty_state.clear()
@@ -216,6 +235,9 @@ class _ManagerWorkspaceState:
             "layout_modified": self.layout_modified,
             "options_modified": self.options_modified,
             "option_overrides": dict(self.option_overrides),
+            "context_modified": self.context_modified,
+            "acquisition_context": copy.deepcopy(self.acquisition_context),
+            "metadata_editor_layout": copy.deepcopy(self.metadata_editor_layout),
             "dirty_generation": self.dirty_generation,
             "dirty_events": tuple(self.dirty_events),
             "delta_save_count": self.delta_save_count,
@@ -239,6 +261,9 @@ class _ManagerWorkspaceState:
         self.layout_modified = snapshot["layout_modified"]
         self.options_modified = snapshot["options_modified"]
         self.option_overrides = dict(snapshot["option_overrides"])
+        self.context_modified = snapshot["context_modified"]
+        self.acquisition_context = copy.deepcopy(snapshot["acquisition_context"])
+        self.metadata_editor_layout = copy.deepcopy(snapshot["metadata_editor_layout"])
         self.dirty_generation = snapshot["dirty_generation"]
         self.dirty_events = list(snapshot["dirty_events"])
         self.delta_save_count = snapshot["delta_save_count"]

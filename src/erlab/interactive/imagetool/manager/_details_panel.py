@@ -1376,6 +1376,7 @@ class _DetailsPanelController:
             multiple_selected and len(selection_children) == 0
         )
         self._manager.batch_action.setEnabled(self._manager.batch_target_count() >= 2)
+        self._manager.metadata_editor_action.setEnabled(bool(imagetool_targets))
         self._manager.create_figure_action.setEnabled(
             bool(self._manager._selected_figure_source_targets())
         )

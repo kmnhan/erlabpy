@@ -22,6 +22,7 @@ from erlab.interactive.imagetool._provenance._execution import (
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
     ScriptInput,
+    ToolProvenanceOperation,
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
     _ProvenanceStepRef,
@@ -35,12 +36,16 @@ from erlab.interactive.imagetool._provenance._operations import (
     AffineCoordOperation,
     AssignAttrsOperation,
     AverageOperation,
+    DivideByCoordOperation,
     GaussianFilterOperation,
     IselOperation,
     KspaceConvertOperation,
     KspaceSetNormalOperation,
     KspaceWorkFunctionOperation,
     ScriptCodeOperation,
+    SortByOperation,
+    SwapDimsOperation,
+    TransposeOperation,
 )
 from erlab.interactive.imagetool.manager import replace_data
 from erlab.interactive.imagetool.manager._provenance_edit import (
@@ -634,7 +639,7 @@ def test_manager_paste_detached_steps_uses_replay_spec_fallback(
     node = types.SimpleNamespace(
         uid="node",
         displayed_provenance_spec=full_data(),
-        current_source_data=lambda: data,
+        current_public_data=lambda: data,
         replace_with_detached_data=lambda data, spec, preserve_filter: replaced.append(
             (data, spec, preserve_filter)
         ),
@@ -1101,6 +1106,144 @@ def test_manager_paste_structured_provenance_steps_into_selected_imagetools(
         xr.testing.assert_identical(tool_b.slicer_area._data, expected_b)
         assert manager._tool_graph.root_wrappers[index_a].displayed_provenance_spec
         assert manager._tool_graph.root_wrappers[index_b].displayed_provenance_spec
+
+
+@pytest.mark.parametrize("target_kind", ["root", "source_child"])
+def test_manager_paste_steps_preserves_nonuniform_public_dimension(
+    target_kind: str,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(12, dtype=float).reshape(3, 4) + 1.0,
+        dims=("Track Shift", "eV"),
+        coords={
+            "Track Shift": [0.0, 1.0, 2.0],
+            "eV": [-0.2, -0.1, 0.0, 0.1],
+            "sample_temp": ("Track Shift", [20.0, 22.0, 25.0]),
+            "mesh_current": ("Track Shift", [1.0, 2.0, 4.0]),
+        },
+        name="scan",
+    )
+    operations = (
+        SwapDimsOperation(mapping={"Track Shift": "sample_temp"}),
+        DivideByCoordOperation(coord_name="mesh_current"),
+    )
+    expected = full_data(*operations).apply(data)
+
+    with manager_context() as manager:
+        if target_kind == "root":
+            tool = itool(data.copy(deep=True), manager=False, execute=False)
+            assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+            index = manager.add_imagetool(
+                tool,
+                show=False,
+                provenance_spec=full_data(),
+            )
+            node = manager._tool_graph.root_wrappers[index]
+            select_tools(manager, [index])
+        else:
+            parent_tool = itool(data, manager=False, execute=False)
+            assert isinstance(parent_tool, erlab.interactive.imagetool.ImageTool)
+            parent_index = manager.add_imagetool(parent_tool, show=False)
+            tool = itool(data.copy(deep=True), manager=False, execute=False)
+            assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+            child_uid = manager.add_imagetool_child(
+                tool,
+                parent_index,
+                show=False,
+                source_spec=full_data(),
+                source_auto_update=True,
+            )
+            node = manager._child_node(child_uid)
+            select_child_tool(manager, child_uid)
+
+        _set_provenance_steps_clipboard(operations)
+        manager._paste_provenance_steps_from_clipboard()
+
+        xr.testing.assert_identical(tool.slicer_area._data, expected)
+        assert tuple(tool.slicer_area.data.dims) == ("sample_temp_idx", "eV")
+        xr.testing.assert_identical(tool.slicer_area.displayed_data, expected)
+        assert isinstance(node.info_text, str)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "nonuniform_attr",
+        "nonuniform_transpose",
+        "nonuniform_sort",
+        "nonuniform_script",
+        "promoted_1d",
+        "squeezed_5d",
+    ],
+)
+def test_manager_paste_steps_starts_from_public_target_data(
+    case: str,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(12, dtype=float).reshape(3, 4) + 1.0,
+        dims=("sample_temp", "eV"),
+        coords={
+            "sample_temp": [20.0, 22.0, 25.0],
+            "eV": [-0.2, -0.1, 0.0, 0.1],
+        },
+        name="scan",
+    )
+    operations: tuple[ToolProvenanceOperation, ...]
+    contains_script = False
+    displayed_expected: xr.DataArray
+    if case == "nonuniform_attr":
+        operations = (AssignAttrsOperation(attrs={"sample": "reference"}),)
+        expected = operations[0].apply(data, parent_data=data)
+    elif case == "nonuniform_transpose":
+        operations = (TransposeOperation(dims=("eV", "sample_temp")),)
+        expected = operations[0].apply(data, parent_data=data)
+    elif case == "nonuniform_sort":
+        data = data.assign_coords(sample_temp=[25.0, 20.0, 22.0])
+        operations = (SortByOperation(variables=("sample_temp",)),)
+        expected = operations[0].apply(data, parent_data=data)
+    elif case == "nonuniform_script":
+        operations = (
+            ScriptCodeOperation(label="Offset data", code="derived = derived + 1.0"),
+        )
+        contains_script = True
+        expected = data + 1.0
+    elif case == "promoted_1d":
+        data = data.isel(eV=0, drop=True)
+        operations = (AssignAttrsOperation(attrs={"sample": "reference"}),)
+        expected = operations[0].apply(data, parent_data=data)
+    else:
+        data = data.expand_dims(a=[1.0], b=[2.0], c=[3.0])
+        operations = (AssignAttrsOperation(attrs={"sample": "reference"}),)
+        expected = operations[0].apply(data, parent_data=data)
+    displayed_expected = expected.transpose(*data.dims, transpose_coords=True)
+
+    with manager_context() as manager:
+        tool = itool(data.copy(deep=True), manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        index = manager.add_imagetool(
+            tool,
+            show=False,
+            provenance_spec=full_data(),
+        )
+        node = manager._tool_graph.root_wrappers[index]
+
+        manager._provenance_edit_controller._paste_steps_into_node(
+            node,
+            operations,
+            active_name="derived",
+            contains_script=contains_script,
+        )
+
+        xr.testing.assert_identical(tool.slicer_area._data, expected)
+        xr.testing.assert_identical(tool.slicer_area.displayed_data, displayed_expected)
+        xr.testing.assert_identical(node.current_public_data(), expected)
+        assert isinstance(node.info_text, str)
 
 
 def test_manager_paste_structured_provenance_steps_into_pending_memory_imagetool(
@@ -1653,13 +1796,14 @@ def test_manager_paste_script_steps_replays_from_current_output_name(
         manager._paste_provenance_steps_from_clipboard()
 
         expected = dest_data + 2.0
-        displayed_expected = (
+        renderer_expected = (
             erlab.interactive.imagetool.slicer.ArraySlicer.validate_array(
                 expected,
                 copy_values=False,
             )
         )
-        xr.testing.assert_identical(dest_tool.slicer_area._data, displayed_expected)
+        xr.testing.assert_identical(dest_tool.slicer_area._data, expected)
+        xr.testing.assert_identical(dest_tool.slicer_area.data, renderer_expected)
         dest_node = manager._tool_graph.root_wrappers[dest_index]
         assert dest_node.displayed_provenance_spec is not None
         assert [

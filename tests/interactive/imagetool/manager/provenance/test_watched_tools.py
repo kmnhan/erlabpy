@@ -299,15 +299,15 @@ def test_manager_watched_badge_color_groups_by_source_uid(
         other = manager._tool_graph.root_wrappers[2]
 
         assert (
-            manager.color_for_watched_var_source(left)
+            manager.color_for_watched_var_source(left).getRgb()[:3]
             == manager_widgets._WATCHED_VAR_COLORS[0]
         )
         assert (
-            manager.color_for_watched_var_source(right)
+            manager.color_for_watched_var_source(right).getRgb()[:3]
             == manager_widgets._WATCHED_VAR_COLORS[0]
         )
         assert (
-            manager.color_for_watched_var_source(other)
+            manager.color_for_watched_var_source(other).getRgb()[:3]
             == manager_widgets._WATCHED_VAR_COLORS[1]
         )
 

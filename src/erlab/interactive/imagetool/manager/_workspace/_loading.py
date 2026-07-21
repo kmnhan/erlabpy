@@ -693,6 +693,7 @@ class _WorkspaceLoader:
     ) -> None:
         self._manager._tool_graph.restore_uid_counter(snapshot["node_uid_counter"])
         dirty_uids = self._manager._workspace_state.restore(snapshot)
+        self._manager._acquisition_context.refresh_ui()
         if self._manager._workspace_state.path is not None:
             self._manager._recent_directory = str(
                 self._manager._workspace_state.path.parent
@@ -1578,6 +1579,7 @@ class _WorkspaceLoader:
                         self._restore_workspace_layout(manifest)
                         self._restore_workspace_option_overrides(manifest)
                         self._restore_workspace_loader_state(manifest)
+                        self._restore_acquisition_context(manifest)
                         self._restore_standalone_apps_state(manifest)
                 if not mark_dirty:
                     with profiler.stage("ui catch-up"):
@@ -1766,6 +1768,7 @@ class _WorkspaceLoader:
                             self._restore_workspace_layout(manifest)
                             self._restore_workspace_option_overrides(manifest)
                             self._restore_workspace_loader_state(manifest)
+                            self._restore_acquisition_context(manifest)
                             self._restore_standalone_apps_state(manifest)
                     if not mark_dirty:
                         with profiler.stage("ui catch-up"):
@@ -1839,9 +1842,10 @@ class _WorkspaceLoader:
     def _restore_workspace_layout(
         self, manifest: Mapping[str, typing.Any] | None
     ) -> None:
-        if manifest is None:
-            return
-        layout = manifest.get("manager_layout")
+        layout = None if manifest is None else manifest.get("manager_layout")
+        self._manager._metadata_editor.restore_layout_payload(
+            layout.get("metadata_editor") if isinstance(layout, dict) else None
+        )
         if not isinstance(layout, dict):
             return
 
@@ -1895,6 +1899,12 @@ class _WorkspaceLoader:
                 for name, extensions in loader_extensions.items()
             },
         )
+
+    def _restore_acquisition_context(
+        self, manifest: Mapping[str, typing.Any] | None
+    ) -> None:
+        payload = None if manifest is None else manifest.get("acquisition_context")
+        self._manager._acquisition_context.restore_state_payload(payload)
 
     def _restore_workspace_loader_state(
         self,

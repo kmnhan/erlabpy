@@ -1673,7 +1673,7 @@ def test_pending_workspace_actions_and_color_branches(
         linked_color = manager.color_for_linker(manager._link_registry.linkers[0])
         assert manager.color_for_workspace_link_key(link_key) == linked_color
         assert (
-            manager.color_for_workspace_link_key("unknown-link-key")
+            manager.color_for_workspace_link_key("unknown-link-key").getRgb()[:3]
             == (manager_mainwindow._LINKER_COLORS[0])
         )
 

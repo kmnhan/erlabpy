@@ -59,7 +59,7 @@ class _GridSpecOutsideClickFilter(QtCore.QObject):
 _SELECTOR_CORNER_RADIUS = 6.0
 _SELECTOR_BORDER_WIDTH = 1.0
 _SELECTOR_SELECTED_BORDER_WIDTH = 1.6
-_SELECTOR_MUTED_STATUS_COLOR = QtGui.QColor("#59636e")
+_SELECTOR_MUTED_STATUS_COLOR = "#59636e"
 
 
 def _blend_qcolors(
@@ -100,7 +100,7 @@ def _selector_colors(widget: QtWidgets.QWidget) -> _SelectorColors:
     selection_face = _blend_qcolors(face, selection, 0.18)
     muted_text = _blend_qcolors(
         text,
-        _SELECTOR_MUTED_STATUS_COLOR,
+        QtGui.QColor(_SELECTOR_MUTED_STATUS_COLOR),
         0.55 if text.lightness() > panel.lightness() else 0.72,
     )
     return _SelectorColors(

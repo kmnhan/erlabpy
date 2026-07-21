@@ -193,7 +193,7 @@ _PREVIEW_PIXMAP_UPDATE_DELAY_MS = 250
 _PERSISTED_PREVIEW_CACHE_ATTR = "figure_composer_preview_cache_png"
 _PERSISTED_PREVIEW_CACHE_STALE_ATTR = "figure_composer_preview_cache_stale"
 _PERSISTED_SELECTED_SOURCE_DATA_ATTR = "figure_composer_selected_source_data"
-_PERSISTED_PREVIEW_CACHE_SIZE = QtCore.QSize(512, 384)
+_PERSISTED_PREVIEW_CACHE_SIZE = (512, 384)
 _PERSISTED_PREVIEW_CACHE_MAX_BYTES = 384_000
 _RESTORE_OPERATION_EDITOR_KEY = "figure_composer_operation_editor"
 _RESTORE_REDRAW_KEY = "figure_composer_restored_redraw"
@@ -4476,11 +4476,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if preview is None or preview.isNull():
             return None
         if (
-            preview.width() > _PERSISTED_PREVIEW_CACHE_SIZE.width()
-            or preview.height() > _PERSISTED_PREVIEW_CACHE_SIZE.height()
+            preview.width() > _PERSISTED_PREVIEW_CACHE_SIZE[0]
+            or preview.height() > _PERSISTED_PREVIEW_CACHE_SIZE[1]
         ):
             return preview.scaled(
-                _PERSISTED_PREVIEW_CACHE_SIZE,
+                QtCore.QSize(*_PERSISTED_PREVIEW_CACHE_SIZE),
                 QtCore.Qt.AspectRatioMode.KeepAspectRatio,
                 QtCore.Qt.TransformationMode.SmoothTransformation,
             )

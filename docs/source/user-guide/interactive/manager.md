@@ -107,6 +107,9 @@ Once the manager is running, you can open ImageTools in several ways:
 - Use the manager’s {menuselection}`File --> Add Data Files…` action to load data in a new
   ImageTool.
 
+  To add or replace coordinates and attributes while loading files, see
+  {ref}`imagetool-manager-acquisition-context`.
+
 - Drag and drop supported ARPES data into the manager window.
 
   In the dialog that appears, you can choose the plugin to use for loading the data. For
@@ -283,6 +286,43 @@ rows opened from another row can show the state badges described in
 {ref}`imagetool-manager-refresh`, and results that depend on several ImageTools can show
 the {guilabel}`Changed` or {guilabel}`Missing` badges described in
 {ref}`imagetool-manager-derived-data`.
+
+(imagetool-manager-acquisition-context)=
+
+## Setting coordinates and attributes while loading files
+
+```{versionadded} 3.25.0
+```
+
+Use Acquisition Context when files do not contain every coordinate or attribute you want
+to keep with the data, or when a value in the files needs to be replaced. This is
+particularly useful when conducting experiments at some endstations that provide partial
+or incorrect metadata in the data files.
+
+Open {menuselection}`File --> Acquisition Context…` and enter the current values. You
+can enter fields directly or use {guilabel}`Add from Selected ImageTool…` to copy them
+from a selected ImageTool.
+
+When you want the current context applied as you load new files, turn on
+{guilabel}`Apply automatically when loading data from files` and save. Update the
+context whenever acquisition conditions change. To change coordinates or attributes in
+ImageTools that are already open, use the
+{ref}`Metadata Editor <imagetool-manager-metadata-editor>`.
+
+(imagetool-manager-metadata-editor)=
+
+## Batch editing metadata
+
+```{versionadded} 3.25.0
+```
+
+Select one or more ImageTools and choose {menuselection}`Edit --> Metadata Editor…`.
+Each row represents one ImageTool. Use {guilabel}`Fields` to choose which coordinates
+and attributes appear as columns, then edit or paste values as you would in a logbook.
+
+A marker in the upper-right corner shows that a value was assigned in ImageTool after
+loading either from an acquisition context or manual assignment, rather than from the
+file metadata. Use {guilabel}`Revert Assignment` to restore its earlier value.
 
 (imagetool-manager-figure-composer)=
 

@@ -1070,16 +1070,15 @@ def test_figure_composer_redraw_and_preview_cache_edges(qtbot, monkeypatch) -> N
 
     assert tool._persisted_preview_cache_pixmap() is None
     preview = QtGui.QPixmap(
-        figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE.width() + 20,
-        figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE.height() + 20,
+        figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE[0] + 20,
+        figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE[1] + 20,
     )
     preview.fill(QtGui.QColor("red"))
     tool._preview_pixmap_cache = preview
     persisted = tool._persisted_preview_cache_pixmap()
     assert persisted is not None
     assert (
-        persisted.width()
-        <= figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE.width()
+        persisted.width() <= figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_SIZE[0]
     )
     saved = tool._append_persistence_payload(xr.Dataset())
     assert figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_ATTR in saved.attrs

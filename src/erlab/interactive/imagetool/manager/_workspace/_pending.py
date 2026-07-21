@@ -207,6 +207,20 @@ class _PendingWorkspacePayloads:
         }
         return data.copy(deep=False).assign_coords(loaded_coords)
 
+    def _pending_workspace_imagetool_metadata_data(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> xr.DataArray:
+        """Return pending ImageTool metadata without materializing its data window."""
+        data = self._pending_workspace_lazy_source_data(
+            node, data_role="source", owner_node=node
+        )
+        scalar_coords = {
+            key: coord.copy(deep=False).load()
+            for key, coord in data.coords.items()
+            if isinstance(key, str) and coord.ndim == 0
+        }
+        return data.copy(deep=False).assign_coords(scalar_coords)
+
     def _pending_workspace_imagetool_info_text(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> str | None:
