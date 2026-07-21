@@ -61,6 +61,29 @@ _FLOAT_PATTERN = re.compile(
     r"[+-]?(?:(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+)\Z"
 )
 _SIGNED_DIGITS_PATTERN = re.compile(r"[+-]?\d+\Z")
+_FILE_RANGE_SEPARATOR_PATTERN = re.compile("[~\N{EN DASH}]")
+
+
+class _SpreadsheetRow(typing.NamedTuple):
+    spreadsheet_row: int
+    file_name: object
+    values: tuple[typing.Any, ...]
+
+
+class _FileNumberRange(typing.NamedTuple):
+    start: int
+    end: int
+    row: _SpreadsheetRow
+
+
+class _SpreadsheetIndex(typing.NamedTuple):
+    file_names: dict[str, list[_SpreadsheetRow]]
+    ranges: tuple[_FileNumberRange, ...]
+
+
+class _SpreadsheetMatch(typing.NamedTuple):
+    row: _SpreadsheetRow
+    number_range: tuple[int, int] | None = None
 
 
 def _file_number_parse_error(
@@ -142,6 +165,58 @@ def _normalize_file_number(value: object, *, spreadsheet_row: int | None = None)
             spreadsheet_row=spreadsheet_row,
         )
     return number
+
+
+def _normalize_file_number_range(
+    value: object, *, spreadsheet_row: int | None = None
+) -> tuple[int, int] | None:
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+    separators = list(_FILE_RANGE_SEPARATOR_PATTERN.finditer(text))
+    if not separators:
+        return None
+    if len(separators) != 1:
+        raise _file_number_parse_error(
+            value,
+            "file ranges must contain exactly one '~' or en dash separator",
+            spreadsheet_row=spreadsheet_row,
+        )
+
+    separator = separators[0]
+    start_value = text[: separator.start()].strip()
+    end_value = text[separator.end() :].strip()
+    if not start_value or not end_value:
+        raise _file_number_parse_error(
+            value,
+            "file ranges must have a value on both sides of the separator",
+            spreadsheet_row=spreadsheet_row,
+        )
+
+    try:
+        start = _normalize_file_number(start_value)
+    except ValueError as exc:
+        raise _file_number_parse_error(
+            value,
+            f"range start {start_value!r} is not a valid file number or file name",
+            spreadsheet_row=spreadsheet_row,
+        ) from exc
+    try:
+        end = _normalize_file_number(end_value)
+    except ValueError as exc:
+        raise _file_number_parse_error(
+            value,
+            f"range end {end_value!r} is not a valid file number or file name",
+            spreadsheet_row=spreadsheet_row,
+        ) from exc
+    if start > end:
+        raise _file_number_parse_error(
+            value,
+            f"range start {start} is greater than range end {end}",
+            spreadsheet_row=spreadsheet_row,
+        )
+    return start, end
 
 
 def _parse_spreadsheet_value(value: Any) -> Any:
@@ -291,11 +366,14 @@ class SpreadsheetMetadataSource(abc.ABC):
         Header of the column containing the file name or number used to match loaded
         data. For path-based loads, whitespace-trimmed cell text is first matched
         exactly and case-sensitively against the file name without its path or final
-        extension. If that fails, the loader derives a file number from the path with
-        :meth:`erlab.io.dataloader.LoaderBase.infer_index`. That number is compared with
-        spreadsheet cells containing an integer or a simple filename ending in a
-        number, such as ``f_0001.pxt``. `file_name_column` may be omitted while
-        inspecting :meth:`get_sheet_names` or :meth:`get_column_names`.
+        extension. The loader derives a file number from the path with
+        :meth:`erlab.io.dataloader.LoaderBase.infer_index` for numeric fallback and to
+        check whether a range also claims a direct match. That number is compared with
+        spreadsheet cells containing an integer or a simple filename ending in a number,
+        such as ``f_0001.pxt``. Cells can also contain an inclusive range separated by
+        ``~`` or an en dash, such as ``f_0015~20`` or ``f_0015~f_0020``.
+        `file_name_column` may be omitted while inspecting :meth:`get_sheet_names` or
+        :meth:`get_column_names`.
     coordinate_mapping
         Mapping from spreadsheet headers to scalar coordinate names. This and
         `attribute_mapping` may both be omitted while inspecting
@@ -305,8 +383,8 @@ class SpreadsheetMetadataSource(abc.ABC):
         Mapping from spreadsheet headers to attribute names. The normalized mapping is
         immutable after construction.
     sheet_name
-        Worksheet name or zero-based worksheet index. If omitted, the source chooses
-        its default worksheet.
+        Worksheet name or zero-based worksheet index. If omitted, the source chooses its
+        default worksheet.
     overwrite
         Whether spreadsheet values replace existing scalar coordinates and attributes.
     row_range
@@ -315,9 +393,9 @@ class SpreadsheetMetadataSource(abc.ABC):
 
     Notes
     -----
-    Configured source-column names are matched exactly first. If no exact header
-    exists, a spreadsheet header containing newlines also matches the same name with
-    each newline replaced by a space.
+    Configured source-column names are matched exactly first. If no exact header exists,
+    a spreadsheet header containing newlines also matches the same name with each
+    newline replaced by a space.
 
     .. versionadded:: 3.25.0
     """
@@ -365,9 +443,7 @@ class SpreadsheetMetadataSource(abc.ABC):
         self._overwrite = overwrite
         self._row_range = None if row_range is None else _normalize_row_range(row_range)
         self._lock = threading.RLock()
-        self._row_index: dict[str, list[tuple[int, object, tuple[Any, ...]]]] | None = (
-            None
-        )
+        self._row_index: _SpreadsheetIndex | None = None
         self._headers: tuple[str, ...] | None = None
         self._sheet_names: tuple[str, ...] | None = None
 
@@ -503,10 +579,7 @@ class SpreadsheetMetadataSource(abc.ABC):
 
     def _get_cached_snapshot(
         self,
-    ) -> tuple[
-        tuple[str, ...],
-        dict[str, list[tuple[int, object, tuple[Any, ...]]]],
-    ]:
+    ) -> tuple[tuple[str, ...], _SpreadsheetIndex]:
         with self._lock:
             if not self._cache_row_index:
                 headers, row_index = self._build_index(self._read_rows())
@@ -536,9 +609,38 @@ class SpreadsheetMetadataSource(abc.ABC):
         """Match a bare file name exactly, parsing numbers only after a miss."""
         self._validate_lookup_configuration()
         headers, row_index = self._get_cached_snapshot()
-        if file_name in row_index:
+        direct_rows = row_index.file_names.get(file_name, [])
+        if direct_rows:
+            direct_matches = [_SpreadsheetMatch(row) for row in direct_rows]
+            if len(direct_matches) > 1:
+                return (
+                    self._metadata_for_matches(file_name, direct_matches, headers),
+                    file_name,
+                )
+
+            range_number: int | None = None
+            if row_index.ranges:
+                inferred = infer_file_number()
+                if inferred is not None:
+                    range_number = _normalize_file_number(inferred)
+                else:
+                    try:
+                        range_number = _normalize_file_number(file_name)
+                    except ValueError:
+                        range_number = None
+            if range_number is not None:
+                range_matches = self._matching_ranges(range_number, row_index)
+                if range_matches:
+                    return (
+                        self._metadata_for_matches(
+                            range_number,
+                            [*direct_matches, *range_matches],
+                            headers,
+                        ),
+                        file_name,
+                    )
             return (
-                self._metadata_for_matches(file_name, row_index[file_name], headers),
+                self._metadata_for_matches(file_name, direct_matches, headers),
                 file_name,
             )
 
@@ -563,45 +665,69 @@ class SpreadsheetMetadataSource(abc.ABC):
         self,
         number: int,
         headers: tuple[str, ...],
-        row_index: dict[str, list[tuple[int, object, tuple[Any, ...]]]],
+        row_index: _SpreadsheetIndex,
     ) -> _SpreadsheetMetadataValues | None:
-        matches: list[tuple[int, object, tuple[Any, ...]]] = []
-        for candidates in row_index.values():
-            for spreadsheet_row, raw_file_name, row in candidates:
+        matches: list[_SpreadsheetMatch] = []
+        for candidates in row_index.file_names.values():
+            for row in candidates:
                 try:
                     candidate_number = _normalize_file_number(
-                        raw_file_name, spreadsheet_row=spreadsheet_row
+                        row.file_name, spreadsheet_row=row.spreadsheet_row
                     )
                 except ValueError:
                     continue
                 if candidate_number == number:
-                    matches.append((spreadsheet_row, raw_file_name, row))
+                    matches.append(_SpreadsheetMatch(row))
+        matches.extend(self._matching_ranges(number, row_index))
         return self._metadata_for_matches(number, matches, headers)
+
+    @staticmethod
+    def _matching_ranges(
+        number: int, row_index: _SpreadsheetIndex
+    ) -> list[_SpreadsheetMatch]:
+        return [
+            _SpreadsheetMatch(item.row, (item.start, item.end))
+            for item in row_index.ranges
+            if item.start <= number <= item.end
+        ]
 
     def _metadata_for_matches(
         self,
         key: str | int,
-        matches: list[tuple[int, object, tuple[Any, ...]]],
+        matches: list[_SpreadsheetMatch],
         headers: tuple[str, ...],
     ) -> _SpreadsheetMetadataValues | None:
         resolved_columns = self._resolve_mapping_columns(headers)
         if not matches:
             return None
+        matches = sorted(matches, key=lambda match: match.row.spreadsheet_row)
         if len(matches) > 1:
-            first_row, first_value, _ = matches[0]
-            second_row, second_value, _ = matches[1]
-            if isinstance(key, int):
-                raise ValueError(
-                    f"{self.source_name} rows {first_row} and {second_row} have "
-                    f"file-name values {first_value!r} and {second_value!r}, which "
-                    f"both resolve to {key}"
-                )
-            raise ValueError(
-                f"{self.source_name} rows {first_row} and {second_row} have "
-                f"file-name values {first_value!r} and {second_value!r}, which "
-                f"both match file name {key!r}"
+            descriptions: list[str] = []
+            for match in matches:
+                row = match.row
+                if match.number_range is not None:
+                    start, end = match.number_range
+                    descriptions.append(
+                        f"row {row.spreadsheet_row} value {row.file_name!r} covers "
+                        f"{start}\N{EN DASH}{end}"
+                    )
+                elif isinstance(key, int):
+                    descriptions.append(
+                        f"row {row.spreadsheet_row} value {row.file_name!r} resolves "
+                        f"to {key}"
+                    )
+                else:
+                    descriptions.append(
+                        f"row {row.spreadsheet_row} value {row.file_name!r} matches "
+                        "directly"
+                    )
+            lookup = (
+                f"file number {key}" if isinstance(key, int) else f"file name {key!r}"
             )
-        row = matches[0][2]
+            raise ValueError(
+                f"{self.source_name} {lookup} is ambiguous: " + "; ".join(descriptions)
+            )
+        row = matches[0].row.values
 
         values_by_header = dict(zip(headers, row, strict=True))
         coordinate_values = {
@@ -686,10 +812,7 @@ class SpreadsheetMetadataSource(abc.ABC):
 
     def _build_index(
         self, rows: Iterable[Iterable[Any]]
-    ) -> tuple[
-        tuple[str, ...],
-        dict[str, list[tuple[int, object, tuple[Any, ...]]]],
-    ]:
+    ) -> tuple[tuple[str, ...], _SpreadsheetIndex]:
         row_iterator = iter(rows)
         try:
             raw_headers = list(next(row_iterator))
@@ -700,7 +823,8 @@ class SpreadsheetMetadataSource(abc.ABC):
 
         resolved_file_name_column = self._resolve_file_name_column(headers)
         file_name_index = headers.index(resolved_file_name_column)
-        row_index: dict[str, list[tuple[int, object, tuple[Any, ...]]]] = {}
+        file_names: dict[str, list[_SpreadsheetRow]] = {}
+        ranges: list[_FileNumberRange] = []
         first_data_row = 2 if self.row_range is None else self.row_range[0]
         for spreadsheet_row, raw_row in enumerate(row_iterator, start=first_data_row):
             row = list(raw_row)
@@ -719,10 +843,19 @@ class SpreadsheetMetadataSource(abc.ABC):
             file_name = str(raw_file_name).strip()
             if not file_name:
                 continue
-            row_record = (spreadsheet_row, raw_file_name, tuple(row))
-            row_index.setdefault(file_name, []).append(row_record)
+            row_record = _SpreadsheetRow(spreadsheet_row, raw_file_name, tuple(row))
+            try:
+                number_range = _normalize_file_number_range(
+                    raw_file_name, spreadsheet_row=spreadsheet_row
+                )
+            except ValueError:
+                number_range = None
+            if number_range is not None:
+                ranges.append(_FileNumberRange(*number_range, row_record))
+                continue
+            file_names.setdefault(file_name, []).append(row_record)
 
-        return headers, row_index
+        return headers, _SpreadsheetIndex(file_names, tuple(ranges))
 
 
 class ExcelMetadataSource(SpreadsheetMetadataSource):

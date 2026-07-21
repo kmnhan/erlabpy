@@ -174,7 +174,13 @@ def test_source_discovers_headers_without_indexing_rows() -> None:
     )
 
     assert source.get_column_names() == ["File", "Temperature"]
-    with pytest.raises(ValueError, match=r"rows 2 and 3.*both match file name"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"file name 'f_0001' is ambiguous: row 2 value 'f_0001' matches "
+            r"directly; row 3 value 'f_0001' matches directly"
+        ),
+    ):
         source._metadata_for_file_name(
             "f_0001", lambda: pytest.fail("numeric inference must not run")
         )
@@ -288,6 +294,7 @@ def test_source_skips_rows_without_file_numbers() -> None:
         ("scan2026_run_0042.pxt", 42),
         ("/data/scan_0003.nc", 3),
         (r"C:\data\scan_0004.h5", 4),
+        ("~/data/scan_0007.h5", 7),
         ("0005", 5),
         (6.0, 6),
     ],
@@ -305,6 +312,176 @@ def test_source_parses_simple_filenames(
     values = source._metadata_for_file_number(file_number)
     assert values is not None
     assert values.coordinate_values == {"sample_temp": 30.0, "hv": 40.8}
+
+
+@pytest.mark.parametrize(
+    "spreadsheet_value",
+    [
+        "f_0015~20",
+        "f_0015~f_0020",
+        "f_0015 \N{EN DASH} f_0020",
+        "f_0015.pxt~f_0020.pxt",
+        "15~20",
+    ],
+)
+def test_source_matches_inclusive_file_number_ranges(
+    spreadsheet_value: str,
+) -> None:
+    source = _source(
+        [
+            ["File", "Temperature", "Energy", "Mode"],
+            [spreadsheet_value, 30.0, 40.8, "cut"],
+        ]
+    )
+
+    for file_number in (15, 16, 20):
+        values = source._metadata_for_file_number(file_number)
+        assert values is not None
+        assert values.coordinate_values == {"sample_temp": 30.0, "hv": 40.8}
+    assert source._metadata_for_file_number(14) is None
+    assert source._metadata_for_file_number(21) is None
+
+
+@pytest.mark.parametrize(
+    "spreadsheet_value",
+    [
+        "f_0020~f_0015",
+        "f_0015~",
+        "~f_0020",
+        "f_0015~f_0020~f_0025",
+        "notes~f_0020",
+        "f_0015~notes",
+    ],
+)
+def test_source_does_not_parse_malformed_file_number_ranges(
+    spreadsheet_value: str,
+) -> None:
+    source = _source(
+        [
+            ["File", "Temperature", "Energy", "Mode"],
+            [spreadsheet_value, 30.0, 40.8, "cut"],
+        ]
+    )
+
+    assert source._metadata_for_file_number(20) is None
+    values, lookup = source._metadata_for_file_name(spreadsheet_value, lambda: None)
+    assert lookup == spreadsheet_value
+    assert values is not None
+    assert values.coordinate_values == {"sample_temp": 30.0, "hv": 40.8}
+
+
+def test_source_reports_scalar_and_range_ambiguity() -> None:
+    source = _source(
+        [
+            ["File", "Temperature", "Energy", "Mode"],
+            ["f_0015~f_0020", 20.0, 21.2, "range"],
+            ["f_0016", 30.0, 40.8, "exact"],
+        ]
+    )
+    match = (
+        r"file number 16 is ambiguous: row 2 value 'f_0015~f_0020' covers "
+        "15\N{EN DASH}20; row 3 value 'f_0016' resolves to 16"
+    )
+
+    with pytest.raises(ValueError, match=match):
+        source._metadata_for_file_number(16)
+    with pytest.raises(ValueError, match=match):
+        source._metadata_for_file_name("f_0016", lambda: None)
+
+
+def test_source_reports_overlapping_file_number_ranges() -> None:
+    source = _source(
+        [
+            ["File", "Temperature", "Energy", "Mode"],
+            ["f_0010~f_0020", 20.0, 21.2, "first"],
+            ["f_0015 \N{EN DASH} f_0025", 30.0, 40.8, "second"],
+        ]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"file number 18 is ambiguous: row 2 value 'f_0010~f_0020' covers "
+            "10\N{EN DASH}20; row 3 value 'f_0015 \N{EN DASH} f_0025' covers "
+            "15\N{EN DASH}25"
+        ),
+    ):
+        source._metadata_for_file_number(18)
+
+
+def test_source_uses_loader_inference_to_check_direct_range_ambiguity() -> None:
+    source = _source(
+        [
+            ["File", "Temperature", "Energy", "Mode"],
+            ["f_0015~f_0020", 20.0, 21.2, "range"],
+            ["custom_name", 30.0, 40.8, "exact"],
+        ]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"row 2 value 'f_0015~f_0020' covers 15.*20; "
+            r"row 3 value 'custom_name' resolves to 16"
+        ),
+    ):
+        source._metadata_for_file_name("custom_name", lambda: 16)
+
+
+def test_source_preserves_direct_names_not_covered_by_ranges() -> None:
+    source = _source(
+        [
+            ["File", "Temperature", "Energy", "Mode"],
+            ["f_0015~f_0020", 20.0, 21.2, "range"],
+            ["f_0025", 30.0, 40.8, "numbered"],
+            ["sample-final", 35.0, 50.0, "unnumbered"],
+        ]
+    )
+
+    numbered_values, numbered_lookup = source._metadata_for_file_name(
+        "f_0025", lambda: 25
+    )
+    assert numbered_lookup == "f_0025"
+    assert numbered_values is not None
+    assert numbered_values.attribute_values == {"mode": "numbered"}
+
+    unnumbered_values, unnumbered_lookup = source._metadata_for_file_name(
+        "sample-final", lambda: None
+    )
+    assert unnumbered_lookup == "sample-final"
+    assert unnumbered_values is not None
+    assert unnumbered_values.attribute_values == {"mode": "unnumbered"}
+
+
+def test_source_does_not_expand_file_number_ranges() -> None:
+    source = _source(
+        [
+            ["File", "Temperature", "Energy", "Mode"],
+            ["f_0001~f_1000000000", 30.0, 40.8, "range"],
+        ]
+    )
+
+    values = source._metadata_for_file_number(500_000_000)
+    assert values is not None
+    assert source._row_index is not None
+    assert len(source._row_index.ranges) == 1
+
+
+def test_source_limits_file_number_ranges_to_row_range() -> None:
+    source = _RowsMetadataSource(
+        [
+            ["File", "Temperature"],
+            ["f_0015~f_0020", 20.0],
+            ["f_0016", 30.0],
+        ],
+        file_name_column="File",
+        coordinate_mapping={"Temperature": "sample_temp"},
+        row_range=(3, 3),
+    )
+
+    values = source._metadata_for_file_number(16)
+    assert values is not None
+    assert values.coordinate_values == {"sample_temp": 30.0}
 
 
 def test_source_prefers_trimmed_file_name_without_number_parsing(
@@ -342,9 +519,19 @@ def test_source_reports_ambiguous_numeric_fallback() -> None:
 
     with pytest.raises(
         ValueError,
-        match=r"rows 2 and 3.*both resolve to 1",
+        match=(
+            r"file number 1 is ambiguous: row 2 value 'sample_a_0001' resolves "
+            r"to 1; row 3 value 'sample_b_0001' resolves to 1"
+        ),
     ):
         source._metadata_for_file_number(1)
+
+    values, lookup = source._metadata_for_file_name(
+        "sample_a_0001", lambda: pytest.fail("numeric inference must not run")
+    )
+    assert lookup == "sample_a_0001"
+    assert values is not None
+    assert values.attribute_values == {"mode": "a"}
 
 
 def test_source_skips_unparseable_file_number_rows() -> None:
@@ -809,6 +996,28 @@ def test_loader_infers_spreadsheet_file_number_from_path(
     path.touch()
     source = _RowsMetadataSource(
         [["File", "Energy", "Temperature", "Configuration"], [1, 21.2, 30.0, 1]],
+        file_name_column="File",
+        coordinate_mapping={"Energy": "hv", "Temperature": "sample_temp"},
+        attribute_mapping={"Configuration": "configuration"},
+    )
+
+    result = _StrictMetadataLoader().load(path, metadata=source)
+
+    assert result["hv"].item() == 21.2
+    assert result["sample_temp"].item() == 30.0
+    assert result.attrs["configuration"] == 1
+
+
+def test_loader_matches_spreadsheet_file_number_range_from_path(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "scan_16.nc"
+    path.touch()
+    source = _RowsMetadataSource(
+        [
+            ["File", "Energy", "Temperature", "Configuration"],
+            ["f_0015~f_0020", 21.2, 30.0, 1],
+        ],
         file_name_column="File",
         coordinate_mapping={"Energy": "hv", "Temperature": "sample_temp"},
         attribute_mapping={"Configuration": "configuration"},

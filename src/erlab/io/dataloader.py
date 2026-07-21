@@ -634,11 +634,11 @@ class LoaderBase(metaclass=_Loader):
             Spreadsheet metadata source used to fill scalar coordinates and attributes.
             Integer identifiers provide the file number automatically. For paths, the
             file name without its path or final extension is matched directly and
-            case-sensitively against whitespace-trimmed spreadsheet cells before the
-            loader tries to match the file number through :meth:`infer_index
-            <erlab.io.dataloader.LoaderBase.infer_index>`. The default implementation
-            recognizes file names ending in decimal digits. Pass ``file_number`` to use
-            an explicit value instead.
+            case-sensitively against whitespace-trimmed spreadsheet cells. The loader
+            uses :meth:`infer_index <erlab.io.dataloader.LoaderBase.infer_index>` for
+            numeric fallback and to detect a range that overlaps a direct match. The
+            default implementation recognizes file names ending in decimal digits.
+            Pass ``file_number`` to use an explicit value instead.
         file_number
             Explicit file number used for spreadsheet metadata when `identifier` is a
             path, bypassing direct file-name matching and inference. This must be
