@@ -17,6 +17,7 @@ from erlab.interactive.imagetool._provenance._model import (
     FileLoadSource,
     FileReplayCall,
     ReplayStage,
+    ReplayStep,
     ToolProvenanceSpec,
     file_load,
 )
@@ -489,9 +490,12 @@ def _load_provenance_from_file_details(
     load_func: _LoadFunc | None,
     *,
     source_input_dtype: np.dtype[typing.Any] | str | None = None,
+    replay_steps: Sequence[ReplayStep] = (),
     replay_stages: Sequence[ReplayStage] = (),
 ) -> ToolProvenanceSpec | None:
     """Build replay provenance whose seed reloads the current data from disk."""
+    if replay_steps and replay_stages:
+        raise ValueError("Use replay steps or legacy replay stages, not both")
     resolved = _resolve_load_func(
         load_func,
         source_input_dtype=source_input_dtype,
@@ -513,6 +517,7 @@ def _load_provenance_from_file_details(
             replay_call=resolved.replay_call(),
             load_code=details.load_code,
         ),
+        steps=replay_steps,
         replay_stages=replay_stages,
     )
 

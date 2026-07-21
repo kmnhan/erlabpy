@@ -32,11 +32,10 @@ from erlab.interactive.imagetool._provenance._model import (
     selection,
 )
 from erlab.interactive.imagetool._provenance._operations import (
-    AverageOperation,
+    AssignAttrsOperation,
     GaussianFilterOperation,
     IselOperation,
     QSelOperation,
-    RenameOperation,
     ScriptCodeOperation,
 )
 from erlab.interactive.imagetool.dialogs import SelectionDialog
@@ -63,7 +62,6 @@ from tests.interactive.imagetool.manager.helpers import (
 )
 
 from ._common import (
-    _manager_provenance_file_spec,
     _seed_fit2d_param_results,
     _set_selection_point,
     _set_selection_range,
@@ -231,7 +229,7 @@ def test_manager_metadata_derivation_list_has_visible_splitter(
         assert manager.metadata_derivation_list.height() > before_list_height
 
 
-def test_manager_file_label_helpers_and_file_replay_rename_update(tmp_path) -> None:
+def test_manager_compact_file_suffix(tmp_path) -> None:
     paths = [
         tmp_path / "scan_a.h5",
         tmp_path / "scan_b.h5",
@@ -239,32 +237,6 @@ def test_manager_file_label_helpers_and_file_replay_rename_update(tmp_path) -> N
     ]
 
     assert manager_wrapper._compact_file_suffix(paths) == " (scan_a, scan_b, +1)"
-
-    spec = _manager_provenance_file_spec(paths[0]).append_replay_stage(
-        full_data(AverageOperation(dims=("x",))).append_final_rename("old")
-    )
-    renamed = manager_wrapper._spec_with_final_data_name(spec, "new")
-
-    assert renamed.kind == "file"
-    assert renamed.replay_stages
-    assert renamed.replay_stages[-1].operations[-1] == RenameOperation(name="new")
-    assert renamed.replay_stages[-1].operations[:-1] == (AverageOperation(dims=("x",)),)
-
-    script_spec = script(
-        start_label="Load source",
-        seed_code=typing.cast("str", spec.seed_code),
-        active_name="derived",
-        file_load_source=spec.file_load_source,
-        replay_stages=spec.replay_stages,
-    )
-    script_renamed = manager_wrapper._spec_with_final_data_name(script_spec, "newer")
-
-    assert script_renamed.kind == "script"
-    assert script_renamed.replay_stages
-    assert script_renamed.operations == ()
-    script_stage_operations = script_renamed.replay_stages[-1].operations
-    assert script_stage_operations[-1] == RenameOperation(name="newer")
-    assert script_stage_operations[:-1] == (AverageOperation(dims=("x",)),)
 
 
 def test_manager_childtool_from_filtered_parent_uses_display_provenance(
@@ -279,7 +251,7 @@ def test_manager_childtool_from_filtered_parent_uses_display_provenance(
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
     operation = GaussianFilterOperation(sigma={"alpha": 1.0})
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
 
     with manager_context() as manager:
         manager.show()
@@ -323,7 +295,7 @@ def test_manager_filtered_parent_updates_source_bound_child(
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
     operation = GaussianFilterOperation(sigma={"alpha": 1.0})
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
 
     with manager_context() as manager:
         manager.show()
@@ -374,7 +346,7 @@ def test_manager_filtered_source_bound_child_refresh_keeps_filter(
     )
     updated = data + 100.0
     operation = GaussianFilterOperation(sigma={"alpha": 1.0})
-    expected = operation.apply(updated, parent_data=updated)
+    expected = operation.apply(updated)
 
     with manager_context() as manager:
         manager.show()
@@ -435,7 +407,7 @@ def test_manager_filtered_source_bound_child_failed_refresh_keeps_filter(
         coords={"u": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
     )
     operation = GaussianFilterOperation(sigma={"x": 1.0})
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
 
     with manager_context() as manager:
         manager.show()
@@ -480,7 +452,7 @@ def test_manager_duplicate_filtered_child_records_filter_once(
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
     operation = GaussianFilterOperation(sigma={"alpha": 1.0})
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
 
     with manager_context() as manager:
         manager.show()
@@ -573,7 +545,7 @@ def test_manager_workspace_roundtrip_filtered_child_records_filter_once(
         updated = data + 10.0
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated)
-        expected = operation.apply(updated, parent_data=updated)
+        expected = operation.apply(updated)
         qtbot.wait_until(
             lambda: fetch(child_uid).identical(expected),
             timeout=5000,
@@ -661,7 +633,7 @@ def test_manager_operation_filter_preserves_output_binding(
         )
         operation = GaussianFilterOperation(sigma={"x": 1.0})
         output_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
-        expected = operation.apply(initial_output, parent_data=initial_output)
+        expected = operation.apply(initial_output)
 
         duplicated_uid = manager.duplicate_childtool(output_uid)
         duplicated_node = manager._child_node(duplicated_uid)
@@ -1031,7 +1003,10 @@ def test_manager_nested_imagetool_refresh_updates_descendant_dependency(
             "str", grandchild_node.provenance_spec.derivation_code()
         )
 
-        root_node.set_detached_provenance(updated_root_spec)
+        root_node.set_detached_provenance(
+            updated_root_spec,
+            replay_source_data=None,
+        )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, base.isel(x=slice(1, 3)))
 
@@ -1095,7 +1070,8 @@ def test_manager_nested_imagetool_auto_update_can_be_disabled_from_auto_badge(
 
         updated = base.isel(x=slice(2, 4))
         manager._tool_graph.root_wrappers[0].set_detached_provenance(
-            selection(IselOperation(kwargs={"x": slice(2, 4)}))
+            selection(IselOperation(kwargs={"x": slice(2, 4)})),
+            replay_source_data=None,
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated)
@@ -1164,7 +1140,8 @@ def test_manager_nested_imagetool_auto_update_can_be_disabled_from_auto_badge(
 
         updated2 = base.isel(x=slice(4, 6))
         manager._tool_graph.root_wrappers[0].set_detached_provenance(
-            selection(IselOperation(kwargs={"x": slice(4, 6)}))
+            selection(IselOperation(kwargs={"x": slice(4, 6)})),
+            replay_source_data=None,
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated2)
@@ -1226,7 +1203,8 @@ def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
         grandchild_node = manager._child_node(grandchild_uid)
 
         root_node.set_detached_provenance(
-            selection(IselOperation(kwargs={"x": slice(1, 3)}))
+            selection(IselOperation(kwargs={"x": slice(1, 3)})),
+            replay_source_data=None,
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, base.isel(x=slice(1, 3)))
@@ -1289,7 +1267,8 @@ def test_manager_manual_nested_refresh_updates_stale_ancestors(
         updated_root = base.isel(x=slice(2, 4))
 
         manager._tool_graph.root_wrappers[0].set_detached_provenance(
-            selection(IselOperation(kwargs={"x": slice(2, 4)}))
+            selection(IselOperation(kwargs={"x": slice(2, 4)})),
+            replay_source_data=None,
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated_root)
@@ -2476,6 +2455,45 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
         xr.testing.assert_identical(fetch(child_uid), child_before)
 
 
+def test_manager_promote_live_child_retains_replay_source(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = xr.DataArray(np.arange(6.0), dims=("x",), name="source")
+    source_spec = full_data(
+        AssignAttrsOperation(attrs={"order": "first"}),
+        AssignAttrsOperation(attrs={"order": "second"}),
+    )
+
+    with manager_context() as manager:
+        parent_tool = itool(source, manager=False, execute=False)
+        assert isinstance(parent_tool, erlab.interactive.imagetool.ImageTool)
+        parent_index = manager.add_imagetool(parent_tool, show=False)
+        expected_source = (
+            manager._node_for_target(parent_index).current_public_data().copy(deep=True)
+        )
+
+        child_tool = itool(source_spec.apply(source), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            parent_index,
+            show=False,
+            source_spec=source_spec,
+        )
+
+        promoted_index = manager.promote_child_imagetool(child_uid)
+        promoted = manager._tool_graph.root_wrappers[promoted_index]
+        assert promoted.replay_source_data is not None
+        xr.testing.assert_identical(promoted.replay_source_data, expected_source)
+
+        select_tools(manager, [promoted_index])
+        manager._update_info(uid=promoted.uid)
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+
+
 def test_manager_replace_current_sets_provenance_on_provenance_free_root(
     qtbot,
     accept_dialog,
@@ -2630,7 +2648,7 @@ def test_manager_replace_transform_on_filtered_source_child_keeps_live_source(
 
         accept_dialog(child_tool.mnb._average, pre_call=_replace_average)
 
-        filtered = operation.apply(data, parent_data=data)
+        filtered = operation.apply(data)
         expected = filtered.qsel.mean("x")
         xr.testing.assert_identical(fetch(child_uid), expected)
         assert child_node.source_spec is not None
@@ -2644,7 +2662,7 @@ def test_manager_replace_transform_on_filtered_source_child_keeps_live_source(
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated)
 
-        updated_filtered = operation.apply(updated, parent_data=updated)
+        updated_filtered = operation.apply(updated)
         updated_expected = updated_filtered.qsel.mean("x")
         qtbot.wait_until(
             lambda: (
@@ -2703,11 +2721,8 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
 
         assert root.provenance_spec is not None
         assert root.provenance_spec.kind == "file"
-        assert len(root.provenance_spec.replay_stages) == 1
-        assert root.provenance_spec.replay_stages[0].source_kind == "full_data"
-        assert [op.op for op in root.provenance_spec.replay_stages[0].operations] == [
-            "qsel_aggregate",
-        ]
+        assert [op.op for op in root.provenance_spec.operations] == ["qsel_aggregate"]
+        assert [step.input_policy for step in root.provenance_spec.steps] == ["current"]
         entries = root.provenance_spec.display_entries()
         assert entries[0].label == "Load data from file 'scan.h5'"
         assert any("Aggregate" in entry.label for entry in entries)

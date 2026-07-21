@@ -1311,13 +1311,11 @@ def test_metadata_assignments_survive_live_replacement_and_update_provenance(
         xr.testing.assert_identical(replacement_payloads[-1], expected)
 
         node = manager._tool_graph.root_wrappers[0]
-        assert node.detached_live_parent_data is not None
-        xr.testing.assert_identical(node.detached_live_parent_data, replacement)
+        assert node.replay_source_data is not None
+        xr.testing.assert_identical(node.replay_source_data, replacement)
         provenance = node.displayed_provenance_spec
         assert provenance is not None
-        xr.testing.assert_identical(
-            provenance.apply(node.detached_live_parent_data), actual
-        )
+        xr.testing.assert_identical(provenance.apply(node.replay_source_data), actual)
 
         incompatible = xr.DataArray(
             np.arange(16.0).reshape(4, 4),
@@ -1328,7 +1326,47 @@ def test_metadata_assignments_survive_live_replacement_and_update_provenance(
         with pytest.raises(ValueError, match="angle"):
             replace_data(0, incompatible)
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, before)
-        xr.testing.assert_identical(node.detached_live_parent_data, replacement)
+        xr.testing.assert_identical(node.replay_source_data, replacement)
+
+
+def test_metadata_editor_rejects_unreplayable_live_provenance_atomically(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data("source")
+    provenance = full_data(TransposeOperation(dims=("y", "x")))
+    displayed = provenance.apply(source)
+    messages = _block_message_dialog(monkeypatch)
+
+    with manager_context() as manager:
+        tool = itool(displayed, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        index = manager.add_imagetool(
+            tool,
+            show=False,
+            provenance_spec=provenance,
+        )
+        node = manager._tool_graph.root_wrappers[index]
+        before = tool.slicer_area._data.copy(deep=True)
+
+        assert not manager._metadata_editor.apply_edits(
+            {
+                index: (
+                    MetadataCellEdit(
+                        MetadataField(kind="attribute", name="sample"),
+                        value="reference",
+                    ),
+                )
+            }
+        )
+
+        assert messages
+        xr.testing.assert_identical(tool.slicer_area._data, before)
+        assert node.provenance_spec == provenance
+        assert node.replay_source_data is None
 
 
 def test_metadata_edits_and_replacement_preserve_nonuniform_public_data(
@@ -1373,11 +1411,11 @@ def test_metadata_edits_and_replacement_preserve_nonuniform_public_data(
         assert tuple(tool.slicer_area.data.dims) == ("sample_temp_idx", "eV")
         xr.testing.assert_identical(tool.slicer_area.displayed_data, replaced_expected)
         node = manager._tool_graph.root_wrappers[index]
-        assert node.detached_live_parent_data is not None
-        xr.testing.assert_identical(node.detached_live_parent_data, replacement)
+        assert node.replay_source_data is not None
+        xr.testing.assert_identical(node.replay_source_data, replacement)
         assert node.displayed_provenance_spec is not None
         xr.testing.assert_identical(
-            node.displayed_provenance_spec.apply(node.detached_live_parent_data),
+            node.displayed_provenance_spec.apply(node.replay_source_data),
             replaced_expected,
         )
 
@@ -1547,6 +1585,60 @@ def test_metadata_assignments_survive_watched_variable_updates(
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
 
 
+def test_watched_metadata_assignments_retain_workspace_replay_source(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data("scan")
+    edits = (
+        MetadataCellEdit(
+            MetadataField(kind="attribute", name="sample"), value="reference"
+        ),
+        MetadataCellEdit(MetadataField(kind="coordinate", name="angle"), value=1.5),
+    )
+    expected = source.assign_coords(angle=1.5).assign_attrs(sample="reference")
+
+    with manager_context() as manager:
+        manager._data_watched_update("scan", "watched-uid", source)
+        assert manager._metadata_editor.apply_edits({0: edits})
+
+        node = manager._tool_graph.root_wrappers[0]
+        xr.testing.assert_identical(node.replay_source_data, source)
+        select_tools(manager, [0])
+        manager._update_info(uid=node.uid)
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+
+        workspace_path = tmp_path / "watched-metadata-replay.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+
+        restored = manager._tool_graph.root_wrappers[0]
+        assert restored.watched
+        assert restored.has_replay_source
+        xr.testing.assert_identical(restored.resolved_replay_source_data(), source)
+        assert restored.provenance_spec is not None
+        xr.testing.assert_identical(
+            manager._provenance_edit_controller._replay_candidate(
+                restored, "display", restored.provenance_spec
+            ),
+            expected,
+        )
+        select_tools(manager, [0])
+        manager._update_info(uid=restored.uid)
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+
+
 def test_acquisition_context_does_not_apply_when_child_is_promoted(
     qtbot,
     manager_context: Callable[
@@ -1604,7 +1696,7 @@ def test_live_replacement_preserves_explicit_assignment_when_source_matches(
         )
         node = manager._tool_graph.root_wrappers[0]
         assert node.displayed_provenance_spec is not None
-        assert node.detached_live_parent_data is not None
+        assert node.replay_source_data is not None
 
 
 def test_acquisition_context_can_copy_selected_coordinates_and_attributes(
@@ -2879,6 +2971,49 @@ def test_update_info_handles_legacy_imagetool_preview_attribute(
         assert manager.preview_widget.isVisible()
 
 
+def test_manager_summary_sorts_coordinate_order_at_presentation_boundary(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={
+            "x": [0.0, 1.0],
+            "y": [0.0, 1.0, 2.0],
+            "aux": ("x", [10.0, 20.0]),
+        },
+    )
+    unsorted = erlab.utils.array.sort_coord_order(
+        data,
+        ("aux", "y", "x"),
+        dims_first=False,
+    )
+    assert tuple(unsorted.coords) == ("aux", "y", "x")
+    formatted_coord_orders: list[tuple[typing.Any, ...]] = []
+
+    def format_darr_html(value: xr.DataArray, **_kwargs: typing.Any) -> str:
+        formatted_coord_orders.append(tuple(value.coords))
+        return "<p>summary</p>"
+
+    with manager_context() as manager:
+        tool = itool(data, manager=False, execute=False)
+        manager.add_imagetool(tool, show=False)
+        node = manager._tool_graph.root_wrappers[0]
+        monkeypatch.setattr(type(node), "_metadata_data", lambda _self: unsorted)
+        monkeypatch.setattr(
+            erlab.utils.formatting,
+            "format_darr_html",
+            format_darr_html,
+        )
+
+        assert "summary" in node.info_text
+
+    assert formatted_coord_orders == [("x", "y", "aux")]
+
+
 def test_details_panel_update_info_hides_missing_child_preview_pixmap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3122,7 +3257,10 @@ def test_batch_action_transform_error_paths(
         )
 
         manager._node_for_target(0).set_source_binding(full_data())
-        manager._node_for_target(1).set_detached_provenance(full_data())
+        manager._node_for_target(1).set_detached_provenance(
+            full_data(),
+            replay_source_data=None,
+        )
         assert manager.apply_batch_transform_dialog(
             _BatchTransformStub(public_source=True),
             "replace",
@@ -3877,7 +4015,8 @@ def test_manager_metadata_full_code_generated_only_when_copied(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         wrapper = manager._tool_graph.root_wrappers[0]
         wrapper.set_detached_provenance(
-            full_data(RenameOperation(name="renamed")).to_replay_spec()
+            full_data(RenameOperation(name="renamed")).to_replay_spec(),
+            replay_source_data=None,
         )
 
         monkeypatch.setattr(

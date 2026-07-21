@@ -803,8 +803,6 @@ class DataTransformDialog(_DataManipulationDialog):
         target: int | str,
         new_name: str,
         fallback_spec: ToolProvenanceSpec | None,
-        *,
-        live_parent_data: xr.DataArray | None = None,
     ) -> bool:
         manager, _ = self._manager_target()
         if manager is None:
@@ -819,21 +817,17 @@ class DataTransformDialog(_DataManipulationDialog):
             )
             return True
         displayed_provenance = node.displayed_provenance_spec
+        replay_source_data = node.resolved_replay_source_data()
         if displayed_provenance is not None:
-            existing_parent_data = node.detached_live_parent_data
             node.set_detached_provenance(
                 self._compose_replace_source_spec(displayed_provenance, new_name),
-                live_parent_data=(
-                    existing_parent_data
-                    if existing_parent_data is not None
-                    else live_parent_data
-                ),
+                replay_source_data=replay_source_data,
             )
             return True
         if fallback_spec is not None:
             node.set_detached_provenance(
                 fallback_spec,
-                live_parent_data=live_parent_data,
+                replay_source_data=replay_source_data,
             )
             return True
         return False
@@ -850,7 +844,7 @@ class DataTransformDialog(_DataManipulationDialog):
         operation = self.source_transform_operation()
         if operation is None:
             return data
-        return operation.apply(data, parent_data=data)
+        return operation.apply(data)
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         return self._apply_source_transform(data)
@@ -1034,7 +1028,6 @@ class DataTransformDialog(_DataManipulationDialog):
                         target,
                         new_name,
                         detached_provenance_spec,
-                        live_parent_data=self.slicer_area.data,
                     )
                 else:
                     self._set_current_tool_provenance(detached_provenance_spec)
@@ -1064,10 +1057,16 @@ class DataTransformDialog(_DataManipulationDialog):
                         )
                         if tool is not None:  # pragma: no branch
                             tool.set_provenance_spec(detached_provenance_spec)
+                            replay_source_data = self.slicer_area.data
+                            if target is not None:
+                                replay_source_data = manager._node_for_target(
+                                    target
+                                ).resolved_replay_source_data()
                             manager.add_imagetool(
                                 tool,
                                 activate=True,
                                 provenance_spec=detached_provenance_spec,
+                                replay_source_data=replay_source_data,
                             )
                     else:
                         tool = typing.cast(
@@ -4238,7 +4237,7 @@ class _BaseCropDialog(DataTransformDialog):
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         for operation in self.source_operations():
-            data = operation.apply(data, parent_data=data)
+            data = operation.apply(data)
         return data
 
 
@@ -4446,7 +4445,7 @@ class NormalizeDialog(DataFilterDialog):
         operation = self.filter_operation()
         if operation is None:
             return data
-        return operation.apply(data, parent_data=data)
+        return operation.apply(data)
 
     def filter_operation(
         self,
@@ -4841,7 +4840,7 @@ class _BoxcarFilterDialog(DataFilterDialog):
         operation = self.filter_operation()
         if operation is None:
             return data
-        return operation.apply(data, parent_data=data)
+        return operation.apply(data)
 
     def filter_operation(self) -> ToolProvenanceOperation | None:
         if not (sizes := self._sizes):

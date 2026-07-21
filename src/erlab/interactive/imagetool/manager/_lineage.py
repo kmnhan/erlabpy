@@ -1121,6 +1121,7 @@ class _LineageController:
             result.provenance_spec,
             propagate_descendants=True,
             preserve_filter=True,
+            replay_source_data=node.replay_source_data,
         )
         self._manager.tree_view.refresh(node.uid)
         if self._manager._metadata_node_uid == node.uid:

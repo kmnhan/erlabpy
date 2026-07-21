@@ -138,7 +138,7 @@ def test_meshtool_output_provenance_roundtrip_uses_tuple_assignment(
         assert isinstance(reparsed.operations[-1], RemoveMeshOperation)
         assert reparsed.operations[-1].output == expected_name
         xr.testing.assert_identical(
-            reparsed.operations[-1].apply(meshy_data, parent_data=meshy_data),
+            reparsed.operations[-1].apply(meshy_data),
             typing.cast("xr.DataArray", win.output_imagetool_data(output_id)),
         )
         code = reparsed.display_code()
@@ -183,7 +183,7 @@ def test_meshtool_output_provenance_roundtrip_uses_tuple_assignment(
     )
     xr.testing.assert_identical(
         typing.cast("xr.DataArray", corrected_namespace["mesh_output"]),
-        corrected_operation.apply(meshy_data, parent_data=meshy_data),
+        corrected_operation.apply(meshy_data),
     )
 
     mesh_collision_code = mesh_operation.statement_code(
@@ -197,7 +197,7 @@ def test_meshtool_output_provenance_roundtrip_uses_tuple_assignment(
     exec(mesh_collision_code, {"__builtins__": {}}, mesh_namespace)  # noqa: S102
     xr.testing.assert_identical(
         typing.cast("xr.DataArray", mesh_namespace["corrected_output"]),
-        mesh_operation.apply(meshy_data, parent_data=meshy_data),
+        mesh_operation.apply(meshy_data),
     )
 
 
@@ -267,7 +267,7 @@ def test_remove_mesh_replay_preserves_reserved_tuple_binding(
         "xr": xr,
     }
     exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
-    expected = operation.apply(meshy_data, parent_data=meshy_data) + existing_mesh
+    expected = operation.apply(meshy_data) + existing_mesh
     xr.testing.assert_identical(
         typing.cast("xr.DataArray", namespace["result"]),
         expected,

@@ -69,15 +69,12 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
         provenance_payload = json.loads(
             tree["1/imagetool"].attrs["manager_node_provenance_spec"]
         )
-        assert provenance_payload["schema_version"] == 2
+        assert provenance_payload["schema_version"] == 3
         assert provenance_payload["kind"] == "file"
         assert provenance_payload["operations"] == []
-        assert len(provenance_payload["replay_stages"]) == 1
-        assert provenance_payload["replay_stages"][0]["source_kind"] == "full_data"
-        assert [
-            operation["op"]
-            for operation in provenance_payload["replay_stages"][0]["operations"]
-        ] == ["qsel_aggregate"]
+        assert len(provenance_payload["steps"]) == 1
+        assert provenance_payload["steps"][0]["input_policy"] == "current"
+        assert provenance_payload["steps"][0]["operation"]["op"] == "qsel_aggregate"
         assert (
             provenance_payload["file_load_source"]["replay_call"]["target"]
             == "xarray.load_dataarray"
@@ -196,7 +193,7 @@ def test_manager_workspace_loads_legacy_321_provenance_payload(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         loaded = manager._tool_graph.root_wrappers[0]
         assert loaded.provenance_spec is not None
-        assert loaded.provenance_spec.schema_version == 2
+        assert loaded.provenance_spec.schema_version == 3
         assert loaded.provenance_spec.kind == "script"
         assert loaded.provenance_spec.file_load_source is not None
         assert loaded.provenance_spec.file_load_source.replay_call is None
@@ -552,6 +549,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         detached = manager._tool_graph.root_wrappers[1]
         assert detached.source_spec is None
         assert detached.provenance_spec is not None
+        assert detached.replay_source_data is not None
         detached_tool = manager.get_imagetool(1)
         detached_derivation_before = detached.provenance_spec.derivation_code()
 
@@ -605,6 +603,11 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         ]
         assert duplicated_detached.source_spec is None
         assert duplicated_detached.provenance_spec == detached.provenance_spec
+        assert duplicated_detached.replay_source_data is not None
+        xr.testing.assert_identical(
+            duplicated_detached.replay_source_data,
+            detached.replay_source_data,
+        )
         xr.testing.assert_identical(
             manager.get_imagetool(duplicated_detached_index).slicer_area._data.rename(
                 None

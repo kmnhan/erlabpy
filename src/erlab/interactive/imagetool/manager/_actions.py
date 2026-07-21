@@ -19,7 +19,6 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     compose_display_provenance,
     compose_full_provenance,
-    require_live_source_spec,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AssignCoord1DOperation,
@@ -176,6 +175,17 @@ class _ActionsController:
             raise RuntimeError(
                 "Could not read this ImageTool's saved data from the workspace file."
             )
+        replay_source_expected = (
+            node.parent_uid is not None
+            and node.source_spec is not None
+            and self._manager._parent_node(node).has_replay_source
+        )
+        replay_source_data = node.resolved_replay_source_data()
+        if replay_source_expected and replay_source_data is None:
+            raise RuntimeError(
+                "Could not read this ImageTool's saved replay source from the "
+                "workspace file."
+            )
 
         row_index = self._manager.tree_view._model._row_index(uid)
         was_expanded = row_index.isValid() and self._manager.tree_view.isExpanded(
@@ -205,6 +215,7 @@ class _ActionsController:
                 show=False,
                 uid=uid,
                 provenance_spec=provenance_spec,
+                replay_source_data=replay_source_data,
                 snapshot_token=snapshot_token,
                 source_snapshot_token=source_snapshot_token,
                 created_time=created_time,
@@ -524,7 +535,7 @@ class _ActionsController:
 
                 replace_kind = ""
                 replace_provenance = None
-                replace_live_parent_data = None
+                replay_source_data = node.resolved_replay_source_data()
                 if launch_mode == "replace":
                     displayed_source = node.displayed_source_spec
                     if displayed_source is not None:
@@ -544,15 +555,6 @@ class _ActionsController:
                     else:
                         replace_kind = "detached"
                         replace_provenance = detached_provenance
-                    if replace_kind == "detached":
-                        with contextlib.suppress(TypeError):
-                            if require_live_source_spec(replace_provenance) is not None:
-                                replace_live_parent_data = (
-                                    node.detached_live_parent_data
-                                    if node.detached_live_parent_data is not None
-                                    else slicer_area.data
-                                )
-
                 plan.append(
                     (
                         target,
@@ -564,7 +566,7 @@ class _ActionsController:
                         detached_provenance,
                         replace_kind,
                         replace_provenance,
-                        replace_live_parent_data,
+                        replay_source_data,
                     )
                 )
             except Exception as exc:
@@ -586,7 +588,7 @@ class _ActionsController:
                 detached_provenance,
                 replace_kind,
                 replace_provenance,
-                replace_live_parent_data,
+                replay_source_data,
             ) in plan:
                 if launch_mode == "replace":
                     if replace_provenance is not None:
@@ -599,7 +601,7 @@ class _ActionsController:
                         else:
                             node.set_detached_provenance(
                                 replace_provenance,
-                                live_parent_data=replace_live_parent_data,
+                                replay_source_data=replay_source_data,
                             )
                     slicer_area.replace_source_data(processed, emit_edited=True)
                     continue
@@ -629,6 +631,7 @@ class _ActionsController:
                         tool,
                         activate=True,
                         provenance_spec=detached_provenance,
+                        replay_source_data=replay_source_data,
                     )
             if launch_mode == "replace":
                 self._manager._sigDataReplaced.emit()
@@ -780,11 +783,12 @@ class _ActionsController:
                         duplicated_window,
                         show=False,
                         source_input_ndim=node.source_input_ndim,
-                        provenance_spec=persistence.provenance_spec,
+                        provenance_spec=node.provenance_spec,
                         source_spec=persistence.source_spec,
                         source_binding=persistence.source_binding,
                         source_auto_update=persistence.source_auto_update,
                         source_state=persistence.source_state,
+                        replay_source_data=node.resolved_replay_source_data(),
                         note=node.note,
                     )
                 else:
@@ -803,6 +807,7 @@ class _ActionsController:
                         source_auto_update=persistence.source_auto_update,
                         source_state=persistence.source_state,
                         output_id=persistence.output_id,
+                        replay_source_data=persistence.replay_source_data,
                         note=node.note,
                     )
             else:
@@ -1122,10 +1127,18 @@ class _ActionsController:
             wrapper.set_source_input_ndim(prepared.source_ndim)
             wrapper.set_source_input_dtype(prepared.source_dtype)
             if replacement is None:
+                # A notebook-side update replaces the watched variable itself, so
+                # prior ImageTool operations no longer describe the displayed array.
+                wrapper.set_detached_provenance(
+                    None,
+                    replay_source_data=None,
+                )
                 self._manager.get_imagetool(idx).slicer_area.replace_source_data(
                     prepared.data
                 )
             else:
+                # Rebuild provenance from the updated watched source and only the
+                # metadata assignments that still apply to it.
                 processed, provenance = replacement
                 self._manager._metadata_editor.commit_replacement(
                     idx, prepared.data, processed, provenance
@@ -1391,6 +1404,8 @@ class _ActionsController:
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
+        replay_source_data: xr.DataArray | None = None,
+        replay_source_pending: bool = False,
         snapshot_token: str | None = None,
         source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
@@ -1421,6 +1436,8 @@ class _ActionsController:
             source_auto_update=source_auto_update,
             source_state=source_state,
             output_id=output_id,
+            replay_source_data=replay_source_data,
+            replay_source_pending=replay_source_pending,
             snapshot_token=snapshot_token,
             source_snapshot_token=source_snapshot_token,
             created_time=created_time,

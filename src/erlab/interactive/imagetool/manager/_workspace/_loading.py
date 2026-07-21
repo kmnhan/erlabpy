@@ -765,6 +765,16 @@ class _WorkspaceLoader:
                         uid,
                         exc_info=True,
                     )
+            replay_source_pending = (
+                workspace_format._WORKSPACE_REPLAY_SOURCE_BLOB_NAME in ds
+                and pending_workspace_memory_payload is not None
+            )
+            replay_source_data = None
+            if (
+                workspace_format._WORKSPACE_REPLAY_SOURCE_BLOB_NAME in ds
+                and not replay_source_pending
+            ):
+                replay_source_data = self._workspace_replay_source_data(ds, uid=uid)
             kwargs: dict[str, typing.Any] = {
                 "uid": uid,
                 "snapshot_token": ds.attrs.get("manager_node_snapshot_token"),
@@ -774,6 +784,8 @@ class _WorkspaceLoader:
                 "created_time": ds.attrs.get("manager_node_added_at"),
                 "note": ds.attrs.get("manager_node_note"),
                 "provenance_spec": parsed_provenance_spec,
+                "replay_source_data": replay_source_data,
+                "replay_source_pending": replay_source_pending,
                 "source_spec": parsed_source_spec,
                 "source_binding": (
                     parsed_source_binding if parsed_source_spec is None else None
@@ -859,6 +871,25 @@ class _WorkspaceLoader:
                 )
         self._record_workspace_loaded_node_target(ds, target, loaded_targets_by_uid)
         return target
+
+    @staticmethod
+    def _workspace_replay_source_data(
+        ds: xr.Dataset,
+        *,
+        uid: object,
+    ) -> xr.DataArray | None:
+        blob_name = workspace_format._WORKSPACE_REPLAY_SOURCE_BLOB_NAME
+        if blob_name not in ds:
+            return None
+        try:
+            return erlab.interactive.utils._tool_data_from_blob(ds[blob_name])
+        except Exception:
+            logger.warning(
+                "Ignoring invalid saved replay source for node %s",
+                uid,
+                exc_info=True,
+            )
+            return None
 
     def _load_workspace_tool_dataset(
         self,

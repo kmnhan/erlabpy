@@ -539,6 +539,7 @@ class _ConcatDialog(QtWidgets.QDialog):
                         ),
                         propagate_descendants=True,
                         preserve_filter=False,
+                        replay_source_data=None,
                     )
                     manager.tree_view.refresh(replacement_node.uid)
                     if manager._metadata_node_uid == replacement_node.uid:

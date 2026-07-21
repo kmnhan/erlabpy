@@ -1,4 +1,6 @@
+import json
 import pathlib
+import types
 import typing
 from collections.abc import Callable
 
@@ -18,19 +20,42 @@ from erlab.interactive.imagetool._provenance._execution import (
 )
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
+    ReplayStep,
     ScriptInput,
+    ToolProvenanceSpec,
     _ProvenanceDisplayRow,
+    _ProvenanceReorderBlock,
+    _ProvenanceReorderBlockRef,
+    _ProvenanceReorderSection,
+    _ProvenanceReorderSectionRef,
     _ProvenanceStepRef,
+    compose_full_provenance,
     full_data,
     script,
+    stamp_operation_group,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AssignAttrsOperation,
     IselOperation,
     NormalizeOperation,
     QSelAggregationOperation,
+    RenameOperation,
     ScriptCodeOperation,
 )
+from erlab.interactive.imagetool.manager._provenance_edit import (
+    _controller as manager_provenance_controller,
+)
+from erlab.interactive.imagetool.manager._provenance_edit._controller import (
+    _ProvenanceEditController,
+    _ProvenanceReorderSession,
+)
+from erlab.interactive.imagetool.manager._provenance_edit._reorder import (
+    _REORDER_BLOCK_ROLE,
+    _ProvenanceReorderDialog,
+    _ProvenanceReorderListModel,
+    _ProvenanceReorderListView,
+)
+from erlab.interactive.imagetool.manager._widgets import _TrustedScriptReplayCancelled
 from tests.interactive.imagetool.manager.helpers import (
     select_metadata_rows,
     select_tools,
@@ -43,6 +68,21 @@ from ._common import (
     _set_aggregate,
     _set_provenance_steps_clipboard,
 )
+
+
+def _composed_reorder_file_spec(file_path: pathlib.Path) -> ToolProvenanceSpec:
+    spec = _manager_replay_file_spec(file_path)
+    for source in (
+        full_data(
+            IselOperation(kwargs={"x": slice(0, 2)}),
+            NormalizeOperation(dims=("x",), mode="area"),
+        ),
+        full_data(AssignAttrsOperation(attrs={"recorded_stage": "second"})),
+    ):
+        composed = compose_full_provenance(spec, source)
+        assert composed is not None
+        spec = composed
+    return spec
 
 
 def test_manager_provenance_file_load_edit_accept_and_cancel(
@@ -493,10 +533,7 @@ def test_manager_provenance_context_menu_preserves_extended_selection(
         QSelAggregationOperation(dims=("alpha",), func="mean"),
         operation,
     )
-    displayed = operation.apply(
-        test_data.qsel.mean("alpha"),
-        parent_data=test_data.qsel.mean("alpha"),
-    )
+    displayed = operation.apply(test_data.qsel.mean("alpha"))
 
     with manager_context() as manager:
         manager.show()
@@ -687,17 +724,1132 @@ def test_manager_provenance_context_menu_groups_row_commands(
 
         actions = menu.actions()
         assert actions[0] is manager._metadata_edit_step_action
-        assert actions[1] is manager._metadata_revert_step_action
-        assert actions[2].isSeparator()
-        assert actions[3] is manager._metadata_copy_selected_action
-        assert actions[4] is manager._metadata_paste_steps_action
+        assert actions[1] is manager._metadata_reorder_steps_action
+        assert actions[2] is manager._metadata_revert_step_action
+        assert actions[3].isSeparator()
+        assert actions[4] is manager._metadata_copy_selected_action
+        assert actions[5] is manager._metadata_paste_steps_action
         if manager._metadata_copy_full_action in actions:
-            assert actions[5] is manager._metadata_copy_full_action
-            separator_index = 6
+            assert actions[6] is manager._metadata_copy_full_action
+            separator_index = 7
         else:
-            separator_index = 5
+            separator_index = 6
         assert actions[separator_index].isSeparator()
         assert actions[separator_index + 1] is manager._metadata_delete_step_action
+
+
+def test_manager_provenance_reorder_requires_available_replay(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        name="scan",
+    )
+    file_path = tmp_path / "scan.h5"
+    data.to_netcdf(file_path, engine="h5netcdf")
+    recorded_input = _manager_replay_file_spec(file_path)
+    steps = (
+        AssignAttrsOperation(attrs={"first": True}),
+        AssignAttrsOperation(attrs={"second": True}),
+    )
+    opaque_script = script(
+        ScriptCodeOperation(
+            label="Opaque operation",
+            code=None,
+            copyable=False,
+        ),
+        *steps,
+        start_label="Run opaque code",
+        active_name="derived",
+    )
+    missing_input_script = script(
+        *steps,
+        start_label="Run script",
+        seed_code="derived = missing_input",
+        active_name="derived",
+        script_inputs=(ScriptInput(name="missing_input", label="Unavailable input"),),
+    )
+    missing_file = _composed_reorder_file_spec(tmp_path / "missing.h5")
+    detached_live = full_data(*steps)
+    opaque_live = full_data(
+        ScriptCodeOperation(
+            label="Opaque live operation",
+            code=None,
+            copyable=False,
+        ),
+        *steps,
+    )
+    trusted_script = script(
+        ScriptCodeOperation(
+            label="Run trusted code",
+            code="import math\nderived = recorded_input + math.pi",
+        ),
+        AssignAttrsOperation(attrs={"trusted": True}),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="recorded_input",
+                label="Recorded input",
+                provenance_spec=recorded_input.model_dump(mode="json"),
+            ),
+        ),
+    )
+    detached_script = script(
+        *steps,
+        start_label="Start from detached data",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+    unavailable_specs = (
+        opaque_script,
+        missing_input_script,
+        missing_file,
+        detached_live,
+    )
+    assert all(spec._reorder_sections() for spec in unavailable_specs)
+    assert trusted_script._reorder_sections()
+
+    with manager_context() as manager:
+        tool = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(data, manager=False, execute=False),
+        )
+        manager.add_imagetool(tool, show=False, provenance_spec=opaque_script)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        root = manager._tool_graph.root_wrappers[0]
+        select_tools(manager, [0])
+
+        for unavailable_spec in unavailable_specs:
+            root.set_detached_provenance(
+                unavailable_spec,
+                replay_source_data=None,
+            )
+            manager._update_info()
+            assert not manager._provenance_edit_controller.can_reorder_steps()[0]
+
+        root.set_detached_provenance(opaque_live, replay_source_data=data)
+        manager._update_info()
+        assert not manager._provenance_edit_controller.can_reorder_steps()[0]
+
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        assert not manager._metadata_reorder_steps_action.isEnabled()
+
+        root.set_detached_provenance(detached_live, replay_source_data=data)
+        manager._update_info()
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+
+        root.set_detached_provenance(detached_script, replay_source_data=data)
+        manager._update_info()
+        assert manager._provenance_edit_controller._script_replay_source_input_names(
+            detached_script
+        ) == ("data",)
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+
+        root.set_detached_provenance(trusted_script, replay_source_data=None)
+        manager._update_info()
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        assert manager._metadata_reorder_steps_action.isEnabled()
+
+
+def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Dependency:
+        def snapshot_token_for_role(self, role: str) -> str:
+            return f"token-{role}"
+
+    manager = types.SimpleNamespace(
+        _tool_graph=types.SimpleNamespace(nodes={"available": _Dependency()}),
+    )
+    controller = _ProvenanceEditController(typing.cast("typing.Any", manager))
+    spec = script(
+        AssignAttrsOperation(attrs={"first": True}),
+        AssignAttrsOperation(attrs={"second": True}),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="first_input",
+                node_uid="available",
+                data_role="source",
+            ),
+            ScriptInput(
+                name="duplicate_input",
+                node_uid="available",
+                data_role="source",
+            ),
+            ScriptInput(name="missing_input", node_uid="missing"),
+        ),
+    )
+    assert controller._dependency_snapshot_tokens(spec) == (
+        ("available", "source", "token-source"),
+        ("missing", "displayed", None),
+    )
+
+    display_node = types.SimpleNamespace(
+        parent_uid=None,
+        source_spec=None,
+        displayed_source_spec=None,
+        displayed_provenance_spec=spec,
+    )
+    assert controller._reorder_target(display_node) == ("display", spec)
+    source_node = types.SimpleNamespace(
+        parent_uid="parent",
+        source_spec=spec,
+        displayed_source_spec=spec,
+        displayed_provenance_spec=None,
+    )
+    assert controller._reorder_target(source_node) == ("source", spec)
+
+    no_source_file = _manager_replay_file_spec(pathlib.Path("missing.h5")).model_copy(
+        update={"file_load_source": None}
+    )
+    reason = controller._reorder_replay_unavailable_reason(
+        display_node,
+        "display",
+        no_source_file,
+    )
+    assert reason is not None
+
+    live_spec = full_data(
+        AssignAttrsOperation(attrs={"first": True}),
+        AssignAttrsOperation(attrs={"second": True}),
+    )
+    orphan = types.SimpleNamespace(uid="orphan", parent_uid="deleted")
+    assert (
+        controller._reorder_replay_unavailable_reason(orphan, "source", live_spec)
+        is not None
+    )
+    manager._tool_graph.nodes["parent"] = object()
+    orphan.parent_uid = "parent"
+    assert (
+        controller._reorder_replay_unavailable_reason(orphan, "source", live_spec)
+        is None
+    )
+
+    monkeypatch.setattr(controller, "_metadata_node", lambda: None)
+    unavailable: list[str] = []
+    monkeypatch.setattr(controller, "_show_unavailable", unavailable.append)
+    assert not controller.can_reorder_steps()[0]
+    controller.open_reorder_dialog()
+    assert len(unavailable) == 1
+
+    no_spec_node = types.SimpleNamespace(
+        is_imagetool=True,
+        imagetool=None,
+        pending_workspace_memory_payload=object(),
+        parent_uid=None,
+        source_spec=None,
+        displayed_provenance_spec=None,
+    )
+    monkeypatch.setattr(controller, "_metadata_node", lambda: no_spec_node)
+    assert not controller.can_reorder_steps()[0]
+
+    parent_revision = "parent-revision"
+    parent = types.SimpleNamespace(snapshot_token=parent_revision)
+    source_revision = "source-revision"
+    source_node = types.SimpleNamespace(
+        uid="source-node",
+        is_imagetool=True,
+        imagetool=None,
+        pending_workspace_memory_payload=object(),
+        parent_uid="parent",
+        source_spec=live_spec,
+        displayed_source_spec=live_spec,
+        displayed_provenance_spec=None,
+        snapshot_token=source_revision,
+        materialize_pending_workspace_payload=lambda: True,
+    )
+    manager._tool_graph.nodes.update({"parent": parent, source_node.uid: source_node})
+    manager._parent_node = lambda _node: parent
+    monkeypatch.setattr(controller, "_metadata_node", lambda: source_node)
+    opened: list[bool] = []
+
+    class _Signal:
+        def connect(self, _slot) -> None:
+            pass
+
+    class _Dialog:
+        def __init__(self, **_kwargs) -> None:
+            self.apply_requested = _Signal()
+
+        def exec(self) -> None:
+            opened.append(True)
+
+    monkeypatch.setattr(
+        manager_provenance_controller,
+        "_ProvenanceReorderDialog",
+        _Dialog,
+    )
+    controller.open_reorder_dialog()
+    assert opened == [True]
+
+    data = xr.DataArray([1.0, 2.0], dims="x")
+    live_script = full_data(
+        ScriptCodeOperation(
+            label="Offset data",
+            code="derived = derived + 1.0",
+        )
+    )
+    replay_node = types.SimpleNamespace(
+        parent_uid=None,
+        replay_source_data=data,
+        resolved_replay_source_data=lambda: data,
+        has_replay_source=True,
+    )
+    xr.testing.assert_identical(
+        controller._replay_live_script_candidate(replay_node, "display", live_script),
+        data + 1.0,
+    )
+    replay_node.uid = "replay-node"
+    two_script_steps = full_data(
+        *live_script.operations,
+        ScriptCodeOperation(
+            label="Offset data again",
+            code="derived = derived + 1.0",
+        ),
+    )
+    assert (
+        controller._reorder_replay_unavailable_reason(
+            replay_node,
+            "display",
+            two_script_steps,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "seed_code",
+    ["derived = my_data", "derived = my_data.astype(np.float64)"],
+)
+def test_manager_detached_watched_provenance_reorder_uses_retained_source(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    seed_code: str,
+) -> None:
+    source = xr.DataArray([1.0, 2.0], dims=("x",), name="scan")
+    spec = script(
+        AssignAttrsOperation(attrs={"order": "first"}),
+        AssignAttrsOperation(attrs={"order": "second"}),
+        start_label="Start from watched variable 'my_data'",
+        seed_code=seed_code,
+        active_name="derived",
+    )
+    displayed = replay_script_provenance(spec, {"my_data": source})
+
+    with manager_context() as manager:
+        tool = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(displayed, manager=False, execute=False),
+        )
+        manager.add_imagetool(
+            tool,
+            show=False,
+            provenance_spec=spec,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        root = manager._tool_graph.root_wrappers[0]
+        root.set_detached_provenance(spec, replay_source_data=source)
+        assert not root.watched
+        select_tools(manager, [0])
+        manager._update_info()
+
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+
+        def _apply_reordered(dialog: QtWidgets.QDialog) -> None:
+            assert isinstance(dialog, _ProvenanceReorderDialog)
+            assert dialog.current_view.move_current(1)
+            dialog.apply_button.click()
+
+        accept_dialog(
+            manager._provenance_edit_controller.open_reorder_dialog,
+            accept_call=_apply_reordered,
+        )
+
+        assert root.provenance_spec is not None
+        assert [
+            typing.cast("AssignAttrsOperation", operation).attrs["order"]
+            for operation in root.provenance_spec.operations
+        ] == ["second", "first"]
+        assert root.slicer_area._data.attrs["order"] == "first"
+        assert root.replay_source_data is not None
+        xr.testing.assert_identical(root.replay_source_data, source)
+
+
+def test_manager_filtered_root_retains_source_when_provenance_becomes_durable(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = xr.DataArray(
+        np.arange(12.0).reshape(3, 4) + 1.0,
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(4)},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        tool = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(source, manager=False, execute=False),
+        )
+        manager.add_imagetool(tool, show=False)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        root = manager._tool_graph.root_wrappers[0]
+
+        tool.slicer_area.apply_filter_operation(
+            NormalizeOperation(dims=("x",), mode="area")
+        )
+        assert root.provenance_spec is None
+        assert root.displayed_provenance_spec is not None
+
+        replay_source = root.resolved_replay_source_data()
+        assert replay_source is not None
+        xr.testing.assert_identical(replay_source, source)
+
+        manager._provenance_edit_controller._paste_structured_steps(
+            root,
+            (AssignAttrsOperation(attrs={"pasted": True}),),
+        )
+
+        assert root.replay_source_data is not None
+        xr.testing.assert_identical(root.replay_source_data, source)
+        assert root.provenance_spec is not None
+        xr.testing.assert_identical(
+            manager._provenance_edit_controller._replay_candidate(
+                root,
+                "display",
+                root.provenance_spec,
+            ),
+            tool.slicer_area._data,
+        )
+
+        select_tools(manager, [0])
+        manager._update_info(uid=root.uid)
+        assert manager._provenance_edit_controller.can_reorder_steps() == (True, "")
+
+
+def test_manager_provenance_reorder_session_rejects_each_stale_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node_revision = "node-snapshot"
+    parent_revision = "parent-snapshot"
+    spec = full_data(
+        AssignAttrsOperation(attrs={"first": True}),
+        AssignAttrsOperation(attrs={"second": True}),
+    )
+    node = types.SimpleNamespace(
+        uid="node",
+        is_imagetool=True,
+        imagetool=None,
+        pending_workspace_memory_payload=object(),
+        parent_uid=None,
+        source_spec=None,
+        displayed_source_spec=None,
+        displayed_provenance_spec=spec,
+        snapshot_token=node_revision,
+    )
+    parent = types.SimpleNamespace(snapshot_token=parent_revision)
+    manager = types.SimpleNamespace(
+        _tool_graph=types.SimpleNamespace(nodes={"node": node, "parent": parent}),
+        _parent_node=lambda _node: parent,
+    )
+    controller = _ProvenanceEditController(typing.cast("typing.Any", manager))
+    sections = spec._reorder_sections()
+    session = _ProvenanceReorderSession(
+        node_uid=node.uid,
+        scope="display",
+        spec=spec,
+        sections=sections,
+        node_snapshot_token=node.snapshot_token,
+        parent_snapshot_token=None,
+        dependency_snapshot_tokens=(),
+    )
+
+    current, reason = controller._reorder_session_current(session)
+    assert current is node
+    assert not reason
+
+    manager._tool_graph.nodes.pop("node")
+    assert controller._reorder_session_current(session)[0] is None
+    manager._tool_graph.nodes["node"] = node
+
+    node.displayed_provenance_spec = full_data(
+        *spec.operations, RenameOperation(name="x")
+    )
+    assert controller._reorder_session_current(session)[0] is None
+    node.displayed_provenance_spec = spec
+
+    node.snapshot_token = "changed"  # noqa: S105
+    assert controller._reorder_session_current(session)[0] is None
+    node.snapshot_token = session.node_snapshot_token
+
+    source_session = _ProvenanceReorderSession(
+        node_uid=node.uid,
+        scope="source",
+        spec=spec,
+        sections=sections,
+        node_snapshot_token=node.snapshot_token,
+        parent_snapshot_token=parent.snapshot_token,
+        dependency_snapshot_tokens=(),
+    )
+    node.parent_uid = "parent"
+    node.source_spec = spec
+    node.displayed_source_spec = spec
+    parent.snapshot_token = "changed-parent"  # noqa: S105
+    assert controller._reorder_session_current(source_session)[0] is None
+    parent.snapshot_token = source_session.parent_snapshot_token
+
+    monkeypatch.setattr(
+        controller,
+        "_dependency_snapshot_tokens",
+        lambda _spec: (("dependency", "displayed", "changed"),),
+    )
+    assert controller._reorder_session_current(source_session)[0] is None
+    monkeypatch.setattr(controller, "_dependency_snapshot_tokens", lambda _spec: ())
+    monkeypatch.setattr(controller, "_reorder_sections", lambda _node, _spec: ())
+    assert controller._reorder_session_current(source_session)[0] is None
+
+
+def test_manager_provenance_reorder_cancelled_replay_restores_dialog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node_revision = "snapshot"
+    spec = full_data(
+        AssignAttrsOperation(attrs={"first": True}),
+        AssignAttrsOperation(attrs={"second": True}),
+    )
+    sections = spec._reorder_sections()
+    section = sections[0]
+    session = _ProvenanceReorderSession(
+        node_uid="node",
+        scope="display",
+        spec=spec,
+        sections=sections,
+        node_snapshot_token=node_revision,
+        parent_snapshot_token=None,
+        dependency_snapshot_tokens=(),
+    )
+    node = object()
+    controller = _ProvenanceEditController(typing.cast("typing.Any", object()))
+    monkeypatch.setattr(
+        controller,
+        "_reorder_session_current",
+        lambda _session: (node, ""),
+    )
+
+    def cancel_replay(*_args, **_kwargs) -> None:
+        raise _TrustedScriptReplayCancelled
+
+    monkeypatch.setattr(controller, "_validate_and_replace", cancel_replay)
+
+    class _Dialog:
+        def __init__(self) -> None:
+            self.busy_states: list[bool] = []
+
+        def reorder_plan(self):
+            return {section.ref: tuple(block.ref for block in section.blocks)}
+
+        def set_busy(self, busy: bool) -> None:
+            self.busy_states.append(busy)
+
+        def finish_success(self) -> None:
+            raise AssertionError("cancelled replay must leave the dialog open")
+
+    dialog = _Dialog()
+    controller._apply_reorder_dialog(
+        typing.cast("_ProvenanceReorderDialog", dialog),
+        session,
+    )
+    assert dialog.busy_states == [True, False]
+
+
+def test_manager_provenance_reorder_dialog_controls_and_drop_boundaries(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    staged = _manager_replay_file_spec(
+        tmp_path / "scan.h5",
+        IselOperation(kwargs={"x": slice(0, 2)}),
+        NormalizeOperation(dims=("x",), mode="area"),
+    ).append_replay_stage(
+        full_data(
+            AssignAttrsOperation(attrs={"first": True}),
+            AssignAttrsOperation(attrs={"second": True}),
+        )
+    )
+    hidden_boundary = ScriptCodeOperation(
+        label="Internal boundary",
+        code="derived = derived.copy(deep=False)",
+        visible=False,
+    )
+    spec = script(
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="derived",
+        steps=(
+            *staged.steps[:2],
+            ReplayStep(operation=hidden_boundary),
+            *staged.steps[2:],
+            ReplayStep(
+                operation=hidden_boundary.model_copy(
+                    update={"label": "Second internal boundary"}
+                )
+            ),
+            ReplayStep(operation=AssignAttrsOperation(attrs={"third": True})),
+            ReplayStep(operation=AssignAttrsOperation(attrs={"fourth": True})),
+        ),
+    )
+    sections = spec._reorder_sections()
+    assert len(sections) == 3
+
+    dialog = _ProvenanceReorderDialog(
+        sections=sections,
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    assert dialog.list_stack.count() == len(sections)
+    assert dialog.scope_combo.isVisible()
+    first_view = dialog.current_view
+    second_view = dialog.view_for_section(sections[1].ref)
+    assert isinstance(first_view, _ProvenanceReorderListView)
+    assert first_view.reorder_model.rowCount() == len(sections[0].blocks)
+    assert second_view.reorder_model.rowCount() == len(sections[1].blocks)
+
+    original_first_order = first_view.reorder_model.order()
+    original_second_order = second_view.reorder_model.order()
+    assert not first_view.move_current(0)
+    assert not first_view.move_current(-1)
+    first_view.clearSelection()
+    first_view.setCurrentIndex(QtCore.QModelIndex())
+    assert not first_view.move_current(1)
+    first_view.setCurrentIndex(first_view.reorder_model.index(0, 0))
+
+    class _InternalDropEvent(QtGui.QDropEvent):
+        def __init__(self, source: QtCore.QObject) -> None:
+            super().__init__(
+                QtCore.QPointF(),
+                QtCore.Qt.DropAction.MoveAction,
+                QtCore.QMimeData(),
+                QtCore.Qt.MouseButton.LeftButton,
+                QtCore.Qt.KeyboardModifier.NoModifier,
+            )
+            self._source = source
+
+        def source(self) -> QtCore.QObject:
+            return self._source
+
+    def drop_event(source: QtCore.QObject = first_view) -> _InternalDropEvent:
+        return _InternalDropEvent(source)
+
+    first_view.dropEvent(None)
+    external_drop = drop_event(dialog)
+    first_view.dropEvent(external_drop)
+    assert not external_drop.isAccepted()
+
+    first_view.setCurrentIndex(QtCore.QModelIndex())
+    no_source_drop = drop_event()
+    first_view.dropEvent(no_source_drop)
+    assert not no_source_drop.isAccepted()
+    first_view.setCurrentIndex(first_view.reorder_model.index(0, 0))
+
+    monkeypatch.setattr(first_view, "indexAt", lambda _position: QtCore.QModelIndex())
+    monkeypatch.setattr(
+        first_view,
+        "dropIndicatorPosition",
+        lambda: QtWidgets.QAbstractItemView.DropIndicatorPosition.AboveItem,
+    )
+    invalid_target_drop = drop_event()
+    first_view.dropEvent(invalid_target_drop)
+    assert not invalid_target_drop.isAccepted()
+
+    target_index = first_view.reorder_model.index(1, 0)
+    monkeypatch.setattr(first_view, "indexAt", lambda _position: target_index)
+    monkeypatch.setattr(
+        first_view,
+        "dropIndicatorPosition",
+        lambda: QtWidgets.QAbstractItemView.DropIndicatorPosition.BelowItem,
+    )
+    moved_drop = drop_event()
+    first_view.dropEvent(moved_drop)
+    assert moved_drop.isAccepted()
+    assert first_view.reorder_model.rowCount() == len(original_first_order)
+    assert set(first_view.reorder_model.order()) == set(original_first_order)
+    assert first_view.reorder_model.order() == tuple(reversed(original_first_order))
+    assert dialog.order_changed()
+
+    monkeypatch.setattr(first_view, "indexAt", lambda _position: QtCore.QModelIndex())
+    monkeypatch.setattr(
+        first_view,
+        "dropIndicatorPosition",
+        lambda: QtWidgets.QAbstractItemView.DropIndicatorPosition.OnViewport,
+    )
+    viewport_drop = drop_event()
+    first_view.dropEvent(viewport_drop)
+    assert viewport_drop.isAccepted()
+    assert first_view.reorder_model.order() == tuple(reversed(original_first_order))
+
+    monkeypatch.setattr(
+        first_view,
+        "indexAt",
+        lambda _position: first_view.reorder_model.index(0, 0),
+    )
+    monkeypatch.setattr(
+        first_view,
+        "dropIndicatorPosition",
+        lambda: QtWidgets.QAbstractItemView.DropIndicatorPosition.AboveItem,
+    )
+    above_drop = drop_event()
+    first_view.dropEvent(above_drop)
+    assert above_drop.isAccepted()
+    assert first_view.reorder_model.order() == original_first_order
+
+    monkeypatch.setattr(
+        first_view,
+        "dropIndicatorPosition",
+        lambda: QtWidgets.QAbstractItemView.DropIndicatorPosition.OnItem,
+    )
+    on_item_drop = drop_event()
+    first_view.dropEvent(on_item_drop)
+    assert not on_item_drop.isAccepted()
+    assert first_view.move_current(1)
+    assert first_view.reorder_model.order() == tuple(reversed(original_first_order))
+
+    second_view.setCurrentIndex(second_view.reorder_model.index(0, 0))
+    monkeypatch.setattr(
+        second_view,
+        "indexAt",
+        lambda _position: second_view.reorder_model.index(1, 0),
+    )
+    monkeypatch.setattr(
+        second_view,
+        "dropIndicatorPosition",
+        lambda: QtWidgets.QAbstractItemView.DropIndicatorPosition.BelowItem,
+    )
+    cross_scope_drop = drop_event(first_view)
+    second_view.dropEvent(cross_scope_drop)
+    assert not cross_scope_drop.isAccepted()
+    assert second_view.reorder_model.order() == original_second_order
+
+    first_view.setCurrentIndex(first_view.reorder_model.index(0, 0))
+    dialog.set_busy(False)
+    dialog.set_busy(True)
+    assert not dialog.list_stack.isEnabled()
+    assert not dialog.scope_combo.isEnabled()
+    assert not dialog.apply_button.isEnabled()
+    assert not dialog.cancel_button.isEnabled()
+    dialog.reject()
+    assert dialog.isVisible()
+    close_event = QtGui.QCloseEvent()
+    dialog.closeEvent(close_event)
+    assert not close_event.isAccepted()
+    dialog.set_busy(False)
+    assert dialog.apply_button.isEnabled()
+    assert dialog.cancel_button.isEnabled()
+
+    dialog.scope_combo.setCurrentIndex(1)
+    assert dialog.current_view is second_view
+    assert second_view.move_current(1)
+    assert dialog.order_changed()
+    dialog.reset_order()
+    assert first_view.reorder_model.order() == original_first_order
+    assert second_view.reorder_model.order() == original_second_order
+    assert not dialog.order_changed()
+    assert not dialog.apply_button.isEnabled()
+
+
+def test_manager_provenance_reorder_list_models_keep_atomic_rows(
+    qtbot,
+) -> None:
+    grouped = stamp_operation_group(
+        (
+            AssignAttrsOperation(attrs={"first": True}),
+            AssignAttrsOperation(attrs={"second": True}),
+        ),
+        kind="test",
+        group_id="atomic-reorder-test",
+    )
+    operation_spec = full_data(
+        *grouped,
+        AssignAttrsOperation(attrs={"third": True}),
+    )
+    section = operation_spec._reorder_sections()[0]
+    model = _ProvenanceReorderListModel(section)
+    assert model.rowCount() == 2
+    assert model.rowCount(model.index(0, 0)) == 0
+    assert model.data(QtCore.QModelIndex()) is None
+    assert model.data(model.index(0, 0), _REORDER_BLOCK_ROLE) == section.blocks[0].ref
+    assert model.flags(QtCore.QModelIndex()) & QtCore.Qt.ItemFlag.ItemIsDropEnabled
+    assert model.supportedDropActions() == QtCore.Qt.DropAction.MoveAction
+    mime_data = model.mimeData([model.index(0, 0)])
+    assert mime_data.hasFormat(model.mimeTypes()[0])
+    assert model.canDropMimeData(
+        mime_data,
+        QtCore.Qt.DropAction.MoveAction,
+        1,
+        -1,
+        QtCore.QModelIndex(),
+    )
+    assert not model.canDropMimeData(
+        QtCore.QMimeData(),
+        QtCore.Qt.DropAction.MoveAction,
+        1,
+        -1,
+        QtCore.QModelIndex(),
+    )
+
+    original = model.order()
+    assert model.move_row(0, 1)
+    assert model.order() == tuple(reversed(original))
+    assert not model.move_row(1, 1)
+    assert not model.move_row(-1, 0)
+    assert model.reset_order(original)
+    assert not model.reset_order(original)
+    with pytest.raises(ValueError, match="every provenance block once"):
+        model.reset_order(original[:1])
+
+    dialog = _ProvenanceReorderDialog(
+        sections=(section,),
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    assert not dialog.scope_combo.isVisible()
+    assert dialog.list_stack.count() == 1
+    assert dialog.current_view.reorder_model.rowCount() == len(section.blocks)
+    assert dialog.current_view.move_current(1)
+    dialog.reset_order()
+    assert dialog.reorder_plan()[section.ref] == original
+
+
+def test_manager_provenance_reorder_flat_presentation_edge_cases(qtbot) -> None:
+    entries = tuple(
+        AssignAttrsOperation(attrs={f"value_{index}": index}).derivation_entry()
+        for index in range(4)
+    )
+    blocks = (
+        _ProvenanceReorderBlock(
+            _ProvenanceReorderBlockRef(0, 1),
+            entries,
+            tooltip="Stage source details",
+        ),
+        _ProvenanceReorderBlock(
+            _ProvenanceReorderBlockRef(1, 2),
+            (),
+        ),
+        _ProvenanceReorderBlock(
+            _ProvenanceReorderBlockRef(2, 5),
+            entries[:1],
+        ),
+    )
+    section = _ProvenanceReorderSection(
+        _ProvenanceReorderSectionRef(0, 3),
+        "Presentation test",
+        blocks,
+    )
+    model = _ProvenanceReorderListModel(section)
+    for row in range(model.rowCount()):
+        index = model.index(row, 0)
+        assert isinstance(
+            model.data(index, int(QtCore.Qt.ItemDataRole.DisplayRole)),
+            str,
+        )
+        assert isinstance(
+            model.data(index, int(QtCore.Qt.ItemDataRole.ToolTipRole)),
+            str,
+        )
+    assert model.data(model.index(0, 0), 9999) is None
+    assert not model.mimeData([QtCore.QModelIndex()]).formats()
+
+    empty_section = _ProvenanceReorderSection(
+        _ProvenanceReorderSectionRef(0, 0),
+        "Empty",
+        (),
+    )
+    empty_view = _ProvenanceReorderListView(empty_section)
+    qtbot.addWidget(empty_view)
+    assert not empty_view.currentIndex().isValid()
+    empty_view.select_block(None)
+    empty_view.select_block(blocks[0].ref)
+
+    single_operation_section = _ProvenanceReorderSection(
+        _ProvenanceReorderSectionRef(0, 1),
+        "Single operation",
+        blocks[:1],
+    )
+    dialog = _ProvenanceReorderDialog(
+        sections=(single_operation_section,),
+    )
+    qtbot.addWidget(dialog)
+    dialog._set_current_scope(-1)
+
+    empty_dialog = _ProvenanceReorderDialog(
+        sections=(),
+    )
+    qtbot.addWidget(empty_dialog)
+    assert not empty_dialog.move_up_button.isEnabled()
+    assert not empty_dialog.move_down_button.isEnabled()
+    with pytest.raises(TypeError, match="current step list"):
+        _ = empty_dialog.current_view
+
+
+def test_manager_provenance_reorder_dialog_is_transactional(
+    qtbot,
+    accept_dialog,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    source = xr.DataArray(
+        [[1.0, 2.0], [3.0, 6.0], [10.0, 20.0]],
+        dims=("x", "y"),
+        name="scan",
+    )
+    source.to_netcdf(file_path, engine="h5netcdf")
+    spec = _composed_reorder_file_spec(file_path)
+    displayed = replay_file_provenance(spec)
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        _add_file_replay_tool(manager, displayed, spec)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        root = manager._tool_graph.root_wrappers[0]
+        select_tools(manager, [0])
+        manager._update_info()
+
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        assert manager._metadata_reorder_steps_action.isEnabled()
+
+        controller = manager._provenance_edit_controller
+        replay_calls = 0
+        original_replay = controller._replay_candidate_result
+
+        def _count_replay(*args, **kwargs):
+            nonlocal replay_calls
+            replay_calls += 1
+            return original_replay(*args, **kwargs)
+
+        monkeypatch.setattr(controller, "_replay_candidate_result", _count_replay)
+        before_spec = root.provenance_spec
+        before_data = root.slicer_area._data.copy(deep=True)
+
+        def _cancel_reordered(dialog: QtWidgets.QDialog) -> None:
+            assert isinstance(dialog, _ProvenanceReorderDialog)
+            assert dialog.current_view.move_current(1)
+            assert dialog.current_view.move_current(1)
+            assert replay_calls == 0
+            assert root.provenance_spec == before_spec
+            xr.testing.assert_identical(root.slicer_area._data, before_data)
+            dialog.reject()
+
+        accept_dialog(
+            controller.open_reorder_dialog,
+            accept_call=_cancel_reordered,
+        )
+        assert replay_calls == 0
+        assert root.provenance_spec == before_spec
+        xr.testing.assert_identical(root.slicer_area._data, before_data)
+
+        def _apply_reordered(dialog: QtWidgets.QDialog) -> None:
+            assert isinstance(dialog, _ProvenanceReorderDialog)
+            assert dialog.current_view.move_current(1)
+            assert dialog.current_view.move_current(1)
+            assert replay_calls == 0
+            dialog.apply_button.click()
+
+        accept_dialog(
+            controller.open_reorder_dialog,
+            accept_call=_apply_reordered,
+        )
+        assert replay_calls == 1
+        assert root.provenance_spec is not None
+        assert [operation.op for operation in root.provenance_spec.operations] == [
+            "normalize",
+            "assign_attrs",
+            "isel",
+        ]
+        xr.testing.assert_identical(
+            root.slicer_area._data,
+            replay_file_provenance(root.provenance_spec),
+        )
+
+        tree = manager._workspace_controller.saving._to_datatree()
+        saved_spec = json.loads(
+            tree["0/imagetool"].attrs["manager_node_provenance_spec"]
+        )
+        assert [step["operation"]["op"] for step in saved_spec["steps"]] == [
+            "normalize",
+            "assign_attrs",
+            "isel",
+        ]
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        for saved_node in tree.values():
+            manager._workspace_controller.loading._load_workspace_node(
+                typing.cast("xr.DataTree", saved_node)
+            )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        restored = manager._tool_graph.root_wrappers[0]
+        assert restored.provenance_spec is not None
+        assert [operation.op for operation in restored.provenance_spec.operations] == [
+            "normalize",
+            "assign_attrs",
+            "isel",
+        ]
+        xr.testing.assert_identical(
+            restored.slicer_area._data,
+            replay_file_provenance(restored.provenance_spec),
+        )
+
+
+def test_manager_provenance_reorder_failure_keeps_dialog_and_data(
+    qtbot,
+    accept_dialog,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    source = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        name="scan",
+    )
+    source.to_netcdf(file_path, engine="h5netcdf")
+    spec = _composed_reorder_file_spec(file_path)
+    displayed = replay_file_provenance(spec)
+
+    with manager_context() as manager:
+        _add_file_replay_tool(manager, displayed, spec)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        root = manager._tool_graph.root_wrappers[0]
+        select_tools(manager, [0])
+        manager._update_info()
+        before_spec = root.provenance_spec
+        before_data = root.slicer_area._data.copy(deep=True)
+        failures: list[Exception] = []
+
+        def _fail_validation(*_args, **_kwargs) -> None:
+            raise ValueError("invalid reordered recipe")
+
+        monkeypatch.setattr(
+            manager._provenance_edit_controller,
+            "_validate_and_replace",
+            _fail_validation,
+        )
+        monkeypatch.setattr(
+            manager._provenance_edit_controller,
+            "_show_failed",
+            lambda _title, exc, **_kwargs: failures.append(exc),
+        )
+
+        def _apply_invalid(dialog: QtWidgets.QDialog) -> None:
+            assert isinstance(dialog, _ProvenanceReorderDialog)
+            assert dialog.current_view.move_current(1)
+            dialog.apply_button.click()
+            assert dialog.isVisible()
+            assert dialog.apply_button.isEnabled()
+            dialog.reject()
+
+        accept_dialog(
+            manager._provenance_edit_controller.open_reorder_dialog,
+            accept_call=_apply_invalid,
+        )
+
+        assert len(failures) == 1
+        assert root.provenance_spec == before_spec
+        xr.testing.assert_identical(root.slicer_area._data, before_data)
+
+
+def test_manager_provenance_reorder_rejects_stale_dialog(
+    qtbot,
+    accept_dialog,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    source = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        name="scan",
+    )
+    source.to_netcdf(file_path, engine="h5netcdf")
+    spec = _composed_reorder_file_spec(file_path)
+    displayed = replay_file_provenance(spec)
+
+    with manager_context() as manager:
+        _add_file_replay_tool(manager, displayed, spec)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        root = manager._tool_graph.root_wrappers[0]
+        select_tools(manager, [0])
+        manager._update_info()
+        apply_calls = 0
+        messages: list[str] = []
+
+        def _record_apply(*_args, **_kwargs) -> None:
+            nonlocal apply_calls
+            apply_calls += 1
+
+        monkeypatch.setattr(
+            manager._provenance_edit_controller,
+            "_validate_and_replace",
+            _record_apply,
+        )
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "information",
+            lambda _parent, _title, text: messages.append(text),
+        )
+
+        replacement = displayed + 10.0
+
+        def _apply_after_data_change(dialog: QtWidgets.QDialog) -> None:
+            assert isinstance(dialog, _ProvenanceReorderDialog)
+            assert dialog.current_view.move_current(1)
+            root.replace_with_detached_data(
+                replacement,
+                spec,
+                replay_source_data=None,
+            )
+            dialog.apply_button.click()
+            assert dialog.isVisible()
+            dialog.reject()
+
+        accept_dialog(
+            manager._provenance_edit_controller.open_reorder_dialog,
+            accept_call=_apply_after_data_change,
+        )
+
+        assert apply_calls == 0
+        assert len(messages) == 1
+        assert root.provenance_spec == spec
+        xr.testing.assert_identical(root.slicer_area._data, replacement)
 
 
 def test_manager_provenance_unresolved_script_prefix_blocks_structured_edit(
@@ -890,8 +2042,9 @@ def test_manager_provenance_structured_operation_edit_accept_and_cancel(
         accept_dialog(manager._edit_selected_derivation_step, pre_call=_edit_aggregate)
 
         assert root.provenance_spec is not None
-        stage = root.provenance_spec.replay_stages[0]
-        assert stage.operations == (QSelAggregationOperation(dims=("x",), func="sum"),)
+        assert root.provenance_spec.operations == (
+            QSelAggregationOperation(dims=("x",), func="sum"),
+        )
         xr.testing.assert_identical(
             tool.slicer_area._data.rename(None),
             data.qsel.sum("x").rename(None),
@@ -1112,7 +2265,7 @@ def test_manager_provenance_edit_rejects_incompatible_downstream_and_reverts(
         )
 
         assert root.provenance_spec is not None
-        assert root.provenance_spec.replay_stages[0].operations == (
+        assert root.provenance_spec.operations == (
             QSelAggregationOperation(dims=("x",), func="mean"),
         )
         xr.testing.assert_identical(

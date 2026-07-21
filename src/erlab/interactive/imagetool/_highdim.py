@@ -257,7 +257,7 @@ class _HighDimensionalReductionDialog(QtWidgets.QDialog):
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         for operation in self.source_operations():
-            data = operation.apply(data, parent_data=data)
+            data = operation.apply(data)
         return data
 
     def make_code(self) -> str:

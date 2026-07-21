@@ -31,7 +31,7 @@ class ScriptCodeOperation(ToolProvenanceOperation):
 
     live_applicable: typing.ClassVar[bool] = False
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         raise TypeError(
             "script_code operations do not support live updates from ImageTool data"
         )
@@ -348,7 +348,7 @@ class ModelFitOperation(ToolProvenanceOperation):
     def preferred_replay_input_name(self) -> str:
         return "fit_data"
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         if self.fit_dim not in data.dims:
             raise ValueError(
                 f"Model-fit dimension {self.fit_dim!r} was not found in data"

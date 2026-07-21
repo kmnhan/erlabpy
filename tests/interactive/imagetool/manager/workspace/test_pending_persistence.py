@@ -22,6 +22,7 @@ from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._model import FileDataSelection, full_data
 from erlab.interactive.imagetool._provenance._operations import (
+    AssignAttrsOperation,
     AverageOperation,
     ImageToolSelectionSourceBinding,
 )
@@ -820,7 +821,10 @@ def test_manager_pending_memory_file_source_full_code_uses_saved_load_code(
         root.hide()
 
         node = manager._tool_graph.root_wrappers[0]
-        node.set_detached_provenance(full_data(AverageOperation(dims=("alpha",))))
+        node.set_detached_provenance(
+            full_data(AverageOperation(dims=("alpha",))),
+            replay_source_data=None,
+        )
 
         fname = tmp_path / "pending-file-source-replay.itws"
         manager._workspace_controller.saving._save_workspace_document(
@@ -868,6 +872,63 @@ def test_manager_pending_memory_file_source_full_code_uses_saved_load_code(
         )
         assert wrapper.pending_workspace_memory_payload is not None
         assert wrapper.imagetool is None
+
+
+def test_manager_replay_source_survives_pending_workspace_load_and_duplicate(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = xr.DataArray(np.arange(6.0), dims=("x",), name="source")
+    provenance = full_data(
+        AssignAttrsOperation(attrs={"order": "first"}),
+        AssignAttrsOperation(attrs={"order": "second"}),
+    )
+    displayed = provenance.apply(source)
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tool = itool(displayed, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(
+            tool,
+            show=False,
+            provenance_spec=provenance,
+            replay_source_data=source,
+        )
+        tool.hide()
+
+        fname = tmp_path / "pending-replay-source.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            fname,
+            force_full=True,
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+
+        wrapper = manager._tool_graph.root_wrappers[0]
+        assert wrapper.pending_workspace_memory_payload is not None
+        assert wrapper.has_replay_source
+        assert wrapper.replay_source_data is None
+        select_tools(manager, [0])
+        manager._update_info(uid=wrapper.uid)
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+
+        manager.get_imagetool(0)
+        assert wrapper.replay_source_data is not None
+        xr.testing.assert_identical(wrapper.replay_source_data, source)
+
+        duplicate_index = typing.cast("int", manager.duplicate_imagetool(0))
+        duplicate = manager._tool_graph.root_wrappers[duplicate_index]
+        assert duplicate.replay_source_data is not None
+        xr.testing.assert_identical(duplicate.replay_source_data, source)
 
 
 def test_full_save_copies_unopened_pending_toolwindows_without_construction(
@@ -1234,6 +1295,7 @@ def test_manager_duplicate_pending_mixed_subtree_is_complete(
 
 def test_manager_promote_pending_child_memory_uses_saved_payload(
     qtbot,
+    monkeypatch,
     tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -1241,19 +1303,36 @@ def test_manager_promote_pending_child_memory_uses_saved_payload(
 ) -> None:
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-        root_data = xr.DataArray(
+        replay_source = xr.DataArray(
             np.arange(25, dtype=np.float64).reshape((5, 5)),
             dims=["x", "y"],
+            coords={"x": np.arange(5), "y": np.arange(5)},
             name="root",
         )
-        child_data = (root_data + 100.0).rename("child")
+        root_provenance = full_data(
+            AssignAttrsOperation(attrs={"root_step": "first"}),
+            AssignAttrsOperation(attrs={"root_step": "second"}),
+        )
+        root_data = root_provenance.apply(replay_source)
+        child_source_spec = full_data(AssignAttrsOperation(attrs={"child_step": True}))
+        child_data = child_source_spec.apply(root_data)
 
         root = itool(root_data, manager=False, execute=False)
         child = itool(child_data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         assert isinstance(child, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(root, show=False)
-        child_uid = manager.add_imagetool_child(child, 0, show=False)
+        manager.add_imagetool(
+            root,
+            show=False,
+            provenance_spec=root_provenance,
+            replay_source_data=replay_source,
+        )
+        child_uid = manager.add_imagetool_child(
+            child,
+            0,
+            show=False,
+            source_spec=child_source_spec,
+        )
         root.hide()
         child.hide()
 
@@ -1266,18 +1345,38 @@ def test_manager_promote_pending_child_memory_uses_saved_payload(
         )
 
         child_node = manager._child_node(child_uid)
+        root_node = manager._tool_graph.root_wrappers[0]
         assert child_node.pending_workspace_memory_payload is not None
+        assert root_node.pending_workspace_memory_payload is not None
+        assert root_node.replay_source_data is None
+        assert root_node.has_replay_source
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                root_node, "materialize_pending_workspace_payload", lambda: False
+            )
+            with pytest.raises(RuntimeError, match="saved replay source"):
+                manager.promote_child_imagetool(child_uid)
+        assert child_uid in manager._tool_graph.nodes
+        assert manager._child_node(child_uid).parent_uid == root_node.uid
 
         promoted_index = manager.promote_child_imagetool(child_uid)
         promoted = manager.get_imagetool(promoted_index).slicer_area
+        promoted_node = manager._tool_graph.root_wrappers[promoted_index]
 
-        assert (
-            manager._tool_graph.root_wrappers[
-                promoted_index
-            ].pending_workspace_memory_payload
-            is None
+        assert promoted_node.pending_workspace_memory_payload is None
+        xr.testing.assert_identical(promoted._data, child_data)
+        xr.testing.assert_identical(promoted_node.replay_source_data, replay_source)
+        assert promoted_node.provenance_spec is not None
+        select_tools(manager, [promoted_index])
+        manager._update_info(uid=promoted_node.uid)
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+        xr.testing.assert_identical(
+            manager._provenance_edit_controller._replay_candidate(
+                promoted_node, "display", promoted_node.provenance_spec
+            ),
+            child_data,
         )
-        np.testing.assert_array_equal(promoted._data.values, child_data.values)
 
 
 def test_manager_save_as_rebinds_live_tool_reference_dataset(

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
-    ReplayStage,
+    ReplayStep,
     ToolProvenanceSpec,
     parse_tool_provenance_spec,
 )
@@ -185,19 +185,17 @@ class BaseImageTool(QtWidgets.QMainWindow):
         file_path = self.slicer_area._file_path
         if file_path is None:
             return
-        replay_stages: tuple[ReplayStage, ...] = ()
+        replay_steps: tuple[ReplayStep, ...] = ()
         if self.slicer_area._load_preparation_operations:
-            replay_stages = (
-                ReplayStage(
-                    source_kind="full_data",
-                    operations=self.slicer_area._load_preparation_operations,
-                ),
+            replay_steps = tuple(
+                ReplayStep(operation=operation, input_policy="current")
+                for operation in self.slicer_area._load_preparation_operations
             )
         provenance_spec = _load_provenance_from_file_details(
             file_path,
             self.slicer_area._load_func,
             source_input_dtype=self.slicer_area._source_input_dtype,
-            replay_stages=replay_stages,
+            replay_steps=replay_steps,
         )
         self.set_provenance_spec(provenance_spec)
 

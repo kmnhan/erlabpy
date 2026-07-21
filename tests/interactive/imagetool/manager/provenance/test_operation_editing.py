@@ -30,6 +30,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     NormalizeOperation,
     QSelAggregationOperation,
     QSelOperation,
+    ScriptCodeOperation,
     SelOperation,
     SortByOperation,
     TransposeOperation,
@@ -269,7 +270,7 @@ def test_manager_terminal_current_data_edit_opens_without_replay(
     dialog_cls: type[imagetool_dialogs._DataManipulationDialog],
 ) -> None:
     base = _native_current_seed_data()
-    current = operation.apply(base, parent_data=base)
+    current = operation.apply(base)
     spec = _manager_replay_file_spec(tmp_path / "source.h5", operation)
     node = _fake_edit_node(spec)
     node.current_source_data = lambda: current
@@ -355,7 +356,7 @@ def test_manager_terminal_current_data_edit_accept_still_replays_for_validation(
         mode="minmax",
         denominator_rtol=1e-7,
     )
-    current = operation.apply(base, parent_data=base)
+    current = operation.apply(base)
     spec = _manager_replay_file_spec(tmp_path / "source.h5", operation)
     node = _fake_edit_node(spec)
     node.current_source_data = lambda: current
@@ -506,7 +507,7 @@ def test_manager_affine_coord_edit_opens_without_replay(
         scale=2.0,
         offset=0.5,
     )
-    current = operation.apply(base, parent_data=base)
+    current = operation.apply(base)
     spec = _manager_replay_file_spec(tmp_path / "source.h5", operation)
     node = _fake_edit_node(spec)
     node.current_source_data = lambda: current
@@ -573,7 +574,7 @@ def test_manager_affine_coord_edit_accept_still_replays_for_validation(
         scale=2.0,
         offset=0.5,
     )
-    current = operation.apply(base, parent_data=base)
+    current = operation.apply(base)
     spec = _manager_replay_file_spec(tmp_path / "source.h5", operation)
     node = _fake_edit_node(spec)
     node.current_source_data = lambda: current
@@ -816,7 +817,7 @@ def test_manager_terminal_current_data_edit_falls_back_to_replay(
             operation,
             TransposeOperation(dims=("eV", "x")),
         )
-        current_data = operation.apply(replay_data, parent_data=replay_data).transpose(
+        current_data = operation.apply(replay_data).transpose(
             "eV",
             "x",
         )
@@ -833,7 +834,7 @@ def test_manager_terminal_current_data_edit_falls_back_to_replay(
             direction="negative",
         )
         operations = (operation,)
-        current_data = operation.apply(replay_data, parent_data=replay_data)
+        current_data = operation.apply(replay_data)
         dialog_cls = imagetool_dialogs.LeadingEdgeDialog
 
     spec = _manager_replay_file_spec(tmp_path / "source.h5", *operations)
@@ -1100,6 +1101,58 @@ def test_manager_provenance_validation_preserves_active_filter_with_one_replay(
     assert edit.filter_operation == filter_operation
 
 
+def test_manager_provenance_validation_rejects_highdim_reorder_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+    )
+    expand = ScriptCodeOperation(
+        label="Expand dimensions",
+        code="derived = derived.expand_dims(a=2, b=2, c=2)",
+    )
+    reduce = ScriptCodeOperation(
+        label="Reduce added dimensions",
+        code=(
+            "derived = derived.mean([dim for dim in ('a', 'b', 'c') "
+            "if dim in derived.dims])"
+        ),
+    )
+    original = script(
+        expand,
+        reduce,
+        start_label="Start from source",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+    reordered = original.model_copy(update={"steps": tuple(reversed(original.steps))})
+    manager = types.SimpleNamespace(
+        _ensure_script_provenance_trusted=lambda *_args, **_kwargs: None,
+    )
+    controller = provenance_edit_controller._ProvenanceEditController(
+        typing.cast("typing.Any", manager)
+    )
+    node = types.SimpleNamespace(
+        imagetool=None,
+        resolved_replay_source_data=lambda: source,
+    )
+    applied_edits: list[typing.Any] = []
+    monkeypatch.setattr(controller, "_apply_validated_edit", applied_edits.append)
+
+    with pytest.raises(
+        provenance_edit_controller._ProvenanceReplayFailure,
+        match="validating the replayed ImageTool data",
+    ):
+        controller._validate_and_replace(
+            typing.cast("typing.Any", node),
+            "display",
+            reordered,
+            where="validating the reordered provenance",
+        )
+    assert applied_edits == []
+
+
 def test_manager_provenance_filter_validation_uses_live_slicer_result() -> None:
     controller = _fake_edit_controller(_fake_edit_node(full_data()))
     data = xr.DataArray([1.0, 2.0], dims=("x",))
@@ -1181,7 +1234,9 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
         parent_uid="parent",
         source_display_spec=selection(),
     )
-    replaced: list[tuple[xr.DataArray, ToolProvenanceSpec, bool, bool]] = []
+    replaced: list[
+        tuple[xr.DataArray, ToolProvenanceSpec, bool, xr.DataArray | None, bool]
+    ] = []
     source_bindings: list[
         tuple[
             ToolProvenanceSpec,
@@ -1190,11 +1245,26 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
             ToolProvenanceSpec,
         ]
     ] = []
-    node._replace_imagetool_data = (
-        lambda data, spec, *, propagate_descendants, preserve_filter: replaced.append(
-            (data, spec, propagate_descendants, preserve_filter)
+
+    def replace_imagetool_data(
+        data,
+        spec,
+        *,
+        propagate_descendants,
+        replay_source_data,
+        preserve_filter,
+    ) -> None:
+        replaced.append(
+            (
+                data,
+                spec,
+                propagate_descendants,
+                replay_source_data,
+                preserve_filter,
+            )
         )
-    )
+
+    node._replace_imagetool_data = replace_imagetool_data
     node.set_source_binding = lambda spec, *, auto_update, state, provenance_spec: (
         source_bindings.append((spec, auto_update, state, provenance_spec))
     )
@@ -1228,7 +1298,7 @@ def test_manager_provenance_edit_controller_live_replay_and_replace() -> None:
             parent_data=parent_data,
         ),
     )
-    assert replaced[-1][2:] == (True, True)
+    assert replaced[-1][2:] == (True, None, True)
 
     with pytest.raises(RuntimeError, match="Live provenance"):
         controller._replay_candidate_result(
@@ -1282,21 +1352,20 @@ def test_manager_provenance_edit_controller_active_filter_refs_and_split() -> No
     ) == _ProvenanceStepRef(
         "operation",
         operation_index=0,
-        stage_index=0,
     )
     base_spec, split_operation = controller._split_active_filter(
         typing.cast("typing.Any", node),
         file_spec,
     )
     assert split_operation == active
-    assert base_spec.replay_stages == ()
+    assert base_spec.steps == ()
 
     script_file_spec = script(
         start_label="Load source",
         seed_code=typing.cast("str", file_spec.seed_code),
         active_name="derived",
         file_load_source=file_spec.file_load_source,
-        replay_stages=file_spec.replay_stages,
+        steps=file_spec.steps,
     )
     assert controller._active_filter_ref(
         typing.cast("typing.Any", node),
@@ -1304,7 +1373,6 @@ def test_manager_provenance_edit_controller_active_filter_refs_and_split() -> No
     ) == _ProvenanceStepRef(
         "operation",
         operation_index=0,
-        stage_index=0,
     )
     base_spec, split_operation = controller._split_active_filter(
         typing.cast("typing.Any", node),
@@ -1312,7 +1380,7 @@ def test_manager_provenance_edit_controller_active_filter_refs_and_split() -> No
     )
     assert split_operation == active
     assert base_spec.kind == "script"
-    assert base_spec.replay_stages == ()
+    assert base_spec.steps == ()
 
     node.slicer_area._accepted_filter_provenance_operation = None
     assert controller._split_active_filter(
@@ -1352,19 +1420,7 @@ def test_tool_provenance_spec_row_reference_helpers_cover_edge_branches() -> Non
     stage_ref = _ProvenanceStepRef(
         "operation",
         operation_index=1,
-        stage_index=0,
     )
     assert file_spec._operation_for_ref(stage_ref) == sel
-    assert (
-        file_spec._operation_for_ref(
-            _ProvenanceStepRef("operation", operation_index=1, stage_index=2)
-        )
-        is None
-    )
-    assert (
-        file_spec._prefix_through_ref(_ProvenanceStepRef("file_load")).replay_stages
-        == ()
-    )
-    assert file_spec._prefix_before_ref(stage_ref).replay_stages[0].operations == (
-        isel,
-    )
+    assert file_spec._prefix_through_ref(_ProvenanceStepRef("file_load")).steps == ()
+    assert file_spec._prefix_before_ref(stage_ref).operations == (isel,)

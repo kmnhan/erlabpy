@@ -148,7 +148,7 @@ class _PendingWorkspacePayloads:
             raise TypeError("Invalid pending filter operation")
         operation = parse_tool_provenance_operation(filter_payload)
         source_shape = tuple(data.sizes[dim] for dim in data.dims)
-        filtered = operation.apply(data, parent_data=data)
+        filtered = operation.apply(data)
         if filtered.ndim != data.ndim or set(filtered.dims) != set(data.dims):
             raise ValueError("Pending filter changed data dimensions")
         expected_shape = tuple(data.sizes[dim] for dim in filtered.dims)
@@ -243,6 +243,7 @@ class _PendingWorkspacePayloads:
                     attrs = ds.attrs
                 data = self._pending_workspace_data_with_saved_dim_order(data, attrs)
                 data = erlab.utils.array._restore_nonuniform_dims(data)
+                data = erlab.utils.array.sort_coord_order(data)
                 additional_info = [f"Added {node.added_time_display}"]
                 try:
                     metadata_data = self._pending_workspace_data_with_loaded_coords(
@@ -781,6 +782,8 @@ class _PendingWorkspacePayloads:
                     kwargs.get("source_state", "fresh"),
                 ),
                 output_id=kwargs.get("output_id"),
+                replay_source_data=kwargs.get("replay_source_data"),
+                replay_source_pending=bool(kwargs.get("replay_source_pending", False)),
                 snapshot_token=kwargs.get("snapshot_token"),
                 source_snapshot_token=kwargs.get("source_snapshot_token"),
                 created_time=kwargs.get("created_time"),
@@ -836,6 +839,8 @@ class _PendingWorkspacePayloads:
                 "_ManagedWindowNode._source_state_type",
                 root_kwargs.get("source_state", "fresh"),
             ),
+            replay_source_data=root_kwargs.get("replay_source_data"),
+            replay_source_pending=bool(root_kwargs.get("replay_source_pending", False)),
             snapshot_token=root_kwargs.get("snapshot_token"),
             source_snapshot_token=root_kwargs.get("source_snapshot_token"),
             created_time=root_kwargs.get("created_time"),
@@ -912,6 +917,9 @@ class _PendingWorkspacePayloads:
                         data = ds[_ITOOL_DATA_NAME].rename(name)
                         node.slicer_area.set_data(data, auto_compute=False)
                         node.slicer_area.state = state
+                    node._restore_replay_source_data(
+                        self._loader._workspace_replay_source_data(ds, uid=node.uid)
+                    )
                     node.clear_pending_workspace_payload()
                     node.update_title()
                     self._loader._sync_materialized_workspace_link_group(node)

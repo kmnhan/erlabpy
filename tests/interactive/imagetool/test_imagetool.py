@@ -446,7 +446,7 @@ def test_tool_output_operation_editors_restore_parameters(qtbot) -> None:
     assert boxcar_dialog.filter_operation() == boxcar_operation
     xr.testing.assert_identical(
         boxcar_dialog.process_data(data),
-        boxcar_operation.apply(data, parent_data=data),
+        boxcar_operation.apply(data),
     )
 
     missing_boxcar_dimension = BoxcarFilterOperation(size={"missing": 3})
@@ -541,7 +541,7 @@ def test_uniform_interpolation_editor_uses_public_nonuniform_dimensions(qtbot) -
     public_data = erlab.utils.array._restore_nonuniform_dims(win.slicer_area.data)
     xr.testing.assert_identical(
         dialog.process_data(public_data),
-        operation.apply(public_data, parent_data=public_data),
+        operation.apply(public_data),
     )
 
 
@@ -568,7 +568,7 @@ def test_boxcar_editor_uses_public_nonuniform_dimensions(qtbot) -> None:
     public_data = erlab.utils.array._restore_nonuniform_dims(win.slicer_area.data)
     xr.testing.assert_identical(
         dialog.process_data(public_data),
-        operation.apply(public_data, parent_data=public_data),
+        operation.apply(public_data),
     )
 
 
@@ -1067,7 +1067,7 @@ def test_itool_dataset_metadata_fields_roundtrip(qtbot, tmp_path: pathlib.Path) 
     data.to_netcdf(file_path, engine="h5netcdf")
 
     operation = NormalizeOperation(dims=("alpha",), mode="min")
-    expected_display = operation.apply(data, parent_data=data)
+    expected_display = operation.apply(data)
     provenance_spec = full_data()
     win = ImageTool(
         data,
@@ -3371,7 +3371,7 @@ def test_prepare_high_dimensional_data_dialog_branches(
 
         @property
         def result_data(self) -> xr.DataArray:
-            return operation.apply(data, parent_data=data)
+            return operation.apply(data)
 
         def source_operations(self) -> list[ToolProvenanceOperation]:
             return [operation]
@@ -3414,7 +3414,7 @@ def test_itool_high_dimensional_data_dialog_branches(
 
         @property
         def result_data(self) -> xr.DataArray:
-            return operation.apply(data, parent_data=data)
+            return operation.apply(data)
 
         def source_operations(self) -> list[ToolProvenanceOperation]:
             return [operation]
@@ -3469,7 +3469,7 @@ def test_show_in_manager_high_dimensional_data_dialog_branches(
 
         @property
         def result_data(self) -> xr.DataArray:
-            return operation.apply(data, parent_data=data)
+            return operation.apply(data)
 
         def source_operations(self) -> list[ToolProvenanceOperation]:
             return [operation]
@@ -3605,12 +3605,7 @@ def test_itool_load(qtbot, monkeypatch, move_and_compare_values, accept_dialog) 
         assert win.provenance_spec is not None
         entries = win.provenance_spec.display_entries()
         assert entries[0].label == "Load data from file 'data.h5'"
-        assert win.provenance_spec.replay_stages is not None
-        assert any(
-            op.op == "qsel_aggregate"
-            for stage in win.provenance_spec.replay_stages
-            for op in stage.operations
-        )
+        assert any(op.op == "qsel_aggregate" for op in win.provenance_spec.operations)
 
         display_code = win.provenance_spec.display_code()
         assert display_code is not None
@@ -3751,7 +3746,7 @@ def test_itool_file_open_reduces_high_dimensional_data_with_provenance(
 
         @property
         def result_data(self) -> xr.DataArray:
-            return operation.apply(self._data, parent_data=self._data)
+            return operation.apply(self._data)
 
         def source_operations(self) -> list[ToolProvenanceOperation]:
             return [operation]
@@ -3784,11 +3779,7 @@ def test_itool_file_open_reduces_high_dimensional_data_with_provenance(
 
     xr.testing.assert_identical(win.slicer_area.data, expected)
     assert win.provenance_spec is not None
-    assert [
-        replay_operation
-        for stage in win.provenance_spec.replay_stages
-        for replay_operation in stage.operations
-    ] == [operation]
+    assert list(win.provenance_spec.operations) == [operation]
 
     replayed = replay_file_provenance(win.provenance_spec)
     xarray.testing.assert_identical(replayed, expected)
@@ -4261,7 +4252,7 @@ def test_itool_save_preserves_filter_state_and_exports_displayed_data(
         dims=("x",),
         mode="min",
     )
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
     win = itool(data, execute=False)
     qtbot.addWidget(win)
     win.slicer_area.apply_filter_operation(operation)
@@ -4337,7 +4328,7 @@ def test_saved_filtered_file_data_reloads_by_reapplying_filter(
     with qtbot.wait_signal(restored.slicer_area.sigDataChanged):
         restored.slicer_area.reload()
 
-    expected = operation.apply(updated, parent_data=updated)
+    expected = operation.apply(updated)
     xarray.testing.assert_identical(restored.slicer_area.data, expected)
 
     restored.close()
@@ -4351,7 +4342,7 @@ def test_filter_state_restore_does_not_emit_edit_signals(qtbot) -> None:
         coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
     )
     operation = GaussianFilterOperation(sigma={"x": 1.0})
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
     source = itool(data, execute=False)
     target = itool(data.copy(deep=True), execute=False)
     qtbot.addWidget(source)
@@ -4699,10 +4690,7 @@ def test_itool_child_tool_source_specs_and_non_source_updates(qtbot) -> None:
         transpose=True, squeeze=True
     )
     assert selection_spec.kind == "selection"
-    assert [op.op for op in selection_spec.operations] == [
-        "sort_coord_order",
-        "transpose",
-    ]
+    assert [op.op for op in selection_spec.operations] == ["transpose"]
 
     win.slicer_area.open_in_meshtool()
     qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
@@ -4725,7 +4713,7 @@ def test_child_tool_from_gaussian_filtered_itool_keeps_display_provenance(
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
     operation = GaussianFilterOperation(sigma={"alpha": 1.0})
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
 
     win = itool(data, execute=False)
     qtbot.addWidget(win)
@@ -4755,7 +4743,7 @@ def test_image_child_from_gaussian_filtered_itool_keeps_display_provenance(
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
     operation = GaussianFilterOperation(sigma={"alpha": 1.0})
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
 
     win = itool(data, execute=False)
     qtbot.addWidget(win)
@@ -8152,7 +8140,7 @@ def test_itool_transform_after_filter_uses_displayed_data_and_provenance(
         dims=("x",),
         mode="min",
     )
-    filtered = filter_operation.apply(data, parent_data=data)
+    filtered = filter_operation.apply(data)
     expected = filtered.qsel.mean("y")
     win = itool(data, execute=False)
     qtbot.addWidget(win)
@@ -8607,8 +8595,6 @@ def test_high_dimensional_reduction_dialog_preview_does_not_apply_operations(
     def _fail_apply(
         self: QSelAggregationOperation,
         _data: xr.DataArray,
-        *,
-        parent_data: xr.DataArray,
     ) -> xr.DataArray:
         calls.append(self)
         raise AssertionError("preview must not apply aggregation")
@@ -8639,11 +8625,9 @@ def test_high_dimensional_reduction_dialog_accept_applies_once(
     def _count_apply(
         self: QSelAggregationOperation,
         data_array: xr.DataArray,
-        *,
-        parent_data: xr.DataArray,
     ) -> xr.DataArray:
         calls.append(self)
-        return original_apply(self, data_array, parent_data=parent_data)
+        return original_apply(self, data_array)
 
     monkeypatch.setattr(QSelAggregationOperation, "apply", _count_apply)
     monkeypatch.setattr(
@@ -12480,8 +12464,8 @@ def test_itool_filter_preview_reject_restores_active_filter(qtbot) -> None:
     )
     first_operation = GaussianFilterOperation(sigma={"x": 0.015})
     second_operation = GaussianFilterOperation(sigma={"x": 0.02})
-    first_expected = first_operation.apply(data, parent_data=data)
-    second_expected = second_operation.apply(data, parent_data=data)
+    first_expected = first_operation.apply(data)
+    second_expected = second_operation.apply(data)
     win = itool(data, execute=False)
     qtbot.addWidget(win)
     win.slicer_area.apply_filter_operation(first_operation)
@@ -12524,7 +12508,7 @@ def test_accepted_filter_displayed_data_uses_materialized_filter(qtbot) -> None:
 
     data.values[:] *= 2.0
 
-    recomputed = operation.apply(data, parent_data=data)
+    recomputed = operation.apply(data)
     assert float(recomputed.values[1, 0]) != float(accepted.values[1, 0])
     xarray.testing.assert_identical(win.slicer_area.data, accepted)
     xarray.testing.assert_identical(win.slicer_area.displayed_data, accepted)
@@ -12554,7 +12538,7 @@ def test_displayed_data_restores_promoted_1d_source(qtbot) -> None:
 
     xarray.testing.assert_identical(
         win.slicer_area.displayed_data,
-        operation.apply(data, parent_data=data),
+        operation.apply(data),
     )
     win.close()
 
@@ -12582,7 +12566,7 @@ def test_displayed_data_restores_squeezed_singleton_source_dims(qtbot) -> None:
 
     xarray.testing.assert_identical(
         win.slicer_area.displayed_data,
-        operation.apply(data, parent_data=data),
+        operation.apply(data),
     )
     win.close()
 
@@ -12608,7 +12592,7 @@ def test_displayed_data_restores_high_dimensional_nonuniform_source(
         },
     )
     operation = BoxcarFilterOperation(size={"sample_temp": 3})
-    expected = operation.apply(data, parent_data=data) if filtered else data
+    expected = operation.apply(data) if filtered else data
     win = ImageTool(data, auto_compute=False)
     qtbot.addWidget(win)
 
@@ -12637,7 +12621,7 @@ def test_filter_helpers_reject_invalid_normalized_results(qtbot, monkeypatch) ->
     qtbot.addWidget(win)
 
     func = win.slicer_area._filter_func_from_operation(operation)
-    xarray.testing.assert_identical(func(data), operation.apply(data, parent_data=data))
+    xarray.testing.assert_identical(func(data), operation.apply(data))
 
     monkeypatch.setattr(
         win.slicer_area,
@@ -12689,7 +12673,7 @@ def test_apply_filter_operation_caches_dask_accepted_filter_lazily(qtbot) -> Non
     assert cached.chunks is not None
     xarray.testing.assert_identical(
         cached.compute(),
-        operation.apply(data, parent_data=data).compute(),
+        operation.apply(data).compute(),
     )
     win.close()
 
@@ -12713,7 +12697,7 @@ def test_compute_chunked_preserves_accepted_filter(qtbot) -> None:
     win.slicer_area._compute_chunked()
 
     loaded = data.compute()
-    expected = operation.apply(loaded, parent_data=loaded)
+    expected = operation.apply(loaded)
     assert win.slicer_area._data.chunks is None
     assert win.slicer_area._accepted_filter_provenance_operation == operation
     xarray.testing.assert_identical(win.slicer_area.data, expected)
@@ -12749,7 +12733,7 @@ def test_itool_reload_reapplies_accepted_filter(qtbot, tmp_path: pathlib.Path) -
     win.slicer_area.sigSourceDataChanged.connect(lambda: source_changed.append(True))
     win.slicer_area.sigSourceDataReplaced.connect(source_replaced.append)
 
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
     xarray.testing.assert_identical(win.slicer_area.data, expected)
     assert win.slicer_area.reloadable
 
@@ -12757,7 +12741,7 @@ def test_itool_reload_reapplies_accepted_filter(qtbot, tmp_path: pathlib.Path) -
     with qtbot.wait_signal(win.slicer_area.sigDataChanged):
         win.slicer_area.reload()
 
-    updated_expected = operation.apply(updated, parent_data=updated)
+    updated_expected = operation.apply(updated)
     xarray.testing.assert_identical(win.slicer_area._data, updated)
     xarray.testing.assert_identical(win.slicer_area.data, updated_expected)
     xarray.testing.assert_identical(win.slicer_area.displayed_data, updated_expected)
@@ -12850,7 +12834,7 @@ def test_itool_filter_accept_and_reset_are_undoable(qtbot, accept_dialog) -> Non
     )
     sigma = 0.015
     operation = GaussianFilterOperation(sigma={"x": sigma})
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 

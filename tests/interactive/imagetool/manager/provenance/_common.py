@@ -253,14 +253,15 @@ def _fake_edit_node(
     parent_uid: str | None = None,
     active_filter: ToolProvenanceOperation | None = None,
 ) -> types.SimpleNamespace:
-    return types.SimpleNamespace(
+    node = types.SimpleNamespace(
         uid=uid,
         display_text=display_text,
         is_imagetool=True,
         imagetool=object(),
         pending_workspace_memory_payload=None,
         parent_uid=parent_uid,
-        detached_live_parent_data=None,
+        replay_source_data=None,
+        has_replay_source=False,
         source_spec=source_spec,
         displayed_provenance_spec=spec,
         displayed_source_spec=source_display_spec,
@@ -270,3 +271,5 @@ def _fake_edit_node(
             _accepted_filter_provenance_operation=active_filter
         ),
     )
+    node.resolved_replay_source_data = lambda: node.replay_source_data
+    return node

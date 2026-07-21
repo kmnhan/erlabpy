@@ -2957,8 +2957,7 @@ def test_figure_composer_source_provenance_helper_edges(qtbot) -> None:
     assert selected_input.label == "display_selected"
     selected_spec = selected_input.parsed_provenance_spec()
     assert selected_spec is not None
-    assert len(selected_spec.replay_stages) == 1
-    assert len(selected_spec.replay_stages[0].operations) == 2
+    assert len(selected_spec.steps) == 2
 
     historical_selected_source = selected_source.model_copy(
         update={"label": "ImageTool 7: gap scan"}
@@ -3912,8 +3911,7 @@ def test_figure_composer_provenance_replays_transitive_selected_source_chain(
     assert script_inputs[0].node_uid is None
     selected_spec = script_inputs[0].parsed_provenance_spec()
     assert selected_spec is not None
-    assert len(selected_spec.replay_stages) == 2
-    assert all(len(stage.operations) == 1 for stage in selected_spec.replay_stages)
+    assert len(selected_spec.steps) == 2
     [dependency] = script_input_dependency_refs(selected_spec)
     assert dependency.node_uid == "base-node"
 

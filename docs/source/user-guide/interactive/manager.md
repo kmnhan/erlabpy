@@ -471,6 +471,8 @@ ImageTool window. You can also copy selected steps, select another ImageTool in 
 manager, and choose {guilabel}`Paste` to apply those steps to that ImageTool's
 current data.
 
+Choose {guilabel}`Reorder Steps…` from the context menu to rearrange recorded steps.
+
 For [watched variables](working-with-notebooks), copied code contains the watched
 variable name. File-backed workflows also include a snippet that loads the data in the
 copied code. Otherwise, you will be prompted to enter the name of the variable to use as

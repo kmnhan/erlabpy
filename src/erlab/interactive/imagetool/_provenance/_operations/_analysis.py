@@ -96,7 +96,7 @@ class RotateOperation(ToolProvenanceOperation):
             "order": self.order,
         }
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.transform.rotate(data, **self.kwargs)
 
     def derivation_label(self) -> str:
@@ -148,7 +148,7 @@ class AverageOperation(ToolProvenanceOperation):
             return cls(dims=typing.cast("tuple[Hashable, ...]", dims))
         return None
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return data.qsel.mean(self.dims)
 
     def derivation_label(self) -> str:
@@ -198,7 +198,7 @@ class QSelAggregationOperation(ToolProvenanceOperation):
             )
         return None
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return typing.cast("xr.DataArray", getattr(data.qsel, self.func)(self.dims))
 
     def derivation_label(self) -> str:
@@ -278,7 +278,7 @@ class InterpolationOperation(ToolProvenanceOperation):
     def decoded_values(self) -> np.ndarray:
         return np.asarray(self._decode_stored_field(self.values))
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return data.interp({self.dim: self.decoded_values}, method=self.method)
 
     def expression_code(
@@ -341,7 +341,7 @@ class UniformInterpolationOperation(ToolProvenanceOperation):
             raise ValueError("uniform interpolation bounds must be finite")
         return np.linspace(float(endpoints[0]), float(endpoints[1]), size)
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return data.interp(
             {
                 dim: self._target_values(data, dim, size)
@@ -411,7 +411,7 @@ class LeadingEdgeOperation(ToolProvenanceOperation):
             "direction": self.direction,
         }
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.interpolate.leading_edge(data, **self.kwargs)
 
     def derivation_label(self) -> str:
@@ -450,7 +450,7 @@ class DivideByCoordOperation(ToolProvenanceOperation):
         coord_name = erlab.interactive.utils._parse_single_arg(self.coord_name)
         return f"{data_name}.coords[{coord_name}]"
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         coord = data.coords[self.coord_name]
         self._raise_if_zero(coord)
         return (data / coord).rename(data.name)
@@ -470,7 +470,7 @@ class GaussianFilterOperation(ToolProvenanceOperation):
     batch_available: typing.ClassVar[bool] = True
     sigma: ProvenanceFloatMapping = pydantic.Field(default_factory=dict)
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.image.gaussian_filter(data, sigma=self.sigma)
 
     def derivation_label(self) -> str:
@@ -516,7 +516,7 @@ class BoxcarFilterOperation(ToolProvenanceOperation):
     def kwargs(self) -> dict[str, typing.Any]:
         return {"size": self.size, "mode": self.mode, "cval": self.cval}
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.image.boxcar_filter(data, **self.kwargs)
 
     def derivation_label(self) -> str:
@@ -546,7 +546,7 @@ class FillNaOperation(ToolProvenanceOperation):
             raise ValueError("fill value must be finite")
         return value
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return data.fillna(self.value)
 
     def derivation_label(self) -> str:
@@ -609,7 +609,7 @@ class ImageDerivativeOperation(ToolProvenanceOperation):
             raise ValueError("a0 must be positive")
         return self
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         function = getattr(erlab.analysis.image, self.method)
         kwargs = typing.cast("dict[str, typing.Any]", dict(self.kwargs))
         result = function(data, **kwargs)
@@ -726,7 +726,7 @@ class RemoveMeshOperation(ToolProvenanceOperation):
             "method": self.method,
         }
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         corrected, mesh = typing.cast(
             "tuple[xr.DataArray, xr.DataArray]",
             erlab.analysis.mesh.remove_mesh(data, **self.kwargs),
@@ -830,7 +830,7 @@ class NormalizeOperation(ToolProvenanceOperation):
     def _dims_code(dims: tuple[Hashable, ...]) -> str:
         return _format_qsel_dims_arg(dims)
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         if not self.dims:
             return data
 
@@ -956,7 +956,7 @@ class CoarsenOperation(ToolProvenanceOperation):
             "coord_func": self.coord_func,
         }
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         coarsened = data.coarsen(**self.coarsen_kwargs)
         return typing.cast("xr.DataArray", getattr(coarsened, self.reducer)())
 
@@ -1040,7 +1040,7 @@ class ThinOperation(ToolProvenanceOperation):
             return {"mode": self.mode, "factor": int(typing.cast("int", self.factor))}
         return {"mode": self.mode, "factors": self.factors}
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         if self.mode == "global":
             return data.thin(int(typing.cast("int", self.factor)))
         return data.thin(self.factors)
@@ -1091,7 +1091,7 @@ class SymmetrizeOperation(ToolProvenanceOperation):
             "part": self.part,
         }
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.transform.symmetrize(data, **self.kwargs)
 
     def derivation_label(self) -> str:
@@ -1154,7 +1154,7 @@ class SymmetrizeNfoldOperation(ToolProvenanceOperation):
             "order": self.order,
         }
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.transform.symmetrize_nfold(data, **self.kwargs)
 
     def derivation_label(self) -> str:
@@ -1204,7 +1204,7 @@ class CorrectWithEdgeOperation(ToolProvenanceOperation):
     def decoded_edge_fit(self) -> xr.Dataset:
         return typing.cast("xr.Dataset", self._decode_stored_field(self.edge_fit))
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.gold.correct_with_edge(
             data,
             self.decoded_edge_fit,

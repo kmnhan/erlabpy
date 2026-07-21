@@ -298,10 +298,14 @@ def _execute_replay_graph(
                 parent_data,
             )
         elif node.kind == "operation":
-            data = node.payload["operation"].apply(
-                values[node.parents[0]],
-                parent_data=values[node.parents[1]],
-            )
+            operation = node.payload["operation"]
+            if node.payload.get("legacy_parent_context", False):
+                data = operation._apply_schema_v2(
+                    values[node.parents[0]],
+                    parent_data=values[node.parents[1]],
+                )
+            else:
+                data = operation.apply(values[node.parents[0]])
         elif node.kind == "script":
             codes = typing.cast("tuple[str, ...]", node.payload["codes"])
             compiled_codes = tuple(
@@ -436,12 +440,19 @@ def can_reload_without_trust(
     return True
 
 
-def script_provenance_replayable(spec: typing.Any) -> bool:
+def script_provenance_replayable(
+    spec: typing.Any,
+    *,
+    external_input_names: set[str] | None = None,
+) -> bool:
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None:
         return False
     try:
-        _validate_script_provenance(parsed)
+        _validate_script_provenance(
+            parsed,
+            external_input_names=external_input_names,
+        )
     except (ReplayGraphError, TypeError, ValueError):
         return False
     return True

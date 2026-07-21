@@ -18,7 +18,7 @@ set of source forms:
 2. Durable replay specs.
 
    - Use :func:`file_load` for data that can be reloaded from a recorded file source
-     and replayed through structured :class:`ReplayStage` operations.
+     and replayed through an ordered sequence of :class:`ReplayStep` objects.
 
    - Use :func:`script` for console-derived and other multi-input results. Script
      specs may reference any number of :class:`ScriptInput` records. Each input stores
@@ -60,8 +60,8 @@ Adding a new provenance-carrying operation follows the same pattern every time:
    convenience properties for runtime use.
 
 4. Implement :meth:`ToolProvenanceOperation.apply` so it transforms a derived array
-   using the recorded parameters. ``parent_data`` is provided when the operation needs
-   access to parent coordinates or ordering.
+   using only its recorded parameters. Operations are unary so their meaning remains
+   stable when users reorder them.
 
 5. Implement :meth:`ToolProvenanceOperation.expression_code` and
    :meth:`ToolProvenanceOperation.derivation_label` so copied code and manager
@@ -146,6 +146,7 @@ if typing.TYPE_CHECKING:
     from collections.abc import Iterator
 
 _SourceKind: typing.TypeAlias = typing.Literal["full_data", "public_data", "selection"]
+_ReplayInputPolicy: typing.TypeAlias = typing.Literal["current", "restored"]
 ScriptInputDataRole: typing.TypeAlias = typing.Literal["source", "displayed"]
 FileLoadSourceStatus: typing.TypeAlias = typing.Literal[
     "loadable",
@@ -158,9 +159,6 @@ FileLoadSourceStatus: typing.TypeAlias = typing.Literal[
 _DEFAULT_REPLAY_SEED_CODE = "derived = data"
 _PROMOTED_1D_SOURCE_ATTR = "_erlab_promoted_from_1d_source"
 _SORT_COORD_ORDER_DERIVATION_LABEL = "Sort coordinates to parent order"
-_SORT_COORD_ORDER_DERIVATION_CODE = (
-    "derived = erlab.utils.array.sort_coord_order(derived, data.coords.keys())"
-)
 
 
 @dataclass(frozen=True)
@@ -178,7 +176,6 @@ class _ProvenanceStepRef:
 
     kind: typing.Literal["start", "file_load", "operation", "script_input"]
     operation_index: int | None = None
-    stage_index: int | None = None
     script_input_index: int | None = None
 
 
@@ -192,6 +189,41 @@ class _ProvenanceDisplayRow:
     scope: typing.Literal["display", "source"] = "display"
     children: tuple[_ProvenanceDisplayRow, ...] = ()
     script_input_path: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class _ProvenanceReorderBlockRef:
+    """Original operation range represented by one reorder-dialog row."""
+
+    start: int
+    stop: int
+
+
+@dataclass(frozen=True)
+class _ProvenanceReorderBlock:
+    """One atomic provenance block exposed by the reorder dialog."""
+
+    ref: _ProvenanceReorderBlockRef
+    entries: tuple[DerivationEntry, ...]
+    label: str | None = None
+    tooltip: str | None = None
+
+
+@dataclass(frozen=True)
+class _ProvenanceReorderSectionRef:
+    """Contiguous operation range that may be permuted."""
+
+    start: int
+    stop: int
+
+
+@dataclass(frozen=True)
+class _ProvenanceReorderSection:
+    """Movable operation blocks bounded by fixed provenance semantics."""
+
+    ref: _ProvenanceReorderSectionRef
+    label: str
+    blocks: tuple[_ProvenanceReorderBlock, ...]
 
 
 @dataclass(frozen=True)
@@ -256,7 +288,7 @@ class _ProvenanceDisplayContext:
 
     def advance(self, operation: ToolProvenanceOperation) -> _ProvenanceDisplayContext:
         operation_name = getattr(operation, "op", None)
-        if operation_name in {"sort_coord_order", "rename"}:
+        if operation_name == "rename":
             return self
         if operation_name == "source_view":
             if self.dims is not None and (
@@ -387,13 +419,6 @@ def _decode_fit_dataset(value: typing.Any) -> xr.Dataset:
         else value
     )
     return erlab.interactive.utils._deserialize_fit_dataset_blob(payload)
-
-
-def _is_internal_sort_coord_order_entry(entry: DerivationEntry) -> bool:
-    return (
-        entry.label == _SORT_COORD_ORDER_DERIVATION_LABEL
-        and entry.code == _SORT_COORD_ORDER_DERIVATION_CODE
-    )
 
 
 def _is_whole_array_rename_entry(entry: DerivationEntry) -> bool:
@@ -1111,21 +1136,17 @@ class ToolProvenanceOperation(pydantic.BaseModel):
             for key, item in decoded.items()
         }
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         """Apply this operation to the current derived array.
 
         Subclasses that participate in live refresh or executable provenance replay
         should reimplement this method. The implementation must be deterministic for
-        the operation's stored model fields and must not mutate ``data`` or
-        ``parent_data`` in place.
+        the operation's stored model fields and must not mutate ``data`` in place.
 
         Parameters
         ----------
         data
             Array produced by the preceding replay step.
-        parent_data
-            Parent ImageTool data for the enclosing provenance spec. Operations may
-            inspect it for coordinates, dimension order, or metadata.
 
         Returns
         -------
@@ -1136,8 +1157,34 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         -----
         Operations that only emit generated code should set ``live_applicable = False``
         and raise from this method.
+
+        .. versionchanged:: 3.25.0
+           Operations receive only the current derived array. Record every input needed
+           for deterministic replay in the operation model.
         """
         raise NotImplementedError
+
+    def _apply_schema_v2(
+        self,
+        data: xr.DataArray,
+        *,
+        parent_data: xr.DataArray,
+    ) -> xr.DataArray:
+        """Apply an operation deserialized from a schema-v2 parent-data context.
+
+        All current operations are unary and ignore the legacy context. Third-party
+        operation classes written against schema v2 may still implement
+        ``apply(data, *, parent_data)``. Keep that signature adaptation isolated here
+        so normal operation replay remains unary. Remove this method,
+        ``ReplayStep.legacy_context``, and the schema-v2 migration together when old
+        saved workspace support is retired.
+        """
+        if "parent_data" in inspect.signature(self.apply).parameters:
+            # Schema-v2 compatibility shim for operation classes defined outside
+            # ERLab. Do not broaden the current unary apply() contract.
+            legacy_apply = typing.cast("Callable[..., xr.DataArray]", self.apply)
+            return legacy_apply(data, parent_data=parent_data)
+        return self.apply(data)
 
     def derivation_entry(self) -> DerivationEntry:
         """Return the user-visible derivation entry for this operation.
@@ -1752,6 +1799,17 @@ def parse_tool_provenance_operation(
     return operation_type.model_validate(payload)
 
 
+def _is_legacy_coord_order_cleanup(
+    operation: ToolProvenanceOperation,
+) -> bool:
+    """Identify cosmetic coordinate sorting retained only for saved-data parsing."""
+    if _operation_is(operation, "sort_coord_order"):
+        return True
+    return _operation_is(operation, "script_code") and (
+        operation.derivation_entry().label == _SORT_COORD_ORDER_DERIVATION_LABEL
+    )
+
+
 def _normalize_script_code_operations(
     spec: ToolProvenanceSpec,
 ) -> ToolProvenanceSpec:
@@ -1795,7 +1853,16 @@ def _normalize_script_code_operations(
     operations = tuple(normalized_operations)
     if operations == spec.operations:
         return spec
-    return spec.model_copy(update={"operations": operations})
+    if spec.kind in {"script", "file"}:
+        return spec.model_copy(
+            update={
+                "steps": tuple(
+                    step.model_copy(update={"operation": operation})
+                    for step, operation in zip(spec.steps, operations, strict=True)
+                )
+            }
+        )
+    return spec.model_copy(update={"source_operations": operations})
 
 
 class FileDataSelection(pydantic.BaseModel):
@@ -1921,7 +1988,14 @@ class FileReplayCall(pydantic.BaseModel):
 
 
 class ReplayStage(pydantic.BaseModel):
-    """Structured transformation stage replayed against one parent data array."""
+    """Legacy schema-v2 transformation stage.
+
+    New provenance must use :class:`ReplayStep`.  This model remains public only so
+    saved schema-v2 workspaces and callers constructing their old payloads continue to
+    deserialize.  The compatibility conversion is centralized in
+    :meth:`ToolProvenanceSpec._migrate_legacy_replay_shape`; remove this class together
+    with that converter when schema-v2 workspace support is retired.
+    """
 
     source_kind: _SourceKind
     operations: tuple[pydantic.SerializeAsAny[ToolProvenanceOperation], ...] = ()
@@ -1941,17 +2015,24 @@ class ReplayStage(pydantic.BaseModel):
             return ()
         if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
             raise TypeError("Serialized replay stage operations must be a sequence")
-        return tuple(
+        operations = tuple(
             parse_tool_provenance_operation(
                 typing.cast("ToolProvenanceOperation | Mapping[str, typing.Any]", item)
             )
             for item in value
         )
+        return tuple(
+            operation
+            for operation in operations
+            if not _is_legacy_coord_order_cleanup(operation)
+        )
 
     @pydantic.model_validator(mode="after")
     def _validate_live_operations(self) -> typing.Self:
         if any(not operation.live_applicable for operation in self.operations):
-            raise TypeError("file replay stages cannot contain script-only operations")
+            raise TypeError(
+                "legacy replay stages cannot contain script-only operations"
+            )
         return self
 
     @classmethod
@@ -1969,7 +2050,7 @@ class _SourceViewOperation(ToolProvenanceOperation):
     op: typing.Literal["source_view"] = "source_view"
     source_kind: _SourceKind
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return _starting_data_for_source_kind(self.source_kind, data)
 
     def derivation_label(self) -> str:
@@ -1999,6 +2080,170 @@ class _SourceViewOperation(ToolProvenanceOperation):
             output_name=output_name,
             copy_input=True,
         )
+
+
+class _LegacyReplayContext(pydantic.BaseModel):
+    """Schema-v2 parent context retained only for exact legacy operation replay.
+
+    Schema-v2 stage operations shared one ``parent_data`` value, while top-level
+    operations received their own input as ``parent_data``. New operations are
+    self-contained and new replay steps do not populate this model. Keeping the
+    compatibility state on migrated steps makes the removal boundary explicit.
+    """
+
+    index: int
+    input_policy: _ReplayInputPolicy
+
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
+
+
+class ReplayStep(pydantic.BaseModel):
+    """One operation in the canonical ordered durable replay pipeline."""
+
+    operation: pydantic.SerializeAsAny[ToolProvenanceOperation]
+    input_policy: _ReplayInputPolicy | None = None
+    context_names: tuple[str, ...] = pydantic.Field(
+        default=(),
+        exclude_if=lambda value: not value,
+    )
+    legacy_context: _LegacyReplayContext | None = pydantic.Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    model_config = pydantic.ConfigDict(
+        frozen=True,
+        arbitrary_types_allowed=True,
+        extra="forbid",
+    )
+
+    @pydantic.field_validator("operation", mode="before")
+    @classmethod
+    def _validate_operation(cls, value: typing.Any) -> ToolProvenanceOperation:
+        return parse_tool_provenance_operation(value)
+
+    @pydantic.field_validator("context_names", mode="before")
+    @classmethod
+    def _validate_context_names(cls, value: typing.Any) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+            raise TypeError("Replay step context names must be a sequence")
+        names: list[str] = []
+        for item in value:
+            name = _validate_active_name(item)
+            if name is None:
+                raise ValueError("Replay step context names must not be None")
+            if name not in names:
+                names.append(name)
+        return tuple(names)
+
+    @pydantic.model_validator(mode="after")
+    def _validate_step(self) -> typing.Self:
+        if self.input_policy is not None and self.legacy_context is not None:
+            raise ValueError(
+                "Replay steps cannot define both current and legacy input policies"
+            )
+        if self.input_policy is not None and not self.operation.live_applicable:
+            raise TypeError("Source-backed replay steps require live operations")
+        return self
+
+    @classmethod
+    def from_source_spec(cls, source: ToolProvenanceSpec) -> tuple[ReplayStep, ...]:
+        """Lower one live source into independently movable durable steps."""
+        live_source = require_live_source_spec(source)
+        if live_source is None:
+            raise TypeError("source must not be None")
+        input_policy: _ReplayInputPolicy = (
+            "current" if live_source.kind == "full_data" else "restored"
+        )
+        if not live_source.operations:
+            if live_source.kind == "full_data":
+                return ()
+            return (
+                cls(
+                    operation=_SourceViewOperation(
+                        source_kind=typing.cast("_SourceKind", live_source.kind)
+                    ),
+                    input_policy="current",
+                ),
+            )
+        return tuple(
+            cls(operation=operation, input_policy=input_policy)
+            for operation in live_source.operations
+        )
+
+
+def _steps_for_legacy_operations_update(
+    current_steps: Sequence[ReplayStep],
+    operations: Sequence[ToolProvenanceOperation],
+) -> tuple[ReplayStep, ...]:
+    """Translate the schema-v2 operations alias without dropping step metadata.
+
+    Old extensions may insert, remove, replace, or reorder operation objects through
+    ``model_copy(update={"operations": ...})``. Match retained operations by identity
+    and then value, and transfer the remaining step metadata positionally to genuine
+    replacements. New insertions receive a new unannotated step.
+
+    Remove this function with the ``operations`` model-copy alias.
+    """
+    old_steps = tuple(current_steps)
+    new_operations = tuple(operations)
+    old_operation_payloads = tuple(
+        step.operation.model_dump(mode="json") for step in old_steps
+    )
+    new_operation_payloads = tuple(
+        operation.model_dump(mode="json") for operation in new_operations
+    )
+    unmatched_old = list(range(len(old_steps)))
+    matched_old_by_new: dict[int, int] = {}
+
+    for new_index, operation in enumerate(new_operations):
+        for old_index in unmatched_old:
+            if old_steps[old_index].operation is operation:
+                matched_old_by_new[new_index] = old_index
+                unmatched_old.remove(old_index)
+                break
+
+    for new_index, operation_payload in enumerate(new_operation_payloads):
+        if new_index in matched_old_by_new:
+            continue
+        candidates = [
+            old_index
+            for old_index in unmatched_old
+            if old_operation_payloads[old_index] == operation_payload
+        ]
+        if not candidates:
+            continue
+        first = old_steps[candidates[0]]
+        if any(
+            (
+                candidate.input_policy,
+                candidate.context_names,
+                candidate.legacy_context,
+            )
+            != (first.input_policy, first.context_names, first.legacy_context)
+            for candidate in (old_steps[index] for index in candidates[1:])
+        ):
+            raise ValueError(
+                "Cannot match duplicate operations with different replay metadata; "
+                "update `steps` explicitly"
+            )
+        old_index = candidates[0]
+        matched_old_by_new[new_index] = old_index
+        unmatched_old.remove(old_index)
+
+    unmatched_new = [
+        index for index in range(len(new_operations)) if index not in matched_old_by_new
+    ]
+    matched_old_by_new.update(dict(zip(unmatched_new, unmatched_old, strict=False)))
+
+    return tuple(
+        ReplayStep(operation=operation)
+        if (old_index := matched_old_by_new.get(new_index)) is None
+        else old_steps[old_index].model_copy(update={"operation": operation})
+        for new_index, operation in enumerate(new_operations)
+    )
 
 
 class FileLoadSource(pydantic.BaseModel):
@@ -2170,10 +2415,10 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     Live child-tool refresh uses single-parent specs from :func:`full_data`,
     :func:`public_data`, or :func:`selection`. Durable reload and copied code use replay
     specs. The ``kind`` field selects the replay representation, not the user-visible
-    origin: ``file_load_source`` is the file-origin capability, and
-    ``replay_stages`` are structured operations that can be carried by both ``file`` and
-    ``script`` replay specs. ``script`` specs may also include multi-input
-    ``script_inputs`` for console or UI actions that combine several ImageTools.
+    origin: ``file_load_source`` is the file-origin capability, and ``steps`` is the
+    single ordered operation sequence used by both ``file`` and ``script`` replay
+    specs. ``script`` specs may also include multi-input ``script_inputs`` for console
+    or UI actions that combine several ImageTools.
     Deserialize saved payloads with
     :func:`parse_tool_provenance_spec`.
 
@@ -2183,36 +2428,147 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     bindings are converted to source specs once for compatibility.
     """
 
-    schema_version: typing.Literal[2] = 2
+    schema_version: typing.Literal[3] = 3
     kind: typing.Literal["full_data", "public_data", "selection", "script", "file"]
     start_label: str | None = None
     seed_code: str | None = None
     active_name: str | None = None
-    operations: tuple[pydantic.SerializeAsAny[ToolProvenanceOperation], ...] = ()
-    file_load_source: FileLoadSource | None = None
-    replay_stages: tuple[ReplayStage, ...] = ()
-    script_inputs: tuple[ScriptInput, ...] = ()
-    script_context_bindings: tuple[_ScriptContextBinding, ...] = pydantic.Field(
-        default=(),
-        exclude_if=lambda value: not value,
+    source_operations: tuple[pydantic.SerializeAsAny[ToolProvenanceOperation], ...] = (
+        pydantic.Field(
+            default=(),
+            validation_alias=pydantic.AliasChoices("operations", "source_operations"),
+            serialization_alias="operations",
+        )
     )
+    steps: tuple[ReplayStep, ...] = ()
+    file_load_source: FileLoadSource | None = None
+    script_inputs: tuple[ScriptInput, ...] = ()
 
     model_config = pydantic.ConfigDict(
         frozen=True,
         arbitrary_types_allowed=True,
         extra="forbid",
+        serialize_by_alias=True,
     )
 
     @pydantic.model_validator(mode="before")
     @classmethod
     def _validate_serialized_shape(cls, value: typing.Any) -> typing.Any:
-        if (
-            isinstance(value, Mapping)
-            and value.get("kind") == "script"
-            and "active_name" not in value
-        ):
+        if not isinstance(value, Mapping):
+            return value
+        payload = cls._migrate_legacy_replay_shape(value)
+        if payload.get("kind") == "script" and "active_name" not in payload:
             raise ValueError("script provenance specs must define `active_name`")
-        return value
+        return payload
+
+    @staticmethod
+    def _migrate_legacy_replay_shape(
+        value: Mapping[str, typing.Any],
+    ) -> dict[str, typing.Any]:
+        """Convert schema-v1/v2 containers to the flat schema-v3 step sequence.
+
+        This is the sole compatibility boundary for saved replay stages, indexed
+        script context bindings, and operations whose schema-v2 implementation read
+        ``parent_data``. New runtime authoring never creates ``legacy_context`` values.
+        """
+        payload = dict(value)
+        legacy_keys = (
+            "replay_stages" in payload
+            or "script_context_bindings" in payload
+            or (
+                payload.get("kind") in {"script", "file"}
+                and "steps" not in payload
+                and "operations" in payload
+            )
+        )
+        schema_version = payload.get("schema_version", 2 if legacy_keys else 3)
+        if schema_version == 3 and not legacy_keys:
+            return payload
+        if schema_version not in {1, 2, 3}:
+            return payload
+
+        kind = payload.get("kind")
+        raw_operations = payload.get("operations") or ()
+        if kind == "file" and raw_operations:
+            raise ValueError("file provenance specs cannot define operations")
+        raw_bindings = payload.pop("script_context_bindings", ()) or ()
+        bindings_by_index: dict[int, tuple[str, ...]] = {}
+        for raw_binding in raw_bindings:
+            binding = (
+                raw_binding
+                if isinstance(raw_binding, _ScriptContextBinding)
+                else _ScriptContextBinding.model_validate(raw_binding)
+            )
+            existing_names = bindings_by_index.get(binding.operation_index, ())
+            bindings_by_index[binding.operation_index] = tuple(
+                dict.fromkeys((*existing_names, *binding.names))
+            )
+
+        # Schema-v2 ScriptCodeOperation payloads can load names such as
+        # ``parent_data`` from these indexed bindings. Attach the names to the
+        # operation itself so saved scripts retain that behavior without keeping the
+        # old parallel collection in the active model.
+
+        steps: list[dict[str, typing.Any] | ReplayStep] = []
+        raw_stages = payload.pop("replay_stages", ()) or ()
+        if isinstance(raw_stages, (str, bytes)) or not isinstance(raw_stages, Sequence):
+            raise TypeError("Serialized replay stages must be a sequence")
+        for stage_index, raw_stage in enumerate(raw_stages):
+            stage = (
+                raw_stage
+                if isinstance(raw_stage, ReplayStage)
+                else ReplayStage.model_validate(raw_stage)
+            )
+            input_policy: _ReplayInputPolicy = (
+                "current" if stage.source_kind == "full_data" else "restored"
+            )
+            if not stage.operations:
+                if stage.source_kind == "full_data":
+                    continue
+                steps.append(
+                    {
+                        "operation": _SourceViewOperation(
+                            source_kind=stage.source_kind
+                        ),
+                    }
+                )
+                continue
+            steps.extend(
+                {
+                    "operation": operation,
+                    "legacy_context": {
+                        "index": stage_index,
+                        "input_policy": input_policy,
+                    },
+                }
+                for operation in stage.operations
+            )
+
+        if kind in {"script", "file"}:
+            if isinstance(raw_operations, (str, bytes)) or not isinstance(
+                raw_operations, Sequence
+            ):
+                raise TypeError("Serialized provenance operations must be a sequence")
+            for index, raw_operation in enumerate(raw_operations):
+                operation = parse_tool_provenance_operation(raw_operation)
+                step: dict[str, typing.Any] = {
+                    "operation": operation,
+                    "context_names": bindings_by_index.get(index, ()),
+                }
+                if not _operation_is(operation, "script_code"):
+                    # Schema-v2 applied each top-level structured operation with the
+                    # operation input as both ``data`` and ``parent_data``. Retain that
+                    # exact call contract for third-party operation subclasses until
+                    # schema-v2 workspace compatibility is removed.
+                    step["legacy_context"] = {
+                        "index": len(raw_stages) + index,
+                        "input_policy": "current",
+                    }
+                steps.append(step)
+            payload["operations"] = ()
+        payload["steps"] = steps
+        payload["schema_version"] = 3
+        return payload
 
     @pydantic.field_validator("active_name", mode="before")
     @classmethod
@@ -2226,7 +2582,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             return _migrate_legacy_nonuniform_restore_code(value)
         return value
 
-    @pydantic.field_validator("operations", mode="before")
+    @pydantic.field_validator("source_operations", mode="before")
     @classmethod
     def _validate_operations(
         cls, value: typing.Any
@@ -2235,23 +2591,31 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             return ()
         if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
             raise TypeError("Serialized provenance operations must be a sequence")
-        return tuple(
+        operations = tuple(
             parse_tool_provenance_operation(
                 typing.cast("ToolProvenanceOperation | Mapping[str, typing.Any]", item)
             )
             for item in value
         )
+        return tuple(
+            operation
+            for operation in operations
+            if not _is_legacy_coord_order_cleanup(operation)
+        )
 
-    @pydantic.field_validator("replay_stages", mode="before")
+    @pydantic.field_validator("steps", mode="before")
     @classmethod
-    def _validate_replay_stages(cls, value: typing.Any) -> tuple[ReplayStage, ...]:
+    def _validate_steps(cls, value: typing.Any) -> tuple[ReplayStep, ...]:
         if value is None:
             return ()
         if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
-            raise TypeError("Serialized replay stages must be a sequence")
-        return tuple(
-            item if isinstance(item, ReplayStage) else ReplayStage.model_validate(item)
+            raise TypeError("Serialized replay steps must be a sequence")
+        steps = tuple(
+            item if isinstance(item, ReplayStep) else ReplayStep.model_validate(item)
             for item in value
+        )
+        return tuple(
+            step for step in steps if not _is_legacy_coord_order_cleanup(step.operation)
         )
 
     @pydantic.field_validator("script_inputs", mode="before")
@@ -2266,32 +2630,13 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             for item in value
         )
 
-    @pydantic.field_validator("script_context_bindings", mode="before")
-    @classmethod
-    def _validate_script_context_bindings(
-        cls, value: typing.Any
-    ) -> tuple[_ScriptContextBinding, ...]:
-        if value is None:
-            return ()
-        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
-            raise TypeError("Serialized script context bindings must be a sequence")
-        return tuple(
-            item
-            if isinstance(item, _ScriptContextBinding)
-            else _ScriptContextBinding.model_validate(item)
-            for item in value
-        )
-
     @pydantic.model_validator(mode="after")
     def _validate_kind_fields(self) -> typing.Self:
         if self.kind == "script":
             if self.start_label is None:
                 raise ValueError("script provenance specs must define `start_label`")
-            for binding in self.script_context_bindings:
-                if binding.operation_index >= len(self.operations):
-                    raise ValueError(
-                        "script context binding must target an operation boundary"
-                    )
+            if self.source_operations:
+                raise ValueError("script provenance specs must define replay steps")
             return self
         if self.kind == "file":
             if self.start_label is None:
@@ -2304,32 +2649,117 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 raise ValueError("file provenance specs must define `file_load_source`")
             if self.file_load_source.replay_call is None:
                 raise ValueError("file provenance specs must define `replay_call`")
-            if self.operations:
-                raise ValueError("file provenance specs cannot define operations")
-            if self.script_context_bindings:
-                raise ValueError("file provenance specs cannot define script context")
+            if self.source_operations:
+                raise ValueError("file provenance specs must define replay steps")
+            if any(step.context_names for step in self.steps):
+                raise ValueError("file provenance steps cannot define script context")
+            if any(not step.operation.live_applicable for step in self.steps):
+                raise ValueError(
+                    "file provenance steps must contain live-applicable operations"
+                )
             return self
         if (
             self.start_label is not None
             or self.seed_code is not None
             or self.active_name is not None
             or self.file_load_source is not None
-            or self.replay_stages
+            or self.steps
             or self.script_inputs
-            or self.script_context_bindings
         ):
             raise ValueError(
                 "Only script or file provenance specs may define `start_label`, "
-                "`seed_code`, `active_name`, `file_load_source`, `replay_stages`, "
-                "`script_inputs`, or `script_context_bindings`"
+                "`seed_code`, `active_name`, `file_load_source`, `steps`, or "
+                "`script_inputs`"
             )
         return self
+
+    @property
+    def operations(self) -> tuple[ToolProvenanceOperation, ...]:
+        """Return the ordered operations for this live source or durable recipe."""
+        if self.kind in {"script", "file"}:
+            return tuple(step.operation for step in self.steps)
+        return self.source_operations
+
+    @property
+    def script_context_bindings(self) -> tuple[_ScriptContextBinding, ...]:
+        """Compatibility projection of explicit replay-step context names."""
+        if self.kind != "script":
+            return ()
+        return tuple(
+            _ScriptContextBinding(operation_index=index, names=step.context_names)
+            for index, step in enumerate(self.steps)
+            if step.context_names
+        )
 
     @property
     def is_live_source(self) -> bool:
         return self.kind in {"full_data", "public_data", "selection"} and all(
             operation.live_applicable for operation in self.operations
         )
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, typing.Any] | None = None,
+        deep: bool = False,
+    ) -> typing.Self:
+        """Copy while translating the schema-v2 ``operations`` update alias.
+
+        ``BaseModel.model_copy`` does not validate aliases.  Older manager extensions
+        may still update the serialized ``operations`` name directly, so keep this
+        small compatibility translation until schema-v2 extension support is removed.
+        New runtime code updates ``source_operations`` or ``steps`` explicitly.
+        """
+        normalized = dict(update or {})
+        if "replay_stages" in normalized:
+            raw_stages = normalized.pop("replay_stages")
+            top_steps = tuple(
+                step
+                for step in self.steps
+                if step.input_policy is None and step.legacy_context is None
+            )
+            legacy_payload = self._migrate_legacy_replay_shape(
+                {
+                    "schema_version": 2,
+                    "kind": self.kind,
+                    "operations": tuple(step.operation for step in top_steps),
+                    "replay_stages": raw_stages,
+                    "script_context_bindings": tuple(
+                        _ScriptContextBinding(
+                            operation_index=index,
+                            names=step.context_names,
+                        )
+                        for index, step in enumerate(top_steps)
+                        if step.context_names
+                    ),
+                }
+            )
+            normalized["steps"] = tuple(
+                ReplayStep.model_validate(step)
+                for step in legacy_payload.get("steps", ())
+            )
+        if "operations" in normalized:
+            operations = tuple(
+                _require_operation_instance(operation)
+                for operation in normalized.pop("operations")
+            )
+            if self.kind in {"script", "file"}:
+                current_steps = self._validate_steps(
+                    normalized.get("steps", self.steps)
+                )
+                normalized["steps"] = _steps_for_legacy_operations_update(
+                    current_steps,
+                    operations,
+                )
+            else:
+                normalized["source_operations"] = operations
+        if "steps" in normalized:
+            normalized["steps"] = self._validate_steps(normalized["steps"])
+        if "source_operations" in normalized:
+            normalized["source_operations"] = self._validate_operations(
+                normalized["source_operations"]
+            )
+        return super().model_copy(update=normalized, deep=deep)
 
     def append_operations(
         self, *operations: ToolProvenanceOperation
@@ -2341,13 +2771,27 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         this method.
         """
         appended = tuple(_require_operation_instance(op) for op in operations)
-        return self.model_copy(update={"operations": (*self.operations, *appended)})
+        if self.kind in {"script", "file"}:
+            return self.model_copy(
+                update={
+                    "steps": (
+                        *self.steps,
+                        *(ReplayStep(operation=operation) for operation in appended),
+                    )
+                }
+            )
+        return self.model_copy(
+            update={"source_operations": (*self.source_operations, *appended)}
+        )
 
     def drop_trailing_rename(self) -> ToolProvenanceSpec:
-        operations = self.operations
-        if operations and _operation_is(operations[-1], "rename"):
-            operations = operations[:-1]
-        return self.model_copy(update={"operations": operations})
+        if not self.operations or not _operation_is(self.operations[-1], "rename"):
+            return self
+        if self.kind in {"script", "file"}:
+            return self.model_copy(update={"steps": self.steps[:-1]})
+        return self.model_copy(
+            update={"source_operations": self.source_operations[:-1]}
+        )
 
     def append_replacement_operations(
         self, *operations: ToolProvenanceOperation
@@ -2365,7 +2809,13 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         operations = self.operations
         if operations and _operation_is(operations[-1], "rename"):
             return self.model_copy(
-                update={"operations": (*operations[:-1], operation, operations[-1])}
+                update={
+                    "source_operations": (
+                        *operations[:-1],
+                        operation,
+                        operations[-1],
+                    )
+                }
             )
         return self.append_operations(operation)
 
@@ -2375,25 +2825,20 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         )
 
     def append_replay_stage(self, source: ToolProvenanceSpec) -> ToolProvenanceSpec:
-        """Append one live-source transformation stage to replay provenance."""
+        """Compatibility alias for appending a live source as flat replay steps."""
         if self.kind not in {"file", "script"}:
-            raise TypeError("Replay stages can only be appended to replay provenance")
-        stage = ReplayStage.from_source_spec(source)
-        return self.model_copy(update={"replay_stages": (*self.replay_stages, stage)})
+            raise TypeError("Replay steps can only be appended to replay provenance")
+        return self.model_copy(
+            update={"steps": (*self.steps, *ReplayStep.from_source_spec(source))}
+        )
 
     def _operation_for_ref(
         self, ref: _ProvenanceStepRef
     ) -> ToolProvenanceOperation | None:
         if ref.kind != "operation" or ref.operation_index is None:
             return None
-        if ref.stage_index is None:
-            if 0 <= ref.operation_index < len(self.operations):
-                return self.operations[ref.operation_index]
-            return None
-        if 0 <= ref.stage_index < len(self.replay_stages):
-            operations = self.replay_stages[ref.stage_index].operations
-            if 0 <= ref.operation_index < len(operations):
-                return operations[ref.operation_index]
+        if 0 <= ref.operation_index < len(self.operations):
+            return self.operations[ref.operation_index]
         return None
 
     def _replace_operation_ref(
@@ -2410,42 +2855,6 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             replacements,
         )
 
-    def _operation_group_range_ref(
-        self,
-        ref: _ProvenanceStepRef,
-        *,
-        kind: str | None = None,
-    ) -> tuple[int, int] | None:
-        if ref.kind != "operation" or ref.operation_index is None:
-            return None
-        if ref.stage_index is None:
-            operations = self.operations
-        elif 0 <= ref.stage_index < len(self.replay_stages):
-            operations = self.replay_stages[ref.stage_index].operations
-        else:
-            return None
-        return operation_group_range(operations, ref.operation_index, kind=kind)
-
-    def _replace_operation_group_ref(
-        self,
-        ref: _ProvenanceStepRef,
-        replacements: Sequence[ToolProvenanceOperation],
-        *,
-        kind: str | None = None,
-    ) -> ToolProvenanceSpec:
-        group = self._operation_group_range_ref(ref, kind=kind)
-        if group is None:
-            raise ValueError("Expected a complete operation group reference")
-        return self._replace_operation_range_ref(ref, group[0], group[1], replacements)
-
-    def _delete_operation_group_ref(
-        self,
-        ref: _ProvenanceStepRef,
-        *,
-        kind: str | None = None,
-    ) -> ToolProvenanceSpec:
-        return self._replace_operation_group_ref(ref, (), kind=kind)
-
     def _replace_operation_range_ref(
         self,
         ref: _ProvenanceStepRef,
@@ -2458,121 +2867,282 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if start < 0 or stop <= start:
             raise ValueError("Expected a non-empty operation range")
         replacement_ops = tuple(_require_operation_instance(op) for op in replacements)
-        if ref.stage_index is None:
-            operations = list(self.operations)
+        if self.kind not in {"script", "file"}:
+            operations = list(self.source_operations)
             operations[start:stop] = replacement_ops
-            updates: dict[str, typing.Any] = {"operations": tuple(operations)}
-            if self.kind == "script" and self.script_context_bindings:
-                operation_count_delta = len(replacement_ops) - (stop - start)
-                script_context_bindings: list[_ScriptContextBinding] = []
-                for binding in self.script_context_bindings:
-                    operation_index = binding.operation_index
-                    if start <= operation_index < stop and not (
-                        operation_index == start and replacement_ops
-                    ):
-                        continue
-                    if operation_index >= stop:
-                        operation_index += operation_count_delta
-                    if operation_index < len(operations):
-                        script_context_bindings.append(
-                            binding.model_copy(
-                                update={"operation_index": operation_index}
-                            )
-                        )
-                updates["script_context_bindings"] = tuple(script_context_bindings)
-            return self.model_copy(update=updates)
+            return self.model_copy(update={"source_operations": tuple(operations)})
 
-        stages = list(self.replay_stages)
-        stage = stages[ref.stage_index]
-        operations = list(stage.operations)
-        operations[start:stop] = replacement_ops
-        stages[ref.stage_index] = stage.model_copy(
-            update={"operations": tuple(operations)}
+        replaced_steps = self.steps[start:stop]
+        first_step = replaced_steps[0]
+        common_input_policy = (
+            first_step.input_policy
+            if all(
+                step.input_policy == first_step.input_policy for step in replaced_steps
+            )
+            else None
         )
-        return self.model_copy(update={"replay_stages": tuple(stages)})
+        common_legacy_context = (
+            first_step.legacy_context
+            if all(
+                step.legacy_context == first_step.legacy_context
+                for step in replaced_steps
+            )
+            else None
+        )
+        replacement_steps = tuple(
+            ReplayStep(
+                operation=operation,
+                input_policy=common_input_policy,
+                context_names=first_step.context_names if index == 0 else (),
+                legacy_context=common_legacy_context,
+            )
+            for index, operation in enumerate(replacement_ops)
+        )
+        steps = list(self.steps)
+        steps[start:stop] = replacement_steps
+        return self.model_copy(update={"steps": tuple(steps)})
+
+    @staticmethod
+    def _operation_is_reorderable(operation: ToolProvenanceOperation) -> bool:
+        if not _operation_is(operation, "script_code"):
+            return operation.live_applicable
+        return bool(
+            getattr(operation, "copyable", False) and getattr(operation, "code", None)
+        )
+
+    @staticmethod
+    def _operation_reorder_entry(
+        operation: ToolProvenanceOperation,
+    ) -> DerivationEntry | None:
+        """Return the stable reorder-dialog entry for one stored operation.
+
+        This intentionally excludes only operations that are structurally internal or
+        explicitly hidden. Context-dependent display cleanup, such as eliding a no-op
+        transpose or squeeze, must not change reorder boundaries.
+        """
+        entry = operation.derivation_entry()
+        if _operation_is(operation, "script_code"):
+            if not getattr(operation, "visible", True):
+                return None
+            if entry.code in {
+                "derived = derived.isel()",
+                "derived = derived.qsel()",
+                "derived = derived.sel()",
+            }:
+                return None
+        elif _operation_is(operation, "qsel", "isel", "sel"):
+            if not getattr(operation, "decoded_kwargs", {}):
+                return None
+        elif _operation_is(operation, "rename", "source_view"):
+            return None
+        return entry
+
+    def _reorderable_operation_blocks(
+        self,
+        *,
+        fixed_refs: Collection[_ProvenanceStepRef] = (),
+    ) -> tuple[_ProvenanceReorderBlock, ...]:
+        """Return the structural atomic operation blocks in the flat recipe.
+
+        Operation identity, grouping, and reorder visibility come directly from the
+        stored provenance. Display streamlining and the hierarchical ``display_rows()``
+        representation are deliberately not part of reorder planning.
+        """
+        fixed_ref_set = set(fixed_refs)
+        operations = self.operations
+        reorder_entries = tuple(
+            self._operation_reorder_entry(operation) for operation in operations
+        )
+        blocks: list[_ProvenanceReorderBlock] = []
+        operation_index = 0
+        while operation_index < len(operations):
+            operation = operations[operation_index]
+            group_range = operation_group_range(operations, operation_index)
+            if operation.group is not None and group_range is None:
+                operation_index += 1
+                continue
+            start, stop = (
+                (operation_index, operation_index + 1)
+                if group_range is None
+                else group_range
+            )
+            operation_index = stop
+            entries = tuple(
+                entry
+                for index in range(start, stop)
+                if (entry := reorder_entries[index]) is not None
+            )
+            if not entries:
+                continue
+            block_refs = {
+                _ProvenanceStepRef("operation", operation_index=index)
+                for index in range(start, stop)
+            }
+            if block_refs & fixed_ref_set or any(
+                not self._operation_is_reorderable(item)
+                for item in operations[start:stop]
+            ):
+                continue
+            blocks.append(
+                _ProvenanceReorderBlock(
+                    _ProvenanceReorderBlockRef(start, stop),
+                    entries,
+                )
+            )
+        return tuple(blocks)
+
+    def _reorder_sections(
+        self,
+        *,
+        fixed_refs: Collection[_ProvenanceStepRef] = (),
+    ) -> tuple[_ProvenanceReorderSection, ...]:
+        """Return contiguous flat operation sections safe to permute."""
+        segments: list[list[_ProvenanceReorderBlock]] = []
+        for block in self._reorderable_operation_blocks(fixed_refs=fixed_refs):
+            if not segments or segments[-1][-1].ref.stop != block.ref.start:
+                segments.append([block])
+            else:
+                segments[-1].append(block)
+        movable_segments = [segment for segment in segments if len(segment) >= 2]
+        return tuple(
+            _ProvenanceReorderSection(
+                ref=_ProvenanceReorderSectionRef(
+                    segment[0].ref.start,
+                    segment[-1].ref.stop,
+                ),
+                label=(
+                    "Steps"
+                    if len(movable_segments) == 1
+                    else f"Steps — section {segment_index}"
+                ),
+                blocks=tuple(segment),
+            )
+            for segment_index, segment in enumerate(movable_segments, start=1)
+        )
+
+    def _reorder_operation_blocks(
+        self,
+        sections: Sequence[_ProvenanceReorderSection],
+        orders: Mapping[
+            _ProvenanceReorderSectionRef,
+            Sequence[_ProvenanceReorderBlockRef],
+        ],
+    ) -> ToolProvenanceSpec:
+        """Return a validated spec with allowed provenance blocks permuted."""
+        expected_section_refs = tuple(section.ref for section in sections)
+        if len(set(expected_section_refs)) != len(expected_section_refs):
+            raise ValueError("Provenance reorder sections must be unique")
+        if set(orders) != set(expected_section_refs):
+            raise ValueError("Provenance reorder plan does not match its sections")
+
+        allowed_block_refs = {
+            block.ref for block in self._reorderable_operation_blocks()
+        }
+        index_order = list(range(len(self.operations)))
+        occupied_ranges: list[tuple[int, int]] = []
+        for section in sections:
+            section_ref = section.ref
+            if not (0 <= section_ref.start < section_ref.stop <= len(self.operations)):
+                raise ValueError("Provenance reorder section is out of range")
+            if any(
+                section_ref.start < stop and start < section_ref.stop
+                for start, stop in occupied_ranges
+            ):
+                raise ValueError("Provenance reorder sections must not overlap")
+            occupied_ranges.append((section_ref.start, section_ref.stop))
+
+            expected_blocks = tuple(block.ref for block in section.blocks)
+            if not set(expected_blocks) <= allowed_block_refs:
+                raise ValueError(
+                    "Provenance reorder blocks must represent movable displayed steps"
+                )
+            cursor = section_ref.start
+            for block_ref in expected_blocks:
+                if (
+                    block_ref.start != cursor
+                    or not block_ref.start < block_ref.stop <= section_ref.stop
+                ):
+                    raise ValueError(
+                        "Provenance reorder blocks must partition their section"
+                    )
+                operation = self.operations[block_ref.start]
+                group_range = operation_group_range(
+                    self.operations,
+                    block_ref.start,
+                )
+                if operation.group is None:
+                    if block_ref.stop != block_ref.start + 1:
+                        raise ValueError(
+                            "Ungrouped provenance blocks must contain one operation"
+                        )
+                elif group_range != (block_ref.start, block_ref.stop):
+                    raise ValueError(
+                        "Grouped provenance blocks must contain the complete group"
+                    )
+                cursor = block_ref.stop
+            if cursor != section_ref.stop or len(set(expected_blocks)) != len(
+                expected_blocks
+            ):
+                raise ValueError(
+                    "Provenance reorder blocks must partition their section"
+                )
+
+            requested_blocks = tuple(orders[section_ref])
+            if len(requested_blocks) != len(expected_blocks) or set(
+                requested_blocks
+            ) != set(expected_blocks):
+                raise ValueError(
+                    "Provenance reorder plan must contain every block exactly once"
+                )
+            index_order[section_ref.start : section_ref.stop] = [
+                index
+                for block_ref in requested_blocks
+                for index in range(block_ref.start, block_ref.stop)
+            ]
+
+        if self.kind in {"script", "file"}:
+            candidate = self.model_copy(
+                update={"steps": tuple(self.steps[index] for index in index_order)}
+            )
+        else:
+            candidate = self.model_copy(
+                update={
+                    "source_operations": tuple(
+                        self.source_operations[index] for index in index_order
+                    )
+                }
+            )
+        return type(self).model_validate(candidate.model_dump(mode="python"))
 
     def _prefix_through_ref(self, ref: _ProvenanceStepRef) -> ToolProvenanceSpec:
         """Return a spec replaying through the referenced displayed row."""
         if ref.kind in {"start", "file_load"}:
-            if self.kind == "file":
-                return self.model_copy(update={"replay_stages": ()})
+            if self.kind in {"file", "script"}:
+                updates: dict[str, typing.Any] = {"steps": ()}
+                if output_name := self._script_seed_output_name():
+                    updates["active_name"] = output_name
+                return self.model_copy(update=updates)
             if self.kind in {"full_data", "public_data", "selection"}:
-                return self.model_copy(update={"operations": ()})
-            start_updates: dict[str, typing.Any] = {
-                "operations": (),
-                "replay_stages": (),
-                "script_context_bindings": (),
-            }
-            if output_name := self._script_seed_output_name():
-                start_updates["active_name"] = output_name
-            return self.model_copy(update=start_updates)
+                return self.model_copy(update={"source_operations": ()})
 
         if ref.kind != "operation" or ref.operation_index is None:
             raise ValueError("This provenance row cannot be replayed as a prefix")
-
         end = ref.operation_index + 1
-        if ref.stage_index is None:
-            operation_updates: dict[str, typing.Any] = {
-                "operations": self.operations[:end]
-            }
-            if self.kind == "script" and self.script_context_bindings:
-                operation_updates["script_context_bindings"] = tuple(
-                    binding
-                    for binding in self.script_context_bindings
-                    if binding.operation_index < end
-                )
-            return self.model_copy(update=operation_updates)
-
-        stages = list(self.replay_stages[: ref.stage_index])
-        stage = self.replay_stages[ref.stage_index]
-        stages.append(stage.model_copy(update={"operations": stage.operations[:end]}))
-        stage_updates: dict[str, typing.Any] = {"replay_stages": tuple(stages)}
-        if self.kind == "script":
-            stage_updates.update(
-                {
-                    "operations": (),
-                    "script_context_bindings": (),
-                }
-            )
-            if output_name := self._script_seed_output_name():
-                stage_updates["active_name"] = output_name
-        return self.model_copy(update=stage_updates)
+        if self.kind in {"script", "file"}:
+            return self.model_copy(update={"steps": self.steps[:end]})
+        return self.model_copy(
+            update={"source_operations": self.source_operations[:end]}
+        )
 
     def _prefix_before_ref(self, ref: _ProvenanceStepRef) -> ToolProvenanceSpec:
         """Return a spec replaying to the input of the referenced operation row."""
         if ref.kind != "operation" or ref.operation_index is None:
             return self._prefix_through_ref(ref)
-
-        if ref.stage_index is None:
-            before_operation_updates: dict[str, typing.Any] = {
-                "operations": self.operations[: ref.operation_index]
-            }
-            if self.kind == "script" and self.script_context_bindings:
-                before_operation_updates["script_context_bindings"] = tuple(
-                    binding
-                    for binding in self.script_context_bindings
-                    if binding.operation_index < ref.operation_index
-                )
-            return self.model_copy(update=before_operation_updates)
-
-        stages = list(self.replay_stages[: ref.stage_index])
-        stage = self.replay_stages[ref.stage_index]
-        stages.append(
-            stage.model_copy(
-                update={"operations": stage.operations[: ref.operation_index]}
-            )
+        if self.kind in {"script", "file"}:
+            return self.model_copy(update={"steps": self.steps[: ref.operation_index]})
+        return self.model_copy(
+            update={"source_operations": self.source_operations[: ref.operation_index]}
         )
-        before_stage_updates: dict[str, typing.Any] = {"replay_stages": tuple(stages)}
-        if self.kind == "script":
-            before_stage_updates.update(
-                {
-                    "operations": (),
-                    "script_context_bindings": (),
-                }
-            )
-            if output_name := self._script_seed_output_name():
-                before_stage_updates["active_name"] = output_name
-        return self.model_copy(update=before_stage_updates)
 
     def _script_seed_output_name(self) -> str | None:
         """Return the variable produced by this script spec's seed code."""
@@ -2649,23 +3219,18 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             if _operation_is(operation, "script_code"):
                 entry = operation.derivation_entry()
                 hide_operation = (
-                    (
-                        not getattr(operation, "visible", True)
-                        and not include_hidden_script_code
-                    )
-                    or entry.code
-                    in {
-                        "derived = derived.isel()",
-                        "derived = derived.qsel()",
-                        "derived = derived.sel()",
-                    }
-                    or _is_internal_sort_coord_order_entry(entry)
-                )
+                    not getattr(operation, "visible", True)
+                    and not include_hidden_script_code
+                ) or entry.code in {
+                    "derived = derived.isel()",
+                    "derived = derived.qsel()",
+                    "derived = derived.sel()",
+                }
             # Rule 1: drop empty selection operations.
             elif _operation_is(operation, "qsel", "isel", "sel"):
                 hide_operation = not getattr(operation, "decoded_kwargs", {})
-            # Rule 2: hide internal coordinate-order normalization.
-            elif _operation_is(operation, "sort_coord_order", "source_view"):
+            # Rule 2: hide source-view compatibility operations.
+            elif _operation_is(operation, "source_view"):
                 hide_operation = True
             # Rule 2c: hide final whole-array name changes unless arbitrary script code
             # follows and may observe the DataArray name.
@@ -2748,7 +3313,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             seed_code=_default_seed_code_for_operations(self.operations),
             active_name="derived",
             file_load_source=self.file_load_source,
-            operations=self.operations,
+            steps=ReplayStep.from_source_spec(self),
         )
 
     def apply(self, parent_data: xr.DataArray) -> xr.DataArray:
@@ -2761,7 +3326,12 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             parent_data,
         )
         for operation in self.operations:
-            data = operation.apply(data, parent_data=parent_data)
+            data = operation._apply_schema_v2(data, parent_data=parent_data)
+        if self.kind == "selection":
+            # Coordinate dictionary order is presentation state, not a replay step.
+            # Normalize it once at the live selection boundary so it cannot split or
+            # constrain the operation sequence shown in the reorder dialog.
+            data = erlab.utils.array.sort_coord_order(data, parent_data.coords.keys())
         return data
 
     def derivation_entries(self) -> list[DerivationEntry]:
@@ -2775,31 +3345,17 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 )
                 for script_input in self.script_inputs
             )
-        operations: Sequence[ToolProvenanceOperation]
-        if self.kind == "file":
-            operations = tuple(
-                operation
-                for stage in self.replay_stages
-                for operation in stage.operations
-            )
-        elif self.kind == "script":
-            operations = (
-                *(
-                    operation
-                    for stage in self.replay_stages
-                    for operation in stage.operations
-                ),
-                *self.operations,
-            )
-        else:
-            operations = self.operations
-        for operation in operations:
+        for operation in self.operations:
             entry = operation.derivation_entry()
             entries.append(entry)
         return entries
 
-    def _script_graph_code(self, *, display: bool) -> str | None:
-        if not self.operations and not self.replay_stages:
+    def _graph_code(self, *, display: bool) -> str | None:
+        if self.kind not in {"script", "file"} or not self.operations:
+            return None
+        if self.kind == "file" and not any(
+            _operation_is(operation, "source_view") for operation in self.operations
+        ):
             return None
         from erlab.interactive.imagetool._provenance._graph import (
             ReplayGraphError,
@@ -2842,23 +3398,12 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             for script_input in self.script_inputs
         )
 
-        stage_parent_data = parent_data
-        for stage in self.replay_stages:
-            entries.extend(
-                operation.derivation_entry()
-                for _, operation in self._streamlined_operation_refs(
-                    stage.source_kind,
-                    stage.operations,
-                    parent_data=stage_parent_data,
-                )
-            )
-            stage_parent_data = None
-
         entries.extend(
             operation.derivation_entry()
             for _, operation in self._streamlined_operation_refs(
                 "full_data",
                 self.operations,
+                parent_data=parent_data,
                 include_hidden_script_code=True,
             )
         )
@@ -2866,9 +3411,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
     def derivation_code(self) -> str | None:
         prefix: str | None = None
-        if self.kind == "script" and (
-            graph_code := self._script_graph_code(display=True)
-        ):
+        if graph_code := self._graph_code(display=True):
             return graph_code
         if self.kind in {"script", "file"}:
             prefix = self.seed_code
@@ -2964,26 +3507,6 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                         ),
                     )
                 )
-            stage_parent_data = parent_data
-            for stage_index, stage in enumerate(self.replay_stages):
-                for operation_index, operation in self._streamlined_operation_refs(
-                    stage.source_kind,
-                    stage.operations,
-                    parent_data=stage_parent_data,
-                ):
-                    step_ref = _ProvenanceStepRef(
-                        "operation",
-                        operation_index=operation_index,
-                        stage_index=stage_index,
-                    )
-                    rows.append(
-                        _ProvenanceDisplayRow(
-                            operation.derivation_entry(),
-                            edit_ref=step_ref,
-                            replay_ref=step_ref,
-                        )
-                    )
-                stage_parent_data = None
             rows.extend(
                 _ProvenanceDisplayRow(
                     operation.derivation_entry(),
@@ -3011,26 +3534,22 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             )
             return scoped_rows(rows)
         if self.kind == "file":
-            stage_parent_data = parent_data
-            for stage_index, stage in enumerate(self.replay_stages):
+            rows.extend(
+                _ProvenanceDisplayRow(
+                    operation.derivation_entry(),
+                    edit_ref=_ProvenanceStepRef(
+                        "operation", operation_index=operation_index
+                    ),
+                    replay_ref=_ProvenanceStepRef(
+                        "operation", operation_index=operation_index
+                    ),
+                )
                 for operation_index, operation in self._streamlined_operation_refs(
-                    stage.source_kind,
-                    stage.operations,
-                    parent_data=stage_parent_data,
-                ):
-                    step_ref = _ProvenanceStepRef(
-                        "operation",
-                        operation_index=operation_index,
-                        stage_index=stage_index,
-                    )
-                    rows.append(
-                        _ProvenanceDisplayRow(
-                            operation.derivation_entry(),
-                            edit_ref=step_ref,
-                            replay_ref=step_ref,
-                        )
-                    )
-                stage_parent_data = None
+                    "full_data",
+                    self.operations,
+                    parent_data=parent_data,
+                )
+            )
             return scoped_rows(rows)
 
         rows.extend(
@@ -3064,9 +3583,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         no-op and normalization steps from copied provenance code.
         """
         prefix: str | None = None
-        if self.kind == "script" and (
-            graph_code := self._script_graph_code(display=True)
-        ):
+        if graph_code := self._graph_code(display=True):
             return graph_code
         if self.kind in {"script", "file"}:
             prefix = self.seed_code
@@ -3107,9 +3624,6 @@ def parse_tool_provenance_spec(
         return None
     if isinstance(value, ToolProvenanceSpec):
         return value
-    if value.get("schema_version") == 1:
-        value = dict(value)
-        value["schema_version"] = 2
     return _normalize_script_code_operations(ToolProvenanceSpec.model_validate(value))
 
 
@@ -3128,23 +3642,11 @@ def iter_operation_refs(
     spec = parse_tool_provenance_spec(value)
     if spec is None:
         return
-    if spec.kind in {"file", "script"}:
-        for stage_index, stage in enumerate(spec.replay_stages):
-            for operation_index, operation in enumerate(stage.operations):
-                yield (
-                    _ProvenanceStepRef(
-                        "operation",
-                        operation_index=operation_index,
-                        stage_index=stage_index,
-                    ),
-                    operation,
-                )
-    if spec.kind in {"full_data", "public_data", "selection", "script"}:
-        for operation_index, operation in enumerate(spec.operations):
-            yield (
-                _ProvenanceStepRef("operation", operation_index=operation_index),
-                operation,
-            )
+    for operation_index, operation in enumerate(spec.operations):
+        yield (
+            _ProvenanceStepRef("operation", operation_index=operation_index),
+            operation,
+        )
 
 
 def script_input_dependency_refs(
@@ -3264,8 +3766,6 @@ def compose_display_provenance(
                 if getattr(operation, "decoded_kwargs", {}):
                     break
                 continue
-            if _operation_is(operation, "sort_coord_order"):
-                continue
             if (
                 _operation_is(operation, "squeeze")
                 and getattr(operation, "dims", None) is None
@@ -3293,9 +3793,14 @@ def compose_display_provenance(
     local_spec = ToolProvenanceSpec(
         kind="script",
         start_label=source._start_entry().label,
-        seed_code=_default_seed_code_for_operations(display_operations),
+        seed_code=_DEFAULT_REPLAY_SEED_CODE,
         active_name="derived",
-        operations=display_operations,
+        # Display provenance is already rooted at the displayed parent expression.
+        # Source restoration belongs to executable full provenance, not this
+        # streamlined projection.
+        steps=tuple(
+            ReplayStep(operation=operation) for operation in display_operations
+        ),
     )
     if parent_spec is None:
         return local_spec
@@ -3318,7 +3823,6 @@ def direct_replay_input_name(
     if (
         spec is None
         or spec.operations
-        or spec.replay_stages
         or spec.script_inputs
         or spec.seed_code is None
         or spec.seed_code == _DEFAULT_REPLAY_SEED_CODE
@@ -3355,6 +3859,37 @@ def direct_replay_input_name(
     return name
 
 
+def _direct_replay_source_name(spec: ToolProvenanceSpec) -> str | None:
+    """Return the external array name used by a direct script replay seed."""
+    if spec.kind != "script" or spec.script_inputs or spec.seed_code is None:
+        return None
+    try:
+        module = ast.parse(spec.seed_code, mode="exec")
+    except SyntaxError:
+        return None
+    if len(module.body) != 1:
+        return None
+    statement = module.body[0]
+    if not (
+        isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and statement.targets[0].id == spec.active_name
+    ):
+        return None
+    value = statement.value
+    if isinstance(value, ast.Name):
+        return value.id
+    if (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "astype"
+        and isinstance(value.func.value, ast.Name)
+    ):
+        return value.func.value.id
+    return None
+
+
 def replay_input_name(
     value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
 ) -> str | None:
@@ -3378,20 +3913,9 @@ def _as_script_replay_spec(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
             seed_code=spec.seed_code,
             active_name=spec.active_name,
             file_load_source=spec.file_load_source,
-            replay_stages=spec.replay_stages,
+            steps=spec.steps,
         )
     return spec.to_replay_spec()
-
-
-def _script_operations_from_replay_stages(
-    replay_stages: Sequence[ReplayStage],
-) -> tuple[ToolProvenanceOperation, ...]:
-    operations: list[ToolProvenanceOperation] = []
-    for stage in replay_stages:
-        if stage.source_kind != "full_data":
-            operations.append(_SourceViewOperation(source_kind=stage.source_kind))
-        operations.extend(stage.operations)
-    return tuple(operations)
 
 
 def compose_full_provenance(
@@ -3416,15 +3940,36 @@ def compose_full_provenance(
         return parent_value.to_replay_spec()
 
     parent_replay = parent_value.to_replay_spec()
-    if parent_replay.kind == "file":
-        with contextlib.suppress(TypeError):
-            local_live = require_live_source_spec(local_value)
-            if local_live is not None:
-                if local_live.kind in {"full_data", "public_data"} and not (
-                    local_live.operations
-                ):
-                    return parent_replay
-                return parent_replay.append_replay_stage(local_live)
+    with contextlib.suppress(TypeError):
+        local_live = require_live_source_spec(local_value)
+        if local_live is not None:
+            if local_live.kind == "full_data" and not local_live.operations:
+                return parent_replay
+            prefix_steps: tuple[ReplayStep, ...] = ()
+            if parent_replay.kind == "script" and parent_replay.active_name not in {
+                None,
+                "derived",
+            }:
+                prefix_steps = (
+                    ReplayStep(
+                        operation=_operation_instance(
+                            "script_code",
+                            label="Use current parent output as the active data",
+                            code=f"derived = {parent_replay.active_name}",
+                            visible=False,
+                        )
+                    ),
+                )
+            return parent_replay.model_copy(
+                update={
+                    "active_name": "derived",
+                    "steps": (
+                        *parent_replay.steps,
+                        *prefix_steps,
+                        *ReplayStep.from_source_spec(local_live),
+                    ),
+                }
+            )
 
     parent_spec = _as_script_replay_spec(parent_replay)
     local_spec = _as_script_replay_spec(local_value.to_replay_spec())
@@ -3437,12 +3982,28 @@ def compose_full_provenance(
         if name not in normalized_context_names:
             normalized_context_names.append(name)
 
-    local_stage_operations = _script_operations_from_replay_stages(
-        local_spec.replay_stages
-    )
-    local_operations = [*local_stage_operations, *local_spec.operations]
-    local_operation_offset = len(parent_spec.operations)
-    inserted_local_operations = 0
+    parent_legacy_indices = [
+        step.legacy_context.index
+        for step in parent_spec.steps
+        if step.legacy_context is not None
+    ]
+    legacy_index_offset = max(parent_legacy_indices, default=-1) + 1
+    local_steps = [
+        (
+            step
+            if step.legacy_context is None
+            else step.model_copy(
+                update={
+                    "legacy_context": step.legacy_context.model_copy(
+                        update={
+                            "index": step.legacy_context.index + legacy_index_offset
+                        }
+                    )
+                }
+            )
+        )
+        for step in local_spec.steps
+    ]
     if local_spec.seed_code:
         seed_code: str | None = local_spec.seed_code
         if seed_code == _DEFAULT_REPLAY_SEED_CODE:
@@ -3452,56 +4013,48 @@ def compose_full_provenance(
             elif parent_input is not None:
                 seed_code = f"derived = {parent_input}"
         if seed_code is not None:
-            local_operations.insert(
+            local_steps.insert(
                 0,
-                _operation_instance(
-                    "script_code",
-                    label=typing.cast("str", local_spec.start_label),
-                    code=seed_code,
-                    visible=False,
+                ReplayStep(
+                    operation=_operation_instance(
+                        "script_code",
+                        label=typing.cast("str", local_spec.start_label),
+                        code=seed_code,
+                        visible=False,
+                    )
                 ),
             )
-            inserted_local_operations = 1
     elif local_spec.active_name == "derived":
         parent_input = replay_input_name(parent_spec)
         if (
             parent_input is not None
             and parent_input != "derived"
             and parent_spec.active_name not in {None, "derived"}
-            and local_operations
+            and local_steps
         ):
-            local_operations.insert(
+            local_steps.insert(
                 0,
-                _operation_instance(
-                    "script_code",
-                    label="Use current parent output as the active data",
-                    code=f"derived = {parent_input}",
-                    visible=False,
+                ReplayStep(
+                    operation=_operation_instance(
+                        "script_code",
+                        label="Use current parent output as the active data",
+                        code=f"derived = {parent_input}",
+                        visible=False,
+                    )
                 ),
             )
-            inserted_local_operations = 1
 
-    script_context_bindings = list(parent_spec.script_context_bindings)
-    if normalized_context_names and local_value.kind == "script" and local_operations:
-        script_context_bindings.append(
-            _ScriptContextBinding(
-                operation_index=local_operation_offset,
-                names=tuple(normalized_context_names),
-            )
-        )
-    script_context_bindings.extend(
-        binding.model_copy(
+    if normalized_context_names and local_value.kind == "script" and local_steps:
+        first_step = local_steps[0]
+        local_steps[0] = first_step.model_copy(
             update={
-                "operation_index": (
-                    local_operation_offset
-                    + inserted_local_operations
-                    + len(local_stage_operations)
-                    + binding.operation_index
+                "context_names": tuple(
+                    dict.fromkeys(
+                        (*normalized_context_names, *first_step.context_names)
+                    )
                 )
             }
         )
-        for binding in local_spec.script_context_bindings
-    )
 
     return ToolProvenanceSpec(
         kind="script",
@@ -3509,10 +4062,8 @@ def compose_full_provenance(
         seed_code=parent_spec.seed_code,
         active_name=local_spec.active_name or parent_spec.active_name,
         file_load_source=parent_spec.file_load_source or local_spec.file_load_source,
-        replay_stages=parent_spec.replay_stages,
         script_inputs=(*parent_spec.script_inputs, *local_spec.script_inputs),
-        operations=(*parent_spec.operations, *local_operations),
-        script_context_bindings=tuple(script_context_bindings),
+        steps=(*parent_spec.steps, *local_steps),
     )
 
 
@@ -3557,19 +4108,29 @@ def script(
     seed_code: str | None = None,
     active_name: str | None = None,
     file_load_source: FileLoadSource | None = None,
+    steps: Sequence[ReplayStep] = (),
     replay_stages: Sequence[ReplayStage] = (),
     script_inputs: Sequence[ScriptInput] = (),
 ) -> ToolProvenanceSpec:
     """Build script provenance from code, structured steps, and named inputs."""
-    return ToolProvenanceSpec(
-        kind="script",
-        start_label=start_label,
-        seed_code=seed_code,
-        active_name=active_name,
-        file_load_source=file_load_source,
-        replay_stages=tuple(replay_stages),
-        script_inputs=tuple(script_inputs),
-    ).append_operations(*operations)
+    if steps and replay_stages:
+        raise ValueError("Use replay steps or legacy replay stages, not both")
+    payload: dict[str, typing.Any] = {
+        "kind": "script",
+        "start_label": start_label,
+        "seed_code": seed_code,
+        "active_name": active_name,
+        "file_load_source": file_load_source,
+        "steps": tuple(steps),
+        "script_inputs": tuple(script_inputs),
+    }
+    if replay_stages:
+        # Constructor-level schema-v2 compatibility. Runtime authoring should pass
+        # ReplayStep objects; remove this branch with ReplayStage support.
+        payload["schema_version"] = 2
+        payload["replay_stages"] = tuple(replay_stages)
+        payload.pop("steps")
+    return ToolProvenanceSpec.model_validate(payload).append_operations(*operations)
 
 
 def file_load(
@@ -3578,14 +4139,23 @@ def file_load(
     seed_code: str,
     file_load_source: FileLoadSource,
     active_name: str = "derived",
+    steps: Sequence[ReplayStep] = (),
     replay_stages: Sequence[ReplayStage] = (),
 ) -> ToolProvenanceSpec:
     """Build structured file-backed provenance for runtime reload."""
-    return ToolProvenanceSpec(
-        kind="file",
-        start_label=start_label,
-        seed_code=seed_code,
-        active_name=active_name,
-        file_load_source=file_load_source,
-        replay_stages=tuple(replay_stages),
-    )
+    if steps and replay_stages:
+        raise ValueError("Use replay steps or legacy replay stages, not both")
+    payload: dict[str, typing.Any] = {
+        "kind": "file",
+        "start_label": start_label,
+        "seed_code": seed_code,
+        "active_name": active_name,
+        "file_load_source": file_load_source,
+        "steps": tuple(steps),
+    }
+    if replay_stages:
+        # Constructor-level schema-v2 compatibility; see script() above.
+        payload["schema_version"] = 2
+        payload["replay_stages"] = tuple(replay_stages)
+        payload.pop("steps")
+    return ToolProvenanceSpec.model_validate(payload)

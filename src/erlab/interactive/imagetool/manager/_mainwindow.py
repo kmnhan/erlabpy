@@ -1000,6 +1000,13 @@ class ImageToolManager(_ImageToolManagerBase):
         self._metadata_edit_step_action.triggered.connect(
             self._edit_selected_derivation_step
         )
+        self._metadata_reorder_steps_action = QtGui.QAction("Reorder Steps…", self)
+        self._metadata_reorder_steps_action.setObjectName(
+            "manager_reorder_provenance_steps_action"
+        )
+        self._metadata_reorder_steps_action.triggered.connect(
+            self._provenance_edit_controller.open_reorder_dialog
+        )
         self._metadata_revert_step_action = QtGui.QAction("Revert to This Step…", self)
         self._metadata_revert_step_action.setObjectName(
             "manager_revert_provenance_step_action"
@@ -2699,6 +2706,8 @@ class ImageToolManager(_ImageToolManagerBase):
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
+        replay_source_data: xr.DataArray | None = None,
+        replay_source_pending: bool = False,
         snapshot_token: str | None = None,
         source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
@@ -2716,6 +2725,8 @@ class ImageToolManager(_ImageToolManagerBase):
             source_auto_update=source_auto_update,
             source_state=source_state,
             output_id=output_id,
+            replay_source_data=replay_source_data,
+            replay_source_pending=replay_source_pending,
             snapshot_token=snapshot_token,
             source_snapshot_token=source_snapshot_token,
             created_time=created_time,
@@ -2785,6 +2796,8 @@ class ImageToolManager(_ImageToolManagerBase):
         source_binding: ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
+        replay_source_data: xr.DataArray | None = None,
+        replay_source_pending: bool = False,
         index: int | None = None,
         snapshot_token: str | None = None,
         source_snapshot_token: str | None = None,
@@ -2836,6 +2849,8 @@ class ImageToolManager(_ImageToolManagerBase):
             source_binding=source_binding,
             source_auto_update=source_auto_update,
             source_state=source_state,
+            replay_source_data=replay_source_data,
+            replay_source_pending=replay_source_pending,
             snapshot_token=snapshot_token,
             source_snapshot_token=source_snapshot_token,
             created_time=created_time,

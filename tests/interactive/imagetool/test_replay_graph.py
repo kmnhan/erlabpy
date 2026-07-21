@@ -442,6 +442,20 @@ class Child(Base, metaclass=data_5):
     with pytest.raises(ReplayGraphError, match="non-replayable"):
         _validate_script_provenance(invalid_stage_spec)
     assert not script_provenance_replayable(None)
+    external_input_spec = script(
+        ScriptCodeOperation(
+            label="Use external input",
+            code="derived = data + 1",
+        ),
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+    assert not script_provenance_replayable(external_input_spec)
+    assert script_provenance_replayable(
+        external_input_spec,
+        external_input_names={"data"},
+    )
     assert not _script_provenance_validates(
         script(
             start_label="Run script",
@@ -1175,7 +1189,7 @@ def test_replay_graph_preserves_shared_script_input_identity(
     xr.testing.assert_identical(expected, source)
 
 
-def test_replay_graph_replays_script_with_preserved_file_stage(
+def test_replay_graph_replays_script_with_preserved_file_steps(
     tmp_path: pathlib.Path,
 ) -> None:
     path = tmp_path / "scan.nc"
@@ -1202,15 +1216,11 @@ def test_replay_graph_replays_script_with_preserved_file_stage(
     spec = compose_full_provenance(file_spec, local)
     assert spec is not None
     assert spec.kind == "script"
-    assert len(spec.replay_stages) == 1
-    assert isinstance(spec.replay_stages[0].operations[0], AverageOperation)
+    assert any(isinstance(step.operation, AverageOperation) for step in spec.steps)
 
     replayed = replay_script_provenance(spec, {})
 
-    expected_input = AverageOperation(dims=("x",)).apply(
-        source,
-        parent_data=source,
-    )
+    expected_input = AverageOperation(dims=("x",)).apply(source)
     xr.testing.assert_identical(replayed, expected_input - expected_input.mean())
     code = typing.cast("str", spec.display_code())
     assert code.count("xr.load_dataarray") == 1
@@ -1239,6 +1249,28 @@ def test_replay_graph_display_code_preserves_script_mutation_order() -> None:
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
 
     xr.testing.assert_identical(namespace["derived"], replayed)
+
+
+def test_replay_graph_applies_consecutive_restored_steps_as_one_chain() -> None:
+    data = xr.DataArray(
+        np.arange(20.0).reshape(4, 5),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 0.7, 1.5], "y": np.arange(5)},
+    )
+    source = selection(
+        IselOperation(kwargs={"x": slice(1, None)}),
+        SelOperation(kwargs={"y": slice(1, 3)}),
+    )
+    replay_spec = source.to_replay_spec()
+
+    assert [step.input_policy for step in replay_spec.steps] == [
+        "restored",
+        "restored",
+    ]
+    xr.testing.assert_identical(
+        replay_script_provenance(replay_spec, {"data": data}),
+        source.apply(data),
+    )
 
 
 def test_replay_graph_composes_local_script_stage_after_script_parent() -> None:
@@ -1272,7 +1304,11 @@ def test_replay_graph_composes_local_script_stage_after_script_parent() -> None:
     spec = compose_full_provenance(parent, local)
     assert spec is not None
     assert spec.kind == "script"
-    assert spec.replay_stages == ()
+    assert [operation.op for operation in spec.operations] == [
+        "script_code",
+        "average",
+        "script_code",
+    ]
 
     replayed = replay_script_provenance(spec, {"data": source})
 
@@ -1659,7 +1695,7 @@ def test_replay_graph_keeps_structured_operations_in_opaque_script() -> None:
     )
 
 
-def test_replay_graph_rebases_context_for_inlined_operation() -> None:
+def test_replay_graph_omits_cosmetic_coordinate_sort_operation() -> None:
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
         dims=("x", "y"),
@@ -1678,15 +1714,15 @@ def test_replay_graph_rebases_context_for_inlined_operation() -> None:
     inlined_code = "\n".join(script_nodes[0].payload["codes"])
 
     assert script_provenance_replayable(spec)
-    assert "data.coords" not in inlined_code
-    assert "derived.coords.keys()" in inlined_code
+    assert spec.operations == ()
+    assert "sort_coord_order" not in inlined_code
     xr.testing.assert_identical(
         replay_script_provenance(spec, {"data_0": data}),
-        erlab.utils.array.sort_coord_order(data + 1, (data + 1).coords.keys()),
+        data + 1,
     )
 
 
-def test_replay_graph_rebases_context_in_script_input_code(
+def test_replay_graph_omits_cosmetic_coordinate_sort_from_script_input_code(
     tmp_path: pathlib.Path,
 ) -> None:
     path = tmp_path / "scan.nc"
@@ -1713,14 +1749,10 @@ def test_replay_graph_rebases_context_in_script_input_code(
     graph = compile_replay_graph(spec, display=False)
     code = emit_replay_code(graph, output_name="derived")
 
-    assert "data.coords" not in code
-    assert "tmp.coords.keys()" in code
+    assert "sort_coord_order" not in code
     assert "derived = tmp" not in code
     namespace = _exec_generated_code(code)
-    xr.testing.assert_identical(
-        namespace["derived"],
-        erlab.utils.array.sort_coord_order(data + 1, (data + 1).coords.keys()),
-    )
+    xr.testing.assert_identical(namespace["derived"], data + 1)
 
 
 def test_replay_graph_shares_structured_console_alias_prefixes(

@@ -315,20 +315,6 @@ def _dialog_class_for_operation(
     return _standalone_editor_dialog_class_for_operation_type(type(operation))
 
 
-def _operations_for_ref(
-    spec: ToolProvenanceSpec,
-    ref: _ProvenanceStepRef,
-) -> tuple[ToolProvenanceOperation, ...]:
-    if ref.kind != "operation" or ref.operation_index is None:
-        return ()
-    if ref.stage_index is None:
-        return getattr(spec, "operations", ())
-    replay_stages = getattr(spec, "replay_stages", ())
-    if 0 <= ref.stage_index < len(replay_stages):
-        return replay_stages[ref.stage_index].operations
-    return ()
-
-
 def _dialog_match_for_operation_ref(
     spec: ToolProvenanceSpec,
     ref: _ProvenanceStepRef,
@@ -337,7 +323,7 @@ def _dialog_match_for_operation_ref(
     operation = spec._operation_for_ref(ref)
     if operation is None or ref.operation_index is None:
         return None
-    operations = _operations_for_ref(spec, ref)
+    operations = spec.operations
     if not operations:
         return None
 

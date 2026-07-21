@@ -786,7 +786,7 @@ class _AcquisitionContextController(QtCore.QObject):
                     statuses.append("keep")
                     continue
                 operation = field.operation()
-                operation.apply(data, parent_data=data)
+                operation.apply(data)
                 if field.kind == "attribute":
                     attrs[field.name] = desired
                 else:

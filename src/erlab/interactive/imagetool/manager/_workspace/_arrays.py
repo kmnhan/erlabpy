@@ -824,7 +824,10 @@ def _workspace_h5py_dataset_independent_tool_variable(
 def _workspace_h5py_extra_tool_data_names(
     ds: xr.Dataset, data_name: typing.Hashable
 ) -> frozenset[typing.Hashable]:
-    if data_name != _serialization.SAVED_TOOL_DATA_NAME:
+    if data_name not in {
+        _serialization.ITOOL_DATA_NAME,
+        _serialization.SAVED_TOOL_DATA_NAME,
+    }:
         return frozenset()
     return frozenset(
         name
@@ -887,10 +890,7 @@ def _read_workspace_dataset_group_h5py(
         else:
             return None
 
-        if (
-            preferred_data_name == _serialization.SAVED_TOOL_DATA_NAME
-            and data_name == _serialization.SAVED_TOOL_DATA_NAME
-        ):
+        if preferred_data_name == data_name == _serialization.SAVED_TOOL_DATA_NAME:
             independent_data_vars: dict[typing.Hashable, xr.Variable] = {}
             for variable_name, dataset in datasets.items():
                 variable = _workspace_h5py_dataset_independent_tool_variable(
@@ -1042,10 +1042,10 @@ def _read_workspace_dataset_group_h5py(
                 continue
             data_vars[variable_name] = coord_variable
 
-        if (
-            preferred_data_name == _serialization.SAVED_TOOL_DATA_NAME
-            and data_name == _serialization.SAVED_TOOL_DATA_NAME
-        ):
+        if data_name in {
+            _serialization.ITOOL_DATA_NAME,
+            _serialization.SAVED_TOOL_DATA_NAME,
+        }:
             for variable_name, dataset in datasets.items():
                 if (
                     variable_name == data_name
@@ -1059,7 +1059,9 @@ def _read_workspace_dataset_group_h5py(
                     exclude_attrs=internal_attrs,
                 )
                 if variable is None:
-                    return None
+                    if data_name == _serialization.SAVED_TOOL_DATA_NAME:
+                        return None
+                    continue
                 data_vars[variable_name] = variable
 
         return _serialization.restore_private_coords(

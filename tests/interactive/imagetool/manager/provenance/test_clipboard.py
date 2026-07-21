@@ -633,16 +633,28 @@ def test_manager_paste_detached_steps_uses_replay_spec_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data = _provenance_paste_test_data()
+    replay_source = data.copy(deep=True)
     local = full_data(AverageOperation(dims=("z",)))
     controller = _fake_edit_controller(None, metadata_uid=None)
-    replaced: list[tuple[xr.DataArray, ToolProvenanceSpec, bool]] = []
+    replaced: list[
+        tuple[xr.DataArray, ToolProvenanceSpec, bool, xr.DataArray | None]
+    ] = []
+
+    def _replace_with_detached_data(
+        result: xr.DataArray,
+        spec: ToolProvenanceSpec,
+        *,
+        preserve_filter: bool,
+        replay_source_data: xr.DataArray | None,
+    ) -> None:
+        replaced.append((result, spec, preserve_filter, replay_source_data))
+
     node = types.SimpleNamespace(
         uid="node",
         displayed_provenance_spec=full_data(),
         current_public_data=lambda: data,
-        replace_with_detached_data=lambda data, spec, preserve_filter: replaced.append(
-            (data, spec, preserve_filter)
-        ),
+        resolved_replay_source_data=lambda: replay_source,
+        replace_with_detached_data=_replace_with_detached_data,
     )
     monkeypatch.setattr(
         provenance_edit_controller,
@@ -660,6 +672,7 @@ def test_manager_paste_detached_steps_uses_replay_spec_fallback(
     xr.testing.assert_identical(replaced[0][0], local.apply(data))
     assert replaced[0][1] == local.to_replay_spec()
     assert replaced[0][2] is False
+    assert replaced[0][3] is replay_source
 
 
 def test_manager_can_delete_row_reports_unavailable_branches(
@@ -668,7 +681,6 @@ def test_manager_can_delete_row_reports_unavailable_branches(
     operation_ref = _ProvenanceStepRef(
         "operation",
         operation_index=0,
-        stage_index=0,
     )
     row = _ProvenanceDisplayRow(
         DerivationEntry("Average", None),
@@ -700,7 +712,6 @@ def test_manager_can_delete_row_reports_unavailable_branches(
         replay_ref=_ProvenanceStepRef(
             "operation",
             operation_index=99,
-            stage_index=0,
         ),
     )
     controller = _fake_edit_controller(
@@ -712,6 +723,12 @@ def test_manager_can_delete_row_reports_unavailable_branches(
 
     broken_script_spec = types.SimpleNamespace(
         kind="script",
+        operations=(
+            ScriptCodeOperation(
+                label="Broken",
+                code="derived = data",
+            ),
+        ),
         _operation_for_ref=lambda _ref: ScriptCodeOperation(
             label="Broken",
             code="derived = data",
@@ -772,7 +789,6 @@ def test_manager_delete_row_error_branches(
         replay_ref=_ProvenanceStepRef(
             "operation",
             operation_index=0,
-            stage_index=0,
         ),
     )
     node = _fake_edit_node(full_data(AverageOperation(dims=("x",))))
@@ -877,7 +893,6 @@ def test_manager_delete_provenance_step_preserves_later_operations(
             _ProvenanceStepRef(
                 "operation",
                 operation_index=0,
-                stage_index=0,
             ),
             (),
         )
@@ -1199,14 +1214,14 @@ def test_manager_paste_steps_starts_from_public_target_data(
     displayed_expected: xr.DataArray
     if case == "nonuniform_attr":
         operations = (AssignAttrsOperation(attrs={"sample": "reference"}),)
-        expected = operations[0].apply(data, parent_data=data)
+        expected = operations[0].apply(data)
     elif case == "nonuniform_transpose":
         operations = (TransposeOperation(dims=("eV", "sample_temp")),)
-        expected = operations[0].apply(data, parent_data=data)
+        expected = operations[0].apply(data)
     elif case == "nonuniform_sort":
         data = data.assign_coords(sample_temp=[25.0, 20.0, 22.0])
         operations = (SortByOperation(variables=("sample_temp",)),)
-        expected = operations[0].apply(data, parent_data=data)
+        expected = operations[0].apply(data)
     elif case == "nonuniform_script":
         operations = (
             ScriptCodeOperation(label="Offset data", code="derived = derived + 1.0"),
@@ -1216,11 +1231,11 @@ def test_manager_paste_steps_starts_from_public_target_data(
     elif case == "promoted_1d":
         data = data.isel(eV=0, drop=True)
         operations = (AssignAttrsOperation(attrs={"sample": "reference"}),)
-        expected = operations[0].apply(data, parent_data=data)
+        expected = operations[0].apply(data)
     else:
         data = data.expand_dims(a=[1.0], b=[2.0], c=[3.0])
         operations = (AssignAttrsOperation(attrs={"sample": "reference"}),)
-        expected = operations[0].apply(data, parent_data=data)
+        expected = operations[0].apply(data)
     displayed_expected = expected.transpose(*data.dims, transpose_coords=True)
 
     with manager_context() as manager:
@@ -1965,7 +1980,7 @@ def test_manager_affine_coord_child_refreshes_from_formula(
             scale=2.0,
             offset=0.5,
         )
-        expected = operation.apply(data, parent_data=data).rename("scan")
+        expected = operation.apply(data).rename("scan")
         xr.testing.assert_identical(child_tool.slicer_area._data, expected)
 
         assert child_node.source_spec is not None
@@ -1983,7 +1998,7 @@ def test_manager_affine_coord_child_refreshes_from_formula(
         assert child_node._update_from_parent_source() is True
         xr.testing.assert_identical(
             child_tool.slicer_area._data.rename(None),
-            operation.apply(updated, parent_data=updated).rename(None),
+            operation.apply(updated).rename(None),
         )
 
 
@@ -2036,7 +2051,7 @@ def test_manager_assign_attrs_child_refreshes_from_operation(
         child_tool = manager.get_imagetool(child_uid)
 
         operation = AssignAttrsOperation(attrs={"source": "new", "flag": True})
-        expected = operation.apply(data, parent_data=data).rename("scan")
+        expected = operation.apply(data).rename("scan")
         xr.testing.assert_identical(child_tool.slicer_area._data, expected)
 
         assert child_node.source_spec is not None
@@ -2053,5 +2068,5 @@ def test_manager_assign_attrs_child_refreshes_from_operation(
         assert child_node._update_from_parent_source() is True
         xr.testing.assert_identical(
             child_tool.slicer_area._data.rename(None),
-            operation.apply(updated, parent_data=updated).rename(None),
+            operation.apply(updated).rename(None),
         )

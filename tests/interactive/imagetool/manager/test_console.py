@@ -405,7 +405,7 @@ def test_manager_console_handles_use_filtered_display_data(
         dims=("x",),
         mode="min",
     )
-    expected = operation.apply(data, parent_data=data)
+    expected = operation.apply(data)
 
     with manager_context() as manager:
         manager.show()
@@ -715,7 +715,7 @@ def test_tool_namespace_set_filtered_data_item_uses_displayed_data(
 ) -> None:
     data = test_data.astype(float)
     operation = GaussianFilterOperation(sigma={data.dims[0]: 1.0})
-    filtered = operation.apply(data, parent_data=data)
+    filtered = operation.apply(data)
 
     with manager_context() as manager:
         manager.show()
@@ -796,7 +796,7 @@ def test_tool_namespace_set_filtered_data_item_updates_child_provenance(
         coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
     )
     operation = GaussianFilterOperation(sigma={"x": 1.0})
-    filtered = operation.apply(data, parent_data=data)
+    filtered = operation.apply(data)
     expected = filtered.copy(deep=True)
     expected[(0, 0)] = -5.0
 
@@ -2438,7 +2438,7 @@ def test_manager_console_derived_reload_reapplies_filter(
         )
 
         raw_expected = updated0 + data1
-        expected = operation.apply(raw_expected, parent_data=raw_expected)
+        expected = operation.apply(raw_expected)
         xr.testing.assert_identical(derived.slicer_area.data, expected)
         xr.testing.assert_identical(derived.slicer_area.displayed_data, expected)
         display_spec = manager._tool_graph.root_wrappers[2].displayed_provenance_spec
@@ -2582,7 +2582,8 @@ def test_manager_concat_can_replace_source_tool_and_preserve_children(
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         old_root_provenance = full_data()
         manager._tool_graph.root_wrappers[0].set_detached_provenance(
-            old_root_provenance
+            old_root_provenance,
+            replay_source_data=None,
         )
         manager.get_imagetool(0).slicer_area.apply_filter_operation(
             operation,
@@ -2861,7 +2862,7 @@ def test_manager_displayed_script_inputs_track_and_reload_filters(
     )
     data1 = data0 + 10.0
     operation = NormalizeOperation(dims=("x",), mode="min")
-    filtered0 = operation.apply(data0, parent_data=data0)
+    filtered0 = operation.apply(data0)
 
     with manager_context() as manager:
         manager.show()
@@ -3404,7 +3405,10 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         manager.show()
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
-        manager._tool_graph.root_wrappers[1].set_detached_provenance(file_spec)
+        manager._tool_graph.root_wrappers[1].set_detached_provenance(
+            file_spec,
+            replay_source_data=None,
+        )
         assert (
             manager._show_multi_input_script_result(
                 data0 - data1,
@@ -3569,8 +3573,14 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
         manager.show()
         itool([left_data, right_data], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
-        manager._tool_graph.root_wrappers[0].set_detached_provenance(left_spec)
-        manager._tool_graph.root_wrappers[1].set_detached_provenance(right_spec)
+        manager._tool_graph.root_wrappers[0].set_detached_provenance(
+            left_spec,
+            replay_source_data=None,
+        )
+        manager._tool_graph.root_wrappers[1].set_detached_provenance(
+            right_spec,
+            replay_source_data=None,
+        )
         assert (
             manager._show_multi_input_script_result(
                 left_data - right_data,
@@ -4240,7 +4250,7 @@ def test_manager_reload_self_replacement_uses_recorded_source(
         itool(data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         wrapper = manager._tool_graph.root_wrappers[0]
-        wrapper.set_detached_provenance(file_spec)
+        wrapper.set_detached_provenance(file_spec, replay_source_data=None)
 
         tools = manager_console.ToolsNamespace(manager)
         tool = tools[0]
@@ -4407,7 +4417,8 @@ def test_manager_reload_data_explains_non_replayable_script_provenance(
                 start_label="Run opaque code",
                 active_name="derived",
                 script_inputs=(manager._script_input_for_node(wrapper),),
-            )
+            ),
+            replay_source_data=None,
         )
 
         manager.tree_view.deselect_all()

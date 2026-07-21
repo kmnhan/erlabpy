@@ -179,6 +179,13 @@ class _WorkspaceSaver:
             ds.attrs.pop("manager_node_note", None)
         persistence = node.persistence_view()
         provenance_spec = persistence.provenance_spec
+        if kind == "imagetool" and persistence.replay_source_data is not None:
+            ds = ds.copy(deep=False)
+            blob_name = workspace_format._WORKSPACE_REPLAY_SOURCE_BLOB_NAME
+            ds[blob_name] = erlab.interactive.utils._tool_data_to_blob(
+                persistence.replay_source_data,
+                blob_name,
+            )
         if provenance_spec is not None:
             ds.attrs["manager_node_provenance_spec"] = json.dumps(
                 provenance_spec.model_dump(mode="json")

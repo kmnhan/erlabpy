@@ -106,6 +106,13 @@ def test_manager_data_watched_update_replaces_existing_tool_source_data(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         tool = manager.get_imagetool(0)
+        wrapper = manager._tool_graph.root_wrappers[0]
+        assert wrapper.replay_source_data is None
+        xr.testing.assert_identical(wrapper.resolved_replay_source_data(), test_data)
+        wrapper.set_detached_provenance(
+            full_data(AverageOperation(dims=("alpha",))),
+            replay_source_data=test_data,
+        )
         updated = test_data.copy(deep=True)
         updated.data = np.asarray(updated.data) * 11
 
@@ -113,6 +120,10 @@ def test_manager_data_watched_update_replaces_existing_tool_source_data(
             manager._data_watched_update("data", "kernel-0", updated)
 
         xr.testing.assert_identical(tool.slicer_area.data, updated)
+        assert wrapper.provenance_spec is not None
+        assert wrapper.provenance_spec.operations == ()
+        assert wrapper.replay_source_data is None
+        xr.testing.assert_identical(wrapper.resolved_replay_source_data(), updated)
 
 
 def test_manager_high_dimensional_watched_data_errors_without_reduction_dialog(
@@ -217,6 +228,8 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
         assert attrs["manager_node_watched_workspace_link_id"] == workspace_link_id
         assert attrs["manager_node_watched_source_label"] == "notebook-a"
         assert attrs["manager_node_watched_source_uid"] == "kernel-a"
+        assert "manager_node_provenance_spec" not in attrs
+        assert "<manager-replay-source-data>" not in tree["0/imagetool"]
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
@@ -235,6 +248,8 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
         assert wrapper._watched_source_label == "notebook-a"
         assert wrapper._watched_source_uid == "kernel-a"
         assert wrapper._watched_connected is False
+        assert wrapper.replay_source_data is None
+        xr.testing.assert_identical(wrapper.resolved_replay_source_data(), test_data)
 
         with qtbot.wait_signal(manager._sigReplyData) as blocker:
             manager._send_watch_info()
@@ -451,7 +466,10 @@ def test_manager_non_watched_full_code_prompts_for_source_variable(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         node = manager._tool_graph.root_wrappers[0]
-        node.set_detached_provenance(full_data(AverageOperation(dims=("alpha",))))
+        node.set_detached_provenance(
+            full_data(AverageOperation(dims=("alpha",))),
+            replay_source_data=None,
+        )
 
         copied: list[str] = []
         prompted: list[str] = []
@@ -497,7 +515,10 @@ def test_manager_non_watched_full_code_prompt_cancel_does_not_copy(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         node = manager._tool_graph.root_wrappers[0]
-        node.set_detached_provenance(full_data(AverageOperation(dims=("alpha",))))
+        node.set_detached_provenance(
+            full_data(AverageOperation(dims=("alpha",))),
+            replay_source_data=None,
+        )
 
         copied: list[str] = []
         monkeypatch.setattr(
@@ -545,7 +566,10 @@ def test_manager_file_backed_full_code_uses_load_code(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         node = manager._tool_graph.root_wrappers[0]
-        node.set_detached_provenance(full_data(AverageOperation(dims=("alpha",))))
+        node.set_detached_provenance(
+            full_data(AverageOperation(dims=("alpha",))),
+            replay_source_data=None,
+        )
 
         copied: list[str] = []
         monkeypatch.setattr(
@@ -645,7 +669,10 @@ def test_manager_file_backed_full_code_prefers_scan_number_loader(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         node = manager._tool_graph.root_wrappers[0]
-        node.set_detached_provenance(full_data(AverageOperation(dims=("alpha",))))
+        node.set_detached_provenance(
+            full_data(AverageOperation(dims=("alpha",))),
+            replay_source_data=None,
+        )
 
         copied: list[str] = []
         monkeypatch.setattr(
@@ -1203,9 +1230,19 @@ def test_manager_duplicate_watched_1d_root_preserves_copy_code_cleanup(
             [data], {}, watched_var=("my_1d", "kernel-0")
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        replay_source = manager._tool_graph.root_wrappers[
+            0
+        ].resolved_replay_source_data()
+        assert replay_source is not None
 
         duplicated = manager.duplicate_imagetool(0)
         assert isinstance(duplicated, int)
+        duplicated_wrapper = manager._tool_graph.root_wrappers[duplicated]
+        assert duplicated_wrapper.replay_source_data is not None
+        xr.testing.assert_identical(
+            duplicated_wrapper.replay_source_data,
+            replay_source,
+        )
 
         parent_tool = manager.get_imagetool(duplicated)
         parent_tool.slicer_area.images[0].open_in_ftool()

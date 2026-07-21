@@ -38,6 +38,7 @@ _WORKSPACE_BACKUP_GROUP_PREFIX = "__itws_backup_"
 _WORKSPACE_TRANSACTION_GROUP_PREFIX = "__itws_txn_"
 _WORKSPACE_ENCODED_ATTRS_ATTR = "_erlab_workspace_encoded_attrs"
 _WORKSPACE_ENCODED_ATTRS_VERSION = 1
+_WORKSPACE_REPLAY_SOURCE_BLOB_NAME = "<manager-replay-source-data>"
 
 
 class WorkspaceLoaderState(pydantic.BaseModel):

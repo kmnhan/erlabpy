@@ -1351,7 +1351,7 @@ def _line_source_expression_and_data(
         data = data[operation.line_y]
     for reduce_operation in _line_reduce_operations(operation):
         code = reduce_operation.expression_code(code)
-        data = reduce_operation.apply(data, parent_data=data)
+        data = reduce_operation.apply(data)
     return code, data
 
 
@@ -1376,7 +1376,7 @@ def _reduced_line_iter_data(
         return line_data
     data = line_data
     for reduce_operation in _line_reduce_operations(operation):
-        data = reduce_operation.apply(data, parent_data=data)
+        data = reduce_operation.apply(data)
     return data
 
 

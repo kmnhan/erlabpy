@@ -98,7 +98,6 @@ class ImageToolSelectionSourceBinding(pydantic.BaseModel):
         if crop_isel_indexers:
             operations.append(IselOperation(kwargs=crop_isel_indexers))
 
-        operations.append(SortCoordOrderOperation())
         if self.transpose_dims is not None:
             operations.append(TransposeOperation(dims=self.transpose_dims))
         if self.squeeze:
@@ -122,7 +121,7 @@ class QSelOperation(ToolProvenanceOperation):
     def decoded_kwargs(self) -> dict[Hashable, typing.Any]:
         return dict(self.kwargs)
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return data.qsel(self.decoded_kwargs)
 
     def derivation_label(self) -> str:
@@ -151,7 +150,7 @@ class IselOperation(ToolProvenanceOperation):
     def decoded_kwargs(self) -> dict[Hashable, typing.Any]:
         return dict(self.kwargs)
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return data.isel(self.decoded_kwargs)
 
     def derivation_label(self) -> str:
@@ -180,7 +179,7 @@ class SelOperation(ToolProvenanceOperation):
     def decoded_kwargs(self) -> dict[Hashable, typing.Any]:
         return dict(self.kwargs)
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return data.sel(self.decoded_kwargs)
 
     def derivation_label(self) -> str:
@@ -193,10 +192,34 @@ class SelOperation(ToolProvenanceOperation):
 
 
 class SortCoordOrderOperation(ToolProvenanceOperation):
-    op: typing.Literal["sort_coord_order"] = "sort_coord_order"
+    """Legacy serialized coordinate-order cleanup.
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
-        return erlab.utils.array.sort_coord_order(data, parent_data.coords.keys())
+    Coordinate order only affects the DataArray representation, so canonical
+    provenance specs discard this operation during validation.  Keep the model
+    registered while schema-v2 workspaces remain supported; remove it together with
+    the schema-v2 provenance migration.
+    """
+
+    op: typing.Literal["sort_coord_order"] = "sort_coord_order"
+    coord_order: NullableProvenanceHashableTuple = None
+
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
+        if self.coord_order is None:
+            raise ValueError(
+                "Legacy sort_coord_order provenance requires its saved parent context"
+            )
+        return erlab.utils.array.sort_coord_order(data, self.coord_order)
+
+    def _apply_schema_v2(
+        self,
+        data: xr.DataArray,
+        *,
+        parent_data: xr.DataArray,
+    ) -> xr.DataArray:
+        """Replay the schema-v2 form that omitted ``coord_order``."""
+        if self.coord_order is None:
+            return erlab.utils.array.sort_coord_order(data, parent_data.coords.keys())
+        return self.apply(data)
 
     def derivation_label(self) -> str:
         return _SORT_COORD_ORDER_DERIVATION_LABEL
@@ -204,6 +227,12 @@ class SortCoordOrderOperation(ToolProvenanceOperation):
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
+        if self.coord_order is not None:
+            return (
+                "erlab.utils.array.sort_coord_order("
+                f"{input_name}, {_format_derivation_value(self.coord_order)})"
+            )
+        # See the schema-v2 compatibility note in apply().
         source_name = input_name if source_name is None else source_name
         return (
             "erlab.utils.array.sort_coord_order("
@@ -259,7 +288,7 @@ class SortByOperation(ToolProvenanceOperation):
             raise TypeError("sortby variables must be coordinate names")
         return typing.cast("tuple[Hashable, ...]", values)
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         variables: Hashable | list[Hashable] = (
             self.variables[0] if len(self.variables) == 1 else list(self.variables)
         )
@@ -285,7 +314,7 @@ class SelectCoordOperation(ToolProvenanceOperation):
     op: typing.Literal["select_coord"] = "select_coord"
     coord_name: ProvenanceHashable
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return data.coords[self.coord_name].copy(deep=False)
 
     def derivation_label(self) -> str:
@@ -324,7 +353,7 @@ class TransposeOperation(ToolProvenanceOperation):
             return cls(dims=tuple(call.args) or None)
         return None
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         if self.dims:
             return data.transpose(*self.dims)
         return data.transpose()
@@ -387,7 +416,7 @@ class SqueezeOperation(ToolProvenanceOperation):
             )
         return None
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         if self.dims is None:
             return data.squeeze(drop=self.drop)
         return data.squeeze(dim=tuple(self.dims), drop=self.drop)
@@ -434,7 +463,7 @@ class RenameOperation(ToolProvenanceOperation):
             return cls(name=call.args[0])
         return None
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return data.rename(self.name)
 
     def derivation_label(self) -> str:
@@ -452,7 +481,7 @@ class RestoreNonuniformDimsOperation(ToolProvenanceOperation):
     batch_available: typing.ClassVar[bool] = True
     dimension_mapping: ProvenanceHashableMapping | None = None
 
-    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.utils.array._restore_nonuniform_dims(data, self.dimension_mapping)
 
     def derivation_label(self) -> str:
