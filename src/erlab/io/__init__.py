@@ -43,6 +43,7 @@ Learn more about loaders in the :ref:`User Guide <loading-arpes-data>`.
    fitsutils
    exampledata
    characterization
+   metadata
 
 .. rubric:: Module Attributes
 

@@ -45,6 +45,9 @@ if typing.TYPE_CHECKING:
     import datetime
     from collections.abc import Callable, Iterator, KeysView, Sequence
 
+    from erlab.io.metadata import SpreadsheetMetadataSource
+    from erlab.io.metadata._core import _SpreadsheetMetadataValues
+
 
 class ValidationWarning(UserWarning):
     """Issued when the loaded data fails validation checks."""
@@ -549,6 +552,9 @@ class LoaderBase(metaclass=_Loader):
         progress: bool = True,
         load_kwargs: dict[str, typing.Any] | None = None,
         loader_extensions: Mapping[str, typing.Any] | None = None,
+        metadata: SpreadsheetMetadataSource | None = None,
+        file_number: int | None = None,
+        _metadata_values: _SpreadsheetMetadataValues | None = None,
         **kwargs,
     ) -> (
         xr.DataArray
@@ -624,6 +630,16 @@ class LoaderBase(metaclass=_Loader):
         loader_extensions
             Temporary extensions to loader attributes, with the same keys accepted by
             :meth:`extend_loader <erlab.io.dataloader.LoaderBase.extend_loader>`.
+        metadata
+            Spreadsheet metadata source used to fill scalar coordinates and attributes.
+            Integer identifiers provide the file number automatically. For paths, the
+            file name without its path or final extension is matched directly and
+            case-sensitively against whitespace-trimmed spreadsheet cells before the
+            loader tries :meth:`infer_index`.
+        file_number
+            Explicit file number used for spreadsheet metadata when `identifier` is a
+            path, bypassing direct file-name matching and inference. This must be
+            omitted for integer identifiers and when `metadata` is not given.
         **kwargs
             Additional keyword arguments are passed to :meth:`identify
             <erlab.io.dataloader.LoaderBase.identify>` and :meth:`load_single
@@ -637,6 +653,10 @@ class LoaderBase(metaclass=_Loader):
         -------
         `xarray.DataArray` or `xarray.Dataset` or `xarray.DataTree`
             The loaded data.
+
+        .. versionchanged:: 3.25.0
+
+           Added spreadsheet metadata enrichment with `metadata` and `file_number`.
 
         Notes
         -----
@@ -693,8 +713,78 @@ class LoaderBase(metaclass=_Loader):
                     parallel=parallel,
                     progress=progress,
                     load_kwargs=load_kwargs,
+                    metadata=metadata,
+                    file_number=file_number,
+                    _metadata_values=_metadata_values,
                     **kwargs,
                 )
+
+        if metadata is None:
+            if file_number is not None:
+                raise ValueError("file_number requires a metadata source")
+        else:
+            from erlab.io.metadata import SpreadsheetMetadataSource
+
+            if _metadata_values is not None:
+                raise RuntimeError("Spreadsheet metadata was resolved more than once")
+            if not isinstance(metadata, SpreadsheetMetadataSource):
+                raise TypeError("metadata must be a SpreadsheetMetadataSource")
+            if isinstance(identifier, int):
+                if file_number is not None:
+                    raise ValueError(
+                        "file_number must be omitted when identifier is an integer"
+                    )
+                metadata_file_number: object = identifier
+                metadata_values = metadata._metadata_for_file_number(
+                    metadata_file_number
+                )
+            elif file_number is not None:
+                metadata_file_number = file_number
+                metadata_values = metadata._metadata_for_file_number(
+                    metadata_file_number
+                )
+            else:
+                metadata_basename = os.path.splitext(
+                    os.path.basename(os.fspath(identifier))
+                )[0]
+
+                def infer_metadata_file_number() -> int | None:
+                    try:
+                        inferred, _ = self.infer_index(metadata_basename)
+                    except NotImplementedError:
+                        return None
+                    return inferred
+
+                metadata_values, metadata_file_number = (
+                    metadata._metadata_for_file_name(
+                        metadata_basename, infer_metadata_file_number
+                    )
+                )
+                if metadata_file_number is None:
+                    raise ValueError(
+                        "file_number is required when loading spreadsheet metadata "
+                        f"because path {identifier!s} did not match a spreadsheet "
+                        f"file name and loader {self.name!r} could not infer an index"
+                    )
+
+            if metadata_values is None:
+                erlab.utils.misc.emit_user_level_warning(
+                    f"No spreadsheet metadata found for file number "
+                    f"{metadata_file_number!r} in {metadata.source_name}"
+                )
+
+            return self.load(
+                identifier,
+                data_dir=data_dir,
+                chunks=chunks,
+                single=single,
+                combine=combine,
+                parallel=parallel,
+                progress=progress,
+                load_kwargs=load_kwargs,
+                _metadata_values=metadata_values,
+                **kwargs,
+            )
 
         if self.always_single:
             single = True
@@ -778,6 +868,7 @@ class LoaderBase(metaclass=_Loader):
                         parallel=parallel,
                         progress=progress,
                         post_process=True,
+                        _metadata_values=_metadata_values,
                         **load_kwargs,
                     )
 
@@ -807,6 +898,7 @@ class LoaderBase(metaclass=_Loader):
                     new_kwargs.setdefault("combine", combine)
                     new_kwargs.setdefault("parallel", parallel)
                     new_kwargs.setdefault("load_kwargs", load_kwargs)
+                    new_kwargs.setdefault("_metadata_values", _metadata_values)
                     try:
                         return self.load(new_identifier, new_dir, **new_kwargs)
                     except Exception:
@@ -827,6 +919,8 @@ class LoaderBase(metaclass=_Loader):
             data = self.load_single(identifier, **load_kwargs)
 
         data = self.post_process_general(data)
+        if _metadata_values is not None:
+            data = _metadata_values.apply(data)
 
         if not self.skip_validate:
             self.validate(data)
@@ -2049,6 +2143,7 @@ class LoaderBase(metaclass=_Loader):
         parallel: bool | None = None,
         progress: bool = True,
         post_process: bool = False,
+        _metadata_values: _SpreadsheetMetadataValues | None = None,
         **kwargs,
     ) -> list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree]:
         """Load from multiple files in parallel.
@@ -2085,7 +2180,12 @@ class LoaderBase(metaclass=_Loader):
         if post_process:
 
             def _load_func(filename):
-                return self.load(filename, single=True, load_kwargs=kwargs)
+                return self.load(
+                    filename,
+                    single=True,
+                    load_kwargs=kwargs,
+                    _metadata_values=_metadata_values,
+                )
 
         else:
 
@@ -2474,6 +2574,8 @@ class LoaderRegistry(metaclass=_ReloadStableMeta):
         progress: bool = True,
         load_kwargs: dict[str, typing.Any] | None = None,
         loader_extensions: Mapping[str, typing.Any] | None = None,
+        metadata: SpreadsheetMetadataSource | None = None,
+        file_number: int | None = None,
         **kwargs,
     ) -> (
         xr.DataArray
@@ -2517,6 +2619,8 @@ class LoaderRegistry(metaclass=_ReloadStableMeta):
             progress=progress,
             load_kwargs=load_kwargs,
             loader_extensions=loader_extensions,
+            metadata=metadata,
+            file_number=file_number,
             **kwargs,
         )
 
