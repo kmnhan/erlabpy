@@ -16,6 +16,7 @@ from erlab.io.dataloader import LoaderBase
 from erlab.io.metadata import (
     ExcelMetadataSource,
     GoogleSheetsMetadataSource,
+    SpreadsheetMetadataError,
     SpreadsheetMetadataSource,
 )
 from erlab.io.metadata import _core as metadata_core
@@ -951,6 +952,26 @@ def test_excel_source_errors(tmp_path: pathlib.Path) -> None:
     with pytest.raises(ValueError, match="Worksheet 'Missing' was not found"):
         source.refresh()
 
+    missing_path = tmp_path / "missing.xlsx"
+    missing_source = ExcelMetadataSource(
+        missing_path,
+        file_name_column="File",
+        coordinate_mapping={"Temperature": "sample_temp"},
+    )
+    with pytest.raises(SpreadsheetMetadataError, match=str(missing_path)) as exc_info:
+        missing_source.refresh()
+    assert isinstance(exc_info.value.__cause__, FileNotFoundError)
+
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.append(["File", "Temperature"])
+    worksheet.append([1, 35.0])
+    workbook.save(missing_path)
+    workbook.close()
+    recovered = missing_source._metadata_for_file_number(1)
+    assert recovered is not None
+    assert recovered.coordinate_values == {"sample_temp": 35.0}
+
 
 def test_excel_optional_dependency_error(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
@@ -1548,7 +1569,7 @@ def test_google_source_http_errors(
         coordinate_mapping={"Energy": "hv"},
     )
 
-    with pytest.raises(RuntimeError, match=match):
+    with pytest.raises(SpreadsheetMetadataError, match=match):
         source.refresh()
 
 

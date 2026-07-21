@@ -9,15 +9,21 @@ mapped to scalar coordinates or attributes on data returned by :func:`erlab.io.l
 .. autosummary::
 
    SpreadsheetMetadataSource
+   SpreadsheetMetadataError
    ExcelMetadataSource
    GoogleSheetsMetadataSource
 """
 
-from erlab.io.metadata._core import ExcelMetadataSource, SpreadsheetMetadataSource
+from erlab.io.metadata._core import (
+    ExcelMetadataSource,
+    SpreadsheetMetadataError,
+    SpreadsheetMetadataSource,
+)
 from erlab.io.metadata._google import GoogleSheetsMetadataSource
 
 __all__ = [
     "ExcelMetadataSource",
     "GoogleSheetsMetadataSource",
+    "SpreadsheetMetadataError",
     "SpreadsheetMetadataSource",
 ]

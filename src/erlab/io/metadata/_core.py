@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-__all__ = ["ExcelMetadataSource", "SpreadsheetMetadataSource"]
+__all__ = [
+    "ExcelMetadataSource",
+    "SpreadsheetMetadataError",
+    "SpreadsheetMetadataSource",
+]
 
 import abc
 import importlib.util
@@ -21,6 +25,22 @@ if typing.TYPE_CHECKING:
     from typing import Any
 
     import xarray as xr
+
+
+class SpreadsheetMetadataError(Exception):
+    """Base class for failures reading a configured spreadsheet source.
+
+    The exception describes one attempted read. It does not invalidate the source, so
+    callers may retry after a temporary network, permission, or filesystem failure.
+    """
+
+
+class _SpreadsheetMetadataAccessError(RuntimeError, SpreadsheetMetadataError):
+    """Raised when spreadsheet content cannot be accessed or decoded."""
+
+
+class _SpreadsheetWorksheetNotFoundError(ValueError, SpreadsheetMetadataError):
+    """Raised when a configured worksheet is no longer available."""
 
 
 def _is_blank(value: object) -> bool:
@@ -941,16 +961,25 @@ class ExcelMetadataSource(SpreadsheetMetadataSource):
             raise ImportError("`openpyxl` needs to be installed to read Excel metadata")
         import openpyxl
 
-        return openpyxl.load_workbook(
-            self.path, read_only=True, data_only=True, keep_links=False
-        )
+        try:
+            return openpyxl.load_workbook(
+                self.path, read_only=True, data_only=True, keep_links=False
+            )
+        except Exception as exc:
+            if isinstance(exc, FileNotFoundError):
+                message = f"Excel metadata workbook was not found: {self.path!s}"
+            elif isinstance(exc, PermissionError):
+                message = f"Excel metadata workbook is not readable: {self.path!s}"
+            else:
+                message = f"Could not read Excel metadata workbook {self.path!s}: {exc}"
+            raise _SpreadsheetMetadataAccessError(message) from exc
 
     def _select_worksheet(self, workbook):
         if self._selected_sheet_name is not None:
             try:
                 return workbook[self._selected_sheet_name]
             except KeyError as exc:
-                raise ValueError(
+                raise _SpreadsheetWorksheetNotFoundError(
                     f"Worksheet {self._selected_sheet_name!r} was not found in "
                     f"{self.path!s}"
                 ) from exc
@@ -962,7 +991,7 @@ class ExcelMetadataSource(SpreadsheetMetadataSource):
             else:
                 worksheet = workbook[sheet_name]
         except (IndexError, KeyError) as exc:
-            raise ValueError(
+            raise _SpreadsheetWorksheetNotFoundError(
                 f"Worksheet {sheet_name!r} was not found in {self.path!s}"
             ) from exc
         self._selected_sheet_name = worksheet.title

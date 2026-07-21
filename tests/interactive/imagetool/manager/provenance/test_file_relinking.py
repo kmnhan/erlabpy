@@ -1605,6 +1605,196 @@ def test_manager_provenance_file_load_batch_replaces_nested_peer_root(
     assert pathlib.Path(edited_peer.file_load_source.path) == new_dir / "peer.h5"
 
 
+@pytest.mark.parametrize(
+    ("action", "configure_result", "expected_attempts", "expected_applied"),
+    [
+        ("retry", False, 2, 1),
+        ("configure", True, 2, 1),
+        ("configure", False, 1, 0),
+        ("cancel", False, 1, 0),
+    ],
+)
+def test_manager_provenance_spreadsheet_failure_is_recoverable_on_demand(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    action: typing.Literal["retry", "configure", "cancel"],
+    configure_result: bool,
+    expected_attempts: int,
+    expected_applied: int,
+) -> None:
+    spec = _manager_replay_file_spec(tmp_path / "scan.h5")
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    source = erlab.io.metadata.ExcelMetadataSource(
+        tmp_path / "metadata.xlsx",
+        sheet_name="Measurements",
+        file_name_column="File",
+        coordinate_mapping={"Temperature": "sample_temp"},
+        row_range=(20, 27),
+    )
+    configure_calls: list[bool] = []
+
+    class _LoaderOptions:
+        def spreadsheet_metadata_source(self):
+            return source
+
+        def configure_spreadsheet_metadata(self, *, load_on_open: bool) -> bool:
+            configure_calls.append(load_on_open)
+            return configure_result
+
+    class _Dialog:
+        loader_options = _LoaderOptions()
+
+        def __init__(self, *_args: typing.Any, **_kwargs: typing.Any) -> None:
+            pass
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        def provenance_spec(self, **_kwargs: typing.Any) -> ToolProvenanceSpec:
+            return spec
+
+        def selected_batch_peers(
+            self,
+        ) -> tuple[provenance_edit_files._FileLoadBatchPeer, ...]:
+            return ()
+
+    validation_attempts = 0
+    applied: list[provenance_edit_controller._ValidatedProvenanceEdit] = []
+
+    def validate(
+        edit_node: object,
+        scope: typing.Literal["display", "source"],
+        candidate: ToolProvenanceSpec,
+        **_kwargs: typing.Any,
+    ) -> provenance_edit_controller._ValidatedProvenanceEdit:
+        nonlocal validation_attempts
+        validation_attempts += 1
+        if validation_attempts == 1:
+            source_error = erlab.io.metadata.SpreadsheetMetadataError(
+                "temporary source failure"
+            )
+            raise provenance_edit_controller._ProvenanceReplayFailure(
+                "validating spreadsheet replay",
+                source_error,
+            ) from source_error
+        return provenance_edit_controller._ValidatedProvenanceEdit(
+            node=typing.cast("typing.Any", edit_node),
+            scope=scope,
+            data=xr.DataArray([1.0], dims=("x",)),
+            spec=candidate,
+            filter_operation=None,
+        )
+
+    monkeypatch.setattr(provenance_edit_controller, "_FileLoadEditDialog", _Dialog)
+    monkeypatch.setattr(controller, "_validated_edit", validate)
+    monkeypatch.setattr(
+        controller,
+        "_prompt_spreadsheet_metadata_recovery",
+        lambda selected_source, _error: (
+            action if selected_source is source else pytest.fail("wrong source")
+        ),
+    )
+    monkeypatch.setattr(controller, "_apply_validated_edit", applied.append)
+
+    controller._edit_file_load_spec(
+        typing.cast("typing.Any", node),
+        "display",
+        spec,
+        where="validating spreadsheet replay",
+    )
+
+    assert validation_attempts == expected_attempts
+    assert len(applied) == expected_applied
+    assert configure_calls == ([False] if action == "configure" else [])
+
+
+@pytest.mark.parametrize("action", ["retry", "configure", "cancel"])
+def test_manager_provenance_spreadsheet_recovery_prompt_actions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    action: typing.Literal["retry", "configure", "cancel"],
+) -> None:
+    real_message_box = QtWidgets.QMessageBox
+    boxes: list[object] = []
+
+    class _Button:
+        def __init__(self) -> None:
+            self.object_name = ""
+
+        def setObjectName(self, name: str) -> None:
+            self.object_name = name
+
+    class _MessageBox:
+        Icon = real_message_box.Icon
+        StandardButton = real_message_box.StandardButton
+        ButtonRole = real_message_box.ButtonRole
+
+        def __init__(self, _parent: object) -> None:
+            self.object_name = ""
+            self.buttons: dict[object, _Button] = {}
+            self.clicked: _Button | None = None
+            boxes.append(self)
+
+        def setObjectName(self, name: str) -> None:
+            self.object_name = name
+
+        def setIcon(self, _icon: object) -> None:
+            pass
+
+        def setWindowTitle(self, _title: str) -> None:
+            pass
+
+        def setText(self, _text: str) -> None:
+            pass
+
+        def setInformativeText(self, _text: str) -> None:
+            pass
+
+        def setDetailedText(self, _text: str) -> None:
+            pass
+
+        def addButton(self, button: object, role: object | None = None) -> _Button:
+            created = _Button()
+            self.buttons["configure" if role is not None else button] = created
+            return created
+
+        def setDefaultButton(self, _button: object) -> None:
+            pass
+
+        def exec(self) -> None:
+            key: object = {
+                "retry": real_message_box.StandardButton.Retry,
+                "configure": "configure",
+                "cancel": real_message_box.StandardButton.Cancel,
+            }[action]
+            self.clicked = self.buttons[key]
+
+        def clickedButton(self) -> _Button | None:
+            return self.clicked
+
+    monkeypatch.setattr(
+        provenance_edit_controller.QtWidgets,
+        "QMessageBox",
+        _MessageBox,
+    )
+    controller = _fake_edit_controller(_fake_edit_node(full_data()))
+    source = erlab.io.metadata.ExcelMetadataSource(tmp_path / "metadata.xlsx")
+
+    result = controller._prompt_spreadsheet_metadata_recovery(
+        source,
+        erlab.io.metadata.SpreadsheetMetadataError("source unavailable"),
+    )
+
+    assert result == action
+    box = typing.cast("typing.Any", boxes[0])
+    assert box.object_name == "managerSpreadsheetMetadataRecoveryDialog"
+    assert (
+        box.buttons["configure"].object_name
+        == "managerSpreadsheetMetadataRecoveryConfigureButton"
+    )
+
+
 def test_manager_provenance_revert_rejects_current_prefixes(
     tmp_path: pathlib.Path,
 ) -> None:

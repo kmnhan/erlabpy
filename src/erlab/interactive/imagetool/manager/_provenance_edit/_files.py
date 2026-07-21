@@ -12,6 +12,7 @@ from qtpy import QtCore, QtWidgets
 import erlab
 import erlab.interactive.utils
 from erlab.interactive.imagetool._load_source import (
+    _deserialize_loader_kwargs,
     _load_provenance_from_file_details,
     _loader_callable_text,
     _migrate_legacy_file_data_selection,
@@ -175,7 +176,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self._initial_kwargs = (
             _parse_loader_kwargs(load_source.kwargs_text)
             if self._replay_call is None
-            else dict(self._replay_call.kwargs)
+            else _deserialize_loader_kwargs(self._replay_call.kwargs)
         )
         loader_extensions = self._initial_kwargs.pop("loader_extensions", None)
         self._initial_loader_extensions = (

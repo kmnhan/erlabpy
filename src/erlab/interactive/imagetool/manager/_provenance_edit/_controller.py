@@ -124,6 +124,31 @@ class _ProvenanceReplayFailure(RuntimeError):
         return _missing_source_file_error_from_exception(self.cause)
 
 
+def _spreadsheet_metadata_error_from_exception(
+    exc: BaseException,
+) -> erlab.io.metadata.SpreadsheetMetadataError | None:
+    seen: set[int] = set()
+
+    def visit(
+        current: BaseException | None,
+    ) -> erlab.io.metadata.SpreadsheetMetadataError | None:
+        if current is None or id(current) in seen:
+            return None
+        seen.add(id(current))
+        if isinstance(current, erlab.io.metadata.SpreadsheetMetadataError):
+            return current
+        for nested in (
+            getattr(current, "cause", None),
+            current.__cause__,
+            current.__context__,
+        ):
+            if isinstance(nested, BaseException) and (error := visit(nested)):
+                return error
+        return None
+
+    return visit(exc)
+
+
 class _ProvenanceEditController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
@@ -1322,74 +1347,99 @@ class _ProvenanceEditController:
         )
         if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
             return
-        candidate = dialog.provenance_spec(
-            active_name=_file_load_edit_active_name(spec),
-            replay_steps=spec.steps,
-        )
-        if spec.kind == "script":
-            candidate = _replace_file_load_fields(spec, candidate)
-        if row is None:
-            edit_candidate = candidate
-        elif root_spec is None:
-            edit_candidate = self._root_candidate_for_row(node, row, candidate)
-        else:
-            edit_candidate = self._replace_script_input_path_spec(
-                root_spec,
-                row.script_input_path,
-                candidate,
+        while True:
+            candidate = dialog.provenance_spec(
+                active_name=_file_load_edit_active_name(spec),
+                replay_steps=spec.steps,
             )
-        peer_edits = [
-            (peer, dialog.peer_provenance_spec(peer))
-            for peer in dialog.selected_batch_peers()
-        ]
-        deferred_peer_edits: list[
-            tuple[
-                _FileLoadBatchPeer,
-                ToolProvenanceSpec,
-            ]
-        ] = []
-        for peer, peer_candidate in peer_edits:
-            if peer.node.uid == node.uid and peer.scope == scope:
-                edit_candidate = self._replace_file_load_target_spec(
-                    edit_candidate,
-                    peer,
-                    peer_candidate,
-                )
+            if spec.kind == "script":
+                candidate = _replace_file_load_fields(spec, candidate)
+            if row is None:
+                edit_candidate = candidate
+            elif root_spec is None:
+                edit_candidate = self._root_candidate_for_row(node, row, candidate)
             else:
-                deferred_peer_edits.append((peer, peer_candidate))
-        validated_edits = [
-            self._validated_edit(node, scope, edit_candidate, where=where),
-        ]
-        failures: list[tuple[_FileLoadBatchPeer, Exception]] = []
-        for peer, peer_candidate in deferred_peer_edits:
-            try:
-                peer_where = (
-                    "validating the edited file-load provenance for "
-                    f"{peer.node.display_text}"
+                edit_candidate = self._replace_script_input_path_spec(
+                    root_spec,
+                    row.script_input_path,
+                    candidate,
                 )
-                if peer.script_input_path:
-                    peer_candidate = self._replace_file_load_target_spec(
-                        self._root_spec_for_batch_peer(peer),
+
+            peer_edits = [
+                (peer, dialog.peer_provenance_spec(peer))
+                for peer in dialog.selected_batch_peers()
+            ]
+            deferred_peer_edits: list[
+                tuple[
+                    _FileLoadBatchPeer,
+                    ToolProvenanceSpec,
+                ]
+            ] = []
+            for peer, peer_candidate in peer_edits:
+                if peer.node.uid == node.uid and peer.scope == scope:
+                    edit_candidate = self._replace_file_load_target_spec(
+                        edit_candidate,
                         peer,
                         peer_candidate,
                     )
-                validated_edits.append(
-                    self._validated_edit(
-                        peer.node,
-                        peer.scope,
-                        peer_candidate,
-                        where=peer_where,
-                    )
-                )
+                else:
+                    deferred_peer_edits.append((peer, peer_candidate))
+
+            try:
+                validated_edits = [
+                    self._validated_edit(node, scope, edit_candidate, where=where),
+                ]
             except Exception as exc:
-                failures.append((peer, exc))
-        if failures and not self._confirm_apply_valid_batch(
-            valid_peer_count=len(validated_edits) - 1,
-            failures=failures,
-        ):
+                spreadsheet_error = _spreadsheet_metadata_error_from_exception(exc)
+                if spreadsheet_error is None:
+                    raise
+                source = dialog.loader_options.spreadsheet_metadata_source()
+                if source is None:
+                    raise
+                action = self._prompt_spreadsheet_metadata_recovery(
+                    source, spreadsheet_error
+                )
+                if action == "retry":
+                    continue
+                if action == "configure" and (
+                    dialog.loader_options.configure_spreadsheet_metadata(
+                        load_on_open=False
+                    )
+                ):
+                    continue
+                return
+
+            failures: list[tuple[_FileLoadBatchPeer, Exception]] = []
+            for peer, peer_candidate in deferred_peer_edits:
+                try:
+                    peer_where = (
+                        "validating the edited file-load provenance for "
+                        f"{peer.node.display_text}"
+                    )
+                    if peer.script_input_path:
+                        peer_candidate = self._replace_file_load_target_spec(
+                            self._root_spec_for_batch_peer(peer),
+                            peer,
+                            peer_candidate,
+                        )
+                    validated_edits.append(
+                        self._validated_edit(
+                            peer.node,
+                            peer.scope,
+                            peer_candidate,
+                            where=peer_where,
+                        )
+                    )
+                except Exception as exc:
+                    failures.append((peer, exc))
+            if failures and not self._confirm_apply_valid_batch(
+                valid_peer_count=len(validated_edits) - 1,
+                failures=failures,
+            ):
+                return
+            for edit in validated_edits:
+                self._apply_validated_edit(edit)
             return
-        for edit in validated_edits:
-            self._apply_validated_edit(edit)
 
     def _edit_operation_row(
         self,
@@ -2137,6 +2187,46 @@ class _ProvenanceEditController:
             icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
         )
         dialog.exec()
+
+    def _prompt_spreadsheet_metadata_recovery(
+        self,
+        source: erlab.io.metadata.SpreadsheetMetadataSource,
+        error: erlab.io.metadata.SpreadsheetMetadataError,
+    ) -> typing.Literal["retry", "configure", "cancel"]:
+        msg_box = QtWidgets.QMessageBox(self._manager)
+        msg_box.setObjectName("managerSpreadsheetMetadataRecoveryDialog")
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle("Spreadsheet Metadata Unavailable")
+        msg_box.setText("Spreadsheet metadata could not be read.")
+        msg_box.setInformativeText(
+            f"{source.source_name}\n\n"
+            "Retry if the failure may be temporary, or configure a replacement "
+            "spreadsheet. The current ImageTool and its saved provenance have not "
+            "been changed."
+        )
+        msg_box.setDetailedText(f"{type(error).__name__}: {error}")
+        retry_button = msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Retry)
+        configure_button = typing.cast(
+            "QtWidgets.QPushButton",
+            msg_box.addButton(
+                "Change Metadata Source…",
+                QtWidgets.QMessageBox.ButtonRole.ActionRole,
+            ),
+        )
+        configure_button.setObjectName(
+            "managerSpreadsheetMetadataRecoveryConfigureButton"
+        )
+        cancel_button = msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        msg_box.setDefaultButton(typing.cast("QtWidgets.QPushButton", retry_button))
+        msg_box.exec()
+        clicked = msg_box.clickedButton()
+        if clicked is retry_button:
+            return "retry"
+        if clicked is configure_button:
+            return "configure"
+        if clicked is cancel_button:
+            return "cancel"
+        return "cancel"
 
     def _show_failed(
         self,

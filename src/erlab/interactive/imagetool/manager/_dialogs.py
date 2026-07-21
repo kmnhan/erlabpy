@@ -1427,20 +1427,37 @@ class _LoaderOptionsWidget(QtWidgets.QWidget):
 
     @QtCore.Slot()
     def _open_spreadsheet_metadata_dialog(self) -> None:
+        self.configure_spreadsheet_metadata()
+
+    def spreadsheet_metadata_source(
+        self,
+    ) -> erlab.io.metadata.SpreadsheetMetadataSource | None:
+        """Return the spreadsheet source for the selected loader, if configured."""
         checked_id = self._button_group.checkedId()
         if checked_id < 0:
-            return
+            return None
+        name_filter = list(self._valid_loaders.keys())[checked_id]
+        return self._spreadsheet_metadata_by_filter.get(name_filter)
+
+    def configure_spreadsheet_metadata(self, *, load_on_open: bool = True) -> bool:
+        """Open spreadsheet configuration, preserving the selected source settings."""
+        checked_id = self._button_group.checkedId()
+        if checked_id < 0:
+            return False
         name_filter = list(self._valid_loaders.keys())[checked_id]
         initial_directory = self._sample_paths[0].parent if self._sample_paths else None
         dialog = _SpreadsheetMetadataDialog(
             self,
             self._spreadsheet_metadata_by_filter.get(name_filter),
             initial_directory=initial_directory,
+            load_on_open=load_on_open,
         )
         if dialog.exec():
             self._spreadsheet_metadata_by_filter[name_filter] = dialog.selected_source()
             self._clear_checked_values()
             self._update_spreadsheet_metadata_controls()
+            return True
+        return False
 
     @QtCore.Slot()
     def _clear_spreadsheet_metadata(self) -> None:

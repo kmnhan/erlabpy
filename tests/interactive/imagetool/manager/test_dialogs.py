@@ -348,7 +348,12 @@ def test_spreadsheet_metadata_dialog_loads_google_structure_asynchronously(
 
     dialog.add_mapping_row("Temperature\n(K)", "coordinate", "sample_temp")
     dialog.add_mapping_row("Mode", "attribute", "scan_mode")
-    dialog.row_range_check.setChecked(True)
+    assert dialog.row_start_label.buddy() is dialog.row_start_spin
+    assert dialog.row_end_label.buddy() is dialog.row_end_spin
+    assert dialog.row_start_spin.isEnabled()
+    assert dialog.row_end_spin.isEnabled()
+    assert not dialog.row_start_spin.prefix()
+    assert not dialog.row_end_spin.prefix()
     dialog.row_start_spin.setValue(20)
     dialog.row_end_spin.setValue(27)
     dialog.overwrite_check.setChecked(True)
@@ -454,6 +459,136 @@ def test_spreadsheet_metadata_dialog_restores_excel_source(
     dialog.mapping_table.setCurrentItem(dialog.mapping_table.topLevelItem(0))
     dialog.remove_mapping_button.click()
     assert dialog.mapping_table.topLevelItemCount() == 1
+
+
+def test_spreadsheet_metadata_dialog_replaces_missing_excel_without_losing_settings(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    old_path = tmp_path / "missing.xlsx"
+    new_path = tmp_path / "replacement.xlsx"
+    source = erlab.io.metadata.ExcelMetadataSource(
+        old_path,
+        sheet_name="Measurements",
+        file_name_column="File",
+        coordinate_mapping={"Temperature": "sample_temp"},
+        attribute_mapping={"Mode": "scan_mode"},
+        overwrite=True,
+        row_range=(20, 27),
+    )
+    sheet_requests: list[pathlib.Path] = []
+
+    def get_sheet_names(self) -> list[str]:
+        sheet_requests.append(self.path)
+        return ["Overview", "Measurements"]
+
+    monkeypatch.setattr(
+        erlab.io.metadata.ExcelMetadataSource,
+        "get_sheet_names",
+        get_sheet_names,
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.ExcelMetadataSource,
+        "get_selected_sheet_name",
+        lambda self: typing.cast("str", self.sheet_name),
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.ExcelMetadataSource,
+        "get_column_names",
+        lambda _self: ["File", "Temperature", "Mode"],
+    )
+
+    dialog = _SpreadsheetMetadataDialog(None, source, load_on_open=False)
+    qtbot.addWidget(dialog)
+
+    assert not dialog._workers
+    assert sheet_requests == []
+    assert dialog.mapping_table.topLevelItemCount() == 2
+    assert dialog.row_range() == (20, 27)
+    assert dialog.overwrite_check.isChecked()
+
+    dialog.excel_path_line.setText(str(new_path))
+    dialog.refresh_button.click()
+    qtbot.waitUntil(
+        lambda: not dialog._busy and not dialog._workers and bool(dialog._columns)
+    )
+
+    assert sheet_requests == [new_path]
+    assert dialog.sheet_combo.currentData() == "Measurements"
+    assert dialog.file_name_combo.currentData() == "File"
+    assert dialog._mappings() == (
+        {"Temperature": "sample_temp"},
+        {"Mode": "scan_mode"},
+    )
+
+    dialog.accept()
+    replacement = dialog.selected_source()
+    assert isinstance(replacement, erlab.io.metadata.ExcelMetadataSource)
+    assert replacement.path == new_path
+    assert replacement.sheet_name == "Measurements"
+    assert replacement.row_range == (20, 27)
+    assert replacement.overwrite
+
+
+def test_spreadsheet_metadata_dialog_invalid_replacement_link_keeps_settings(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_url = "https://docs.google.com/spreadsheets/d/old-sheet/edit"
+    new_url = "https://docs.google.com/spreadsheets/d/new-sheet/edit"
+    source = erlab.io.metadata.GoogleSheetsMetadataSource(
+        old_url,
+        sheet_name="Measurements",
+        file_name_column="File",
+        coordinate_mapping={"Temperature": "sample_temp"},
+        row_range=(20, 27),
+    )
+    errors: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *args, **_kwargs: errors.append(args),
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.GoogleSheetsMetadataSource,
+        "get_sheet_names",
+        lambda _self: ["Overview", "Measurements"],
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.GoogleSheetsMetadataSource,
+        "get_selected_sheet_name",
+        lambda self: typing.cast("str", self.sheet_name),
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.GoogleSheetsMetadataSource,
+        "get_column_names",
+        lambda _self: ["File", "Temperature"],
+    )
+
+    dialog = _SpreadsheetMetadataDialog(None, source, load_on_open=False)
+    qtbot.addWidget(dialog)
+    dialog.google_url_line.setText("not a Google Sheets link")
+    dialog.refresh_button.click()
+
+    assert len(errors) == 1
+    assert dialog.mapping_table.topLevelItemCount() == 1
+    assert dialog.row_range() == (20, 27)
+
+    dialog.google_url_line.setText(new_url)
+    dialog.refresh_button.click()
+    qtbot.waitUntil(
+        lambda: not dialog._busy and not dialog._workers and bool(dialog._columns)
+    )
+    assert dialog.sheet_combo.currentData() == "Measurements"
+    assert dialog._mappings() == ({"Temperature": "sample_temp"}, {})
+
+    dialog.accept()
+    replacement = dialog.selected_source()
+    assert isinstance(replacement, erlab.io.metadata.GoogleSheetsMetadataSource)
+    assert replacement.share_url == new_url
+    assert replacement.sheet_name == "Measurements"
+    assert replacement.row_range == (20, 27)
 
 
 def test_spreadsheet_metadata_dialog_reports_background_read_error(

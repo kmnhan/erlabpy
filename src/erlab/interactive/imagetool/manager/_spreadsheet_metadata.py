@@ -330,6 +330,7 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         source: SpreadsheetMetadataSource | None = None,
         *,
         initial_directory: pathlib.Path | None = None,
+        load_on_open: bool = True,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Spreadsheet Metadata")
@@ -339,6 +340,7 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
 
         self._selected_source: SpreadsheetMetadataSource | None = source
         self._initial_directory = initial_directory
+        self._load_on_open = load_on_open
         self._columns: tuple[str, ...] = ()
         self._next_mapping_row_id = 0
         self._mapping_context_menu: QtWidgets.QMenu | None = None
@@ -426,21 +428,23 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         range_field = QtWidgets.QWidget(source_group)
         range_layout = QtWidgets.QHBoxLayout(range_field)
         range_layout.setContentsMargins(0, 0, 0, 0)
-        self.row_range_check = QtWidgets.QCheckBox("Limit data rows", range_field)
-        self.row_range_check.setObjectName("spreadsheet_metadata_limit_rows")
-        self.row_range_check.toggled.connect(self._update_row_range_enabled)
-        range_layout.addWidget(self.row_range_check)
+        self.row_start_label = QtWidgets.QLabel("First row", range_field)
+        self.row_start_label.setObjectName("spreadsheet_metadata_first_row_label")
+        range_layout.addWidget(self.row_start_label)
         self.row_start_spin = QtWidgets.QSpinBox(range_field)
         self.row_start_spin.setObjectName("spreadsheet_metadata_first_row")
         self.row_start_spin.setRange(2, 999_999_999)
         self.row_start_spin.setValue(2)
-        self.row_start_spin.setPrefix("First: ")
+        self.row_start_label.setBuddy(self.row_start_spin)
         range_layout.addWidget(self.row_start_spin)
+        self.row_end_label = QtWidgets.QLabel("Last row", range_field)
+        self.row_end_label.setObjectName("spreadsheet_metadata_last_row_label")
+        range_layout.addWidget(self.row_end_label)
         self.row_end_spin = QtWidgets.QSpinBox(range_field)
         self.row_end_spin.setObjectName("spreadsheet_metadata_last_row")
         self.row_end_spin.setRange(2, 999_999_999)
         self.row_end_spin.setValue(1000)
-        self.row_end_spin.setPrefix("Last: ")
+        self.row_end_label.setBuddy(self.row_end_spin)
         self.row_start_spin.valueChanged.connect(self.row_end_spin.setMinimum)
         range_layout.addWidget(self.row_end_spin)
         range_layout.addStretch()
@@ -463,7 +467,6 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         status_layout.addWidget(self.status_label, 1)
         source_layout.addRow("Status", status_field)
         layout.addWidget(source_group)
-        self._update_row_range_enabled(False)
 
     def _setup_mapping_group(self, layout: QtWidgets.QVBoxLayout) -> None:
         mapping_group = QtWidgets.QGroupBox("Column Mapping", self)
@@ -552,7 +555,6 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         )
         if source is not None:
             if source.row_range is not None:
-                self.row_range_check.setChecked(True)
                 self.row_start_spin.setValue(source.row_range[0])
                 self.row_end_spin.setValue(source.row_range[1])
             self.overwrite_check.setChecked(source.overwrite)
@@ -560,7 +562,14 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
                 self.add_mapping_row(column, "coordinate", name)
             for column, name in source.attribute_mapping.items():
                 self.add_mapping_row(column, "attribute", name)
-            erlab.interactive.utils.single_shot(self, 0, self._request_sheets)
+            if self._load_on_open:
+                erlab.interactive.utils.single_shot(self, 0, self._request_sheets)
+            else:
+                self._set_busy(
+                    False,
+                    "Could not read the spreadsheet. Replace the location or load "
+                    "worksheets to retry.",
+                )
         else:
             self._source_type_changed()
 
@@ -586,7 +595,6 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
 
     @QtCore.Slot()
     def _source_input_edited(self) -> None:
-        self._preferred_sheet = None
         self._request_id += 1
         self._threadpool.clear()
         self.sheet_combo.blockSignals(True)
@@ -752,14 +760,7 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
                 column.replace("\n", "\\n") if isinstance(column, str) else "",
             )
 
-    @QtCore.Slot(bool)
-    def _update_row_range_enabled(self, enabled: bool) -> None:
-        self.row_start_spin.setEnabled(enabled)
-        self.row_end_spin.setEnabled(enabled)
-
-    def row_range(self) -> tuple[int, int] | None:
-        if not self.row_range_check.isChecked():
-            return None
+    def row_range(self) -> tuple[int, int]:
         return self.row_start_spin.value(), self.row_end_spin.value()
 
     @QtCore.Slot()

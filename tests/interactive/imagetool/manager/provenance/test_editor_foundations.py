@@ -18,6 +18,7 @@ import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
+from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
     FileDataSelection,
@@ -108,6 +109,56 @@ def test_file_load_edit_dialog_uses_loader_options_widget(qtbot) -> None:
         "engine": "h5netcdf",
         "chunks": {"x": 1},
     }
+
+
+def test_file_load_edit_dialog_restores_spreadsheet_metadata_controls(
+    qtbot,
+    tmp_path: pathlib.Path,
+    example_loader,
+) -> None:
+    source = erlab.io.metadata.ExcelMetadataSource(
+        tmp_path / "metadata.xlsx",
+        sheet_name="Measurements",
+        file_name_column="File",
+        coordinate_mapping={"Temperature": "sample_temp"},
+        row_range=(20, 27),
+    )
+    load_source = FileLoadSource(
+        path=str(tmp_path / "scan.h5"),
+        loader_label="Loader",
+        loader_text="example",
+        kwargs_text="",
+        replay_call=FileReplayCall(
+            kind="erlab_loader",
+            target="example",
+            kwargs=_serialize_loader_kwargs(
+                {
+                    "single": True,
+                    "metadata": source,
+                    "loader_extensions": {"additional_coords": {"gui_extra": 7.0}},
+                }
+            ),
+            selected_index=0,
+        ),
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = provenance_edit_files._FileLoadEditDialog(load_source, parent)
+    qtbot.addWidget(dialog)
+
+    assert provenance_edit_files._parse_loader_kwargs(dialog.kwargs_edit.text()) == {
+        "single": True
+    }
+    assert dialog.loader_options.metadata_clear_button.isEnabled()
+    selected_kwargs = dialog.loader_options.checked_filter()[2]
+    assert selected_kwargs["loader_extensions"] == {
+        "additional_coords": {"gui_extra": 7.0}
+    }
+    selected_metadata = selected_kwargs["metadata"]
+    assert isinstance(selected_metadata, erlab.io.metadata.ExcelMetadataSource)
+    assert selected_metadata.sheet_name == "Measurements"
+    assert selected_metadata.coordinate_mapping == {"Temperature": "sample_temp"}
+    assert selected_metadata.row_range == (20, 27)
 
 
 def test_file_load_edit_dialog_open_is_metadata_only(

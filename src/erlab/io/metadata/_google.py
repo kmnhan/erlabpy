@@ -13,7 +13,12 @@ import re
 import typing
 from urllib.parse import parse_qs, quote, urlsplit
 
-from erlab.io.metadata._core import SpreadsheetMetadataSource, _parse_spreadsheet_value
+from erlab.io.metadata._core import (
+    SpreadsheetMetadataSource,
+    _parse_spreadsheet_value,
+    _SpreadsheetMetadataAccessError,
+    _SpreadsheetWorksheetNotFoundError,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping
@@ -68,7 +73,9 @@ def _decode_javascript_string(value: str) -> str:
     try:
         decoded = json.loads(value)
     except json.JSONDecodeError as exc:
-        raise RuntimeError("Google Sheets returned invalid worksheet metadata") from exc
+        raise _SpreadsheetMetadataAccessError(
+            "Google Sheets returned invalid worksheet metadata"
+        ) from exc
     return typing.cast("str", decoded)
 
 
@@ -82,17 +89,21 @@ def _request_public_sheet(url: str, *, params: dict[str, str], timeout: float) -
     try:
         response = requests.get(url, params=params, timeout=timeout)
     except requests.RequestException as exc:
-        raise RuntimeError("Google Sheets request failed") from exc
+        raise _SpreadsheetMetadataAccessError(
+            f"Google Sheets request failed: {exc}"
+        ) from exc
 
     if response.status_code in {401, 403}:
-        raise RuntimeError("The spreadsheet is not publicly readable")
+        raise _SpreadsheetMetadataAccessError(
+            "The Google Sheets spreadsheet is not publicly readable"
+        )
     if response.status_code == 429:
-        raise RuntimeError("Google Sheets request was rate-limited")
+        raise _SpreadsheetMetadataAccessError("Google Sheets request was rate-limited")
 
     try:
         response.raise_for_status()
     except requests.HTTPError as exc:
-        raise RuntimeError(
+        raise _SpreadsheetMetadataAccessError(
             f"Google Sheets returned HTTP {response.status_code}"
         ) from exc
     return response
@@ -116,7 +127,7 @@ def _read_public_sheet_properties(
         for match in _SHEET_ITEM_PATTERN.finditer(response.text)
     ]
     if not properties:
-        raise RuntimeError(
+        raise _SpreadsheetMetadataAccessError(
             "Google Sheets did not return a worksheet list; verify that the "
             "spreadsheet is publicly readable"
         )
@@ -163,7 +174,9 @@ def _read_public_sheet_values(
         )
         return [[_parse_spreadsheet_value(value) for value in row] for row in rows]
     except csv.Error as exc:
-        raise RuntimeError("Google Sheets returned invalid CSV") from exc
+        raise _SpreadsheetMetadataAccessError(
+            "Google Sheets returned invalid CSV"
+        ) from exc
 
 
 class GoogleSheetsMetadataSource(SpreadsheetMetadataSource):
@@ -282,14 +295,14 @@ class GoogleSheetsMetadataSource(SpreadsheetMetadataSource):
                 if name == sheet_name:
                     return gid
             available = ", ".join(repr(name) for name, _ in properties)
-            raise ValueError(
+            raise _SpreadsheetWorksheetNotFoundError(
                 f"Worksheet {sheet_name!r} was not found in the Google Sheets "
                 f"spreadsheet. Available worksheets: {available}"
             )
         if self.gid is not None:
             if any(gid == self.gid for _, gid in properties):
                 return self.gid
-            raise ValueError(
+            raise _SpreadsheetWorksheetNotFoundError(
                 f"Worksheet gid {self.gid} from share_url was not found in the "
                 "Google Sheets spreadsheet"
             )
