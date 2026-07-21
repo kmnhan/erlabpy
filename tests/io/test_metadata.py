@@ -684,14 +684,60 @@ def test_excel_metadata_source(tmp_path: pathlib.Path) -> None:
     assert source.source_name == f"Excel metadata source {path!s}"
     assert values.coordinate_values == {"sample_temp": 35.0, "hv": 40.8}
     assert values.attribute_values == {"mode": "cut"}
+    source.refresh()
+    assert source.get_sheet_names() == ["Other", "Metadata"]
+    assert source.get_column_names() == ["File", "Temperature", "Energy", "Mode"]
+
+    workbook = openpyxl.load_workbook(path)
+    worksheet = workbook["Metadata"]
+    worksheet["B1"] = "Updated Temperature"
+    worksheet["B2"] = 42.0
+    workbook.create_sheet("Added Later")
+    workbook.save(path)
+    workbook.close()
+
+    assert source.get_sheet_names() == ["Other", "Metadata"]
+    assert source.get_column_names() == ["File", "Temperature", "Energy", "Mode"]
+    updated_values = source._metadata_for_file_number(7)
+    assert updated_values is not None
+    assert updated_values.coordinate_values == {"sample_temp": 42.0, "hv": 40.8}
+
+    with pytest.raises(ValueError, match="missing columns: 'Temperature'"):
+        source.refresh()
+    assert source.get_sheet_names() == ["Other", "Metadata"]
+    assert source.get_column_names() == ["File", "Temperature", "Energy", "Mode"]
+    restored_values = source._metadata_for_file_number(7)
+    assert restored_values is not None
+    assert restored_values.coordinate_values["sample_temp"] == 42.0
 
     by_index = ExcelMetadataSource(
         path,
         sheet_name=1,
         file_name_column="File",
-        coordinate_mapping={"Temperature": "sample_temp"},
+        coordinate_mapping={"Updated Temperature": "sample_temp"},
     )
-    assert by_index._metadata_for_file_number(7) is not None
+    indexed_values = by_index._metadata_for_file_number(7)
+    assert indexed_values is not None
+    assert indexed_values.coordinate_values["sample_temp"] == 42.0
+
+    workbook = openpyxl.load_workbook(path)
+    worksheet = workbook["Metadata"]
+    worksheet["B2"] = 43.0
+    workbook.move_sheet(worksheet, offset=-1)
+    workbook.save(path)
+    workbook.close()
+
+    reordered_values = by_index._metadata_for_file_number(7)
+    assert reordered_values is not None
+    assert reordered_values.coordinate_values["sample_temp"] == 43.0
+
+    workbook = openpyxl.load_workbook(path)
+    workbook.remove(workbook["Metadata"])
+    workbook.save(path)
+    workbook.close()
+
+    with pytest.raises(ValueError, match="Worksheet 'Metadata' was not found"):
+        by_index._metadata_for_file_number(7)
 
 
 def test_excel_source_errors(tmp_path: pathlib.Path) -> None:

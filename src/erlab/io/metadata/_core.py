@@ -431,10 +431,10 @@ class SpreadsheetMetadataSource(abc.ABC):
         """Clear source-specific cached values."""
 
     def refresh(self) -> None:
-        """Clear and revalidate cached spreadsheet structure and row content.
+        """Clear and revalidate cached spreadsheet structure.
 
-        Sources that always read current row content, such as Google Sheets, only
-        revalidate their cached worksheet and header information.
+        Sources that always read current row content only revalidate their cached
+        worksheet and header information.
         """
         with self._lock:
             previous = self._headers, self._row_index, self._sheet_names
@@ -740,8 +740,16 @@ class ExcelMetadataSource(SpreadsheetMetadataSource):
     file_name_column, coordinate_mapping, attribute_mapping, overwrite, row_range
         See :class:`SpreadsheetMetadataSource`.
 
+    Notes
+    -----
+    Worksheet names and headers are cached, while row content is read from the workbook
+    for every metadata lookup. Call :meth:`refresh` to revalidate the selected worksheet
+    and header.
+
     .. versionadded:: 3.25.0
     """
+
+    _cache_row_index = False
 
     def __init__(
         self,
@@ -755,6 +763,7 @@ class ExcelMetadataSource(SpreadsheetMetadataSource):
         row_range: tuple[int, int] | None = None,
     ) -> None:
         self.path = pathlib.Path(path)
+        self._selected_sheet_name: str | None = None
         if self.path.suffix.lower() not in {".xlsx", ".xlsm"}:
             raise ValueError("Excel metadata files must use .xlsx or .xlsm")
         super().__init__(
@@ -780,15 +789,30 @@ class ExcelMetadataSource(SpreadsheetMetadataSource):
         )
 
     def _select_worksheet(self, workbook):
+        if self._selected_sheet_name is not None:
+            try:
+                return workbook[self._selected_sheet_name]
+            except KeyError as exc:
+                raise ValueError(
+                    f"Worksheet {self._selected_sheet_name!r} was not found in "
+                    f"{self.path!s}"
+                ) from exc
+
         sheet_name = typing.cast("str | int", self.sheet_name)
         try:
             if isinstance(sheet_name, int):
-                return workbook.worksheets[sheet_name]
-            return workbook[sheet_name]
+                worksheet = workbook.worksheets[sheet_name]
+            else:
+                worksheet = workbook[sheet_name]
         except (IndexError, KeyError) as exc:
             raise ValueError(
                 f"Worksheet {sheet_name!r} was not found in {self.path!s}"
             ) from exc
+        self._selected_sheet_name = worksheet.title
+        return worksheet
+
+    def _clear_source_cache(self) -> None:
+        self._selected_sheet_name = None
 
     def _read_sheet_names(self) -> list[str]:
         workbook = self._load_workbook()
@@ -810,9 +834,14 @@ class ExcelMetadataSource(SpreadsheetMetadataSource):
         workbook = self._load_workbook()
         try:
             worksheet = self._select_worksheet(workbook)
-            header = list(
-                next(worksheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
-            )
+            if self._headers is None:
+                header = list(
+                    next(
+                        worksheet.iter_rows(min_row=1, max_row=1, values_only=True), ()
+                    )
+                )
+            else:
+                header = list(self._headers)
             min_row = 2 if self.row_range is None else self.row_range[0]
             max_row = None if self.row_range is None else self.row_range[1]
             data_rows = [
@@ -824,3 +853,13 @@ class ExcelMetadataSource(SpreadsheetMetadataSource):
             return [header, *data_rows]
         finally:
             workbook.close()
+
+    def refresh(self) -> None:
+        """Refresh the cached worksheet selection and column names."""
+        with self._lock:
+            previous_selected_sheet = self._selected_sheet_name
+            try:
+                super().refresh()
+            except Exception:
+                self._selected_sheet_name = previous_selected_sheet
+                raise
