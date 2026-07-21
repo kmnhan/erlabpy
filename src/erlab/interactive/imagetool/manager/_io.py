@@ -235,7 +235,6 @@ class _DataIngressController:
                 context_data, context_operations, context_resolution = (
                     self._manager._acquisition_context.apply_to_file_data(source_data)
                 )
-                context_summary.add_resolution(context_resolution)
             preparation_operations = (
                 *preparation_operations,
                 *context_operations,
@@ -268,6 +267,8 @@ class _DataIngressController:
                     source_input_dtype=source_input_dtype,
                 )
                 indices.append(new_index)
+                if context_resolution is not None:
+                    context_summary.add_resolution(context_resolution)
                 if watched_var is not None:
                     node = self._manager._node_for_target(indices[-1])
                     if node.imagetool is not None:

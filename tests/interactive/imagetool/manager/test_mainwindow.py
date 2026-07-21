@@ -16,6 +16,7 @@ import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
+import erlab.interactive.imagetool.manager._io as manager_io
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._metadata_editor as metadata_editor
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
@@ -872,6 +873,58 @@ def test_acquisition_context_is_hidden_until_active_and_enriches_file_data(
         replaced = manager.get_imagetool(0).slicer_area.data
         assert replaced.coords["photon_energy"].item() == 21.2
         assert replaced.attrs["sample"] == "reference"
+
+
+def test_failed_file_ingress_does_not_report_acquisition_context(
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = _batch_data("scan")
+    field = AcquisitionContextField.from_value(
+        kind="attribute", name="sample", value="reference"
+    )
+    load_options = {
+        "load_func": (
+            xr.load_dataarray,
+            {},
+            FileDataSelection(kind="dataarray"),
+        )
+    }
+    creation_errors: list[None] = []
+
+    def fail_registration(*_args: object, **_kwargs: object) -> typing.NoReturn:
+        raise RuntimeError("registration failed")
+
+    with manager_context() as manager:
+        manager._acquisition_context.set_state(
+            AcquisitionContextState(enabled=True, fields=(field,)),
+            mark_dirty=False,
+        )
+        monkeypatch.setattr(manager_io, "ImageTool", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr(manager, "add_imagetool", fail_registration)
+        monkeypatch.setattr(
+            manager._data_ingress,
+            "_error_creating_imagetool",
+            lambda: creation_errors.append(None),
+        )
+
+        manager._status_bar.showMessage("unchanged")
+        assert manager._data_ingress.receive_data(
+            [source], load_options.copy(), show=False
+        ) == [False]
+        assert manager._status_bar.currentMessage() == "unchanged"
+
+        summary = ContextIngressSummary()
+        assert manager._data_ingress.receive_data(
+            [source],
+            load_options.copy(),
+            show=False,
+            _context_summary=summary,
+        ) == [False]
+        assert summary == ContextIngressSummary()
+        assert len(creation_errors) == 2
 
 
 def test_acquisition_context_collision_policy_and_incompatible_input_are_atomic(
