@@ -730,6 +730,13 @@ def test_acquisition_context_dialog_commands_are_atomic(
         )
         dialog._from_selected()
         assert dialog._fields == [changed_sample, run]
+        monkeypatch.setattr(
+            _AcceptedSourcePicker,
+            "exec",
+            lambda _self: QtWidgets.QDialog.DialogCode.Rejected,
+        )
+        dialog._from_selected()
+        assert dialog._fields == [changed_sample, run]
 
         temperature = AcquisitionContextField.from_value(
             kind="coordinate", name="temperature", value=20.0
@@ -750,6 +757,13 @@ def test_acquisition_context_dialog_commands_are_atomic(
         )
         dialog._add_field()
         assert dialog._fields[-1] == temperature
+        _AcceptedFieldDialog.result = QtWidgets.QDialog.DialogCode.Rejected
+        dialog._add_field()
+        assert dialog._fields[-1] == temperature
+        dialog._select_row(0)
+        dialog._edit_field()
+        assert dialog._fields[0] == changed_sample
+        _AcceptedFieldDialog.result = QtWidgets.QDialog.DialogCode.Accepted
 
         warnings: list[tuple[object, ...]] = []
         monkeypatch.setattr(
@@ -857,6 +871,13 @@ def test_acquisition_context_controller_recovers_from_invalid_state(
         controller.restore_state_payload({"fields": [{"kind": "invalid"}]})
         assert warnings
         assert controller.state == AcquisitionContextState()
+
+        manager._workspace_state.acquisition_context = {"fields": [{"kind": "invalid"}]}
+        assert controller.state == AcquisitionContextState()
+        manager._workspace_state.acquisition_context = "invalid"  # type: ignore[assignment]
+        replacement_controller = type(controller)(manager)
+        assert manager._workspace_state.acquisition_context == {}
+        replacement_controller.deleteLater()
 
         button = controller._status_button
         controller._status_button = None
@@ -2175,7 +2196,6 @@ def test_metadata_editor_field_chooser_and_frozen_data_column(
     with manager_context() as manager:
         _add_batch_tools(qtbot, manager, data0, data1)
         dialog = MetadataEditorDialog(manager, manager._metadata_editor, (0, 1))
-        qtbot.addWidget(dialog)
         dialog.show()
         qtbot.mouseClick(dialog.fields_button, QtCore.Qt.MouseButton.LeftButton)
         qtbot.wait_until(dialog.fields_menu.isVisible)
@@ -2263,6 +2283,23 @@ def test_metadata_editor_field_chooser_and_frozen_data_column(
         assert added[-1] == (run, 4)
         assert run in dialog.model.fields
         chooser.add_field(run)
+        chooser.set_field_visible(
+            MetadataField(kind="attribute", name="not-listed"), True
+        )
+        sample_item = chooser._items[sample]
+        chooser._item_changed(sample_item, 1)
+        sample_item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
+        assert sample not in dialog.model.fields
+        sample_item.setCheckState(0, QtCore.Qt.CheckState.Checked)
+        assert sample in dialog.model.fields
+
+        dialog._set_field_visible(object(), True)
+        dialog._set_visible_fields([coord])
+        dialog._add_field(object(), 0)
+
+        messages.clear()
+        dialog._show_cell_edit_error("invalid value")
+        assert messages
 
         dialog._set_field_visible(coord, False)
         assert coord not in dialog.model.fields
@@ -2279,8 +2316,36 @@ def test_metadata_editor_field_chooser_and_frozen_data_column(
         dialog.table.setRowHeight(0, 38)
         assert dialog.table.frozen_view.columnWidth(0) == 210
         assert dialog.table.frozen_view.rowHeight(0) == 38
+        manager._metadata_editor.set_column_width(None, 210)
 
-        dialog._show_header_menu(QtCore.QPoint(1, 1))
+        selection_model = typing.cast(
+            "QtCore.QItemSelectionModel", dialog.table.selectionModel()
+        )
+        selection_model.clearSelection()
+        dialog.table.setCurrentIndex(index)
+        dialog._fill_down()
+        dialog._revert_assignment()
+
+        header = typing.cast("QtWidgets.QHeaderView", dialog.table.horizontalHeader())
+        sample_column = dialog.model.fields.index(sample) + 1
+        sample_position = QtCore.QPoint(
+            header.sectionViewportPosition(sample_column) + 1, 1
+        )
+
+        def _choose_hide_field() -> None:
+            menu = QtWidgets.QApplication.activePopupWidget()
+            if not isinstance(menu, QtWidgets.QMenu):
+                pytest.fail("The metadata header menu did not open.")
+            action = menu.actions()[0]
+            qtbot.mouseClick(
+                menu,
+                QtCore.Qt.MouseButton.LeftButton,
+                pos=menu.actionGeometry(action).center(),
+            )
+
+        QtCore.QTimer.singleShot(0, _choose_hide_field)
+        dialog._show_header_menu(sample_position)
+        assert sample not in dialog.model.fields
         dialog._set_field_visible(run, False)
         assert run not in dialog.model.fields
 
