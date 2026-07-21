@@ -53,7 +53,8 @@ class WorkspaceLoaderState(pydantic.BaseModel):
     manager_loader_extensions_by_filter: dict[str, dict[str, typing.Any]] = (
         pydantic.Field(default_factory=dict)
     )
-    # Data Explorer tabs select loaders by name, so their options use loader names.
+    # Shared manager/Data Explorer options use loader names. The field name is retained
+    # for compatibility with existing workspace manifests.
     explorer_loader_kwargs_by_name: dict[str, dict[str, typing.Any]] = pydantic.Field(
         default_factory=dict
     )

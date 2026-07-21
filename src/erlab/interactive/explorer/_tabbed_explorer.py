@@ -16,6 +16,10 @@ from erlab.interactive.explorer._base_explorer import (
     DataExplorerTabState,
     _DataExplorer,
 )
+from erlab.interactive.imagetool._load_source import (
+    _deserialize_loader_kwargs,
+    _serialize_loader_kwargs,
+)
 
 
 class DataExplorerState(pydantic.BaseModel):
@@ -23,7 +27,7 @@ class DataExplorerState(pydantic.BaseModel):
     window_state: _qt_state.QtWindowState | None = None
     tabs: tuple[DataExplorerTabState, ...] = ()
     active_tab: int = 0
-    # Shared loader options for tabs in this Data Explorer window.
+    # Shared loader options for tabs and, when managed, manager file-load dialogs.
     loader_kwargs_by_name: dict[str, dict[str, typing.Any]] = pydantic.Field(
         default_factory=dict
     )
@@ -42,6 +46,7 @@ class DataExplorerState(pydantic.BaseModel):
 
 
 class _TabbedExplorer(QtWidgets.QMainWindow):
+    sigLoaderStateChanged = QtCore.Signal(object, object)
     sigStateChanged = QtCore.Signal()
 
     def __init__(self, parent: QtWidgets.QWidget | None = None, **kwargs) -> None:
@@ -173,6 +178,21 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
                     extensions_by_name=extensions_by_name,
                 )
 
+    @QtCore.Slot(object, object)
+    def _apply_loader_state_from_tab(
+        self,
+        kwargs_by_name: dict[str, dict[str, typing.Any]],
+        extensions_by_name: dict[str, dict[str, typing.Any]],
+    ) -> None:
+        self.apply_loader_state(
+            kwargs_by_name=kwargs_by_name,
+            extensions_by_name=extensions_by_name,
+        )
+        self.sigLoaderStateChanged.emit(
+            self.loader_kwargs_by_name(),
+            self.loader_extensions_by_name(),
+        )
+
     def workspace_state_payload(self) -> dict[str, typing.Any]:
         return DataExplorerState(
             window_state=_qt_state.qt_window_state(self),
@@ -182,7 +202,10 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
                 if (explorer := self.get_explorer(index)) is not None
             ),
             active_tab=int(self.tab_widget.currentIndex()),
-            loader_kwargs_by_name=self.loader_kwargs_by_name(),
+            loader_kwargs_by_name={
+                name: _serialize_loader_kwargs(kwargs)
+                for name, kwargs in self.loader_kwargs_by_name().items()
+            },
             loader_extensions_by_name=self.loader_extensions_by_name(),
         ).model_dump(mode="json", exclude_none=True)
 
@@ -191,7 +214,7 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
         self._workspace_state_restoring = True
         try:
             loader_kwargs_by_name = {
-                str(name): dict(value)
+                str(name): _deserialize_loader_kwargs(value)
                 for name, value in state.loader_kwargs_by_name.items()
             }
             loader_extensions_by_name = {
@@ -222,6 +245,10 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
             _qt_state.restore_qt_window_state(self, state.window_state)
         finally:
             self._workspace_state_restoring = False
+        self.sigLoaderStateChanged.emit(
+            self.loader_kwargs_by_name(),
+            self.loader_extensions_by_name(),
+        )
         self._emit_workspace_state_changed()
 
     def show_path(self, path: str | pathlib.Path) -> None:
@@ -319,6 +346,7 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
 
         new_explorer.sigDirectoryChanged.connect(self.update_title)
         new_explorer.sigCloseRequested.connect(self.close_tab)
+        new_explorer.sigLoaderStateChanged.connect(self._apply_loader_state_from_tab)
         new_explorer.sigStateChanged.connect(self._emit_workspace_state_changed)
         self.update_menubar()
         self._emit_workspace_state_changed()

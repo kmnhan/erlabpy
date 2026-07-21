@@ -229,6 +229,8 @@ def _resolve_importable_callable(target: str) -> Callable[..., typing.Any]:
 
 
 def _load_file_source_object(load_source: FileLoadSource) -> typing.Any:
+    from erlab.interactive.imagetool._load_source import _deserialize_loader_kwargs
+
     call = load_source.replay_call
     if call is None:
         raise ValueError("File load source does not define replay metadata")
@@ -238,7 +240,7 @@ def _load_file_source_object(load_source: FileLoadSource) -> typing.Any:
     else:
         func = _resolve_importable_callable(call.target)
 
-    return func(file_path, **dict(call.kwargs))
+    return func(file_path, **_deserialize_loader_kwargs(call.kwargs))
 
 
 def _load_file_source_data(load_source: FileLoadSource) -> xr.DataArray:

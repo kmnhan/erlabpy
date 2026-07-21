@@ -36,8 +36,12 @@ _LOAD_KWARGS_NOT_FOR_IDENTIFY = frozenset(
         "progress",
         "load_kwargs",
         "loader_extensions",
+        "metadata",
+        "file_number",
     }
 )
+
+_SPREADSHEET_METADATA_MARKER = "__erlab_spreadsheet_metadata_source__"
 
 _RESERVED_REPLAY_SOURCE_NAMES = {
     "data",
@@ -55,6 +59,141 @@ _LoadFunc: typing.TypeAlias = tuple[
     FileDataSelection,
 ]
 _LoadKind: typing.TypeAlias = typing.Literal["erlab_loader", "callable"]
+
+
+def _spreadsheet_metadata_source_config(
+    source: erlab.io.metadata.SpreadsheetMetadataSource,
+) -> dict[str, typing.Any] | None:
+    common: dict[str, typing.Any] = {
+        "sheet_name": source.sheet_name,
+        "file_name_column": source.file_name_column,
+        "coordinate_mapping": dict(source.coordinate_mapping),
+        "attribute_mapping": dict(source.attribute_mapping),
+        "overwrite": source.overwrite,
+        "row_range": None if source.row_range is None else list(source.row_range),
+    }
+    if isinstance(source, erlab.io.metadata.ExcelMetadataSource):
+        return {"type": "excel", "path": str(source.path), **common}
+    if isinstance(source, erlab.io.metadata.GoogleSheetsMetadataSource):
+        return {
+            "type": "google_sheets",
+            "share_url": source.share_url,
+            "timeout": source.timeout,
+            **common,
+        }
+    return None
+
+
+def _spreadsheet_metadata_source_from_config(
+    config: Mapping[str, typing.Any],
+) -> erlab.io.metadata.SpreadsheetMetadataSource:
+    source_type = config.get("type")
+    row_range = config.get("row_range")
+    if row_range is not None:
+        if (
+            not isinstance(row_range, Sequence)
+            or isinstance(row_range, str | bytes)
+            or len(row_range) != 2
+        ):
+            raise ValueError("Saved spreadsheet metadata row range is invalid")
+        row_range = (row_range[0], row_range[1])
+    common = {
+        "sheet_name": config.get("sheet_name"),
+        "file_name_column": config.get("file_name_column"),
+        "coordinate_mapping": config.get("coordinate_mapping"),
+        "attribute_mapping": config.get("attribute_mapping"),
+        "overwrite": config.get("overwrite", False),
+        "row_range": row_range,
+    }
+    if source_type == "excel":
+        path = config.get("path")
+        if not isinstance(path, str):
+            raise TypeError("Saved Excel metadata path must be a string")
+        return erlab.io.metadata.ExcelMetadataSource(path, **common)
+    if source_type == "google_sheets":
+        share_url = config.get("share_url")
+        if not isinstance(share_url, str):
+            raise TypeError("Saved Google Sheets metadata link must be a string")
+        return erlab.io.metadata.GoogleSheetsMetadataSource(
+            share_url,
+            timeout=config.get("timeout", 10.0),
+            **common,
+        )
+    raise ValueError(f"Unknown spreadsheet metadata source type {source_type!r}")
+
+
+def _serialize_loader_kwargs(
+    kwargs: Mapping[str, typing.Any],
+) -> dict[str, typing.Any]:
+    """Return loader kwargs with built-in spreadsheet sources made JSON-safe."""
+    serialized = dict(kwargs)
+    source = serialized.get("metadata")
+    if isinstance(source, erlab.io.metadata.SpreadsheetMetadataSource):
+        config = _spreadsheet_metadata_source_config(source)
+        if config is not None:
+            serialized["metadata"] = {_SPREADSHEET_METADATA_MARKER: config}
+    return serialized
+
+
+def _deserialize_loader_kwargs(
+    kwargs: Mapping[str, typing.Any],
+) -> dict[str, typing.Any]:
+    """Restore a spreadsheet metadata source from serialized loader kwargs."""
+    restored = dict(kwargs)
+    metadata = restored.get("metadata")
+    if (
+        isinstance(metadata, Mapping)
+        and set(metadata) == {_SPREADSHEET_METADATA_MARKER}
+        and isinstance(metadata[_SPREADSHEET_METADATA_MARKER], Mapping)
+    ):
+        restored["metadata"] = _spreadsheet_metadata_source_from_config(
+            metadata[_SPREADSHEET_METADATA_MARKER]
+        )
+    return restored
+
+
+def _spreadsheet_metadata_source_code(
+    source: erlab.io.metadata.SpreadsheetMetadataSource,
+) -> str:
+    config = _spreadsheet_metadata_source_config(source)
+    if config is None:
+        raise TypeError(
+            f"Cannot generate code for spreadsheet metadata source "
+            f"{type(source).__name__!r}"
+        )
+    source_type = config["type"]
+    if source_type == "excel":
+        constructor = "erlab.io.metadata.ExcelMetadataSource"
+        args = [repr(config["path"])]
+    else:
+        constructor = "erlab.io.metadata.GoogleSheetsMetadataSource"
+        args = [repr(config["share_url"])]
+    for key in (
+        "sheet_name",
+        "file_name_column",
+        "coordinate_mapping",
+        "attribute_mapping",
+        "overwrite",
+        "row_range",
+    ):
+        value = config[key]
+        if value not in (None, {}, False):
+            if key == "row_range":
+                value = tuple(value)
+            args.append(f"{key}={value!r}")
+    if source_type == "google_sheets" and config["timeout"] != 10.0:
+        args.append(f"timeout={config['timeout']!r}")
+    return f"{constructor}({', '.join(args)})"
+
+
+def _loader_kwargs_for_code(
+    kwargs: Mapping[str, typing.Any],
+) -> dict[str, typing.Any]:
+    formatted = dict(kwargs)
+    source = formatted.get("metadata")
+    if isinstance(source, erlab.io.metadata.SpreadsheetMetadataSource):
+        formatted["metadata"] = f"|{_spreadsheet_metadata_source_code(source)}|"
+    return formatted
 
 
 def _parse_serialized_file_data_selection(value: typing.Any) -> FileDataSelection:
@@ -108,7 +247,10 @@ class _ResolvedLoadFunc:
         if not self.kwargs:
             return "(none)"
         return erlab.interactive.utils.format_kwargs(
-            typing.cast("dict[typing.Hashable, typing.Any]", self.kwargs)
+            typing.cast(
+                "dict[typing.Hashable, typing.Any]",
+                _loader_kwargs_for_code(self.kwargs),
+            )
         )
 
     def replay_call(
@@ -118,7 +260,7 @@ class _ResolvedLoadFunc:
         return FileReplayCall(
             kind=self.kind,
             target=self.target,
-            kwargs=self.kwargs,
+            kwargs=_serialize_loader_kwargs(self.kwargs),
             selection=self.selection,
             cast_float64=self.cast_float64,
         )
@@ -164,7 +306,10 @@ class _ResolvedLoadFunc:
 def _format_call_kwargs(kwargs: dict[str, typing.Any]) -> str:
     return (
         erlab.interactive.utils.format_call_kwargs(
-            typing.cast("dict[typing.Hashable, typing.Any]", kwargs)
+            typing.cast(
+                "dict[typing.Hashable, typing.Any]",
+                _loader_kwargs_for_code(kwargs),
+            )
         )
         if kwargs
         else ""
@@ -276,7 +421,10 @@ def _scan_number_load_call_args(
     if load_kwargs:
         call_args.append(
             erlab.interactive.utils.format_call_kwargs(
-                typing.cast("dict[typing.Hashable, typing.Any]", load_kwargs)
+                typing.cast(
+                    "dict[typing.Hashable, typing.Any]",
+                    _loader_kwargs_for_code(load_kwargs),
+                )
             )
         )
     return call_args

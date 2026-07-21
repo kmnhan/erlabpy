@@ -19,7 +19,7 @@ from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 if typing.TYPE_CHECKING:
     import pathlib
     import types
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Mapping
 
     from erlab.interactive._dask import DaskMenu
     from erlab.interactive._options.schema import AppOptions
@@ -107,6 +107,11 @@ class _StandaloneAppEventFilter(QtCore.QObject):
         if event is not None and event.type() in self._STATE_EVENT_TYPES:
             self._manager._mark_standalone_app_state_dirty()
         return super().eventFilter(obj, event)
+
+
+def _loader_name_for_callable(func: Callable) -> str | None:
+    loader = getattr(func, "__self__", None)
+    return loader.name if isinstance(loader, erlab.io.dataloader.LoaderBase) else None
 
 
 class _ImageToolManagerBase(QtWidgets.QMainWindow):
@@ -442,6 +447,104 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         )
         return explorer
 
+    def _shared_loader_state(
+        self,
+    ) -> tuple[dict[str, dict[str, typing.Any]], dict[str, dict[str, typing.Any]]]:
+        state = self._workspace_controller._loader_state
+        shared_kwargs = {
+            str(name): dict(kwargs)
+            for name, kwargs in state.explorer_loader_kwargs_by_name.items()
+        }
+        shared_extensions = {
+            str(name): dict(extensions)
+            for name, extensions in state.explorer_loader_extensions_by_name.items()
+        }
+        valid_loaders = erlab.interactive.utils.file_loaders()
+        for name_filter, kwargs in self._recent_loader_kwargs_by_filter.items():
+            loader_entry = valid_loaders.get(name_filter)
+            if loader_entry is None:
+                continue
+            loader_name = _loader_name_for_callable(loader_entry[0])
+            if loader_name is not None:
+                shared_kwargs.setdefault(loader_name, dict(kwargs))
+        for name_filter, extensions in self._recent_loader_extensions_by_filter.items():
+            loader_entry = valid_loaders.get(name_filter)
+            if loader_entry is None:
+                continue
+            loader_name = _loader_name_for_callable(loader_entry[0])
+            if loader_name is not None:
+                shared_extensions.setdefault(loader_name, dict(extensions))
+        return shared_kwargs, shared_extensions
+
+    def _sync_shared_loader_state(
+        self,
+        kwargs_by_name: Mapping[str, Mapping[str, typing.Any]],
+        extensions_by_name: Mapping[str, Mapping[str, typing.Any]],
+        *,
+        apply_explorer: bool,
+    ) -> None:
+        shared_kwargs = {
+            str(name): dict(kwargs) for name, kwargs in kwargs_by_name.items()
+        }
+        shared_extensions = {
+            str(name): dict(extensions)
+            for name, extensions in extensions_by_name.items()
+        }
+        state = self._workspace_controller._loader_state
+        state.explorer_loader_kwargs_by_name = shared_kwargs
+        state.explorer_loader_extensions_by_name = shared_extensions
+
+        for loader_name, kwargs in shared_kwargs.items():
+            if loader_name not in erlab.io.loaders:
+                continue
+            for name_filter in erlab.io.loaders[loader_name].file_dialog_methods:
+                self._recent_loader_kwargs_by_filter[name_filter] = kwargs.copy()
+        for loader_name, extensions in shared_extensions.items():
+            if loader_name not in erlab.io.loaders:
+                continue
+            for name_filter in erlab.io.loaders[loader_name].file_dialog_methods:
+                self._recent_loader_extensions_by_filter[name_filter] = (
+                    extensions.copy()
+                )
+
+        if not apply_explorer:
+            return
+        explorer = self._standalone_app_windows.get("explorer")
+        if explorer is not None and erlab.interactive.utils.qt_is_valid(explorer):
+            apply_loader_state = getattr(explorer, "apply_loader_state", None)
+            if callable(apply_loader_state):
+                apply_loader_state(
+                    kwargs_by_name=shared_kwargs,
+                    extensions_by_name=shared_extensions,
+                )
+
+    def _set_shared_loader_options(
+        self,
+        loader_name: str,
+        kwargs: Mapping[str, typing.Any],
+        extensions: Mapping[str, typing.Any],
+    ) -> None:
+        shared_kwargs, shared_extensions = self._shared_loader_state()
+        shared_kwargs[loader_name] = dict(kwargs)
+        shared_extensions[loader_name] = dict(extensions)
+        self._sync_shared_loader_state(
+            shared_kwargs,
+            shared_extensions,
+            apply_explorer=True,
+        )
+
+    @QtCore.Slot(object, object)
+    def _update_shared_loader_state_from_explorer(
+        self,
+        kwargs_by_name: dict[str, dict[str, typing.Any]],
+        extensions_by_name: dict[str, dict[str, typing.Any]],
+    ) -> None:
+        self._sync_shared_loader_state(
+            kwargs_by_name,
+            extensions_by_name,
+            apply_explorer=False,
+        )
+
     def _create_ptable_window(self) -> QtWidgets.QWidget:
         from erlab.interactive.ptable import PeriodicTableWindow
 
@@ -484,18 +587,30 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         *,
         sample_paths: Iterable[str | pathlib.Path] | None = None,
     ) -> tuple[str, Callable, dict[str, typing.Any]] | None:
+        shared_kwargs, shared_extensions = self._shared_loader_state()
         dialog_loaders: dict[str, tuple[Callable, dict[str, typing.Any]]] = {}
+        dialog_extensions: dict[str, dict[str, typing.Any]] = {}
         for current_filter, (func, kwargs) in valid_loaders.items():
             dialog_kwargs = kwargs.copy()
-            dialog_kwargs.update(
-                self._recent_loader_kwargs_by_filter.get(current_filter, {})
-            )
+            loader_name = _loader_name_for_callable(func)
+            if loader_name is not None and loader_name in shared_kwargs:
+                dialog_kwargs.update(shared_kwargs[loader_name])
+            else:
+                dialog_kwargs.update(
+                    self._recent_loader_kwargs_by_filter.get(current_filter, {})
+                )
             dialog_loaders[current_filter] = (func, dialog_kwargs)
+            if loader_name is not None and loader_name in shared_extensions:
+                dialog_extensions[current_filter] = shared_extensions[loader_name]
+            else:
+                dialog_extensions[current_filter] = (
+                    self._recent_loader_extensions_by_filter.get(current_filter, {})
+                )
 
         dialog = _NameFilterDialog(
             self,
             dialog_loaders,
-            loader_extensions=self._recent_loader_extensions_by_filter,
+            loader_extensions=dialog_extensions,
             sample_paths=sample_paths,
         )
         dialog.check_filter(name_filter or self._preferred_name_filter(dialog_loaders))
@@ -512,6 +627,13 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         self._recent_loader_extensions_by_filter[selected_filter] = (
             loader_extensions.copy() if isinstance(loader_extensions, dict) else {}
         )
+        loader_name = _loader_name_for_callable(func)
+        if loader_name is not None:
+            self._set_shared_loader_options(
+                loader_name,
+                selected_kwargs,
+                loader_extensions if isinstance(loader_extensions, dict) else {},
+            )
         self._mark_workspace_layout_dirty()
         return selected_filter, func, kwargs
 
@@ -538,6 +660,10 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         signal = getattr(widget, "sigStateChanged", None)
         if signal is not None:
             signal.connect(self._mark_standalone_app_state_dirty)
+        if key == "explorer":
+            loader_signal = getattr(widget, "sigLoaderStateChanged", None)
+            if loader_signal is not None:
+                loader_signal.connect(self._update_shared_loader_state_from_explorer)
 
         widget_ref = weakref.ref(widget)
 

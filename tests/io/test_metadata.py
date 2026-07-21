@@ -865,6 +865,7 @@ def test_excel_metadata_source(tmp_path: pathlib.Path) -> None:
         attribute_mapping={"Mode": "mode"},
     )
     assert source.get_sheet_names() == ["Other", "Metadata"]
+    assert source.get_selected_sheet_name() == "Metadata"
     assert source.get_column_names() == ["File", "Temperature", "Energy", "Mode"]
     values = source._metadata_for_file_number(7)
     assert values is not None
@@ -1237,6 +1238,7 @@ def test_google_source_reads_linked_tab(
     )
 
     assert source.get_sheet_names() == ["Linked Sheet", "Other Sheet"]
+    assert source.get_selected_sheet_name() == "Linked Sheet"
     assert source.get_column_names() == [
         "File",
         "Temperature",

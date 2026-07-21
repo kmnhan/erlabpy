@@ -265,6 +265,15 @@ class GoogleSheetsMetadataSource(SpreadsheetMetadataSource):
     def _read_sheet_names(self) -> list[str]:
         return [name for name, _ in self._get_worksheet_properties()]
 
+    def get_selected_sheet_name(self) -> str:
+        """Return the visible name of the worksheet selected by the link or name."""
+        with self._lock:
+            selected_gid = self._selected_gid()
+            for name, gid in self._get_worksheet_properties():
+                if gid == selected_gid:
+                    return name
+        raise RuntimeError("Google Sheets worksheet selection is inconsistent")
+
     def _selected_gid(self) -> int:
         properties = self._get_worksheet_properties()
         if self.sheet_name is not None:

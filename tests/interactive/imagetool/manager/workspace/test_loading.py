@@ -680,10 +680,22 @@ def test_manager_workspace_roundtrip_restores_loader_and_standalone_apps(
 
         manager._recent_directory = str(example_data_dir)
         manager._recent_name_filter = name_filter
-        manager._recent_loader_kwargs_by_filter[name_filter] = {"single": True}
-        manager._recent_loader_extensions_by_filter[name_filter] = {
-            "coordinate_attrs": ["manager"]
+        metadata_source = erlab.io.metadata.ExcelMetadataSource(
+            tmp_path / "metadata.xlsx",
+            sheet_name="Measurements",
+            file_name_column="File",
+            coordinate_mapping={"Temperature": "sample_temp"},
+        )
+        shared_loader_kwargs = {
+            "single": True,
+            "metadata": metadata_source,
         }
+        shared_loader_extensions = {"coordinate_attrs": ["shared"]}
+        manager._set_shared_loader_options(
+            loader_name,
+            shared_loader_kwargs,
+            shared_loader_extensions,
+        )
 
         manager.show_explorer()
         explorer = manager.explorer
@@ -695,12 +707,11 @@ def test_manager_workspace_roundtrip_restores_loader_and_standalone_apps(
         explorer.current_explorer._tree_view.sortByColumn(
             0, QtCore.Qt.SortOrder.DescendingOrder
         )
-        explorer.current_explorer._loader_kwargs_by_name[loader_name] = {
-            "single": False
-        }
-        explorer.current_explorer._loader_extensions_by_name[loader_name] = {
-            "coordinate_attrs": ["explorer"]
-        }
+        assert explorer.loader_kwargs_by_name()[loader_name] == shared_loader_kwargs
+        assert (
+            explorer.loader_extensions_by_name()[loader_name]
+            == shared_loader_extensions
+        )
         expected_explorer_size = explorer.size()
         explorer.hide()
         qtbot.wait_until(lambda: not explorer.isVisible(), timeout=5000)
@@ -729,15 +740,29 @@ def test_manager_workspace_roundtrip_restores_loader_and_standalone_apps(
             manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert manifest["loader_state"]["recent_directory"] == str(example_data_dir)
         assert manifest["loader_state"]["recent_name_filter"] == name_filter
-        assert manifest["loader_state"]["manager_loader_kwargs_by_filter"][
-            name_filter
-        ] == {"single": True}
+        saved_manager_kwargs = manifest["loader_state"][
+            "manager_loader_kwargs_by_filter"
+        ][name_filter]
+        assert saved_manager_kwargs["single"] is True
+        assert (
+            saved_manager_kwargs["metadata"]["__erlab_spreadsheet_metadata_source__"][
+                "sheet_name"
+            ]
+            == "Measurements"
+        )
         app_state = manifest["standalone_apps"]["apps"]
         assert not app_state["explorer"]["window_state"]["visible"]
         assert app_state["explorer"]["active_tab"] == 1
-        assert app_state["explorer"]["loader_kwargs_by_name"][loader_name] == {
-            "single": False
-        }
+        saved_explorer_kwargs = app_state["explorer"]["loader_kwargs_by_name"][
+            loader_name
+        ]
+        assert saved_explorer_kwargs["single"] is True
+        assert (
+            saved_explorer_kwargs["metadata"]["__erlab_spreadsheet_metadata_source__"][
+                "sheet_name"
+            ]
+            == "Measurements"
+        )
         assert app_state["ptable"]["window_state"]["visible"]
         assert app_state["ptable"]["window_state"]["rect"][2:] == [
             expected_ptable_size.width(),
@@ -762,10 +787,16 @@ def test_manager_workspace_roundtrip_restores_loader_and_standalone_apps(
 
         assert manager._recent_directory == str(example_data_dir)
         assert manager._recent_name_filter == name_filter
-        assert manager._recent_loader_kwargs_by_filter[name_filter] == {"single": True}
-        assert manager._recent_loader_extensions_by_filter[name_filter] == {
-            "coordinate_attrs": ["manager"]
-        }
+        restored_manager_kwargs = manager._recent_loader_kwargs_by_filter[name_filter]
+        assert restored_manager_kwargs["single"] is True
+        restored_metadata = restored_manager_kwargs["metadata"]
+        assert isinstance(restored_metadata, erlab.io.metadata.ExcelMetadataSource)
+        assert restored_metadata.sheet_name == "Measurements"
+        assert restored_metadata.coordinate_mapping == {"Temperature": "sample_temp"}
+        assert (
+            manager._recent_loader_extensions_by_filter[name_filter]
+            == shared_loader_extensions
+        )
 
         assert "explorer" not in manager._standalone_app_windows
         assert manager._standalone_app_pending_states["explorer"]["active_tab"] == 1
@@ -792,12 +823,18 @@ def test_manager_workspace_roundtrip_restores_loader_and_standalone_apps(
         assert restored_tab.loader_name == loader_name
         assert restored_tab._preview_check.isChecked()
         assert restored_tab._fs_model._sort_order == QtCore.Qt.SortOrder.DescendingOrder
-        assert restored_explorer.loader_kwargs_by_name()[loader_name] == {
-            "single": False
-        }
-        assert restored_explorer.loader_extensions_by_name()[loader_name] == {
-            "coordinate_attrs": ["explorer"]
-        }
+        restored_explorer_kwargs = restored_explorer.loader_kwargs_by_name()[
+            loader_name
+        ]
+        assert restored_explorer_kwargs["single"] is True
+        assert isinstance(
+            restored_explorer_kwargs["metadata"],
+            erlab.io.metadata.ExcelMetadataSource,
+        )
+        assert (
+            restored_explorer.loader_extensions_by_name()[loader_name]
+            == shared_loader_extensions
+        )
 
 
 def test_manager_workspace_roundtrip_restores_full_serializable_state(
@@ -1209,8 +1246,8 @@ def test_manager_workspace_loader_state_does_not_create_explorer_app_state(
         name for name in erlab.io.loaders if erlab.io.loaders[name].file_dialog_methods
     )
     name_filter = next(iter(erlab.io.loaders[loader_name].file_dialog_methods))
-    explorer_kwargs = {loader_name: {"single": False}}
-    explorer_extensions = {loader_name: {"coordinate_attrs": ["explorer"]}}
+    explorer_kwargs = {loader_name: {"single": True}}
+    explorer_extensions = {loader_name: {"coordinate_attrs": ["shared"]}}
     root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
     qtbot.addWidget(root)
 
@@ -1220,12 +1257,10 @@ def test_manager_workspace_loader_state_does_not_create_explorer_app_state(
         manager.add_imagetool(root, show=False)
         manager._recent_directory = str(example_data_dir)
         manager._recent_name_filter = name_filter
-        manager._recent_loader_kwargs_by_filter[name_filter] = {"single": True}
-        manager._workspace_controller._loader_state = (
-            workspace_format.WorkspaceLoaderState(
-                explorer_loader_kwargs_by_name=explorer_kwargs,
-                explorer_loader_extensions_by_name=explorer_extensions,
-            )
+        manager._set_shared_loader_options(
+            loader_name,
+            explorer_kwargs[loader_name],
+            explorer_extensions[loader_name],
         )
 
         fname = tmp_path / "loader-no-explorer.itws"
@@ -1245,6 +1280,7 @@ def test_manager_workspace_loader_state_does_not_create_explorer_app_state(
         manager._recent_directory = None
         manager._recent_name_filter = None
         manager._recent_loader_kwargs_by_filter.clear()
+        manager._recent_loader_extensions_by_filter.clear()
 
         assert manager._workspace_controller.loading._load_workspace_file(
             fname,

@@ -560,6 +560,30 @@ class SpreadsheetMetadataSource(abc.ABC):
                 self._sheet_names = names
             return list(self._sheet_names)
 
+    def get_selected_sheet_name(self) -> str:
+        """Return the visible name of the selected worksheet.
+
+        The worksheet list is read on the first call and then follows the same cache
+        lifetime as :meth:`get_sheet_names`.
+        """
+        with self._lock:
+            names = self.get_sheet_names()
+            sheet_name = self.sheet_name
+            if isinstance(sheet_name, int):
+                try:
+                    return names[sheet_name]
+                except IndexError as exc:
+                    raise ValueError(
+                        f"Worksheet {sheet_name!r} was not found in {self.source_name}"
+                    ) from exc
+            if isinstance(sheet_name, str) and sheet_name in names:
+                return sheet_name
+            if sheet_name is None:
+                return names[0]
+            raise ValueError(
+                f"Worksheet {sheet_name!r} was not found in {self.source_name}"
+            )
+
     def get_column_names(self) -> list[str]:
         """Return the spreadsheet column names.
 

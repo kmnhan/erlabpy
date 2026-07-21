@@ -113,10 +113,14 @@ Once the manager is running, you can open ImageTools in several ways:
 - Drag and drop supported ARPES data into the manager window.
 
   In the dialog that appears, you can choose the plugin to use for loading the data. For
-  data loader plugins loaders, expand {guilabel}`Loader Extensions` to set custom load
+  data loader plugins, expand {guilabel}`Loader Extensions` to set custom load
   arguments, including {func}`erlab.io.extend_loader` options. The {guilabel}`name_map`
   and {guilabel}`coordinate_attrs` rows have buttons that inspect the first selected
   file and help build the literal values interactively.
+
+  Use {guilabel}`Spreadsheet Metadata` to fill coordinates and attributes from an Excel
+  workbook or public Google Sheets link. See {ref}`io-spreadsheet-metadata` for the API
+  equivalent.
 
   :::{hint}
 
@@ -129,8 +133,7 @@ Once the manager is running, you can open ImageTools in several ways:
 
 - Launch the built-in data explorer from {menuselection}`File --> Data Explorer` or
   {kbd}`Ctrl+E` when you want directory browsing and metadata preview before opening
-  selected files in the manager. Use the loader options button next to the loader
-  selector to apply the same `loader_extensions=` settings when opening selected files.
+  selected files in the manager.
 
 - Watch notebook variables with the `%watch` magic to create windows that stay
   synchronized with your data structures. Use `%watch -m 1 darr` to watch into manager
@@ -498,6 +501,10 @@ or when you are developing loaders.
 The explorer can also be launched standalone from Python or the command line for browsing
 and previewing. Opening selected files into ImageTool analysis still requires a running
 ImageTool manager, which is why launching it from the manager is the recommended path.
+
+When launched from the manager, loader options are shared with the manager's
+file-loading dialogs and across all Data Explorer tabs. This includes configured
+spreadsheet metadata.
 
 For the standalone tool page, see {ref}`guide-data-explorer`.
 

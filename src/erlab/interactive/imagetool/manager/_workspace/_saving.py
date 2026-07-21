@@ -21,6 +21,7 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 from erlab.interactive import _qt_state
+from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
 from erlab.interactive.imagetool.manager._widgets import (
     _strip_workspace_modified_placeholder,
 )
@@ -472,11 +473,16 @@ class _WorkspaceSaver:
             extensions_getter = getattr(explorer, "loader_extensions_by_name", None)
             if callable(extensions_getter):
                 explorer_extensions = extensions_getter()
+        self._manager._sync_shared_loader_state(
+            explorer_kwargs,
+            explorer_extensions,
+            apply_explorer=False,
+        )
         state = workspace_format.WorkspaceLoaderState(
             recent_directory=self._manager._recent_directory,
             recent_name_filter=self._manager._recent_name_filter,
             manager_loader_kwargs_by_filter={
-                str(name): dict(kwargs)
+                str(name): _serialize_loader_kwargs(kwargs)
                 for name, kwargs in manager_loader_kwargs.items()
             },
             manager_loader_extensions_by_filter={
@@ -484,7 +490,8 @@ class _WorkspaceSaver:
                 for name, extensions in manager_loader_extensions.items()
             },
             explorer_loader_kwargs_by_name={
-                str(name): dict(kwargs) for name, kwargs in explorer_kwargs.items()
+                str(name): _serialize_loader_kwargs(kwargs)
+                for name, kwargs in explorer_kwargs.items()
             },
             explorer_loader_extensions_by_name={
                 str(name): dict(extensions)

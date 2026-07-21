@@ -1451,6 +1451,63 @@ def test_itool_state_loader_string_selection_roundtrip_and_reload(
     win.close()
 
 
+def test_itool_state_spreadsheet_metadata_source_roundtrip(
+    qtbot,
+    tmp_path: pathlib.Path,
+    example_loader,
+) -> None:
+    data = xr.DataArray(
+        np.arange(25, dtype=float).reshape((5, 5)),
+        dims=["x", "y"],
+        name="signal",
+    )
+    source = erlab.io.metadata.ExcelMetadataSource(
+        tmp_path / "metadata.xlsx",
+        sheet_name="Measurements",
+        file_name_column="File",
+        coordinate_mapping={"Temperature": "sample_temp"},
+        row_range=(20, 27),
+    )
+    win = ImageTool(
+        data,
+        file_path=tmp_path / "scan_0001.h5",
+        load_func=(
+            example_loader.name,
+            {"metadata": source},
+            FileDataSelection(kind="dataarray"),
+        ),
+    )
+    qtbot.addWidget(win)
+
+    serialized = win.to_dataset()
+    saved_state = json.loads(serialized.attrs["itool_state"])
+    json.dumps(json.loads(serialized.attrs["itool_provenance_spec"]))
+    assert saved_state["load_func"][1]["metadata"] == {
+        "__erlab_spreadsheet_metadata_source__": {
+            "type": "excel",
+            "path": str(source.path),
+            "sheet_name": "Measurements",
+            "file_name_column": "File",
+            "coordinate_mapping": {"Temperature": "sample_temp"},
+            "attribute_mapping": {},
+            "overwrite": False,
+            "row_range": [20, 27],
+        }
+    }
+
+    restored = ImageTool.from_dataset(serialized)
+    qtbot.addWidget(restored)
+    assert restored.slicer_area._load_func is not None
+    restored_source = restored.slicer_area._load_func[1]["metadata"]
+    assert isinstance(restored_source, erlab.io.metadata.ExcelMetadataSource)
+    assert restored_source.sheet_name == "Measurements"
+    assert restored_source.coordinate_mapping == {"Temperature": "sample_temp"}
+    assert restored_source.row_range == (20, 27)
+
+    restored.close()
+    win.close()
+
+
 @pytest.mark.parametrize(
     ("loader", "saved_data", "selection", "expected_selection"),
     [
