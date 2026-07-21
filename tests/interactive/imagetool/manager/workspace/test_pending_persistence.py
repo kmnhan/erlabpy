@@ -22,6 +22,7 @@ from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._model import FileDataSelection, full_data
 from erlab.interactive.imagetool._provenance._operations import (
+    AssignAttrsOperation,
     AverageOperation,
     ImageToolSelectionSourceBinding,
 )
@@ -820,7 +821,10 @@ def test_manager_pending_memory_file_source_full_code_uses_saved_load_code(
         root.hide()
 
         node = manager._tool_graph.root_wrappers[0]
-        node.set_detached_provenance(full_data(AverageOperation(dims=("alpha",))))
+        node.set_detached_provenance(
+            full_data(AverageOperation(dims=("alpha",))),
+            replay_source_data=None,
+        )
 
         fname = tmp_path / "pending-file-source-replay.itws"
         manager._workspace_controller.saving._save_workspace_document(
@@ -868,6 +872,63 @@ def test_manager_pending_memory_file_source_full_code_uses_saved_load_code(
         )
         assert wrapper.pending_workspace_memory_payload is not None
         assert wrapper.imagetool is None
+
+
+def test_manager_replay_source_survives_pending_workspace_load_and_duplicate(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = xr.DataArray(np.arange(6.0), dims=("x",), name="source")
+    provenance = full_data(
+        AssignAttrsOperation(attrs={"order": "first"}),
+        AssignAttrsOperation(attrs={"order": "second"}),
+    )
+    displayed = provenance.apply(source)
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tool = itool(displayed, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(
+            tool,
+            show=False,
+            provenance_spec=provenance,
+            replay_source_data=source,
+        )
+        tool.hide()
+
+        fname = tmp_path / "pending-replay-source.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            fname,
+            force_full=True,
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+
+        wrapper = manager._tool_graph.root_wrappers[0]
+        assert wrapper.pending_workspace_memory_payload is not None
+        assert wrapper.has_replay_source
+        assert wrapper.replay_source_data is None
+        select_tools(manager, [0])
+        manager._update_info(uid=wrapper.uid)
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+
+        manager.get_imagetool(0)
+        assert wrapper.replay_source_data is not None
+        xr.testing.assert_identical(wrapper.replay_source_data, source)
+
+        duplicate_index = typing.cast("int", manager.duplicate_imagetool(0))
+        duplicate = manager._tool_graph.root_wrappers[duplicate_index]
+        assert duplicate.replay_source_data is not None
+        xr.testing.assert_identical(duplicate.replay_source_data, source)
 
 
 def test_full_save_copies_unopened_pending_toolwindows_without_construction(

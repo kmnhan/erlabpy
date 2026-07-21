@@ -4373,6 +4373,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     provenance_spec,
                     state=output_source_state,
                     propagate_descendants=True,
+                    replay_source_data=None,
                 )
                 manager.show_childtool(existing_target)
                 return manager.get_imagetool(existing_target)

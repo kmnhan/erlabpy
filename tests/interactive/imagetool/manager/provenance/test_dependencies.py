@@ -32,6 +32,7 @@ from erlab.interactive.imagetool._provenance._model import (
     selection,
 )
 from erlab.interactive.imagetool._provenance._operations import (
+    AssignAttrsOperation,
     GaussianFilterOperation,
     IselOperation,
     QSelOperation,
@@ -1002,7 +1003,10 @@ def test_manager_nested_imagetool_refresh_updates_descendant_dependency(
             "str", grandchild_node.provenance_spec.derivation_code()
         )
 
-        root_node.set_detached_provenance(updated_root_spec)
+        root_node.set_detached_provenance(
+            updated_root_spec,
+            replay_source_data=None,
+        )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, base.isel(x=slice(1, 3)))
 
@@ -1066,7 +1070,8 @@ def test_manager_nested_imagetool_auto_update_can_be_disabled_from_auto_badge(
 
         updated = base.isel(x=slice(2, 4))
         manager._tool_graph.root_wrappers[0].set_detached_provenance(
-            selection(IselOperation(kwargs={"x": slice(2, 4)}))
+            selection(IselOperation(kwargs={"x": slice(2, 4)})),
+            replay_source_data=None,
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated)
@@ -1135,7 +1140,8 @@ def test_manager_nested_imagetool_auto_update_can_be_disabled_from_auto_badge(
 
         updated2 = base.isel(x=slice(4, 6))
         manager._tool_graph.root_wrappers[0].set_detached_provenance(
-            selection(IselOperation(kwargs={"x": slice(4, 6)}))
+            selection(IselOperation(kwargs={"x": slice(4, 6)})),
+            replay_source_data=None,
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated2)
@@ -1197,7 +1203,8 @@ def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
         grandchild_node = manager._child_node(grandchild_uid)
 
         root_node.set_detached_provenance(
-            selection(IselOperation(kwargs={"x": slice(1, 3)}))
+            selection(IselOperation(kwargs={"x": slice(1, 3)})),
+            replay_source_data=None,
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, base.isel(x=slice(1, 3)))
@@ -1260,7 +1267,8 @@ def test_manager_manual_nested_refresh_updates_stale_ancestors(
         updated_root = base.isel(x=slice(2, 4))
 
         manager._tool_graph.root_wrappers[0].set_detached_provenance(
-            selection(IselOperation(kwargs={"x": slice(2, 4)}))
+            selection(IselOperation(kwargs={"x": slice(2, 4)})),
+            replay_source_data=None,
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated_root)
@@ -2445,6 +2453,45 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
 
         assert promoted.source_state == "fresh"
         xr.testing.assert_identical(fetch(child_uid), child_before)
+
+
+def test_manager_promote_live_child_retains_replay_source(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = xr.DataArray(np.arange(6.0), dims=("x",), name="source")
+    source_spec = full_data(
+        AssignAttrsOperation(attrs={"order": "first"}),
+        AssignAttrsOperation(attrs={"order": "second"}),
+    )
+
+    with manager_context() as manager:
+        parent_tool = itool(source, manager=False, execute=False)
+        assert isinstance(parent_tool, erlab.interactive.imagetool.ImageTool)
+        parent_index = manager.add_imagetool(parent_tool, show=False)
+        expected_source = (
+            manager._node_for_target(parent_index).current_source_data().copy(deep=True)
+        )
+
+        child_tool = itool(source_spec.apply(source), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            parent_index,
+            show=False,
+            source_spec=source_spec,
+        )
+
+        promoted_index = manager.promote_child_imagetool(child_uid)
+        promoted = manager._tool_graph.root_wrappers[promoted_index]
+        assert promoted.replay_source_data is not None
+        xr.testing.assert_identical(promoted.replay_source_data, expected_source)
+
+        select_tools(manager, [promoted_index])
+        manager._update_info(uid=promoted.uid)
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
 
 
 def test_manager_replace_current_sets_provenance_on_provenance_free_root(

@@ -1234,7 +1234,10 @@ class ToolNamespace(_ConsoleDataHandleBase):
         else:
             raw_value = value
         if provenance_spec is not None:
-            self._wrapper.set_detached_provenance(provenance_spec)
+            self._wrapper.set_detached_provenance(
+                provenance_spec,
+                replay_source_data=None,
+            )
         self.tool.slicer_area.replace_source_data(raw_value, emit_edited=True)
 
     @property
@@ -1365,7 +1368,10 @@ class ToolNamespace(_ConsoleDataHandleBase):
                 value_operand.value,
                 emit_signals=False,
             )
-            self._wrapper.set_detached_provenance(provenance_spec)
+            self._wrapper.set_detached_provenance(
+                provenance_spec,
+                replay_source_data=None,
+            )
             slicer_area = self.tool.slicer_area
             slicer_area.sigSourceDataChanged.emit()
             slicer_area.sigSourceDataReplaced.emit(
@@ -1373,7 +1379,10 @@ class ToolNamespace(_ConsoleDataHandleBase):
             )
             slicer_area.sigDataEdited.emit()
             return
-        self._wrapper.set_detached_provenance(provenance_spec)
+        self._wrapper.set_detached_provenance(
+            provenance_spec,
+            replay_source_data=None,
+        )
         self._set_data_item(
             key_operand.value,
             value_operand.value,

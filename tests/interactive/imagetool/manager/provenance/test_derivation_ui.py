@@ -800,6 +800,12 @@ def test_manager_provenance_reorder_requires_available_replay(
             ),
         ),
     )
+    detached_script = script(
+        *steps,
+        start_label="Start from detached data",
+        seed_code="derived = data",
+        active_name="derived",
+    )
     unavailable_specs = (
         opaque_script,
         missing_input_script,
@@ -820,7 +826,10 @@ def test_manager_provenance_reorder_requires_available_replay(
         select_tools(manager, [0])
 
         for unavailable_spec in unavailable_specs:
-            root.set_detached_provenance(unavailable_spec)
+            root.set_detached_provenance(
+                unavailable_spec,
+                replay_source_data=None,
+            )
             manager._update_info()
             assert not manager._provenance_edit_controller.can_reorder_steps()[0]
 
@@ -836,7 +845,15 @@ def test_manager_provenance_reorder_requires_available_replay(
         manager._update_info()
         assert manager._provenance_edit_controller.can_reorder_steps()[0]
 
-        root.set_detached_provenance(trusted_script)
+        root.set_detached_provenance(detached_script, replay_source_data=data)
+        manager._update_info()
+        assert manager._provenance_edit_controller._detached_script_replay_input_names(
+            root,
+            detached_script,
+        ) == ("data",)
+        assert manager._provenance_edit_controller.can_reorder_steps()[0]
+
+        root.set_detached_provenance(trusted_script, replay_source_data=None)
         manager._update_info()
         assert manager._provenance_edit_controller.can_reorder_steps()[0]
         menu = manager._build_metadata_derivation_menu()
@@ -951,6 +968,7 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
         displayed_source_spec=live_spec,
         displayed_provenance_spec=None,
         snapshot_token=source_revision,
+        materialize_pending_workspace_payload=lambda: True,
     )
     manager._tool_graph.nodes.update({"parent": parent, source_node.uid: source_node})
     manager._parent_node = lambda _node: parent
@@ -985,7 +1003,8 @@ def test_manager_provenance_reorder_controller_tracks_dependencies_and_targets(
     )
     replay_node = types.SimpleNamespace(
         parent_uid=None,
-        detached_replay_source_data=data,
+        replay_source_data=data,
+        has_replay_source=True,
     )
     xr.testing.assert_identical(
         controller._replay_live_script_candidate(replay_node, "display", live_script),
@@ -1061,8 +1080,8 @@ def test_manager_watched_provenance_reorder_uses_retained_source(
             for operation in root.provenance_spec.operations
         ] == ["second", "first"]
         assert root.slicer_area._data.attrs["order"] == "first"
-        assert root.detached_replay_source_data is not None
-        xr.testing.assert_identical(root.detached_replay_source_data, source)
+        assert root.replay_source_data is not None
+        xr.testing.assert_identical(root.replay_source_data, source)
 
 
 def test_manager_provenance_reorder_session_rejects_each_stale_input(
@@ -1754,7 +1773,11 @@ def test_manager_provenance_reorder_rejects_stale_dialog(
         def _apply_after_data_change(dialog: QtWidgets.QDialog) -> None:
             assert isinstance(dialog, _ProvenanceReorderDialog)
             assert dialog.current_view.move_current(1)
-            root.replace_with_detached_data(replacement, spec)
+            root.replace_with_detached_data(
+                replacement,
+                spec,
+                replay_source_data=None,
+            )
             dialog.apply_button.click()
             assert dialog.isVisible()
             dialog.reject()

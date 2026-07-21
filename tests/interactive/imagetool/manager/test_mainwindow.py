@@ -3165,7 +3165,10 @@ def test_batch_action_transform_error_paths(
         )
 
         manager._node_for_target(0).set_source_binding(full_data())
-        manager._node_for_target(1).set_detached_provenance(full_data())
+        manager._node_for_target(1).set_detached_provenance(
+            full_data(),
+            replay_source_data=None,
+        )
         assert manager.apply_batch_transform_dialog(
             _BatchTransformStub(public_source=True),
             "replace",
@@ -3920,7 +3923,8 @@ def test_manager_metadata_full_code_generated_only_when_copied(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         wrapper = manager._tool_graph.root_wrappers[0]
         wrapper.set_detached_provenance(
-            full_data(RenameOperation(name="renamed")).to_replay_spec()
+            full_data(RenameOperation(name="renamed")).to_replay_spec(),
+            replay_source_data=None,
         )
 
         monkeypatch.setattr(

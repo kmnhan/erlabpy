@@ -803,8 +803,6 @@ class DataTransformDialog(_DataManipulationDialog):
         target: int | str,
         new_name: str,
         fallback_spec: ToolProvenanceSpec | None,
-        *,
-        replay_source_data: xr.DataArray | None = None,
     ) -> bool:
         manager, _ = self._manager_target()
         if manager is None:
@@ -819,15 +817,11 @@ class DataTransformDialog(_DataManipulationDialog):
             )
             return True
         displayed_provenance = node.displayed_provenance_spec
+        replay_source_data = node.replay_source_for_detached_output()
         if displayed_provenance is not None:
-            existing_source_data = node.detached_replay_source_data
             node.set_detached_provenance(
                 self._compose_replace_source_spec(displayed_provenance, new_name),
-                replay_source_data=(
-                    existing_source_data
-                    if existing_source_data is not None
-                    else replay_source_data
-                ),
+                replay_source_data=replay_source_data,
             )
             return True
         if fallback_spec is not None:
@@ -1034,7 +1028,6 @@ class DataTransformDialog(_DataManipulationDialog):
                         target,
                         new_name,
                         detached_provenance_spec,
-                        replay_source_data=self.slicer_area.data,
                     )
                 else:
                     self._set_current_tool_provenance(detached_provenance_spec)
@@ -1064,10 +1057,16 @@ class DataTransformDialog(_DataManipulationDialog):
                         )
                         if tool is not None:  # pragma: no branch
                             tool.set_provenance_spec(detached_provenance_spec)
+                            replay_source_data = self.slicer_area.data
+                            if target is not None:
+                                replay_source_data = manager._node_for_target(
+                                    target
+                                ).replay_source_for_detached_output()
                             manager.add_imagetool(
                                 tool,
                                 activate=True,
                                 provenance_spec=detached_provenance_spec,
+                                replay_source_data=replay_source_data,
                             )
                     else:
                         tool = typing.cast(

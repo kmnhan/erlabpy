@@ -549,6 +549,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         detached = manager._tool_graph.root_wrappers[1]
         assert detached.source_spec is None
         assert detached.provenance_spec is not None
+        assert detached.replay_source_data is not None
         detached_tool = manager.get_imagetool(1)
         detached_derivation_before = detached.provenance_spec.derivation_code()
 
@@ -602,6 +603,11 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         ]
         assert duplicated_detached.source_spec is None
         assert duplicated_detached.provenance_spec == detached.provenance_spec
+        assert duplicated_detached.replay_source_data is not None
+        xr.testing.assert_identical(
+            duplicated_detached.replay_source_data,
+            detached.replay_source_data,
+        )
         xr.testing.assert_identical(
             manager.get_imagetool(duplicated_detached_index).slicer_area._data.rename(
                 None

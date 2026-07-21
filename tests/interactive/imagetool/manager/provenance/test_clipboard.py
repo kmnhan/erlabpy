@@ -633,16 +633,28 @@ def test_manager_paste_detached_steps_uses_replay_spec_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data = _provenance_paste_test_data()
+    replay_source = data.copy(deep=True)
     local = full_data(AverageOperation(dims=("z",)))
     controller = _fake_edit_controller(None, metadata_uid=None)
-    replaced: list[tuple[xr.DataArray, ToolProvenanceSpec, bool]] = []
+    replaced: list[
+        tuple[xr.DataArray, ToolProvenanceSpec, bool, xr.DataArray | None]
+    ] = []
+
+    def _replace_with_detached_data(
+        result: xr.DataArray,
+        spec: ToolProvenanceSpec,
+        *,
+        preserve_filter: bool,
+        replay_source_data: xr.DataArray | None,
+    ) -> None:
+        replaced.append((result, spec, preserve_filter, replay_source_data))
+
     node = types.SimpleNamespace(
         uid="node",
         displayed_provenance_spec=full_data(),
         current_public_data=lambda: data,
-        replace_with_detached_data=lambda data, spec, preserve_filter: replaced.append(
-            (data, spec, preserve_filter)
-        ),
+        replay_source_for_detached_output=lambda: replay_source,
+        replace_with_detached_data=_replace_with_detached_data,
     )
     monkeypatch.setattr(
         provenance_edit_controller,
@@ -660,6 +672,7 @@ def test_manager_paste_detached_steps_uses_replay_spec_fallback(
     xr.testing.assert_identical(replaced[0][0], local.apply(data))
     assert replaced[0][1] == local.to_replay_spec()
     assert replaced[0][2] is False
+    assert replaced[0][3] is replay_source
 
 
 def test_manager_can_delete_row_reports_unavailable_branches(

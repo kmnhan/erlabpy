@@ -896,7 +896,8 @@ def test_manager_selection_provenance_edit_restores_from_high_dimensional_source
     )
     spec = full_data(IselOperation(kwargs={"scan": 1}))
     node = _fake_edit_node(spec)
-    node.detached_replay_source_data = parent_data
+    node.replay_source_data = parent_data
+    node.has_replay_source = True
 
     manager = QtWidgets.QWidget()
     qtbot.addWidget(manager)
@@ -1468,7 +1469,8 @@ def test_manager_edit_live_script_code_row_replays_with_data_context(
         )
     )
     node = _fake_edit_node(spec)
-    node.detached_replay_source_data = parent_data
+    node.replay_source_data = parent_data
+    node.has_replay_source = True
     controller = _fake_edit_controller(node)
     applied: list[tuple[xr.DataArray, ToolProvenanceSpec]] = []
 

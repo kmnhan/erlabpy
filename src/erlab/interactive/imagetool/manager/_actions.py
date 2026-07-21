@@ -175,6 +175,7 @@ class _ActionsController:
             raise RuntimeError(
                 "Could not read this ImageTool's saved data from the workspace file."
             )
+        replay_source_data = node.replay_source_for_detached_output()
 
         row_index = self._manager.tree_view._model._row_index(uid)
         was_expanded = row_index.isValid() and self._manager.tree_view.isExpanded(
@@ -204,6 +205,7 @@ class _ActionsController:
                 show=False,
                 uid=uid,
                 provenance_spec=provenance_spec,
+                replay_source_data=replay_source_data,
                 snapshot_token=snapshot_token,
                 source_snapshot_token=source_snapshot_token,
                 created_time=created_time,
@@ -523,7 +525,7 @@ class _ActionsController:
 
                 replace_kind = ""
                 replace_provenance = None
-                replace_replay_source_data = None
+                replay_source_data = node.replay_source_for_detached_output()
                 if launch_mode == "replace":
                     displayed_source = node.displayed_source_spec
                     if displayed_source is not None:
@@ -543,13 +545,6 @@ class _ActionsController:
                     else:
                         replace_kind = "detached"
                         replace_provenance = detached_provenance
-                    if replace_kind == "detached":
-                        replace_replay_source_data = (
-                            node.detached_replay_source_data
-                            if node.detached_replay_source_data is not None
-                            else slicer_area.data
-                        )
-
                 plan.append(
                     (
                         target,
@@ -561,7 +556,7 @@ class _ActionsController:
                         detached_provenance,
                         replace_kind,
                         replace_provenance,
-                        replace_replay_source_data,
+                        replay_source_data,
                     )
                 )
             except Exception as exc:
@@ -583,7 +578,7 @@ class _ActionsController:
                 detached_provenance,
                 replace_kind,
                 replace_provenance,
-                replace_replay_source_data,
+                replay_source_data,
             ) in plan:
                 if launch_mode == "replace":
                     if replace_provenance is not None:
@@ -596,7 +591,7 @@ class _ActionsController:
                         else:
                             node.set_detached_provenance(
                                 replace_provenance,
-                                replay_source_data=replace_replay_source_data,
+                                replay_source_data=replay_source_data,
                             )
                     slicer_area.replace_source_data(processed, emit_edited=True)
                     continue
@@ -626,6 +621,7 @@ class _ActionsController:
                         tool,
                         activate=True,
                         provenance_spec=detached_provenance,
+                        replay_source_data=replay_source_data,
                     )
             if launch_mode == "replace":
                 self._manager._sigDataReplaced.emit()
@@ -782,6 +778,7 @@ class _ActionsController:
                         source_binding=persistence.source_binding,
                         source_auto_update=persistence.source_auto_update,
                         source_state=persistence.source_state,
+                        replay_source_data=persistence.replay_source_data,
                         note=node.note,
                     )
                 else:
@@ -800,6 +797,7 @@ class _ActionsController:
                         source_auto_update=persistence.source_auto_update,
                         source_state=persistence.source_state,
                         output_id=persistence.output_id,
+                        replay_source_data=persistence.replay_source_data,
                         note=node.note,
                     )
             else:
@@ -1121,7 +1119,10 @@ class _ActionsController:
             if replacement is None:
                 # A notebook-side update replaces the watched variable itself, so
                 # prior ImageTool operations no longer describe the displayed array.
-                wrapper.set_displayed_provenance(None)
+                wrapper.set_detached_provenance(
+                    None,
+                    replay_source_data=prepared.data,
+                )
                 self._manager.get_imagetool(idx).slicer_area.replace_source_data(
                     prepared.data
                 )
@@ -1393,6 +1394,8 @@ class _ActionsController:
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
+        replay_source_data: xr.DataArray | None = None,
+        replay_source_pending: bool = False,
         snapshot_token: str | None = None,
         source_snapshot_token: str | None = None,
         created_time: datetime.datetime | str | bytes | None = None,
@@ -1423,6 +1426,8 @@ class _ActionsController:
             source_auto_update=source_auto_update,
             source_state=source_state,
             output_id=output_id,
+            replay_source_data=replay_source_data,
+            replay_source_pending=replay_source_pending,
             snapshot_token=snapshot_token,
             source_snapshot_token=source_snapshot_token,
             created_time=created_time,
