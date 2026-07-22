@@ -646,6 +646,52 @@ def test_handle_dropped_files_treats_itws_suffix_case_insensitively(
     assert calls == [([fname], True)]
 
 
+def test_handle_dropped_files_allows_mixed_extensions(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    calls: list[tuple[list[pathlib.Path], bool]] = []
+    paths = [tmp_path / "first.pxt", tmp_path / "second.zip"]
+
+    def _record_open(paths, try_workspace: bool = False) -> None:
+        calls.append((paths, try_workspace))
+
+    with manager_context() as manager:
+        monkeypatch.setattr(manager._data_ingress, "open_multiple_files", _record_open)
+        manager._handle_dropped_files(paths)
+
+    assert calls == [(paths, False)]
+
+
+def test_open_multiple_files_reports_incompatible_mixed_extensions(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    critical_calls: list[tuple[typing.Any, ...]] = []
+    paths = [tmp_path / "first.pxt", tmp_path / "second.txt"]
+
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "critical",
+        lambda *args: critical_calls.append(args),
+    )
+
+    with manager_context() as manager:
+        manager._data_ingress.open_multiple_files(paths)
+
+    assert len(critical_calls) == 1
+    message = critical_calls[0][2]
+    assert "all selected file types" in message
+    assert "'.pxt'" in message
+    assert "'.txt'" in message
+
+
 def test_open_multiple_files_dropped_itws_error_does_not_fall_through_to_loaders(
     monkeypatch,
     tmp_path,

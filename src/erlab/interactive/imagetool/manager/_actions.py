@@ -1260,13 +1260,6 @@ class _ActionsController:
             extensions: set[str] = {
                 file_path.suffix.lower() for file_path in file_paths
             }
-            if len(extensions) != 1:
-                QtWidgets.QMessageBox.critical(
-                    self._manager,
-                    "Error",
-                    "Multiple file types cannot be opened at the same time.",
-                )
-                return
             self._manager._data_ingress.open_multiple_files(
                 file_paths,
                 try_workspace=extensions == {".itws"},
