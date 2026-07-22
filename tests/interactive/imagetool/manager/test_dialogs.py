@@ -1091,11 +1091,9 @@ def test_spreadsheet_metadata_mapping_reorder_defensive_paths(qtbot) -> None:
     assert len(requested) == 1
 
 
-def test_spreadsheet_metadata_mapping_uses_loader_destination_suggestions(
-    qtbot,
-    example_loader,
-) -> None:
-    dialog = _SpreadsheetMetadataDialog(None, loader=erlab.io.loaders["example"])
+def test_spreadsheet_metadata_mapping_uses_fixed_destination_suggestions(qtbot) -> None:
+    expected = ("sample_temp", "hv", "chi", "xi", "delta", "alpha", "beta")
+    dialog = _SpreadsheetMetadataDialog(None)
     qtbot.addWidget(dialog)
     dialog.show()
     qtbot.waitUntil(dialog.isVisible)
@@ -1116,8 +1114,10 @@ def test_spreadsheet_metadata_mapping_uses_loader_destination_suggestions(
         if child.isVisible()
     )
     assert editor.isEditable()
-    coordinate_suggestions = {editor.itemText(index) for index in range(editor.count())}
-    assert {"sample_temp", "hv"} <= coordinate_suggestions
+    coordinate_suggestions = tuple(
+        editor.itemText(index) for index in range(editor.count())
+    )
+    assert coordinate_suggestions == expected
     assert editor.currentText() == "custom_coord"
     editor.setEditText("custom_coord")
     line_edit = editor.lineEdit()
@@ -1141,8 +1141,10 @@ def test_spreadsheet_metadata_mapping_uses_loader_destination_suggestions(
         if child.isVisible()
     )
     assert editor.isEditable()
-    attribute_suggestions = {editor.itemText(index) for index in range(editor.count())}
-    assert {"configuration", "LensMode"} <= attribute_suggestions
+    attribute_suggestions = tuple(
+        editor.itemText(index) for index in range(editor.count())
+    )
+    assert attribute_suggestions == expected
     assert editor.currentText() == "custom_attr"
 
 

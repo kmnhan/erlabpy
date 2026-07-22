@@ -19,7 +19,7 @@ from erlab.io.metadata import (
 
 if typing.TYPE_CHECKING:
     import pathlib
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable
 
     from erlab.io.metadata._core import _SpreadsheetMetadataPreview
 
@@ -28,6 +28,15 @@ _MAPPING_SOURCE_COLUMN = 0
 _MAPPING_KIND_COLUMN = 1
 _MAPPING_NAME_COLUMN = 2
 _MAPPING_VALUE_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
+_MAPPING_DESTINATION_SUGGESTIONS = (
+    "sample_temp",
+    "hv",
+    "chi",
+    "xi",
+    "delta",
+    "alpha",
+    "beta",
+)
 
 
 class _MappingEditDelegate(QtWidgets.QStyledItemDelegate):
@@ -38,19 +47,13 @@ class _MappingEditDelegate(QtWidgets.QStyledItemDelegate):
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self._columns: tuple[str, ...] = ()
-        self._coordinate_destinations: tuple[str, ...] = ()
-        self._attribute_destinations: tuple[str, ...] = ()
+        self._destination_names: tuple[str, ...] = ()
 
     def set_columns(self, columns: tuple[str, ...]) -> None:
         self._columns = columns
 
-    def set_destination_names(
-        self,
-        coordinate_names: tuple[str, ...],
-        attribute_names: tuple[str, ...],
-    ) -> None:
-        self._coordinate_destinations = coordinate_names
-        self._attribute_destinations = attribute_names
+    def set_destination_names(self, names: tuple[str, ...]) -> None:
+        self._destination_names = names
 
     def createEditor(
         self,
@@ -89,13 +92,7 @@ class _MappingEditDelegate(QtWidgets.QStyledItemDelegate):
                 QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
             )
             editor.setMinimumContentsLength(16)
-            kind = index.siblingAtColumn(_MAPPING_KIND_COLUMN).data(_MAPPING_VALUE_ROLE)
-            destinations = (
-                self._attribute_destinations
-                if kind == "attribute"
-                else self._coordinate_destinations
-            )
-            editor.addItems(destinations)
+            editor.addItems(self._destination_names)
             completer = editor.completer()
             if completer is not None:
                 completer.setCaseSensitivity(QtCore.Qt.CaseSensitivity.CaseInsensitive)
@@ -441,46 +438,6 @@ def _column_display_label(columns: tuple[str, ...], column: str | None) -> str:
     return f"{column.replace(chr(10), ' ')} (not found)"
 
 
-def _loader_destination_names(
-    loader: erlab.io.dataloader.LoaderBase | None,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Return ordered coordinate and attribute name suggestions for a loader."""
-    if loader is None:
-        return (), ()
-
-    try:
-        summary_values = tuple(
-            value for value in loader.summary_attrs.values() if isinstance(value, str)
-        )
-    except Exception:
-        # Suggestions must never prevent configuring a third-party loader whose
-        # summary metadata depends on unavailable runtime state.
-        summary_values = ()
-
-    def unique_names(*groups: Iterable[object]) -> tuple[str, ...]:
-        return tuple(
-            dict.fromkeys(
-                value
-                for group in groups
-                for value in group
-                if isinstance(value, str) and value.strip()
-            )
-        )
-
-    common_names = unique_names(loader.name_map, summary_values)
-    coordinate_names = unique_names(
-        loader.coordinate_attrs,
-        loader.additional_coords,
-        common_names,
-    )
-    attribute_names = unique_names(
-        loader.additional_attrs,
-        summary_values,
-        common_names,
-    )
-    return coordinate_names, attribute_names
-
-
 class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
     """Configure an Excel or Google Sheets metadata source for a file load."""
 
@@ -655,9 +612,7 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         self.mapping_delegate.editor_accepted.connect(
             self.mapping_table.advance_after_editor
         )
-        self.mapping_delegate.set_destination_names(
-            *_loader_destination_names(self._loader)
-        )
+        self.mapping_delegate.set_destination_names(_MAPPING_DESTINATION_SUGGESTIONS)
         self.mapping_table.setItemDelegate(self.mapping_delegate)
         header = typing.cast("QtWidgets.QHeaderView", self.mapping_table.header())
         header.setStretchLastSection(False)
