@@ -1091,6 +1091,54 @@ def test_spreadsheet_metadata_mapping_reorder_defensive_paths(qtbot) -> None:
     assert len(requested) == 1
 
 
+def test_spreadsheet_metadata_mapping_keyboard_cursor_navigation(qtbot) -> None:
+    dialog = _SpreadsheetMetadataDialog(None)
+    qtbot.addWidget(dialog)
+    table = dialog.mapping_table
+    no_modifiers = QtCore.Qt.KeyboardModifier.NoModifier
+    action = QtWidgets.QAbstractItemView.CursorAction
+
+    assert not table.moveCursor(action.MoveNext, no_modifiers).isValid()
+
+    dialog.add_mapping_row("Temperature", name="sample_temp")
+    dialog.add_mapping_row("Mode", "attribute", "mode")
+
+    def check_move(
+        row: int,
+        column: int,
+        cursor_action: QtWidgets.QAbstractItemView.CursorAction,
+        expected: tuple[int, int],
+    ) -> None:
+        item = table.topLevelItem(row)
+        assert item is not None
+        table.setCurrentIndex(table.indexFromItem(item, column))
+        result = table.moveCursor(cursor_action, no_modifiers)
+        assert (result.row(), result.column()) == expected
+
+    check_move(0, 0, action.MoveNext, (0, 1))
+    check_move(0, 2, action.MoveNext, (1, 0))
+    check_move(0, 1, action.MovePrevious, (0, 0))
+    check_move(1, 0, action.MovePrevious, (0, 2))
+    check_move(0, 1, action.MoveLeft, (0, 0))
+    check_move(0, 0, action.MoveLeft, (0, 0))
+    check_move(0, 1, action.MoveRight, (0, 2))
+    check_move(0, 2, action.MoveRight, (0, 2))
+    check_move(1, 1, action.MoveUp, (0, 1))
+    check_move(0, 1, action.MoveUp, (0, 1))
+    check_move(0, 1, action.MoveDown, (1, 1))
+    check_move(1, 1, action.MoveDown, (1, 1))
+
+    first_item = table.topLevelItem(0)
+    last_item = table.topLevelItem(1)
+    assert first_item is not None
+    assert last_item is not None
+    table.setCurrentIndex(table.indexFromItem(first_item, 0))
+    table.moveCursor(action.MovePrevious, no_modifiers)
+    table.setCurrentIndex(table.indexFromItem(last_item, 2))
+    table.moveCursor(action.MoveNext, no_modifiers)
+    table.moveCursor(action.MovePageUp, no_modifiers)
+
+
 def test_spreadsheet_metadata_add_mapping_keyboard_opens_source_popup(qtbot) -> None:
     dialog = _SpreadsheetMetadataDialog(None)
     qtbot.addWidget(dialog)
