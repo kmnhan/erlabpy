@@ -55,6 +55,29 @@ class _MappingEditDelegate(QtWidgets.QStyledItemDelegate):
     def set_destination_names(self, names: tuple[str, ...]) -> None:
         self._destination_names = names
 
+    def eventFilter(
+        self,
+        watched: QtCore.QObject | None,
+        event: QtCore.QEvent | None,
+    ) -> bool:
+        if (
+            isinstance(watched, QtWidgets.QComboBox)
+            and not watched.isEditable()
+            and event is not None
+            and event.type() == QtCore.QEvent.Type.KeyPress
+        ):
+            key_event = typing.cast("QtGui.QKeyEvent", event)
+            if key_event.key() in (
+                QtCore.Qt.Key.Key_Return,
+                QtCore.Qt.Key.Key_Enter,
+            ):
+                popup = watched.view()
+                if popup is None or not popup.isVisible():
+                    watched.showPopup()
+                    key_event.accept()
+                    return True
+        return super().eventFilter(watched, event)
+
     def createEditor(
         self,
         parent: QtWidgets.QWidget | None,
@@ -127,9 +150,11 @@ class _MappingEditDelegate(QtWidgets.QStyledItemDelegate):
                 value = index.data(_MAPPING_VALUE_ROLE)
                 editor.setCurrentIndex(editor.findData(value))
             else:
-                editor.setEditText(
-                    str(index.data(QtCore.Qt.ItemDataRole.EditRole) or "")
-                )
+                text = str(index.data(QtCore.Qt.ItemDataRole.EditRole) or "")
+                match = editor.findText(text)
+                editor.setCurrentIndex(match)
+                if match < 0:
+                    editor.setEditText(text)
             return
         super().setEditorData(editor, index)
 

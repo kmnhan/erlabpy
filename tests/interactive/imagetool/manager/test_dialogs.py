@@ -1091,8 +1091,52 @@ def test_spreadsheet_metadata_mapping_reorder_defensive_paths(qtbot) -> None:
     assert len(requested) == 1
 
 
+def test_spreadsheet_metadata_add_mapping_keyboard_opens_source_popup(qtbot) -> None:
+    dialog = _SpreadsheetMetadataDialog(None)
+    qtbot.addWidget(dialog)
+    dialog._set_columns(("Comment", "Mode"))
+    dialog.show()
+    qtbot.waitUntil(dialog.isVisible)
+
+    dialog.add_mapping_button.setFocus()
+    qtbot.keyClick(dialog.add_mapping_button, QtCore.Qt.Key.Key_Return)
+    qtbot.waitUntil(lambda: dialog.mapping_table.topLevelItemCount() == 1)
+    qtbot.waitUntil(
+        lambda: any(
+            editor.isVisible()
+            for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        )
+    )
+    editor = next(
+        editor
+        for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        if editor.isVisible()
+    )
+    assert not editor.view().isVisible()
+
+    qtbot.keyClick(editor, QtCore.Qt.Key.Key_Return)
+    qtbot.waitUntil(editor.view().isVisible)
+
+
 def test_spreadsheet_metadata_mapping_uses_fixed_destination_suggestions(qtbot) -> None:
     expected = ("sample_temp", "hv", "chi", "xi", "delta", "alpha", "beta")
+
+    def show_popup_with_arrow(editor: QtWidgets.QComboBox) -> None:
+        option = QtWidgets.QStyleOptionComboBox()
+        editor.initStyleOption(option)
+        arrow_rect = editor.style().subControlRect(
+            QtWidgets.QStyle.ComplexControl.CC_ComboBox,
+            option,
+            QtWidgets.QStyle.SubControl.SC_ComboBoxArrow,
+            editor,
+        )
+        qtbot.mouseClick(
+            editor,
+            QtCore.Qt.MouseButton.LeftButton,
+            pos=arrow_rect.center(),
+        )
+        qtbot.waitUntil(editor.view().isVisible)
+
     dialog = _SpreadsheetMetadataDialog(None)
     qtbot.addWidget(dialog)
     dialog.show()
@@ -1119,13 +1163,15 @@ def test_spreadsheet_metadata_mapping_uses_fixed_destination_suggestions(qtbot) 
     )
     assert coordinate_suggestions == expected
     assert editor.currentText() == "custom_coord"
-    editor.setEditText("custom_coord")
+    assert editor.currentIndex() == -1
+    show_popup_with_arrow(editor)
+    editor.hidePopup()
     line_edit = editor.lineEdit()
     assert line_edit is not None
     qtbot.keyClick(line_edit, QtCore.Qt.Key.Key_Return)
     qtbot.waitUntil(lambda: not dialog.mapping_table.findChildren(QtWidgets.QComboBox))
 
-    dialog.add_mapping_row("Mode", "attribute", "custom_attr")
+    dialog.add_mapping_row("Mode", "attribute", "hv")
     attribute_item = dialog.mapping_table.currentItem()
     assert attribute_item is not None
     dialog.mapping_table.editItem(attribute_item, _MAPPING_NAME_COLUMN)
@@ -1145,7 +1191,9 @@ def test_spreadsheet_metadata_mapping_uses_fixed_destination_suggestions(qtbot) 
         editor.itemText(index) for index in range(editor.count())
     )
     assert attribute_suggestions == expected
-    assert editor.currentText() == "custom_attr"
+    assert editor.currentText() == "hv"
+    assert editor.currentIndex() == editor.findText("hv")
+    show_popup_with_arrow(editor)
 
 
 @pytest.mark.parametrize("accept_file", [False, True])
