@@ -385,6 +385,14 @@ class _SpreadsheetMetadataValues:
         return result
 
 
+class _SpreadsheetMetadataPreview(typing.NamedTuple):
+    """Result of matching one file without loading its data."""
+
+    values: _SpreadsheetMetadataValues | None
+    lookup: str | int | None
+    spreadsheet_row: int | None
+
+
 class SpreadsheetMetadataSource(abc.ABC):
     """Base class for spreadsheet-backed loader metadata.
 
@@ -659,15 +667,28 @@ class SpreadsheetMetadataSource(abc.ABC):
         infer_file_number: Callable[[], object | None],
     ) -> tuple[_SpreadsheetMetadataValues | None, str | int | None]:
         """Match a bare file name exactly, parsing numbers only after a miss."""
+        preview = self._metadata_preview_for_file_name(file_name, infer_file_number)
+        return preview.values, preview.lookup
+
+    def _metadata_preview_for_file_name(
+        self,
+        file_name: str,
+        infer_file_number: Callable[[], object | None],
+    ) -> _SpreadsheetMetadataPreview:
+        """Match a bare file name and retain the matched spreadsheet row."""
         self._validate_lookup_configuration()
         headers, row_index = self._get_cached_snapshot()
         direct_rows = row_index.file_names.get(file_name, [])
         if direct_rows:
             direct_matches = [_SpreadsheetMatch(row) for row in direct_rows]
             if len(direct_matches) > 1:
-                return (
-                    self._metadata_for_matches(file_name, direct_matches, headers),
+                values, spreadsheet_row = self._metadata_match_for_matches(
+                    file_name, direct_matches, headers
+                )
+                return _SpreadsheetMetadataPreview(
+                    values,
                     file_name,
+                    spreadsheet_row,
                 )
 
             range_number: int | None = None
@@ -683,24 +704,33 @@ class SpreadsheetMetadataSource(abc.ABC):
             if range_number is not None:
                 range_matches = self._matching_ranges(range_number, row_index)
                 if range_matches:
-                    return (
-                        self._metadata_for_matches(
-                            range_number,
-                            [*direct_matches, *range_matches],
-                            headers,
-                        ),
-                        file_name,
+                    values, spreadsheet_row = self._metadata_match_for_matches(
+                        range_number,
+                        [*direct_matches, *range_matches],
+                        headers,
                     )
-            return (
-                self._metadata_for_matches(file_name, direct_matches, headers),
+                    return _SpreadsheetMetadataPreview(
+                        values,
+                        file_name,
+                        spreadsheet_row,
+                    )
+            values, spreadsheet_row = self._metadata_match_for_matches(
+                file_name, direct_matches, headers
+            )
+            return _SpreadsheetMetadataPreview(
+                values,
                 file_name,
+                spreadsheet_row,
             )
 
         inferred = infer_file_number()
         if inferred is None:
-            return None, None
+            return _SpreadsheetMetadataPreview(None, None, None)
         number = _normalize_file_number(inferred)
-        return self._metadata_for_number(number, headers, row_index), number
+        values, spreadsheet_row = self._metadata_match_for_number(
+            number, headers, row_index
+        )
+        return _SpreadsheetMetadataPreview(values, number, spreadsheet_row)
 
     def _validate_lookup_configuration(self) -> None:
         if not self.coordinate_mapping and not self.attribute_mapping:
@@ -719,6 +749,14 @@ class SpreadsheetMetadataSource(abc.ABC):
         headers: tuple[str, ...],
         row_index: _SpreadsheetIndex,
     ) -> _SpreadsheetMetadataValues | None:
+        return self._metadata_match_for_number(number, headers, row_index)[0]
+
+    def _metadata_match_for_number(
+        self,
+        number: int,
+        headers: tuple[str, ...],
+        row_index: _SpreadsheetIndex,
+    ) -> tuple[_SpreadsheetMetadataValues | None, int | None]:
         matches: list[_SpreadsheetMatch] = []
         for candidates in row_index.file_names.values():
             for row in candidates:
@@ -731,7 +769,7 @@ class SpreadsheetMetadataSource(abc.ABC):
                 if candidate_number == number:
                     matches.append(_SpreadsheetMatch(row))
         matches.extend(self._matching_ranges(number, row_index))
-        return self._metadata_for_matches(number, matches, headers)
+        return self._metadata_match_for_matches(number, matches, headers)
 
     @staticmethod
     def _matching_ranges(
@@ -749,9 +787,17 @@ class SpreadsheetMetadataSource(abc.ABC):
         matches: list[_SpreadsheetMatch],
         headers: tuple[str, ...],
     ) -> _SpreadsheetMetadataValues | None:
+        return self._metadata_match_for_matches(key, matches, headers)[0]
+
+    def _metadata_match_for_matches(
+        self,
+        key: str | int,
+        matches: list[_SpreadsheetMatch],
+        headers: tuple[str, ...],
+    ) -> tuple[_SpreadsheetMetadataValues | None, int | None]:
         resolved_columns = self._resolve_mapping_columns(headers)
         if not matches:
-            return None
+            return None, None
         matches = sorted(matches, key=lambda match: match.row.spreadsheet_row)
         if len(matches) > 1:
             descriptions: list[str] = []
@@ -779,7 +825,8 @@ class SpreadsheetMetadataSource(abc.ABC):
             raise ValueError(
                 f"{self.source_name} {lookup} is ambiguous: " + "; ".join(descriptions)
             )
-        row = matches[0].row.values
+        matched_row = matches[0].row
+        row = matched_row.values
 
         values_by_header = dict(zip(headers, row, strict=True))
         coordinate_values = {
@@ -792,10 +839,13 @@ class SpreadsheetMetadataSource(abc.ABC):
             for source, destination in self.attribute_mapping.items()
             if not _is_blank(values_by_header[resolved_columns[source]])
         }
-        return _SpreadsheetMetadataValues(
-            coordinate_values,
-            attribute_values,
-            overwrite=self.overwrite,
+        return (
+            _SpreadsheetMetadataValues(
+                coordinate_values,
+                attribute_values,
+                overwrite=self.overwrite,
+            ),
+            matched_row.spreadsheet_row,
         )
 
     def _normalize_headers(self, raw_headers: Iterable[Any]) -> tuple[str, ...]:

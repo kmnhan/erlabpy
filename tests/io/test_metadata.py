@@ -121,6 +121,36 @@ def test_source_snapshot_and_refresh() -> None:
     assert source.read_count == 2
 
 
+def test_source_file_name_preview_reports_the_resolved_row() -> None:
+    source = _source(
+        [
+            ["File", "Temperature", "Energy", "Mode"],
+            ["scan_0042", 20.0, 21.2, "mapping"],
+            [43, 30.0, 40.8, "cut"],
+        ]
+    )
+
+    direct = source._metadata_preview_for_file_name(
+        "scan_0042",
+        lambda: (_ for _ in ()).throw(RuntimeError("must not infer")),
+    )
+    assert direct.lookup == "scan_0042"
+    assert direct.spreadsheet_row == 2
+    assert direct.values is not None
+    assert direct.values.coordinate_values["sample_temp"] == 20.0
+
+    inferred = source._metadata_preview_for_file_name("renamed_scan", lambda: 43)
+    assert inferred.lookup == 43
+    assert inferred.spreadsheet_row == 3
+    assert inferred.values is not None
+    assert inferred.values.coordinate_values["sample_temp"] == 30.0
+
+    missing = source._metadata_preview_for_file_name("unmatched", lambda: None)
+    assert missing.values is None
+    assert missing.lookup is None
+    assert missing.spreadsheet_row is None
+
+
 def test_failed_refresh_preserves_cached_snapshot() -> None:
     source = _source(
         [["File", "Temperature", "Energy", "Mode"], [1, 20.0, 21.2, "cut"]]
