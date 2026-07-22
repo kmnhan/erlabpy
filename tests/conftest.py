@@ -192,10 +192,24 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.compat)
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     for settings_path in _TEST_INTERACTIVE_OPTIONS_PATHS:
         with contextlib.suppress(OSError):
             settings_path.unlink()
+
+    qapp = QtWidgets.QApplication.instance()
+    if qapp is None:
+        return
+
+    # pytest-qt closes registered widgets with deleteLater(), but processEvents()
+    # does not guarantee that DeferredDelete events run before interpreter shutdown.
+    for _ in range(2):
+        QtWidgets.QApplication.sendPostedEvents(
+            None, int(QtCore.QEvent.Type.DeferredDelete.value)
+        )
+        QtWidgets.QApplication.sendPostedEvents(None, 0)
+        qapp.processEvents()
 
 
 @pytest.fixture(autouse=True)
