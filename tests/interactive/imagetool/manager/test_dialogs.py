@@ -33,6 +33,7 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _text_to_loader_extension_value,
 )
 from erlab.interactive.imagetool.manager._spreadsheet_metadata import (
+    _MAPPING_NAME_COLUMN,
     _MAPPING_VALUE_ROLE,
     _column_display_entries,
     _SpreadsheetMetadataDialog,
@@ -478,6 +479,82 @@ def test_spreadsheet_metadata_dialog_loads_google_structure_asynchronously(
     assert source.overwrite
 
 
+def test_spreadsheet_metadata_dialog_previews_current_rows_asynchronously(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    example_loader,
+) -> None:
+    rows: list[list[typing.Any]] = [
+        ["File", "Temperature", "Mode"],
+        [16, 35.0, "cut"],
+    ]
+    read_count = 0
+
+    def read_rows(_self) -> list[list[typing.Any]]:
+        nonlocal read_count
+        read_count += 1
+        return [row.copy() for row in rows]
+
+    monkeypatch.setattr(
+        erlab.io.metadata.ExcelMetadataSource,
+        "_read_rows",
+        read_rows,
+    )
+    messages: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *args, **_kwargs: messages.append(args),
+    )
+
+    dialog = _SpreadsheetMetadataDialog(
+        None,
+        sample_path=tmp_path / "scan_016.h5",
+        loader=erlab.io.loaders["example"],
+    )
+    qtbot.addWidget(dialog)
+    dialog.excel_path_line.setText(str(tmp_path / "metadata.xlsx"))
+    dialog.sheet_combo.blockSignals(True)
+    dialog.sheet_combo.addItem("Measurements", "Measurements")
+    dialog.sheet_combo.blockSignals(False)
+    dialog._set_columns(("File", "Temperature", "Mode"))
+    dialog.file_name_combo.setCurrentIndex(dialog.file_name_combo.findData("File"))
+    dialog.add_mapping_row("Temperature", "coordinate", "sample_temp")
+    dialog.add_mapping_row("Mode", "attribute", "mode")
+
+    assert not dialog.test_match_button.isHidden()
+    assert dialog.test_match_button.isEnabled()
+    dialog.test_match_button.click()
+    qtbot.waitUntil(lambda: not dialog._busy and not dialog._workers)
+
+    preview = dialog._last_preview
+    assert preview is not None
+    assert preview.lookup == 16
+    assert preview.spreadsheet_row == 2
+    assert preview.values is not None
+    assert preview.values.coordinate_values == {"sample_temp": 35.0}
+    assert preview.values.attribute_values == {"mode": "cut"}
+    assert read_count == 1
+
+    rows[1][1] = 42.0
+    dialog.test_match_button.click()
+    qtbot.waitUntil(lambda: not dialog._busy and not dialog._workers)
+    preview = dialog._last_preview
+    assert preview is not None
+    assert preview.values is not None
+    assert preview.values.coordinate_values == {"sample_temp": 42.0}
+    assert read_count == 2
+
+    rows.append(["f_0015~20", 50.0, "map"])
+    dialog.test_match_button.click()
+    qtbot.waitUntil(lambda: not dialog._busy and not dialog._workers)
+    assert dialog._last_preview is None
+    assert dialog._last_preview_error is not None
+    assert read_count == 3
+    assert messages == []
+
+
 def test_spreadsheet_metadata_dialog_ignores_result_after_cancel(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
@@ -681,7 +758,8 @@ def test_spreadsheet_metadata_dialog_invalid_replacement_link_keeps_settings(
     dialog.google_url_line.setText("not a Google Sheets link")
     dialog.refresh_button.click()
 
-    assert len(errors) == 1
+    assert errors == []
+    assert dialog._last_discovery_error is not None
     assert dialog.mapping_table.topLevelItemCount() == 1
     assert dialog.row_range() == (20, 27)
 
@@ -690,6 +768,7 @@ def test_spreadsheet_metadata_dialog_invalid_replacement_link_keeps_settings(
     qtbot.waitUntil(
         lambda: not dialog._busy and not dialog._workers and bool(dialog._columns)
     )
+    assert dialog._last_discovery_error is None
     assert dialog.sheet_combo.currentData() == "Measurements"
     assert dialog._mappings() == ({"Temperature": "sample_temp"}, {})
 
@@ -728,7 +807,8 @@ def test_spreadsheet_metadata_dialog_reports_background_read_error(
     dialog.refresh_button.click()
     qtbot.waitUntil(lambda: not dialog._busy and not dialog._workers)
 
-    assert len(messages) == 1
+    assert messages == []
+    assert dialog._last_discovery_error is not None
     assert dialog.sheet_combo.count() == 0
     assert not dialog.progress_bar.isVisible()
 
@@ -754,14 +834,16 @@ def test_spreadsheet_metadata_dialog_validates_mappings(
     assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
 
     dialog._request_sheets()
-    assert len(messages) == 2
+    assert len(messages) == 1
+    assert dialog._last_discovery_error is not None
     dialog._sheet_changed()
-    assert len(messages) == 2
+    assert len(messages) == 1
     dialog.sheet_combo.blockSignals(True)
     dialog.sheet_combo.addItem("Measurements", "Measurements")
     dialog.sheet_combo.blockSignals(False)
     dialog._sheet_changed()
-    assert len(messages) == 3
+    assert len(messages) == 1
+    assert dialog._last_discovery_error is not None
 
     dialog.excel_path_line.setText("metadata.xlsx")
     dialog._set_columns(("File", "Temperature"))
@@ -771,12 +853,12 @@ def test_spreadsheet_metadata_dialog_validates_mappings(
     dialog.sheet_combo.addItem("Measurements", "Measurements")
     dialog.sheet_combo.blockSignals(False)
     dialog.accept()
-    assert len(messages) == 4
+    assert len(messages) == 2
 
     dialog._busy = True
     dialog.accept()
     dialog._busy = False
-    assert len(messages) == 4
+    assert len(messages) == 2
 
     dialog.add_mapping_row("Missing", name="missing")
     with pytest.raises(ValueError, match="no available column"):
@@ -806,7 +888,7 @@ def test_spreadsheet_metadata_dialog_validates_mappings(
     ):
         dialog._mappings()
     dialog.accept()
-    assert len(messages) == 5
+    assert len(messages) == 3
 
     dialog.remove_mapping_button.click()
     assert dialog.mapping_table.topLevelItemCount() == 1
@@ -909,6 +991,7 @@ def test_spreadsheet_metadata_mapping_reorder_defensive_paths(qtbot) -> None:
     dialog.add_mapping_row("Temperature", name="sample_temp")
     item = dialog.mapping_table.topLevelItem(0)
     assert item is not None
+    dialog.add_mapping_row()
     assert all(
         dialog.mapping_table.itemWidget(item, column) is None for column in range(3)
     )
@@ -937,37 +1020,56 @@ def test_spreadsheet_metadata_mapping_reorder_defensive_paths(qtbot) -> None:
     )
     dialog.mapping_table.keyPressEvent(propagated_return)
     assert propagated_return.isAccepted()
-    qtbot.waitUntil(lambda: not dialog.mapping_table.findChildren(QtWidgets.QComboBox))
-    qtbot.waitUntil(lambda: not dialog.mapping_table._return_edit_suppressed)
     assert item.text(0) == "Mode"
-
-    qtbot.keyClick(dialog.mapping_table, QtCore.Qt.Key.Key_Tab)
-    assert dialog.mapping_table.currentIndex().column() == 1
-    qtbot.keyClick(dialog.mapping_table, QtCore.Qt.Key.Key_F2)
     qtbot.waitUntil(
-        lambda: bool(dialog.mapping_table.findChildren(QtWidgets.QComboBox))
+        lambda: (
+            dialog.mapping_table.currentIndex().column() == 1
+            and any(
+                editor.isVisible()
+                for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+            )
+        )
     )
-    kind_editor = dialog.mapping_table.findChild(QtWidgets.QComboBox)
-    assert kind_editor is not None
+    kind_editor = next(
+        editor
+        for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        if editor.isVisible()
+    )
     kind_editor.setCurrentIndex(kind_editor.findData("attribute"))
     kind_editor.activated.emit(kind_editor.currentIndex())
-    qtbot.waitUntil(lambda: not dialog.mapping_table.findChildren(QtWidgets.QComboBox))
     assert item.text(1) == "Attr"
-
-    qtbot.keyClick(dialog.mapping_table, QtCore.Qt.Key.Key_Tab)
-    assert dialog.mapping_table.currentIndex().column() == 2
-    qtbot.keyClick(dialog.mapping_table, QtCore.Qt.Key.Key_N)
-    name_editor = QtWidgets.QApplication.focusWidget()
-    assert isinstance(name_editor, QtWidgets.QLineEdit)
-    qtbot.keyClicks(name_editor, "ew_name")
-    qtbot.keyClick(name_editor, QtCore.Qt.Key.Key_Return)
-    qtbot.waitUntil(lambda: item.text(2) == "new_name")
-    qtbot.keyClick(
-        dialog.mapping_table,
-        QtCore.Qt.Key.Key_Tab,
-        QtCore.Qt.KeyboardModifier.ShiftModifier,
+    qtbot.waitUntil(
+        lambda: (
+            dialog.mapping_table.currentIndex().column() == 2
+            and any(
+                editor.isVisible()
+                for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+            )
+        )
     )
-    assert dialog.mapping_table.currentIndex().column() == 1
+    name_editor = next(
+        editor
+        for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        if editor.isVisible()
+    )
+    assert name_editor.isEditable()
+    name_editor.setEditText("new_name")
+    line_edit = name_editor.lineEdit()
+    assert line_edit is not None
+    qtbot.keyClick(line_edit, QtCore.Qt.Key.Key_Return)
+    qtbot.waitUntil(lambda: item.text(2) == "new_name")
+    qtbot.waitUntil(
+        lambda: (
+            dialog.mapping_table.currentIndex().row() == 1
+            and dialog.mapping_table.currentIndex().column() == 0
+            and any(
+                editor.isVisible()
+                for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+            )
+        )
+    )
+    dialog._remove_selected_mapping()
+    assert dialog.mapping_table.topLevelItemCount() == 1
 
     dialog.mapping_table.setCurrentIndex(QtCore.QModelIndex())
     dialog._remove_selected_mapping()
@@ -987,6 +1089,61 @@ def test_spreadsheet_metadata_mapping_reorder_defensive_paths(qtbot) -> None:
     dialog.mapping_table.keyPressEvent(menu_event)
     assert menu_event.isAccepted()
     assert len(requested) == 1
+
+
+def test_spreadsheet_metadata_mapping_uses_loader_destination_suggestions(
+    qtbot,
+    example_loader,
+) -> None:
+    dialog = _SpreadsheetMetadataDialog(None, loader=erlab.io.loaders["example"])
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitUntil(dialog.isVisible)
+    dialog._set_columns(("Temperature", "Mode"))
+    dialog.add_mapping_row("Temperature", "coordinate", "custom_coord")
+    coordinate_item = dialog.mapping_table.currentItem()
+    assert coordinate_item is not None
+    dialog.mapping_table.editItem(coordinate_item, _MAPPING_NAME_COLUMN)
+    qtbot.waitUntil(
+        lambda: any(
+            editor.isVisible()
+            for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        )
+    )
+    editor = next(
+        child
+        for child in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        if child.isVisible()
+    )
+    assert editor.isEditable()
+    coordinate_suggestions = {editor.itemText(index) for index in range(editor.count())}
+    assert {"sample_temp", "hv"} <= coordinate_suggestions
+    assert editor.currentText() == "custom_coord"
+    editor.setEditText("custom_coord")
+    line_edit = editor.lineEdit()
+    assert line_edit is not None
+    qtbot.keyClick(line_edit, QtCore.Qt.Key.Key_Return)
+    qtbot.waitUntil(lambda: not dialog.mapping_table.findChildren(QtWidgets.QComboBox))
+
+    dialog.add_mapping_row("Mode", "attribute", "custom_attr")
+    attribute_item = dialog.mapping_table.currentItem()
+    assert attribute_item is not None
+    dialog.mapping_table.editItem(attribute_item, _MAPPING_NAME_COLUMN)
+    qtbot.waitUntil(
+        lambda: any(
+            editor.isVisible()
+            for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        )
+    )
+    editor = next(
+        child
+        for child in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        if child.isVisible()
+    )
+    assert editor.isEditable()
+    attribute_suggestions = {editor.itemText(index) for index in range(editor.count())}
+    assert {"configuration", "LensMode"} <= attribute_suggestions
+    assert editor.currentText() == "custom_attr"
 
 
 @pytest.mark.parametrize("accept_file", [False, True])
@@ -1033,10 +1190,11 @@ def test_loader_options_spreadsheet_metadata_dialog_accept_and_cancel(
         file_name_column="File",
         coordinate_mapping={"Temperature": "sample_temp"},
     )
+    dialog_kwargs: list[dict[str, typing.Any]] = []
 
     class _Dialog:
         def __init__(self, *_args, **_kwargs) -> None:
-            pass
+            dialog_kwargs.append(_kwargs)
 
         def exec(self) -> QtWidgets.QDialog.DialogCode:
             return (
@@ -1058,6 +1216,8 @@ def test_loader_options_spreadsheet_metadata_dialog_accept_and_cancel(
     dialog.check_filter("Example Raw Data (*.h5)")
 
     dialog.metadata_button.click()
+    assert dialog_kwargs[0]["sample_path"] == tmp_path / "scan.h5"
+    assert dialog_kwargs[0]["loader"] is erlab.io.loaders["example"]
     kwargs = dialog.checked_filter()[2]
     if accepted:
         assert kwargs["metadata"] is source

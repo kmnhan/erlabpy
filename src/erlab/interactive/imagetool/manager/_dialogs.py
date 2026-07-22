@@ -1445,11 +1445,21 @@ class _LoaderOptionsWidget(QtWidgets.QWidget):
         if checked_id < 0:
             return False
         name_filter = list(self._valid_loaders.keys())[checked_id]
-        initial_directory = self._sample_paths[0].parent if self._sample_paths else None
+        sample_path = self._sample_paths[0] if self._sample_paths else None
+        initial_directory = sample_path.parent if sample_path is not None else None
+        func = self._valid_loaders[name_filter][0]
+        candidate_loader = getattr(func, "__self__", None)
+        loader = (
+            candidate_loader
+            if isinstance(candidate_loader, erlab.io.dataloader.LoaderBase)
+            else None
+        )
         dialog = _SpreadsheetMetadataDialog(
             self,
             self._spreadsheet_metadata_by_filter.get(name_filter),
             initial_directory=initial_directory,
+            sample_path=sample_path,
+            loader=loader,
             load_on_open=load_on_open,
         )
         if dialog.exec():
@@ -1478,17 +1488,40 @@ class _LoaderOptionsWidget(QtWidgets.QWidget):
         self.metadata_clear_button.setEnabled(source is not None)
         if source is None:
             self.metadata_summary.setText("Not configured")
+            self.metadata_summary.setToolTip("")
             return
-        n_mappings = len(source.coordinate_mapping) + len(source.attribute_mapping)
+        n_coordinates = len(source.coordinate_mapping)
+        n_attributes = len(source.attribute_mapping)
+        n_mappings = n_coordinates + n_attributes
         sheet = source.sheet_name
-        sheet_text = "linked worksheet" if sheet is None else f"worksheet {sheet!r}"
+        sheet_text = "linked sheet" if sheet is None else str(sheet)
         if isinstance(source, erlab.io.metadata.ExcelMetadataSource):
             location = source.path.name
-        else:
+            full_location = str(source.path)
+        elif isinstance(source, erlab.io.metadata.GoogleSheetsMetadataSource):
             location = "Google Sheets"
+            full_location = source.share_url
+        else:
+            location = type(source).__name__
+            full_location = source.source_name
         self.metadata_summary.setText(
-            f"{location}, {sheet_text}, {n_mappings} mapping"
+            f"{location} · {sheet_text} · {n_mappings} mapping"
             f"{'s' if n_mappings != 1 else ''}"
+        )
+        row_text = (
+            "all data rows"
+            if source.row_range is None
+            else f"rows {source.row_range[0]}\N{EN DASH}{source.row_range[1]}"
+        )
+        self.metadata_summary.setToolTip(
+            f"{full_location}\nWorksheet: {sheet_text}\n{row_text}\n"
+            f"{n_coordinates} Coord, {n_attributes} Attr\n"
+            f"File name column: {source.file_name_column or 'not selected'}\n"
+            + (
+                "Overwrite existing values"
+                if source.overwrite
+                else "Preserve existing values"
+            )
         )
 
     @QtCore.Slot(bool)

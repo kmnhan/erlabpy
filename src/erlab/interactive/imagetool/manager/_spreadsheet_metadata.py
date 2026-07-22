@@ -19,6 +19,9 @@ from erlab.io.metadata import (
 
 if typing.TYPE_CHECKING:
     import pathlib
+    from collections.abc import Callable, Iterable
+
+    from erlab.io.metadata._core import _SpreadsheetMetadataPreview
 
 
 _MAPPING_SOURCE_COLUMN = 0
@@ -30,14 +33,24 @@ _MAPPING_VALUE_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
 class _MappingEditDelegate(QtWidgets.QStyledItemDelegate):
     """Create combo boxes only while a mapping cell is being edited."""
 
-    combo_accepted = QtCore.Signal()
+    editor_accepted = QtCore.Signal(int)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self._columns: tuple[str, ...] = ()
+        self._coordinate_destinations: tuple[str, ...] = ()
+        self._attribute_destinations: tuple[str, ...] = ()
 
     def set_columns(self, columns: tuple[str, ...]) -> None:
         self._columns = columns
+
+    def set_destination_names(
+        self,
+        coordinate_names: tuple[str, ...],
+        attribute_names: tuple[str, ...],
+    ) -> None:
+        self._coordinate_destinations = coordinate_names
+        self._attribute_destinations = attribute_names
 
     def createEditor(
         self,
@@ -53,7 +66,9 @@ class _MappingEditDelegate(QtWidgets.QStyledItemDelegate):
                 QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents
             )
             editor.activated.connect(
-                lambda _index, combo=editor: self._commit_combo(combo)
+                lambda _index, combo=editor: self._commit_combo(
+                    combo, _MAPPING_SOURCE_COLUMN
+                )
             )
             return editor
         if index.column() == _MAPPING_KIND_COLUMN:
@@ -61,8 +76,42 @@ class _MappingEditDelegate(QtWidgets.QStyledItemDelegate):
             editor.addItem("Coord", "coordinate")
             editor.addItem("Attr", "attribute")
             editor.activated.connect(
-                lambda _index, combo=editor: self._commit_combo(combo)
+                lambda _index, combo=editor: self._commit_combo(
+                    combo, _MAPPING_KIND_COLUMN
+                )
             )
+            return editor
+        if index.column() == _MAPPING_NAME_COLUMN:
+            editor = QtWidgets.QComboBox(parent)
+            editor.setEditable(True)
+            editor.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+            editor.setSizeAdjustPolicy(
+                QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            editor.setMinimumContentsLength(16)
+            kind = index.siblingAtColumn(_MAPPING_KIND_COLUMN).data(_MAPPING_VALUE_ROLE)
+            destinations = (
+                self._attribute_destinations
+                if kind == "attribute"
+                else self._coordinate_destinations
+            )
+            editor.addItems(destinations)
+            completer = editor.completer()
+            if completer is not None:
+                completer.setCaseSensitivity(QtCore.Qt.CaseSensitivity.CaseInsensitive)
+                completer.setCompletionMode(
+                    QtWidgets.QCompleter.CompletionMode.PopupCompletion
+                )
+            editor.activated.connect(
+                lambda _index, combo=editor: self._commit_combo(
+                    combo, _MAPPING_NAME_COLUMN
+                )
+            )
+            line_edit = editor.lineEdit()
+            if line_edit is not None:
+                line_edit.returnPressed.connect(
+                    lambda combo=editor: self._commit_combo(combo, _MAPPING_NAME_COLUMN)
+                )
             return editor
         return super().createEditor(parent, option, index)
 
@@ -70,15 +119,20 @@ class _MappingEditDelegate(QtWidgets.QStyledItemDelegate):
         self, editor: QtWidgets.QWidget | None, index: QtCore.QModelIndex
     ) -> None:
         if isinstance(editor, QtWidgets.QComboBox):
-            value = index.data(_MAPPING_VALUE_ROLE)
             if index.column() == _MAPPING_SOURCE_COLUMN:
+                value = index.data(_MAPPING_VALUE_ROLE)
                 _set_column_combo_items(
                     editor,
                     self._columns,
                     value if isinstance(value, str) else None,
                 )
-            else:
+            elif index.column() == _MAPPING_KIND_COLUMN:
+                value = index.data(_MAPPING_VALUE_ROLE)
                 editor.setCurrentIndex(editor.findData(value))
+            else:
+                editor.setEditText(
+                    str(index.data(QtCore.Qt.ItemDataRole.EditRole) or "")
+                )
             return
         super().setEditorData(editor, index)
 
@@ -91,6 +145,13 @@ class _MappingEditDelegate(QtWidgets.QStyledItemDelegate):
         if model is None:
             return
         if isinstance(editor, QtWidgets.QComboBox):
+            if index.column() == _MAPPING_NAME_COLUMN:
+                model.setData(
+                    index,
+                    editor.currentText().strip(),
+                    QtCore.Qt.ItemDataRole.EditRole,
+                )
+                return
             value = editor.currentData()
             if not isinstance(value, str):
                 return
@@ -107,16 +168,21 @@ class _MappingEditDelegate(QtWidgets.QStyledItemDelegate):
             return
         super().setModelData(editor, model, index)
 
-    def _commit_combo(self, editor: QtWidgets.QComboBox) -> None:
-        self.combo_accepted.emit()
+    def _commit_combo(self, editor: QtWidgets.QComboBox, column: int) -> None:
+        if editor.property("mappingEditorCommitted"):
+            return
+        editor.setProperty("mappingEditorCommitted", True)
+        editor.hidePopup()
         self.commitData.emit(editor)
         self.closeEditor.emit(editor)
+        self.editor_accepted.emit(column)
 
 
 class _MappingTable(ReorderList):
     """Editable mapping table with Figure Composer-style row reordering."""
 
     context_menu_requested = QtCore.Signal(QtCore.QPoint)
+    last_row_completed = QtCore.Signal()
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(_MAPPING_SOURCE_COLUMN, parent)
@@ -150,6 +216,39 @@ class _MappingTable(ReorderList):
 
     def _clear_return_edit_suppression(self) -> None:
         self._return_edit_suppressed = False
+
+    @QtCore.Slot(int)
+    def advance_after_editor(self, column: int) -> None:
+        """Advance through a mapping row after an editor is explicitly accepted."""
+        self.suppress_return_edit()
+        current = self.currentIndex()
+        item = self.itemFromIndex(current)
+        if item is None:
+            return
+        row = current.row()
+        if column < _MAPPING_NAME_COLUMN:
+            next_column = column + 1
+        elif row + 1 < self.topLevelItemCount():
+            row += 1
+            next_column = _MAPPING_SOURCE_COLUMN
+            next_item = self.topLevelItem(row)
+            if next_item is None:  # pragma: no cover - bounded tree access.
+                return
+            item = next_item
+        else:
+            erlab.interactive.utils.single_shot(self, 0, self.last_row_completed.emit)
+            return
+        self.setCurrentIndex(self.indexFromItem(item, next_column))
+        erlab.interactive.utils.single_shot(self, 0, self._edit_current_cell)
+
+    def _edit_current_cell(self) -> None:
+        index = self.currentIndex()
+        item = self.itemFromIndex(index)
+        if item is None:
+            return
+        self.editItem(item, index.column())
+        if index.column() in (_MAPPING_SOURCE_COLUMN, _MAPPING_KIND_COLUMN):
+            erlab.interactive.utils.single_shot(self, 0, self._show_active_combo_popup)
 
     def moveCursor(
         self,
@@ -243,8 +342,11 @@ class _SpreadsheetDiscoveryWorker(QtCore.QRunnable):
     def __init__(
         self,
         request_id: int,
-        operation: typing.Literal["sheets", "columns"],
+        operation: typing.Literal["sheets", "columns", "preview"],
         source: SpreadsheetMetadataSource,
+        *,
+        preview_file_name: str | None = None,
+        infer_file_number: Callable[[], object | None] | None = None,
     ) -> None:
         super().__init__()
         self.setAutoDelete(False)
@@ -252,6 +354,8 @@ class _SpreadsheetDiscoveryWorker(QtCore.QRunnable):
         self.request_id = request_id
         self.operation = operation
         self.source = source
+        self.preview_file_name = preview_file_name
+        self.infer_file_number = infer_file_number
 
     @QtCore.Slot()
     def run(self) -> None:
@@ -265,8 +369,20 @@ class _SpreadsheetDiscoveryWorker(QtCore.QRunnable):
                     # selected worksheet has been removed or renamed.
                     selected_sheet = None
                 result: object = (sheet_names, selected_sheet)
-            else:
+            elif self.operation == "columns":
                 result = self.source.get_column_names()
+            else:
+                if self.preview_file_name is None:
+                    self.signals.failed.emit(
+                        self.request_id,
+                        self.operation,
+                        "RuntimeError: A file name is required for metadata preview",
+                    )
+                    return
+                result = self.source._metadata_preview_for_file_name(
+                    self.preview_file_name,
+                    self.infer_file_number or (lambda: None),
+                )
         except Exception as exc:
             detail = f"{type(exc).__name__}: {exc}"
             self.signals.failed.emit(self.request_id, self.operation, detail)
@@ -325,6 +441,46 @@ def _column_display_label(columns: tuple[str, ...], column: str | None) -> str:
     return f"{column.replace(chr(10), ' ')} (not found)"
 
 
+def _loader_destination_names(
+    loader: erlab.io.dataloader.LoaderBase | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return ordered coordinate and attribute name suggestions for a loader."""
+    if loader is None:
+        return (), ()
+
+    try:
+        summary_values = tuple(
+            value for value in loader.summary_attrs.values() if isinstance(value, str)
+        )
+    except Exception:
+        # Suggestions must never prevent configuring a third-party loader whose
+        # summary metadata depends on unavailable runtime state.
+        summary_values = ()
+
+    def unique_names(*groups: Iterable[object]) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                value
+                for group in groups
+                for value in group
+                if isinstance(value, str) and value.strip()
+            )
+        )
+
+    common_names = unique_names(loader.name_map, summary_values)
+    coordinate_names = unique_names(
+        loader.coordinate_attrs,
+        loader.additional_coords,
+        common_names,
+    )
+    attribute_names = unique_names(
+        loader.additional_attrs,
+        summary_values,
+        common_names,
+    )
+    return coordinate_names, attribute_names
+
+
 class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
     """Configure an Excel or Google Sheets metadata source for a file load."""
 
@@ -334,6 +490,8 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         source: SpreadsheetMetadataSource | None = None,
         *,
         initial_directory: pathlib.Path | None = None,
+        sample_path: pathlib.Path | None = None,
+        loader: erlab.io.dataloader.LoaderBase | None = None,
         load_on_open: bool = True,
     ) -> None:
         super().__init__(parent)
@@ -344,8 +502,13 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
 
         self._selected_source: SpreadsheetMetadataSource | None = source
         self._initial_directory = initial_directory
+        self._sample_path = sample_path
+        self._loader = loader
         self._load_on_open = load_on_open
         self._columns: tuple[str, ...] = ()
+        self._last_preview: _SpreadsheetMetadataPreview | None = None
+        self._last_preview_error: str | None = None
+        self._last_discovery_error: str | None = None
         self._next_mapping_row_id = 0
         self._mapping_context_menu: QtWidgets.QMenu | None = None
         self._request_id = 0
@@ -489,8 +652,11 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
             self._show_mapping_context_menu
         )
         self.mapping_delegate = _MappingEditDelegate(self.mapping_table)
-        self.mapping_delegate.combo_accepted.connect(
-            self.mapping_table.suppress_return_edit
+        self.mapping_delegate.editor_accepted.connect(
+            self.mapping_table.advance_after_editor
+        )
+        self.mapping_delegate.set_destination_names(
+            *_loader_destination_names(self._loader)
         )
         self.mapping_table.setItemDelegate(self.mapping_delegate)
         header = typing.cast("QtWidgets.QHeaderView", self.mapping_table.header())
@@ -529,8 +695,21 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         self.remove_mapping_button.setEnabled(False)
         mapping_actions.addWidget(self.remove_mapping_button)
         mapping_actions.addStretch()
+        self.test_match_button = QtWidgets.QPushButton("Test Match", mapping_group)
+        self.test_match_button.setObjectName("spreadsheet_metadata_test_match")
+        self.test_match_button.setVisible(self._sample_path is not None)
+        self.test_match_button.setEnabled(False)
+        self.test_match_button.clicked.connect(self._request_preview)
+        mapping_actions.addWidget(self.test_match_button)
         mapping_layout.addLayout(mapping_actions)
         self.mapping_table.itemSelectionChanged.connect(self._sync_mapping_controls)
+        self.mapping_table.last_row_completed.connect(self.add_mapping_button.setFocus)
+
+        self.preview_label = QtWidgets.QLabel(mapping_group)
+        self.preview_label.setObjectName("spreadsheet_metadata_match_preview")
+        self.preview_label.setWordWrap(True)
+        self.preview_label.setVisible(self._sample_path is not None)
+        mapping_layout.addWidget(self.preview_label)
 
         self.overwrite_check = QtWidgets.QCheckBox(
             "Overwrite existing coordinates and attributes", mapping_group
@@ -538,6 +717,12 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         self.overwrite_check.setObjectName("spreadsheet_metadata_overwrite")
         mapping_layout.addWidget(self.overwrite_check)
         layout.addWidget(mapping_group, 1)
+
+        self.file_name_combo.currentIndexChanged.connect(self._reset_preview)
+        self.row_start_spin.valueChanged.connect(self._reset_preview)
+        self.row_end_spin.valueChanged.connect(self._reset_preview)
+        self.mapping_table.itemChanged.connect(self._reset_preview)
+        self._reset_preview()
 
     def _populate_from_source(self, source: SpreadsheetMetadataSource | None) -> None:
         if isinstance(source, GoogleSheetsMetadataSource):
@@ -601,6 +786,7 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
     def _source_input_edited(self) -> None:
         self._request_id += 1
         self._threadpool.clear()
+        self._last_discovery_error = None
         self.sheet_combo.blockSignals(True)
         self.sheet_combo.clear()
         self.sheet_combo.blockSignals(False)
@@ -654,7 +840,7 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
             # keeps replacement workbooks usable when their worksheet names differ.
             source = self._make_source()
         except Exception as exc:
-            self._show_error(f"{type(exc).__name__}: {exc}")
+            self._show_discovery_error(f"{type(exc).__name__}: {exc}")
             return
         self._set_columns(())
         self.sheet_combo.blockSignals(True)
@@ -671,21 +857,66 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         try:
             source = self._make_source(sheet_name=sheet_name)
         except Exception as exc:
-            self._show_error(f"{type(exc).__name__}: {exc}")
+            self._show_discovery_error(f"{type(exc).__name__}: {exc}")
             return
         self._set_columns(())
         self._start_request("columns", source, "Loading column names…")
 
+    @QtCore.Slot()
+    def _request_preview(self) -> None:
+        if self._sample_path is None:
+            return
+        sheet_name = self.sheet_combo.currentData()
+        if not isinstance(sheet_name, str):
+            self._set_preview_error("Choose a loaded worksheet first.")
+            return
+        try:
+            source = self._make_source(sheet_name=sheet_name, configured=True)
+        except Exception as exc:
+            self._set_preview_error(f"{type(exc).__name__}: {exc}")
+            return
+
+        file_name = self._sample_path.stem
+
+        def infer_file_number() -> object | None:
+            if self._loader is None:
+                return None
+            try:
+                return self._loader.infer_index(file_name)[0]
+            except NotImplementedError:
+                return None
+
+        self.preview_label.setText(f"Testing {self._sample_path.name}…")
+        self.preview_label.setToolTip("")
+        self._start_request(
+            "preview",
+            source,
+            "Testing spreadsheet match…",
+            preview_file_name=file_name,
+            infer_file_number=infer_file_number,
+        )
+
     def _start_request(
         self,
-        operation: typing.Literal["sheets", "columns"],
+        operation: typing.Literal["sheets", "columns", "preview"],
         source: SpreadsheetMetadataSource,
         status: str,
+        *,
+        preview_file_name: str | None = None,
+        infer_file_number: Callable[[], object | None] | None = None,
     ) -> None:
         self._request_id += 1
         request_id = self._request_id
         self._threadpool.clear()
-        worker = _SpreadsheetDiscoveryWorker(request_id, operation, source)
+        if operation != "preview":
+            self._last_discovery_error = None
+        worker = _SpreadsheetDiscoveryWorker(
+            request_id,
+            operation,
+            source,
+            preview_file_name=preview_file_name,
+            infer_file_number=infer_file_number,
+        )
         self._workers.add(worker)
         worker.signals.succeeded.connect(self._request_succeeded)
         worker.signals.failed.connect(self._request_failed)
@@ -699,6 +930,7 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
     ) -> None:
         if request_id != self._request_id:
             return
+        self._last_discovery_error = None
         if operation == "sheets":
             names, selected = typing.cast("tuple[list[str], str | None]", result)
             self.sheet_combo.blockSignals(True)
@@ -720,14 +952,24 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
             self.sheet_combo.blockSignals(False)
             self._sheet_changed()
             return
+        if operation == "preview":
+            preview = typing.cast("_SpreadsheetMetadataPreview", result)
+            self._set_busy(False, "Match test complete.")
+            self._show_preview(preview)
+            return
         columns = tuple(typing.cast("list[str]", result))
         self._set_columns(columns)
         self._set_busy(False, f"Loaded {len(columns)} column names.")
 
     @QtCore.Slot(int, str, str)
-    def _request_failed(self, request_id: int, _operation: str, detail: str) -> None:
-        if request_id == self._request_id:
-            self._show_error(detail)
+    def _request_failed(self, request_id: int, operation: str, detail: str) -> None:
+        if request_id != self._request_id:
+            return
+        if operation == "preview":
+            self._set_busy(False, "Match test failed.")
+            self._set_preview_error(detail)
+        else:
+            self._show_discovery_error(detail)
 
     @QtCore.Slot(object)
     def _worker_finished(self, worker: object) -> None:
@@ -735,18 +977,77 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
             self._workers.discard(worker)
 
     def _show_error(self, detail: str) -> None:
-        self._set_busy(False, "Could not read the spreadsheet.")
+        self._set_busy(False, "Could not configure spreadsheet metadata.")
         erlab.interactive.utils.MessageDialog.critical(
             self,
             "Spreadsheet Metadata",
-            "Could not read the spreadsheet.",
+            "Could not configure spreadsheet metadata.",
             detail,
         )
+
+    def _show_discovery_error(self, detail: str) -> None:
+        self._last_discovery_error = detail
+        self._set_busy(
+            False,
+            f"Could not read the spreadsheet. Use Load Worksheets to retry. {detail}",
+        )
+        self.status_label.setToolTip(detail)
+
+    def _show_preview(self, preview: _SpreadsheetMetadataPreview) -> None:
+        if self._sample_path is None:
+            return
+        self._last_preview = preview
+        self._last_preview_error = None
+        if preview.values is None:
+            if preview.lookup is None:
+                detail = "no exact match and no file number could be inferred"
+            else:
+                detail = f"no row matched file number {preview.lookup!r}"
+            self.preview_label.setText(f"{self._sample_path.name} → {detail}")
+            self.preview_label.setToolTip("")
+            return
+
+        parts: list[str] = []
+        for kind, values in (
+            ("Coord", preview.values.coordinate_values),
+            ("Attr", preview.values.attribute_values),
+        ):
+            entries = [f"{name}={value!r}" for name, value in values.items()]
+            if entries:
+                parts.append(f"{kind}: " + ", ".join(entries))
+        if not parts:
+            parts.append("mapped cells are blank")
+        self.preview_label.setText(
+            f"{self._sample_path.name} → row {preview.spreadsheet_row} · "
+            + " · ".join(parts)
+        )
+        self.preview_label.setToolTip("")
+
+    def _set_preview_error(self, detail: str) -> None:
+        if self._sample_path is None:
+            return
+        self._last_preview = None
+        self._last_preview_error = detail
+        self.preview_label.setText(f"Could not test {self._sample_path.name}. {detail}")
+        self.preview_label.setToolTip(detail)
+
+    def _reset_preview(self, *_args: object) -> None:
+        if self._sample_path is None:
+            return
+        self._last_preview = None
+        self._last_preview_error = None
+        self.preview_label.setText(f"Test file: {self._sample_path.name}")
+        self.preview_label.setToolTip("")
+        self.test_match_button.setEnabled(bool(self._columns) and not self._busy)
 
     def _set_busy(self, busy: bool, status: str) -> None:
         self._busy = busy
         self.progress_bar.setVisible(busy)
         self.status_label.setText(status)
+        self.status_label.setToolTip("")
+        self.test_match_button.setEnabled(
+            self._sample_path is not None and bool(self._columns) and not busy
+        )
         ok_button = self.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
         if ok_button is not None:
             ok_button.setEnabled(not busy)
