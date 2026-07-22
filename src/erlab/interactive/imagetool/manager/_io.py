@@ -375,7 +375,6 @@ class _DataIngressController:
             )
             return
 
-        n_files = len(paths)
         loaded: list[pathlib.Path] = []
         failed: list[pathlib.Path] = []
         if try_workspace:
@@ -407,13 +406,15 @@ class _DataIngressController:
                     explorer.add_tab(root_path=path)
                 return
 
-            singular = n_files == 1
+            extensions = sorted({path.suffix.lower() for path in paths})
+            file_types = ", ".join(
+                repr(extension) if extension else "no extension"
+                for extension in extensions
+            )
             QtWidgets.QMessageBox.critical(
                 self._manager,
                 "Error",
-                f"The selected {'file' if singular else 'files'} "
-                f"with extension '{paths[0].suffix}' {'is' if singular else 'are'} "
-                "not supported by any available plugin.",
+                f"No available loader supports all selected file types: {file_types}.",
             )
             return
 

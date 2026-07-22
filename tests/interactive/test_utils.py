@@ -144,6 +144,17 @@ def test_file_loaders_resolve_da30_filter_to_da30() -> None:
     assert func.__self__ is da30_loader
 
 
+def test_file_loaders_match_mixed_extensions() -> None:
+    da30_filter = next(iter(erlab.io.loaders["da30"].file_dialog_methods))
+
+    valid_loaders = erlab.interactive.utils.file_loaders(
+        ["first_scan.pxt", "second_scan.zip"]
+    )
+
+    assert da30_filter in valid_loaders
+    assert (xr.load_dataarray, {"engine": "erlab-igor"}) not in valid_loaders.values()
+
+
 class _PersistentToolState(pydantic.BaseModel):
     value: int = 0
 

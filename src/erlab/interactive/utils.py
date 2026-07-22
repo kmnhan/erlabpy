@@ -1257,10 +1257,12 @@ def file_loaders(
 
     valid_keys: list[str] = []
     for name_filter in valid_loaders:
-        for pattern in _filter_to_patterns(name_filter):
-            if all(fnmatch.fnmatch(p.name, pattern) for p in file_paths):
-                valid_keys.append(name_filter)
-                break
+        patterns = _filter_to_patterns(name_filter)
+        if all(
+            any(fnmatch.fnmatch(path.name, pattern) for pattern in patterns)
+            for path in file_paths
+        ):
+            valid_keys.append(name_filter)
 
     return {k: valid_loaders[k] for k in valid_keys}
 
