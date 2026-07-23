@@ -983,9 +983,16 @@ def test_spreadsheet_metadata_mapping_reorder_controls_mapping_order(
     assert list(source.attribute_mapping) == ["Comment", "Mode"]
 
 
-def test_spreadsheet_metadata_mapping_reorder_defensive_paths(qtbot) -> None:
+def test_spreadsheet_metadata_mapping_reorder_defensive_paths(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+) -> None:
     dialog = _SpreadsheetMetadataDialog(None)
     qtbot.addWidget(dialog)
+    monkeypatch.setattr(
+        dialog.mapping_table,
+        "_show_active_combo_popup",
+        lambda: None,
+    )
     dialog._move_current_mapping(1)
     dialog._set_columns(("Temperature", "Mode"))
     dialog.add_mapping_row("Temperature", name="sample_temp")
