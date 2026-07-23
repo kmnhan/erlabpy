@@ -220,18 +220,15 @@ def _press_alt(monkeypatch):
 def _exec_generated_code(
     code: str, namespace: dict[str, typing.Any]
 ) -> dict[str, typing.Any]:
-    locals_ns = dict(namespace)
-    exec(  # noqa: S102
-        code,
-        {
-            "np": np,
-            "xr": xr,
-            "erlab": erlab,
-            "era": erlab.analysis,
-        },
-        locals_ns,
-    )
-    return locals_ns
+    exec_namespace = {
+        "np": np,
+        "xr": xr,
+        "erlab": erlab,
+        "era": erlab.analysis,
+        **namespace,
+    }
+    exec(code, exec_namespace)  # noqa: S102
+    return exec_namespace
 
 
 def _exec_data_fragment(
