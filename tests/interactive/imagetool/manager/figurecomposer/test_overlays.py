@@ -407,7 +407,11 @@ def test_figure_composer_bz_overlay_helper_edges(qtbot, monkeypatch) -> None:
         "_axes_from_selection",
         lambda *_args, **_kwargs: (),
     )
-    figurecomposer_bz_overlay._render_bz_overlay(tool, operation, None)
+    figurecomposer_bz_overlay._render_bz_overlay(
+        figurecomposer_rendering._render_context(tool),
+        operation,
+        None,
+    )
 
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(0)
@@ -1123,7 +1127,9 @@ def test_figure_composer_photon_energy_overlay_helper_edges(qtbot, monkeypatch) 
     render_tool = _photon_energy_tool(render_operation, data)
     qtbot.addWidget(render_tool)
     figurecomposer_photon_energy._render_photon_energy_overlay(
-        render_tool, render_operation, None
+        figurecomposer_rendering._render_context(render_tool),
+        render_operation,
+        None,
     )
 
 

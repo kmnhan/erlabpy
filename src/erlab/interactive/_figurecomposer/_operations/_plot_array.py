@@ -63,6 +63,7 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
+    from erlab.interactive._figurecomposer._render_context import FigureRenderContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
     from erlab.interactive._figurecomposer._ui._operation_editor import (
         FigureOperationEditor,
@@ -312,20 +313,27 @@ def _plot_array_kwargs(operation: FigureOperationState) -> dict[str, typing.Any]
 
 
 def _render_plot_array(
-    tool: FigureComposerTool, operation: FigureOperationState, axs: typing.Any
+    context: FigureRenderContext,
+    operation: FigureOperationState,
+    axs: typing.Any,
 ) -> None:
     kwargs = _plot_array_kwargs(operation)
     plan = _PlotArrayPreparePlan.from_operation_and_kwargs(operation, kwargs)
-    data = tool._cached_render_data(
+    data = context.cached_data(
         "plot-array",
         plan,
-        lambda: plan.prepare(tool._document),
+        lambda: plan.prepare(context.document),
     )
     if data is None:
         return
     if data.ndim != 2:
         raise ValueError("Image Plot requires a 2D DataArray")
-    axis = _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
+    axis = _axes_from_selection(
+        context.document,
+        operation.axes,
+        axs,
+        for_plot_slices=False,
+    )
     if isinstance(axis, (list, tuple)) or hasattr(axis, "flat"):
         raise ValueError("Image Plot requires exactly one target axis")
     kwargs["crop"] = False
@@ -957,8 +965,8 @@ SPEC = OperationSpec(
     build_source_editor=_build_source_editor,
     build_editor_sections=_editor_sections,
     section_summary=_section_summary,
-    render=lambda tool, operation, _figure, axs: _render_plot_array(
-        tool, operation, axs
+    render=lambda context, operation, _figure, axs: _render_plot_array(
+        context, operation, axs
     ),
     code_lines=_plot_array_code_lines,
     render_cache_safe=_always_render_cache_safe,

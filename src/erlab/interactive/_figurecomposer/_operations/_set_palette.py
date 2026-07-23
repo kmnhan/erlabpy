@@ -38,6 +38,7 @@ if typing.TYPE_CHECKING:
 
     from matplotlib.figure import Figure
 
+    from erlab.interactive._figurecomposer._render_context import FigureRenderContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
     from erlab.interactive._figurecomposer._ui._operation_editor import (
         FigureOperationEditor,
@@ -536,7 +537,7 @@ def _apply_palette_to_existing_axes(fig: Figure, sns: typing.Any) -> None:
 
 
 def _render_set_palette(
-    _tool: FigureComposerTool,
+    _context: FigureRenderContext,
     operation: FigureOperationState,
     fig: Figure,
     _axs: typing.Any,

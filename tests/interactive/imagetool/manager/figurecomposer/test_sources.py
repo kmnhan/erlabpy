@@ -1922,7 +1922,9 @@ def test_figure_composer_source_selection_helper_edges(qtbot) -> None:
         primary_source="data",
     )
     qtbot.addWidget(tool)
-    assert tool._document.source_selection_input_data("derived") is data
+    selection_input = tool._document.source_selection_input_data("derived")
+    assert selection_input is tool._document.source_data["data"]
+    assert selection_input is not data
 
     operation = FigureOperationState.plot_slices(
         label="slice",

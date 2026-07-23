@@ -122,6 +122,7 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
     from erlab.interactive._figurecomposer._model._state import FigureLimit
+    from erlab.interactive._figurecomposer._render_context import FigureRenderContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
     from erlab.interactive._figurecomposer._ui._operation_editor import (
         FigureOperationEditor,
@@ -1251,11 +1252,18 @@ def _transformed_line_entries_from_plan(
 
 
 def _render_line(
-    tool: FigureComposerTool, operation: FigureOperationState, axs: typing.Any
+    context: FigureRenderContext,
+    operation: FigureOperationState,
+    axs: typing.Any,
 ) -> None:
     data_plan = _LineDataPlan.from_operation(operation)
     axes = _iter_axes(
-        _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
+        _axes_from_selection(
+            context.document,
+            operation.axes,
+            axs,
+            for_plot_slices=False,
+        )
     )
     transform_plan = LineTransformPlan.from_operation(operation)
     if line_transform_plan_active(transform_plan):
@@ -1267,20 +1275,20 @@ def _render_line(
                 len(axes) if operation.line_placement == "one_per_axis" else None
             ),
         )
-        line_entries = tool._cached_render_data(
+        line_entries = context.cached_data(
             "line-profile-transforms",
             render_plan,
             lambda: _transformed_line_entries_from_plan(
-                tool._document,
+                context.document,
                 render_plan,
             ),
         )
     else:
-        line_entries = tool._cached_render_data(
+        line_entries = context.cached_data(
             "line-profile-inputs",
             data_plan,
             lambda: _line_data_items_with_source_names_from_plan(
-                tool._document,
+                context.document,
                 data_plan,
             ),
         )
@@ -1288,11 +1296,11 @@ def _render_line(
         return
     line_items = [profile for profile, _source in line_entries]
     sources = [
-        tool._source_display_name(source) if source is not None else None
+        context.source_display_name(source) if source is not None else None
         for _profile, source in line_entries
     ]
     if operation.line_placement == "one_per_axis":
-        _render_one_profile_per_axis(tool, operation, axes, line_items, sources)
+        _render_one_profile_per_axis(operation, axes, line_items, sources)
         return
     styles = _line_styles_for_profiles(operation, line_items, sources)
     for axis in axes:
@@ -1307,7 +1315,6 @@ def _render_line(
 
 
 def _render_one_profile_per_axis(
-    tool: FigureComposerTool,
     operation: FigureOperationState,
     axes: tuple[matplotlib.axes.Axes, ...],
     profiles: list[xr.DataArray],
@@ -2404,7 +2411,9 @@ SPEC = OperationSpec(
     build_source_editor=_build_source_editor,
     build_editor_sections=_editor_sections,
     section_summary=_section_summary,
-    render=lambda tool, operation, _figure, axs: _render_line(tool, operation, axs),
+    render=lambda context, operation, _figure, axs: _render_line(
+        context, operation, axs
+    ),
     code_lines=_line_code,
     render_cache_safe=_always_render_cache_safe,
     required_imports=_required_imports,

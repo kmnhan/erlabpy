@@ -30,6 +30,7 @@ from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
 if typing.TYPE_CHECKING:
     from matplotlib.figure import Figure
 
+    from erlab.interactive._figurecomposer._render_context import FigureRenderContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
     from erlab.interactive._figurecomposer._ui._operation_editor import (
         FigureOperationEditor,
@@ -152,7 +153,7 @@ def _build_custom_code_editor(
 
 
 def _render_custom(
-    tool: FigureComposerTool,
+    context: FigureRenderContext,
     operation: FigureOperationState,
     fig: Figure,
     axs: typing.Any,
@@ -162,7 +163,7 @@ def _render_custom(
         return
     if not operation.trusted:
         raise ValueError("Custom code is not trusted. Enable Trusted to render it.")
-    namespace = _source_namespace(tool, fig, axs)
+    namespace = _source_namespace(context.document, fig, axs)
     # Custom code is the explicit trusted escape hatch in the recipe pipeline.
     exec(operation.code, namespace)  # noqa: S102
 

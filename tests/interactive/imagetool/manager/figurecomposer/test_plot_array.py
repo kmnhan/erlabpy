@@ -1409,7 +1409,7 @@ def test_figure_composer_plot_array_helper_edges(qtbot, monkeypatch) -> None:
         lambda arr, **kwargs: rendered.append((arr, kwargs)),
     )
     figurecomposer_plot_array._render_plot_array(
-        base_tool,
+        figurecomposer_rendering._render_context(base_tool),
         FigureOperationState.plot_array(label="missing", source="missing"),
         None,
     )
@@ -1418,7 +1418,7 @@ def test_figure_composer_plot_array_helper_edges(qtbot, monkeypatch) -> None:
     _, axs = plt.subplots(1, 2, squeeze=False)
     with pytest.raises(ValueError, match="exactly one target axis"):
         figurecomposer_plot_array._render_plot_array(
-            base_tool,
+            figurecomposer_rendering._render_context(base_tool),
             FigureOperationState.plot_array(
                 label="multi_axes",
                 source="image",

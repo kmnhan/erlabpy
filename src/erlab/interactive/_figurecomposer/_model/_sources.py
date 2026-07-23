@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import re
 import typing
+
+import numpy as np
 
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -176,6 +179,21 @@ def _source_unique_name(source_name: str, reserved: set[str]) -> str:
 
 def _public_source_data(data: xr.DataArray) -> xr.DataArray:
     return erlab.utils.array._restore_nonuniform_dims(data)
+
+
+def _read_only_source_data(data: xr.DataArray) -> xr.DataArray:
+    """Return a zero-copy source view that rejects ordinary in-place mutation."""
+    view = data.copy(deep=False)
+    variables = [view.variable, *(view.coords[name].variable for name in view.coords)]
+    for variable in variables:
+        variable.attrs = copy.deepcopy(variable.attrs)
+        variable.encoding = copy.deepcopy(variable.encoding)
+        values = variable.data
+        if isinstance(values, np.ndarray) and values.flags.writeable:
+            values = copy.deepcopy(values) if values.dtype.hasobject else values.view()
+            values.flags.writeable = False
+            variable.data = values
+    return view
 
 
 def _available_source_dims(

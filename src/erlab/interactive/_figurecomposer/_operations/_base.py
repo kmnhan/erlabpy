@@ -40,6 +40,7 @@ if typing.TYPE_CHECKING:
         FigureOperationKind,
         FigureOperationState,
     )
+    from erlab.interactive._figurecomposer._render_context import FigureRenderContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
     from erlab.interactive._figurecomposer._ui._operation_editor import (
         FigureOperationEditor,
@@ -70,7 +71,7 @@ class OperationSpec:
     ]
     section_summary: Callable[[FigureComposerTool, str, FigureOperationState], str]
     render: Callable[
-        [FigureComposerTool, FigureOperationState, Figure, typing.Any], None
+        [FigureRenderContext, FigureOperationState, Figure, typing.Any], None
     ]
     code_lines: Callable[[FigureComposerTool, FigureOperationState], list[str]]
     render_cache_safe: Callable[[FigureOperationState], bool]

@@ -54,6 +54,7 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
     from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
+    from erlab.interactive._figurecomposer._render_context import FigureRenderContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
     from erlab.interactive._figurecomposer._ui._operation_editor import (
         FigureOperationEditor,
@@ -136,12 +137,17 @@ def _bz_bvec(operation: FigureOperationState) -> np.ndarray:
 
 
 def _render_bz_overlay(
-    tool: FigureComposerTool,
+    context: FigureRenderContext,
     operation: FigureOperationState,
     axs: typing.Any,
 ) -> None:
     axes = _iter_axes(
-        _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
+        _axes_from_selection(
+            context.document,
+            operation.axes,
+            axs,
+            for_plot_slices=False,
+        )
     )
     if not axes:
         return
@@ -848,8 +854,8 @@ SPEC = OperationSpec(
     build_source_editor=_empty_source_editor,
     build_editor_sections=_editor_sections,
     section_summary=_section_summary,
-    render=lambda tool, operation, _figure, axs: _render_bz_overlay(
-        tool, operation, axs
+    render=lambda context, operation, _figure, axs: _render_bz_overlay(
+        context, operation, axs
     ),
     code_lines=_bz_code_lines,
     render_cache_safe=_always_render_cache_safe,

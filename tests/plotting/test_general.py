@@ -1,3 +1,5 @@
+import inspect
+
 import matplotlib.colors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -72,27 +74,41 @@ def test_plot_slices_selects_slice_stack_once_per_map(monkeypatch) -> None:
     plt.close(fig)
 
 
-def test_plot_slices_map_preparer_receives_complete_selection() -> None:
+def test_plot_slices_resolver_receives_complete_selection_request() -> None:
     data = xr.DataArray(
         np.arange(24.0).reshape(2, 3, 4),
         dims=("eV", "y", "x"),
         coords={"eV": [0.0, 1.0], "y": [0.0, 1.0, 2.0], "x": np.arange(4.0)},
     )
-    preparations: list[dict[str, object]] = []
+    requests: list[plotting_general._PlotSlicesSelectionRequest] = []
 
-    def prepare_maps(maps, qsel):
-        preparations.append(dict(qsel))
-        return plotting_general._prepare_plot_slices_maps(maps, qsel)
+    class Resolver:
+        def resolve(
+            self,
+            request: plotting_general._PlotSlicesSelectionRequest,
+        ) -> tuple[xr.DataArray, ...]:
+            requests.append(request)
+            return request.prepare()
 
-    fig, _axes = plot_slices(
+    fig, _axes = plotting_general._plot_slices(
+        Resolver(),
         data,
         eV=[0.0, 1.0],
         eV_width=[0.1, 0.2],
         xlim=(1.0, 3.0),
-        _map_preparer=prepare_maps,
     )
 
-    assert preparations == [
+    public_signature = inspect.signature(plot_slices)
+    private_signature = inspect.signature(plotting_general._plot_slices)
+    assert "_selection_resolver" not in public_signature.parameters
+    assert public_signature == private_signature.replace(
+        parameters=tuple(
+            parameter
+            for parameter in private_signature.parameters.values()
+            if parameter.name != "_selection_resolver"
+        )
+    )
+    assert [request.qsel for request in requests] == [
         {
             "eV": [0.0, 1.0],
             "eV_width": [0.1, 0.2],
@@ -101,12 +117,42 @@ def test_plot_slices_map_preparer_receives_complete_selection() -> None:
     ]
     plt.close(fig)
 
+    class EmptyResolver:
+        def resolve(
+            self,
+            _request: plotting_general._PlotSlicesSelectionRequest,
+        ) -> tuple[xr.DataArray, ...]:
+            return ()
+
     with pytest.raises(ValueError, match="must match the input map count"):
-        plot_slices(
+        plotting_general._plot_slices(
+            EmptyResolver(),
             data,
             eV=[0.0],
-            _map_preparer=lambda _maps, _qsel: (),
         )
+
+
+def test_plot_slices_public_wrapper_cannot_bind_internal_resolver(monkeypatch) -> None:
+    sentinel = object()
+    captured: dict[str, object] = {}
+    expected = object(), object()
+
+    def fake_plot_slices(resolver, /, maps, *args, **kwargs):
+        captured.update(
+            resolver=resolver,
+            maps=maps,
+            args=args,
+            values=kwargs,
+        )
+        return expected
+
+    monkeypatch.setattr(plotting_general, "_plot_slices", fake_plot_slices)
+    data = xr.DataArray(np.arange(3.0), dims="_selection_resolver")
+
+    assert plot_slices(data, _selection_resolver=sentinel) is expected
+    assert captured["resolver"] is None
+    assert captured["maps"] is data
+    assert captured["values"]["_selection_resolver"] is sentinel
 
 
 def test_plot_slices_general(monkeypatch) -> None:

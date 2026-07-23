@@ -128,12 +128,70 @@ def test_figure_document_replaces_source_payloads_together() -> None:
     source_data.clear()
     selection_base_data.clear()
 
-    assert document.source_data["data"] is data
-    assert document.source_selection_base_data["selected"] is base
+    xr.testing.assert_identical(document.source_data["data"], data)
+    xr.testing.assert_identical(
+        document.source_selection_base_data["selected"],
+        base,
+    )
+    assert document.source_data["data"] is not data
+    assert document.source_selection_base_data["selected"] is not base
+
+    data.values[:] = -1.0
+    base.values[:] = -1.0
+
+    np.testing.assert_array_equal(document.source_data["data"], np.arange(3.0))
+    np.testing.assert_array_equal(
+        document.source_selection_base_data["selected"],
+        np.arange(4.0),
+    )
 
     document.replace_source_payloads({"data": data}, {})
 
-    assert document.source_data["data"] is data
+    xr.testing.assert_identical(document.source_data["data"], data)
+    assert document.source_data["data"] is not data
+    assert document.source_selection_base_data == {}
+
+
+def test_figure_document_owns_constructor_source_payloads() -> None:
+    data = xr.DataArray(
+        np.arange(3.0),
+        dims="x",
+        attrs={"nested": {"label": "original"}},
+    )
+    document = FigureDocument(
+        FigureRecipeState(),
+        source_data={"data": data},
+        source_selection_base_data={"data": data},
+    )
+
+    assert document.source_data["data"] is document.source_selection_base_data["data"]
+
+    data.values[:] = -1.0
+    data.attrs["nested"]["label"] = "mutated"
+
+    np.testing.assert_array_equal(document.source_data["data"], np.arange(3.0))
+    assert document.source_data["data"].attrs["nested"]["label"] == "original"
+
+
+def test_figure_document_discards_owned_source_payloads() -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    document = FigureDocument(
+        FigureRecipeState(
+            sources=(
+                FigureSourceState(name="data"),
+                FigureSourceState(name="other"),
+            )
+        ),
+        source_data={"data": data, "other": data + 1.0},
+        source_selection_base_data={"data": data},
+    )
+    revision = document.source_revision
+
+    assert document.discard_source_data(("missing",)) == ()
+    assert document.source_revision == revision
+    assert document.discard_source_data(("data", "data")) == ("data",)
+    assert document.source_revision == revision + 1
+    assert set(document.source_data) == {"other"}
     assert document.source_selection_base_data == {}
 
 
@@ -152,6 +210,35 @@ def test_figure_document_attaches_source_observer_after_construction() -> None:
     document.set_source_changed_callback(None)
     document.touch_source_payloads()
     assert revisions == [2]
+
+
+def test_figure_document_owns_assigned_recipe_state() -> None:
+    recipe = FigureRecipeState(
+        setup=FigureSubplotsState(figsize=(4.0, 3.0)),
+        operations=(
+            FigureOperationState.plot_array(
+                label="image",
+                source="data",
+            ).model_copy(update={"extra_kwargs": {"alpha": 0.5}}),
+        ),
+    )
+    document = FigureDocument(recipe)
+
+    recipe.setup.figsize = (8.0, 6.0)
+    recipe.operations[0].extra_kwargs["alpha"] = 0.75
+    assert document.recipe.setup.figsize == (4.0, 3.0)
+    assert document.recipe.operations[0].extra_kwargs["alpha"] == 0.5
+
+    replacement = document.recipe.model_copy(deep=True)
+    replacement.setup.figsize = (5.0, 4.0)
+    assert document.replace_recipe(replacement)
+    revision = document.recipe_revision
+
+    replacement.setup.figsize = (9.0, 7.0)
+    replacement.operations[0].extra_kwargs["alpha"] = 1.0
+    assert document.recipe.setup.figsize == (5.0, 4.0)
+    assert document.recipe.operations[0].extra_kwargs["alpha"] == 0.5
+    assert document.recipe_revision == revision
 
 
 def test_figure_composer_prepared_data_cache_is_bounded_and_persists_dask() -> None:
@@ -600,7 +687,9 @@ def test_figure_document_updates_and_inserts_operations_by_identity() -> None:
 
     assert document.operation_index("second-id") == 1
     assert document.operation_index("missing-id") is None
-    assert document.operation_by_id("second-id") is operations[1]
+    stored_operation = document.operation_by_id("second-id")
+    assert stored_operation == operations[1]
+    assert stored_operation is not operations[1]
     assert document.operation_by_id("missing-id") is None
 
     updated_indices: list[int] = []
@@ -913,6 +1002,56 @@ def test_figure_document_pastes_operations_and_sources_atomically() -> None:
     )
 
 
+def test_figure_document_copies_only_accepted_source_inputs(monkeypatch) -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    document = FigureDocument(
+        FigureRecipeState(sources=(FigureSourceState(name="data"),)),
+        source_data={"data": data},
+    )
+    rejected_replacement = data + 10.0
+    preserved_paste = data + 20.0
+    accepted_replacement = data + 30.0
+    deep_copy_count = 0
+    original_copy = xr.DataArray.copy
+
+    def counted_copy(self, *args, **kwargs):
+        nonlocal deep_copy_count
+        if kwargs.get("deep", True):
+            deep_copy_count += 1
+        return original_copy(self, *args, **kwargs)
+
+    monkeypatch.setattr(xr.DataArray, "copy", counted_copy)
+
+    result = document.replace_source(
+        "missing",
+        FigureSourceState(name="missing"),
+        rejected_replacement,
+    )
+    assert not result
+    assert deep_copy_count == 0
+
+    result = document.paste_operations(
+        0,
+        (FigureOperationState.plot_array(label="image", source="data"),),
+        (FigureSourceState(name="data"),),
+        {"data": preserved_paste},
+        {},
+        preserve_existing=True,
+    )
+    assert not result.source_data_changed
+    assert deep_copy_count == 0
+
+    result = document.replace_source(
+        "data",
+        FigureSourceState(name="data"),
+        accepted_replacement,
+    )
+    assert result.updated == ("data",)
+    assert deep_copy_count == 1
+    accepted_replacement.values[:] = -1.0
+    np.testing.assert_array_equal(document.source_data["data"], data.values + 30.0)
+
+
 def test_figure_document_add_and_replace_recompute_dependents_atomically() -> None:
     base = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
@@ -965,6 +1104,9 @@ def test_figure_document_add_and_replace_recompute_dependents_atomically() -> No
     xr.testing.assert_identical(
         document.source_data["selected"], replacement.qsel(u=1.0)
     )
+    expected_selected = replacement.qsel(u=1.0).copy(deep=True)
+    replacement.values[:] = -1.0
+    xr.testing.assert_identical(document.source_data["selected"], expected_selected)
 
 
 def test_figure_document_updates_source_selection_per_compatible_source() -> None:
@@ -1455,6 +1597,65 @@ def test_figure_composer_tool_status_is_detached_from_live_recipe(
     tool.tool_status = updated
     assert draw_calls == [None, None]
     assert tool.tool_status.operations[0].extra_kwargs["alpha"] == 0.5
+
+    assigned_revision = tool._document.recipe_revision
+    assigned_figsize = tool.tool_status.setup.figsize
+    updated.setup.figsize = (13.0, 9.0)
+    updated.operations[0].extra_kwargs["alpha"] = 0.75
+    assert tool.tool_status.setup.figsize == assigned_figsize
+    assert tool.tool_status.operations[0].extra_kwargs["alpha"] == 0.5
+    assert tool._document.recipe_revision == assigned_revision
+
+
+def test_figure_composer_public_source_data_is_read_only(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={
+            "x": [0.0, 1.0],
+            "y": [0.0, 1.0],
+            "aux": (("x", "y"), np.arange(4.0).reshape(2, 2)),
+        },
+        attrs={"nested": {"value": 1}},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+
+    primary = tool.tool_data
+    named = tool.source_data()["data"]
+    owned = tool._document.source_data["data"]
+    assert np.shares_memory(primary.values, owned.values)
+    assert np.shares_memory(named.values, owned.values)
+    assert not np.shares_memory(owned.values, data.values)
+    with pytest.raises(ValueError, match="read-only"):
+        primary.values[:] = -1.0
+    with pytest.raises(ValueError, match="read-only"):
+        named.coords["aux"].values[:] = -1.0
+
+    primary.attrs["nested"]["value"] = 2
+    assert tool._document.source_data["data"].attrs["nested"]["value"] == 1
+
+    revision = tool._document.source_revision
+    with tool.edit_source_data() as sources:
+        sources["data"].values[:] += 1.0
+    assert tool._document.source_revision == revision + 1
+    np.testing.assert_allclose(tool.tool_data.values, data.values + 1.0)
+    np.testing.assert_array_equal(data.values, np.arange(4.0).reshape(2, 2))
+
+
+def test_figure_composer_subplot_defaults_without_figure_window(qtbot) -> None:
+    tool = FigureComposerTool(xr.DataArray(np.arange(2.0), dims="x", name="data"))
+    qtbot.addWidget(tool)
+    figure_window = tool._figure_window
+    tool._figure_window = None
+    try:
+        defaults = figurecomposer_rendering._subplot_adjust_defaults(tool)
+    finally:
+        tool._figure_window = figure_window
+
+    assert set(defaults) == {"left", "bottom", "right", "top", "wspace", "hspace"}
+    assert all(np.isfinite(value) for value in defaults.values())
 
 
 def test_figure_composer_preview_draw_error_ignores_missing_operation(qtbot) -> None:

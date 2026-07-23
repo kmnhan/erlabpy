@@ -85,6 +85,7 @@ from erlab.interactive._figurecomposer._model._sources import (
     _default_plot_operation,
     _default_setup_for_data,
     _public_source_data,
+    _read_only_source_data,
     _selected_data,
     _source_display_label,
     _source_has_selection,
@@ -2065,7 +2066,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 update={"sources": tuple(source_list), "operations": tuple(operations)}
             )
         )
-        self._document.replace_source_payloads(source_data, selection_base_data)
+        self._document._replace_owned_source_payloads(
+            source_data,
+            selection_base_data,
+        )
         return data_changed
 
     def _operation_with_legacy_source_selections(
@@ -3245,7 +3249,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         state: tuple[Mapping[str, xr.DataArray], Mapping[str, xr.DataArray]],
     ) -> None:
         source_data, selection_base_data = state
-        self._document.replace_source_payloads(source_data, selection_base_data)
+        self._document._replace_owned_source_payloads(
+            source_data,
+            selection_base_data,
+        )
         self._mark_preview_pixmap_stale()
 
     def _clear_pending_figure_resize_history_write(self) -> None:
@@ -3507,7 +3514,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         try:
             axes = _iter_axes(
                 _axes_from_selection(
-                    self,
+                    self._document,
                     selection,
                     layout_axes,
                     for_plot_slices=False,
@@ -3545,7 +3552,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         try:
             axes = _iter_axes(
                 _axes_from_selection(
-                    self,
+                    self._document,
                     operation.axes,
                     layout_axes,
                     for_plot_slices=False,
@@ -4151,14 +4158,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @property
     def tool_data(self) -> xr.DataArray:
-        """Return the live primary source.
+        """Return a read-only view of the primary source.
 
-        Prefer :meth:`edit_source_data` for in-place edits so cache invalidation
-        cannot be forgotten.
+        Use :meth:`edit_source_data` for in-place edits so cache invalidation cannot
+        be forgotten.
+
+        .. versionchanged:: 3.25.0
+           Numerical source buffers returned here are read-only. Use
+           :meth:`edit_source_data` to mutate live source arrays.
         """
         if self._document.recipe.primary_source in self._document.source_data:
-            return self._document.source_data[self._document.recipe.primary_source]
-        return next(iter(self._document.source_data.values()))
+            data = self._document.source_data[self._document.recipe.primary_source]
+        else:
+            data = next(iter(self._document.source_data.values()))
+        return _read_only_source_data(data)
 
     @property
     def tool_status(self) -> FigureRecipeState:
@@ -4190,7 +4203,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         _render_preview(self)
 
     def set_source_data(self, source_data: Mapping[str, xr.DataArray]) -> None:
-        """Replace all source payloads and invalidate prepared render data."""
+        """Copy and replace all source payloads, then invalidate prepared render data.
+
+        .. versionchanged:: 3.25.0
+           Figure Composer owns a copy of each supplied array, so later caller-side
+           mutation cannot bypass render-cache invalidation.
+        """
         self._document.replace_source_payloads(source_data, {})
         self._refresh_source_list()
         self._mark_preview_pixmap_stale()
@@ -4264,7 +4282,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         source_data[self._document.recipe.primary_source] = fallback_data
         if fallback_name not in recipe_sources:
             del source_data[fallback_name]
-        self._document.replace_source_payloads(
+        self._document._replace_owned_source_payloads(
             source_data, self._document.source_selection_base_data
         )
 
@@ -4865,12 +4883,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
 
     def source_data(self) -> dict[str, xr.DataArray]:
-        """Return a mapping snapshot containing the live source arrays.
+        """Return a mapping snapshot containing read-only source views.
 
-        Prefer :meth:`edit_source_data` for in-place edits so cache invalidation
-        cannot be forgotten.
+        Use :meth:`edit_source_data` for in-place edits so cache invalidation cannot
+        be forgotten.
+
+        .. versionchanged:: 3.25.0
+           Numerical source buffers returned here are read-only. Use
+           :meth:`edit_source_data` to mutate live source arrays.
         """
-        return dict(self._document.source_data)
+        return {
+            name: _read_only_source_data(data)
+            for name, data in self._document.source_data.items()
+        }
 
     @staticmethod
     def _source_selection_replay_operations(

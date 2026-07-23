@@ -16,6 +16,7 @@ import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._defaults import (
     _apply_figure_dpi,
     _figure_style_context,
+    _styled_rcparams_value,
     _tool_figure_options_context,
 )
 from erlab.interactive._figurecomposer._model._axes import _axes_expression_value
@@ -28,6 +29,7 @@ from erlab.interactive._figurecomposer._model._sources import (
     _public_source_data,
     _valid_source_variable,
 )
+from erlab.interactive._figurecomposer._render_context import FigureRenderContext
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator
@@ -239,7 +241,7 @@ def _live_layout_axes(
 
 
 def _source_namespace(
-    tool: FigureComposerTool,
+    context: FigureRecipeContext,
     fig: Figure,
     axs: np.ndarray | dict[str, matplotlib.axes.Axes],
 ) -> dict[str, typing.Any]:
@@ -252,13 +254,13 @@ def _source_namespace(
         "xr": xr,
         "eplt": eplt,
     }
-    for name, data in tool._document.source_data.items():
+    for name, data in context.source_data.items():
         namespace[_valid_source_variable(name)] = _public_source_data(data)
     return namespace
 
 
 def _axes_from_selection(
-    tool: FigureComposerTool,
+    context: FigureRecipeContext,
     selection: FigureAxesSelectionState,
     axs: np.ndarray | dict[str, matplotlib.axes.Axes],
     *,
@@ -270,9 +272,7 @@ def _axes_from_selection(
         return _axes_expression_value(selection.expression, axs)
 
     if isinstance(axs, dict):
-        valid_ids = _gridspec_valid_axes_ids(
-            tool._document.recipe.setup, selection.axes_ids
-        )
+        valid_ids = _gridspec_valid_axes_ids(context.recipe.setup, selection.axes_ids)
         invalid_ids = tuple(
             axis_id for axis_id in selection.axes_ids if axis_id not in valid_ids
         )
@@ -287,10 +287,10 @@ def _axes_from_selection(
             return selected[0]
         return np.asarray(selected, dtype=object)
 
-    if selection.invalid_axes(tool._document.recipe.setup):
+    if selection.invalid_axes(context.recipe.setup):
         raise ValueError("Selected axes are outside the current figure layout")
     selected = [
-        axs[row, col] for row, col in selection.valid_axes(tool._document.recipe.setup)
+        axs[row, col] for row, col in selection.valid_axes(context.recipe.setup)
     ]
     if not selected:
         raise ValueError("No axes are selected for this operation")
@@ -311,6 +311,38 @@ def _iter_axes(axis_obj: object) -> tuple[matplotlib.axes.Axes, ...]:
     return (typing.cast("matplotlib.axes.Axes", axis_obj),)
 
 
+def _subplot_adjust_defaults(tool: FigureComposerTool) -> dict[str, float]:
+    figure_window = tool._figure_window
+    if figure_window is not None and erlab.interactive.utils.qt_is_valid(figure_window):
+        subplotpars = figure_window.figure.subplotpars
+    else:
+        setup = tool._document.recipe.setup
+        figure = Figure(
+            figsize=setup.figsize,
+            dpi=setup.dpi,
+            layout=typing.cast("typing.Any", setup.layout),
+        )
+        subplotpars = figure.subplotpars
+    return {
+        key: float(getattr(subplotpars, key))
+        for key in ("left", "bottom", "right", "top", "wspace", "hspace")
+    }
+
+
+def _render_context(tool: FigureComposerTool) -> FigureRenderContext:
+    def default_image_cmap() -> str:
+        with _tool_figure_options_context(tool):
+            return str(_styled_rcparams_value("image.cmap"))
+
+    return FigureRenderContext(
+        document=tool._document,
+        source_display_name=tool._source_display_name,
+        _render_data_getter=tool._cached_render_data,
+        _subplot_adjust_defaults_getter=lambda: _subplot_adjust_defaults(tool),
+        _default_image_cmap_getter=default_image_cmap,
+    )
+
+
 def _render_into_figure(
     tool: FigureComposerTool, figure: Figure, *, sync_visible: bool
 ) -> None:
@@ -318,6 +350,7 @@ def _render_into_figure(
 
     render_errors: dict[str, str] = {}
     cache_safe = tool._render_data_cache_safe()
+    render_context = _render_context(tool)
     with (
         tool._render_data_cache.render_session(
             source_revision=tool._document.source_revision,
@@ -336,7 +369,7 @@ def _render_into_figure(
             ) or tool.operation_editor.has_input_error(operation):
                 continue
             try:
-                spec.render(tool, operation, figure, axs)
+                spec.render(render_context, operation, figure, axs)
             except Exception as exc:
                 render_errors[operation.operation_id] = _render_error_text(exc)
     tool._set_operation_render_errors(render_errors)

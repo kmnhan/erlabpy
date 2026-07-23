@@ -15,6 +15,7 @@ __all__ = [
 
 import contextlib
 import copy
+import dataclasses
 import typing
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 
@@ -693,7 +694,31 @@ def _prepare_plot_slices_maps(
     return tuple(m.qsel(**qsel_kw) for m in maps)
 
 
-def plot_slices(
+@dataclasses.dataclass(frozen=True)
+class _PlotSlicesSelectionRequest:
+    """Complete normalized data-selection request for one Plot Slices call."""
+
+    maps: tuple[xr.DataArray, ...]
+    transpose: bool
+    qsel: dict[str, typing.Any]
+
+    def prepare(self) -> tuple[xr.DataArray, ...]:
+        """Execute this exact request without plotting."""
+        return _prepare_plot_slices_maps(self.maps, self.qsel)
+
+
+class _PlotSlicesSelectionResolver(typing.Protocol):
+    """Resolve a normalized Plot Slices request to selected maps."""
+
+    def resolve(
+        self,
+        request: _PlotSlicesSelectionRequest,
+    ) -> tuple[xr.DataArray, ...]: ...
+
+
+def _plot_slices(
+    _selection_resolver: _PlotSlicesSelectionResolver | None,
+    /,
     maps: xr.DataArray | Sequence[xr.DataArray],
     figsize: tuple[float, float] | None = None,
     *,
@@ -731,11 +756,6 @@ def plot_slices(
     annotate_kw: dict | None = None,
     colorbar_kw: dict | None = None,
     axes: Iterable[matplotlib.axes.Axes] | None = None,
-    _map_preparer: Callable[
-        [Sequence[xr.DataArray], Mapping[str, typing.Any]],
-        tuple[xr.DataArray, ...],
-    ]
-    | None = None,
     **values,
 ) -> tuple[matplotlib.figure.Figure, Iterable[matplotlib.axes.Axes]]:
     """Automated comparison plot of slices.
@@ -1021,10 +1041,15 @@ def plot_slices(
         qsel_stack_kw[slice_dim] = list(slice_levels)
         if isinstance(slice_width, Collection):
             qsel_stack_kw[slice_dim + "_width"] = slice_width
+    selection_request = _PlotSlicesSelectionRequest(
+        maps=tuple(maps),
+        transpose=transpose,
+        qsel=qsel_stack_kw,
+    )
     selected_maps = (
-        _prepare_plot_slices_maps(maps, qsel_stack_kw)
-        if _map_preparer is None
-        else _map_preparer(maps, qsel_stack_kw)
+        selection_request.prepare()
+        if _selection_resolver is None
+        else _selection_resolver.resolve(selection_request)
     )
     if len(selected_maps) != len(maps):
         raise ValueError("Prepared Plot Slices maps must match the input map count")
@@ -1230,6 +1255,80 @@ def plot_slices(
             **annotate_kw,
         )
     return fig, axes
+
+
+def plot_slices(
+    maps: xr.DataArray | Sequence[xr.DataArray],
+    figsize: tuple[float, float] | None = None,
+    *,
+    transpose: bool = False,
+    xlim: float | tuple[float | None, float | None] | None = None,
+    ylim: float | tuple[float | None, float | None] | None = None,
+    crop: bool = True,
+    same_limits: bool | typing.Literal["row", "col", "all"] = False,
+    axis: typing.Literal[
+        "on", "off", "equal", "scaled", "tight", "auto", "image", "square"
+    ] = "auto",
+    show_all_labels: bool = False,
+    colorbar: typing.Literal["none", "right", "rightspan", "all"] = "none",
+    hide_colorbar_ticks: bool = True,
+    annotate: bool = True,
+    cmap: str
+    | matplotlib.colors.Colormap
+    | Iterable[
+        str | matplotlib.colors.Colormap | Iterable[matplotlib.colors.Colormap | str]
+    ]
+    | None = None,
+    norm: matplotlib.colors.Normalize
+    | Iterable[matplotlib.colors.Normalize | Iterable[matplotlib.colors.Normalize]]
+    | None = None,
+    line_kw: Mapping[str, typing.Any]
+    | Iterable[Mapping[str, typing.Any] | Iterable[Mapping[str, typing.Any]]]
+    | None = None,
+    line_order: typing.Literal["C", "F"] | None = None,
+    order: typing.Literal["C", "F"] = "C",
+    cmap_order: typing.Literal["C", "F"] = "C",
+    norm_order: typing.Literal["C", "F"] | None = None,
+    gradient: bool = False,
+    gradient_kw: dict | None = None,
+    subplot_kw: dict | None = None,
+    annotate_kw: dict | None = None,
+    colorbar_kw: dict | None = None,
+    axes: Iterable[matplotlib.axes.Axes] | None = None,
+    **values,
+) -> tuple[matplotlib.figure.Figure, Iterable[matplotlib.axes.Axes]]:
+    return _plot_slices(
+        None,
+        maps,
+        figsize,
+        transpose=transpose,
+        xlim=xlim,
+        ylim=ylim,
+        crop=crop,
+        same_limits=same_limits,
+        axis=axis,
+        show_all_labels=show_all_labels,
+        colorbar=colorbar,
+        hide_colorbar_ticks=hide_colorbar_ticks,
+        annotate=annotate,
+        cmap=cmap,
+        norm=norm,
+        line_kw=line_kw,
+        line_order=line_order,
+        order=order,
+        cmap_order=cmap_order,
+        norm_order=norm_order,
+        gradient=gradient,
+        gradient_kw=gradient_kw,
+        subplot_kw=subplot_kw,
+        annotate_kw=annotate_kw,
+        colorbar_kw=colorbar_kw,
+        axes=axes,
+        **values,
+    )
+
+
+plot_slices.__doc__ = _plot_slices.__doc__
 
 
 MultipleLine2D = list[typing.Union[matplotlib.lines.Line2D, "MultipleLine2D"]]

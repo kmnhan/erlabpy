@@ -8,7 +8,6 @@ import typing
 
 import numpy as np
 
-import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._operations._plot_slices._model import (
     _normalized_selection_operation,
     _operation_maps,
@@ -25,7 +24,7 @@ from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
 )
-from erlab.plotting.general import _prepare_plot_slices_maps
+from erlab.plotting.general import _plot_slices, _PlotSlicesSelectionRequest
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -35,7 +34,7 @@ if typing.TYPE_CHECKING:
     from matplotlib.figure import Figure
 
     from erlab.interactive._figurecomposer._model._state import FigureOperationState
-    from erlab.interactive._figurecomposer._tool import FigureComposerTool
+    from erlab.interactive._figurecomposer._render_context import FigureRenderContext
 
 _PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR = "_figure_composer_operation_id"
 
@@ -51,25 +50,48 @@ class _PlotSlicesSelectionPlan:
     qsel: dict[str, typing.Any]
 
 
+@dataclasses.dataclass(frozen=True)
+class _CachedPlotSlicesSelectionResolver:
+    """Resolve normalized Plot Slices selections through Figure Composer caching."""
+
+    context: FigureRenderContext
+    maps: tuple[str, ...]
+
+    def resolve(
+        self,
+        request: _PlotSlicesSelectionRequest,
+    ) -> tuple[xr.DataArray, ...]:
+        selection_plan = _PlotSlicesSelectionPlan(
+            maps=self.maps,
+            transpose=request.transpose,
+            qsel=dict(request.qsel),
+        )
+        return self.context.cached_data(
+            "plot-slices-selections",
+            selection_plan,
+            request.prepare,
+        )
+
+
 def _render_plot_slices(
-    tool: FigureComposerTool,
+    context: FigureRenderContext,
     operation: FigureOperationState,
     _figure: Figure,
     axs: typing.Any,
 ) -> None:
-    operation = _normalized_selection_operation(tool._document, operation)
-    maps = _operation_maps(tool._document, operation)
+    operation = _normalized_selection_operation(context.document, operation)
+    maps = _operation_maps(context.document, operation)
     if not maps:
         return
-    kwargs = _plot_slices_kwargs(tool, operation)
+    kwargs = _plot_slices_kwargs(context, operation)
     map_plan: tuple[str, ...] | _PlotSlicesTransformPlan = operation.sources
-    if _plot_slices_uses_transformed_line_maps(tool, operation):
+    if _plot_slices_uses_transformed_line_maps(context, operation):
         transform_plan = _PlotSlicesTransformPlan.from_operation(
-            tool._document,
+            context.document,
             operation,
         )
         input_maps = maps
-        maps = tool._cached_render_data(
+        maps = context.cached_data(
             "plot-slices-transformed-maps",
             transform_plan,
             lambda: _plot_slices_transformed_maps_from_plan(
@@ -78,37 +100,35 @@ def _render_plot_slices(
             ),
         )
         map_plan = transform_plan
-        kwargs = _plot_slices_transformed_kwargs(tool, operation)
-    if isinstance(map_plan, tuple):
-
-        def prepare_maps(
-            input_maps: Sequence[xr.DataArray],
-            qsel: Mapping[str, typing.Any],
-        ) -> tuple[xr.DataArray, ...]:
-            selection_plan = _PlotSlicesSelectionPlan(
-                maps=map_plan,
-                transpose=bool(kwargs.get("transpose", False)),
-                qsel=dict(qsel),
-            )
-            return tool._cached_render_data(
-                "plot-slices-selections",
-                selection_plan,
-                lambda: _prepare_plot_slices_maps(input_maps, qsel),
-            )
-
-        kwargs["_map_preparer"] = prepare_maps
+        kwargs = _plot_slices_transformed_kwargs(context, operation)
+    # Transformed maps already cache their expensive selection and transform as one
+    # value. Caching the small follow-up qsel separately would let two large dependent
+    # entries evict one another from the shared bounded cache.
+    selection_resolver = (
+        _CachedPlotSlicesSelectionResolver(context, map_plan)
+        if isinstance(map_plan, tuple)
+        else None
+    )
     axes = _plot_slices_axes(
         operation,
         maps,
-        _axes_from_selection(tool, operation.axes, axs, for_plot_slices=True),
-        slice_count=_plot_slices_slice_count(tool._document, operation),
+        _axes_from_selection(
+            context.document,
+            operation.axes,
+            axs,
+            for_plot_slices=True,
+        ),
+        slice_count=_plot_slices_slice_count(context.document, operation),
     )
     axes_tuple = _iter_axes(axes)
     panel_keys = _plot_slices_panel_keys(
-        tool._document, tool._source_display_name, operation
+        context.document,
+        context.source_display_name,
+        operation,
     )
     mappable_ids_before = _axis_mappable_ids(axes_tuple)
-    eplt.plot_slices(
+    _plot_slices(
+        selection_resolver,
         maps,
         axes=typing.cast("Iterable[matplotlib.axes.Axes]", axes),
         **kwargs,

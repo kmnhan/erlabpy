@@ -2345,7 +2345,7 @@ def test_figure_composer_line_preparation_cache_reuses_data_for_style_changes(
     assert transform_calls == [None, None]
     np.testing.assert_allclose(
         tool.figure.axes[0].lines[0].get_ydata(),
-        2.0 * data.isel(cut=0).values,
+        2.0 * (data.isel(cut=0).values + 1.0),
     )
     assert len(tool._render_data_cache) == 1
     tool.close()
