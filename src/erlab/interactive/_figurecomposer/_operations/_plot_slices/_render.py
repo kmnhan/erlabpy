@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import typing
 
@@ -13,12 +14,12 @@ from erlab.interactive._figurecomposer._operations._plot_slices._model import (
     _operation_maps,
     _plot_slices_kwargs,
     _plot_slices_panel_keys,
-    _plot_slices_selection_sources,
     _plot_slices_slice_count,
     _plot_slices_transformed_kwargs,
-    _plot_slices_transformed_maps,
+    _plot_slices_transformed_maps_from_plan,
     _plot_slices_uses_transformed_line_maps,
     _PlotSlicesPanelKey,
+    _PlotSlicesTransformPlan,
 )
 from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
@@ -40,6 +41,14 @@ _PLOT_SLICES_MAPPABLE_OPERATION_ID_ATTR = "_figure_composer_operation_id"
 _PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR = "_figure_composer_panel_key"
 
 
+@dataclasses.dataclass(frozen=True)
+class _PlotSlicesSelectionPlan:
+    """Semantic map preparation used by plot_slices selection caching."""
+
+    maps: tuple[str, ...] | _PlotSlicesTransformPlan
+    transpose: bool
+
+
 def _render_plot_slices(
     tool: FigureComposerTool,
     operation: FigureOperationState,
@@ -51,46 +60,38 @@ def _render_plot_slices(
     if not maps:
         return
     kwargs = _plot_slices_kwargs(tool, operation)
+    map_plan: tuple[str, ...] | _PlotSlicesTransformPlan = operation.sources
     if _plot_slices_uses_transformed_line_maps(tool, operation):
-        transform_key = tool._operation_render_cache_key(
+        transform_plan = _PlotSlicesTransformPlan.from_operation(
+            tool._document,
             operation,
-            (
-                "sources",
-                "map_selections",
-                "slice_dim",
-                "slice_values_mode",
-                "slice_values",
-                "slice_values_thin",
-                "slice_width",
-                "slice_kwargs",
-                "extra_kwargs",
-                "line_iter_dim",
-                "line_normalize",
-                "line_scales",
-                "line_offsets",
-                "line_offset_source",
-                "line_offset_coord",
-                "line_offset_scale",
-            ),
         )
         input_maps = maps
-
-        def transformed_maps_factory() -> list[xr.DataArray]:
-            return _plot_slices_transformed_maps(tool, operation, input_maps)
-
         maps = typing.cast(
             "list[xr.DataArray]",
             tool._cached_render_data(
-                ("plot-slices-transformed-maps", transform_key),
-                transformed_maps_factory,
+                "plot-slices-transformed-maps",
+                transform_plan,
+                lambda: _plot_slices_transformed_maps_from_plan(
+                    transform_plan,
+                    input_maps,
+                ),
             ),
         )
+        map_plan = transform_plan
         kwargs = _plot_slices_transformed_kwargs(tool, operation)
-    selection_cache = tool._plot_slices_selection_cache
+    selection_cache = (
+        tool._plot_slices_selection_cache if isinstance(map_plan, tuple) else None
+    )
     if selection_cache is not None:
         kwargs["_selection_cache"] = selection_cache
-        kwargs["_selection_cache_key"] = _plot_slices_selection_cache_key(
-            operation, maps
+        selection_plan = _PlotSlicesSelectionPlan(
+            maps=map_plan,
+            transpose=bool(kwargs.get("transpose", False)),
+        )
+        kwargs["_selection_cache_key"] = tool._render_data_cache_key(
+            "plot-slices-selections",
+            selection_plan,
         )
     axes = _plot_slices_axes(
         operation,
@@ -170,15 +171,3 @@ def _plot_slices_axes(
     if axes.size != math.prod(shape):
         return axes
     return axes.reshape(shape)
-
-
-def _plot_slices_selection_cache_key(
-    operation: FigureOperationState, maps: Sequence[xr.DataArray]
-) -> tuple[object, ...]:
-    source_key = tuple(
-        (source,) for source in _plot_slices_selection_sources(operation)
-    )
-    map_key = tuple(
-        (id(data.data), tuple(data.dims), tuple(data.shape)) for data in maps
-    )
-    return (source_key, map_key)

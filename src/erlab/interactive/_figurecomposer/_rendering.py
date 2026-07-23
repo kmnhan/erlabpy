@@ -324,7 +324,7 @@ def _render_into_figure(
     tool._render_data_cache_enabled = previous_cache_enabled and cache_safe
     if not tool._render_data_cache_enabled:
         tool._clear_render_data_caches()
-        tool._plot_slices_selection_cache = {}
+        tool._plot_slices_selection_cache = None
     try:
         with _tool_figure_options_context(tool), _figure_style_context():
             axs = _make_axes(tool, figure, sync_visible=sync_visible)

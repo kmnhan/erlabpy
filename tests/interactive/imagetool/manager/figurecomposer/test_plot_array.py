@@ -935,7 +935,9 @@ def test_figure_composer_plot_array_render_and_generated_code(
     qtbot.addWidget(tool)
     captured: list[tuple[xr.DataArray, dict[str, typing.Any]]] = []
     preparation_calls: list[None] = []
-    original_selected_data = figurecomposer_plot_array._selected_plot_array_data
+    original_selected_data = (
+        figurecomposer_plot_array._selected_plot_array_data_from_source
+    )
 
     def capture_plot_array(arr, **kwargs):
         captured.append((arr, kwargs))
@@ -946,7 +948,9 @@ def test_figure_composer_plot_array_render_and_generated_code(
 
     monkeypatch.setattr(eplt, "plot_array", capture_plot_array)
     monkeypatch.setattr(
-        figurecomposer_plot_array, "_selected_plot_array_data", counted_selected_data
+        figurecomposer_plot_array,
+        "_selected_plot_array_data_from_source",
+        counted_selected_data,
     )
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
 

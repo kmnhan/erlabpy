@@ -792,13 +792,17 @@ def test_figure_composer_photon_energy_overlay_render_and_code(
     qtbot.addWidget(tool)
 
     preparation_calls: list[None] = []
-    original_kz_values = figurecomposer_photon_energy._kz_values
+    original_kz_values = figurecomposer_photon_energy._kz_values_from_plan
 
     def counted_kz_values(*args, **kwargs):
         preparation_calls.append(None)
         return original_kz_values(*args, **kwargs)
 
-    monkeypatch.setattr(figurecomposer_photon_energy, "_kz_values", counted_kz_values)
+    monkeypatch.setattr(
+        figurecomposer_photon_energy,
+        "_kz_values_from_plan",
+        counted_kz_values,
+    )
 
     figure = Figure(figsize=(3, 3))
     FigureCanvasAgg(figure)

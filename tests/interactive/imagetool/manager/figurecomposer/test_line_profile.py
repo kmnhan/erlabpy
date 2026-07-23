@@ -2280,7 +2280,12 @@ def test_figure_composer_line_preparation_cache_reuses_data_for_style_changes(
         name="data",
     )
     operation = FigureOperationState.line(label="line", source="data").model_copy(
-        update={"line_iter_dim": "cut", "line_x": "kx"}
+        update={
+            "line_iter_dim": "cut",
+            "line_x": "kx",
+            "line_label_text": "{source}",
+            "line_scales": (2.0,),
+        }
     )
     tool = FigureComposerTool(
         data,
@@ -2294,8 +2299,10 @@ def test_figure_composer_line_preparation_cache_reuses_data_for_style_changes(
 
     selection_calls: list[None] = []
     transform_calls: list[None] = []
-    original_selection = figurecomposer_line_profile._line_data_items_with_sources
-    original_transform = figurecomposer_line_profile.transform_profiles
+    original_selection = (
+        figurecomposer_line_profile._line_data_items_with_source_names_from_plan
+    )
+    original_transform = figurecomposer_line_profile.transform_profiles_from_plan
 
     def counted_selection(*args, **kwargs):
         selection_calls.append(None)
@@ -2307,11 +2314,13 @@ def test_figure_composer_line_preparation_cache_reuses_data_for_style_changes(
 
     monkeypatch.setattr(
         figurecomposer_line_profile,
-        "_line_data_items_with_sources",
+        "_line_data_items_with_source_names_from_plan",
         counted_selection,
     )
     monkeypatch.setattr(
-        figurecomposer_line_profile, "transform_profiles", counted_transform
+        figurecomposer_line_profile,
+        "transform_profiles_from_plan",
+        counted_transform,
     )
 
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
@@ -2323,12 +2332,68 @@ def test_figure_composer_line_preparation_cache_reuses_data_for_style_changes(
 
     assert selection_calls == [None]
     assert transform_calls == [None]
+    assert tool._plot_slices_selection_cache is tool._prepared_render_data
+    assert len(tool._prepared_render_data) == 1
 
-    tool._document.replace_source_payloads({"data": data + 1.0}, {})
+    tool.source_data()["data"].values[:] += 1.0
+    tool.touch_source_data()
+    assert len(tool._prepared_render_data) == 0
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
 
     assert selection_calls == [None, None]
     assert transform_calls == [None, None]
+    np.testing.assert_allclose(
+        tool.figure.axes[0].lines[0].get_ydata(),
+        2.0 * data.isel(cut=0).values,
+    )
+    assert len(tool._prepared_render_data) == 1
+    tool.close()
+    assert len(tool._prepared_render_data) == 0
+
+
+def test_figure_composer_trusted_custom_code_disables_prepared_data_cache(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.array([1.0, 2.0, 3.0]),
+        dims=("kx",),
+        coords={"kx": [-1.0, 0.0, 1.0]},
+        name="data",
+    )
+    custom = FigureOperationState.custom(
+        label="mutate",
+        code="data.values[:] += 1.0",
+        trusted=True,
+    )
+    line = FigureOperationState.line(label="line", source="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(line, custom),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    first_figure = Figure()
+    figurecomposer_rendering._render_into_figure(
+        tool,
+        first_figure,
+        sync_visible=False,
+    )
+    first_values = first_figure.axes[0].lines[0].get_ydata().copy()
+
+    second_figure = Figure()
+    figurecomposer_rendering._render_into_figure(
+        tool,
+        second_figure,
+        sync_visible=False,
+    )
+    second_values = second_figure.axes[0].lines[0].get_ydata()
+
+    np.testing.assert_allclose(second_values, first_values + 1.0)
+    assert len(tool._prepared_render_data) == 0
 
 
 def test_figure_composer_regular_line_profiles_render_on_each_selected_axis(

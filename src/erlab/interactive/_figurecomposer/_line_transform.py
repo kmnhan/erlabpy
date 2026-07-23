@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import typing
 
@@ -22,6 +23,31 @@ _NORMALIZE_TEXT = {
 }
 
 
+@dataclasses.dataclass(frozen=True)
+class LineTransformPlan:
+    """Semantic inputs used to transform a sequence of line profiles."""
+
+    iter_dim: str | None
+    normalize: typing.Literal["none", "max", "mean"]
+    scales: tuple[float, ...]
+    offsets: tuple[float, ...]
+    offset_source: typing.Literal["manual", "index", "coordinate", "associated"]
+    offset_coord: str | None
+    offset_scale: float
+
+    @classmethod
+    def from_operation(cls, operation: FigureOperationState) -> LineTransformPlan:
+        return cls(
+            iter_dim=operation.line_iter_dim,
+            normalize=operation.line_normalize,
+            scales=operation.line_scales,
+            offsets=operation.line_offsets,
+            offset_source=operation.line_offset_source,
+            offset_coord=operation.line_offset_coord,
+            offset_scale=operation.line_offset_scale,
+        )
+
+
 def line_normalize_text(mode: str) -> str:
     return _NORMALIZE_TEXT.get(mode, _NORMALIZE_TEXT["none"])
 
@@ -36,22 +62,35 @@ def line_normalize_from_text(
 
 
 def line_transform_active(operation: FigureOperationState) -> bool:
+    return line_transform_plan_active(LineTransformPlan.from_operation(operation))
+
+
+def line_transform_plan_active(plan: LineTransformPlan) -> bool:
     return (
-        operation.line_normalize != "none"
-        or bool(operation.line_scales)
-        or line_uses_offsets(operation)
+        plan.normalize != "none"
+        or bool(plan.scales)
+        or line_transform_plan_uses_offsets(plan)
     )
 
 
 def transform_profiles(
     operation: FigureOperationState, profiles: Sequence[xr.DataArray]
 ) -> list[xr.DataArray]:
-    if not line_transform_active(operation):
+    return transform_profiles_from_plan(
+        LineTransformPlan.from_operation(operation),
+        profiles,
+    )
+
+
+def transform_profiles_from_plan(
+    plan: LineTransformPlan, profiles: Sequence[xr.DataArray]
+) -> list[xr.DataArray]:
+    if not line_transform_plan_active(plan):
         return list(profiles)
-    scales = line_transform_values(operation.line_scales, len(profiles), default=1.0)
-    offsets = line_offsets_for_profiles(operation, profiles)
+    scales = line_transform_values(plan.scales, len(profiles), default=1.0)
+    offsets = line_offsets_for_plan(plan, profiles)
     return [
-        offset + scale * normalize_line_data(profile, operation.line_normalize)
+        offset + scale * normalize_line_data(profile, plan.normalize)
         for profile, scale, offset in zip(profiles, scales, offsets, strict=True)
     ]
 
@@ -92,29 +131,42 @@ def line_offsets_for_profiles(
     operation: FigureOperationState,
     profiles: Sequence[xr.DataArray],
 ) -> tuple[float, ...]:
+    return line_offsets_for_plan(LineTransformPlan.from_operation(operation), profiles)
+
+
+def line_offsets_for_plan(
+    plan: LineTransformPlan,
+    profiles: Sequence[xr.DataArray],
+) -> tuple[float, ...]:
     count = len(profiles)
-    if operation.line_offset_source == "manual":
-        return line_transform_values(operation.line_offsets, count, default=0.0)
-    if operation.line_offset_source == "index":
+    if plan.offset_source == "manual":
+        return line_transform_values(plan.offsets, count, default=0.0)
+    if plan.offset_source == "index":
         offsets = tuple(float(index) for index in range(count))
     else:
-        coord_name = line_offset_coordinate_name(operation)
+        coord_name = line_offset_coordinate_name_from_plan(plan)
         offsets = tuple(
             profile_scalar_coord_value(profile, coord_name) for profile in profiles
         )
-    if operation.line_offset_scale == 1.0:
+    if plan.offset_scale == 1.0:
         return offsets
-    return tuple(operation.line_offset_scale * offset for offset in offsets)
+    return tuple(plan.offset_scale * offset for offset in offsets)
 
 
 def line_offset_coordinate_name(operation: FigureOperationState) -> str:
-    if operation.line_offset_source == "coordinate":
-        if operation.line_iter_dim is None:
+    return line_offset_coordinate_name_from_plan(
+        LineTransformPlan.from_operation(operation)
+    )
+
+
+def line_offset_coordinate_name_from_plan(plan: LineTransformPlan) -> str:
+    if plan.offset_source == "coordinate":
+        if plan.iter_dim is None:
             raise ValueError("Coordinate offsets require One profile per")
-        return operation.line_iter_dim
-    if operation.line_offset_coord is None:
+        return plan.iter_dim
+    if plan.offset_coord is None:
         raise ValueError("Associated-coordinate offsets require a coordinate")
-    return operation.line_offset_coord
+    return plan.offset_coord
 
 
 def profile_scalar_coord_value(profile: xr.DataArray, coord_name: str) -> float:
@@ -144,7 +196,11 @@ def line_transform_values(
 
 
 def line_uses_offsets(operation: FigureOperationState) -> bool:
-    return operation.line_offset_source != "manual" or bool(operation.line_offsets)
+    return line_transform_plan_uses_offsets(LineTransformPlan.from_operation(operation))
+
+
+def line_transform_plan_uses_offsets(plan: LineTransformPlan) -> bool:
+    return plan.offset_source != "manual" or bool(plan.offsets)
 
 
 def profile_transform_code_lines(

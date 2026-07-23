@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import typing
 
 import numpy as np
@@ -23,8 +24,9 @@ from erlab.interactive._figurecomposer._line_colormap import (
     values_from_contexts,
 )
 from erlab.interactive._figurecomposer._line_transform import (
+    LineTransformPlan,
     line_transform_active,
-    transform_profiles,
+    transform_profiles_from_plan,
 )
 from erlab.interactive._figurecomposer._model._sources import (
     _available_source_dims,
@@ -756,6 +758,119 @@ def _plot_slices_panel_profile_data(
     return data
 
 
+@dataclasses.dataclass(frozen=True)
+class _PlotSlicesTransformPlan:
+    """Semantic inputs used to select and transform line slice maps."""
+
+    sources: tuple[str, ...]
+    slice_dim: str | None
+    slice_values: tuple[float, ...]
+    slice_width: float | None
+    slice_kwargs: dict[str, typing.Any]
+    slice_count: int
+    order: typing.Literal["C", "F"]
+    transform: LineTransformPlan
+
+    @classmethod
+    def from_operation(
+        cls,
+        context: FigureRecipeContext,
+        operation: FigureOperationState,
+    ) -> _PlotSlicesTransformPlan:
+        operation = _normalized_selection_operation(context, operation)
+        return cls(
+            sources=operation.sources,
+            slice_dim=operation.slice_dim,
+            slice_values=_effective_slice_values(context, operation),
+            slice_width=operation.slice_width,
+            slice_kwargs=dict(operation.slice_kwargs),
+            slice_count=_plot_slices_slice_count(context, operation),
+            order=typing.cast("typing.Literal['C', 'F']", operation.order),
+            transform=LineTransformPlan.from_operation(operation),
+        )
+
+
+def _plot_slices_plan_panel_keys(
+    plan: _PlotSlicesTransformPlan,
+    map_count: int,
+) -> tuple[_PlotSlicesPanelKey, ...]:
+    if plan.order == "F":
+        indices = (
+            (map_index, slice_index)
+            for slice_index in range(plan.slice_count)
+            for map_index in range(map_count)
+        )
+    else:
+        indices = (
+            (map_index, slice_index)
+            for map_index in range(map_count)
+            for slice_index in range(plan.slice_count)
+        )
+    return tuple(
+        _PlotSlicesPanelKey(map_index, slice_index, "")
+        for map_index, slice_index in indices
+    )
+
+
+def _plot_slices_panel_profile_data_from_plan(
+    data: xr.DataArray,
+    plan: _PlotSlicesTransformPlan,
+    key: _PlotSlicesPanelKey,
+) -> xr.DataArray:
+    kwargs = dict(plan.slice_kwargs)
+    if plan.slice_dim and plan.slice_values:
+        kwargs[plan.slice_dim] = plan.slice_values[key.slice_index]
+        if plan.slice_width is not None:
+            kwargs[f"{plan.slice_dim}_width"] = plan.slice_width
+    if kwargs:
+        data = data.qsel(**kwargs)
+    return data.squeeze(drop=True)
+
+
+def _plot_slices_transformed_maps_from_plan(
+    plan: _PlotSlicesTransformPlan,
+    maps: Sequence[xr.DataArray],
+) -> list[xr.DataArray]:
+    profiles: list[xr.DataArray] = []
+    profile_keys: list[_PlotSlicesPanelKey] = []
+    for key in _plot_slices_plan_panel_keys(plan, len(maps)):
+        profile = _plot_slices_panel_profile_data_from_plan(
+            maps[key.map_index],
+            plan,
+            key,
+        )
+        if profile.ndim != 1:
+            continue
+        profiles.append(profile)
+        profile_keys.append(key)
+
+    transformed = transform_profiles_from_plan(plan.transform, profiles)
+    if not plan.slice_dim or not plan.slice_values:
+        return transformed
+
+    map_profiles: list[list[tuple[int, xr.DataArray]]] = [[] for _map in maps]
+    for key, profile in zip(profile_keys, transformed, strict=True):
+        map_profiles[key.map_index].append((key.slice_index, profile))
+
+    transformed_maps: list[xr.DataArray] = []
+    for profiles_for_map in map_profiles:
+        if len(profiles_for_map) != len(plan.slice_values):
+            continue
+        ordered_profiles = [
+            profile
+            for _index, profile in sorted(profiles_for_map, key=lambda item: item[0])
+        ]
+        transformed_maps.append(
+            xr.concat(
+                ordered_profiles,
+                dim=plan.slice_dim,
+                coords="different",
+                compat="equals",
+            ).assign_coords({plan.slice_dim: list(plan.slice_values)})
+        )
+    return transformed_maps
+
+
 def _plot_slices_line_profiles(
     context: FigureRecipeContext,
     source_display_name: Callable[[str], str],
@@ -787,35 +902,8 @@ def _plot_slices_transformed_maps(
     operation: FigureOperationState,
     maps: Sequence[xr.DataArray],
 ) -> list[xr.DataArray]:
-    profiles, keys = _plot_slices_line_profiles(
-        tool._document, tool._source_display_name, operation, maps
-    )
-    transformed = transform_profiles(operation, profiles)
-    slice_values = list(_effective_slice_values(tool._document, operation))
-    if not operation.slice_dim or not slice_values:
-        return transformed
-
-    map_profiles: list[list[tuple[int, xr.DataArray]]] = [[] for _map in maps]
-    for key, profile in zip(keys, transformed, strict=True):
-        map_profiles[key.map_index].append((key.slice_index, profile))
-
-    transformed_maps: list[xr.DataArray] = []
-    for profiles_for_map in map_profiles:
-        if len(profiles_for_map) != len(slice_values):
-            continue
-        ordered_profiles = [
-            profile
-            for _index, profile in sorted(profiles_for_map, key=lambda item: item[0])
-        ]
-        transformed_maps.append(
-            xr.concat(
-                ordered_profiles,
-                dim=operation.slice_dim,
-                coords="different",
-                compat="equals",
-            ).assign_coords({operation.slice_dim: slice_values})
-        )
-    return transformed_maps
+    plan = _PlotSlicesTransformPlan.from_operation(tool._document, operation)
+    return _plot_slices_transformed_maps_from_plan(plan, maps)
 
 
 def _is_slice_kwarg_key(key: typing.Any, dims: Iterable[str]) -> bool:

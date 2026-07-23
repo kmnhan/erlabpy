@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import typing
 
 from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.plotting as eplt
-from erlab.interactive._figurecomposer._cache import _freeze_cache_value
 from erlab.interactive._figurecomposer._code import _axes_code, _maybe_squeeze_drop_code
 from erlab.interactive._figurecomposer._model._gridspec import _gridspec_valid_axes_ids
 from erlab.interactive._figurecomposer._model._sources import (
@@ -92,11 +92,74 @@ def _selected_plot_array_data(
     *,
     squeeze: bool = True,
 ) -> xr.DataArray | None:
-    source_name = _primary_source(operation)
+    return _selected_plot_array_data_from_source(
+        context,
+        _primary_source(operation),
+        squeeze=squeeze,
+    )
+
+
+def _selected_plot_array_data_from_source(
+    context: FigureRecipeContext,
+    source_name: str | None,
+    *,
+    squeeze: bool = True,
+) -> xr.DataArray | None:
     if source_name is None or source_name not in context.source_data:
         return None
     data = _public_source_data(context.source_data[source_name])
     return data.squeeze(drop=True) if squeeze else data
+
+
+@dataclasses.dataclass(frozen=True)
+class _PlotArrayPreparePlan:
+    """Semantic inputs used to prepare an image array for plotting."""
+
+    source: str | None
+    transpose: bool
+    xlim: float | tuple[float | None, float | None] | None
+    ylim: float | tuple[float | None, float | None] | None
+    crop: bool
+    rad2deg: bool | tuple[str, ...]
+
+    @classmethod
+    def from_operation_and_kwargs(
+        cls,
+        operation: FigureOperationState,
+        kwargs: dict[str, typing.Any],
+    ) -> _PlotArrayPreparePlan:
+        rad2deg = kwargs.get("rad2deg", False)
+        if not isinstance(rad2deg, bool):
+            rad2deg = tuple(rad2deg)
+        return cls(
+            source=_primary_source(operation),
+            transpose=operation.transpose,
+            xlim=typing.cast(
+                "float | tuple[float | None, float | None] | None",
+                kwargs.get("xlim"),
+            ),
+            ylim=typing.cast(
+                "float | tuple[float | None, float | None] | None",
+                kwargs.get("ylim"),
+            ),
+            crop=bool(kwargs.get("crop", False)),
+            rad2deg=rad2deg,
+        )
+
+    def prepare(self, context: FigureRecipeContext) -> xr.DataArray | None:
+        data = _selected_plot_array_data_from_source(context, self.source)
+        if data is None:
+            return None
+        if self.transpose:
+            data = data.T
+        prepared, _xlim, _ylim = _prepare_plot_array_data(
+            data,
+            xlim=self.xlim,
+            ylim=self.ylim,
+            crop=self.crop,
+            rad2deg=self.rad2deg,
+        )
+        return prepared
 
 
 def _safe_selected_plot_array_data(
@@ -251,39 +314,14 @@ def _render_plot_array(
     tool: FigureComposerTool, operation: FigureOperationState, axs: typing.Any
 ) -> None:
     kwargs = _plot_array_kwargs(operation)
-    xlim = typing.cast(
-        "float | tuple[float | None, float | None] | None", kwargs.get("xlim")
-    )
-    ylim = typing.cast(
-        "float | tuple[float | None, float | None] | None", kwargs.get("ylim")
-    )
-    crop = typing.cast("bool", kwargs.get("crop", False))
-    rad2deg = typing.cast(
-        "bool | tuple[str, ...] | list[str]", kwargs.get("rad2deg", False)
-    )
-    cache_key = (
-        tool._operation_render_cache_key(operation, ("sources", "transpose")),
-        _freeze_cache_value((xlim, ylim, crop, rad2deg)),
-    )
-
-    def prepare_data() -> xr.DataArray | None:
-        data = _selected_plot_array_data(tool._document, operation)
-        if data is None:
-            return None
-        if operation.transpose:
-            data = data.T
-        prepared, _xlim, _ylim = _prepare_plot_array_data(
-            data,
-            xlim=xlim,
-            ylim=ylim,
-            crop=crop,
-            rad2deg=rad2deg,
-        )
-        return prepared
-
+    plan = _PlotArrayPreparePlan.from_operation_and_kwargs(operation, kwargs)
     data = typing.cast(
         "xr.DataArray | None",
-        tool._cached_render_data(("plot-array", cache_key), prepare_data),
+        tool._cached_render_data(
+            "plot-array",
+            plan,
+            lambda: plan.prepare(tool._document),
+        ),
     )
     if data is None:
         return

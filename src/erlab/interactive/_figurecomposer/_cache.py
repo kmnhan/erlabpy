@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import dataclasses
+import hashlib
+import math
 import typing
 from collections.abc import Hashable, Iterator, Mapping, MutableMapping
 
 import numpy as np
+import pydantic
 import xarray as xr
-
-if typing.TYPE_CHECKING:
-    from erlab.interactive._figurecomposer._model._state import FigureOperationState
-
 
 _DEFAULT_CACHE_MAX_ENTRIES = 32
 _DEFAULT_CACHE_MAX_BYTES = 256 * 1024**2
@@ -54,6 +54,24 @@ def _persist_dask_value(
 
 
 def _freeze_cache_value(value: typing.Any) -> Hashable:
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return (
+            type(value).__module__,
+            type(value).__qualname__,
+            tuple(
+                (
+                    field.name,
+                    _freeze_cache_value(getattr(value, field.name)),
+                )
+                for field in dataclasses.fields(value)
+            ),
+        )
+    if isinstance(value, pydantic.BaseModel):
+        return (
+            type(value).__module__,
+            type(value).__qualname__,
+            _freeze_cache_value(value.model_dump(mode="python")),
+        )
     if isinstance(value, slice):
         return (
             "slice",
@@ -61,12 +79,25 @@ def _freeze_cache_value(value: typing.Any) -> Hashable:
             _freeze_cache_value(value.stop),
             _freeze_cache_value(value.step),
         )
+    if isinstance(value, np.generic):
+        return _freeze_cache_value(value.item())
+    if isinstance(value, float) and math.isnan(value):
+        return ("float", "nan")
     if isinstance(value, np.ndarray):
+        if value.dtype.hasobject:
+            contents: Hashable = tuple(
+                _freeze_cache_value(item) for item in value.reshape(-1).tolist()
+            )
+        else:
+            contents = hashlib.blake2b(
+                np.ascontiguousarray(value).tobytes(),
+                digest_size=16,
+            ).digest()
         return (
             "ndarray",
             value.dtype.str,
             tuple(value.shape),
-            tuple(_freeze_cache_value(item) for item in value.reshape(-1).tolist()),
+            contents,
         )
     if isinstance(value, Mapping):
         return (
@@ -89,13 +120,9 @@ def _freeze_cache_value(value: typing.Any) -> Hashable:
     return repr(value)
 
 
-def _operation_cache_key(
-    operation: FigureOperationState, fields: tuple[str, ...]
-) -> tuple[tuple[str, Hashable], ...]:
-    """Return a stable key for the data-affecting subset of an operation."""
-    return tuple(
-        (field, _freeze_cache_value(getattr(operation, field))) for field in fields
-    )
+def _render_data_cache_key(stage: str, plan: object) -> tuple[str, Hashable]:
+    """Return a stable cache key for a semantic prepared-data plan."""
+    return stage, _freeze_cache_value(plan)
 
 
 class _BoundedCache(MutableMapping[Hashable, typing.Any]):
@@ -125,11 +152,11 @@ class _BoundedCache(MutableMapping[Hashable, typing.Any]):
         if self._persist_dask:
             value = _persist_dask_value(value, max_nbytes=self._max_bytes)
         nbytes = _estimated_nbytes(value)
-        if nbytes > self._max_bytes:
-            return
         previous = self._values.pop(key, None)
         if previous is not None:
             self._nbytes -= previous[1]
+        if nbytes > self._max_bytes:
+            return
         self._values[key] = value, nbytes
         self._nbytes += nbytes
         while len(self._values) > self._max_entries or self._nbytes > self._max_bytes:

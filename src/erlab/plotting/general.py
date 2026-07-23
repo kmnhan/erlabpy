@@ -727,9 +727,11 @@ def _hashable_plot_slices_value(value: typing.Any) -> Hashable:
 def _plot_slices_selection_cache_key(
     maps: Sequence[xr.DataArray],
     qsel_kw: Mapping[str, typing.Any],
-    cache_key: Hashable | None,
+    cache_key: Hashable,
 ) -> Hashable:
-    map_key = tuple((id(m.data), tuple(m.dims), tuple(m.shape)) for m in maps)
+    # The semantic caller key owns source invalidation. Dimensions and shapes guard
+    # against an accidentally inconsistent plan without relying on transient views.
+    map_key = tuple((tuple(m.dims), tuple(m.shape)) for m in maps)
     qsel_key = tuple(
         sorted(
             (key, _hashable_plot_slices_value(value)) for key, value in qsel_kw.items()
@@ -746,7 +748,7 @@ def _plot_slices_selected_maps(
     selection_cache_key: Hashable | None,
 ) -> tuple[xr.DataArray, ...]:
     cache_key: Hashable | None = None
-    if selection_cache is not None:
+    if selection_cache is not None and selection_cache_key is not None:
         cache_key = _plot_slices_selection_cache_key(maps, qsel_kw, selection_cache_key)
         cached = selection_cache.get(cache_key)
         if cached is not None:

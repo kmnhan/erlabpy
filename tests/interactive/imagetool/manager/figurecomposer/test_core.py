@@ -149,7 +149,7 @@ def test_figure_composer_prepared_data_cache_is_bounded_and_persists_dask() -> N
     assert list(cache) == ["first", "third"]
 
     cache["first"] = np.arange(10.0)
-    assert cache["first"].tolist() == [0.0, 1.0]
+    assert "first" not in cache
 
     compute_calls: list[None] = []
 
@@ -1260,6 +1260,36 @@ def test_figure_composer_visible_redraw_draws_once_and_skips_unchanged(
     assert tool.figure.axes[0].images[0].get_cmap().name == "magma"
     assert not tool._auto_redraw_dirty
     assert not tool.preview_pixmap_stale
+
+
+def test_figure_composer_redraw_signature_detects_nested_recipe_mutation(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+
+    draw_calls: list[None] = []
+    original_draw = tool.figure_window.canvas.draw
+
+    def record_draw() -> None:
+        draw_calls.append(None)
+        original_draw()
+
+    monkeypatch.setattr(tool.figure_window.canvas, "draw", record_draw)
+    tool._redraw_plot(force=True)
+    tool._redraw_plot()
+    assert draw_calls == [None]
+
+    tool.tool_status.operations[0].extra_kwargs["alpha"] = 0.5
+    tool._redraw_plot()
+    assert draw_calls == [None, None]
 
 
 def test_figure_composer_preview_draw_error_ignores_missing_operation(qtbot) -> None:

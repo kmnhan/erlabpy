@@ -203,14 +203,25 @@ def _picked_plot_args(
     operation: FigureOperationState,
     spec: MethodSpec,
 ) -> tuple[typing.Any, ...]:
-    if operation.method_plot_y is None:
-        raise ValueError(f"Choose Y values for {_plot_method_call_name(spec)}")
-    y_value = _plot_value_data(source_data, operation.method_plot_y)
-    x_value = (
-        None
-        if operation.method_plot_x is None
-        else _plot_value_data(source_data, operation.method_plot_x)
+    return _picked_plot_args_from_states(
+        source_data,
+        x_state=operation.method_plot_x,
+        y_state=operation.method_plot_y,
+        spec=spec,
     )
+
+
+def _picked_plot_args_from_states(
+    source_data: Mapping[str, xr.DataArray],
+    *,
+    x_state: FigureMethodPlotValueState | None,
+    y_state: FigureMethodPlotValueState | None,
+    spec: MethodSpec,
+) -> tuple[typing.Any, ...]:
+    if y_state is None:
+        raise ValueError(f"Choose Y values for {_plot_method_call_name(spec)}")
+    y_value = _plot_value_data(source_data, y_state)
+    x_value = None if x_state is None else _plot_value_data(source_data, x_state)
     if x_value is None and _plot_axis_required(spec, "x"):
         raise ValueError(f"Choose X values for {_plot_method_call_name(spec)}")
     _validate_plot_value_lengths(x_value, y_value)
@@ -247,13 +258,31 @@ def _validate_entered_errorbar_args(args: tuple[typing.Any, ...]) -> None:
 def _picked_plot_error_kwargs(
     source_data: Mapping[str, xr.DataArray], operation: FigureOperationState
 ) -> dict[str, typing.Any]:
-    if operation.method_plot_y is None:
+    return _picked_plot_error_kwargs_from_states(
+        source_data,
+        y_state=operation.method_plot_y,
+        xerr_state=operation.method_plot_xerr,
+        yerr_state=operation.method_plot_yerr,
+    )
+
+
+def _picked_plot_error_kwargs_from_states(
+    source_data: Mapping[str, xr.DataArray],
+    *,
+    y_state: FigureMethodPlotValueState | None,
+    xerr_state: FigureMethodPlotValueState | None,
+    yerr_state: FigureMethodPlotValueState | None,
+) -> dict[str, typing.Any]:
+    if y_state is None:
         return {}
-    y_value = _plot_value_data(source_data, operation.method_plot_y)
+    y_value = _plot_value_data(source_data, y_state)
     kwargs: dict[str, typing.Any] = {}
     error_values = []
-    for axis in ("xerr", "yerr"):
-        state = _plot_axis_value_state(operation, axis)
+    states: tuple[tuple[_PLOT_DATA_AXES, FigureMethodPlotValueState | None], ...] = (
+        ("xerr", xerr_state),
+        ("yerr", yerr_state),
+    )
+    for axis, state in states:
         if state is None:
             continue
         value = _plot_value_data(source_data, state)

@@ -124,9 +124,11 @@ class FigureDocument:
         *,
         source_data: Mapping[str, xr.DataArray] | None = None,
         source_selection_base_data: Mapping[str, xr.DataArray] | None = None,
+        source_changed_callback: Callable[[int], None] | None = None,
     ) -> None:
         self._recipe_revision = 0
         self._source_revision = 0
+        self._source_changed_callback = source_changed_callback
         self._recipe = recipe.model_copy(
             update={"sources": self.normalized_source_states(recipe.sources)}
         )
@@ -181,7 +183,13 @@ class FigureDocument:
         updated_selection_base_data = dict(selection_base_data)
         self._source_data = updated_source_data
         self._source_selection_base_data = updated_selection_base_data
+        self.touch_source_payloads()
+
+    def touch_source_payloads(self) -> None:
+        """Record in-place changes to the current source payloads."""
         self._source_revision += 1
+        if self._source_changed_callback is not None:
+            self._source_changed_callback(self._source_revision)
 
     def replace_setup(self, setup: FigureSubplotsState) -> bool:
         """Replace the complete validated figure layout setup."""

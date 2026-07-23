@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import typing
 
 from qtpy import QtCore, QtWidgets
@@ -53,10 +54,12 @@ from erlab.interactive._figurecomposer._line_style import (
     line_kw_text,
 )
 from erlab.interactive._figurecomposer._line_transform import (
+    LineTransformPlan,
     line_transform_active,
+    line_transform_plan_active,
     profile_stack_transform_code,
     profile_transform_code_lines,
-    transform_profiles,
+    transform_profiles_from_plan,
 )
 from erlab.interactive._figurecomposer._model._gridspec import _gridspec_valid_axes_ids
 from erlab.interactive._figurecomposer._model._sources import (
@@ -66,6 +69,7 @@ from erlab.interactive._figurecomposer._model._sources import (
     _valid_source_variable,
 )
 from erlab.interactive._figurecomposer._model._state import (
+    FigureDataSelectionState,
     FigureOperationKind,
     FigureOperationState,
 )
@@ -1182,80 +1186,119 @@ def _add_line_fill_controls(
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class _LineDataPlan:
+    """Semantic inputs used to select and reduce line-profile data."""
+
+    map_selections: tuple[FigureDataSelectionState, ...]
+    source: str | None
+    selection: dict[str, typing.Any]
+    y: str | None
+    iter_dim: str | None
+    reduce: typing.Literal["disabled", "coarsen", "thin", "both"]
+    reduce_coarsen: int
+    reduce_thin: int
+
+    @classmethod
+    def from_operation(cls, operation: FigureOperationState) -> _LineDataPlan:
+        return cls(
+            map_selections=operation.map_selections,
+            source=operation.line_source,
+            selection=dict(operation.line_selection),
+            y=operation.line_y,
+            iter_dim=operation.line_iter_dim,
+            reduce=operation.line_reduce,
+            reduce_coarsen=operation.line_reduce_coarsen,
+            reduce_thin=operation.line_reduce_thin,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class _LineRenderTransformPlan:
+    """Semantic inputs used to transform profiles for one render placement."""
+
+    data: _LineDataPlan
+    transform: LineTransformPlan
+    placement: typing.Literal["all_axes", "one_per_axis"]
+    target_axis_count: int | None
+
+
+def _transformed_line_entries_from_plan(
+    context: FigureRecipeContext,
+    plan: _LineRenderTransformPlan,
+) -> list[tuple[xr.DataArray, str | None]]:
+    entries = _line_data_items_with_source_names_from_plan(context, plan.data)
+    if (
+        plan.placement == "one_per_axis"
+        and len(entries) == 1
+        and plan.target_axis_count is not None
+        and plan.target_axis_count > 1
+    ):
+        entries = entries * plan.target_axis_count
+    profiles = transform_profiles_from_plan(
+        plan.transform,
+        [profile for profile, _source in entries],
+    )
+    return [
+        (profile, source)
+        for profile, (_input_profile, source) in zip(
+            profiles,
+            entries,
+            strict=True,
+        )
+    ]
+
+
 def _render_line(
     tool: FigureComposerTool, operation: FigureOperationState, axs: typing.Any
 ) -> None:
-    data_key = tool._operation_render_cache_key(
-        operation,
-        (
-            "map_selections",
-            "line_source",
-            "line_selection",
-            "line_y",
-            "line_iter_dim",
-            "line_reduce",
-            "line_reduce_coarsen",
-            "line_reduce_thin",
-        ),
-    )
-    line_entries = typing.cast(
-        "list[tuple[xr.DataArray, str | None]]",
-        tool._cached_render_data(
-            ("line-profile-inputs", data_key),
-            lambda: _line_data_items_with_sources(
-                tool._document, tool._source_display_name, operation
-            ),
-        ),
-    )
-    if not line_entries:
-        return
-    line_items = [profile for profile, _source in line_entries]
-    sources = [source for _profile, source in line_entries]
+    data_plan = _LineDataPlan.from_operation(operation)
     axes = _iter_axes(
         _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
     )
-    transform_key = tool._operation_render_cache_key(
-        operation,
-        (
-            "map_selections",
-            "line_source",
-            "line_selection",
-            "line_y",
-            "line_iter_dim",
-            "line_reduce",
-            "line_reduce_coarsen",
-            "line_reduce_thin",
-            "line_normalize",
-            "line_scales",
-            "line_offsets",
-            "line_offset_source",
-            "line_offset_coord",
-            "line_offset_scale",
-        ),
-    )
-    if operation.line_placement == "one_per_axis":
-        if len(line_items) == 1 and len(axes) > 1:
-            line_items = line_items * len(axes)
-            sources = sources * len(axes)
-        input_line_items = line_items
-        line_items = typing.cast(
-            "list[xr.DataArray]",
-            tool._cached_render_data(
-                ("line-profile-transforms", transform_key, len(axes)),
-                lambda: transform_profiles(operation, input_line_items),
+    transform_plan = LineTransformPlan.from_operation(operation)
+    if line_transform_plan_active(transform_plan):
+        render_plan = _LineRenderTransformPlan(
+            data=data_plan,
+            transform=transform_plan,
+            placement=operation.line_placement,
+            target_axis_count=(
+                len(axes) if operation.line_placement == "one_per_axis" else None
             ),
         )
+        line_entries = typing.cast(
+            "list[tuple[xr.DataArray, str | None]]",
+            tool._cached_render_data(
+                "line-profile-transforms",
+                render_plan,
+                lambda: _transformed_line_entries_from_plan(
+                    tool._document,
+                    render_plan,
+                ),
+            ),
+        )
+    else:
+        line_entries = typing.cast(
+            "list[tuple[xr.DataArray, str | None]]",
+            tool._cached_render_data(
+                "line-profile-inputs",
+                data_plan,
+                lambda: _line_data_items_with_source_names_from_plan(
+                    tool._document,
+                    data_plan,
+                ),
+            ),
+        )
+    if not line_entries:
+        return
+    line_items = [profile for profile, _source in line_entries]
+    sources = [
+        tool._source_display_name(source) if source is not None else None
+        for _profile, source in line_entries
+    ]
+    if operation.line_placement == "one_per_axis":
         _render_one_profile_per_axis(tool, operation, axes, line_items, sources)
         return
-    line_items = typing.cast(
-        "list[xr.DataArray]",
-        tool._cached_render_data(
-            ("line-profile-transforms", transform_key),
-            lambda: transform_profiles(
-                operation, [profile for profile, _source in line_entries]
-            ),
-        ),
-    )
     styles = _line_styles_for_profiles(operation, line_items, sources)
     for axis in axes:
         for line_data, kwargs in zip(line_items, styles, strict=True):
@@ -1346,36 +1389,64 @@ def _line_data_items_with_sources(
     source_display_name: Callable[[str], str],
     operation: FigureOperationState,
 ) -> list[tuple[xr.DataArray, str | None]]:
-    if len(operation.map_selections) > 1:
+    return _line_data_items_with_sources_from_plan(
+        context,
+        source_display_name,
+        _LineDataPlan.from_operation(operation),
+    )
+
+
+def _line_data_items_with_sources_from_plan(
+    context: FigureRecipeContext,
+    source_display_name: Callable[[str], str],
+    plan: _LineDataPlan,
+) -> list[tuple[xr.DataArray, str | None]]:
+    return [
+        (
+            profile,
+            source_display_name(source) if source is not None else None,
+        )
+        for profile, source in _line_data_items_with_source_names_from_plan(
+            context,
+            plan,
+        )
+    ]
+
+
+def _line_data_items_with_source_names_from_plan(
+    context: FigureRecipeContext,
+    plan: _LineDataPlan,
+) -> list[tuple[xr.DataArray, str | None]]:
+    if len(plan.map_selections) > 1:
         line_items = [
             (
                 selected.squeeze(drop=True),
-                source_display_name(selection.source),
+                selection.source,
             )
-            for selection in operation.map_selections
+            for selection in plan.map_selections
             if (selected := _selected_data(context.source_data, selection)) is not None
         ]
-    elif operation.line_source is not None:
-        data = context.source_data.get(operation.line_source)
+    elif plan.source is not None:
+        data = context.source_data.get(plan.source)
         if data is None:
             return []
         data = _public_source_data(data)
-        if operation.line_selection:
-            data = data.qsel(operation.line_selection)
+        if plan.selection:
+            data = data.qsel(plan.selection)
         line_data = data.squeeze(drop=True)
-        if operation.line_y:
-            line_data = line_data[operation.line_y]
-        line_data = _reduced_line_iter_data(line_data, operation)
-        if operation.line_iter_dim and operation.line_iter_dim in line_data.dims:
+        if plan.y:
+            line_data = line_data[plan.y]
+        line_data = _reduced_line_iter_data_from_plan(line_data, plan)
+        if plan.iter_dim and plan.iter_dim in line_data.dims:
             line_items = [
                 (
                     item.squeeze(drop=True),
-                    source_display_name(operation.line_source),
+                    plan.source,
                 )
-                for item in line_data.transpose(operation.line_iter_dim, ...)
+                for item in line_data.transpose(plan.iter_dim, ...)
             ]
         else:
-            line_items = [(line_data, source_display_name(operation.line_source))]
+            line_items = [(line_data, plan.source)]
     else:
         return []
 
@@ -1425,13 +1496,24 @@ def _line_iter_profiles_need_squeeze(
 def _reduced_line_iter_data(
     line_data: xr.DataArray, operation: FigureOperationState
 ) -> xr.DataArray:
+    return _reduced_line_iter_data_from_plan(
+        line_data,
+        _LineDataPlan.from_operation(operation),
+    )
+
+
+def _reduced_line_iter_data_from_plan(
+    line_data: xr.DataArray,
+    plan: _LineDataPlan,
+) -> xr.DataArray:
     if (
-        not _line_reduce_active(operation)
-        or operation.line_iter_dim not in line_data.dims
+        plan.reduce == "disabled"
+        or plan.iter_dim is None
+        or plan.iter_dim not in line_data.dims
     ):
         return line_data
     data = line_data
-    for reduce_operation in _line_reduce_operations(operation):
+    for reduce_operation in _line_reduce_operations_from_plan(plan):
         data = reduce_operation.apply(data)
     return data
 
@@ -1442,24 +1524,33 @@ def _line_reduce_operations(
     CoarsenOperation | ThinOperation,
     ...,
 ]:
-    if operation.line_iter_dim is None:
+    return _line_reduce_operations_from_plan(_LineDataPlan.from_operation(operation))
+
+
+def _line_reduce_operations_from_plan(
+    plan: _LineDataPlan,
+) -> tuple[
+    CoarsenOperation | ThinOperation,
+    ...,
+]:
+    if plan.iter_dim is None:
         return ()
     operations: list[CoarsenOperation | ThinOperation] = []
-    if operation.line_reduce in {"coarsen", "both"}:
+    if plan.reduce in {"coarsen", "both"}:
         operations.append(
             CoarsenOperation(
-                dim={operation.line_iter_dim: operation.line_reduce_coarsen},
+                dim={plan.iter_dim: plan.reduce_coarsen},
                 boundary="trim",
                 side="left",
                 coord_func="mean",
                 reducer="mean",
             )
         )
-    if operation.line_reduce in {"thin", "both"}:
+    if plan.reduce in {"thin", "both"}:
         operations.append(
             ThinOperation(
                 mode="per_dim",
-                factors={operation.line_iter_dim: operation.line_reduce_thin},
+                factors={plan.iter_dim: plan.reduce_thin},
             )
         )
     return tuple(operations)

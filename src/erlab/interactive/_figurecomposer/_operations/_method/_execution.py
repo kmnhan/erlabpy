@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import typing
 
 import matplotlib.transforms as mtransforms
@@ -17,6 +18,7 @@ from erlab.interactive._figurecomposer._model._gridspec import (
 from erlab.interactive._figurecomposer._model._state import (
     FigureAxesSelectionState,
     FigureMethodFamily,
+    FigureMethodPlotValueState,
     FigureOperationState,
 )
 from erlab.interactive._figurecomposer._operations._method._catalog import (
@@ -28,10 +30,10 @@ from erlab.interactive._figurecomposer._operations._method._catalog import (
     _method_spec,
 )
 from erlab.interactive._figurecomposer._operations._method._plot_data import (
-    _picked_plot_args,
+    _picked_plot_args_from_states,
     _picked_plot_code_args,
     _picked_plot_error_code_kwargs,
-    _picked_plot_error_kwargs,
+    _picked_plot_error_kwargs_from_states,
     _validate_entered_errorbar_args,
 )
 from erlab.interactive._figurecomposer._operations._method._state import (
@@ -67,36 +69,67 @@ if typing.TYPE_CHECKING:
 _TransformComponent = typing.Literal["data", "axes", "figure", "dpi"]
 
 
-def _picked_plot_render_data(
-    tool: FigureComposerTool,
-    operation: FigureOperationState,
-    spec: MethodSpec,
-) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
-    cache_key = tool._operation_render_cache_key(
-        operation,
-        (
-            "method_family",
-            "method_name",
-            "method_plot_data_mode",
-            "method_plot_x",
-            "method_plot_y",
-            "method_plot_xerr",
-            "method_plot_yerr",
-        ),
-    )
+@dataclasses.dataclass(frozen=True)
+class _MethodPlotDataPlan:
+    """Semantic source selections used by a data-backed method call."""
 
-    def prepare() -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
-        args = _picked_plot_args(tool._document.source_data, operation, spec)
+    family: FigureMethodFamily
+    name: str
+    mode: typing.Literal["entered", "from_data"]
+    x: FigureMethodPlotValueState | None
+    y: FigureMethodPlotValueState | None
+    xerr: FigureMethodPlotValueState | None
+    yerr: FigureMethodPlotValueState | None
+
+    @classmethod
+    def from_operation(cls, operation: FigureOperationState) -> _MethodPlotDataPlan:
+        return cls(
+            family=operation.method_family,
+            name=operation.method_name,
+            mode=operation.method_plot_data_mode,
+            x=operation.method_plot_x,
+            y=operation.method_plot_y,
+            xerr=operation.method_plot_xerr,
+            yerr=operation.method_plot_yerr,
+        )
+
+    def prepare(
+        self,
+        tool: FigureComposerTool,
+        spec: MethodSpec,
+    ) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
+        args = _picked_plot_args_from_states(
+            tool._document.source_data,
+            x_state=self.x,
+            y_state=self.y,
+            spec=spec,
+        )
         error_kwargs = (
-            _picked_plot_error_kwargs(tool._document.source_data, operation)
+            _picked_plot_error_kwargs_from_states(
+                tool._document.source_data,
+                y_state=self.y,
+                xerr_state=self.xerr,
+                yerr_state=self.yerr,
+            )
             if _is_axes_errorbar_method(spec)
             else {}
         )
         return args, error_kwargs
 
+
+def _picked_plot_render_data(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    spec: MethodSpec,
+) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
+    plan = _MethodPlotDataPlan.from_operation(operation)
     return typing.cast(
         "tuple[tuple[typing.Any, ...], dict[str, typing.Any]]",
-        tool._cached_render_data(("method-plot-data", cache_key), prepare),
+        tool._cached_render_data(
+            "method-plot-data",
+            plan,
+            lambda: plan.prepare(tool, spec),
+        ),
     )
 
 

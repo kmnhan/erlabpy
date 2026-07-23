@@ -657,13 +657,17 @@ def test_figure_composer_axes_plot_method_picks_data_render_and_codegen(
     qtbot.addWidget(tool)
 
     preparation_calls: list[None] = []
-    original_picked_plot_args = method_execution._picked_plot_args
+    original_picked_plot_args = method_execution._picked_plot_args_from_states
 
     def counted_picked_plot_args(*args, **kwargs):
         preparation_calls.append(None)
         return original_picked_plot_args(*args, **kwargs)
 
-    monkeypatch.setattr(method_execution, "_picked_plot_args", counted_picked_plot_args)
+    monkeypatch.setattr(
+        method_execution,
+        "_picked_plot_args_from_states",
+        counted_picked_plot_args,
+    )
 
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
     assert tool._operation_render_errors == {}

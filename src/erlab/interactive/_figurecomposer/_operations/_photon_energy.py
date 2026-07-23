@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import typing
 
 from erlab.interactive._figurecomposer._code import _axes_code, _axes_sequence_code
@@ -90,16 +91,39 @@ def _photon_energies_code(values: tuple[float, ...]) -> str:
     return "[" + ", ".join(f"{value:g}" for value in values) + "]"
 
 
+@dataclasses.dataclass(frozen=True)
+class _PhotonEnergyPlan:
+    """Semantic inputs used to prepare photon-energy overlay curves."""
+
+    source: str | None
+    photon_energies: tuple[float, ...]
+    binding_energy: float | None
+
+    @classmethod
+    def from_operation(cls, operation: FigureOperationState) -> _PhotonEnergyPlan:
+        return cls(
+            source=operation.hv_overlay_source,
+            photon_energies=operation.photon_energies,
+            binding_energy=operation.binding_energy,
+        )
+
+
+def _source_data_from_name(
+    tool: FigureComposerTool, source: str | None
+) -> xr.DataArray:
+    if source is None:
+        raise ValueError("Select a source data array for the photon-energy overlay")
+    data = tool._document.source_data.get(source)
+    if data is None:
+        source_name = tool._source_display_name(source)
+        raise ValueError(f"Source {source_name!r} is missing")
+    return _public_source_data(data)
+
+
 def _source_data(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> xr.DataArray:
-    if operation.hv_overlay_source is None:
-        raise ValueError("Select a source data array for the photon-energy overlay")
-    data = tool._document.source_data.get(operation.hv_overlay_source)
-    if data is None:
-        source_name = tool._source_display_name(operation.hv_overlay_source)
-        raise ValueError(f"Source {source_name!r} is missing")
-    return _public_source_data(data)
+    return _source_data_from_name(tool, operation.hv_overlay_source)
 
 
 def _source_is_kparallel_kz(data: xr.DataArray) -> bool:
@@ -123,15 +147,21 @@ def _photon_x_dim(data: xr.DataArray, kz_values: xr.DataArray) -> str:
 def _kz_values(
     data: xr.DataArray, operation: FigureOperationState
 ) -> tuple[xr.DataArray, str]:
-    if not operation.photon_energies:
+    return _kz_values_from_plan(data, _PhotonEnergyPlan.from_operation(operation))
+
+
+def _kz_values_from_plan(
+    data: xr.DataArray, plan: _PhotonEnergyPlan
+) -> tuple[xr.DataArray, str]:
+    if not plan.photon_energies:
         raise ValueError("Enter at least one photon energy")
     if not _source_is_kparallel_kz(data):
         raise ValueError(
             "Photon-energy overlays require a kx-kz or ky-kz source data array"
         )
-    kz_values = data.kspace.hv_to_kz(list(operation.photon_energies))
-    if operation.binding_energy is not None:
-        kz_values = kz_values.qsel(eV=operation.binding_energy)
+    kz_values = data.kspace.hv_to_kz(list(plan.photon_energies))
+    if plan.binding_energy is not None:
+        kz_values = kz_values.qsel(eV=plan.binding_energy)
     x_dim = _photon_x_dim(data, kz_values)
     if "eV" in kz_values.dims:
         raise ValueError(
@@ -179,15 +209,16 @@ def _render_photon_energy_overlay(
 def _photon_energy_render_data(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> tuple[xr.DataArray, str]:
-    cache_key = tool._operation_render_cache_key(
-        operation,
-        ("hv_overlay_source", "photon_energies", "binding_energy"),
-    )
+    plan = _PhotonEnergyPlan.from_operation(operation)
     return typing.cast(
         "tuple[xr.DataArray, str]",
         tool._cached_render_data(
-            ("photon-energy-curves", cache_key),
-            lambda: _kz_values(_source_data(tool, operation), operation),
+            "photon-energy-curves",
+            plan,
+            lambda: _kz_values_from_plan(
+                _source_data_from_name(tool, plan.source),
+                plan,
+            ),
         ),
     )
 
