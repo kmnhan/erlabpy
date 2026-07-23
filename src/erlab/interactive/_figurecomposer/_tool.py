@@ -4214,7 +4214,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         .. versionadded:: 3.25.0
         """
         self._document.touch_source_payloads()
-        self._mark_preview_pixmap_stale()
+        self._maybe_redraw_plot()
         self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
 

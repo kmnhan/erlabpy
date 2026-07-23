@@ -386,3 +386,45 @@ def test_figure_composer_live_colormap_respects_disabled_auto_redraw(
     assert mappable.get_cmap().name == "viridis"
     assert tool._auto_redraw_dirty
     assert tool.preview_pixmap_stale
+
+
+def test_figure_composer_touch_source_data_redraws_visible_figure(qtbot) -> None:
+    tool = _visible_image_tool(qtbot, FigureOperationKind.PLOT_ARRAY)
+    operation = tool.tool_status.operations[0]
+    original_mappable = _operation_mappables(tool, operation.operation_id)[0]
+    original_values = np.asarray(original_mappable.get_array()).copy()
+
+    tool.tool_data.values[:] += 1.0
+    tool.touch_source_data()
+
+    updated_mappable = _operation_mappables(tool, operation.operation_id)[0]
+    assert updated_mappable is not original_mappable
+    np.testing.assert_allclose(updated_mappable.get_array(), original_values + 1.0)
+    assert not tool._auto_redraw_dirty
+    assert not tool.preview_pixmap_stale
+
+
+def test_figure_composer_touch_source_data_respects_disabled_auto_redraw(
+    qtbot,
+) -> None:
+    tool = _visible_image_tool(qtbot, FigureOperationKind.PLOT_ARRAY)
+    operation = tool.tool_status.operations[0]
+    original_mappable = _operation_mappables(tool, operation.operation_id)[0]
+    original_values = np.asarray(original_mappable.get_array()).copy()
+    tool.auto_redraw_check.setChecked(False)
+
+    tool.tool_data.values[:] += 1.0
+    tool.touch_source_data()
+
+    assert _operation_mappables(tool, operation.operation_id)[0] is original_mappable
+    np.testing.assert_allclose(original_mappable.get_array(), original_values)
+    assert tool._auto_redraw_dirty
+    assert tool.preview_pixmap_stale
+
+    tool.auto_redraw_check.setChecked(True)
+
+    updated_mappable = _operation_mappables(tool, operation.operation_id)[0]
+    assert updated_mappable is not original_mappable
+    np.testing.assert_allclose(updated_mappable.get_array(), original_values + 1.0)
+    assert not tool._auto_redraw_dirty
+    assert not tool.preview_pixmap_stale
