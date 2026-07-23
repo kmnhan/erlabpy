@@ -1543,6 +1543,7 @@ def test_spreadsheet_metadata_mapping_reorder_controls_mapping_order(
     first_context_menu.aboutToHide.emit()
     qtbot.waitUntil(lambda: not erlab.interactive.utils.qt_is_valid(first_context_menu))
     assert dialog._mapping_context_menu is context_menu
+    dialog._release_mapping_context_menu(first_context_menu)
     actions = {action.objectName(): action for action in context_menu.actions()}
     assert actions["spreadsheet_metadata_move_mapping_up"].isEnabled()
     assert actions["spreadsheet_metadata_move_mapping_down"].isEnabled()
