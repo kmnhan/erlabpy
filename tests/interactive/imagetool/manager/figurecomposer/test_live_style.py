@@ -295,10 +295,17 @@ def test_figure_composer_live_colormap_falls_back_for_invalid_canvas(
     mappable = _operation_mappables(tool, operation.operation_id)[0]
     canvas = tool.canvas
     redraw_calls: list[None] = []
+    original_qt_is_valid = erlab.interactive.utils.qt_is_valid
+
+    def qt_is_valid_except_canvas(*objects: object) -> bool:
+        return all(obj is not canvas for obj in objects) and original_qt_is_valid(
+            *objects
+        )
+
     monkeypatch.setattr(
         erlab.interactive.utils,
         "qt_is_valid",
-        lambda *objects: all(obj is not canvas for obj in objects),
+        qt_is_valid_except_canvas,
     )
     monkeypatch.setattr(
         tool, "_redraw_plot", lambda **_kwargs: redraw_calls.append(None)
