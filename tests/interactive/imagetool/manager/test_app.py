@@ -48,6 +48,27 @@ from tests.interactive.imagetool.manager.helpers import (
 logger = logging.getLogger(__name__)
 
 
+def test_manager_settings_path_override(monkeypatch, tmp_path) -> None:
+    settings_path = tmp_path / "manager-settings.ini"
+    monkeypatch.setenv(
+        manager_widgets._MANAGER_SETTINGS_PATH_ENV_VAR,
+        str(settings_path),
+    )
+
+    settings = manager_widgets._manager_settings()
+    settings.setValue("test/value", 42)
+    settings.sync()
+
+    assert pathlib.Path(settings.fileName()) == settings_path
+    assert (
+        QtCore.QSettings(
+            str(settings_path),
+            QtCore.QSettings.Format.IniFormat,
+        ).value("test/value", type=int)
+        == 42
+    )
+
+
 def test_manager_runtime_icon_asset_exists() -> None:
     icon_path = pathlib.Path(manager_widgets._ICON_PATH)
 

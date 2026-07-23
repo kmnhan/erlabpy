@@ -23,6 +23,7 @@ from erlab.interactive._options.parameters import (
 )
 from erlab.interactive._options.schema import (
     AppOptions,
+    IOOptions,
     WorkspaceOptions,
     normalize_workspace_compression_mode,
 )
@@ -180,6 +181,19 @@ def test_dialog_default_directory_control_has_accessible_description(
     control = _control(dialog, "user", path, DirectoryPathWidget)
     description = _description(dialog, "user", path).text()
 
+    assert description
+    assert control.toolTip() == ""
+    assert control.accessibleDescription() == description
+
+
+def test_dialog_recent_workspace_limit_control(dialog: OptionDialog):
+    path = "io/recent_workspace_limit"
+    control = _control(dialog, "user", path, QtWidgets.QSpinBox)
+    description = _description(dialog, "user", path).text()
+
+    assert control.value() == 20
+    assert control.minimum() == 1
+    assert control.maximum() == 50
     assert description
     assert control.toolTip() == ""
     assert control.accessibleDescription() == description
@@ -958,6 +972,7 @@ def test_workspace_override_helpers_filter_to_curated_subset() -> None:
     assert "colors/cmap/name" in paths
     assert "colors/cmap/packages" not in paths
     assert "io/default_directory" not in paths
+    assert "io/recent_workspace_limit" not in paths
     assert "io/workspace/compression" in paths
     assert "io/workspace/compress" not in paths
     assert "figure/dpi" in paths
@@ -1018,6 +1033,7 @@ def test_options_get_set():
     assert options["io/workspace/use_incremental"] is True
     assert options["io/workspace/incremental_save_on_remote"] is False
     assert options["io/default_directory"] == ""
+    assert options["io/recent_workspace_limit"] == 20
     assert options["figure/dpi"] is None
 
     options["colors/cmap/name"] = "viridis"
@@ -1025,6 +1041,7 @@ def test_options_get_set():
     options["io/workspace/use_incremental"] = False
     options["io/workspace/incremental_save_on_remote"] = True
     options["io/default_directory"] = "~/data"
+    options["io/recent_workspace_limit"] = 35
     options["figure/stylesheets"] = ["classic", "missing-style"]
     options["figure/dpi"] = 150.0
 
@@ -1034,11 +1051,13 @@ def test_options_get_set():
     assert options["io/workspace/use_incremental"] is False
     assert options["io/workspace/incremental_save_on_remote"] is True
     assert options["io/default_directory"] == "~/data"
+    assert options["io/recent_workspace_limit"] == 35
     assert options["figure/stylesheets"] == ["classic", "missing-style"]
     assert options["figure/dpi"] == pytest.approx(150.0)
     assert options.model.io.workspace.compression == "blosclz3"
     assert not options.model.io.workspace.use_incremental
     assert options.model.io.workspace.incremental_save_on_remote
+    assert options.model.io.recent_workspace_limit == 35
     assert options.model.figure.stylesheets == ["classic", "missing-style"]
     assert options.model.figure.dpi == pytest.approx(150.0)
 
@@ -1058,6 +1077,12 @@ def test_options_get_set():
 
     options.restore()
     assert options["figure/dpi"] is None
+
+
+@pytest.mark.parametrize("value", [0, 51])
+def test_recent_workspace_limit_validates_bounds(value: int) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        IOOptions(recent_workspace_limit=value)
 
 
 @pytest.mark.parametrize(

@@ -5,13 +5,8 @@ import typing
 import numpy as np
 import pytest
 import xarray as xr
-from qtpy import QtCore
 
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
-from erlab.interactive.imagetool.manager._figurecomposer import _collection
-from erlab.interactive.imagetool.manager._workspace import (
-    _controller as workspace_controller,
-)
 
 if typing.TYPE_CHECKING:
     import pathlib
@@ -31,12 +26,8 @@ def isolated_recent_workspace_settings(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> pathlib.Path:
     settings_path = tmp_path / "recent-workspaces.ini"
-
-    def _settings() -> QtCore.QSettings:
-        return QtCore.QSettings(str(settings_path), QtCore.QSettings.Format.IniFormat)
-
-    _settings().clear()
-    monkeypatch.setattr(_collection, "_manager_settings", _settings)
-    monkeypatch.setattr(manager_widgets, "_manager_settings", _settings)
-    monkeypatch.setattr(workspace_controller, "_manager_settings", _settings)
+    monkeypatch.setenv(
+        manager_widgets._MANAGER_SETTINGS_PATH_ENV_VAR,
+        str(settings_path),
+    )
     return settings_path
