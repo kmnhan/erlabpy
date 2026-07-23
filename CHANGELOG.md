@@ -1,6 +1,16 @@
-## Unreleased
+## v3.25.0 (2026-07-23)
 
 ### ✨ Features
+
+- **plotting:** add new style files (#486) ([c5697cd](https://github.com/kmnhan/erlabpy/commit/c5697cd9c7dfa9fe687ef52df9ae5e8ca49d426e))
+
+  Adds 2 new matplotlib stylesheets: `erlab.helvetica` and `erlab.stixsans-fallback`.
+
+  `erlab.helvetica` sets the text and math font to Helvetica.
+
+  `erlab.stixsans-fallback` enables missing glyphs to fall back to STIX Sans, which is especially useful when using `nature` or `erlab.helvetica` styles.
+
+- **io.plugins:** add data loader for NSRRC TPS Beamline 39A (#485) ([7effe60](https://github.com/kmnhan/erlabpy/commit/7effe60ebb0e4483fbbe790df46ae4cc592a616e))
 
 - **imagetool:** improve window layout (#477) ([2fdfb9d](https://github.com/kmnhan/erlabpy/commit/2fdfb9dab7f77c662554b91d52dfdecf6d663d17))
 
@@ -36,6 +46,10 @@
 
 ### 🐞 Bug Fixes
 
+- **manager:** fix PDF export for figures in the standalone application (#484) ([8bd9c36](https://github.com/kmnhan/erlabpy/commit/8bd9c362e73ddfb6d1ea2be608e050fd8c824a9f))
+
+- **dtool:** restore provenance editing (#482) ([bd53be9](https://github.com/kmnhan/erlabpy/commit/bd53be9b90323f6e826e3471c7e7494668c8d51e))
+
 - **manager:** allow dropping files with mixed extensions (#475) ([f8fd75e](https://github.com/kmnhan/erlabpy/commit/f8fd75eae8df056a567e625d0303b9ebe0bccc04))
 
 - **manager:** fix deferred tool duplication and linking (#471) ([4e67ce3](https://github.com/kmnhan/erlabpy/commit/4e67ce3dd6433a4431508dc1a0a77dbd2b1bcdeb))
@@ -50,7 +64,15 @@
 
   Fixes an issue where binning would not work on some read-only arrays, like those loaded from DA30 `.zip` files.
 
+### ⚡️ Performance
+
+- **figurecomposer:** speed up repeated plotting in certain cases by caching selections (#476) ([a3a2b87](https://github.com/kmnhan/erlabpy/commit/a3a2b87864ab84d4476a77ef1c4e3e83ee9864a4))
+
 ### ♻️ Code Refactor
+
+- **manager:** show more recent workspaces (#481) ([20abe8b](https://github.com/kmnhan/erlabpy/commit/20abe8bb6ee6dbef2a03d31f22c989ef405330ca))
+
+  Keep 20 recent workspaces by default and add a user setting for choosing a limit from 1 to 50.
 
 - **manager:** move data size to details tab (#480) ([7d1ed4f](https://github.com/kmnhan/erlabpy/commit/7d1ed4f1162babb31d3351ac094bcd145bbc5cda))
 
