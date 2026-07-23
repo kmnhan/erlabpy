@@ -3974,6 +3974,14 @@ class SymmetrizeDialog(DataTransformDialog):
         )
         option_group_layout.addWidget(self.subtract_check)
 
+        self.average_check = QtWidgets.QCheckBox("Average overlap")
+        self.average_check.setChecked(False)
+        self.average_check.setToolTip(
+            "Divide the summed or subtracted intensity by 2 where the original and "
+            "reflected coordinate ranges overlap."
+        )
+        option_group_layout.addWidget(self.average_check)
+
         option_mode = QtWidgets.QWidget()
         option_group_layout.addWidget(option_mode)
         option_mode_layout = QtWidgets.QHBoxLayout()
@@ -4024,6 +4032,7 @@ class SymmetrizeDialog(DataTransformDialog):
                 np.round(self._center_spin.value(), self._center_spin.decimals())
             ),
             "subtract": self.subtract_check.isChecked(),
+            "average": self.average_check.isChecked(),
             "mode": ("full", "valid")[
                 next(i for i, opt in enumerate(self.opt_mode) if opt.isChecked())
             ],
@@ -4050,6 +4059,7 @@ class SymmetrizeDialog(DataTransformDialog):
             raise ValueError(f"Dimension {operation.dim!r} is not available")
         self._center_spin.setValue(float(operation.center))
         self.subtract_check.setChecked(operation.subtract)
+        self.average_check.setChecked(operation.average)
         self.opt_mode[0 if operation.mode == "full" else 1].setChecked(True)
         part_index = {"both": 0, "below": 1, "above": 2}[operation.part]
         self.opt_part[part_index].setChecked(True)

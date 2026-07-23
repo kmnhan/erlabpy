@@ -1069,6 +1069,7 @@ class SymmetrizeOperation(ToolProvenanceOperation):
             defaults={
                 "center": 0.0,
                 "subtract": False,
+                "average": False,
                 "mode": "full",
                 "part": "both",
             },
@@ -1078,6 +1079,7 @@ class SymmetrizeOperation(ToolProvenanceOperation):
     dim: ProvenanceHashable
     center: float
     subtract: bool = False
+    average: bool = False
     mode: typing.Literal["full", "valid"] = "full"
     part: typing.Literal["both", "below", "above"] = "both"
 
@@ -1087,6 +1089,7 @@ class SymmetrizeOperation(ToolProvenanceOperation):
             "dim": self.dim,
             "center": self.center,
             "subtract": self.subtract,
+            "average": self.average,
             "mode": self.mode,
             "part": self.part,
         }

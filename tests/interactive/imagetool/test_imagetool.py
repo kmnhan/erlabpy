@@ -9609,6 +9609,7 @@ def _restore_dialog_data() -> xr.DataArray:
                 part="below",
                 mode="full",
                 subtract=True,
+                average=True,
             ),
             SymmetrizeOperation(
                 dim="x",
@@ -9616,6 +9617,7 @@ def _restore_dialog_data() -> xr.DataArray:
                 part="below",
                 mode="full",
                 subtract=True,
+                average=True,
             ),
         ),
         (
@@ -11141,6 +11143,7 @@ def test_itool_symmetrize(qtbot, accept_dialog, monkeypatch) -> None:
     def _set_dialog_params(dialog: SymmetrizeDialog) -> None:
         dialog._dim_combo.setCurrentIndex(2)
         dialog._center_spin.setValue(2.0)
+        dialog.average_check.setChecked(True)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
         dialog.launch_mode_combo.setCurrentText("Replace Current")
@@ -11148,7 +11151,7 @@ def test_itool_symmetrize(qtbot, accept_dialog, monkeypatch) -> None:
     accept_dialog(win.mnb._symmetrize, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
         win.slicer_area._data.rename(None),
-        erlab.analysis.transform.symmetrize(data, "z", center=2),
+        erlab.analysis.transform.symmetrize(data, "z", center=2, average=True),
     )
 
     namespace = _exec_generated_code(
@@ -11159,7 +11162,7 @@ def test_itool_symmetrize(qtbot, accept_dialog, monkeypatch) -> None:
     assert isinstance(result, xr.DataArray)
     xarray.testing.assert_identical(
         result,
-        erlab.analysis.transform.symmetrize(data, "z", center=2),
+        erlab.analysis.transform.symmetrize(data, "z", center=2, average=True),
     )
     win.close()
 
