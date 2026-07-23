@@ -26,6 +26,7 @@ import erlab.interactive.imagetool.plot_items as imagetool_plot_items
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
     ToolProvenanceSpec,
@@ -1395,6 +1396,111 @@ def test_workspace_loader_and_standalone_app_state_edge_cases(
         widget = QtWidgets.QWidget()
         qtbot.addWidget(widget)
         manager._apply_standalone_app_state("missing", widget, {})
+
+
+def test_workspace_loader_snapshot_keeps_runtime_metadata_source(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        source = erlab.io.metadata.ExcelMetadataSource(
+            tmp_path / "metadata.xlsx",
+            sheet_name="Measurements",
+            file_name_column="File",
+            coordinate_mapping={"Temperature": "sample_temp"},
+        )
+        manager._set_shared_loader_options(
+            "example",
+            {"metadata": source},
+            {},
+        )
+
+        payload = (
+            manager._workspace_controller.saving._workspace_loader_state_snapshot()
+        )
+
+        serialized_metadata = payload["explorer_loader_kwargs_by_name"]["example"][
+            "metadata"
+        ]
+        assert "__erlab_spreadsheet_metadata_source__" in serialized_metadata
+        runtime_metadata = (
+            manager._workspace_controller._loader_state.explorer_loader_kwargs_by_name[
+                "example"
+            ]["metadata"]
+        )
+        assert runtime_metadata is source
+        shared_kwargs, _shared_extensions = manager._shared_loader_state()
+        assert shared_kwargs["example"]["metadata"] is source
+
+
+def test_workspace_loader_restore_skips_invalid_metadata_entries(
+    qtbot,
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    valid_source = erlab.io.metadata.ExcelMetadataSource(
+        tmp_path / "metadata.xlsx",
+        file_name_column="File",
+        coordinate_mapping={"Temperature": "sample_temp"},
+    )
+    valid_kwargs = _serialize_loader_kwargs({"single": True, "metadata": valid_source})
+    invalid_kwargs = {
+        "metadata": {
+            "__erlab_spreadsheet_metadata_source__": {
+                "type": "google_sheets",
+                "share_url": "not a Google Sheets link",
+            }
+        }
+    }
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        with caplog.at_level(logging.WARNING, logger=workspace_loading.__name__):
+            manager._workspace_controller.loading._restore_workspace_loader_state(
+                {
+                    "loader_state": {
+                        "recent_name_filter": "Valid files (*.dat)",
+                        "manager_loader_kwargs_by_filter": {
+                            "Valid files (*.dat)": valid_kwargs,
+                            "Invalid files (*.bad)": invalid_kwargs,
+                        },
+                        "explorer_loader_kwargs_by_name": {
+                            "example": valid_kwargs,
+                            "broken": invalid_kwargs,
+                        },
+                    }
+                }
+            )
+
+        manager_kwargs = manager._recent_loader_kwargs_by_filter
+        assert set(manager_kwargs) == {"Valid files (*.dat)"}
+        assert isinstance(
+            manager_kwargs["Valid files (*.dat)"]["metadata"],
+            erlab.io.metadata.ExcelMetadataSource,
+        )
+        explorer_kwargs = (
+            manager._workspace_controller._loader_state.explorer_loader_kwargs_by_name
+        )
+        assert set(explorer_kwargs) == {"example"}
+        assert isinstance(
+            explorer_kwargs["example"]["metadata"],
+            erlab.io.metadata.ExcelMetadataSource,
+        )
+        assert (
+            sum(
+                record.name == workspace_loading.__name__
+                and record.levelno == logging.WARNING
+                for record in caplog.records
+            )
+            == 2
+        )
 
 
 def test_manager_workspace_import_does_not_restore_standalone_apps(

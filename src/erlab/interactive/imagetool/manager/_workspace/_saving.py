@@ -478,11 +478,11 @@ class _WorkspaceSaver:
             explorer_extensions,
             apply_explorer=False,
         )
-        state = workspace_format.WorkspaceLoaderState(
+        runtime_state = workspace_format.WorkspaceLoaderState(
             recent_directory=self._manager._recent_directory,
             recent_name_filter=self._manager._recent_name_filter,
             manager_loader_kwargs_by_filter={
-                str(name): _serialize_loader_kwargs(kwargs)
+                str(name): dict(kwargs)
                 for name, kwargs in manager_loader_kwargs.items()
             },
             manager_loader_extensions_by_filter={
@@ -490,16 +490,31 @@ class _WorkspaceSaver:
                 for name, extensions in manager_loader_extensions.items()
             },
             explorer_loader_kwargs_by_name={
-                str(name): _serialize_loader_kwargs(kwargs)
-                for name, kwargs in explorer_kwargs.items()
+                str(name): dict(kwargs) for name, kwargs in explorer_kwargs.items()
             },
             explorer_loader_extensions_by_name={
                 str(name): dict(extensions)
                 for name, extensions in explorer_extensions.items()
             },
         )
-        self._controller._loader_state = state
-        return state.model_dump(mode="json", exclude_none=True)
+        self._controller._loader_state = runtime_state
+        serialized_state = runtime_state.model_copy(
+            update={
+                "manager_loader_kwargs_by_filter": {
+                    name: _serialize_loader_kwargs(kwargs)
+                    for name, kwargs in (
+                        runtime_state.manager_loader_kwargs_by_filter.items()
+                    )
+                },
+                "explorer_loader_kwargs_by_name": {
+                    name: _serialize_loader_kwargs(kwargs)
+                    for name, kwargs in (
+                        runtime_state.explorer_loader_kwargs_by_name.items()
+                    )
+                },
+            }
+        )
+        return serialized_state.model_dump(mode="json", exclude_none=True)
 
     def _workspace_standalone_apps_snapshot(self) -> dict[str, typing.Any]:
         app_states: dict[str, dict[str, typing.Any]] = {}

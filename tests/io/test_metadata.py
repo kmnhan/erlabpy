@@ -1655,3 +1655,32 @@ def test_spreadsheet_scalar_parsing() -> None:
     assert metadata_core._parse_spreadsheet_value("FALSE") is False
     assert metadata_core._parse_spreadsheet_value("001") == "001"
     assert metadata_core._parse_spreadsheet_value("2026-07-21") == "2026-07-21"
+
+
+@pytest.mark.parametrize(
+    ("value", "converter_name", "error_type"),
+    [
+        ("123", "int", ValueError),
+        ("1.5", "float", OverflowError),
+    ],
+)
+def test_spreadsheet_scalar_parsing_preserves_failed_conversions(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+    converter_name: str,
+    error_type: type[Exception],
+) -> None:
+    def fail_conversion(_value: str) -> typing.NoReturn:
+        raise error_type("conversion failed")
+
+    monkeypatch.setattr(
+        metadata_core,
+        converter_name,
+        fail_conversion,
+        raising=False,
+    )
+
+    with pytest.warns(UserWarning, match="using the text unchanged"):
+        parsed = metadata_core._parse_spreadsheet_value(value)
+
+    assert parsed == value

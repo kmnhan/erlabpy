@@ -256,10 +256,17 @@ def _parse_spreadsheet_value(value: Any) -> Any:
         return True
     if text == "FALSE":
         return False
-    if _INTEGER_PATTERN.fullmatch(text):
-        return int(text)
-    if _FLOAT_PATTERN.fullmatch(text):
-        return float(text)
+    try:
+        if _INTEGER_PATTERN.fullmatch(text):
+            return int(text)
+        if _FLOAT_PATTERN.fullmatch(text):
+            return float(text)
+    except (ValueError, OverflowError) as exc:
+        preview = value if len(value) <= 120 else f"{value[:117]}..."
+        erlab.utils.misc.emit_user_level_warning(
+            f"Could not convert spreadsheet value {preview!r} to a number "
+            f"({exc}); using the text unchanged"
+        )
     return value
 
 

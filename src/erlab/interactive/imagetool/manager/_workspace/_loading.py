@@ -81,6 +81,26 @@ _WORKSPACE_LOAD_TIMING_ENV = "ERLAB_WORKSPACE_LOAD_TIMING"
 _WORKSPACE_LOAD_SUFFIX_ERROR = "ImageTool workspace files must use the .itws extension"
 
 
+def _deserialize_workspace_loader_kwargs(
+    values: Mapping[str, Mapping[str, typing.Any]],
+    *,
+    scope: str,
+) -> dict[str, dict[str, typing.Any]]:
+    """Restore valid loader arguments while isolating malformed saved entries."""
+    restored: dict[str, dict[str, typing.Any]] = {}
+    for name, kwargs in values.items():
+        try:
+            restored[str(name)] = _deserialize_loader_kwargs(kwargs)
+        except Exception:
+            logger.warning(
+                "Ignoring invalid saved %s loader arguments for %r",
+                scope,
+                name,
+                exc_info=True,
+            )
+    return restored
+
+
 class _WorkspaceLoadProfiler:
     def __init__(self, path: str | os.PathLike[str] | None) -> None:
         self._path = None if path is None else os.fspath(path)
@@ -1955,25 +1975,36 @@ class _WorkspaceLoader:
             logger.warning("Ignoring invalid workspace loader state", exc_info=True)
             return
 
-        self._manager._recent_directory = state.recent_directory
-        self._manager._recent_name_filter = state.recent_name_filter
-        self._manager._recent_loader_kwargs_by_filter = {
-            str(name): _deserialize_loader_kwargs(kwargs)
-            for name, kwargs in state.manager_loader_kwargs_by_filter.items()
-        }
-        self._manager._recent_loader_extensions_by_filter = {
+        manager_loader_kwargs = _deserialize_workspace_loader_kwargs(
+            state.manager_loader_kwargs_by_filter,
+            scope="manager",
+        )
+        manager_loader_extensions = {
             str(name): dict(extensions)
             for name, extensions in state.manager_loader_extensions_by_filter.items()
         }
-        explorer_kwargs = {
-            str(name): _deserialize_loader_kwargs(kwargs)
-            for name, kwargs in state.explorer_loader_kwargs_by_name.items()
-        }
+        explorer_kwargs = _deserialize_workspace_loader_kwargs(
+            state.explorer_loader_kwargs_by_name,
+            scope="Data Explorer",
+        )
         explorer_extensions = {
             str(name): dict(extensions)
             for name, extensions in state.explorer_loader_extensions_by_name.items()
         }
-        self._controller._loader_state = state
+        runtime_state = workspace_format.WorkspaceLoaderState(
+            recent_directory=state.recent_directory,
+            recent_name_filter=state.recent_name_filter,
+            manager_loader_kwargs_by_filter=manager_loader_kwargs,
+            manager_loader_extensions_by_filter=manager_loader_extensions,
+            explorer_loader_kwargs_by_name=explorer_kwargs,
+            explorer_loader_extensions_by_name=explorer_extensions,
+        )
+
+        self._manager._recent_directory = state.recent_directory
+        self._manager._recent_name_filter = state.recent_name_filter
+        self._manager._recent_loader_kwargs_by_filter = manager_loader_kwargs
+        self._manager._recent_loader_extensions_by_filter = manager_loader_extensions
+        self._controller._loader_state = runtime_state
         self._manager._sync_shared_loader_state(
             explorer_kwargs,
             explorer_extensions,
