@@ -7352,9 +7352,47 @@ def test_itool_controls_scroll_and_elide_in_narrow_window(qtbot) -> None:
     bar.wheelEvent(wheel_event)
     assert scroll_bar.value() > 0
 
+    for pixel_delta, angle_delta in (
+        (QtCore.QPoint(-10, 0), QtCore.QPoint()),
+        (QtCore.QPoint(0, -10), QtCore.QPoint()),
+        (QtCore.QPoint(), QtCore.QPoint(-120, 0)),
+    ):
+        scroll_bar.setValue(0)
+        alternate_wheel_event = QtGui.QWheelEvent(
+            QtCore.QPointF(5, 5),
+            QtCore.QPointF(5, 5),
+            pixel_delta,
+            angle_delta,
+            QtCore.Qt.MouseButton.NoButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+            QtCore.Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+        bar.wheelEvent(alternate_wheel_event)
+        assert scroll_bar.value() > 0
+
     scroll_bar.setValue(0)
-    win.binning_controls.reset_btn.setFocus(QtCore.Qt.FocusReason.TabFocusReason)
-    qtbot.waitUntil(lambda: scroll_bar.value() > 0)
+    focusable_children = [
+        child
+        for child in bar._contents.findChildren(QtWidgets.QWidget)
+        if child.focusPolicy() & QtCore.Qt.FocusPolicy.TabFocus
+    ]
+    first_focusable = min(
+        focusable_children,
+        key=lambda child: child.mapTo(bar._contents, QtCore.QPoint()).x(),
+    )
+    first_focusable.setFocus(QtCore.Qt.FocusReason.TabFocusReason)
+    qtbot.waitUntil(lambda: QtWidgets.QApplication.focusWidget() is first_focusable)
+    for _ in range(len(focusable_children)):
+        focused = QtWidgets.QApplication.focusWidget()
+        assert focused is not None
+        qtbot.keyClick(focused, QtCore.Qt.Key.Key_Tab)
+        if scroll_bar.value() > 0:
+            break
+    assert scroll_bar.value() > 0
+    focused = QtWidgets.QApplication.focusWidget()
+    assert focused is not None
+    assert bar._contents.isAncestorOf(focused)
 
     win.resize(bar._contents.sizeHint().width() + 20, win.height())
     qtbot.waitUntil(lambda: scroll_bar.maximum() == 0)
@@ -7363,6 +7401,37 @@ def test_itool_controls_scroll_and_elide_in_narrow_window(qtbot) -> None:
     wheel_event.setAccepted(False)
     bar.wheelEvent(wheel_event)
     assert scroll_bar.value() == 0
+    win.close()
+
+
+def test_itool_controls_follow_dimensionality_changes(qtbot) -> None:
+    data_2d = xr.DataArray(np.zeros((2, 2)), dims=("x", "y"))
+    win = itool(data_2d, execute=False)
+    qtbot.addWidget(win)
+    win.resize(260, win.height())
+    win.show()
+
+    bar = win.controls_bar
+    scroll_bar = bar.horizontalScrollBar()
+    qtbot.waitUntil(lambda: scroll_bar.maximum() > 0)
+    width_2d = bar._contents.width()
+    maximum_2d = scroll_bar.maximum()
+
+    data_4d = xr.DataArray(
+        np.zeros((2, 2, 2, 2)),
+        dims=("a", "b", "c", "d"),
+    )
+    win.slicer_area.set_data(data_4d)
+    qtbot.waitUntil(lambda: len(win.cursor_controls.label_dim) == 4)
+    qtbot.waitUntil(lambda: bar._contents.width() > width_2d)
+    width_4d = bar._contents.width()
+    maximum_4d = scroll_bar.maximum()
+    assert maximum_4d > maximum_2d
+
+    win.slicer_area.set_data(data_2d)
+    qtbot.waitUntil(lambda: len(win.cursor_controls.label_dim) == 2)
+    qtbot.waitUntil(lambda: bar._contents.width() < width_4d)
+    assert scroll_bar.maximum() < maximum_4d
     win.close()
 
 
