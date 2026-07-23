@@ -1555,6 +1555,9 @@ def test_wrapper_pending_workspace_branch_helpers(
             tmp_path / "source.itws", "0/imagetool"
         )
         assert wrapper._metadata_data() is None
+        fields = {field.label: field.value for field in wrapper.metadata_fields}
+        assert "Size" not in fields
+        assert fields["Added"] == wrapper.added_time_display
         assert wrapper._pending_workspace_load_source_details() is None
 
         for raw_state in (b"\xff", "{not-json", json.dumps({"file_path": 1})):
@@ -1643,7 +1646,7 @@ def test_wrapper_pending_workspace_branch_helpers(
             created_time="2026-01-02T03:04:05+00:00",
         )
         try:
-            assert "Added" in empty_node.info_text
+            assert empty_node.info_text == ""
             assert empty_node.persistence_data_backing() == (None, ())
         finally:
             empty_node.deleteLater()
@@ -2046,8 +2049,9 @@ def test_pending_workspace_data_roles_match_materialized_filtered_nonuniform_dat
         assert pending_source.chunks is not None
         pending_source = pending_source.compute()
         pending_displayed = pending_displayed.compute()
-        info = loader.pending._pending_workspace_imagetool_info_text(node)
+        info, data_size = loader.pending._pending_workspace_imagetool_info(node)
         assert info is not None
+        assert data_size == data.nbytes
         assert "sample_temp_idx" not in info
     finally:
         loader._close_workspace_reference_datasets(reference_datasets)

@@ -436,6 +436,7 @@ class _ManagedWindowNode(QtCore.QObject):
             tuple[
                 tuple[typing.Literal["imagetool", "tool"], tuple[pathlib.Path, str]],
                 str,
+                int | None,
             ]
             | None
         ) = None
@@ -1049,37 +1050,37 @@ class _ManagedWindowNode(QtCore.QObject):
             return erlab.interactive.utils._apply_qt_accent_color(
                 self.tool_window.info_text
             )
-        pending_info = self._pending_workspace_info_text()
+        pending_info, _ = self._pending_workspace_info()
         if pending_info is not None:
             return pending_info
         data = self._metadata_data()
         if data is None:
-            return erlab.interactive.utils._apply_qt_accent_color(
-                f"Added {self.added_time_display}"
-            )
+            return ""
         data = erlab.utils.array.sort_coord_order(data)
         text = erlab.utils.formatting.format_darr_html(
             data,
-            show_size=True,
-            additional_info=[f"Added {self.added_time_display}"],
+            show_size=False,
         )
         return erlab.interactive.utils._apply_qt_accent_color(text)
 
-    def _pending_workspace_info_text(self) -> str | None:
+    def _pending_workspace_info(self) -> tuple[str | None, int | None]:
         pending = self._pending_workspace_payload
         kind = self._pending_workspace_payload_kind
         if pending is None or kind is None:
-            return None
+            return None, None
         cache_key = (kind, pending)
         if (
             self._pending_workspace_metadata_cache is not None
             and self._pending_workspace_metadata_cache[0] == cache_key
         ):
-            return self._pending_workspace_metadata_cache[1]
-        text = self.manager._pending_workspace_info_text(self)
+            return (
+                self._pending_workspace_metadata_cache[1],
+                self._pending_workspace_metadata_cache[2],
+            )
+        text, data_size = self.manager._pending_workspace_info(self)
         if text is not None:
-            self._pending_workspace_metadata_cache = (cache_key, text)
-        return text
+            self._pending_workspace_metadata_cache = (cache_key, text, data_size)
+        return text, data_size
 
     @property
     def tree_uid_text(self) -> str:
@@ -1255,14 +1256,27 @@ class _ManagedWindowNode(QtCore.QObject):
                 "Kind",
                 kind_value,
             ),
+        ]
+
+        data = self._metadata_data()
+        data_size = data.nbytes if data is not None else None
+        if data_size is None and self.pending_workspace_memory_payload is not None:
+            _, data_size = self._pending_workspace_info()
+        if data_size is not None:
+            fields.append(
+                _MetadataField(
+                    "Size",
+                    erlab.utils.formatting.format_nbytes(data_size),
+                )
+            )
+        fields.append(
             _MetadataField(
                 "Added",
                 self.added_time_display,
                 monospace=True,
-            ),
-        ]
+            )
+        )
 
-        data = self._metadata_data()
         load_source_details = self._load_source_details()
         if load_source_details is not None:
             fields.append(

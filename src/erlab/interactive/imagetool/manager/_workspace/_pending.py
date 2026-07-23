@@ -221,12 +221,12 @@ class _PendingWorkspacePayloads:
         }
         return data.copy(deep=False).assign_coords(scalar_coords)
 
-    def _pending_workspace_imagetool_info_text(
+    def _pending_workspace_imagetool_info(
         self, node: _ImageToolWrapper | _ManagedWindowNode
-    ) -> str | None:
+    ) -> tuple[str | None, int | None]:
         pending = node.pending_workspace_memory_payload
         if pending is None:
-            return None
+            return None, None
         workspace_path, payload_path = pending
         try:
             ds = self._loader._read_workspace_imagetool_payload_dataset(
@@ -235,7 +235,7 @@ class _PendingWorkspacePayloads:
             try:
                 ds = _serialization.restore_private_coords(ds, _ITOOL_DATA_NAME)
                 if _ITOOL_DATA_NAME not in ds:
-                    return None
+                    return None, None
                 name = None if node.name == "" else node.name
                 data = ds[_ITOOL_DATA_NAME].rename(name)
                 attrs = node.pending_workspace_payload_attrs
@@ -244,15 +244,14 @@ class _PendingWorkspacePayloads:
                 data = self._pending_workspace_data_with_saved_dim_order(data, attrs)
                 data = erlab.utils.array._restore_nonuniform_dims(data)
                 data = erlab.utils.array.sort_coord_order(data)
-                additional_info = [f"Added {node.added_time_display}"]
+                data_size = data.nbytes
                 try:
                     metadata_data = self._pending_workspace_data_with_loaded_coords(
                         data
                     )
                     text = erlab.utils.formatting.format_darr_html(
                         metadata_data,
-                        show_size=True,
-                        additional_info=additional_info,
+                        show_size=False,
                     )
                 except Exception:
                     logger.debug(
@@ -261,11 +260,13 @@ class _PendingWorkspacePayloads:
                     )
                     text = erlab.utils.formatting.format_darr_html(
                         data,
-                        show_size=True,
+                        show_size=False,
                         load_values=False,
-                        additional_info=additional_info,
                     )
-                return erlab.interactive.utils._apply_qt_accent_color(text)
+                return (
+                    erlab.interactive.utils._apply_qt_accent_color(text),
+                    data_size,
+                )
             finally:
                 ds.close()
         except Exception:
@@ -275,7 +276,7 @@ class _PendingWorkspacePayloads:
                 workspace_path,
                 exc_info=True,
             )
-            return None
+            return None, None
 
     def _pending_workspace_tool_info_text(
         self, node: _ImageToolWrapper | _ManagedWindowNode
@@ -295,19 +296,18 @@ class _PendingWorkspacePayloads:
         )
         if source_state is not None:
             lines.append(f"<p>Source: {html.escape(source_state)}</p>")
-        lines.append(f"<p>Added {html.escape(node.added_time_display)}</p>")
         return erlab.interactive.utils._apply_qt_accent_color("".join(lines))
 
-    def _pending_workspace_info_text(
+    def _pending_workspace_info(
         self, node: _ImageToolWrapper | _ManagedWindowNode
-    ) -> str | None:
+    ) -> tuple[str | None, int | None]:
         match node.pending_workspace_payload_kind:
             case "imagetool":
-                return self._pending_workspace_imagetool_info_text(node)
+                return self._pending_workspace_imagetool_info(node)
             case "tool":
-                return self._pending_workspace_tool_info_text(node)
+                return self._pending_workspace_tool_info_text(node), None
             case _:
-                return None
+                return None, None
 
     @staticmethod
     def _pending_workspace_tool_preview_image(

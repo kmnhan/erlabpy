@@ -1931,12 +1931,10 @@ class ImageToolManager(_ImageToolManagerBase):
         pending = self._workspace_controller.loading.pending
         return pending._materialize_pending_workspace_payload(node)
 
-    def _pending_workspace_info_text(
+    def _pending_workspace_info(
         self, node: _ImageToolWrapper | _ManagedWindowNode
-    ) -> str | None:
-        return self._workspace_controller.loading.pending._pending_workspace_info_text(
-            node
-        )
+    ) -> tuple[str | None, int | None]:
+        return self._workspace_controller.loading.pending._pending_workspace_info(node)
 
     def _pending_workspace_imagetool_preview_image(
         self, node: _ImageToolWrapper | _ManagedWindowNode

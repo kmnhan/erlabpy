@@ -218,6 +218,11 @@ def test_manager_pending_memory_sidebar_shows_metadata_without_materializing(
         assert "sample" in info_text
         assert "TiSe2" in info_text
         assert "temperature" in info_text
+        assert "Added" not in info_text
+        assert "Size " not in info_text
+        fields = {field.label: field.value for field in wrapper.metadata_fields}
+        assert fields["Size"] == erlab.utils.formatting.format_nbytes(data.nbytes)
+        assert not wrapper._workspace_reference_datasets
         assert wrapper.pending_workspace_memory_payload is not None
 
         wrapper.name = "renamed_metadata"
@@ -300,12 +305,15 @@ def test_pending_workspace_metadata_coord_load_failure_falls_back(
 
     with manager_context() as manager:
         pending_payloads = manager._workspace_controller.loading.pending
-        info = pending_payloads._pending_workspace_imagetool_info_text(node)
+        info, data_size = pending_payloads._pending_workspace_imagetool_info(node)
     assert info is not None
+    assert data_size == data.nbytes
     assert "pending" in info
     assert "float64 [2]" in info
     assert "float64 [3]" in info
     assert "float64 scalar" in info
+    assert "Added" not in info
+    assert "Size " not in info
     assert node.pending_workspace_memory_payload == (fname, "0/imagetool")
 
 
@@ -1027,7 +1035,8 @@ def test_pending_toolwindow_metadata_and_preview_helpers(
         assert "NestedTool" in text
         assert "source_data" in text
         assert "stale" in text
-        assert loader.pending._pending_workspace_info_text(node) == text
+        assert "Added" not in text
+        assert loader.pending._pending_workspace_info(node) == (text, None)
 
         preview = node.pending_workspace_tool_preview_image()
         assert preview is not None
@@ -1107,7 +1116,7 @@ def test_pending_toolwindow_metadata_and_preview_helpers(
         )
         assert loader.pending._pending_workspace_tool_info_text(no_pending) is None
         assert loader.pending._pending_workspace_tool_preview_image(no_pending) is None
-        assert loader.pending._pending_workspace_info_text(no_pending) is None
+        assert loader.pending._pending_workspace_info(no_pending) == (None, None)
 
 
 def test_pending_workspace_preview_and_metadata_reader_fallbacks(
@@ -1185,8 +1194,9 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             name="pending",
             added_time_display="Today",
         )
-        info = loader.pending._pending_workspace_imagetool_info_text(node)
+        info, data_size = loader.pending._pending_workspace_imagetool_info(node)
         assert info is not None
+        assert data_size == data.nbytes
         assert "pending" in info
         preview = loader.pending._pending_workspace_imagetool_preview_image(node)
         assert preview is not None
@@ -1289,12 +1299,32 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             name="missing",
             added_time_display="Today",
         )
-        assert (
-            loader.pending._pending_workspace_imagetool_info_text(missing_node) is None
+        assert loader.pending._pending_workspace_imagetool_info(missing_node) == (
+            None,
+            None,
         )
         assert (
             loader.pending._pending_workspace_imagetool_preview_image(missing_node)
             is None
+        )
+
+        missing_data_fname = tmp_path / "pending-preview-missing-data.itws"
+        assert workspace_arrays._write_workspace_dataset_group_h5py(
+            missing_data_fname,
+            "0/imagetool",
+            xr.Dataset({"other": xr.DataArray([1.0], dims="x")}),
+        )
+        missing_data_node = types.SimpleNamespace(
+            pending_workspace_memory_payload=(
+                missing_data_fname,
+                "0/imagetool",
+            ),
+            pending_workspace_payload_attrs=None,
+            name="missing",
+        )
+        assert loader.pending._pending_workspace_imagetool_info(missing_data_node) == (
+            None,
+            None,
         )
 
         no_pending = types.SimpleNamespace(
@@ -1303,7 +1333,10 @@ def test_pending_workspace_preview_and_metadata_reader_fallbacks(
             name="missing",
             added_time_display="Today",
         )
-        assert loader.pending._pending_workspace_imagetool_info_text(no_pending) is None
+        assert loader.pending._pending_workspace_imagetool_info(no_pending) == (
+            None,
+            None,
+        )
         assert (
             loader.pending._pending_workspace_imagetool_preview_image(no_pending)
             is None
