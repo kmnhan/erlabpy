@@ -638,7 +638,7 @@ def test_figure_composer_custom_code_disables_selection_reuse_within_render(
     before = np.asarray(figure.axes[0].images[0].get_array())
     after = np.asarray(figure.axes[1].images[0].get_array())
     np.testing.assert_allclose(after, before + 1.0)
-    assert len(tool._prepared_render_data) == 0
+    assert len(tool._render_data_cache) == 0
 
 
 def test_figure_composer_plot_slices_cache_preserves_repeated_source_order(
@@ -3996,7 +3996,7 @@ def test_figure_composer_plot_slices_order_change_matches_cold_transform_cache(
     )
     warm_values = tuple(axis.lines[0].get_ydata() for axis in warm_figure.axes)
 
-    tool._clear_render_data_caches()
+    tool._render_data_cache.invalidate(tool._document.source_revision)
     cold_figure = Figure()
     figurecomposer_rendering._render_into_figure(
         tool,

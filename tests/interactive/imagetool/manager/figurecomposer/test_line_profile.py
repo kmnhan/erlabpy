@@ -2332,12 +2332,13 @@ def test_figure_composer_line_preparation_cache_reuses_data_for_style_changes(
 
     assert selection_calls == [None]
     assert transform_calls == [None]
-    assert tool._plot_slices_selection_cache is tool._prepared_render_data
-    assert len(tool._prepared_render_data) == 1
+    assert len(tool._render_data_cache) == 1
 
-    tool.source_data()["data"].values[:] += 1.0
-    tool.touch_source_data()
-    assert len(tool._prepared_render_data) == 0
+    with tool.edit_source_data() as sources:
+        sources["data"].values[:] += 1.0
+        with pytest.raises(TypeError):
+            sources["other"] = data
+    assert len(tool._render_data_cache) == 0
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
 
     assert selection_calls == [None, None]
@@ -2346,9 +2347,9 @@ def test_figure_composer_line_preparation_cache_reuses_data_for_style_changes(
         tool.figure.axes[0].lines[0].get_ydata(),
         2.0 * data.isel(cut=0).values,
     )
-    assert len(tool._prepared_render_data) == 1
+    assert len(tool._render_data_cache) == 1
     tool.close()
-    assert len(tool._prepared_render_data) == 0
+    assert len(tool._render_data_cache) == 0
 
 
 def test_figure_composer_trusted_custom_code_disables_prepared_data_cache(
@@ -2393,7 +2394,7 @@ def test_figure_composer_trusted_custom_code_disables_prepared_data_cache(
     second_values = second_figure.axes[0].lines[0].get_ydata()
 
     np.testing.assert_allclose(second_values, first_values + 1.0)
-    assert len(tool._prepared_render_data) == 0
+    assert len(tool._render_data_cache) == 0
 
 
 def test_figure_composer_regular_line_profiles_render_on_each_selected_axis(

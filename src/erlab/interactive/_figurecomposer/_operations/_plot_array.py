@@ -37,6 +37,7 @@ from erlab.interactive._figurecomposer._norms import (
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
+    _always_render_cache_safe,
 )
 from erlab.interactive._figurecomposer._rendering import _axes_from_selection
 from erlab.interactive._figurecomposer._text import (
@@ -315,13 +316,10 @@ def _render_plot_array(
 ) -> None:
     kwargs = _plot_array_kwargs(operation)
     plan = _PlotArrayPreparePlan.from_operation_and_kwargs(operation, kwargs)
-    data = typing.cast(
-        "xr.DataArray | None",
-        tool._cached_render_data(
-            "plot-array",
-            plan,
-            lambda: plan.prepare(tool._document),
-        ),
+    data = tool._cached_render_data(
+        "plot-array",
+        plan,
+        lambda: plan.prepare(tool._document),
     )
     if data is None:
         return
@@ -963,5 +961,6 @@ SPEC = OperationSpec(
         tool, operation, axs
     ),
     code_lines=_plot_array_code_lines,
+    render_cache_safe=_always_render_cache_safe,
     required_imports=_required_imports,
 )

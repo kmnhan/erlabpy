@@ -317,34 +317,28 @@ def _render_into_figure(
     from erlab.interactive._figurecomposer._operations import _registry
 
     render_errors: dict[str, str] = {}
-    tool._sync_render_data_caches()
     cache_safe = tool._render_data_cache_safe()
-    previous_cache_enabled = tool._render_data_cache_enabled
-    previous_plot_slices_cache = tool._plot_slices_selection_cache
-    tool._render_data_cache_enabled = previous_cache_enabled and cache_safe
-    if not tool._render_data_cache_enabled:
-        tool._clear_render_data_caches()
-        tool._plot_slices_selection_cache = None
-    try:
-        with _tool_figure_options_context(tool), _figure_style_context():
-            axs = _make_axes(tool, figure, sync_visible=sync_visible)
-            for operation in tool._document.recipe.operations:
-                if not operation.enabled:
-                    continue
-                spec = _registry.spec_for(operation.kind)
-                if spec.has_invalid_target(
-                    tool._document, operation
-                ) or tool.operation_editor.has_input_error(operation):
-                    continue
-                try:
-                    spec.render(tool, operation, figure, axs)
-                except Exception as exc:
-                    render_errors[operation.operation_id] = _render_error_text(exc)
-    finally:
-        tool._render_data_cache_enabled = previous_cache_enabled
-        tool._plot_slices_selection_cache = previous_plot_slices_cache
-        if not cache_safe:
-            tool._clear_render_data_caches()
+    with (
+        tool._render_data_cache.render_session(
+            source_revision=tool._document.source_revision,
+            cache_safe=cache_safe,
+        ),
+        _tool_figure_options_context(tool),
+        _figure_style_context(),
+    ):
+        axs = _make_axes(tool, figure, sync_visible=sync_visible)
+        for operation in tool._document.recipe.operations:
+            if not operation.enabled:
+                continue
+            spec = _registry.spec_for(operation.kind)
+            if spec.has_invalid_target(
+                tool._document, operation
+            ) or tool.operation_editor.has_input_error(operation):
+                continue
+            try:
+                spec.render(tool, operation, figure, axs)
+            except Exception as exc:
+                render_errors[operation.operation_id] = _render_error_text(exc)
     tool._set_operation_render_errors(render_errors)
 
 

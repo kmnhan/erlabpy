@@ -123,13 +123,10 @@ def _picked_plot_render_data(
     spec: MethodSpec,
 ) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
     plan = _MethodPlotDataPlan.from_operation(operation)
-    return typing.cast(
-        "tuple[tuple[typing.Any, ...], dict[str, typing.Any]]",
-        tool._cached_render_data(
-            "method-plot-data",
-            plan,
-            lambda: plan.prepare(tool, spec),
-        ),
+    return tool._cached_render_data(
+        "method-plot-data",
+        plan,
+        lambda: plan.prepare(tool, spec),
     )
 
 

@@ -25,6 +25,7 @@ from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
 )
+from erlab.plotting.general import _prepare_plot_slices_maps
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -45,8 +46,9 @@ _PLOT_SLICES_MAPPABLE_PANEL_KEY_ATTR = "_figure_composer_panel_key"
 class _PlotSlicesSelectionPlan:
     """Semantic map preparation used by plot_slices selection caching."""
 
-    maps: tuple[str, ...] | _PlotSlicesTransformPlan
+    maps: tuple[str, ...]
     transpose: bool
+    qsel: dict[str, typing.Any]
 
 
 def _render_plot_slices(
@@ -67,32 +69,34 @@ def _render_plot_slices(
             operation,
         )
         input_maps = maps
-        maps = typing.cast(
-            "list[xr.DataArray]",
-            tool._cached_render_data(
-                "plot-slices-transformed-maps",
+        maps = tool._cached_render_data(
+            "plot-slices-transformed-maps",
+            transform_plan,
+            lambda: _plot_slices_transformed_maps_from_plan(
                 transform_plan,
-                lambda: _plot_slices_transformed_maps_from_plan(
-                    transform_plan,
-                    input_maps,
-                ),
+                input_maps,
             ),
         )
         map_plan = transform_plan
         kwargs = _plot_slices_transformed_kwargs(tool, operation)
-    selection_cache = (
-        tool._plot_slices_selection_cache if isinstance(map_plan, tuple) else None
-    )
-    if selection_cache is not None:
-        kwargs["_selection_cache"] = selection_cache
-        selection_plan = _PlotSlicesSelectionPlan(
-            maps=map_plan,
-            transpose=bool(kwargs.get("transpose", False)),
-        )
-        kwargs["_selection_cache_key"] = tool._render_data_cache_key(
-            "plot-slices-selections",
-            selection_plan,
-        )
+    if isinstance(map_plan, tuple):
+
+        def prepare_maps(
+            input_maps: Sequence[xr.DataArray],
+            qsel: Mapping[str, typing.Any],
+        ) -> tuple[xr.DataArray, ...]:
+            selection_plan = _PlotSlicesSelectionPlan(
+                maps=map_plan,
+                transpose=bool(kwargs.get("transpose", False)),
+                qsel=dict(qsel),
+            )
+            return tool._cached_render_data(
+                "plot-slices-selections",
+                selection_plan,
+                lambda: _prepare_plot_slices_maps(input_maps, qsel),
+            )
+
+        kwargs["_map_preparer"] = prepare_maps
     axes = _plot_slices_axes(
         operation,
         maps,

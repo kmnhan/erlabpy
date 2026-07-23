@@ -5,6 +5,7 @@ import pytest
 import xarray as xr
 
 import erlab.accessors.general as accessor_general
+import erlab.plotting.general as plotting_general
 from erlab.plotting.general import (
     clean_labels,
     fermiline,
@@ -69,6 +70,43 @@ def test_plot_slices_selects_slice_stack_once_per_map(monkeypatch) -> None:
     np.testing.assert_allclose(axes[1, 0].images[0].get_array(), expected1[0].values)
     np.testing.assert_allclose(axes[1, 1].images[0].get_array(), expected1[1].values)
     plt.close(fig)
+
+
+def test_plot_slices_map_preparer_receives_complete_selection() -> None:
+    data = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("eV", "y", "x"),
+        coords={"eV": [0.0, 1.0], "y": [0.0, 1.0, 2.0], "x": np.arange(4.0)},
+    )
+    preparations: list[dict[str, object]] = []
+
+    def prepare_maps(maps, qsel):
+        preparations.append(dict(qsel))
+        return plotting_general._prepare_plot_slices_maps(maps, qsel)
+
+    fig, _axes = plot_slices(
+        data,
+        eV=[0.0, 1.0],
+        eV_width=[0.1, 0.2],
+        xlim=(1.0, 3.0),
+        _map_preparer=prepare_maps,
+    )
+
+    assert preparations == [
+        {
+            "eV": [0.0, 1.0],
+            "eV_width": [0.1, 0.2],
+            "x": slice(1.0, 3.0),
+        }
+    ]
+    plt.close(fig)
+
+    with pytest.raises(ValueError, match="must match the input map count"):
+        plot_slices(
+            data,
+            eV=[0.0],
+            _map_preparer=lambda _maps, _qsel: (),
+        )
 
 
 def test_plot_slices_general(monkeypatch) -> None:

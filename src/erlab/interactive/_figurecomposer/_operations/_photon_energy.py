@@ -27,6 +27,7 @@ from erlab.interactive._figurecomposer._model._state import (
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
+    _always_render_cache_safe,
 )
 from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
@@ -210,15 +211,12 @@ def _photon_energy_render_data(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> tuple[xr.DataArray, str]:
     plan = _PhotonEnergyPlan.from_operation(operation)
-    return typing.cast(
-        "tuple[xr.DataArray, str]",
-        tool._cached_render_data(
-            "photon-energy-curves",
+    return tool._cached_render_data(
+        "photon-energy-curves",
+        plan,
+        lambda: _kz_values_from_plan(
+            _source_data_from_name(tool, plan.source),
             plan,
-            lambda: _kz_values_from_plan(
-                _source_data_from_name(tool, plan.source),
-                plan,
-            ),
         ),
     )
 
@@ -634,5 +632,6 @@ SPEC = OperationSpec(
         tool, operation, axs
     ),
     code_lines=_photon_energy_code_lines,
+    render_cache_safe=_always_render_cache_safe,
     required_imports=_required_imports,
 )

@@ -26,6 +26,7 @@ from erlab.interactive._figurecomposer._model._state import (
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
+    _always_render_cache_safe,
     _empty_source_editor,
     _uses_no_source_section,
 )
@@ -851,5 +852,6 @@ SPEC = OperationSpec(
         tool, operation, axs
     ),
     code_lines=_bz_code_lines,
+    render_cache_safe=_always_render_cache_safe,
     required_imports=_required_imports,
 )

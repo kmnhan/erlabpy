@@ -137,6 +137,23 @@ def test_figure_document_replaces_source_payloads_together() -> None:
     assert document.source_selection_base_data == {}
 
 
+def test_figure_document_attaches_source_observer_after_construction() -> None:
+    revisions: list[int] = []
+    document = FigureDocument(
+        FigureRecipeState(),
+        source_data={"data": xr.DataArray([1.0], dims="x")},
+    )
+
+    document.set_source_changed_callback(revisions.append)
+    document.touch_source_payloads()
+
+    assert revisions == [2]
+
+    document.set_source_changed_callback(None)
+    document.touch_source_payloads()
+    assert revisions == [2]
+
+
 def test_figure_composer_prepared_data_cache_is_bounded_and_persists_dask() -> None:
     import dask
     import dask.array as da
@@ -171,6 +188,144 @@ def test_figure_composer_prepared_data_cache_is_bounded_and_persists_dask() -> N
         np.testing.assert_allclose(persisted_cache["lazy"].values, np.arange(4.0))
         np.testing.assert_allclose(persisted_cache["lazy"].values, np.arange(4.0))
     assert compute_calls == [None]
+
+
+def test_figure_composer_render_cache_fails_closed_and_restores_session_policy() -> (
+    None
+):
+    class UnsupportedSelector:
+        __hash__ = None
+
+        def __repr__(self) -> str:
+            return "truncated selector"
+
+    cache = figurecomposer_cache._RenderDataCache()
+    compute_calls: list[int] = []
+    cyclic_plan: dict[str, object] = {}
+    cyclic_plan["self"] = cyclic_plan
+
+    def compute() -> int:
+        compute_calls.append(len(compute_calls))
+        return compute_calls[-1]
+
+    assert figurecomposer_cache._freeze_cache_value(1) != (
+        figurecomposer_cache._freeze_cache_value(1.0)
+    )
+    assert figurecomposer_cache._freeze_cache_value([1]) != (
+        figurecomposer_cache._freeze_cache_value((1,))
+    )
+    assert (
+        cache.get_or_compute(
+            "selection",
+            {"selector": UnsupportedSelector()},
+            compute,
+            source_revision=1,
+        )
+        == 0
+    )
+    assert (
+        cache.get_or_compute(
+            "selection",
+            {"selector": UnsupportedSelector()},
+            compute,
+            source_revision=1,
+        )
+        == 1
+    )
+    assert len(cache) == 0
+
+    assert (
+        cache.get_or_compute(
+            "selection",
+            cyclic_plan,
+            compute,
+            source_revision=1,
+        )
+        == 2
+    )
+    assert len(cache) == 0
+
+    assert (
+        cache.get_or_compute("selection", {"selector": 1.0}, compute, source_revision=1)
+        == 3
+    )
+    assert (
+        cache.get_or_compute("selection", {"selector": 1.0}, compute, source_revision=1)
+        == 3
+    )
+    assert len(cache) == 1
+
+    with cache.render_session(source_revision=1, cache_safe=False):
+        assert (
+            cache.get_or_compute(
+                "selection", {"selector": 1.0}, compute, source_revision=1
+            )
+            == 4
+        )
+        assert (
+            cache.get_or_compute(
+                "selection", {"selector": 1.0}, compute, source_revision=1
+            )
+            == 5
+        )
+        assert len(cache) == 0
+
+    assert (
+        cache.get_or_compute("selection", {"selector": 1.0}, compute, source_revision=1)
+        == 6
+    )
+    assert len(cache) == 1
+
+    with (
+        pytest.raises(RuntimeError, match="render failed"),
+        cache.render_session(source_revision=1, cache_safe=False),
+    ):
+        raise RuntimeError("render failed")
+
+    assert (
+        cache.get_or_compute("selection", {"selector": 1.0}, compute, source_revision=1)
+        == 7
+    )
+    assert len(cache) == 1
+
+
+def test_figure_composer_render_cache_nested_values_have_explicit_semantics() -> None:
+    import dataclasses
+    import datetime
+    import enum
+
+    import dask.array as da
+    import pydantic
+
+    @dataclasses.dataclass(frozen=True)
+    class Box:
+        value: object
+
+    class BoxModel(pydantic.BaseModel):
+        value: object
+
+    class Mode(enum.Enum):
+        VALUE = "value"
+
+    array = np.arange(2.0)
+    lazy = xr.DataArray(da.arange(2, chunks=1), dims="x")
+
+    assert figurecomposer_cache._estimated_nbytes(Box(array)) == array.nbytes
+    assert figurecomposer_cache._estimated_nbytes(BoxModel(value=array)) == array.nbytes
+    assert figurecomposer_cache._contains_dask_collection(Box(lazy))
+    assert figurecomposer_cache._contains_dask_collection(BoxModel(value=lazy))
+
+    explicit_values = (
+        np.int64(1),
+        Mode.VALUE,
+        b"value",
+        datetime.date(2026, 7, 23),
+        1.0 + 2.0j,
+        np.array(["value", 1], dtype=object),
+        frozenset({"value"}),
+    )
+    for value in explicit_values:
+        assert isinstance(figurecomposer_cache._freeze_cache_value(value), tuple)
 
 
 def test_figure_document_keeps_selected_dask_sources_lazy() -> None:
@@ -1262,7 +1417,7 @@ def test_figure_composer_visible_redraw_draws_once_and_skips_unchanged(
     assert not tool.preview_pixmap_stale
 
 
-def test_figure_composer_redraw_signature_detects_nested_recipe_mutation(
+def test_figure_composer_tool_status_is_detached_from_live_recipe(
     qtbot, monkeypatch
 ) -> None:
     data = xr.DataArray(
@@ -1287,9 +1442,19 @@ def test_figure_composer_redraw_signature_detects_nested_recipe_mutation(
     tool._redraw_plot()
     assert draw_calls == [None]
 
-    tool.tool_status.operations[0].extra_kwargs["alpha"] = 0.5
+    updated = tool.tool_status
+    updated.operations[0].extra_kwargs["alpha"] = 0.5
     tool._redraw_plot()
+    assert draw_calls == [None]
+    assert "alpha" not in tool.tool_status.operations[0].extra_kwargs
+
+    source_snapshot = tool.source_states()[0]
+    source_snapshot.qsel["x"] = 0.0
+    assert tool.source_states()[0].qsel == {}
+
+    tool.tool_status = updated
     assert draw_calls == [None, None]
+    assert tool.tool_status.operations[0].extra_kwargs["alpha"] == 0.5
 
 
 def test_figure_composer_preview_draw_error_ignores_missing_operation(qtbot) -> None:

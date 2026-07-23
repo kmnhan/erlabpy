@@ -17,6 +17,7 @@ import typing
 import unicodedata
 import uuid
 import weakref
+from types import MappingProxyType
 
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInput,
@@ -48,10 +49,7 @@ import erlab.interactive._figurecomposer._codegen
 import erlab.interactive._figurecomposer._provenance
 import erlab.interactive._figurecomposer._ui._toolbar_dialogs
 import erlab.interactive._qt_state as _qt_state
-from erlab.interactive._figurecomposer._cache import (
-    _BoundedCache,
-    _render_data_cache_key,
-)
+from erlab.interactive._figurecomposer._cache import _RenderDataCache
 from erlab.interactive._figurecomposer._defaults import (
     _figure_draw_context,
     _figure_style_context,
@@ -178,7 +176,6 @@ if typing.TYPE_CHECKING:
         Iterable,
         Iterator,
         Mapping,
-        MutableMapping,
         Sequence,
     )
 
@@ -193,6 +190,7 @@ _PREVIEW_RENDER_UPDATE_DELAY_MS = 50
 _EDITOR_CONTROL_RENDER_UPDATE_DELAY_MS = 300
 _FIGURE_RESIZE_RENDER_DELAY_MS = 120
 _FIGURE_RESIZE_HISTORY_DELAY_MS = 250
+_T = typing.TypeVar("_T")
 _PREVIEW_PIXMAP_UPDATE_DELAY_MS = 250
 _PERSISTED_PREVIEW_CACHE_ATTR = "figure_composer_preview_cache_png"
 _PERSISTED_PREVIEW_CACHE_STALE_ATTR = "figure_composer_preview_cache_stale"
@@ -363,12 +361,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._preview_render_update_generation = 0
         self._redraw_generation = 0
         self._operation_render_errors: dict[str, str] = {}
-        self._prepared_render_data = _BoundedCache(persist_dask=True)
-        self._plot_slices_selection_cache: (
-            MutableMapping[Hashable, typing.Any] | None
-        ) = self._prepared_render_data
-        self._render_cache_source_revision = -1
-        self._render_data_cache_enabled = True
+        self._render_data_cache = _RenderDataCache()
         self._last_preview_render_signature: tuple[object, ...] | None = None
         self._figure_resize_render_generation = 0
         self._figure_resize_history_pending = False
@@ -425,11 +418,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if tool is not None:
                 tool._invalidate_render_data_caches(source_revision)
 
-        self._document = FigureDocument(
-            initial_recipe,
-            source_data=initial_source_data,
-            source_changed_callback=source_changed,
-        )
+        self._document = FigureDocument(initial_recipe, source_data=initial_source_data)
+        self._document.set_source_changed_callback(source_changed)
+        self._render_data_cache.invalidate(self._document.source_revision)
         self._figure_window: _FigureComposerDisplayWindow | None = None
         self._subplot_adjust_dialog: QtWidgets.QDialog | None = None
         self._axes_customize_dialog: QtWidgets.QDialog | None = None
@@ -452,30 +443,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._options_getter = getter
         self._last_preview_render_signature = None
 
-    def _sync_render_data_caches(self) -> None:
-        source_revision = self._document.source_revision
-        if source_revision == self._render_cache_source_revision:
-            return
-        self._clear_render_data_caches()
-
-    def _clear_render_data_caches(self) -> None:
-        self._invalidate_render_data_caches(self._document.source_revision)
-
     def _invalidate_render_data_caches(self, source_revision: int) -> None:
-        self._prepared_render_data.clear()
-        if (
-            self._plot_slices_selection_cache is not None
-            and self._plot_slices_selection_cache is not self._prepared_render_data
-        ):
-            self._plot_slices_selection_cache.clear()
-        self._render_cache_source_revision = source_revision
+        self._render_data_cache.invalidate(source_revision)
 
     def _render_data_cache_safe(self) -> bool:
-        return not any(
-            operation.enabled
-            and operation.kind == FigureOperationKind.CUSTOM
-            and operation.trusted
-            and bool(operation.code.strip())
+        return all(
+            not operation.enabled
+            or _registry.spec_for(operation.kind).render_cache_safe(operation)
             for operation in self._document.recipe.operations
         )
 
@@ -483,23 +457,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self,
         stage: str,
         plan: object,
-        factory: Callable[[], typing.Any],
-    ) -> typing.Any:
+        factory: Callable[[], _T],
+    ) -> _T:
         """Return persisted prepared data reused until source or key changes."""
-        self._sync_render_data_caches()
-        if not self._render_data_cache_enabled or not self._render_data_cache_safe():
-            return factory()
-        key = self._render_data_cache_key(stage, plan)
-        try:
-            return self._prepared_render_data[key]
-        except KeyError:
-            value = factory()
-            self._prepared_render_data[key] = value
-            return self._prepared_render_data.get(key, value)
-
-    @staticmethod
-    def _render_data_cache_key(stage: str, plan: object) -> tuple[str, Hashable]:
-        return _render_data_cache_key(stage, plan)
+        return self._render_data_cache.get_or_compute(
+            stage,
+            plan,
+            factory,
+            source_revision=self._document.source_revision,
+        )
 
     @contextlib.contextmanager
     def _figure_options_context(self) -> Iterator[None]:
@@ -689,7 +655,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return (
             id(window.figure),
             self._document.recipe_revision,
-            self._document.recipe.model_dump_json(),
             self._document.source_revision,
             canvas_size.width(),
             canvas_size.height(),
@@ -1163,7 +1128,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._preview_pixmap_update_generation += 1
         self._preview_pixmap_update_pending = False
         self._clear_preview_pixmap_cache(stale=False)
-        self._clear_render_data_caches()
+        self._render_data_cache.invalidate(self._document.source_revision)
         self.operation_panel.release()
         self.layout_panel.release()
         self._disconnect_step_clipboard()
@@ -4186,14 +4151,24 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @property
     def tool_data(self) -> xr.DataArray:
-        """Return the live primary source; call ``touch_source_data`` after edits."""
+        """Return the live primary source.
+
+        Prefer :meth:`edit_source_data` for in-place edits so cache invalidation
+        cannot be forgotten.
+        """
         if self._document.recipe.primary_source in self._document.source_data:
             return self._document.source_data[self._document.recipe.primary_source]
         return next(iter(self._document.source_data.values()))
 
     @property
     def tool_status(self) -> FigureRecipeState:
-        return self._document.recipe
+        """Return a detached recipe snapshot safe for caller-side mutation.
+
+        .. versionchanged:: 3.25.0
+           The returned state no longer shares mutable nested values with the live
+           Figure Composer recipe. Assign the edited snapshot back to apply it.
+        """
+        return self._document.recipe.model_copy(deep=True)
 
     @tool_status.setter
     def tool_status(self, status: FigureRecipeState) -> None:
@@ -4229,6 +4204,21 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._mark_preview_pixmap_stale()
         self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
+
+    @contextlib.contextmanager
+    def edit_source_data(self) -> Iterator[Mapping[str, xr.DataArray]]:
+        """Yield live source arrays and always invalidate prepared data afterward.
+
+        The yielded mapping is read-only; its arrays remain live and may be edited
+        in place. Use :meth:`set_source_data` to replace the source mapping.
+
+        .. versionadded:: 3.25.0
+        """
+        sources = MappingProxyType(dict(self._document.source_data))
+        try:
+            yield sources
+        finally:
+            self.touch_source_data()
 
     def rebase_source_node_uids(self, uid_map: Mapping[str, str]) -> None:
         if not uid_map:
@@ -4864,10 +4854,22 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return QtGui.QPixmap(thumbnail)
 
     def source_states(self) -> tuple[FigureSourceState, ...]:
-        return self._document.recipe.sources
+        """Return detached source-state snapshots.
+
+        .. versionchanged:: 3.25.0
+           Returned source states no longer share mutable nested values with the live
+           recipe.
+        """
+        return tuple(
+            source.model_copy(deep=True) for source in self._document.recipe.sources
+        )
 
     def source_data(self) -> dict[str, xr.DataArray]:
-        """Return live sources; call ``touch_source_data`` after in-place edits."""
+        """Return a mapping snapshot containing the live source arrays.
+
+        Prefer :meth:`edit_source_data` for in-place edits so cache invalidation
+        cannot be forgotten.
+        """
         return dict(self._document.source_data)
 
     @staticmethod

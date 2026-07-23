@@ -124,11 +124,10 @@ class FigureDocument:
         *,
         source_data: Mapping[str, xr.DataArray] | None = None,
         source_selection_base_data: Mapping[str, xr.DataArray] | None = None,
-        source_changed_callback: Callable[[int], None] | None = None,
     ) -> None:
         self._recipe_revision = 0
         self._source_revision = 0
-        self._source_changed_callback = source_changed_callback
+        self._source_changed_callback: Callable[[int], None] | None = None
         self._recipe = recipe.model_copy(
             update={"sources": self.normalized_source_states(recipe.sources)}
         )
@@ -141,7 +140,11 @@ class FigureDocument:
 
     @property
     def recipe(self) -> FigureRecipeState:
-        """Current validated figure recipe."""
+        """Current validated recipe for internal read-only use.
+
+        Mutations must go through the document replacement methods so revisions,
+        history, rendering, and persistence remain synchronized.
+        """
         return self._recipe
 
     @property
@@ -163,6 +166,12 @@ class FigureDocument:
     def source_revision(self) -> int:
         """Monotonic revision for atomic source-payload replacements."""
         return self._source_revision
+
+    def set_source_changed_callback(
+        self, callback: Callable[[int], None] | None
+    ) -> None:
+        """Set the observer notified after subsequent source-payload changes."""
+        self._source_changed_callback = callback
 
     def replace_recipe(self, recipe: FigureRecipeState) -> bool:
         """Replace the complete recipe after validating document invariants."""

@@ -80,6 +80,7 @@ from erlab.interactive._figurecomposer._norms import (
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
+    _always_render_cache_safe,
 )
 from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
@@ -1266,27 +1267,21 @@ def _render_line(
                 len(axes) if operation.line_placement == "one_per_axis" else None
             ),
         )
-        line_entries = typing.cast(
-            "list[tuple[xr.DataArray, str | None]]",
-            tool._cached_render_data(
-                "line-profile-transforms",
+        line_entries = tool._cached_render_data(
+            "line-profile-transforms",
+            render_plan,
+            lambda: _transformed_line_entries_from_plan(
+                tool._document,
                 render_plan,
-                lambda: _transformed_line_entries_from_plan(
-                    tool._document,
-                    render_plan,
-                ),
             ),
         )
     else:
-        line_entries = typing.cast(
-            "list[tuple[xr.DataArray, str | None]]",
-            tool._cached_render_data(
-                "line-profile-inputs",
+        line_entries = tool._cached_render_data(
+            "line-profile-inputs",
+            data_plan,
+            lambda: _line_data_items_with_source_names_from_plan(
+                tool._document,
                 data_plan,
-                lambda: _line_data_items_with_source_names_from_plan(
-                    tool._document,
-                    data_plan,
-                ),
             ),
         )
     if not line_entries:
@@ -2411,5 +2406,6 @@ SPEC = OperationSpec(
     section_summary=_section_summary,
     render=lambda tool, operation, _figure, axs: _render_line(tool, operation, axs),
     code_lines=_line_code,
+    render_cache_safe=_always_render_cache_safe,
     required_imports=_required_imports,
 )

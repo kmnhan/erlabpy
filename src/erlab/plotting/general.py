@@ -16,15 +16,7 @@ __all__ = [
 import contextlib
 import copy
 import typing
-from collections.abc import (
-    Callable,
-    Collection,
-    Hashable,
-    Iterable,
-    Mapping,
-    MutableMapping,
-    Sequence,
-)
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 
 import matplotlib
 import matplotlib.colorbar
@@ -693,72 +685,12 @@ _LINE_KWARG_ALIASES = {
 }
 
 
-def _hashable_plot_slices_value(value: typing.Any) -> Hashable:
-    if isinstance(value, slice):
-        return (
-            "slice",
-            _hashable_plot_slices_value(value.start),
-            _hashable_plot_slices_value(value.stop),
-            _hashable_plot_slices_value(value.step),
-        )
-    if isinstance(value, np.ndarray):
-        return ("array", tuple(_hashable_plot_slices_value(v) for v in value.tolist()))
-    if isinstance(value, Mapping):
-        return (
-            "mapping",
-            tuple(
-                sorted(
-                    (
-                        _hashable_plot_slices_value(key),
-                        _hashable_plot_slices_value(val),
-                    )
-                    for key, val in value.items()
-                )
-            ),
-        )
-    if isinstance(value, str | bytes) or not isinstance(value, Iterable):
-        with contextlib.suppress(TypeError):
-            hash(value)
-            return typing.cast("Hashable", value)
-        return repr(value)
-    return ("iterable", tuple(_hashable_plot_slices_value(v) for v in value))
-
-
-def _plot_slices_selection_cache_key(
+def _prepare_plot_slices_maps(
     maps: Sequence[xr.DataArray],
     qsel_kw: Mapping[str, typing.Any],
-    cache_key: Hashable,
-) -> Hashable:
-    # The semantic caller key owns source invalidation. Dimensions and shapes guard
-    # against an accidentally inconsistent plan without relying on transient views.
-    map_key = tuple((tuple(m.dims), tuple(m.shape)) for m in maps)
-    qsel_key = tuple(
-        sorted(
-            (key, _hashable_plot_slices_value(value)) for key, value in qsel_kw.items()
-        )
-    )
-    return (cache_key, map_key, qsel_key)
-
-
-def _plot_slices_selected_maps(
-    maps: Sequence[xr.DataArray],
-    qsel_kw: Mapping[str, typing.Any],
-    *,
-    selection_cache: MutableMapping[Hashable, tuple[xr.DataArray, ...]] | None,
-    selection_cache_key: Hashable | None,
 ) -> tuple[xr.DataArray, ...]:
-    cache_key: Hashable | None = None
-    if selection_cache is not None and selection_cache_key is not None:
-        cache_key = _plot_slices_selection_cache_key(maps, qsel_kw, selection_cache_key)
-        cached = selection_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-    selected = tuple(m.qsel(**qsel_kw) for m in maps)
-    if selection_cache is not None and cache_key is not None:
-        selection_cache[cache_key] = selected
-        return selection_cache.get(cache_key, selected)
-    return selected
+    """Apply the complete data-selection stage shared by Plot Slices callers."""
+    return tuple(m.qsel(**qsel_kw) for m in maps)
 
 
 def plot_slices(
@@ -799,8 +731,11 @@ def plot_slices(
     annotate_kw: dict | None = None,
     colorbar_kw: dict | None = None,
     axes: Iterable[matplotlib.axes.Axes] | None = None,
-    _selection_cache: MutableMapping[Hashable, tuple[xr.DataArray, ...]] | None = None,
-    _selection_cache_key: Hashable | None = None,
+    _map_preparer: Callable[
+        [Sequence[xr.DataArray], Mapping[str, typing.Any]],
+        tuple[xr.DataArray, ...],
+    ]
+    | None = None,
     **values,
 ) -> tuple[matplotlib.figure.Figure, Iterable[matplotlib.axes.Axes]]:
     """Automated comparison plot of slices.
@@ -1086,12 +1021,13 @@ def plot_slices(
         qsel_stack_kw[slice_dim] = list(slice_levels)
         if isinstance(slice_width, Collection):
             qsel_stack_kw[slice_dim + "_width"] = slice_width
-    selected_maps = _plot_slices_selected_maps(
-        maps,
-        qsel_stack_kw,
-        selection_cache=_selection_cache,
-        selection_cache_key=_selection_cache_key,
+    selected_maps = (
+        _prepare_plot_slices_maps(maps, qsel_stack_kw)
+        if _map_preparer is None
+        else _map_preparer(maps, qsel_stack_kw)
     )
+    if len(selected_maps) != len(maps):
+        raise ValueError("Prepared Plot Slices maps must match the input map count")
 
     for i in range(len(slice_levels)):
         for j in range(len(maps)):
