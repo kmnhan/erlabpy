@@ -1203,13 +1203,9 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         )
         menu = QtWidgets.QMenu("Column Mapping", self.mapping_table)
         self._mapping_context_menu = menu
-
-        def clear_menu(_destroyed: object | None = None) -> None:
-            if self._mapping_context_menu is menu:
-                self._mapping_context_menu = None
-
-        menu.destroyed.connect(clear_menu)
-        menu.aboutToHide.connect(menu.deleteLater)
+        menu.aboutToHide.connect(
+            lambda *, popup=menu: self._release_mapping_context_menu(popup)
+        )
         for text, object_name, offset in (
             ("Move Up", "spreadsheet_metadata_move_mapping_up", -1),
             ("Move Down", "spreadsheet_metadata_move_mapping_down", 1),
@@ -1233,6 +1229,12 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         menu.addAction(remove_action)
         viewport = typing.cast("QtWidgets.QWidget", self.mapping_table.viewport())
         menu.popup(viewport.mapToGlobal(position))
+
+    def _release_mapping_context_menu(self, menu: QtWidgets.QMenu) -> None:
+        if self._mapping_context_menu is menu:
+            self._mapping_context_menu = None
+        if erlab.interactive.utils.qt_is_valid(menu):
+            menu.deleteLater()
 
     def _move_current_mapping(self, offset: int) -> None:
         item = self.mapping_table.currentItem()

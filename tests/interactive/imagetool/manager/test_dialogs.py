@@ -6,6 +6,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 import types
 import typing
 
@@ -1035,11 +1036,15 @@ def test_spreadsheet_discovery_preview_requires_file_name() -> None:
     assert result == "RuntimeError: A file name is required for metadata preview"
 
 
-def test_spreadsheet_discovery_does_not_delay_application_exit() -> None:
+def test_spreadsheet_discovery_does_not_delay_application_exit(
+    tmp_path: pathlib.Path,
+) -> None:
     script = textwrap.dedent(
         """
-        import threading
+        import pathlib
         import queue
+        import sys
+        import threading
 
         from qtpy import QtCore, QtWidgets
 
@@ -1048,10 +1053,12 @@ def test_spreadsheet_discovery_does_not_delay_application_exit() -> None:
         )
 
         started = threading.Event()
+        started_path = pathlib.Path(sys.argv[1])
 
         class Source:
             def get_sheet_names(self):
                 started.set()
+                started_path.touch()
                 threading.Event().wait(30)
                 return ["Measurements"]
 
@@ -1087,18 +1094,44 @@ def test_spreadsheet_discovery_does_not_delay_application_exit() -> None:
         if name.startswith(("COV_CORE_", "COVERAGE_")):
             environment.pop(name)
 
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        check=False,
-        capture_output=True,
+    started_path = tmp_path / "spreadsheet-discovery-started"
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(started_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         env=environment,
         text=True,
-        timeout=3,
     )
+    startup_deadline = time.monotonic() + 15
+    while (
+        not started_path.exists()
+        and process.poll() is None
+        and time.monotonic() < startup_deadline
+    ):
+        time.sleep(0.01)
 
-    assert result.returncode == 0
-    assert result.stdout == "event-loop-returned\n"
-    assert "RuntimeError" not in result.stderr
+    if not started_path.exists():
+        if process.poll() is None:
+            process.kill()
+        stdout, stderr = process.communicate()
+        pytest.fail(
+            "Spreadsheet discovery did not start within 15 seconds.\n"
+            f"stdout:\n{stdout}\nstderr:\n{stderr}"
+        )
+
+    try:
+        stdout, stderr = process.communicate(timeout=3)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout, stderr = process.communicate()
+        pytest.fail(
+            "The Qt event loop did not return within 3 seconds after spreadsheet "
+            f"discovery started.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        )
+
+    assert process.returncode == 0
+    assert stdout == "event-loop-returned\n"
+    assert "RuntimeError" not in stderr
 
 
 def test_spreadsheet_metadata_dialog_restores_excel_source(
@@ -1499,12 +1532,25 @@ def test_spreadsheet_metadata_mapping_reorder_controls_mapping_order(
     dialog._show_mapping_context_menu(
         dialog.mapping_table.visualItemRect(current_item).center()
     )
+    first_context_menu = dialog._mapping_context_menu
+    assert first_context_menu is not None
+    dialog._show_mapping_context_menu(
+        dialog.mapping_table.visualItemRect(current_item).center()
+    )
     context_menu = dialog._mapping_context_menu
     assert context_menu is not None
+    assert context_menu is not first_context_menu
+    first_context_menu.aboutToHide.emit()
+    qtbot.waitUntil(lambda: not erlab.interactive.utils.qt_is_valid(first_context_menu))
+    assert dialog._mapping_context_menu is context_menu
+    dialog._release_mapping_context_menu(first_context_menu)
     actions = {action.objectName(): action for action in context_menu.actions()}
     assert actions["spreadsheet_metadata_move_mapping_up"].isEnabled()
     assert actions["spreadsheet_metadata_move_mapping_down"].isEnabled()
     actions["spreadsheet_metadata_move_mapping_up"].trigger()
+    context_menu.aboutToHide.emit()
+    qtbot.waitUntil(lambda: not erlab.interactive.utils.qt_is_valid(context_menu))
+    assert dialog._mapping_context_menu is None
 
     dialog.accept()
     source = dialog.selected_source()
