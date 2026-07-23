@@ -221,7 +221,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      DISPLAY: ":99.0"
+      MPLBACKEND: Agg
+      QT_QPA_PLATFORM: offscreen
     strategy:
       fail-fast: false
       matrix:
@@ -241,10 +242,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: pyvista/setup-headless-display-action@v4
-        with:
-          pyvista: false
-          qt: true
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libegl1
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
