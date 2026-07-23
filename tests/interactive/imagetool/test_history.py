@@ -11,11 +11,6 @@ from qtpy import QtCore, QtWidgets
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 import erlab.interactive.utils
 from erlab.interactive.imagetool import ImageTool, _history
-from erlab.interactive.imagetool.controls import (
-    ItoolBinningControls,
-    ItoolColormapControls,
-    ItoolCrosshairControls,
-)
 
 
 def _base_state() -> dict:
@@ -545,8 +540,7 @@ def test_history_group_coalesces_cursor_spinbox_steps(qtbot):
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = ImageTool(data)
     qtbot.addWidget(win)
-    control = win.docks[0].widget().findChild(ItoolCrosshairControls)
-    assert control is not None
+    control = win.cursor_controls
     control.update_content()
     area = win.slicer_area
     start_index = area.current_indices[0]
@@ -565,8 +559,7 @@ def test_controls_history_grouping_skips_nested_controls_and_disconnects(qtbot) 
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = ImageTool(data)
     qtbot.addWidget(win)
-    control = win.docks[1].widget().findChild(ItoolColormapControls)
-    assert control is not None
+    control = win.colormap_controls
     nested_spin = erlab.interactive.utils.BetterSpinBox(control.misc_controls)
     qtbot.addWidget(nested_spin)
     orphan_spin = erlab.interactive.utils.BetterSpinBox()
@@ -942,8 +935,7 @@ def test_history_group_coalesces_binning_spinbox_steps(qtbot):
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = ImageTool(data)
     qtbot.addWidget(win)
-    control = win.docks[2].widget().findChild(ItoolBinningControls)
-    assert control is not None
+    control = win.binning_controls
     control.update_content()
     area = win.slicer_area
 
@@ -961,8 +953,7 @@ def test_history_group_records_gamma_slider_as_one_entry(qtbot):
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = ImageTool(data)
     qtbot.addWidget(win)
-    control = win.docks[1].widget().findChild(ItoolColormapControls)
-    assert control is not None
+    control = win.colormap_controls
     area = win.slicer_area
     initial_gamma = area.colormap_properties["gamma"]
 
@@ -981,8 +972,7 @@ def test_history_group_coalesces_gamma_spinbox_steps(qtbot):
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = ImageTool(data)
     qtbot.addWidget(win)
-    control = win.docks[1].widget().findChild(ItoolColormapControls)
-    assert control is not None
+    control = win.colormap_controls
     area = win.slicer_area
     initial_gamma = area.colormap_properties["gamma"]
 

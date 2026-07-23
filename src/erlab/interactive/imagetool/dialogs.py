@@ -836,9 +836,9 @@ class DataTransformDialog(_DataManipulationDialog):
         self,
         provenance_spec: ToolProvenanceSpec | None,
     ) -> None:
-        parent = self.slicer_area.parent()
-        if parent is not None and hasattr(parent, "set_provenance_spec"):
-            typing.cast("typing.Any", parent).set_provenance_spec(provenance_spec)
+        window = self.slicer_area.window()
+        if hasattr(window, "set_provenance_spec"):
+            typing.cast("typing.Any", window).set_provenance_spec(provenance_spec)
 
     def _apply_source_transform(self, data: xr.DataArray) -> xr.DataArray:
         operation = self.source_transform_operation()

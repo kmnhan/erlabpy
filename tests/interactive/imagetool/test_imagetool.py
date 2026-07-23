@@ -987,8 +987,8 @@ def test_multicursor_restore_updates_cursor_combo(qtbot) -> None:
 
     restored = ImageTool.from_dataset(win.to_dataset())
     qtbot.addWidget(restored)
-    cursor_ctrl = restored.docks[0].widget().layout().itemAt(0).widget()
-    bin_ctrl = restored.docks[2].widget().layout().itemAt(0).widget()
+    cursor_ctrl = restored.cursor_controls
+    bin_ctrl = restored.binning_controls
     assert isinstance(cursor_ctrl, ItoolCrosshairControls)
     assert isinstance(bin_ctrl, ItoolBinningControls)
 
@@ -1004,7 +1004,7 @@ def test_multicursor_restore_updates_cursor_combo(qtbot) -> None:
 def test_cursor_combo_update_colors_resyncs_stale_count(qtbot) -> None:
     win = itool(_TEST_DATA["2D"], execute=False)
     qtbot.addWidget(win)
-    cursor_ctrl = win.docks[0].widget().layout().itemAt(0).widget()
+    cursor_ctrl = win.cursor_controls
     assert isinstance(cursor_ctrl, ItoolCrosshairControls)
 
     win.slicer_area.add_cursor()
@@ -1226,9 +1226,9 @@ def test_itool_dataset_metadata_fields_roundtrip(qtbot, tmp_path: pathlib.Path) 
     restored = ImageTool.from_dataset(ds)
     qtbot.addWidget(restored)
     restored_area = restored.slicer_area
-    cursor_ctrl = restored.docks[0].widget().layout().itemAt(0).widget()
-    color_ctrl = restored.docks[1].widget().layout().itemAt(0).widget()
-    bin_ctrl = restored.docks[2].widget().layout().itemAt(0).widget()
+    cursor_ctrl = restored.cursor_controls
+    color_ctrl = restored.colormap_controls
+    bin_ctrl = restored.binning_controls
     assert isinstance(cursor_ctrl, ItoolCrosshairControls)
     assert isinstance(color_ctrl, ItoolColormapControls)
     assert isinstance(bin_ctrl, ItoolBinningControls)
@@ -2414,8 +2414,7 @@ def test_point_value_context_menu_selects_associated_coord(qtbot) -> None:
     )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
-    control = win.docks[0].widget().findChild(ItoolCrosshairControls)
-    assert control is not None
+    control = win.cursor_controls
     control.update_content()
 
     win.slicer_area.array_slicer.twin_coord_names = {"temp"}
@@ -4546,7 +4545,7 @@ def test_itool_general(qtbot, move_and_compare_values, use_dask) -> None:
     assert win.windowTitle() == "new_data"
 
     # Colormap combobox
-    cmap_ctrl = win.docks[1].widget().layout().itemAt(0).widget()
+    cmap_ctrl = win.colormap_controls
     assert isinstance(cmap_ctrl, ItoolColormapControls)
     cmap_ctrl.cb_colormap.load_all()
     cmap_ctrl.cb_colormap.showPopup()
@@ -6283,8 +6282,7 @@ def test_linked_cursor_entry_closes_before_unrecorded_linked_state(qtbot) -> Non
 
 def test_linked_grouped_cursor_undo_propagates(qtbot) -> None:
     win0, win1 = _linked_pair(qtbot)
-    control = win0.docks[0].widget().findChild(ItoolCrosshairControls)
-    assert control is not None
+    control = win0.cursor_controls
     control.update_content()
 
     control.spin_idx[0].stepBy(1)
@@ -6346,8 +6344,7 @@ def test_linked_gamma_undo_redo_propagates(qtbot) -> None:
 
 def test_linked_grouped_gamma_undo_propagates(qtbot) -> None:
     win0, win1 = _linked_pair(qtbot)
-    control = win0.docks[1].widget().findChild(ItoolColormapControls)
-    assert control is not None
+    control = win0.colormap_controls
 
     control.gamma_widget.slider.sliderPressed.emit()
     control.gamma_widget.setValue(1.2)
@@ -6809,8 +6806,7 @@ def test_eager_preview_from_dask_source_updates_readout(qtbot) -> None:
 
     win = ImageTool(data, auto_compute=False)
     qtbot.addWidget(win)
-    control = win.docks[0].widget().findChild(ItoolCrosshairControls)
-    assert control is not None
+    control = win.cursor_controls
 
     win.slicer_area.apply_func(lambda _darr: preview, preview=True)
     assert win.slicer_area.data_chunked
@@ -7157,6 +7153,108 @@ def test_itool_controls_visibility_menu_history_and_dataset_roundtrip(qtbot) -> 
     assert restored.slicer_area.state["controls_visible"] is False
 
     restored.close()
+    win.close()
+
+
+def test_itool_controls_scroll_and_elide_in_narrow_window(qtbot) -> None:
+    first_dim = "a_dimension_name_that_is_much_too_long_for_the_controls"
+    second_dim = "another_dimension_name_that_is_much_too_long_for_the_controls"
+    data = xr.DataArray(np.zeros((5, 6)), dims=(first_dim, second_dim))
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.show()
+
+    qtbot.waitUntil(lambda: win.cursor_controls.label_dim[0].toolTip() == first_dim)
+    bar = win.controls_bar
+    scroll_bar = bar.horizontalScrollBar()
+    previous_button = bar.findChild(
+        QtWidgets.QToolButton, "itoolControlsPreviousButton"
+    )
+    next_button = bar.findChild(QtWidgets.QToolButton, "itoolControlsNextButton")
+    assert previous_button is not None
+    assert next_button is not None
+
+    assert win.findChildren(QtWidgets.QDockWidget) == []
+    assert bar.findChildren(QtWidgets.QGroupBox) == []
+    assert len(bar.findChildren(QtWidgets.QFrame, "itoolControlsSeparator")) == 2
+    assert (
+        bar.horizontalScrollBarPolicy() == QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    )
+    assert bar.verticalScrollBarPolicy() == QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert not scroll_bar.isVisible()
+
+    for label, dimension in zip(win.cursor_controls.label_dim, data.dims, strict=True):
+        assert label.full_text == dimension
+        assert label.toolTip() == dimension
+        assert label.accessibleName() == dimension
+        assert label.sizeHint().width() < label.fontMetrics().horizontalAdvance(
+            dimension
+        )
+    for label, dimension in zip(win.binning_controls.labels, data.dims, strict=True):
+        assert label.full_text == dimension
+        assert label.toolTip() == dimension
+
+    qtbot.waitUntil(lambda: bar._contents.sizeHint().width() > bar.viewport().width())
+    content_width = bar._contents.sizeHint().width()
+    win.resize(260, win.height())
+    qtbot.waitUntil(lambda: scroll_bar.maximum() > 0)
+    assert win.width() == 260
+    assert win.minimumSizeHint().width() < content_width
+    assert previous_button.isHidden()
+    assert next_button.isVisible()
+    assert next_button.height() == bar.viewport().height()
+
+    qtbot.mouseClick(next_button, QtCore.Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(lambda: scroll_bar.value() > 0)
+    assert previous_button.isVisible()
+    assert next_button.isVisible()
+    assert previous_button.height() == bar.viewport().height()
+
+    scroll_bar.setValue(scroll_bar.maximum())
+    assert previous_button.isVisible()
+    assert next_button.isHidden()
+    previous_value = scroll_bar.value()
+    qtbot.mouseClick(previous_button, QtCore.Qt.MouseButton.LeftButton)
+    assert scroll_bar.value() < previous_value
+
+    scroll_bar.setValue(0)
+    empty_wheel_event = QtGui.QWheelEvent(
+        QtCore.QPointF(5, 5),
+        QtCore.QPointF(5, 5),
+        QtCore.QPoint(),
+        QtCore.QPoint(),
+        QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+        QtCore.Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    bar.wheelEvent(empty_wheel_event)
+    assert scroll_bar.value() == 0
+
+    wheel_event = QtGui.QWheelEvent(
+        QtCore.QPointF(5, 5),
+        QtCore.QPointF(5, 5),
+        QtCore.QPoint(),
+        QtCore.QPoint(0, -120),
+        QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+        QtCore.Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    bar.wheelEvent(wheel_event)
+    assert scroll_bar.value() > 0
+
+    scroll_bar.setValue(0)
+    win.binning_controls.reset_btn.setFocus(QtCore.Qt.FocusReason.TabFocusReason)
+    qtbot.waitUntil(lambda: scroll_bar.value() > 0)
+
+    win.resize(bar._contents.sizeHint().width() + 20, win.height())
+    qtbot.waitUntil(lambda: scroll_bar.maximum() == 0)
+    assert previous_button.isHidden()
+    assert next_button.isHidden()
+    wheel_event.setAccepted(False)
+    bar.wheelEvent(wheel_event)
+    assert scroll_bar.value() == 0
     win.close()
 
 
@@ -12060,8 +12158,7 @@ def test_itool_masks_unsafe_values_for_display_only(qtbot) -> None:
     assert np.isinf(win.slicer_area.data.values[1, 0])
     assert win.slicer_area.data.values[1, 1] == 1e300
 
-    control = win.docks[0].widget().findChild(ItoolCrosshairControls)
-    assert control is not None
+    control = win.cursor_controls
     assert np.isnan(control._readout_value_to_float(np.array([np.inf, 1e300])))
 
     win.slicer_area.lock_levels(True)

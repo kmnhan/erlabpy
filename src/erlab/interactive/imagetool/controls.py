@@ -76,6 +76,71 @@ def clear_layout(layout: QtWidgets.QLayout | None) -> None:
                     child_layout.deleteLater()
 
 
+class _ElidedLabel(QtWidgets.QLabel):
+    """Single-line label whose full text does not determine its minimum width."""
+
+    _MAXIMUM_HINT_EMS = 12
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full_text = ""
+        self.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.setMinimumWidth(0)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+
+    @property
+    def full_text(self) -> str:
+        return self._full_text
+
+    def setText(self, text: str | None) -> None:
+        self._full_text = "" if text is None else text
+        super().setText(self._full_text)
+        self.setToolTip(self._full_text)
+        self.setAccessibleName(self._full_text)
+        self.update()
+
+    def sizeHint(self) -> QtCore.QSize:
+        hint = super().sizeHint()
+        maximum_width = self.fontMetrics().horizontalAdvance(
+            "m" * self._MAXIMUM_HINT_EMS
+        )
+        hint.setWidth(min(hint.width(), maximum_width))
+        return hint
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        return hint
+
+    def paintEvent(self, event: QtGui.QPaintEvent | None) -> None:
+        del event
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing)
+        rect = self.contentsRect()
+        text = self.fontMetrics().elidedText(
+            self._full_text,
+            QtCore.Qt.TextElideMode.ElideRight,
+            max(rect.width(), 0),
+        )
+        style = self.style() or QtWidgets.QApplication.style()
+        if style is not None:  # pragma: no branch
+            style.drawItemText(
+                painter,
+                rect,
+                int(self.alignment()) | int(QtCore.Qt.TextFlag.TextSingleLine.value),
+                self.palette(),
+                self.isEnabled(),
+                text,
+                self.foregroundRole(),
+            )
+
+
 class ItoolControlsBase(QtWidgets.QWidget):
     """Base class for ImageTool controls."""
 
@@ -334,11 +399,8 @@ class ItoolCrosshairControls(ItoolControlsBase):
         typing.cast("QtWidgets.QLayout", self.layout()).addWidget(self.values_groups[0])
 
         # info widgets
-        self.label_dim = tuple(QtWidgets.QLabel(grp) for grp in self.values_groups[1:])
+        self.label_dim = tuple(_ElidedLabel(grp) for grp in self.values_groups[1:])
         for lab in self.label_dim:
-            lab.setTextInteractionFlags(
-                QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
-            )
             lab.setAlignment(
                 QtCore.Qt.AlignmentFlag.AlignHCenter
                 | QtCore.Qt.AlignmentFlag.AlignVCenter
@@ -856,7 +918,7 @@ class ItoolBinningControls(ItoolControlsBase):
         layout.addLayout(self.gridlayout)
         layout.addLayout(self.buttonslayout)
 
-        self.labels = tuple(QtWidgets.QLabel() for _ in range(self.data.ndim))
+        self.labels = tuple(_ElidedLabel() for _ in range(self.data.ndim))
         self.val_labels = tuple(QtWidgets.QLabel() for _ in range(self.data.ndim))
         self.spins = tuple(
             erlab.interactive.utils.BetterSpinBox(

@@ -181,7 +181,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """Canonical replay provenance for the current ImageTool data."""
         return typing.cast(
             "ToolProvenanceSpec | None",
-            getattr(self.parent(), "provenance_spec", None),
+            getattr(self.window(), "provenance_spec", None),
         )
 
     @property
@@ -681,9 +681,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def parent_title(self) -> str:
-        parent = self.parent()
-        if isinstance(parent, QtWidgets.QWidget):  # pragma: no branch
-            return parent.windowTitle()
+        window = self.window()
+        if isinstance(window, QtWidgets.QWidget):  # pragma: no branch
+            return window.windowTitle()
         return ""
 
     @property
@@ -727,9 +727,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def controls_visible(self) -> bool:
-        parent = self.parent()
-        if hasattr(parent, "controls_visible"):
-            return bool(typing.cast("typing.Any", parent).controls_visible)
+        window = self.window()
+        if hasattr(window, "controls_visible"):
+            return bool(typing.cast("typing.Any", window).controls_visible)
         return True
 
     @property
@@ -783,9 +783,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ) -> None:
         logger.debug("Restoring state...")
         with self._workspace_load_stage("imagetool state restore: layout"):
-            parent = self.parent()
-            if hasattr(parent, "_set_controls_visible"):
-                typing.cast("typing.Any", parent)._set_controls_visible(
+            window = self.window()
+            if hasattr(window, "_set_controls_visible"):
+                typing.cast("typing.Any", window)._set_controls_visible(
                     bool(state.get("controls_visible", True))
                 )
 
@@ -2307,13 +2307,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.levels = cached_levels
 
         self.flush_history()
-        parent = self.parent()
+        window = self.window()
         if (
             self._file_path is not None
-            and hasattr(parent, "_sync_file_load_provenance")
-            and hasattr(parent, "_slicer_area")
+            and hasattr(window, "_sync_file_load_provenance")
+            and hasattr(window, "_slicer_area")
         ):
-            typing.cast("typing.Any", parent)._sync_file_load_provenance()
+            typing.cast("typing.Any", window)._sync_file_load_provenance()
         if source_replaced:
             self.sigSourceDataChanged.emit()
             self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
