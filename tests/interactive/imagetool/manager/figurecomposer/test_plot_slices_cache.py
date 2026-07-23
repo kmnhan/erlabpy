@@ -161,6 +161,34 @@ def test_custom_code_disables_plot_slices_selection_cache(qtbot) -> None:
     assert len(tool._plot_slices_cache) == 0
 
 
+def test_custom_code_only_render_invalidates_previous_selection(qtbot) -> None:
+    data = _figure_composer_image_source("data")
+    operation = _slice_operation("slices", axes=((0, 0), (0, 1)))
+    tool = _slices_tool(data, operation)
+    qtbot.addWidget(tool)
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    before = np.asarray(tool.figure.axes[0].images[0].get_array()).copy()
+    assert len(tool._plot_slices_cache) == 1
+
+    custom = FigureOperationState.custom(
+        label="mutate",
+        code="data.values[:] += 1.0",
+        trusted=True,
+    )
+    original_recipe = tool.tool_status
+    tool._document.replace_recipe(
+        original_recipe.model_copy(update={"operations": (custom,)})
+    )
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert len(tool._plot_slices_cache) == 0
+
+    tool._document.replace_recipe(original_recipe)
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    after = np.asarray(tool.figure.axes[0].images[0].get_array())
+    np.testing.assert_allclose(after, before + 1.0)
+
+
 def test_plot_slices_persists_lazy_selection_across_redraws(qtbot) -> None:
     import dask
     import dask.array as da

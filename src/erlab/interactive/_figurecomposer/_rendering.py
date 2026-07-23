@@ -316,6 +316,8 @@ def _render_into_figure(
 ) -> None:
     from erlab.interactive._figurecomposer._operations import _registry
 
+    # Custom code may mutate source arrays even when no Plot Slices step renders.
+    tool._plot_slices_cache_for_render()
     render_errors: dict[str, str] = {}
     with _tool_figure_options_context(tool), _figure_style_context():
         axs = _make_axes(tool, figure, sync_visible=sync_visible)

@@ -728,6 +728,7 @@ def _plot_slices_selected_maps(
     selected = tuple(m.qsel(**qsel_kw) for m in maps)
     if selection_cache is not None and cache_key is not None:
         selection_cache[cache_key] = selected
+        # Cache insertion may replace lazy arrays with their persisted equivalents.
         return selection_cache.get(cache_key, selected)
     return selected
 
