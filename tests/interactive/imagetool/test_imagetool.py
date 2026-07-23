@@ -7204,9 +7204,13 @@ def test_itool_controls_scroll_and_elide_in_narrow_window(qtbot) -> None:
     ] == [0, 2, 4]
     assert all(
         label.alignment()
+        == (QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        for label in win.cursor_controls.label_dim
+    )
+    assert all(
+        label.alignment()
         == (QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         for label in (
-            *win.cursor_controls.label_dim,
             *win.binning_controls.labels,
             *win.binning_controls.val_labels,
         )

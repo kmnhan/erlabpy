@@ -406,7 +406,8 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.label_dim = tuple(_ElidedLabel(grp) for grp in self.values_groups[1:])
         for lab in self.label_dim:
             lab.setAlignment(
-                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
+                QtCore.Qt.AlignmentFlag.AlignHCenter
+                | QtCore.Qt.AlignmentFlag.AlignVCenter
             )
 
         self.spin_idx = tuple(
