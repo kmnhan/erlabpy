@@ -1037,7 +1037,7 @@ class ElementInspector(QtWidgets.QWidget):
             _set_background(frame, theme.panel)
             _set_foreground(frame, theme.text)
         for separator in self.section_separators:
-            _set_background(separator, theme.border_soft)
+            _set_background(separator, theme.border)
         _set_background(self.summary_cards_container, theme.panel)
         summary_viewport = self.summary_cards_scroll.viewport()
         if summary_viewport is not None:
@@ -1074,8 +1074,6 @@ class ElementInspector(QtWidgets.QWidget):
         self.plot_target_combo.setPalette(combo_palette)
 
         table_palette = QtGui.QPalette(self.levels_table.palette())
-        table_palette.setColor(QtGui.QPalette.ColorRole.Base, theme.panel)
-        table_palette.setColor(QtGui.QPalette.ColorRole.AlternateBase, theme.panel_alt)
         table_palette.setColor(QtGui.QPalette.ColorRole.Text, theme.text)
         table_palette.setColor(QtGui.QPalette.ColorRole.WindowText, theme.text)
         table_palette.setColor(QtGui.QPalette.ColorRole.Button, theme.panel)
@@ -1090,7 +1088,7 @@ class ElementInspector(QtWidgets.QWidget):
             QtGui.QPalette.ColorRole.WindowText,
             theme.disabled_text,
         )
-        table_palette.setColor(QtGui.QPalette.ColorRole.Mid, theme.border_soft)
+        table_palette.setColor(QtGui.QPalette.ColorRole.Mid, theme.border)
         self.levels_table.setPalette(table_palette)
         self._levels_horizontal_header.setPalette(table_palette)
         self._levels_vertical_header.setPalette(table_palette)
