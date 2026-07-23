@@ -208,8 +208,6 @@ class GoogleSheetsMetadataSource(SpreadsheetMetadataSource):
     again for every metadata lookup. Independent requests needed for an uncached lookup
     run concurrently. Worksheet names are still validated so that an invalid
     `sheet_name` cannot silently fall back to the first worksheet.
-
-    .. versionadded:: 3.25.0
     """
 
     _cache_row_index = False

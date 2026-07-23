@@ -631,17 +631,27 @@ class LoaderBase(metaclass=_Loader):
             Temporary extensions to loader attributes, with the same keys accepted by
             :meth:`extend_loader <erlab.io.dataloader.LoaderBase.extend_loader>`.
         metadata
-            Spreadsheet metadata source used to fill scalar coordinates and attributes.
-            Integer identifiers provide the file number automatically. For paths, the
-            file name without its path or final extension is matched directly and
-            case-sensitively against whitespace-trimmed spreadsheet cells. The loader
-            uses :meth:`infer_index <erlab.io.dataloader.LoaderBase.infer_index>` for
-            numeric fallback and to detect a range that overlaps a direct match. The
-            default implementation recognizes file names ending in decimal digits.
-            Pass ``file_number`` to use an explicit value instead.
+            Optional spreadsheet metadata source used to fill scalar coordinates and
+            attributes. The behavior of the loader when `metadata` is given depends on
+            the type of ``identifier``:
+
+            - If ``identifier`` is an integer index, the loader attempts to convert the
+              spreadsheet file name column to numbers and match the index against the
+              numbers.
+
+            - If ``identifier`` is a path, the file name without its path or final
+              extension will be matched against whitespace-trimmed file name column
+              cells. If a match is not found, or if the spreadsheet file name column
+              contains a cell that corresponds to a range of indices (e.g.
+              ``f_0012~13``), the loader will attempt to infer an index with
+              :meth:`infer_index <erlab.io.dataloader.LoaderBase.infer_index>` from
+              ``identifier``, and match it against the spreadsheet file name column
+              converted to numbers. To bypass file name matching and override the
+              inferred index, pass an explicit ``file_number`` argument.
+
         file_number
-            Explicit file number used for spreadsheet metadata when `identifier` is a
-            path, bypassing direct file-name matching and inference. This must be
+            Explicit file number used for spreadsheet metadata when ``identifier`` is a
+            path, bypassing direct file name matching and inference. This must be
             omitted for integer identifiers and when ``metadata`` is not given.
         **kwargs
             Additional keyword arguments are passed to :meth:`identify
@@ -656,10 +666,6 @@ class LoaderBase(metaclass=_Loader):
         -------
         `xarray.DataArray` or `xarray.Dataset` or `xarray.DataTree`
             The loaded data.
-
-        .. versionchanged:: 3.25.0
-
-           Added spreadsheet metadata enrichment with ``metadata`` and ``file_number``.
 
         Notes
         -----
@@ -1720,10 +1726,6 @@ class LoaderBase(metaclass=_Loader):
         including when a spreadsheet metadata lookup falls back from direct file-name
         matching to numeric matching. It may therefore be called even when
         :attr:`always_single <erlab.io.dataloader.LoaderBase.always_single>` is `True`.
-
-        .. versionchanged:: 3.25.0
-
-           Added default parsing for file names ending in decimal digits.
         """
         prefix = name.rstrip("0123456789")
         numeric_suffix = name[len(prefix) :]

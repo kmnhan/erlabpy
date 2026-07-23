@@ -396,6 +396,10 @@ class _SpreadsheetMetadataPreview(typing.NamedTuple):
 class SpreadsheetMetadataSource(abc.ABC):
     """Base class for spreadsheet-backed loader metadata.
 
+    Use the subclasses :class:`ExcelMetadataSource` or
+    :class:`GoogleSheetsMetadataSource` to read metadata from a specific spreadsheet
+    format.
+
     Parameters
     ----------
     file_name_column
@@ -432,8 +436,6 @@ class SpreadsheetMetadataSource(abc.ABC):
     Configured source-column names are matched exactly first. If no exact header exists,
     a spreadsheet header containing newlines also matches the same name with each
     newline replaced by a space.
-
-    .. versionadded:: 3.25.0
     """
 
     _cache_row_index = True
@@ -980,8 +982,6 @@ class ExcelMetadataSource(SpreadsheetMetadataSource):
     Worksheet names and headers are cached, while row content is read from the workbook
     for every metadata lookup. Call :meth:`refresh` to revalidate the selected worksheet
     and header.
-
-    .. versionadded:: 3.25.0
     """
 
     _cache_row_index = False
