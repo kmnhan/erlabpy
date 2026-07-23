@@ -1026,6 +1026,8 @@ def test_wait_dialog_suppresses_nested_dialog(qtbot) -> None:
 
     with erlab.interactive.utils.wait_dialog(parent, "Outer") as outer:
         assert isinstance(outer, erlab.interactive.utils._WaitDialog)
+        assert outer.layout().getContentsMargins() == (24, 20, 24, 20)
+        assert outer.sizeHint().height() >= outer._label.sizeHint().height() + 20 * 2
         outer.set_message("Outer updated")
 
         with erlab.interactive.utils.wait_dialog(parent, "Inner") as inner:

@@ -625,6 +625,7 @@ class _WaitDialog(QtWidgets.QDialog):
         self.setModal(True)
         self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
         layout = QtWidgets.QVBoxLayout()
+        layout.setContentsMargins(24, 20, 24, 20)
         self._label = QtWidgets.QLabel(message)
         layout.addWidget(self._label)
         self.setLayout(layout)
