@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import contextlib
+import queue
 import threading
 import typing
 
@@ -354,14 +354,8 @@ class _MappingTable(ReorderList):
             editor.showPopup()
 
 
-class _SpreadsheetDiscoverySignals(QtCore.QObject):
-    succeeded = QtCore.Signal(int, str, object)
-    failed = QtCore.Signal(int, str, str)
-    finished = QtCore.Signal(object)
-
-
-class _SpreadsheetDiscoveryWorker(QtCore.QRunnable):
-    """Read worksheet structure without blocking the GUI thread."""
+class _SpreadsheetDiscoveryWorker:
+    """Read worksheet structure without touching Qt from the worker thread."""
 
     def __init__(
         self,
@@ -372,10 +366,10 @@ class _SpreadsheetDiscoveryWorker(QtCore.QRunnable):
         preview_file_name: str | None = None,
         infer_file_number: Callable[[], object | None] | None = None,
     ) -> None:
-        super().__init__()
-        self.setAutoDelete(False)
         self._cancelled = threading.Event()
-        self.signals = _SpreadsheetDiscoverySignals()
+        self._result_queue: (
+            queue.SimpleQueue[tuple[_SpreadsheetDiscoveryWorker, str, object]] | None
+        ) = None
         self.request_id = request_id
         self.operation = operation
         self.source = source
@@ -386,8 +380,17 @@ class _SpreadsheetDiscoveryWorker(QtCore.QRunnable):
         """Suppress results from this request and skip work that has not started."""
         self._cancelled.set()
 
-    @QtCore.Slot()
+    def set_result_queue(
+        self,
+        result_queue: queue.SimpleQueue[
+            tuple[_SpreadsheetDiscoveryWorker, str, object]
+        ],
+    ) -> None:
+        self._result_queue = result_queue
+
     def run(self) -> None:
+        status = "cancelled"
+        result: object = None
         try:
             if self._cancelled.is_set():
                 return
@@ -401,15 +404,14 @@ class _SpreadsheetDiscoveryWorker(QtCore.QRunnable):
                     # Worksheet discovery must remain usable when a previously
                     # selected worksheet has been removed or renamed.
                     selected_sheet = None
-                result: object = (sheet_names, selected_sheet)
+                result = (sheet_names, selected_sheet)
             elif self.operation == "columns":
                 result = self.source.get_column_names()
             else:
                 if self.preview_file_name is None:
-                    self.signals.failed.emit(
-                        self.request_id,
-                        self.operation,
-                        "RuntimeError: A file name is required for metadata preview",
+                    status = "failed"
+                    result = (
+                        "RuntimeError: A file name is required for metadata preview"
                     )
                     return
                 result = self.source._metadata_preview_for_file_name(
@@ -418,47 +420,139 @@ class _SpreadsheetDiscoveryWorker(QtCore.QRunnable):
                 )
         except Exception as exc:
             if not self._cancelled.is_set():
-                detail = f"{type(exc).__name__}: {exc}"
-                self.signals.failed.emit(self.request_id, self.operation, detail)
+                status = "failed"
+                result = f"{type(exc).__name__}: {exc}"
         else:
             if not self._cancelled.is_set():
-                self.signals.succeeded.emit(
-                    self.request_id,
-                    self.operation,
-                    result,
-                )
+                status = "succeeded"
         finally:
-            self.signals.finished.emit(self)
+            result_queue = self._result_queue
+            self._result_queue = None
+            if result_queue is not None:
+                result_queue.put((self, status, result))
 
 
 _DISCOVERY_BROKER_ATTRIBUTE = "_erlab_spreadsheet_discovery_broker"
+_DISCOVERY_THREAD_COUNT = 2
+
+
+def _spreadsheet_discovery_loop(
+    work_queue: queue.SimpleQueue[_SpreadsheetDiscoveryWorker | None],
+) -> None:
+    """Run queued discovery work without retaining or touching Qt objects."""
+    while True:
+        worker = work_queue.get()
+        if worker is None:
+            return
+        worker.run()
 
 
 class _SpreadsheetDiscoveryBroker(QtCore.QObject):
     """Keep spreadsheet discovery workers alive independently of their dialogs."""
 
-    def __init__(self, parent: QtCore.QObject) -> None:
-        super().__init__(parent)
+    succeeded = QtCore.Signal(object, int, str, object)
+    failed = QtCore.Signal(object, int, str, str)
+    finished = QtCore.Signal(object)
+
+    def __init__(self, application: QtWidgets.QApplication) -> None:
+        super().__init__(application)
+        self._result_queue: queue.SimpleQueue[
+            tuple[_SpreadsheetDiscoveryWorker, str, object]
+        ] = queue.SimpleQueue()
+        self._work_queue: queue.SimpleQueue[_SpreadsheetDiscoveryWorker | None] = (
+            queue.SimpleQueue()
+        )
+        self._threads: list[threading.Thread] = []
         self._workers: set[_SpreadsheetDiscoveryWorker] = set()
+        self._shutting_down = False
+        self._result_timer = QtCore.QTimer(self)
+        self._result_timer.setInterval(10)
+        self._result_timer.timeout.connect(self._drain_results)
+        application.aboutToQuit.connect(self.shutdown)
 
     def start(self, worker: _SpreadsheetDiscoveryWorker) -> None:
-        pool = QtCore.QThreadPool.globalInstance()
-        if pool is None:  # pragma: no cover - Qt creates it with the application
-            raise RuntimeError("Qt's global thread pool is unavailable")
+        if self._shutting_down:
+            raise RuntimeError("The application is shutting down")
+        self._ensure_threads()
+        worker.set_result_queue(self._result_queue)
         self._workers.add(worker)
-        worker.signals.finished.connect(self._worker_finished)
-        try:
-            pool.start(worker)
-        except Exception:
-            self._workers.discard(worker)
-            with contextlib.suppress(TypeError, RuntimeError):
-                worker.signals.finished.disconnect(self._worker_finished)
-            raise
+        self._work_queue.put(worker)
+        if not self._result_timer.isActive():
+            self._result_timer.start()
 
-    @QtCore.Slot(object)
-    def _worker_finished(self, worker: object) -> None:
-        if isinstance(worker, _SpreadsheetDiscoveryWorker):
+    def _ensure_threads(self) -> None:
+        if self._threads:
+            return
+        started_threads: list[threading.Thread] = []
+        try:
+            while len(started_threads) < _DISCOVERY_THREAD_COUNT:
+                thread = threading.Thread(
+                    target=_spreadsheet_discovery_loop,
+                    args=(self._work_queue,),
+                    name=f"SpreadsheetDiscovery-{len(started_threads) + 1}",
+                    daemon=True,
+                )
+                thread.start()
+                started_threads.append(thread)
+        except Exception:
+            for _thread in started_threads:
+                self._work_queue.put(None)
+            raise
+        self._threads = started_threads
+
+    @QtCore.Slot()
+    def _drain_results(self) -> None:
+        while True:
+            try:
+                worker, status, result = self._result_queue.get_nowait()
+            except queue.Empty:
+                break
+            if worker not in self._workers:
+                continue
             self._workers.discard(worker)
+            if status == "succeeded":
+                self.succeeded.emit(
+                    worker,
+                    worker.request_id,
+                    worker.operation,
+                    result,
+                )
+            elif status == "failed":
+                self.failed.emit(
+                    worker,
+                    worker.request_id,
+                    worker.operation,
+                    typing.cast("str", result),
+                )
+            self.finished.emit(worker)
+        if not self._workers:
+            self._result_timer.stop()
+
+    @QtCore.Slot()
+    def shutdown(self) -> None:
+        """Abandon discovery without waiting for uninterruptible external I/O."""
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        self._result_timer.stop()
+        for worker in tuple(self._workers):
+            worker.cancel()
+        self._workers.clear()
+        while True:
+            try:
+                queued_worker = self._work_queue.get_nowait()
+            except queue.Empty:
+                break
+            if queued_worker is not None:
+                queued_worker.cancel()
+        for _thread in self._threads:
+            self._work_queue.put(None)
+        self._threads.clear()
+        while True:
+            try:
+                self._result_queue.get_nowait()
+            except queue.Empty:
+                break
 
 
 def _spreadsheet_discovery_broker() -> _SpreadsheetDiscoveryBroker:
@@ -466,6 +560,7 @@ def _spreadsheet_discovery_broker() -> _SpreadsheetDiscoveryBroker:
     application = QtWidgets.QApplication.instance()
     if application is None:
         raise RuntimeError("Spreadsheet discovery requires a QApplication")
+    application = typing.cast("QtWidgets.QApplication", application)
     broker = getattr(application, _DISCOVERY_BROKER_ATTRIBUTE, None)
     if not isinstance(broker, _SpreadsheetDiscoveryBroker) or not (
         erlab.interactive.utils.qt_is_valid(broker)
@@ -557,6 +652,10 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         )
         self._preferred_sheet: str | int | None = None
         self._workers: set[_SpreadsheetDiscoveryWorker] = set()
+        self._discovery_broker = _spreadsheet_discovery_broker()
+        self._discovery_broker.succeeded.connect(self._worker_succeeded)
+        self._discovery_broker.failed.connect(self._worker_failed)
+        self._discovery_broker.finished.connect(self._worker_finished)
 
         layout = QtWidgets.QVBoxLayout(self)
         self._setup_source_group(layout)
@@ -911,12 +1010,13 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
             return
 
         file_name = self._sample_path.stem
+        loader = self._loader
 
         def infer_file_number() -> object | None:
-            if self._loader is None:
+            if loader is None:
                 return None
             try:
-                return self._loader.infer_index(file_name)[0]
+                return loader.infer_index(file_name)[0]
             except NotImplementedError:
                 return None
 
@@ -952,12 +1052,9 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
             infer_file_number=infer_file_number,
         )
         self._workers.add(worker)
-        worker.signals.succeeded.connect(self._request_succeeded)
-        worker.signals.failed.connect(self._request_failed)
-        worker.signals.finished.connect(self._worker_finished)
         self._set_busy(True, status)
         try:
-            _spreadsheet_discovery_broker().start(worker)
+            self._discovery_broker.start(worker)
         except Exception as exc:
             self._workers.discard(worker)
             self._request_failed(
@@ -969,6 +1066,28 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
     def _cancel_discovery_requests(self) -> None:
         for worker in tuple(self._workers):
             worker.cancel()
+
+    @QtCore.Slot(object, int, str, object)
+    def _worker_succeeded(
+        self,
+        worker: object,
+        request_id: int,
+        operation: str,
+        result: object,
+    ) -> None:
+        if worker in self._workers:
+            self._request_succeeded(request_id, operation, result)
+
+    @QtCore.Slot(object, int, str, str)
+    def _worker_failed(
+        self,
+        worker: object,
+        request_id: int,
+        operation: str,
+        detail: str,
+    ) -> None:
+        if worker in self._workers:
+            self._request_failed(request_id, operation, detail)
 
     @QtCore.Slot(int, str, object)
     def _request_succeeded(
