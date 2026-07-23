@@ -27,6 +27,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive import _qt_state
+from erlab.interactive._widgets import _Separator
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._load_source import _load_provenance_from_file_details
 from erlab.interactive.imagetool.viewer_state import _select_input_dataarrays
@@ -60,7 +61,7 @@ class _ControlsBar(QtWidgets.QScrollArea):
         self._contents.setObjectName("itoolControlsContents")
         self._contents.installEventFilter(self)
         self._layout = QtWidgets.QHBoxLayout(self._contents)
-        self._layout.setContentsMargins(6, 3, 6, 3)
+        self._layout.setContentsMargins(6, 6, 6, 6)
         self._layout.setSpacing(6)
         self._layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetFixedSize)
         self.setWidget(self._contents)
@@ -105,14 +106,8 @@ class _ControlsBar(QtWidgets.QScrollArea):
     def add_group(self, widget: QtWidgets.QWidget, accessible_name: str) -> None:
         """Append a control group, separated from preceding groups by a line."""
         if self._layout.count():
-            separator = QtWidgets.QFrame(self._contents)
+            separator = _Separator(QtCore.Qt.Orientation.Vertical, self._contents)
             separator.setObjectName("itoolControlsSeparator")
-            separator.setFrameShape(QtWidgets.QFrame.Shape.VLine)
-            separator.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
-            separator.setSizePolicy(
-                QtWidgets.QSizePolicy.Policy.Fixed,
-                QtWidgets.QSizePolicy.Policy.Expanding,
-            )
             self._layout.addWidget(separator)
 
         widget.setAccessibleName(accessible_name)

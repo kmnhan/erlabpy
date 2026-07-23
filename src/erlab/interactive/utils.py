@@ -43,6 +43,7 @@ from qtpy import PYQT6, PYSIDE6, QtCore, QtGui, QtWidgets, uic
 
 import erlab
 from erlab.interactive import _qt_state
+from erlab.interactive._widgets import _Separator
 from erlab.utils._code import (
     _parse_single_arg,
     format_1d_numeric_array_code,
@@ -797,9 +798,7 @@ class MessageDialog(QtWidgets.QDialog):
         self._details = QtWidgets.QPlainTextEdit()
         self._details.setReadOnly(True)
 
-        _hline = QtWidgets.QFrame()
-        _hline.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        _hline.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        _hline = _Separator()
 
         self._details_container = QtWidgets.QWidget()
 

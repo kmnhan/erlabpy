@@ -34,6 +34,7 @@ from erlab.interactive._figurecomposer import (
 from erlab.interactive._figurecomposer._exceptions import (
     FigureComposerPlotSlicesSelectionError,
 )
+from erlab.interactive._widgets import _Separator
 from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, itool
@@ -7176,7 +7177,56 @@ def test_itool_controls_scroll_and_elide_in_narrow_window(qtbot) -> None:
 
     assert win.findChildren(QtWidgets.QDockWidget) == []
     assert bar.findChildren(QtWidgets.QGroupBox) == []
-    assert len(bar.findChildren(QtWidgets.QFrame, "itoolControlsSeparator")) == 2
+    separators = bar.findChildren(_Separator, "itoolControlsSeparator")
+    assert len(separators) == 2
+    assert all(
+        separator.orientation == QtCore.Qt.Orientation.Vertical and separator.inset == 0
+        for separator in separators
+    )
+    assert bar._layout.contentsMargins() == QtCore.QMargins(6, 6, 6, 6)
+    cursor_layout = win.cursor_controls.values_layouts[0]
+    binning_layout = win.binning_controls.gridlayout
+    assert [
+        cursor_layout.getItemPosition(cursor_layout.indexOf(widget))[0]
+        for widget in (
+            win.cursor_controls.btn_snap,
+            win.cursor_controls.cb_cursors,
+            win.cursor_controls.spin_dat,
+        )
+    ] == [0, 2, 4]
+    assert [
+        binning_layout.getItemPosition(binning_layout.indexOf(widget))[0]
+        for widget in (
+            win.binning_controls.labels[0],
+            win.binning_controls.spins[0],
+            win.binning_controls.val_labels[0],
+        )
+    ] == [0, 2, 4]
+    assert all(
+        label.alignment()
+        == (QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        for label in (
+            *win.cursor_controls.label_dim,
+            *win.binning_controls.labels,
+            *win.binning_controls.val_labels,
+        )
+    )
+    assert [
+        (cursor_layout.cellRect(row, 0).y(), cursor_layout.cellRect(row, 0).height())
+        for row in (0, 2, 4)
+    ] == [
+        (binning_layout.cellRect(row, 0).y(), binning_layout.cellRect(row, 0).height())
+        for row in (0, 2, 4)
+    ]
+    for layout in (*win.cursor_controls.values_layouts, binning_layout):
+        assert layout.verticalSpacing() == 0
+        assert all(
+            layout.rowMinimumHeight(row) == 3 and layout.rowStretch(row) == 1
+            for row in (1, 3)
+        )
+        spacer_heights = [layout.cellRect(row, 0).height() for row in (1, 3)]
+        assert min(spacer_heights) >= 3
+        assert abs(spacer_heights[0] - spacer_heights[1]) <= 1
     assert (
         bar.horizontalScrollBarPolicy() == QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     )

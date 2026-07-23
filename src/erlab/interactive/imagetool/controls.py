@@ -315,8 +315,12 @@ class ItoolCrosshairControls(ItoolControlsBase):
         )
         for s in self.values_layouts:
             s.setContentsMargins(0, 0, 0, 0)
-
             s.setSpacing(3)
+            if self.orientation == QtCore.Qt.Orientation.Vertical:
+                s.setVerticalSpacing(0)
+                for row in (1, 3):
+                    s.setRowMinimumHeight(row, 3)
+                    s.setRowStretch(row, 1)
         # buttons for multicursor control
         self.btn_add = erlab.interactive.utils.IconButton(
             _ICON_ALIASES["plus"], toolTip="Add cursor"
@@ -388,8 +392,8 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.values_layouts[0].addWidget(self.btn_add, 0, 1, 1, 1)
             self.values_layouts[0].addWidget(self.btn_rem, 0, 2, 1, 1)
             self.values_layouts[0].addWidget(self.btn_snap, 0, 0, 1, 1)
-            self.values_layouts[0].addWidget(self.cb_cursors, 1, 0, 1, 3)
-            self.values_layouts[0].addWidget(self.spin_dat, 2, 0, 1, 3)
+            self.values_layouts[0].addWidget(self.cb_cursors, 2, 0, 1, 3)
+            self.values_layouts[0].addWidget(self.spin_dat, 4, 0, 1, 3)
         else:
             self.values_layouts[0].addWidget(self.btn_add, 0, 1, 1, 1)
             self.values_layouts[0].addWidget(self.btn_rem, 0, 2, 1, 1)
@@ -402,8 +406,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.label_dim = tuple(_ElidedLabel(grp) for grp in self.values_groups[1:])
         for lab in self.label_dim:
             lab.setAlignment(
-                QtCore.Qt.AlignmentFlag.AlignHCenter
-                | QtCore.Qt.AlignmentFlag.AlignVCenter
+                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
             )
 
         self.spin_idx = tuple(
@@ -451,8 +454,8 @@ class ItoolCrosshairControls(ItoolControlsBase):
             if self.orientation == QtCore.Qt.Orientation.Vertical:
                 self.values_layouts[i + 1].addWidget(self.label_dim[i], 0, 0, 1, 1)
                 self.values_layouts[i + 1].addWidget(self.btn_transpose[i], 0, 1, 1, 1)
-                self.values_layouts[i + 1].addWidget(self.spin_idx[i], 1, 0, 1, 2)
-                self.values_layouts[i + 1].addWidget(self.spin_val[i], 2, 0, 1, 2)
+                self.values_layouts[i + 1].addWidget(self.spin_idx[i], 2, 0, 1, 2)
+                self.values_layouts[i + 1].addWidget(self.spin_val[i], 4, 0, 1, 2)
             else:
                 self.values_layouts[i + 1].addWidget(self.label_dim[i], 0, 0, 1, 1)
                 self.values_layouts[i + 1].addWidget(self.btn_transpose[i], 0, 1, 1, 1)
@@ -908,7 +911,11 @@ class ItoolBinningControls(ItoolControlsBase):
         super().initialize_widgets()
         self.gridlayout = QtWidgets.QGridLayout()
         self.gridlayout.setContentsMargins(0, 0, 0, 0)
-        self.gridlayout.setSpacing(3)
+        self.gridlayout.setHorizontalSpacing(3)
+        self.gridlayout.setVerticalSpacing(0)
+        for row in (1, 3):
+            self.gridlayout.setRowMinimumHeight(row, 3)
+            self.gridlayout.setRowStretch(row, 1)
 
         self.buttonslayout = QtWidgets.QVBoxLayout()
         self.buttonslayout.setContentsMargins(0, 0, 0, 0)
@@ -948,11 +955,18 @@ class ItoolBinningControls(ItoolControlsBase):
         )
 
         height = QtGui.QFontMetrics(self.labels[0].font()).height() + 3
+        alignment = (
+            QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
+        )
+        self.gridlayout.setRowMinimumHeight(0, self.reset_btn.sizeHint().height())
+        self.gridlayout.setRowMinimumHeight(4, self.spins[0].minimumHeight())
 
         for i in range(self.data.ndim):
             self.gridlayout.addWidget(self.labels[i], 0, i, 1, 1)
-            self.gridlayout.addWidget(self.spins[i], 1, i, 1, 1)
-            self.gridlayout.addWidget(self.val_labels[i], 2, i, 1, 1)
+            self.gridlayout.addWidget(self.spins[i], 2, i, 1, 1)
+            self.gridlayout.addWidget(self.val_labels[i], 4, i, 1, 1)
+            self.labels[i].setAlignment(alignment)
+            self.val_labels[i].setAlignment(alignment)
             self.val_labels[i].setMaximumHeight(height)
             self.spins[i].setToolTip("Number of bins")
             self.val_labels[i].setToolTip("Value corresponding to number of bins")

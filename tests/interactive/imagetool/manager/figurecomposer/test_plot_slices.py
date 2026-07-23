@@ -65,6 +65,7 @@ from erlab.interactive._figurecomposer._ui import (
     _toolbar_dialogs as figurecomposer_toolbar_dialogs,
 )
 from erlab.interactive._options import options
+from erlab.interactive._widgets import _Separator
 from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
 )
@@ -2094,8 +2095,8 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         QtWidgets.QWidget, "figureComposerGridSpecEditorContainer"
     )
     assert gridspec_container is tool.layout_panel.gridspec_editor_container
-    assert tool.findChild(QtWidgets.QFrame, "figureComposerGridSpecEditorTopLine")
-    assert tool.findChild(QtWidgets.QFrame, "figureComposerGridSpecEditorBottomLine")
+    assert tool.findChild(_Separator, "figureComposerGridSpecEditorTopLine")
+    assert tool.findChild(_Separator, "figureComposerGridSpecEditorBottomLine")
     assert layout_grid.getItemPosition(layout_grid.indexOf(gridspec_container)) == (
         2,
         0,
