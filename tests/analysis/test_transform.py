@@ -479,6 +479,31 @@ def test_symmetrize_subtract():
     np.testing.assert_allclose(sym_da.values, expected, rtol=1e-5)
 
 
+@pytest.mark.parametrize("use_dask", [False, True], ids=["numpy", "dask"])
+def test_symmetrize_average_multidimensional_singleton_halves(
+    use_dask: bool,
+) -> None:
+    da = xr.DataArray(
+        [[1.0, 4.0], [2.0, 6.0]],
+        dims=("batch", "x"),
+        coords={"batch": ["a", "b"], "x": [1.1, 1.2]},
+        name="intensity",
+        attrs={"units": "counts"},
+    )
+    if use_dask:
+        da = da.chunk()
+    expected_sum = da.copy(data=[[5.0, 5.0], [8.0, 8.0]])
+    expected_average = da.copy(data=[[2.5, 2.5], [4.0, 4.0]])
+
+    summed = symmetrize(da, "x", center=1.15)
+    averaged = symmetrize(da, "x", center=1.15, average=True)
+
+    xr.testing.assert_allclose(summed, expected_sum)
+    xr.testing.assert_allclose(averaged, expected_average)
+    assert averaged.name == da.name
+    assert averaged.attrs == da.attrs
+
+
 @pytest.mark.parametrize(
     ("mode", "subtract", "expected"),
     [
@@ -504,6 +529,7 @@ def test_symmetrize_average(mode, subtract, expected):
         np.array([1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1, 0], dtype=float),
         dims="x",
         coords={"x": np.linspace(-6, 5, 12)},
+        name="intensity",
     )
     sym_da = symmetrize(
         da,
@@ -514,6 +540,7 @@ def test_symmetrize_average(mode, subtract, expected):
         mode=mode,
     )
     np.testing.assert_allclose(sym_da.values, expected, rtol=1e-5)
+    assert sym_da.name == da.name
 
 
 def test_symmetrize_non_uniform() -> None:
