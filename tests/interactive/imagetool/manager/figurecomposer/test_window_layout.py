@@ -3344,6 +3344,27 @@ def test_figure_composer_export_uses_style_context(qtbot, monkeypatch, recwarn) 
     )
 
 
+def test_figure_composer_exports_pdf(qtbot, monkeypatch, tmp_path) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    export_path = tmp_path / "figure.pdf"
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(export_path), ""),
+    )
+
+    tool.export_figure()
+
+    assert export_path.read_bytes().startswith(b"%PDF")
+
+
 def test_figure_composer_preview_suppresses_collapsed_layout_warning(
     qtbot, monkeypatch, recwarn
 ) -> None:
