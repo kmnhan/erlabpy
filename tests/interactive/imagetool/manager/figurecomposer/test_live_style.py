@@ -1,5 +1,6 @@
 import typing
 
+import numpy as np
 import pytest
 
 import erlab.interactive.utils
@@ -24,6 +25,7 @@ def _visible_image_tool(
     kind: FigureOperationKind,
     *,
     operation_updates: dict[str, object] | None = None,
+    earlier_operations: tuple[FigureOperationState, ...] = (),
     later_operations: tuple[FigureOperationState, ...] = (),
 ) -> FigureComposerTool:
     data = _figure_composer_image_source("data").isel(eV=0)
@@ -39,7 +41,7 @@ def _visible_image_tool(
     tool = FigureComposerTool.from_sources(
         {"data": data},
         sources=(FigureSourceState(name="data", label="data"),),
-        operations=(operation, *later_operations),
+        operations=(*earlier_operations, operation, *later_operations),
         primary_source="data",
     )
     qtbot.addWidget(tool)
@@ -70,14 +72,20 @@ def test_figure_composer_updates_live_image_colormap_in_place(
     operation = tool.tool_status.operations[0]
     original_mappables = _operation_mappables(tool, operation.operation_id)
     assert len(original_mappables) == 1
-    draw_idle_calls: list[None] = []
+    previous_preview_generation = tool.preview_pixmap_generation
+    draw_calls: list[None] = []
+    original_draw = tool.canvas.draw
+
+    def counted_draw() -> None:
+        draw_calls.append(None)
+        original_draw()
 
     monkeypatch.setattr(
         tool,
         "_redraw_plot",
         lambda **_kwargs: pytest.fail("a safe colormap change must not rerender"),
     )
-    monkeypatch.setattr(tool.canvas, "draw_idle", lambda: draw_idle_calls.append(None))
+    monkeypatch.setattr(tool.canvas, "draw", counted_draw)
 
     assert tool._update_operations_by_ids(
         (operation.operation_id,),
@@ -89,8 +97,37 @@ def test_figure_composer_updates_live_image_colormap_in_place(
     assert updated_mappables[0] is original_mappables[0]
     assert updated_mappables[0].get_cmap().name == "magma"
     assert tool.tool_status.operations[0].cmap == "magma"
-    assert draw_idle_calls == [None]
-    assert tool.preview_pixmap_stale
+    assert draw_calls == [None]
+    assert tool.preview_pixmap_generation == previous_preview_generation + 1
+    assert not tool.preview_pixmap_stale
+
+
+def test_figure_composer_live_colormap_falls_back_for_earlier_custom_step(
+    qtbot,
+) -> None:
+    custom = FigureOperationState.custom(
+        label="mutate",
+        code="data.values[:] += 1.0",
+        trusted=True,
+    )
+    tool = _visible_image_tool(
+        qtbot,
+        FigureOperationKind.PLOT_ARRAY,
+        earlier_operations=(custom,),
+    )
+    operation = tool.tool_status.operations[1]
+    original_mappable = _operation_mappables(tool, operation.operation_id)[0]
+    before = tool.tool_data.values.copy()
+
+    assert tool._update_operations_by_ids(
+        (operation.operation_id,),
+        lambda _index, target: target.model_copy(update={"cmap": "magma"}),
+    )
+
+    np.testing.assert_allclose(tool.tool_data.values, before + 1.0)
+    updated_mappable = _operation_mappables(tool, operation.operation_id)[0]
+    assert updated_mappable is not original_mappable
+    assert updated_mappable.get_cmap().name == "magma"
 
 
 def test_figure_composer_live_colormap_falls_back_after_arbitrary_step(
@@ -299,6 +336,26 @@ def test_figure_composer_live_colormap_falls_back_when_layout_lookup_fails(
 
     assert redraw_calls == [None]
     assert mappable.get_cmap().name == "viridis"
+
+
+def test_figure_composer_live_colormap_falls_back_when_preview_capture_fails(
+    qtbot, monkeypatch
+) -> None:
+    tool = _visible_image_tool(qtbot, FigureOperationKind.PLOT_ARRAY)
+    operation = tool.tool_status.operations[0]
+    redraw_calls: list[None] = []
+    monkeypatch.setattr(tool, "_cache_live_canvas_preview", lambda *, redraw: False)
+    monkeypatch.setattr(
+        tool, "_redraw_plot", lambda **_kwargs: redraw_calls.append(None)
+    )
+
+    assert tool._update_operations_by_ids(
+        (operation.operation_id,),
+        lambda _index, target: target.model_copy(update={"cmap": "magma"}),
+    )
+
+    assert redraw_calls == [None]
+    assert tool.preview_pixmap_stale
 
 
 def test_figure_composer_live_colormap_respects_disabled_auto_redraw(

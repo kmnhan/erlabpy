@@ -829,9 +829,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             or updated.operation_id in self._operation_render_errors
             or self.operation_editor.has_input_error(updated)
             or any(
-                operation.enabled
-                and operation.kind
-                in (FigureOperationKind.METHOD, FigureOperationKind.CUSTOM)
+                operation.enabled and operation.kind == FigureOperationKind.CUSTOM
+                for operation in self._document.recipe.operations
+            )
+            or any(
+                operation.enabled and operation.kind == FigureOperationKind.METHOD
                 for operation in self._document.recipe.operations[index + 1 :]
             )
         ):
@@ -895,7 +897,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             for mappable, _panel_key in tagged_mappables:
                 mappable.set_cmap(cmap)
             self._mark_preview_pixmap_stale()
-            canvas.draw_idle()
+            if not self._cache_live_canvas_preview(redraw=True):
+                return False
         except Exception:
             return False
         return True
