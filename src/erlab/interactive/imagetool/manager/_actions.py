@@ -174,10 +174,27 @@ class _ActionsController:
                 str(error),
             )
             return
-        snapshots = [
-            (window, window.isVisible(), window.windowState(), window.geometry())
-            for window in windows
-        ]
+        snapshots: list[
+            tuple[
+                QtWidgets.QWidget,
+                bool,
+                QtCore.Qt.WindowState,
+                QtCore.QRect,
+            ]
+        ] = []
+        for window in windows:
+            state = window.windowState()
+            geometry = window.normalGeometry()
+            if not (
+                state
+                & (
+                    QtCore.Qt.WindowState.WindowMaximized
+                    | QtCore.Qt.WindowState.WindowFullScreen
+                )
+                and geometry.isValid()
+            ):
+                geometry = window.geometry()
+            snapshots.append((window, window.isVisible(), state, geometry))
         try:
             with self._manager._workspace_load_context():
                 for window in windows:
@@ -202,7 +219,10 @@ class _ActionsController:
         except (RuntimeError, TypeError, ValueError):
             with self._manager._workspace_load_context():
                 self._restore_window_layout_snapshots(snapshots)
-            logger.exception("Error while arranging selected windows")
+            logger.exception(
+                "Error while arranging selected windows",
+                extra={"suppress_ui_alert": True},
+            )
             erlab.interactive.utils.MessageDialog.critical(
                 self._manager,
                 "Error",

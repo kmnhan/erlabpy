@@ -172,6 +172,9 @@ def test_window_layout_dialog_uses_semantic_icon_controls(qtbot) -> None:
             *dialog.direction_buttons.values(),
         )
     } == {4}
+    direction_layout = dialog.direction_buttons[True].parentWidget().layout()
+    assert direction_layout.indexOf(dialog.direction_buttons[True]) == 0
+    assert direction_layout.indexOf(dialog.direction_buttons[False]) == 1
     assert dialog.layout().itemAt(0).layout().labelAlignment() == (
         QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
     )

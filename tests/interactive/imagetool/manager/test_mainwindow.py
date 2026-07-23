@@ -457,6 +457,7 @@ def test_arrange_selected_windows_preserves_geometry_when_layout_does_not_fit(
 def test_arrange_selected_windows_rolls_back_geometry_on_error(
     qtbot,
     monkeypatch,
+    caplog: pytest.LogCaptureFixture,
     test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -490,20 +491,36 @@ def test_arrange_selected_windows_rolls_back_geometry_on_error(
         uids = [manager.add_childtool(window, 0) for window in windows]
         for uid in uids:
             select_child_tool(manager, uid)
-        windows[0].hide()
+        windows[0].setGeometry(80, 90, 320, 240)
+        windows[0].showMaximized()
+        windows[1].hide()
+        qtbot.wait_until(
+            lambda: windows[0].isMaximized() and not windows[1].isVisible()
+        )
+        normal_geometry = windows[0].normalGeometry()
+        assert normal_geometry.isValid()
         original = [
             (window.isVisible(), window.windowState(), window.geometry())
             for window in windows
         ]
 
+        caplog.clear()
         manager.arrange_selected_windows()
         manager._actions_controller._window_layout_dialog.accept()
 
         assert errors
+        error_record = next(
+            record
+            for record in caplog.records
+            if record.getMessage() == "Error while arranging selected windows"
+        )
+        assert error_record.suppress_ui_alert
         assert [
             (window.isVisible(), window.windowState(), window.geometry())
             for window in windows
         ] == original
+        windows[0].showNormal()
+        qtbot.wait_until(lambda: windows[0].geometry() == normal_geometry)
 
 
 def test_reveal_nodes_restores_minimized_manager(

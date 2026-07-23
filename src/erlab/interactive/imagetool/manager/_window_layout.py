@@ -290,7 +290,7 @@ class _WindowLayoutDialog(QtWidgets.QDialog):
         self.direction_group = QtWidgets.QButtonGroup(self)
         self.direction_group.setExclusive(True)
         self.direction_buttons: dict[bool, QtWidgets.QToolButton] = {}
-        for reverse in (False, True):
+        for reverse in (True, False):
             label = "Right to Left" if reverse else "Left to Right"
             button = QtWidgets.QToolButton(direction_widget)
             button.setObjectName(
