@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import typing
 
 import numpy as np
@@ -24,9 +23,8 @@ from erlab.interactive._figurecomposer._line_colormap import (
     values_from_contexts,
 )
 from erlab.interactive._figurecomposer._line_transform import (
-    LineTransformPlan,
     line_transform_active,
-    transform_profiles_from_plan,
+    transform_profiles,
 )
 from erlab.interactive._figurecomposer._model._sources import (
     _available_source_dims,
@@ -44,7 +42,6 @@ from erlab.interactive._figurecomposer._norms import (
     _norm_object,
     _use_powernorm_plot_kwargs,
 )
-from erlab.interactive._figurecomposer._render_context import FigureRenderContext
 from erlab.interactive._figurecomposer._text import _selection_value_count
 
 if typing.TYPE_CHECKING:
@@ -84,23 +81,6 @@ _PLOT_SLICES_EXPLICIT_KWARGS = frozenset(
         "axes",
     )
 )
-
-
-def _operation_context_document(
-    context: FigureComposerTool | FigureRenderContext,
-) -> FigureRecipeContext:
-    if isinstance(context, FigureRenderContext):
-        return context.document
-    return context._document
-
-
-def _operation_context_source_display_name(
-    context: FigureComposerTool | FigureRenderContext,
-) -> Callable[[str], str]:
-    if isinstance(context, FigureRenderContext):
-        return context.source_display_name
-    return context._source_display_name
-
 
 _MISSING = object()
 
@@ -440,12 +420,8 @@ def _effective_panel_cmap(
     return _matplotlib_cmap_name(default_cmap)
 
 
-def _plot_slices_default_cmap(
-    context: FigureComposerTool | FigureRenderContext,
-) -> str:
-    if isinstance(context, FigureRenderContext):
-        return context.default_image_cmap()
-    with _tool_figure_options_context(context):
+def _plot_slices_default_cmap(tool: FigureComposerTool) -> str:
+    with _tool_figure_options_context(tool):
         return str(_styled_rcparams_value("image.cmap"))
 
 
@@ -506,8 +482,7 @@ def _nested_panel_values(
 
 
 def _panel_cmap_argument(
-    context: FigureComposerTool | FigureRenderContext,
-    operation: FigureOperationState,
+    tool: FigureComposerTool, operation: FigureOperationState
 ) -> str | list[list[str]] | None:
     if not operation.panel_styles_enabled or not operation.panel_styles:
         return (
@@ -515,11 +490,7 @@ def _panel_cmap_argument(
             if operation.cmap is not None
             else None
         )
-    keys = _plot_slices_panel_keys(
-        _operation_context_document(context),
-        _operation_context_source_display_name(context),
-        operation,
-    )
+    keys = _plot_slices_panel_keys(tool._document, tool._source_display_name, operation)
     styles = _panel_style_map_for_keys(operation, keys)
     if not any(_panel_style_has_cmap_override(style) for style in styles.values()):
         return (
@@ -528,7 +499,7 @@ def _panel_cmap_argument(
             else None
         )
 
-    default_cmap = _plot_slices_default_cmap(context)
+    default_cmap = _plot_slices_default_cmap(tool)
 
     def value_getter(key: _PlotSlicesPanelKey) -> str:
         style = styles.get(
@@ -548,16 +519,11 @@ def _panel_cmap_argument(
 
 
 def _panel_norm_argument(
-    context: FigureComposerTool | FigureRenderContext,
-    operation: FigureOperationState,
+    tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[list[object]] | object | None:
     if not operation.panel_styles_enabled or not operation.panel_styles:
         return None
-    keys = _plot_slices_panel_keys(
-        _operation_context_document(context),
-        _operation_context_source_display_name(context),
-        operation,
-    )
+    keys = _plot_slices_panel_keys(tool._document, tool._source_display_name, operation)
     styles = _panel_style_map_for_keys(operation, keys)
     if not any(_panel_style_has_norm_override(style) for style in styles.values()):
         return None
@@ -579,16 +545,13 @@ def _panel_norm_argument(
 
 
 def _panel_line_kw_argument(
-    context: FigureComposerTool | FigureRenderContext,
-    operation: FigureOperationState,
+    tool: FigureComposerTool, operation: FigureOperationState
 ) -> dict[str, typing.Any] | list[list[dict[str, typing.Any]]]:
-    document = _operation_context_document(context)
-    source_display_name = _operation_context_source_display_name(context)
-    labels = _plot_slices_line_labels(context, operation)
+    labels = _plot_slices_line_labels(tool, operation)
     has_labels = any(labels)
-    color_active = _plot_slices_line_colormap_active(document, operation)
+    color_active = _plot_slices_line_colormap_active(tool._document, operation)
     line_colors = (
-        _plot_slices_line_colormap_colors(context, operation) if color_active else ()
+        _plot_slices_line_colormap_colors(tool, operation) if color_active else ()
     )
     if (
         not has_labels
@@ -596,7 +559,7 @@ def _panel_line_kw_argument(
         and not color_active
     ):
         return dict(operation.line_kw)
-    keys = _plot_slices_panel_keys(document, source_display_name, operation)
+    keys = _plot_slices_panel_keys(tool._document, tool._source_display_name, operation)
     styles = _panel_style_map_for_keys(operation, keys)
     has_line_overrides = any(
         _panel_style_has_line_override(style) for style in styles.values()
@@ -682,13 +645,10 @@ def _plot_slices_line_label_contexts(
 
 
 def _plot_slices_line_labels(
-    context: FigureComposerTool | FigureRenderContext,
-    operation: FigureOperationState,
+    tool: FigureComposerTool, operation: FigureOperationState
 ) -> tuple[str | None, ...]:
     contexts = _plot_slices_line_label_contexts(
-        _operation_context_document(context),
-        _operation_context_source_display_name(context),
-        operation,
+        tool._document, tool._source_display_name, operation
     )
     return labels_from_text(
         operation.line_label_text,
@@ -725,14 +685,11 @@ def _available_plot_slices_line_color_coords(
 
 
 def _plot_slices_line_color_values(
-    context: FigureComposerTool | FigureRenderContext,
-    operation: FigureOperationState,
+    tool: FigureComposerTool, operation: FigureOperationState
 ) -> tuple[float, ...]:
     return values_from_contexts(
         _plot_slices_line_label_contexts(
-            _operation_context_document(context),
-            _operation_context_source_display_name(context),
-            operation,
+            tool._document, tool._source_display_name, operation
         ),
         effective_line_color_coord(operation, operation.slice_dim),
         item_name="slice",
@@ -740,11 +697,10 @@ def _plot_slices_line_color_values(
 
 
 def _plot_slices_line_colormap_colors(
-    context: FigureComposerTool | FigureRenderContext,
-    operation: FigureOperationState,
+    tool: FigureComposerTool, operation: FigureOperationState
 ) -> tuple[tuple[float, float, float, float], ...]:
     return colors_from_values(
-        _plot_slices_line_color_values(context, operation),
+        _plot_slices_line_color_values(tool, operation),
         effective_line_color_cmap(operation),
         trim=effective_line_color_cmap_trim(operation),
     )
@@ -766,11 +722,10 @@ def _plot_slices_source_labels(
 
 
 def _plot_slices_uses_transformed_line_maps(
-    context: FigureComposerTool | FigureRenderContext,
-    operation: FigureOperationState,
+    tool: FigureComposerTool, operation: FigureOperationState
 ) -> bool:
     return _plot_slices_shape(
-        _operation_context_document(context), operation
+        tool._document, operation
     ).plot_ndim == 1 and line_transform_active(operation)
 
 
@@ -799,119 +754,6 @@ def _plot_slices_panel_profile_data(
     if kwargs:
         return data.qsel(**kwargs)
     return data
-
-
-@dataclasses.dataclass(frozen=True)
-class _PlotSlicesTransformPlan:
-    """Semantic inputs used to select and transform line slice maps."""
-
-    sources: tuple[str, ...]
-    slice_dim: str | None
-    slice_values: tuple[float, ...]
-    slice_width: float | None
-    slice_kwargs: dict[str, typing.Any]
-    slice_count: int
-    order: typing.Literal["C", "F"]
-    transform: LineTransformPlan
-
-    @classmethod
-    def from_operation(
-        cls,
-        context: FigureRecipeContext,
-        operation: FigureOperationState,
-    ) -> _PlotSlicesTransformPlan:
-        operation = _normalized_selection_operation(context, operation)
-        return cls(
-            sources=operation.sources,
-            slice_dim=operation.slice_dim,
-            slice_values=_effective_slice_values(context, operation),
-            slice_width=operation.slice_width,
-            slice_kwargs=dict(operation.slice_kwargs),
-            slice_count=_plot_slices_slice_count(context, operation),
-            order=typing.cast("typing.Literal['C', 'F']", operation.order),
-            transform=LineTransformPlan.from_operation(operation),
-        )
-
-
-def _plot_slices_plan_panel_keys(
-    plan: _PlotSlicesTransformPlan,
-    map_count: int,
-) -> tuple[_PlotSlicesPanelKey, ...]:
-    if plan.order == "F":
-        indices = (
-            (map_index, slice_index)
-            for slice_index in range(plan.slice_count)
-            for map_index in range(map_count)
-        )
-    else:
-        indices = (
-            (map_index, slice_index)
-            for map_index in range(map_count)
-            for slice_index in range(plan.slice_count)
-        )
-    return tuple(
-        _PlotSlicesPanelKey(map_index, slice_index, "")
-        for map_index, slice_index in indices
-    )
-
-
-def _plot_slices_panel_profile_data_from_plan(
-    data: xr.DataArray,
-    plan: _PlotSlicesTransformPlan,
-    key: _PlotSlicesPanelKey,
-) -> xr.DataArray:
-    kwargs = dict(plan.slice_kwargs)
-    if plan.slice_dim and plan.slice_values:
-        kwargs[plan.slice_dim] = plan.slice_values[key.slice_index]
-        if plan.slice_width is not None:
-            kwargs[f"{plan.slice_dim}_width"] = plan.slice_width
-    if kwargs:
-        data = data.qsel(**kwargs)
-    return data.squeeze(drop=True)
-
-
-def _plot_slices_transformed_maps_from_plan(
-    plan: _PlotSlicesTransformPlan,
-    maps: Sequence[xr.DataArray],
-) -> list[xr.DataArray]:
-    profiles: list[xr.DataArray] = []
-    profile_keys: list[_PlotSlicesPanelKey] = []
-    for key in _plot_slices_plan_panel_keys(plan, len(maps)):
-        profile = _plot_slices_panel_profile_data_from_plan(
-            maps[key.map_index],
-            plan,
-            key,
-        )
-        if profile.ndim != 1:
-            continue
-        profiles.append(profile)
-        profile_keys.append(key)
-
-    transformed = transform_profiles_from_plan(plan.transform, profiles)
-    if not plan.slice_dim or not plan.slice_values:
-        return transformed
-
-    map_profiles: list[list[tuple[int, xr.DataArray]]] = [[] for _map in maps]
-    for key, profile in zip(profile_keys, transformed, strict=True):
-        map_profiles[key.map_index].append((key.slice_index, profile))
-
-    transformed_maps: list[xr.DataArray] = []
-    for profiles_for_map in map_profiles:
-        if len(profiles_for_map) != len(plan.slice_values):
-            continue
-        ordered_profiles = [
-            profile
-            for _index, profile in sorted(profiles_for_map, key=lambda item: item[0])
-        ]
-        transformed_maps.append(
-            xr.concat(
-                ordered_profiles,
-                dim=plan.slice_dim,
-                coords="different",
-                compat="equals",
-            ).assign_coords({plan.slice_dim: list(plan.slice_values)})
-        )
-    return transformed_maps
 
 
 def _plot_slices_line_profiles(
@@ -945,8 +787,35 @@ def _plot_slices_transformed_maps(
     operation: FigureOperationState,
     maps: Sequence[xr.DataArray],
 ) -> list[xr.DataArray]:
-    plan = _PlotSlicesTransformPlan.from_operation(tool._document, operation)
-    return _plot_slices_transformed_maps_from_plan(plan, maps)
+    profiles, keys = _plot_slices_line_profiles(
+        tool._document, tool._source_display_name, operation, maps
+    )
+    transformed = transform_profiles(operation, profiles)
+    slice_values = list(_effective_slice_values(tool._document, operation))
+    if not operation.slice_dim or not slice_values:
+        return transformed
+
+    map_profiles: list[list[tuple[int, xr.DataArray]]] = [[] for _map in maps]
+    for key, profile in zip(keys, transformed, strict=True):
+        map_profiles[key.map_index].append((key.slice_index, profile))
+
+    transformed_maps: list[xr.DataArray] = []
+    for profiles_for_map in map_profiles:
+        if len(profiles_for_map) != len(slice_values):
+            continue
+        ordered_profiles = [
+            profile
+            for _index, profile in sorted(profiles_for_map, key=lambda item: item[0])
+        ]
+        transformed_maps.append(
+            xr.concat(
+                ordered_profiles,
+                dim=operation.slice_dim,
+                coords="different",
+                compat="equals",
+            ).assign_coords({operation.slice_dim: slice_values})
+        )
+    return transformed_maps
 
 
 def _is_slice_kwarg_key(key: typing.Any, dims: Iterable[str]) -> bool:
@@ -1215,16 +1084,14 @@ def _format_dim_names(dims: Sequence[str]) -> str:
 
 
 def _plot_slices_kwargs(
-    context: FigureComposerTool | FigureRenderContext,
-    operation: FigureOperationState,
+    tool: FigureComposerTool, operation: FigureOperationState
 ) -> dict[str, typing.Any]:
-    document = _operation_context_document(context)
-    operation = _normalized_selection_operation(document, operation)
+    operation = _normalized_selection_operation(tool._document, operation)
     kwargs: dict[str, typing.Any] = {}
-    shape = _plot_slices_shape(document, operation)
+    shape = _plot_slices_shape(tool._document, operation)
     is_line_plot = shape.plot_ndim == 1
     kwargs.update(dict(operation.slice_kwargs))
-    slice_values = _effective_slice_values(document, operation)
+    slice_values = _effective_slice_values(tool._document, operation)
     if operation.slice_dim and slice_values:
         kwargs[operation.slice_dim] = list(slice_values)
         if operation.slice_width is not None:
@@ -1250,17 +1117,17 @@ def _plot_slices_kwargs(
     if not operation.annotate:
         kwargs["annotate"] = False
     if not is_line_plot:
-        cmap = _panel_cmap_argument(context, operation)
+        cmap = _panel_cmap_argument(tool, operation)
         if cmap is not None:
             kwargs["cmap"] = cmap
     if is_line_plot:
-        line_kw = _panel_line_kw_argument(context, operation)
+        line_kw = _panel_line_kw_argument(tool, operation)
         if line_kw:
             kwargs["line_kw"] = line_kw
         if isinstance(line_kw, list) and operation.order != operation.cmap_order:
             kwargs["line_order"] = operation.order
     if not is_line_plot:
-        panel_norm = _panel_norm_argument(context, operation)
+        panel_norm = _panel_norm_argument(tool, operation)
         if panel_norm is not None:
             kwargs["norm"] = panel_norm
         elif _use_powernorm_plot_kwargs(operation):
@@ -1293,21 +1160,19 @@ def _plot_slices_kwargs(
         kwargs["annotate_kw"] = dict(operation.annotate_kw)
     if not is_line_plot and operation.colorbar_kw:
         kwargs["colorbar_kw"] = dict(operation.colorbar_kw)
-    kwargs.update(dict(_effective_extra_kwargs(document, operation)))
+    kwargs.update(dict(_effective_extra_kwargs(tool._document, operation)))
     return kwargs
 
 
 def _plot_slices_transformed_kwargs(
-    context: FigureComposerTool | FigureRenderContext,
-    operation: FigureOperationState,
+    tool: FigureComposerTool, operation: FigureOperationState
 ) -> dict[str, typing.Any]:
-    document = _operation_context_document(context)
-    kwargs = _plot_slices_kwargs(context, operation)
+    kwargs = _plot_slices_kwargs(tool, operation)
     for key in operation.slice_kwargs:
         kwargs.pop(key, None)
     if operation.slice_dim:
         kwargs.pop(f"{operation.slice_dim}_width", None)
-        slice_values = _effective_slice_values(document, operation)
+        slice_values = _effective_slice_values(tool._document, operation)
         if slice_values:
             kwargs[operation.slice_dim] = list(slice_values)
         else:

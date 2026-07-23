@@ -2116,10 +2116,7 @@ def _axes_for_selection(
         return ()
     try:
         axes_obj = _axes_from_selection(
-            tool._document,
-            selection,
-            layout_axes,
-            for_plot_slices=False,
+            tool, selection, layout_axes, for_plot_slices=False
         )
     except (IndexError, TypeError, ValueError):
         return ()

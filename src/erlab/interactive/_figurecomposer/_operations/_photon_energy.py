@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import dataclasses
 import typing
 
 from erlab.interactive._figurecomposer._code import _axes_code, _axes_sequence_code
@@ -27,12 +26,10 @@ from erlab.interactive._figurecomposer._model._state import (
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
-    _always_render_cache_safe,
 )
 from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
-    _render_context,
 )
 from erlab.interactive._figurecomposer._text import (
     _code_kwargs,
@@ -52,13 +49,10 @@ from erlab.interactive._figurecomposer._ui._line_style import (
 from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable
-
     import xarray as xr
     from qtpy import QtWidgets
 
     from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
-    from erlab.interactive._figurecomposer._render_context import FigureRenderContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
     from erlab.interactive._figurecomposer._ui._operation_editor import (
         FigureOperationEditor,
@@ -96,45 +90,16 @@ def _photon_energies_code(values: tuple[float, ...]) -> str:
     return "[" + ", ".join(f"{value:g}" for value in values) + "]"
 
 
-@dataclasses.dataclass(frozen=True)
-class _PhotonEnergyPlan:
-    """Semantic inputs used to prepare photon-energy overlay curves."""
-
-    source: str | None
-    photon_energies: tuple[float, ...]
-    binding_energy: float | None
-
-    @classmethod
-    def from_operation(cls, operation: FigureOperationState) -> _PhotonEnergyPlan:
-        return cls(
-            source=operation.hv_overlay_source,
-            photon_energies=operation.photon_energies,
-            binding_energy=operation.binding_energy,
-        )
-
-
-def _source_data_from_name(
-    context: FigureRecipeContext,
-    source_display_name: Callable[[str], str],
-    source: str | None,
-) -> xr.DataArray:
-    if source is None:
-        raise ValueError("Select a source data array for the photon-energy overlay")
-    data = context.source_data.get(source)
-    if data is None:
-        source_name = source_display_name(source)
-        raise ValueError(f"Source {source_name!r} is missing")
-    return _public_source_data(data)
-
-
 def _source_data(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> xr.DataArray:
-    return _source_data_from_name(
-        tool._document,
-        tool._source_display_name,
-        operation.hv_overlay_source,
-    )
+    if operation.hv_overlay_source is None:
+        raise ValueError("Select a source data array for the photon-energy overlay")
+    data = tool._document.source_data.get(operation.hv_overlay_source)
+    if data is None:
+        source_name = tool._source_display_name(operation.hv_overlay_source)
+        raise ValueError(f"Source {source_name!r} is missing")
+    return _public_source_data(data)
 
 
 def _source_is_kparallel_kz(data: xr.DataArray) -> bool:
@@ -158,21 +123,15 @@ def _photon_x_dim(data: xr.DataArray, kz_values: xr.DataArray) -> str:
 def _kz_values(
     data: xr.DataArray, operation: FigureOperationState
 ) -> tuple[xr.DataArray, str]:
-    return _kz_values_from_plan(data, _PhotonEnergyPlan.from_operation(operation))
-
-
-def _kz_values_from_plan(
-    data: xr.DataArray, plan: _PhotonEnergyPlan
-) -> tuple[xr.DataArray, str]:
-    if not plan.photon_energies:
+    if not operation.photon_energies:
         raise ValueError("Enter at least one photon energy")
     if not _source_is_kparallel_kz(data):
         raise ValueError(
             "Photon-energy overlays require a kx-kz or ky-kz source data array"
         )
-    kz_values = data.kspace.hv_to_kz(list(plan.photon_energies))
-    if plan.binding_energy is not None:
-        kz_values = kz_values.qsel(eV=plan.binding_energy)
+    kz_values = data.kspace.hv_to_kz(list(operation.photon_energies))
+    if operation.binding_energy is not None:
+        kz_values = kz_values.qsel(eV=operation.binding_energy)
     x_dim = _photon_x_dim(data, kz_values)
     if "eV" in kz_values.dims:
         raise ValueError(
@@ -198,47 +157,23 @@ def _line_kwargs(
 
 
 def _render_photon_energy_overlay(
-    context: FigureRenderContext,
+    tool: FigureComposerTool,
     operation: FigureOperationState,
     axs: typing.Any,
 ) -> None:
     axes = _iter_axes(
-        _axes_from_selection(
-            context.document,
-            operation.axes,
-            axs,
-            for_plot_slices=False,
-        )
+        _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
     )
     if not axes:
         return
 
-    kz_values, x_dim = _photon_energy_render_data(context, operation)
+    kz_values, x_dim = _kz_values(_source_data(tool, operation), operation)
     for axis in axes:
         for index in range(kz_values.sizes["hv"]):
             kz = kz_values.isel(hv=index)
             axis.plot(kz[x_dim], kz, **_line_kwargs(operation, kz))
         if operation.show_legend:
             axis.legend(**operation.legend_kw)
-
-
-def _photon_energy_render_data(
-    context: FigureRenderContext,
-    operation: FigureOperationState,
-) -> tuple[xr.DataArray, str]:
-    plan = _PhotonEnergyPlan.from_operation(operation)
-    return context.cached_data(
-        "photon-energy-curves",
-        plan,
-        lambda: _kz_values_from_plan(
-            _source_data_from_name(
-                context.document,
-                context.source_display_name,
-                plan.source,
-            ),
-            plan,
-        ),
-    )
 
 
 def _label_code(operation: FigureOperationState) -> str:
@@ -284,7 +219,8 @@ def _photon_energy_code_lines(
 ) -> list[str]:
     if operation.hv_overlay_source is None:
         raise ValueError("Select a source data array for the photon-energy overlay")
-    _, x_dim = _photon_energy_render_data(_render_context(tool), operation)
+    data = _source_data(tool, operation)
+    _, x_dim = _kz_values(data, operation)
     source_code = _valid_source_variable(operation.hv_overlay_source)
     values_code = _photon_energies_code(operation.photon_energies)
     call_code = f"{source_code}.kspace.hv_to_kz({values_code})"
@@ -648,10 +584,9 @@ SPEC = OperationSpec(
     build_source_editor=_build_source_editor,
     build_editor_sections=_editor_sections,
     section_summary=_section_summary,
-    render=lambda context, operation, _figure, axs: _render_photon_energy_overlay(
-        context, operation, axs
+    render=lambda tool, operation, _figure, axs: _render_photon_energy_overlay(
+        tool, operation, axs
     ),
     code_lines=_photon_energy_code_lines,
-    render_cache_safe=_always_render_cache_safe,
     required_imports=_required_imports,
 )

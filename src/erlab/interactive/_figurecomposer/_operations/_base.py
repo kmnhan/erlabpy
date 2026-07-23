@@ -40,7 +40,6 @@ if typing.TYPE_CHECKING:
         FigureOperationKind,
         FigureOperationState,
     )
-    from erlab.interactive._figurecomposer._render_context import FigureRenderContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
     from erlab.interactive._figurecomposer._ui._operation_editor import (
         FigureOperationEditor,
@@ -71,10 +70,9 @@ class OperationSpec:
     ]
     section_summary: Callable[[FigureComposerTool, str, FigureOperationState], str]
     render: Callable[
-        [FigureRenderContext, FigureOperationState, Figure, typing.Any], None
+        [FigureComposerTool, FigureOperationState, Figure, typing.Any], None
     ]
     code_lines: Callable[[FigureComposerTool, FigureOperationState], list[str]]
-    render_cache_safe: Callable[[FigureOperationState], bool]
     uses_axes: Callable[[FigureOperationState], bool] = dataclasses.field(
         default=operation_uses_axes
     )
@@ -106,11 +104,6 @@ def _no_invalid_target(
 
 def _uses_no_source_section(_operation: FigureOperationState) -> bool:
     return False
-
-
-def _always_render_cache_safe(_operation: FigureOperationState) -> bool:
-    """Declare that an operation cannot mutate Figure Composer source data."""
-    return True
 
 
 def _empty_section_summary(

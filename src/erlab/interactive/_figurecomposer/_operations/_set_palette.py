@@ -21,7 +21,6 @@ from erlab.interactive._figurecomposer._model._state import (
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
-    _always_render_cache_safe,
     _empty_source_editor,
     _no_invalid_target,
     _uses_no_source_section,
@@ -38,7 +37,6 @@ if typing.TYPE_CHECKING:
 
     from matplotlib.figure import Figure
 
-    from erlab.interactive._figurecomposer._render_context import FigureRenderContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
     from erlab.interactive._figurecomposer._ui._operation_editor import (
         FigureOperationEditor,
@@ -537,7 +535,7 @@ def _apply_palette_to_existing_axes(fig: Figure, sns: typing.Any) -> None:
 
 
 def _render_set_palette(
-    _context: FigureRenderContext,
+    _tool: FigureComposerTool,
     operation: FigureOperationState,
     fig: Figure,
     _axs: typing.Any,
@@ -1676,6 +1674,5 @@ SPEC = OperationSpec(
     section_summary=_section_summary,
     render=_render_set_palette,
     code_lines=_code_lines,
-    render_cache_safe=_always_render_cache_safe,
     required_imports=_required_imports,
 )

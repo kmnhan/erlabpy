@@ -1409,7 +1409,7 @@ def test_figure_composer_manual_redraw_controls(qtbot, monkeypatch) -> None:
     assert tool.tool_status.operations[0].label == "manual"
     assert render_calls == []
     assert not tool._preview_render_update_pending
-    assert not tool._auto_redraw_dirty
+    assert tool._auto_redraw_dirty
     assert info_changed == [None]
 
     tool.redraw_plot_button.click()
@@ -1421,8 +1421,7 @@ def test_figure_composer_manual_redraw_controls(qtbot, monkeypatch) -> None:
     render_calls.clear()
     info_changed.clear()
     tool.auto_redraw_check.setChecked(False)
-    tool.operation_editor.request_update(cmap="plasma")
-    assert tool._auto_redraw_dirty
+    tool.operation_editor.request_update(label="catch up")
     tool.auto_redraw_check.setChecked(True)
 
     assert render_calls == [((tool,), {})]
@@ -2650,22 +2649,20 @@ def test_figure_composer_editor_control_changes_defer_preview_render(
     plain = QtWidgets.QPlainTextEdit(tool)
     tool.operation_editor.connect_plain_text_changed(
         plain,
-        lambda text: tool.operation_editor.request_update(extra_kwargs={"url": text}),
+        lambda text: tool.operation_editor.request_update(label=text),
     )
     spin = QtWidgets.QSpinBox(tool)
     tool.operation_editor.connect_value_signal(
         spin,
         spin.valueChanged,
         int,
-        lambda value: tool.operation_editor.request_update(
-            extra_kwargs={"alpha": value}
-        ),
+        lambda value: tool.operation_editor.request_update(label=f"value {value}"),
     )
 
     plain.setPlainText("typed")
     spin.setValue(1)
 
-    assert tool.tool_status.operations[0].extra_kwargs == {"alpha": 1}
+    assert tool.tool_status.operations[0].label == "value 1"
     assert render_calls == []
     assert tool._preview_render_update_pending
 

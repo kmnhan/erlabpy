@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import dataclasses
 import typing
 
 import matplotlib.transforms as mtransforms
+from matplotlib.figure import Figure
 
+import erlab.interactive.utils
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._code import _axes_code, _axes_sequence_code
 from erlab.interactive._figurecomposer._model._gridspec import (
@@ -16,7 +17,6 @@ from erlab.interactive._figurecomposer._model._gridspec import (
 from erlab.interactive._figurecomposer._model._state import (
     FigureAxesSelectionState,
     FigureMethodFamily,
-    FigureMethodPlotValueState,
     FigureOperationState,
 )
 from erlab.interactive._figurecomposer._operations._method._catalog import (
@@ -28,10 +28,10 @@ from erlab.interactive._figurecomposer._operations._method._catalog import (
     _method_spec,
 )
 from erlab.interactive._figurecomposer._operations._method._plot_data import (
-    _picked_plot_args_from_states,
+    _picked_plot_args,
     _picked_plot_code_args,
     _picked_plot_error_code_kwargs,
-    _picked_plot_error_kwargs_from_states,
+    _picked_plot_error_kwargs,
     _validate_entered_errorbar_args,
 )
 from erlab.interactive._figurecomposer._operations._method._state import (
@@ -50,7 +50,6 @@ from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
     _live_layout_axes,
-    _subplot_adjust_defaults,
 )
 from erlab.interactive._figurecomposer._subplot_adjust import (
     normalize_subplots_adjust_kwargs,
@@ -61,74 +60,11 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from matplotlib.axes import Axes
-    from matplotlib.figure import Figure
 
-    from erlab.interactive._figurecomposer._render_context import FigureRenderContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
 _TransformComponent = typing.Literal["data", "axes", "figure", "dpi"]
-
-
-@dataclasses.dataclass(frozen=True)
-class _MethodPlotDataPlan:
-    """Semantic source selections used by a data-backed method call."""
-
-    family: FigureMethodFamily
-    name: str
-    mode: typing.Literal["entered", "from_data"]
-    x: FigureMethodPlotValueState | None
-    y: FigureMethodPlotValueState | None
-    xerr: FigureMethodPlotValueState | None
-    yerr: FigureMethodPlotValueState | None
-
-    @classmethod
-    def from_operation(cls, operation: FigureOperationState) -> _MethodPlotDataPlan:
-        return cls(
-            family=operation.method_family,
-            name=operation.method_name,
-            mode=operation.method_plot_data_mode,
-            x=operation.method_plot_x,
-            y=operation.method_plot_y,
-            xerr=operation.method_plot_xerr,
-            yerr=operation.method_plot_yerr,
-        )
-
-    def prepare(
-        self,
-        context: FigureRenderContext,
-        spec: MethodSpec,
-    ) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
-        args = _picked_plot_args_from_states(
-            context.document.source_data,
-            x_state=self.x,
-            y_state=self.y,
-            spec=spec,
-        )
-        error_kwargs = (
-            _picked_plot_error_kwargs_from_states(
-                context.document.source_data,
-                y_state=self.y,
-                xerr_state=self.xerr,
-                yerr_state=self.yerr,
-            )
-            if _is_axes_errorbar_method(spec)
-            else {}
-        )
-        return args, error_kwargs
-
-
-def _picked_plot_render_data(
-    context: FigureRenderContext,
-    operation: FigureOperationState,
-    spec: MethodSpec,
-) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
-    plan = _MethodPlotDataPlan.from_operation(operation)
-    return context.cached_data(
-        "method-plot-data",
-        plan,
-        lambda: plan.prepare(context, spec),
-    )
 
 
 def _first_live_axis(
@@ -148,10 +84,7 @@ def _first_live_axis(
         )
     try:
         selected_axes = _axes_from_selection(
-            tool._document,
-            selection,
-            layout_axes,
-            for_plot_slices=False,
+            tool, selection, layout_axes, for_plot_slices=False
         )
     except (IndexError, TypeError, ValueError):
         return None
@@ -160,14 +93,20 @@ def _first_live_axis(
 
 
 def _method_call_args(
-    context: FigureRenderContext,
+    tool: FigureComposerTool,
     operation: FigureOperationState,
     spec: MethodSpec,
     *,
     default_axis: Axes | None = None,
 ) -> tuple[typing.Any, ...]:
     if _is_axes_plot_method(spec) and operation.method_plot_data_mode == "from_data":
-        return _picked_plot_render_data(context, operation, spec)[0]
+        return _picked_plot_args(tool._document.source_data, operation, spec)
+    if (
+        default_axis is None
+        and spec.family == FigureMethodFamily.AXES
+        and spec.name in {"set_xlim", "set_ylim"}
+    ):
+        default_axis = _first_live_axis(tool, operation.axes)
     args = _method_args(
         operation,
         spec,
@@ -304,7 +243,7 @@ def _method_transform_code(
 
 
 def _render_args_kwargs(
-    context: FigureRenderContext,
+    tool: FigureComposerTool,
     operation: FigureOperationState,
     spec: MethodSpec,
     *,
@@ -314,7 +253,7 @@ def _render_args_kwargs(
 ) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
     args = list(
         _method_call_args(
-            context,
+            tool,
             operation,
             spec,
             default_axis=axis if default_axis is None else default_axis,
@@ -328,7 +267,7 @@ def _render_args_kwargs(
     ):
         kwargs.pop("xerr", None)
         kwargs.pop("yerr", None)
-        kwargs.update(_picked_plot_render_data(context, operation, spec)[1])
+        kwargs.update(_picked_plot_error_kwargs(tool._document.source_data, operation))
     if _method_has_transform_control(spec):
         kwargs.pop("transform", None)
     if spec.text_values_policy == MethodTextValuesPolicy.POSITIONAL:
@@ -348,8 +287,7 @@ def _render_args_kwargs(
         kwargs = normalize_subplots_adjust_kwargs(
             kwargs,
             defaults=_subplots_adjust_values(
-                operation,
-                context.subplot_adjust_defaults(),
+                operation, _tool_subplots_adjust_defaults(tool)
             ),
         )
     return tuple(args), kwargs
@@ -394,8 +332,7 @@ def _code_args_kwargs(
         kwargs = normalize_subplots_adjust_kwargs(
             kwargs,
             defaults=_subplots_adjust_values(
-                operation,
-                _subplot_adjust_defaults(tool),
+                operation, _tool_subplots_adjust_defaults(tool)
             ),
         )
     return tuple(args), kwargs
@@ -405,8 +342,27 @@ def _erlab_callable(spec: MethodSpec) -> Callable[..., typing.Any]:
     return typing.cast("Callable[..., typing.Any]", getattr(eplt, spec.call_name))
 
 
+def _tool_subplots_adjust_defaults(
+    tool: FigureComposerTool,
+) -> dict[str, float]:
+    figure_window = tool._figure_window
+    if figure_window is not None and erlab.interactive.utils.qt_is_valid(figure_window):
+        subplotpars = figure_window.figure.subplotpars
+    else:
+        figure = Figure(
+            figsize=tool.tool_status.setup.figsize,
+            dpi=tool.tool_status.setup.dpi,
+            layout=typing.cast("typing.Any", tool.tool_status.setup.layout),
+        )
+        subplotpars = figure.subplotpars
+    return {
+        key: float(getattr(subplotpars, key))
+        for key in ("left", "bottom", "right", "top", "wspace", "hspace")
+    }
+
+
 def _render_method(
-    context: FigureRenderContext,
+    tool: FigureComposerTool,
     operation: FigureOperationState,
     figure: Figure,
     axs: typing.Any,
@@ -415,12 +371,7 @@ def _render_method(
     call_policy = _effective_call_policy(operation, spec)
     axes = None
     if spec.target_domain == MethodTargetDomain.AXES:
-        axes = _axes_from_selection(
-            context.document,
-            operation.axes,
-            axs,
-            for_plot_slices=False,
-        )
+        axes = _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
     default_axis = None
     if axes is not None:
         selected_axes = _iter_axes(axes)
@@ -433,31 +384,21 @@ def _render_method(
                 return
             for axis in _iter_axes(axes):
                 args, kwargs = _render_args_kwargs(
-                    context,
-                    operation,
-                    spec,
-                    figure=figure,
-                    axis=axis,
+                    tool, operation, spec, figure=figure, axis=axis
                 )
                 getattr(axis, spec.call_name)(*args, **kwargs)
         case MethodCallPolicy.AXES_POSITIONAL:
             if axes is None:
                 return
             args, kwargs = _render_args_kwargs(
-                context,
-                operation,
-                spec,
-                default_axis=default_axis,
+                tool, operation, spec, default_axis=default_axis
             )
             _erlab_callable(spec)(axes, *args, **kwargs)
         case MethodCallPolicy.AX_KEYWORD:
             if axes is None:
                 return
             args, kwargs = _render_args_kwargs(
-                context,
-                operation,
-                spec,
-                default_axis=default_axis,
+                tool, operation, spec, default_axis=default_axis
             )
             _erlab_callable(spec)(*args, ax=axes, **kwargs)
         case MethodCallPolicy.EACH_AXIS_AX_KEYWORD:
@@ -465,34 +406,22 @@ def _render_method(
                 return
             for axis in _iter_axes(axes):
                 args, kwargs = _render_args_kwargs(
-                    context,
-                    operation,
-                    spec,
-                    default_axis=axis,
+                    tool, operation, spec, default_axis=axis
                 )
                 _erlab_callable(spec)(*args, ax=axis, **kwargs)
         case MethodCallPolicy.BOUND_FIGURE:
             args, kwargs = _render_args_kwargs(
-                context,
-                operation,
-                spec,
-                default_axis=default_axis,
+                tool, operation, spec, default_axis=default_axis
             )
             getattr(figure, spec.call_name)(*args, **kwargs)
         case MethodCallPolicy.FIG_KEYWORD:
             args, kwargs = _render_args_kwargs(
-                context,
-                operation,
-                spec,
-                default_axis=default_axis,
+                tool, operation, spec, default_axis=default_axis
             )
             _erlab_callable(spec)(*args, fig=figure, **kwargs)
         case MethodCallPolicy.PLAIN_CALL:
             args, kwargs = _render_args_kwargs(
-                context,
-                operation,
-                spec,
-                default_axis=default_axis,
+                tool, operation, spec, default_axis=default_axis
             )
             _erlab_callable(spec)(*args, **kwargs)
 

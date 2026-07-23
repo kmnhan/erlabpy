@@ -125,12 +125,9 @@ class FigureDocument:
         source_data: Mapping[str, xr.DataArray] | None = None,
         source_selection_base_data: Mapping[str, xr.DataArray] | None = None,
     ) -> None:
-        self._recipe_revision = 0
         self._source_revision = 0
-        self._source_changed_callback: Callable[[int], None] | None = None
-        owned_recipe = recipe.model_copy(deep=True)
-        self._recipe = owned_recipe.model_copy(
-            update={"sources": self.normalized_source_states(owned_recipe.sources)}
+        self._recipe = recipe.model_copy(
+            update={"sources": self.normalized_source_states(recipe.sources)}
         )
         self._validate_operation_id_sequence(self._recipe.operations)
         self._source_data: dict[str, xr.DataArray]
@@ -141,17 +138,8 @@ class FigureDocument:
 
     @property
     def recipe(self) -> FigureRecipeState:
-        """Current validated recipe for internal read-only use.
-
-        Mutations must go through the document replacement methods so revisions,
-        history, rendering, and persistence remain synchronized.
-        """
+        """Current validated figure recipe."""
         return self._recipe
-
-    @property
-    def recipe_revision(self) -> int:
-        """Monotonic revision for changes to the figure recipe."""
-        return self._recipe_revision
 
     @property
     def source_data(self) -> Mapping[str, xr.DataArray]:
@@ -165,22 +153,15 @@ class FigureDocument:
 
     @property
     def source_revision(self) -> int:
-        """Monotonic revision for atomic source-payload replacements."""
+        """Monotonic generation for source-payload changes."""
         return self._source_revision
-
-    def set_source_changed_callback(
-        self, callback: Callable[[int], None] | None
-    ) -> None:
-        """Set the observer notified after subsequent source-payload changes."""
-        self._source_changed_callback = callback
 
     def replace_recipe(self, recipe: FigureRecipeState) -> bool:
         """Replace the complete recipe after validating document invariants."""
         if recipe == self._recipe:
             return False
         self._validate_operation_id_sequence(recipe.operations)
-        self._recipe = recipe.model_copy(deep=True)
-        self._recipe_revision += 1
+        self._recipe = recipe
         return True
 
     def replace_source_payloads(
@@ -188,88 +169,16 @@ class FigureDocument:
         source_data: Mapping[str, xr.DataArray],
         selection_base_data: Mapping[str, xr.DataArray],
     ) -> None:
-        """Copy and replace effective and selection-base source payloads together."""
-        owned_source_data, owned_selection_base_data = self._owned_source_payloads(
-            source_data,
-            selection_base_data,
-        )
-        self._replace_owned_source_payloads(
-            owned_source_data,
-            owned_selection_base_data,
-        )
-
-    @staticmethod
-    def _owned_source_payloads(
-        source_data: Mapping[str, xr.DataArray],
-        selection_base_data: Mapping[str, xr.DataArray],
-    ) -> tuple[dict[str, xr.DataArray], dict[str, xr.DataArray]]:
-        """Copy source arrays once per input object at an ownership boundary."""
-        owned_by_id: dict[int, xr.DataArray] = {}
-
-        def owned(data: xr.DataArray) -> xr.DataArray:
-            data_id = id(data)
-            if data_id not in owned_by_id:
-                owned_by_id[data_id] = data.copy(deep=True)
-            return owned_by_id[data_id]
-
-        return (
-            {name: owned(data) for name, data in source_data.items()},
-            {name: owned(data) for name, data in selection_base_data.items()},
-        )
-
-    def _replace_owned_source_payloads(
-        self,
-        source_data: Mapping[str, xr.DataArray],
-        selection_base_data: Mapping[str, xr.DataArray],
-    ) -> None:
-        """Adopt already-owned source mappings and advance their generation."""
-        self._source_data = dict(source_data)
-        self._source_selection_base_data = dict(selection_base_data)
+        """Replace effective and selection-base source payloads together."""
+        updated_source_data = dict(source_data)
+        updated_selection_base_data = dict(selection_base_data)
+        self._source_data = updated_source_data
+        self._source_selection_base_data = updated_selection_base_data
         self.touch_source_payloads()
 
-    def _owned_candidate_payloads(
-        self,
-        source_data: Mapping[str, xr.DataArray],
-        selection_base_data: Mapping[str, xr.DataArray],
-    ) -> tuple[dict[str, xr.DataArray], dict[str, xr.DataArray]]:
-        """Copy only candidate arrays not already owned by this document."""
-        owned_ids = {
-            id(data)
-            for data in (
-                *self._source_data.values(),
-                *self._source_selection_base_data.values(),
-            )
-        }
-        unowned_source_data = {
-            name: data
-            for name, data in source_data.items()
-            if id(data) not in owned_ids
-        }
-        unowned_selection_base_data = {
-            name: data
-            for name, data in selection_base_data.items()
-            if id(data) not in owned_ids
-        }
-        owned_source_data, owned_selection_base_data = self._owned_source_payloads(
-            unowned_source_data,
-            unowned_selection_base_data,
-        )
-        return (
-            {
-                name: owned_source_data.get(name, data)
-                for name, data in source_data.items()
-            },
-            {
-                name: owned_selection_base_data.get(name, data)
-                for name, data in selection_base_data.items()
-            },
-        )
-
     def touch_source_payloads(self) -> None:
-        """Record in-place changes to the current source payloads."""
+        """Advance the source generation after an in-place payload edit."""
         self._source_revision += 1
-        if self._source_changed_callback is not None:
-            self._source_changed_callback(self._source_revision)
 
     def replace_setup(self, setup: FigureSubplotsState) -> bool:
         """Replace the complete validated figure layout setup."""
@@ -712,10 +621,6 @@ class FigureDocument:
             if preserve_existing and pasted_name in self.source_selection_base_data:
                 continue
             renamed_selection_base_data[pasted_name] = data
-        renamed_source_data, renamed_selection_base_data = self._owned_source_payloads(
-            renamed_source_data,
-            renamed_selection_base_data,
-        )
         updated_source_data = dict(self.source_data)
         updated_source_data.update(renamed_source_data)
         updated_selection_base_data = dict(self.source_selection_base_data)
@@ -728,10 +633,7 @@ class FigureDocument:
         )
 
         self.replace_recipe(updated_recipe)
-        self._replace_owned_source_payloads(
-            updated_source_data,
-            updated_selection_base_data,
-        )
+        self.replace_source_payloads(updated_source_data, updated_selection_base_data)
         return FigureOperationPasteResult(
             tuple(operation.operation_id for operation in copied_operations),
             bool(renamed_source_data or renamed_selection_base_data),
@@ -983,7 +885,7 @@ class FigureDocument:
             updates["primary_source"] = new_name
 
         self.replace_recipe(self.recipe.model_copy(update=updates))
-        self._replace_owned_source_payloads(source_data, selection_base_data)
+        self.replace_source_payloads(source_data, selection_base_data)
         return True
 
     def duplicate_sources(self, names: Sequence[str]) -> tuple[str, ...]:
@@ -1016,7 +918,7 @@ class FigureDocument:
         sources[insert_index:insert_index] = duplicates
 
         self.replace_recipe(self.recipe.model_copy(update={"sources": tuple(sources)}))
-        self._replace_owned_source_payloads(source_data, selection_base_data)
+        self.replace_source_payloads(source_data, selection_base_data)
         return tuple(source.name for source in duplicates)
 
     def _source_copy_alias(self, source_name: str, reserved: set[str]) -> str:
@@ -1139,7 +1041,7 @@ class FigureDocument:
             source_data.pop(name, None)
             selection_base_data.pop(name, None)
         self.replace_recipe(self.recipe.model_copy(update=updates))
-        self._replace_owned_source_payloads(source_data, selection_base_data)
+        self.replace_source_payloads(source_data, selection_base_data)
         return tuple(removed)
 
     @staticmethod
@@ -1249,7 +1151,7 @@ class FigureDocument:
                 }
             )
         )
-        self._replace_owned_source_payloads(candidate_data, candidate_bases)
+        self.replace_source_payloads(candidate_data, candidate_bases)
         return result
 
     def recompute_source_dependents(
@@ -1335,7 +1237,6 @@ class FigureDocument:
         source_data: Mapping[str, xr.DataArray],
     ) -> FigureSourceAddResult:
         """Add sources or refresh matching linked sources atomically per input."""
-        source_data = self._owned_source_payloads(source_data, {})[0]
         existing = self.source_by_name()
         candidate_data = dict(self.source_data)
         candidate_bases = dict(self.source_selection_base_data)
@@ -1447,7 +1348,7 @@ class FigureDocument:
         self.replace_recipe(
             self.recipe.model_copy(update={"sources": tuple(existing.values())})
         )
-        self._replace_owned_source_payloads(candidate_data, candidate_bases)
+        self.replace_source_payloads(candidate_data, candidate_bases)
         return result
 
     def replace_source(
@@ -1495,65 +1396,49 @@ class FigureDocument:
                     if candidate.name == root_name
                 )
                 preserve_selection_parent = True
-
-        def replacement_candidate(
-            input_data: xr.DataArray,
-        ) -> tuple[
-            list[FigureSourceState],
-            dict[str, xr.DataArray],
-            dict[str, xr.DataArray],
-        ]:
+        try:
             replacement, selected_data = self._replacement_source_data(
                 replacement_name,
                 source,
-                input_data,
+                data,
                 existing_source,
                 keep_selection_source=preserve_selection_parent,
             )
-            updated_sources = list(source_list)
-            updated_sources[existing_index] = replacement
-            updated_sources = list(self.normalized_source_states(updated_sources))
+        except (IndexError, KeyError, TypeError, ValueError) as exc:
+            return FigureSourceUpdateResult(
+                skipped=((alias, str(exc) or exc.__class__.__name__),)
+            )
+        source_list[existing_index] = replacement
+        source_list = list(self.normalized_source_states(source_list))
 
-            candidate_data = dict(self.source_data)
-            candidate_data[replacement_name] = selected_data
-            candidate_bases = dict(self.source_selection_base_data)
-            if _source_has_selection(replacement):
-                candidate_bases[replacement_name] = input_data
-            else:
-                candidate_bases.pop(replacement_name, None)
-            source_by_name = {
-                candidate.name: candidate for candidate in updated_sources
-            }
+        candidate_data = dict(self.source_data)
+        candidate_data[replacement_name] = selected_data
+        candidate_bases = dict(self.source_selection_base_data)
+        if _source_has_selection(replacement):
+            candidate_bases[replacement_name] = data
+        else:
+            candidate_bases.pop(replacement_name, None)
+        source_by_name = {candidate.name: candidate for candidate in source_list}
+        try:
             candidate_data, candidate_bases = self.recompute_source_dependents(
                 candidate_data,
                 candidate_bases,
                 (replacement_name,),
                 source_by_name=source_by_name,
             )
-            return updated_sources, candidate_data, candidate_bases
-
-        try:
-            source_list, candidate_data, candidate_bases = replacement_candidate(data)
-        except (IndexError, KeyError, TypeError, ValueError) as exc:
-            return FigureSourceUpdateResult(
-                skipped=((alias, str(exc) or exc.__class__.__name__),)
-            )
-        candidate_data, candidate_bases = self._owned_candidate_payloads(
-            candidate_data,
-            candidate_bases,
-        )
+        except ValueError as exc:
+            return FigureSourceUpdateResult(skipped=((alias, str(exc)),))
 
         self.replace_recipe(
             self.recipe.model_copy(update={"sources": tuple(source_list)})
         )
-        self._replace_owned_source_payloads(candidate_data, candidate_bases)
+        self.replace_source_payloads(candidate_data, candidate_bases)
         return FigureSourceUpdateResult(updated=(replacement_name,))
 
     def refresh_sources(
         self, source_data: Mapping[str, xr.DataArray]
     ) -> FigureSourceUpdateResult:
         """Refresh source payloads atomically per requested source."""
-        source_data = self._owned_source_payloads(source_data, {})[0]
         source_by_name = self.source_by_name()
         candidate_data = dict(self.source_data)
         candidate_bases = dict(self.source_selection_base_data)
@@ -1594,7 +1479,7 @@ class FigureDocument:
         )
         if not result:
             return result
-        self._replace_owned_source_payloads(candidate_data, candidate_bases)
+        self.replace_source_payloads(candidate_data, candidate_bases)
         return result
 
     def discard_source_data(self, names: Iterable[str]) -> tuple[str, ...]:
@@ -1613,7 +1498,7 @@ class FigureDocument:
         for name in discarded:
             source_data.pop(name, None)
             selection_base_data.pop(name, None)
-        self._replace_owned_source_payloads(source_data, selection_base_data)
+        self.replace_source_payloads(source_data, selection_base_data)
         return discarded
 
     def axes_selection_has_invalid_target(

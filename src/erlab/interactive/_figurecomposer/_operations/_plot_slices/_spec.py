@@ -22,7 +22,6 @@ from erlab.interactive._figurecomposer._norms import (
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
-    _always_render_cache_safe,
 )
 from erlab.interactive._figurecomposer._operations._plot_slices._codegen import (
     _panel_norm_uses_matplotlib_colors,
@@ -217,6 +216,5 @@ SPEC = OperationSpec(
     section_summary=_section_summary,
     render=_render_plot_slices,
     code_lines=_plot_slices_code_lines,
-    render_cache_safe=_always_render_cache_safe,
     required_imports=_required_imports,
 )

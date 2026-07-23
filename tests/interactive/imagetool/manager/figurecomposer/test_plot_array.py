@@ -934,24 +934,11 @@ def test_figure_composer_plot_array_render_and_generated_code(
     )
     qtbot.addWidget(tool)
     captured: list[tuple[xr.DataArray, dict[str, typing.Any]]] = []
-    preparation_calls: list[None] = []
-    original_selected_data = (
-        figurecomposer_plot_array._selected_plot_array_data_from_source
-    )
 
     def capture_plot_array(arr, **kwargs):
         captured.append((arr, kwargs))
 
-    def counted_selected_data(*args, **kwargs):
-        preparation_calls.append(None)
-        return original_selected_data(*args, **kwargs)
-
     monkeypatch.setattr(eplt, "plot_array", capture_plot_array)
-    monkeypatch.setattr(
-        figurecomposer_plot_array,
-        "_selected_plot_array_data_from_source",
-        counted_selected_data,
-    )
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
 
     assert len(captured) == 1
@@ -972,77 +959,6 @@ def test_figure_composer_plot_array_render_and_generated_code(
     assert "eplt.plot_array(data_selected.T" in code
     namespace = _exec_generated_code(code, {"data": data})
     assert "fig" in namespace
-
-    preparation_calls.clear()
-    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
-    styled = tool.tool_status.operations[0].model_copy(update={"cmap": "viridis"})
-    tool._document.replace_operation(0, styled)
-    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
-    assert preparation_calls == []
-
-    tool._document.replace_source_payloads({"data": data + 1.0}, {})
-    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
-    assert preparation_calls == [None]
-
-
-def test_figure_composer_plot_array_caches_conversion_aware_crop(
-    qtbot, monkeypatch
-) -> None:
-    data = xr.DataArray(
-        np.arange(63.0).reshape(7, 9),
-        dims=("beta", "alpha"),
-        coords={
-            "beta": np.deg2rad(np.linspace(-60.0, 60.0, 7)),
-            "alpha": np.deg2rad(np.linspace(-80.0, 80.0, 9)),
-        },
-        name="data",
-    )
-    operation = FigureOperationState.plot_array(
-        label="plot_array", source="data"
-    ).model_copy(
-        update={
-            "crop": True,
-            "xlim": (-30.0, 30.0),
-            "ylim": (-30.0, 30.0),
-            "extra_kwargs": {"rad2deg": True},
-        }
-    )
-    tool = FigureComposerTool.from_sources(
-        {"data": data},
-        sources=(FigureSourceState(name="data", label="data"),),
-        operations=(operation,),
-        primary_source="data",
-    )
-    qtbot.addWidget(tool)
-
-    preparation_calls: list[bool] = []
-    original_prepare = figurecomposer_plot_array._prepare_plot_array_data
-
-    def counted_prepare(*args, **kwargs):
-        preparation_calls.append(kwargs["rad2deg"])
-        return original_prepare(*args, **kwargs)
-
-    monkeypatch.setattr(
-        figurecomposer_plot_array, "_prepare_plot_array_data", counted_prepare
-    )
-
-    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
-
-    assert preparation_calls == [True]
-    assert tool.figure.axes[0].images[0].get_array().shape == (3, 3)
-
-    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
-
-    assert preparation_calls == [True]
-
-    updated = tool.tool_status.operations[0].model_copy(
-        update={"extra_kwargs": {"rad2deg": False}}
-    )
-    tool._document.replace_operation(0, updated)
-    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
-
-    assert preparation_calls == [True, False]
-    assert tool.figure.axes[0].images[0].get_array().shape == (7, 9)
 
 
 def test_figure_composer_plot_array_aspect_control_updates_recipe(qtbot) -> None:
@@ -1409,7 +1325,7 @@ def test_figure_composer_plot_array_helper_edges(qtbot, monkeypatch) -> None:
         lambda arr, **kwargs: rendered.append((arr, kwargs)),
     )
     figurecomposer_plot_array._render_plot_array(
-        figurecomposer_rendering._render_context(base_tool),
+        empty_tool,
         FigureOperationState.plot_array(label="missing", source="missing"),
         None,
     )
@@ -1418,7 +1334,7 @@ def test_figure_composer_plot_array_helper_edges(qtbot, monkeypatch) -> None:
     _, axs = plt.subplots(1, 2, squeeze=False)
     with pytest.raises(ValueError, match="exactly one target axis"):
         figurecomposer_plot_array._render_plot_array(
-            figurecomposer_rendering._render_context(base_tool),
+            base_tool,
             FigureOperationState.plot_array(
                 label="multi_axes",
                 source="image",

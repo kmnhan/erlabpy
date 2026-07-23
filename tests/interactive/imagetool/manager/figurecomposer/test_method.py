@@ -685,12 +685,12 @@ def test_figure_composer_method_helper_edge_contracts(
         name="text_values",
     ).model_copy(update={"text_values": ("A", "B")})
     assert method_execution._render_args_kwargs(
-        figurecomposer_rendering._render_context(tool),
+        tool,
         text_operation,
         positional_text_spec,
     )[0] == (["A", "B"],)
     assert method_execution._render_args_kwargs(
-        figurecomposer_rendering._render_context(tool),
+        tool,
         text_operation,
         keyword_text_spec,
     )[1] == {"labels": ["A", "B"]}

@@ -72,13 +72,6 @@ def test_figure_composer_custom_code_helpers_cover_codegen_paths(qtbot) -> None:
         "import xarray as xr",
         "import erlab.plotting as eplt",
     )
-    assert not figurecomposer_custom_code_operation.SPEC.render_cache_safe(operation)
-    assert figurecomposer_custom_code_operation.SPEC.render_cache_safe(
-        operation.model_copy(update={"trusted": False})
-    )
-    assert figurecomposer_custom_code_operation.SPEC.render_cache_safe(
-        operation.model_copy(update={"code": ""})
-    )
     assert figurecomposer_custom_code._custom_code_names("bad code !!") == frozenset()
     assert "data" in figurecomposer_custom_code._custom_code_names("data = data.mean()")
     assert "data" in figurecomposer_custom_code._custom_code_names("data += 1")

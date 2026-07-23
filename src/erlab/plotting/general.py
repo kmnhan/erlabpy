@@ -15,9 +15,16 @@ __all__ = [
 
 import contextlib
 import copy
-import dataclasses
 import typing
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import (
+    Callable,
+    Collection,
+    Hashable,
+    Iterable,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 
 import matplotlib
 import matplotlib.colorbar
@@ -216,52 +223,6 @@ def _imshow_nonuniform(
     return im
 
 
-def _plot_array_rad2deg_dims(
-    arr: xr.DataArray, rad2deg: bool | Iterable[str]
-) -> tuple[str, ...]:
-    if rad2deg is False:
-        return ()
-    if np.iterable(rad2deg):
-        return tuple(rad2deg)
-    return tuple(
-        dim for dim in ["phi", "theta", "beta", "alpha", "chi"] if dim in arr.dims
-    )
-
-
-def _prepare_plot_array_data(
-    arr: xr.DataArray,
-    *,
-    xlim: float | tuple[float | None, float | None] | None,
-    ylim: float | tuple[float | None, float | None] | None,
-    crop: bool,
-    rad2deg: bool | Iterable[str],
-) -> tuple[
-    xr.DataArray,
-    tuple[float | None, float | None] | None,
-    tuple[float | None, float | None] | None,
-]:
-    """Apply coordinate conversion and cropping in plot display coordinates."""
-    if xlim is not None and not isinstance(xlim, Iterable):
-        xlim = (-xlim, xlim)
-    if ylim is not None and not isinstance(ylim, Iterable):
-        ylim = (-ylim, ylim)
-
-    conv_dims = _plot_array_rad2deg_dims(arr, rad2deg)
-    if conv_dims:
-        arr = arr.assign_coords({dim: np.rad2deg(arr[dim]) for dim in conv_dims})
-
-    if crop:
-        crop_indexers = {}
-        if xlim is not None:
-            crop_indexers[arr.dims[1]] = slice(*xlim)
-        if ylim is not None:
-            crop_indexers[arr.dims[0]] = slice(*ylim)
-        if crop_indexers:
-            arr = arr.sel(crop_indexers)
-
-    return arr, xlim, ylim
-
-
 def plot_array(
     arr: xr.DataArray,
     ax: matplotlib.axes.Axes | None = None,
@@ -346,13 +307,20 @@ def plot_array(
     if ax is None:
         ax = plt.gca()
 
-    arr, xlim, ylim = _prepare_plot_array_data(
-        arr,
-        xlim=xlim,
-        ylim=ylim,
-        crop=crop,
-        rad2deg=rad2deg,
-    )
+    if xlim is not None and not isinstance(xlim, Iterable):
+        xlim = (-xlim, xlim)
+
+    if ylim is not None and not isinstance(ylim, Iterable):
+        ylim = (-ylim, ylim)
+
+    if rad2deg is not False:
+        if np.iterable(rad2deg):
+            conv_dims = rad2deg
+        else:
+            conv_dims = [
+                d for d in ["phi", "theta", "beta", "alpha", "chi"] if d in arr.dims
+            ]
+        arr = arr.assign_coords({d: np.rad2deg(arr[d]) for d in conv_dims})
 
     norm_kw = {}
     if "vmin" in improps:
@@ -372,6 +340,12 @@ def plot_array(
     improps_default = {"aspect": "auto", "origin": "lower", "rasterized": rasterized}
     for k, v in improps_default.items():
         improps.setdefault(k, v)
+
+    if crop:
+        if xlim is not None:
+            arr = arr.copy(deep=True).sel({arr.dims[1]: slice(*xlim)})
+        if ylim is not None:
+            arr = arr.copy(deep=True).sel({arr.dims[0]: slice(*ylim)})
 
     if func is not None:
         arr = func(arr.copy(deep=True), **func_args)
@@ -686,39 +660,79 @@ _LINE_KWARG_ALIASES = {
 }
 
 
-def _prepare_plot_slices_maps(
+def _hashable_plot_slices_value(value: typing.Any) -> Hashable:
+    if isinstance(value, slice):
+        return (
+            "slice",
+            _hashable_plot_slices_value(value.start),
+            _hashable_plot_slices_value(value.stop),
+            _hashable_plot_slices_value(value.step),
+        )
+    if isinstance(value, np.ndarray):
+        return ("array", tuple(_hashable_plot_slices_value(v) for v in value.tolist()))
+    if isinstance(value, Mapping):
+        return (
+            "mapping",
+            tuple(
+                sorted(
+                    (
+                        _hashable_plot_slices_value(key),
+                        _hashable_plot_slices_value(val),
+                    )
+                    for key, val in value.items()
+                )
+            ),
+        )
+    if isinstance(value, str | bytes) or not isinstance(value, Iterable):
+        with contextlib.suppress(TypeError):
+            hash(value)
+            return typing.cast("Hashable", value)
+        return repr(value)
+    return ("iterable", tuple(_hashable_plot_slices_value(v) for v in value))
+
+
+def _plot_slices_selection_cache_key(
     maps: Sequence[xr.DataArray],
     qsel_kw: Mapping[str, typing.Any],
+    cache_key: Hashable | None,
+) -> Hashable:
+    # A caller-supplied key owns source identity. Recomputing it here would use
+    # temporary transposed views and prevent reuse across plot_slices calls.
+    map_key = (
+        ()
+        if cache_key is not None
+        else tuple((id(m.data), tuple(m.dims), tuple(m.shape)) for m in maps)
+    )
+    qsel_key = tuple(
+        sorted(
+            (key, _hashable_plot_slices_value(value)) for key, value in qsel_kw.items()
+        )
+    )
+    return (cache_key, map_key, qsel_key)
+
+
+def _plot_slices_selected_maps(
+    maps: Sequence[xr.DataArray],
+    qsel_kw: Mapping[str, typing.Any],
+    *,
+    selection_cache: MutableMapping[Hashable, tuple[xr.DataArray, ...]] | None,
+    selection_cache_key: Hashable | None,
 ) -> tuple[xr.DataArray, ...]:
-    """Apply the complete data-selection stage shared by Plot Slices callers."""
-    return tuple(m.qsel(**qsel_kw) for m in maps)
+    cache_key: Hashable | None = None
+    if selection_cache is not None:
+        cache_key = _plot_slices_selection_cache_key(maps, qsel_kw, selection_cache_key)
+        cached = selection_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    selected = tuple(m.qsel(**qsel_kw) for m in maps)
+    if selection_cache is not None and cache_key is not None:
+        selection_cache[cache_key] = selected
+        return selection_cache.get(cache_key, selected)
+    return selected
 
 
-@dataclasses.dataclass(frozen=True)
-class _PlotSlicesSelectionRequest:
-    """Complete normalized data-selection request for one Plot Slices call."""
-
-    maps: tuple[xr.DataArray, ...]
-    transpose: bool
-    qsel: dict[str, typing.Any]
-
-    def prepare(self) -> tuple[xr.DataArray, ...]:
-        """Execute this exact request without plotting."""
-        return _prepare_plot_slices_maps(self.maps, self.qsel)
-
-
-class _PlotSlicesSelectionResolver(typing.Protocol):
-    """Resolve a normalized Plot Slices request to selected maps."""
-
-    def resolve(
-        self,
-        request: _PlotSlicesSelectionRequest,
-    ) -> tuple[xr.DataArray, ...]: ...
-
-
-def _plot_slices(
-    _selection_resolver: _PlotSlicesSelectionResolver | None,
-    /,
+def plot_slices(
     maps: xr.DataArray | Sequence[xr.DataArray],
     figsize: tuple[float, float] | None = None,
     *,
@@ -756,6 +770,8 @@ def _plot_slices(
     annotate_kw: dict | None = None,
     colorbar_kw: dict | None = None,
     axes: Iterable[matplotlib.axes.Axes] | None = None,
+    _selection_cache: MutableMapping[Hashable, tuple[xr.DataArray, ...]] | None = None,
+    _selection_cache_key: Hashable | None = None,
     **values,
 ) -> tuple[matplotlib.figure.Figure, Iterable[matplotlib.axes.Axes]]:
     """Automated comparison plot of slices.
@@ -938,12 +954,6 @@ def _plot_slices(
 
     kwargs = values.copy()
 
-    rad2deg = typing.cast("bool | Iterable[str]", kwargs.get("rad2deg", False))
-    if rad2deg is not False and np.iterable(rad2deg):
-        rad2deg = tuple(rad2deg)
-        kwargs["rad2deg"] = rad2deg
-    converted_dims = set(_plot_array_rad2deg_dims(maps[0], rad2deg))
-
     plot_dims: list[str] = [str(d) for d in dims if d not in sel_dims]
 
     if len(plot_dims) not in (1, 2):
@@ -1012,22 +1022,10 @@ def _plot_slices(
 
         elif len(plot_dims) == 2:
             if xlim is not None:
-                xlim_selection = xlim
-                if plot_dims[1] in converted_dims:
-                    xlim_selection = tuple(
-                        None if value is None else float(np.deg2rad(value))
-                        for value in xlim
-                    )
-                qsel_kw[plot_dims[1]] = slice(*xlim_selection)
+                qsel_kw[plot_dims[1]] = slice(*xlim)
 
             if ylim is not None:
-                ylim_selection = ylim
-                if plot_dims[0] in converted_dims:
-                    ylim_selection = tuple(
-                        None if value is None else float(np.deg2rad(value))
-                        for value in ylim
-                    )
-                qsel_kw[plot_dims[0]] = slice(*ylim_selection)
+                qsel_kw[plot_dims[0]] = slice(*ylim)
 
     if slice_width is not None and slice_dim is not None:
         if isinstance(slice_width, Collection):
@@ -1041,18 +1039,12 @@ def _plot_slices(
         qsel_stack_kw[slice_dim] = list(slice_levels)
         if isinstance(slice_width, Collection):
             qsel_stack_kw[slice_dim + "_width"] = slice_width
-    selection_request = _PlotSlicesSelectionRequest(
-        maps=tuple(maps),
-        transpose=transpose,
-        qsel=qsel_stack_kw,
+    selected_maps = _plot_slices_selected_maps(
+        maps,
+        qsel_stack_kw,
+        selection_cache=_selection_cache,
+        selection_cache_key=_selection_cache_key,
     )
-    selected_maps = (
-        selection_request.prepare()
-        if _selection_resolver is None
-        else _selection_resolver.resolve(selection_request)
-    )
-    if len(selected_maps) != len(maps):
-        raise ValueError("Prepared Plot Slices maps must match the input map count")
 
     for i in range(len(slice_levels)):
         for j in range(len(maps)):
@@ -1200,14 +1192,12 @@ def _plot_slices(
                             norm = copy.deepcopy(cmap_norm[j])
                 else:
                     norm = copy.deepcopy(cmap_norm)
-                plot_array_kwargs = dict(kwargs)
-                plot_array_kwargs["crop"] = crop
                 plot_array(
                     dat_sel,
                     ax=ax,
                     norm=typing.cast("plt.Normalize", norm),
                     cmap=cmap,
-                    **plot_array_kwargs,
+                    **kwargs,
                 )
 
     if len(plot_dims) == 2:
@@ -1255,80 +1245,6 @@ def _plot_slices(
             **annotate_kw,
         )
     return fig, axes
-
-
-def plot_slices(
-    maps: xr.DataArray | Sequence[xr.DataArray],
-    figsize: tuple[float, float] | None = None,
-    *,
-    transpose: bool = False,
-    xlim: float | tuple[float | None, float | None] | None = None,
-    ylim: float | tuple[float | None, float | None] | None = None,
-    crop: bool = True,
-    same_limits: bool | typing.Literal["row", "col", "all"] = False,
-    axis: typing.Literal[
-        "on", "off", "equal", "scaled", "tight", "auto", "image", "square"
-    ] = "auto",
-    show_all_labels: bool = False,
-    colorbar: typing.Literal["none", "right", "rightspan", "all"] = "none",
-    hide_colorbar_ticks: bool = True,
-    annotate: bool = True,
-    cmap: str
-    | matplotlib.colors.Colormap
-    | Iterable[
-        str | matplotlib.colors.Colormap | Iterable[matplotlib.colors.Colormap | str]
-    ]
-    | None = None,
-    norm: matplotlib.colors.Normalize
-    | Iterable[matplotlib.colors.Normalize | Iterable[matplotlib.colors.Normalize]]
-    | None = None,
-    line_kw: Mapping[str, typing.Any]
-    | Iterable[Mapping[str, typing.Any] | Iterable[Mapping[str, typing.Any]]]
-    | None = None,
-    line_order: typing.Literal["C", "F"] | None = None,
-    order: typing.Literal["C", "F"] = "C",
-    cmap_order: typing.Literal["C", "F"] = "C",
-    norm_order: typing.Literal["C", "F"] | None = None,
-    gradient: bool = False,
-    gradient_kw: dict | None = None,
-    subplot_kw: dict | None = None,
-    annotate_kw: dict | None = None,
-    colorbar_kw: dict | None = None,
-    axes: Iterable[matplotlib.axes.Axes] | None = None,
-    **values,
-) -> tuple[matplotlib.figure.Figure, Iterable[matplotlib.axes.Axes]]:
-    return _plot_slices(
-        None,
-        maps,
-        figsize,
-        transpose=transpose,
-        xlim=xlim,
-        ylim=ylim,
-        crop=crop,
-        same_limits=same_limits,
-        axis=axis,
-        show_all_labels=show_all_labels,
-        colorbar=colorbar,
-        hide_colorbar_ticks=hide_colorbar_ticks,
-        annotate=annotate,
-        cmap=cmap,
-        norm=norm,
-        line_kw=line_kw,
-        line_order=line_order,
-        order=order,
-        cmap_order=cmap_order,
-        norm_order=norm_order,
-        gradient=gradient,
-        gradient_kw=gradient_kw,
-        subplot_kw=subplot_kw,
-        annotate_kw=annotate_kw,
-        colorbar_kw=colorbar_kw,
-        axes=axes,
-        **values,
-    )
-
-
-plot_slices.__doc__ = _plot_slices.__doc__
 
 
 MultipleLine2D = list[typing.Union[matplotlib.lines.Line2D, "MultipleLine2D"]]

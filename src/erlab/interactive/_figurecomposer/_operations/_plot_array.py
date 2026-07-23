@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import typing
 
 from qtpy import QtCore, QtWidgets
@@ -37,7 +36,6 @@ from erlab.interactive._figurecomposer._norms import (
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
-    _always_render_cache_safe,
 )
 from erlab.interactive._figurecomposer._rendering import _axes_from_selection
 from erlab.interactive._figurecomposer._text import (
@@ -54,7 +52,6 @@ from erlab.interactive._figurecomposer._ui._editor_controls import (
     ComboBoxDataControlAdapter,
 )
 from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
-from erlab.plotting.general import _prepare_plot_array_data
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
@@ -63,7 +60,6 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive._figurecomposer._model._document import FigureRecipeContext
-    from erlab.interactive._figurecomposer._render_context import FigureRenderContext
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
     from erlab.interactive._figurecomposer._ui._operation_editor import (
         FigureOperationEditor,
@@ -94,74 +90,11 @@ def _selected_plot_array_data(
     *,
     squeeze: bool = True,
 ) -> xr.DataArray | None:
-    return _selected_plot_array_data_from_source(
-        context,
-        _primary_source(operation),
-        squeeze=squeeze,
-    )
-
-
-def _selected_plot_array_data_from_source(
-    context: FigureRecipeContext,
-    source_name: str | None,
-    *,
-    squeeze: bool = True,
-) -> xr.DataArray | None:
+    source_name = _primary_source(operation)
     if source_name is None or source_name not in context.source_data:
         return None
     data = _public_source_data(context.source_data[source_name])
     return data.squeeze(drop=True) if squeeze else data
-
-
-@dataclasses.dataclass(frozen=True)
-class _PlotArrayPreparePlan:
-    """Semantic inputs used to prepare an image array for plotting."""
-
-    source: str | None
-    transpose: bool
-    xlim: float | tuple[float | None, float | None] | None
-    ylim: float | tuple[float | None, float | None] | None
-    crop: bool
-    rad2deg: bool | tuple[str, ...]
-
-    @classmethod
-    def from_operation_and_kwargs(
-        cls,
-        operation: FigureOperationState,
-        kwargs: dict[str, typing.Any],
-    ) -> _PlotArrayPreparePlan:
-        rad2deg = kwargs.get("rad2deg", False)
-        if not isinstance(rad2deg, bool):
-            rad2deg = tuple(rad2deg)
-        return cls(
-            source=_primary_source(operation),
-            transpose=operation.transpose,
-            xlim=typing.cast(
-                "float | tuple[float | None, float | None] | None",
-                kwargs.get("xlim"),
-            ),
-            ylim=typing.cast(
-                "float | tuple[float | None, float | None] | None",
-                kwargs.get("ylim"),
-            ),
-            crop=bool(kwargs.get("crop", False)),
-            rad2deg=rad2deg,
-        )
-
-    def prepare(self, context: FigureRecipeContext) -> xr.DataArray | None:
-        data = _selected_plot_array_data_from_source(context, self.source)
-        if data is None:
-            return None
-        if self.transpose:
-            data = data.T
-        prepared, _xlim, _ylim = _prepare_plot_array_data(
-            data,
-            xlim=self.xlim,
-            ylim=self.ylim,
-            crop=self.crop,
-            rad2deg=self.rad2deg,
-        )
-        return prepared
 
 
 def _safe_selected_plot_array_data(
@@ -313,35 +246,22 @@ def _plot_array_kwargs(operation: FigureOperationState) -> dict[str, typing.Any]
 
 
 def _render_plot_array(
-    context: FigureRenderContext,
-    operation: FigureOperationState,
-    axs: typing.Any,
+    tool: FigureComposerTool, operation: FigureOperationState, axs: typing.Any
 ) -> None:
-    kwargs = _plot_array_kwargs(operation)
-    plan = _PlotArrayPreparePlan.from_operation_and_kwargs(operation, kwargs)
-    data = context.cached_data(
-        "plot-array",
-        plan,
-        lambda: plan.prepare(context.document),
-    )
+    data = _selected_plot_array_data(tool._document, operation)
     if data is None:
         return
+    if operation.transpose:
+        data = data.T
     if data.ndim != 2:
         raise ValueError("Image Plot requires a 2D DataArray")
-    axis = _axes_from_selection(
-        context.document,
-        operation.axes,
-        axs,
-        for_plot_slices=False,
-    )
+    axis = _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
     if isinstance(axis, (list, tuple)) or hasattr(axis, "flat"):
         raise ValueError("Image Plot requires exactly one target axis")
-    kwargs["crop"] = False
-    kwargs["rad2deg"] = False
     image = eplt.plot_array(
         data,
         ax=typing.cast("matplotlib.axes.Axes", axis),
-        **kwargs,
+        **_plot_array_kwargs(operation),
     )
     if image is not None:
         tagged_image = typing.cast("typing.Any", image)
@@ -965,10 +885,9 @@ SPEC = OperationSpec(
     build_source_editor=_build_source_editor,
     build_editor_sections=_editor_sections,
     section_summary=_section_summary,
-    render=lambda context, operation, _figure, axs: _render_plot_array(
-        context, operation, axs
+    render=lambda tool, operation, _figure, axs: _render_plot_array(
+        tool, operation, axs
     ),
     code_lines=_plot_array_code_lines,
-    render_cache_safe=_always_render_cache_safe,
     required_imports=_required_imports,
 )

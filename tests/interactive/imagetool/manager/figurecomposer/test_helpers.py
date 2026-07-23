@@ -914,14 +914,14 @@ def test_figure_composer_rendering_helpers_cover_selection_edges(qtbot) -> None:
     fig, axs = plt.subplots(1, 1, squeeze=False)
     with pytest.raises(ValueError, match="outside the current figure"):
         figurecomposer_rendering._axes_from_selection(
-            tool._document,
+            tool,
             FigureAxesSelectionState(axes=((2, 0),)),
             axs,
             for_plot_slices=False,
         )
     with pytest.raises(ValueError, match="No axes"):
         figurecomposer_rendering._axes_from_selection(
-            tool._document,
+            tool,
             FigureAxesSelectionState(axes=()),
             axs,
             for_plot_slices=False,
@@ -960,21 +960,21 @@ def test_figure_composer_rendering_helpers_cover_selection_edges(qtbot) -> None:
     axes_by_id = {"axis-a": grid_axs}
     with pytest.raises(ValueError, match="Advanced axes expressions"):
         figurecomposer_rendering._axes_from_selection(
-            grid_tool._document,
+            grid_tool,
             FigureAxesSelectionState(expression="axs"),
             axes_by_id,
             for_plot_slices=False,
         )
     with pytest.raises(ValueError, match="outside the current GridSpec"):
         figurecomposer_rendering._axes_from_selection(
-            grid_tool._document,
+            grid_tool,
             FigureAxesSelectionState(axes_ids=("missing",)),
             axes_by_id,
             for_plot_slices=False,
         )
     with pytest.raises(ValueError, match="No axes"):
         figurecomposer_rendering._axes_from_selection(
-            grid_tool._document,
+            grid_tool,
             FigureAxesSelectionState(axes_ids=()),
             axes_by_id,
             for_plot_slices=False,
