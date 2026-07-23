@@ -2049,8 +2049,9 @@ def test_pending_workspace_data_roles_match_materialized_filtered_nonuniform_dat
         assert pending_source.chunks is not None
         pending_source = pending_source.compute()
         pending_displayed = pending_displayed.compute()
-        info = loader.pending._pending_workspace_imagetool_info_text(node)
+        info, data_size = loader.pending._pending_workspace_imagetool_info(node)
         assert info is not None
+        assert data_size == data.nbytes
         assert "sample_temp_idx" not in info
     finally:
         loader._close_workspace_reference_datasets(reference_datasets)
