@@ -258,6 +258,7 @@ def test_pending_workspace_metadata_loads_only_coords() -> None:
     loaded = pending_cls._pending_workspace_data_with_loaded_coords(data)
 
     assert loaded.chunks == data.chunks
+    assert tuple(loaded.coords) == tuple(data.coords)
     assert loaded.coords["x"].chunks is None
     assert loaded.coords["y"].chunks is None
     assert loaded.coords["temperature"].chunks is None
