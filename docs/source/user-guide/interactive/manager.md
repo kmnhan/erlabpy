@@ -216,9 +216,10 @@ and right-click context menus:
 
 - {guilabel}`Show` / {guilabel}`Hide` / {guilabel}`Remove`
 
-  Use the toolbar buttons or {kbd}`Return`, {kbd}`Ctrl+W`, and {kbd}`Del` to bring
-  windows to the front, hide them, or remove them entirely. These controls live in
-  {guilabel}`File`.
+  Use the toolbar buttons or keyboard shortcuts to act on the selected rows. To bring
+  their windows to the front, press {kbd}`Enter` (Windows/Linux) or {kbd}`⌘+↓` (macOS).
+  Press {kbd}`Ctrl+W` to hide the windows, and {kbd}`Del` to remove the rows entirely.
+  These controls live in {guilabel}`File`.
 
   :::{note}
 
@@ -230,6 +231,7 @@ and right-click context menus:
 - {guilabel}`Rename` / {guilabel}`Duplicate`
 
   Rename multiple selections at once or activate in-place editing for a single tool.
+  Press {kbd}`F2` (Windows/Linux) or {kbd}`Return` (macOS) to rename the selection.
   {guilabel}`Duplicate` clones the currently selected windows, including their state.
 
 - {guilabel}`Arrange Selected Windows…`
