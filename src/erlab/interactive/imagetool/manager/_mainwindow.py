@@ -367,6 +367,18 @@ class ImageToolManager(_ImageToolManagerBase):
         self.hide_action.setShortcut("Ctrl+W")
         self.hide_action.setToolTip("Hide selected windows")
 
+        self.arrange_windows_action = QtWidgets.QAction(
+            "Arrange Selected Windows…", self
+        )
+        self.arrange_windows_action.setObjectName(
+            "manager_arrange_selected_windows_action"
+        )
+        self.arrange_windows_action.setToolTip(
+            "Arrange and resize selected windows on this screen"
+        )
+        self.arrange_windows_action.setIcon(QtGui.QIcon.fromTheme("view-grid"))
+        self.arrange_windows_action.triggered.connect(self.arrange_selected_windows)
+
         self.gc_action = QtWidgets.QAction("Run Garbage Collection", self)
         self.gc_action.triggered.connect(self.garbage_collect)
         self.gc_action.setToolTip("Run garbage collection to free up memory")
@@ -686,6 +698,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.view_menu.addSeparator()
         self.view_menu.addAction(self.preview_action)
         self.view_menu.addSeparator()
+        self.view_menu.addAction(self.arrange_windows_action)
 
         self.apps_menu: QtWidgets.QMenu = typing.cast(
             "QtWidgets.QMenu", self.menu_bar.addMenu("&Apps")
@@ -2437,6 +2450,9 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def hide_selected(self) -> None:
         self._lineage_controller.hide_selected()
+
+    def arrange_selected_windows(self) -> None:
+        self._actions_controller.arrange_selected_windows()
 
     def hide_all(self) -> None:
         self._lineage_controller.hide_all()

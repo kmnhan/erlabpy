@@ -229,6 +229,10 @@ and right-click context menus:
   Rename multiple selections at once or activate in-place editing for a single tool.
   {guilabel}`Duplicate` clones the currently selected windows, including their state.
 
+- {guilabel}`Arrange Selected Windows…`
+
+  Arranges two or more selected windows into a grid.
+
 - {guilabel}`Reset Index`
 
   Renumbers all windows from zero.

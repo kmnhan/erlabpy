@@ -4,10 +4,11 @@ import typing
 
 import pytest
 import xarray as xr
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
+import erlab.interactive.imagetool.manager._window_layout as window_layout
 from erlab.interactive.imagetool._load_source import (
     _load_code_from_file_details,
     _resolve_identified_path,
@@ -21,6 +22,218 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _NameMapEditorDialog,
     _text_to_loader_extension_value,
 )
+
+
+@pytest.mark.parametrize(
+    ("mode", "primary_count", "reverse", "expected_positions"),
+    [
+        (
+            "grid_row",
+            3,
+            False,
+            [(-100, 20), (-66, 20), (-32, 20), (-100, 51), (-66, 51)],
+        ),
+        (
+            "grid_row",
+            3,
+            True,
+            [(-32, 20), (-66, 20), (-100, 20), (-32, 51), (-66, 51)],
+        ),
+        (
+            "grid_column",
+            2,
+            False,
+            [(-100, 20), (-100, 51), (-66, 20), (-66, 51), (-32, 20)],
+        ),
+        (
+            "grid_column",
+            2,
+            True,
+            [(-32, 20), (-32, 51), (-66, 20), (-66, 51), (-100, 20)],
+        ),
+        (
+            "row",
+            2,
+            False,
+            [(-100, 20), (-79, 20), (-58, 20), (-38, 20), (-18, 20)],
+        ),
+        (
+            "column",
+            2,
+            True,
+            [(-100, 20), (-100, 33), (-100, 46), (-100, 58), (-100, 70)],
+        ),
+    ],
+)
+def test_window_layout_rects_follow_visual_order(
+    mode,
+    primary_count: int,
+    reverse: bool,
+    expected_positions: list[tuple[int, int]],
+) -> None:
+    rects = window_layout.window_layout_rects(
+        QtCore.QRect(-100, 20, 101, 61),
+        5,
+        mode,
+        primary_count,
+        1,
+        reverse,
+    )
+
+    assert [(rect.x(), rect.y()) for rect in rects] == expected_positions
+    assert all(rect.width() > 0 and rect.height() > 0 for rect in rects)
+
+
+def test_window_layout_rects_reject_impossible_spacing() -> None:
+    with pytest.raises(ValueError, match="Spacing"):
+        window_layout.window_layout_rects(
+            QtCore.QRect(0, 0, 10, 10), 3, "row", 1, 5, False
+        )
+    with pytest.raises(ValueError, match="positive"):
+        window_layout.window_layout_rects(
+            QtCore.QRect(0, 0, 10, 10), 0, "row", 1, 0, False
+        )
+    with pytest.raises(ValueError, match="positive"):
+        window_layout.window_layout_rects(
+            QtCore.QRect(0, 0, 10, 10), 2, "row", 0, 0, False
+        )
+    with pytest.raises(ValueError, match="negative"):
+        window_layout.window_layout_rects(
+            QtCore.QRect(0, 0, 10, 10), 2, "row", 1, -1, False
+        )
+
+
+def test_window_layout_minimum_size_validation(qtbot) -> None:
+    window = QtWidgets.QWidget()
+    qtbot.addWidget(window)
+    window.setMinimumSize(100, 80)
+
+    assert not window_layout.frame_rects_fit_windows(
+        [window], [QtCore.QRect(0, 0, 99, 80)]
+    )
+    assert window_layout.frame_rects_fit_windows(
+        [window], [QtCore.QRect(0, 0, 100, 80)]
+    )
+
+
+def test_window_layout_dialog_uses_semantic_icon_controls(qtbot) -> None:
+    def icon_image(button: QtWidgets.QToolButton) -> QtGui.QImage:
+        return (
+            button.icon()
+            .pixmap(button.iconSize())
+            .toImage()
+            .convertToFormat(QtGui.QImage.Format.Format_RGBA8888)
+        )
+
+    def alpha_centroid(button: QtWidgets.QToolButton) -> tuple[float, float]:
+        image = icon_image(button)
+        total_alpha = weighted_x = weighted_y = 0
+        for y in range(image.height()):
+            for x in range(image.width()):
+                alpha = image.pixelColor(x, y).alpha()
+                total_alpha += alpha
+                weighted_x += x * alpha
+                weighted_y += y * alpha
+        return weighted_x / total_alpha, weighted_y / total_alpha
+
+    def max_channel_delta(first: QtGui.QImage, second: QtGui.QImage) -> int:
+        return max(
+            abs(
+                first.pixelColor(x, y).getRgb()[channel]
+                - second.pixelColor(x, y).getRgb()[channel]
+            )
+            for y in range(first.height())
+            for x in range(first.width())
+            for channel in range(4)
+        )
+
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = window_layout._WindowLayoutDialog(parent)
+    qtbot.addWidget(dialog)
+    dialog.set_window_count(7)
+
+    assert dialog.primary_count == 3
+    assert dialog.spacing == 0
+    assert all(not button.icon().isNull() for button in dialog.layout_buttons.values())
+    assert all(button.accessibleName() for button in dialog.layout_buttons.values())
+    assert all(
+        button.toolButtonStyle() == QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly
+        and button.size() == QtCore.QSize(32, 32)
+        for button in (
+            *dialog.layout_buttons.values(),
+            *dialog.direction_buttons.values(),
+        )
+    )
+    assert {
+        button.parentWidget().layout().spacing()
+        for button in (
+            *dialog.layout_buttons.values(),
+            *dialog.direction_buttons.values(),
+        )
+    } == {4}
+    assert dialog.layout().itemAt(0).layout().labelAlignment() == (
+        QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
+    )
+    assert all(
+        button.property("layoutMode") == mode
+        for mode, button in dialog.layout_buttons.items()
+    )
+    for button in dialog.layout_buttons.values():
+        image = icon_image(button)
+        centroid = alpha_centroid(button)
+        assert centroid[0] == pytest.approx((image.width() - 1) / 2, abs=0.2)
+        assert centroid[1] == pytest.approx((image.height() - 1) / 2, abs=0.2)
+
+    dialog.layout_buttons["grid_column"].click()
+    assert dialog.layout_mode == "grid_column"
+    assert dialog.primary_count_spin.isEnabled()
+    assert all(
+        not button.icon().isNull() for button in dialog.direction_buttons.values()
+    )
+    assert all(button.accessibleName() for button in dialog.direction_buttons.values())
+    for button in dialog.direction_buttons.values():
+        image = icon_image(button)
+        centroid = alpha_centroid(button)
+        assert centroid[0] == pytest.approx((image.width() - 1) / 2, abs=0.2)
+        assert centroid[1] == pytest.approx((image.height() - 1) / 2, abs=0.2)
+
+    forward_icons = {
+        mode: icon_image(button) for mode, button in dialog.layout_buttons.items()
+    }
+    dialog.direction_buttons[True].click()
+    for mode, button in dialog.layout_buttons.items():
+        expected = (
+            forward_icons[mode]
+            if mode == "column"
+            else forward_icons[mode].flipped(QtCore.Qt.Orientation.Horizontal)
+        )
+        assert max_channel_delta(icon_image(button), expected) <= 2
+        image = icon_image(button)
+        centroid = alpha_centroid(button)
+        assert centroid[0] == pytest.approx((image.width() - 1) / 2, abs=0.2)
+        assert centroid[1] == pytest.approx((image.height() - 1) / 2, abs=0.2)
+    dialog.direction_buttons[False].click()
+
+    dialog.layout_buttons["column"].click()
+    assert dialog.layout_mode == "column"
+    assert not dialog.primary_count_spin.isEnabled()
+    dialog.direction_buttons[True].click()
+    assert dialog.reverse_order
+    dialog.primary_count_spin.setValue(7)
+    dialog.set_window_count(4)
+    assert dialog.primary_count == 4
+
+    old_keys = {
+        mode: button.icon().cacheKey() for mode, button in dialog.layout_buttons.items()
+    }
+    palette = dialog.palette()
+    palette.setColor(QtGui.QPalette.ColorRole.Highlight, QtGui.QColor("#ff00aa"))
+    dialog.setPalette(palette)
+    assert any(
+        button.icon().cacheKey() != old_keys[mode]
+        for mode, button in dialog.layout_buttons.items()
+    )
 
 
 def test_load_code_from_file_details_uses_erlab_io_loader_syntax(

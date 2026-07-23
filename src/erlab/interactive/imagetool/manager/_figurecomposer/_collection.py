@@ -236,7 +236,10 @@ class _FigureCollectionController(QtCore.QObject):
         if pane is None:
             return []
         output: list[str] = []
-        for item in pane.list_widget.selectedItems():
+        for row in range(pane.list_widget.count()):
+            item = pane.list_widget.item(row)
+            if item is None or not item.isSelected():
+                continue
             uid = self.uid_from_item(item)
             if uid is not None and self._host._is_figure_uid(uid):
                 output.append(uid)
@@ -477,6 +480,7 @@ class _FigureCollectionController(QtCore.QObject):
         menu.aboutToHide.connect(lambda *, popup=menu: self._release_menu(popup))
         menu.addAction(self._host.show_action)
         menu.addAction(self._host.hide_action)
+        menu.addAction(self._host.arrange_windows_action)
         menu.addSeparator()
         menu.addAction(self._host.duplicate_action)
         menu.addAction(self._host.remove_action)

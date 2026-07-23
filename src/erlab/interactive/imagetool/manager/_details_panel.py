@@ -1366,6 +1366,7 @@ class _DetailsPanelController:
 
         self._manager.show_action.setEnabled(something_selected)
         self._manager.hide_action.setEnabled(something_selected)
+        self._manager.arrange_windows_action.setEnabled(total_selected >= 2)
         self._manager.remove_action.setEnabled(something_selected)
         self._manager.rename_action.setEnabled(
             single_selected or multiple_root_imagetools_selected
