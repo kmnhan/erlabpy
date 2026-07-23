@@ -589,6 +589,9 @@ def _validate_script_provenance(
             current_name = preferred_name
             available_names.add(preferred_name)
             active_available = preferred_name == spec.active_name
+        elif index == len(spec.operations) - 1:
+            current_name = spec.active_name
+            active_available = True
         else:
             active_available = active_available or current_name == spec.active_name
     if not has_replay_step:

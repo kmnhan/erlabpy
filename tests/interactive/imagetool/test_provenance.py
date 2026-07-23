@@ -4342,6 +4342,42 @@ def test_tool_provenance_script_flat_step_prefix_and_fallback_rows() -> None:
     )
 
 
+def test_tool_provenance_script_prefix_tracks_active_output_name() -> None:
+    spec = script(
+        UniformInterpolationOperation(sizes={"x": 5}),
+        GaussianFilterOperation(sigma={"x": 1.0}),
+        ImageDerivativeOperation(
+            method="diffn",
+            kwargs={"coord": "x", "order": 2},
+        ),
+        TransposeOperation(),
+        start_label="Start from current dtool input data",
+        seed_code="derived = data",
+        active_name="result",
+    )
+
+    expected_before = ("derived", "processed_data", "processed_data", "result")
+    expected_through = ("processed_data", "processed_data", "result", "result")
+    for operation_index in range(len(spec.operations)):
+        ref = _ProvenanceStepRef(
+            "operation",
+            operation_index=operation_index,
+        )
+        before = spec._prefix_before_ref(ref)
+        through = spec._prefix_through_ref(ref)
+
+        assert before.active_name == expected_before[operation_index]
+        assert through.active_name == expected_through[operation_index]
+        assert script_provenance_replayable(
+            before,
+            external_input_names={"data"},
+        )
+        assert script_provenance_replayable(
+            through,
+            external_input_names={"data"},
+        )
+
+
 def test_tool_provenance_operation_group_replacement_preserves_script_context() -> None:
     grouped = stamp_operation_group(
         (
