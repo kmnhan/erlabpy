@@ -271,6 +271,12 @@ For a full list of dependencies and optional dependency groups, check the `[proj
 ```{literalinclude} ../../pyproject.toml
 :language: toml
 :start-at: dependencies = [
+:end-before: [project.urls]
+```
+
+```{literalinclude} ../../pyproject.toml
+:language: toml
+:start-at: [project.optional-dependencies]
 :end-before: [dependency-groups]
 ```
 

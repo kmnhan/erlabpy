@@ -47,7 +47,8 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
 ## Search Hints
 
 - Search `erlab.io.load`, `loader_context`, `set_loader`, `set_data_dir`,
-  `plugins`, or `data explorer` for loading and plugin questions.
+  `plugins`, `data explorer`, `Spreadsheet Metadata`, `ExcelMetadataSource`, or
+  `GoogleSheetsMetadataSource` for loading, plugin, and spreadsheet-metadata questions.
 - Search `xarray.DataArray.qsel`, `qsel.mean`, `qsel.min`,
   `qsel.max`, `qsel.sum`, `qsel.around`, `xarray.DataArray.sortby`, `Sort By`,
   `Aggregate`, or `workflow-bridge` for slicing and indexing questions.

@@ -29,8 +29,10 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 from erlab.interactive.imagetool import _history, _kspace_conversion
 from erlab.interactive.imagetool._load_source import (
+    _deserialize_loader_kwargs,
     _LoadFunc,
     _parse_serialized_file_data_selection,
+    _serialize_loader_kwargs,
 )
 from erlab.interactive.imagetool._provenance._execution import (
     _select_replay_input,
@@ -739,7 +741,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
             fn = load_func[0]
             func_name = f"{fn.__module__}:{fn.__qualname__}" if callable(fn) else fn
             selection = load_func[2].model_dump(mode="json")
-            load_func = (func_name, load_func[1], selection)
+            load_func = (
+                func_name,
+                _serialize_loader_kwargs(load_func[1]),
+                selection,
+            )
         state: ImageSlicerState = {
             "color": self.colormap_properties,
             "slice": self.array_slicer.state,
@@ -842,9 +848,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 fn: str = load_func[0]
                 try:
                     selection = _parse_serialized_file_data_selection(load_func[2])
+                    restored_kwargs = _deserialize_loader_kwargs(load_func[1])
                 except Exception:
                     self._load_func = None
                     selection = None
+                    restored_kwargs = None
                 if ":" in fn:
                     try:
                         mod_name, qual = fn.split(":")
@@ -855,13 +863,21 @@ class ImageSlicerArea(QtWidgets.QWidget):
                         if selection is not None:
                             self._load_func = (
                                 typing.cast("Callable", func_obj),
-                                load_func[1],
+                                typing.cast("dict[str, typing.Any]", restored_kwargs),
                                 selection,
                             )
                     except Exception:
                         self._load_func = None
-                elif fn in erlab.io.loaders and selection is not None:
-                    self._load_func = (fn, load_func[1], selection)
+                elif (
+                    fn in erlab.io.loaders
+                    and selection is not None
+                    and restored_kwargs is not None
+                ):
+                    self._load_func = (
+                        fn,
+                        restored_kwargs,
+                        selection,
+                    )
                 else:
                     self._load_func = None
 

@@ -1,25 +1,48 @@
+import json
+import os
 import pathlib
+import queue
+import subprocess
+import sys
+import textwrap
+import threading
 import types
 import typing
 
 import pytest
 import xarray as xr
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 from erlab.interactive.imagetool._load_source import (
+    _deserialize_loader_kwargs,
     _load_code_from_file_details,
     _resolve_identified_path,
     _scan_number_load_call_args,
+    _serialize_loader_kwargs,
+    _spreadsheet_metadata_source_code,
+    _spreadsheet_metadata_source_from_config,
 )
-from erlab.interactive.imagetool._provenance._model import FileDataSelection
+from erlab.interactive.imagetool._provenance._execution import _load_file_source_object
+from erlab.interactive.imagetool._provenance._model import (
+    FileDataSelection,
+    FileLoadSource,
+    FileReplayCall,
+)
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
     _CoordinateAttrsPickerDialog,
     _NameFilterDialog,
     _NameMapEditorDialog,
     _text_to_loader_extension_value,
+)
+from erlab.interactive.imagetool.manager._spreadsheet_metadata import (
+    _MAPPING_NAME_COLUMN,
+    _MAPPING_VALUE_ROLE,
+    _column_display_entries,
+    _SpreadsheetDiscoveryWorker,
+    _SpreadsheetMetadataDialog,
 )
 
 
@@ -180,6 +203,1512 @@ def test_load_code_from_file_details_prefers_scan_number_for_erlab_loader(
         file_path, (erlab.io.loaders["example"].load, {}, dataarray_selection)
     )
     assert bound_loader_code == code
+
+
+def test_spreadsheet_metadata_loader_kwargs_roundtrip_and_code(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    source = erlab.io.metadata.ExcelMetadataSource(
+        tmp_path / "metadata.xlsx",
+        sheet_name="Measurements",
+        file_name_column="File\nName",
+        coordinate_mapping={"Temperature\n(K)": "sample_temp"},
+        attribute_mapping={"Mode": "mode"},
+        overwrite=True,
+        row_range=(20, 27),
+    )
+    serialized = _serialize_loader_kwargs({"single": True, "metadata": source})
+    restored = _deserialize_loader_kwargs(json.loads(json.dumps(serialized)))
+
+    restored_source = restored["metadata"]
+    assert isinstance(restored_source, erlab.io.metadata.ExcelMetadataSource)
+    assert restored_source.path == source.path
+    assert restored_source.sheet_name == "Measurements"
+    assert restored_source.file_name_column == "File\nName"
+    assert restored_source.coordinate_mapping == {"Temperature\n(K)": "sample_temp"}
+    assert restored_source.attribute_mapping == {"Mode": "mode"}
+    assert restored_source.overwrite
+    assert restored_source.row_range == (20, 27)
+
+    calls: list[tuple[object, dict[str, typing.Any]]] = []
+    monkeypatch.setattr(erlab.io, "set_loader", lambda _name: None)
+    monkeypatch.setattr(
+        erlab.io,
+        "load",
+        lambda identifier, **kwargs: (
+            calls.append((identifier, kwargs)) or xr.DataArray([1.0], dims="x")
+        ),
+    )
+    namespace = {"erlab": erlab}
+    file_path = example_data_dir / "data_002.h5"
+    for kwargs in (
+        {"metadata": source},
+        {"metadata": source, "file_number": 42},
+    ):
+        code = _load_code_from_file_details(
+            file_path,
+            (
+                "example",
+                kwargs,
+                FileDataSelection(kind="dataarray"),
+            ),
+        )
+        if code is None:
+            raise RuntimeError("Spreadsheet metadata load code was not generated")
+        exec(code, namespace)  # noqa: S102
+
+    assert namespace["data"].identical(xr.DataArray([1.0], dims="x"))
+    assert [identifier for identifier, _kwargs in calls] == [
+        str(file_path),
+        str(file_path),
+    ]
+    assert "file_number" not in calls[0][1]
+    assert calls[1][1]["file_number"] == 42
+    for _identifier, generated_kwargs in calls:
+        generated_source = generated_kwargs["metadata"]
+        assert isinstance(generated_source, erlab.io.metadata.ExcelMetadataSource)
+        assert generated_source.coordinate_mapping == {
+            "Temperature\n(K)": "sample_temp"
+        }
+
+    replay_calls: list[tuple[pathlib.Path, dict[str, typing.Any]]] = []
+
+    class _ReplayLoader(erlab.io.dataloader.LoaderBase):
+        name = "metadata_replay"
+        description = "Spreadsheet metadata replay test loader"
+
+        def load(self, path: pathlib.Path, **kwargs):
+            replay_calls.append((path, kwargs))
+            return xr.DataArray([2.0], dims="x")
+
+    monkeypatch.setitem(erlab.io.loaders._loaders, "metadata_replay", _ReplayLoader())
+    monkeypatch.setitem(
+        erlab.io.loaders._alias_mapping, "metadata_replay", "metadata_replay"
+    )
+    replay_source = FileLoadSource(
+        path=str(file_path),
+        loader_label="Loader",
+        loader_text="metadata_replay",
+        kwargs_text="",
+        replay_call=FileReplayCall(
+            kind="erlab_loader",
+            target="metadata_replay",
+            kwargs=serialized,
+            selection=FileDataSelection(kind="dataarray"),
+        ),
+    )
+    replayed = _load_file_source_object(replay_source)
+
+    assert replayed.identical(xr.DataArray([2.0], dims="x"))
+    assert replay_calls[0][0] == file_path
+    assert isinstance(
+        replay_calls[0][1]["metadata"],
+        erlab.io.metadata.ExcelMetadataSource,
+    )
+
+
+def test_google_spreadsheet_metadata_loader_kwargs_roundtrip_and_code() -> None:
+    source = erlab.io.metadata.GoogleSheetsMetadataSource(
+        "https://docs.google.com/spreadsheets/d/test-sheet/edit?usp=sharing",
+        sheet_name="Measurements",
+        file_name_column="File Name",
+        coordinate_mapping={"Temperature": "sample_temp"},
+        overwrite=True,
+        row_range=(2, 10),
+        timeout=2.5,
+    )
+
+    serialized = _serialize_loader_kwargs({"metadata": source})
+    restored = _deserialize_loader_kwargs(json.loads(json.dumps(serialized)))[
+        "metadata"
+    ]
+
+    assert isinstance(restored, erlab.io.metadata.GoogleSheetsMetadataSource)
+    assert restored.share_url == source.share_url
+    assert restored.sheet_name == "Measurements"
+    assert restored.file_name_column == "File Name"
+    assert restored.coordinate_mapping == {"Temperature": "sample_temp"}
+    assert restored.overwrite
+    assert restored.row_range == (2, 10)
+    assert restored.timeout == 2.5
+
+    namespace = {"erlab": erlab}
+    exec(  # noqa: S102
+        f"metadata_source = {_spreadsheet_metadata_source_code(source)}",
+        namespace,
+    )
+    generated = namespace["metadata_source"]
+    assert isinstance(generated, erlab.io.metadata.GoogleSheetsMetadataSource)
+    assert generated.share_url == source.share_url
+    assert generated.sheet_name == "Measurements"
+    assert generated.coordinate_mapping == {"Temperature": "sample_temp"}
+    assert generated.row_range == (2, 10)
+    assert generated.timeout == 2.5
+
+
+@pytest.mark.parametrize("row_range", [42, "2-3", [2]])
+def test_spreadsheet_metadata_rejects_invalid_saved_row_range(
+    row_range: object,
+) -> None:
+    with pytest.raises(ValueError, match="row range"):
+        _spreadsheet_metadata_source_from_config(
+            {"type": "excel", "path": "metadata.xlsx", "row_range": row_range}
+        )
+
+
+@pytest.mark.parametrize(
+    ("config", "error", "match"),
+    [
+        ({"type": "excel", "path": None}, TypeError, "Excel metadata path"),
+        (
+            {"type": "google_sheets", "share_url": None},
+            TypeError,
+            "Google Sheets metadata link",
+        ),
+        ({"type": "unsupported"}, ValueError, "Unknown spreadsheet metadata"),
+    ],
+)
+def test_spreadsheet_metadata_rejects_invalid_saved_source_config(
+    config: dict[str, object],
+    error: type[Exception],
+    match: str,
+) -> None:
+    with pytest.raises(error, match=match):
+        _spreadsheet_metadata_source_from_config(config)
+
+
+def test_custom_spreadsheet_metadata_source_is_not_serialized() -> None:
+    class CustomSpreadsheetMetadataSource(erlab.io.metadata.SpreadsheetMetadataSource):
+        @property
+        def source_name(self) -> str:
+            return "custom"
+
+        def _read_rows(self) -> list[list[object]]:
+            return [["File Name", "Temperature"]]
+
+    source = CustomSpreadsheetMetadataSource(
+        file_name_column="File Name",
+        coordinate_mapping={"Temperature": "sample_temp"},
+    )
+
+    serialized = _serialize_loader_kwargs({"metadata": source})
+    assert serialized["metadata"] is source
+    assert _deserialize_loader_kwargs(serialized)["metadata"] is source
+    with pytest.raises(TypeError, match="Cannot generate code"):
+        _spreadsheet_metadata_source_code(source)
+
+
+def test_spreadsheet_column_labels_preserve_exact_line_break_names() -> None:
+    assert _column_display_entries(("File\nName", "File Name", "Temperature")) == [
+        ("File Name (line breaks, column 1)", "File\nName"),
+        ("File Name (literal spaces, column 2)", "File Name"),
+        ("Temperature", "Temperature"),
+    ]
+
+
+def test_spreadsheet_metadata_dialog_loads_google_structure_asynchronously(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    column_requests: list[str | int | None] = []
+
+    def get_column_names(self) -> list[str]:
+        column_requests.append(self.sheet_name)
+        if self.sheet_name == "Overview":
+            return ["File", "Comment"]
+        return ["File\nName", "Temperature\n(K)", "Mode"]
+
+    monkeypatch.setattr(
+        erlab.io.metadata.GoogleSheetsMetadataSource,
+        "get_sheet_names",
+        lambda _self: ["Overview", "2604 NSRRC"],
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.GoogleSheetsMetadataSource,
+        "get_selected_sheet_name",
+        lambda _self: "2604 NSRRC",
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.GoogleSheetsMetadataSource,
+        "get_column_names",
+        get_column_names,
+    )
+
+    share_url = "https://docs.google.com/spreadsheets/d/test-sheet/edit?usp=sharing"
+    dialog = _SpreadsheetMetadataDialog(
+        None,
+        erlab.io.metadata.GoogleSheetsMetadataSource(
+            share_url,
+            sheet_name="2604 NSRRC",
+        ),
+    )
+    qtbot.addWidget(dialog)
+    qtbot.waitUntil(
+        lambda: not dialog._busy and not dialog._workers and bool(dialog._columns)
+    )
+
+    assert dialog.google_url_line.text() == share_url
+    assert dialog.sheet_combo.currentData() == "2604 NSRRC"
+    assert dialog.file_name_combo.currentText() == "File Name"
+    assert dialog.file_name_combo.currentData() == "File\nName"
+
+    dialog.sheet_combo.setCurrentIndex(dialog.sheet_combo.findData("Overview"))
+    qtbot.waitUntil(lambda: not dialog._busy and dialog._columns == ("File", "Comment"))
+    dialog.sheet_combo.setCurrentIndex(dialog.sheet_combo.findData("2604 NSRRC"))
+    qtbot.waitUntil(lambda: not dialog._busy and dialog._columns[0] == "File\nName")
+    assert column_requests == ["2604 NSRRC", "Overview", "2604 NSRRC"]
+
+    dialog.add_mapping_row("Temperature\n(K)", "coordinate", "sample_temp")
+    dialog.add_mapping_row("Mode", "attribute", "scan_mode")
+    assert dialog.row_start_label.buddy() is dialog.row_start_spin
+    assert dialog.row_end_label.buddy() is dialog.row_end_spin
+    assert dialog.row_start_spin.isEnabled()
+    assert dialog.row_end_spin.isEnabled()
+    assert not dialog.row_start_spin.prefix()
+    assert not dialog.row_end_spin.prefix()
+    dialog.row_start_spin.setValue(20)
+    dialog.row_end_spin.setValue(27)
+    dialog.overwrite_check.setChecked(True)
+    dialog.accept()
+
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+    source = dialog.selected_source()
+    assert isinstance(source, erlab.io.metadata.GoogleSheetsMetadataSource)
+    assert source.sheet_name == "2604 NSRRC"
+    assert source.file_name_column == "File\nName"
+    assert source.coordinate_mapping == {"Temperature\n(K)": "sample_temp"}
+    assert source.attribute_mapping == {"Mode": "scan_mode"}
+    assert source.row_range == (20, 27)
+    assert source.overwrite
+
+
+def test_spreadsheet_metadata_dialog_previews_current_rows_asynchronously(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    example_loader,
+) -> None:
+    rows: list[list[typing.Any]] = [
+        ["File", "Temperature", "Mode"],
+        [16, 35.0, "cut"],
+    ]
+    read_count = 0
+
+    def read_rows(_self) -> list[list[typing.Any]]:
+        nonlocal read_count
+        read_count += 1
+        return [row.copy() for row in rows]
+
+    monkeypatch.setattr(
+        erlab.io.metadata.ExcelMetadataSource,
+        "_read_rows",
+        read_rows,
+    )
+    messages: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *args, **_kwargs: messages.append(args),
+    )
+
+    dialog = _SpreadsheetMetadataDialog(
+        None,
+        sample_path=tmp_path / "scan_016.h5",
+        loader=erlab.io.loaders["example"],
+    )
+    qtbot.addWidget(dialog)
+    dialog.excel_path_line.setText(str(tmp_path / "metadata.xlsx"))
+    dialog.sheet_combo.blockSignals(True)
+    dialog.sheet_combo.addItem("Measurements", "Measurements")
+    dialog.sheet_combo.blockSignals(False)
+    dialog._set_columns(("File", "Temperature", "Mode"))
+    dialog.file_name_combo.setCurrentIndex(dialog.file_name_combo.findData("File"))
+    dialog.add_mapping_row("Temperature", "coordinate", "sample_temp")
+    dialog.add_mapping_row("Mode", "attribute", "mode")
+
+    assert not dialog.test_match_button.isHidden()
+    assert dialog.test_match_button.isEnabled()
+    dialog.test_match_button.click()
+    qtbot.waitUntil(lambda: not dialog._busy and not dialog._workers)
+
+    preview = dialog._last_preview
+    assert preview is not None
+    assert preview.lookup == 16
+    assert preview.spreadsheet_row == 2
+    assert preview.values is not None
+    assert preview.values.coordinate_values == {"sample_temp": 35.0}
+    assert preview.values.attribute_values == {"mode": "cut"}
+    assert read_count == 1
+
+    rows[1][1] = 42.0
+    dialog.test_match_button.click()
+    qtbot.waitUntil(lambda: not dialog._busy and not dialog._workers)
+    preview = dialog._last_preview
+    assert preview is not None
+    assert preview.values is not None
+    assert preview.values.coordinate_values == {"sample_temp": 42.0}
+    assert read_count == 2
+
+    rows.append(["f_0015~20", 50.0, "map"])
+    dialog.test_match_button.click()
+    qtbot.waitUntil(lambda: not dialog._busy and not dialog._workers)
+    assert dialog._last_preview is None
+    assert dialog._last_preview_error is not None
+    assert read_count == 3
+    assert messages == []
+
+
+def test_spreadsheet_metadata_dialog_ignores_result_after_cancel(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    source_returned = threading.Event()
+    selected_sheet_requests: list[None] = []
+
+    def get_sheet_names(_self) -> list[str]:
+        started.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("test did not release spreadsheet discovery")
+        source_returned.set()
+        return ["Measurements"]
+
+    monkeypatch.setattr(
+        erlab.io.metadata.GoogleSheetsMetadataSource,
+        "get_sheet_names",
+        get_sheet_names,
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.GoogleSheetsMetadataSource,
+        "get_selected_sheet_name",
+        lambda _self: selected_sheet_requests.append(None) or "Measurements",
+    )
+    dialog = _SpreadsheetMetadataDialog(None)
+    qtbot.addWidget(dialog)
+    dialog.source_type_combo.setCurrentIndex(
+        dialog.source_type_combo.findData("google_sheets")
+    )
+    dialog.google_url_line.setText(
+        "https://docs.google.com/spreadsheets/d/test-sheet/edit?usp=sharing"
+    )
+    dialog.refresh_button.click()
+    qtbot.waitUntil(started.is_set)
+
+    dialog.reject()
+    release.set()
+    qtbot.waitUntil(source_returned.is_set)
+    qtbot.waitUntil(
+        lambda: (
+            not any(
+                thread.name.startswith("SpreadsheetDiscovery-")
+                for thread in threading.enumerate()
+            )
+        )
+    )
+    dialog._drain_discovery_results()
+
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+    assert dialog.sheet_combo.count() == 0
+    assert selected_sheet_requests == []
+
+
+def test_cancelled_spreadsheet_discovery_skips_queued_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[None] = []
+    result_queue: queue.SimpleQueue[tuple[_SpreadsheetDiscoveryWorker, str, object]] = (
+        queue.SimpleQueue()
+    )
+    source = erlab.io.metadata.GoogleSheetsMetadataSource(
+        "https://docs.google.com/spreadsheets/d/test-sheet/edit?usp=sharing"
+    )
+    monkeypatch.setattr(
+        source,
+        "get_sheet_names",
+        lambda: requests.append(None) or ["Measurements"],
+    )
+    worker = _SpreadsheetDiscoveryWorker(
+        1,
+        "sheets",
+        source,
+        result_queue=result_queue,
+    )
+    worker.cancel()
+    worker.start()
+
+    result_worker, status, _result = result_queue.get(timeout=5)
+    assert result_worker is worker
+    assert status == "cancelled"
+    assert requests == []
+
+
+def test_spreadsheet_metadata_dialog_can_be_destroyed_during_discovery(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    source_returned = threading.Event()
+
+    def get_sheet_names(_self) -> list[str]:
+        started.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("test did not release spreadsheet discovery")
+        source_returned.set()
+        return ["Measurements"]
+
+    monkeypatch.setattr(
+        erlab.io.metadata.GoogleSheetsMetadataSource,
+        "get_sheet_names",
+        get_sheet_names,
+    )
+    dialog = _SpreadsheetMetadataDialog(None)
+    dialog.source_type_combo.setCurrentIndex(
+        dialog.source_type_combo.findData("google_sheets")
+    )
+    dialog.google_url_line.setText(
+        "https://docs.google.com/spreadsheets/d/test-sheet/edit?usp=sharing"
+    )
+    dialog.refresh_button.click()
+    qtbot.waitUntil(started.is_set)
+
+    try:
+        dialog.reject()
+        dialog.deleteLater()
+        QtWidgets.QApplication.sendPostedEvents(
+            dialog,
+            QtCore.QEvent.Type.DeferredDelete,
+        )
+
+        assert not erlab.interactive.utils.qt_is_valid(dialog)
+        assert not source_returned.is_set()
+    finally:
+        release.set()
+
+    qtbot.waitUntil(source_returned.is_set)
+    qtbot.waitUntil(
+        lambda: (
+            not any(
+                thread.name.startswith("SpreadsheetDiscovery-")
+                for thread in threading.enumerate()
+            )
+        )
+    )
+
+
+def test_spreadsheet_discovery_limits_parallel_work(qtbot) -> None:
+    release = threading.Event()
+    started: list[int] = []
+    started_lock = threading.Lock()
+    result_queue: queue.SimpleQueue[tuple[_SpreadsheetDiscoveryWorker, str, object]] = (
+        queue.SimpleQueue()
+    )
+
+    class Source:
+        def __init__(self, index: int) -> None:
+            self.index = index
+
+        def get_sheet_names(self) -> list[str]:
+            with started_lock:
+                started.append(self.index)
+            if not release.wait(timeout=5):
+                raise TimeoutError("test did not release spreadsheet discovery")
+            return ["Measurements"]
+
+        def get_selected_sheet_name(self) -> str:
+            return "Measurements"
+
+    workers = [
+        _SpreadsheetDiscoveryWorker(
+            index,
+            "sheets",
+            typing.cast("typing.Any", Source(index)),
+            result_queue=result_queue,
+        )
+        for index in range(3)
+    ]
+    for worker in workers:
+        worker.start()
+
+    qtbot.waitUntil(lambda: len(started) == 2)
+    assert len(started) == 2
+
+    release.set()
+    results = [result_queue.get(timeout=5) for _worker in workers]
+    assert sorted(started) == [0, 1, 2]
+    assert {status for _worker, status, _result in results} == {"succeeded"}
+
+
+def test_spreadsheet_discovery_cancels_queued_work(qtbot) -> None:
+    release = threading.Event()
+    started: list[int] = []
+    returned: list[int] = []
+    state_lock = threading.Lock()
+    result_queue: queue.SimpleQueue[tuple[_SpreadsheetDiscoveryWorker, str, object]] = (
+        queue.SimpleQueue()
+    )
+
+    class Source:
+        def __init__(self, index: int) -> None:
+            self.index = index
+
+        def get_sheet_names(self) -> list[str]:
+            with state_lock:
+                started.append(self.index)
+            if not release.wait(timeout=5):
+                raise TimeoutError("test did not release spreadsheet discovery")
+            with state_lock:
+                returned.append(self.index)
+            return ["Measurements"]
+
+        def get_selected_sheet_name(self) -> str:
+            return "Measurements"
+
+    workers = [
+        _SpreadsheetDiscoveryWorker(
+            index,
+            "sheets",
+            typing.cast("typing.Any", Source(index)),
+            result_queue=result_queue,
+        )
+        for index in range(3)
+    ]
+    for worker in workers:
+        worker.start()
+
+    qtbot.waitUntil(lambda: len(started) == 2)
+    for worker in workers:
+        worker.cancel()
+    release.set()
+    results = [result_queue.get(timeout=5) for _worker in workers]
+
+    assert {status for _worker, status, _result in results} == {"cancelled"}
+    assert sorted(returned) == sorted(started)
+    assert len(started) == 2
+
+    qtbot.waitUntil(
+        lambda: (
+            not any(
+                thread.name.startswith("SpreadsheetDiscovery-")
+                for thread in threading.enumerate()
+            )
+        )
+    )
+
+
+def test_spreadsheet_discovery_preview_requires_file_name() -> None:
+    result_queue: queue.SimpleQueue[tuple[_SpreadsheetDiscoveryWorker, str, object]] = (
+        queue.SimpleQueue()
+    )
+    worker = _SpreadsheetDiscoveryWorker(
+        1,
+        "preview",
+        typing.cast("typing.Any", object()),
+        result_queue=result_queue,
+    )
+
+    worker.run()
+
+    result_worker, status, result = result_queue.get_nowait()
+    assert result_worker is worker
+    assert status == "failed"
+    assert result == "RuntimeError: A file name is required for metadata preview"
+
+
+def test_spreadsheet_discovery_does_not_delay_application_exit() -> None:
+    script = textwrap.dedent(
+        """
+        import threading
+        import queue
+
+        from qtpy import QtCore, QtWidgets
+
+        from erlab.interactive.imagetool.manager._spreadsheet_metadata import (
+            _SpreadsheetDiscoveryWorker,
+        )
+
+        started = threading.Event()
+
+        class Source:
+            def get_sheet_names(self):
+                started.set()
+                threading.Event().wait(30)
+                return ["Measurements"]
+
+            def get_selected_sheet_name(self):
+                return "Measurements"
+
+        application = QtWidgets.QApplication([])
+        worker = _SpreadsheetDiscoveryWorker(
+            1,
+            "sheets",
+            Source(),
+            result_queue=queue.SimpleQueue(),
+        )
+        worker.start()
+
+        def quit_when_started():
+            if started.is_set():
+                application.quit()
+            else:
+                QtCore.QTimer.singleShot(1, quit_when_started)
+
+        QtCore.QTimer.singleShot(0, quit_when_started)
+        application.exec()
+        print("event-loop-returned", flush=True)
+        """
+    )
+    environment = os.environ.copy()
+    environment["QT_QPA_PLATFORM"] = "offscreen"
+    environment["QT_API"] = (
+        "pyqt6" if hasattr(QtCore, "PYQT_VERSION_STR") else "pyside6"
+    )
+    for name in tuple(environment):
+        if name.startswith(("COV_CORE_", "COVERAGE_")):
+            environment.pop(name)
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        env=environment,
+        text=True,
+        timeout=3,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "event-loop-returned\n"
+    assert "RuntimeError" not in result.stderr
+
+
+def test_spreadsheet_metadata_dialog_restores_excel_source(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source = erlab.io.metadata.ExcelMetadataSource(
+        tmp_path / "metadata.xlsx",
+        sheet_name="Measurements",
+        file_name_column="File\nName",
+        coordinate_mapping={"Temperature": "sample_temp"},
+        attribute_mapping={"Mode": "scan_mode"},
+        overwrite=True,
+        row_range=(20, 27),
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.ExcelMetadataSource,
+        "get_sheet_names",
+        lambda _self: ["Overview", "Measurements"],
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.ExcelMetadataSource,
+        "get_selected_sheet_name",
+        lambda self: typing.cast("str", self.sheet_name),
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.ExcelMetadataSource,
+        "get_column_names",
+        lambda _self: ["File\nName", "Temperature", "Mode"],
+    )
+
+    dialog = _SpreadsheetMetadataDialog(None, source)
+    qtbot.addWidget(dialog)
+    qtbot.waitUntil(
+        lambda: not dialog._busy and not dialog._workers and bool(dialog._columns)
+    )
+
+    assert dialog.source_type_combo.currentData() == "excel"
+    assert dialog.excel_path_line.text() == str(source.path)
+    assert dialog.sheet_combo.currentData() == "Measurements"
+    assert dialog.file_name_combo.currentData() == "File\nName"
+    assert dialog.row_range() == (20, 27)
+    assert dialog.overwrite_check.isChecked()
+    assert dialog.mapping_table.topLevelItemCount() == 2
+
+    dialog.mapping_table.setCurrentItem(dialog.mapping_table.topLevelItem(0))
+    dialog.remove_mapping_button.click()
+    assert dialog.mapping_table.topLevelItemCount() == 1
+
+
+def test_spreadsheet_metadata_dialog_replaces_missing_excel_without_losing_settings(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    old_path = tmp_path / "missing.xlsx"
+    new_path = tmp_path / "replacement.xlsx"
+    source = erlab.io.metadata.ExcelMetadataSource(
+        old_path,
+        sheet_name="Measurements",
+        file_name_column="File",
+        coordinate_mapping={"Temperature": "sample_temp"},
+        attribute_mapping={"Mode": "scan_mode"},
+        overwrite=True,
+        row_range=(20, 27),
+    )
+    sheet_requests: list[pathlib.Path] = []
+
+    def get_sheet_names(self) -> list[str]:
+        sheet_requests.append(self.path)
+        return ["Overview", "Replacement Data"]
+
+    monkeypatch.setattr(
+        erlab.io.metadata.ExcelMetadataSource,
+        "get_sheet_names",
+        get_sheet_names,
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.ExcelMetadataSource,
+        "get_selected_sheet_name",
+        lambda _self: (_ for _ in ()).throw(
+            ValueError("the previously selected worksheet is missing")
+        ),
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.ExcelMetadataSource,
+        "get_column_names",
+        lambda _self: ["File", "Temperature", "Mode"],
+    )
+
+    dialog = _SpreadsheetMetadataDialog(None, source, load_on_open=False)
+    qtbot.addWidget(dialog)
+
+    assert not dialog._workers
+    assert sheet_requests == []
+    assert dialog.mapping_table.topLevelItemCount() == 2
+    assert dialog.row_range() == (20, 27)
+    assert dialog.overwrite_check.isChecked()
+
+    dialog.excel_path_line.setText(str(new_path))
+    dialog.refresh_button.click()
+    qtbot.waitUntil(
+        lambda: not dialog._busy and not dialog._workers and bool(dialog._columns)
+    )
+
+    assert sheet_requests == [new_path]
+    assert dialog.sheet_combo.currentData() == "Overview"
+    assert dialog.file_name_combo.currentData() == "File"
+    assert dialog._mappings() == (
+        {"Temperature": "sample_temp"},
+        {"Mode": "scan_mode"},
+    )
+
+    dialog.accept()
+    replacement = dialog.selected_source()
+    assert isinstance(replacement, erlab.io.metadata.ExcelMetadataSource)
+    assert replacement.path == new_path
+    assert replacement.sheet_name == "Overview"
+    assert replacement.row_range == (20, 27)
+    assert replacement.overwrite
+
+
+def test_spreadsheet_metadata_dialog_invalid_replacement_link_keeps_settings(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_url = "https://docs.google.com/spreadsheets/d/old-sheet/edit"
+    new_url = "https://docs.google.com/spreadsheets/d/new-sheet/edit"
+    source = erlab.io.metadata.GoogleSheetsMetadataSource(
+        old_url,
+        sheet_name="Measurements",
+        file_name_column="File",
+        coordinate_mapping={"Temperature": "sample_temp"},
+        row_range=(20, 27),
+    )
+    errors: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *args, **_kwargs: errors.append(args),
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.GoogleSheetsMetadataSource,
+        "get_sheet_names",
+        lambda _self: ["Overview", "Measurements"],
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.GoogleSheetsMetadataSource,
+        "get_selected_sheet_name",
+        lambda self: typing.cast("str", self.sheet_name),
+    )
+    monkeypatch.setattr(
+        erlab.io.metadata.GoogleSheetsMetadataSource,
+        "get_column_names",
+        lambda _self: ["File", "Temperature"],
+    )
+
+    dialog = _SpreadsheetMetadataDialog(None, source, load_on_open=False)
+    qtbot.addWidget(dialog)
+    dialog.google_url_line.setText("not a Google Sheets link")
+    dialog.refresh_button.click()
+
+    assert errors == []
+    assert dialog._last_discovery_error is not None
+    assert dialog.mapping_table.topLevelItemCount() == 1
+    assert dialog.row_range() == (20, 27)
+
+    dialog.google_url_line.setText(new_url)
+    dialog.refresh_button.click()
+    qtbot.waitUntil(
+        lambda: not dialog._busy and not dialog._workers and bool(dialog._columns)
+    )
+    assert dialog._last_discovery_error is None
+    assert dialog.sheet_combo.currentData() == "Measurements"
+    assert dialog._mappings() == ({"Temperature": "sample_temp"}, {})
+
+    dialog.accept()
+    replacement = dialog.selected_source()
+    assert isinstance(replacement, erlab.io.metadata.GoogleSheetsMetadataSource)
+    assert replacement.share_url == new_url
+    assert replacement.sheet_name == "Measurements"
+    assert replacement.row_range == (20, 27)
+
+
+def test_spreadsheet_metadata_dialog_reports_background_read_error(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        erlab.io.metadata.GoogleSheetsMetadataSource,
+        "get_sheet_names",
+        lambda _self: (_ for _ in ()).throw(RuntimeError("read failed")),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *args, **_kwargs: messages.append(args),
+    )
+    dialog = _SpreadsheetMetadataDialog(None)
+    qtbot.addWidget(dialog)
+    dialog.source_type_combo.setCurrentIndex(
+        dialog.source_type_combo.findData("google_sheets")
+    )
+    dialog.google_url_line.setText(
+        "https://docs.google.com/spreadsheets/d/test-sheet/edit?usp=sharing"
+    )
+
+    dialog.refresh_button.click()
+    qtbot.waitUntil(lambda: not dialog._busy and not dialog._workers)
+
+    assert messages == []
+    assert dialog._last_discovery_error is not None
+    assert dialog.sheet_combo.count() == 0
+    assert not dialog.progress_bar.isVisible()
+
+
+def test_spreadsheet_metadata_dialog_reports_worker_start_error(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_start(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("worker thread unavailable")
+
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    dialog = _SpreadsheetMetadataDialog(None)
+    qtbot.addWidget(dialog)
+    dialog.source_type_combo.setCurrentIndex(
+        dialog.source_type_combo.findData("google_sheets")
+    )
+    dialog.google_url_line.setText(
+        "https://docs.google.com/spreadsheets/d/test-sheet/edit?usp=sharing"
+    )
+
+    dialog.refresh_button.click()
+
+    assert not dialog._busy
+    assert not dialog._workers
+    assert dialog._last_discovery_error == ("RuntimeError: worker thread unavailable")
+    assert not dialog._discovery_timer.isActive()
+
+
+def test_spreadsheet_metadata_dialog_validates_mappings(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *args, **_kwargs: messages.append(args),
+    )
+    dialog = _SpreadsheetMetadataDialog(None)
+    qtbot.addWidget(dialog)
+
+    with pytest.raises(RuntimeError, match="has not been configured"):
+        dialog.selected_source()
+
+    dialog.accept()
+    assert len(messages) == 1
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+
+    dialog._request_sheets()
+    assert len(messages) == 1
+    assert dialog._last_discovery_error is not None
+    dialog._sheet_changed()
+    assert len(messages) == 1
+    dialog.sheet_combo.blockSignals(True)
+    dialog.sheet_combo.addItem("Measurements", "Measurements")
+    dialog.sheet_combo.blockSignals(False)
+    dialog._sheet_changed()
+    assert len(messages) == 1
+    assert dialog._last_discovery_error is not None
+
+    dialog.excel_path_line.setText("metadata.xlsx")
+    dialog._set_columns(("File", "Temperature"))
+    dialog.file_name_combo.setCurrentIndex(dialog.file_name_combo.findData("File"))
+    dialog.sheet_combo.clear()
+    dialog.sheet_combo.blockSignals(True)
+    dialog.sheet_combo.addItem("Measurements", "Measurements")
+    dialog.sheet_combo.blockSignals(False)
+    dialog.accept()
+    assert len(messages) == 2
+
+    dialog._busy = True
+    dialog.accept()
+    dialog._busy = False
+    assert len(messages) == 2
+
+    dialog.add_mapping_row("Missing", name="missing")
+    with pytest.raises(ValueError, match="no available column"):
+        dialog._mappings()
+    dialog.remove_mapping_button.click()
+
+    dialog.add_mapping_row("Temperature")
+    with pytest.raises(ValueError, match="no destination name"):
+        dialog._mappings()
+
+    item = dialog.mapping_table.topLevelItem(0)
+    assert item is not None
+    item.setText(2, "sample_temp")
+    dialog.add_mapping_row("Temperature", name="other_temp")
+    with pytest.raises(ValueError, match="mapped more than once"):
+        dialog._mappings()
+    duplicate_item = dialog.mapping_table.topLevelItem(1)
+    assert duplicate_item is not None
+    duplicate_item.setData(
+        0,
+        _MAPPING_VALUE_ROLE,
+        "File",
+    )
+    duplicate_item.setText(2, "sample_temp")
+    with pytest.raises(
+        ValueError, match=r"Destination name 'sample_temp'.*rows 1 and 2"
+    ):
+        dialog._mappings()
+    dialog.accept()
+    assert len(messages) == 3
+
+    dialog.remove_mapping_button.click()
+    assert dialog.mapping_table.topLevelItemCount() == 1
+
+
+def test_spreadsheet_metadata_mapping_reorder_controls_mapping_order(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dialog = _SpreadsheetMetadataDialog(None)
+    qtbot.addWidget(dialog)
+    dialog.excel_path_line.setText("metadata.xlsx")
+    dialog._set_columns(("File", "Temperature", "Mode", "Energy", "Comment"))
+    dialog.file_name_combo.setCurrentIndex(dialog.file_name_combo.findData("File"))
+    dialog.sheet_combo.blockSignals(True)
+    dialog.sheet_combo.addItem("Measurements", "Measurements")
+    dialog.sheet_combo.blockSignals(False)
+    dialog.add_mapping_row("Temperature", "coordinate", "sample_temp")
+    dialog.add_mapping_row("Mode", "attribute", "mode")
+    dialog.add_mapping_row("Energy", "coordinate", "hv")
+    dialog.add_mapping_row("Comment", "attribute", "comment")
+
+    assert dialog.mapping_table.selectionBehavior() == (
+        QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+    )
+    assert not dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+    assert (
+        dialog.mapping_table.dragDropMode()
+        == QtWidgets.QAbstractItemView.DragDropMode.InternalMove
+    )
+    assert dialog.mapping_table.defaultDropAction() == QtCore.Qt.DropAction.MoveAction
+    assert dialog.mapping_table.showDropIndicator()
+    assert all(
+        bool(
+            typing.cast(
+                "QtWidgets.QTreeWidgetItem", dialog.mapping_table.topLevelItem(row)
+            ).flags()
+            & QtCore.Qt.ItemFlag.ItemIsDragEnabled
+        )
+        and not bool(
+            typing.cast(
+                "QtWidgets.QTreeWidgetItem", dialog.mapping_table.topLevelItem(row)
+            ).flags()
+            & QtCore.Qt.ItemFlag.ItemIsDropEnabled
+        )
+        for row in range(dialog.mapping_table.topLevelItemCount())
+    )
+
+    energy = dialog.mapping_table.takeTopLevelItem(2)
+    comment = dialog.mapping_table.takeTopLevelItem(2)
+    assert energy is not None
+    assert comment is not None
+    dialog.mapping_table.insertTopLevelItem(0, energy)
+    dialog.mapping_table.insertTopLevelItem(1, comment)
+    dialog.mapping_table.setCurrentItem(comment)
+    dialog.mapping_table._queue_rows_reordered()
+    assert [
+        typing.cast(
+            "QtWidgets.QTreeWidgetItem", dialog.mapping_table.topLevelItem(row)
+        ).text(2)
+        for row in range(dialog.mapping_table.topLevelItemCount())
+    ] == ["hv", "comment", "sample_temp", "mode"]
+
+    dialog._move_current_mapping(1)
+    assert [
+        typing.cast(
+            "QtWidgets.QTreeWidgetItem", dialog.mapping_table.topLevelItem(row)
+        ).text(2)
+        for row in range(dialog.mapping_table.topLevelItemCount())
+    ] == [
+        "hv",
+        "sample_temp",
+        "comment",
+        "mode",
+    ]
+    monkeypatch.setattr(QtWidgets.QMenu, "popup", lambda *_args: None)
+    current_item = dialog.mapping_table.currentItem()
+    assert current_item is not None
+    dialog._show_mapping_context_menu(
+        dialog.mapping_table.visualItemRect(current_item).center()
+    )
+    context_menu = dialog._mapping_context_menu
+    assert context_menu is not None
+    actions = {action.objectName(): action for action in context_menu.actions()}
+    assert actions["spreadsheet_metadata_move_mapping_up"].isEnabled()
+    assert actions["spreadsheet_metadata_move_mapping_down"].isEnabled()
+    actions["spreadsheet_metadata_move_mapping_up"].trigger()
+
+    dialog.accept()
+    source = dialog.selected_source()
+    assert list(source.coordinate_mapping) == ["Energy", "Temperature"]
+    assert list(source.attribute_mapping) == ["Comment", "Mode"]
+
+
+def test_spreadsheet_metadata_mapping_reorder_defensive_paths(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dialog = _SpreadsheetMetadataDialog(None)
+    qtbot.addWidget(dialog)
+    monkeypatch.setattr(
+        dialog.mapping_table,
+        "_show_active_combo_popup",
+        lambda: None,
+    )
+    dialog._move_current_mapping(1)
+    dialog._set_columns(("Temperature", "Mode"))
+    dialog.add_mapping_row("Temperature", name="sample_temp")
+    item = dialog.mapping_table.topLevelItem(0)
+    assert item is not None
+    dialog.add_mapping_row()
+    assert all(
+        dialog.mapping_table.itemWidget(item, column) is None for column in range(3)
+    )
+    assert not dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+
+    dialog.show()
+    qtbot.waitUntil(dialog.isVisible)
+    dialog.mapping_table.setCurrentIndex(dialog.mapping_table.indexFromItem(item, 0))
+    dialog.mapping_table.setFocus()
+    qtbot.keyClick(dialog.mapping_table, QtCore.Qt.Key.Key_F2)
+    qtbot.waitUntil(
+        lambda: bool(dialog.mapping_table.findChildren(QtWidgets.QComboBox))
+    )
+    source_editor = dialog.mapping_table.findChild(QtWidgets.QComboBox)
+    assert source_editor is not None
+    assert (
+        dialog.mapping_table.visualItemRect(item).height()
+        >= source_editor.sizeHint().height()
+    )
+    source_editor.setCurrentIndex(source_editor.findData("Mode"))
+    source_editor.activated.emit(source_editor.currentIndex())
+    propagated_return = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_Return,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    dialog.mapping_table.keyPressEvent(propagated_return)
+    assert propagated_return.isAccepted()
+    assert item.text(0) == "Mode"
+    qtbot.waitUntil(
+        lambda: (
+            dialog.mapping_table.currentIndex().column() == 1
+            and any(
+                editor.isVisible()
+                for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+            )
+        )
+    )
+    kind_editor = next(
+        editor
+        for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        if editor.isVisible()
+    )
+    kind_editor.setCurrentIndex(kind_editor.findData("attribute"))
+    kind_editor.activated.emit(kind_editor.currentIndex())
+    assert item.text(1) == "Attr"
+    qtbot.waitUntil(
+        lambda: (
+            dialog.mapping_table.currentIndex().column() == 2
+            and any(
+                editor.isVisible()
+                for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+            )
+        )
+    )
+    name_editor = next(
+        editor
+        for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        if editor.isVisible()
+    )
+    assert name_editor.isEditable()
+    name_editor.setEditText("new_name")
+    line_edit = name_editor.lineEdit()
+    assert line_edit is not None
+    qtbot.keyClick(line_edit, QtCore.Qt.Key.Key_Return)
+    qtbot.waitUntil(lambda: item.text(2) == "new_name")
+    qtbot.waitUntil(
+        lambda: (
+            dialog.mapping_table.currentIndex().row() == 1
+            and dialog.mapping_table.currentIndex().column() == 0
+            and any(
+                editor.isVisible()
+                for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+            )
+        )
+    )
+    active_editor = next(
+        editor
+        for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        if editor.isVisible()
+    )
+    active_editor.hidePopup()
+    qtbot.mouseClick(
+        dialog.remove_mapping_button,
+        QtCore.Qt.MouseButton.LeftButton,
+    )
+    qtbot.waitUntil(lambda: dialog.mapping_table.topLevelItemCount() == 1)
+    qtbot.waitUntil(lambda: not dialog.mapping_table.findChildren(QtWidgets.QComboBox))
+
+    dialog.mapping_table.setCurrentIndex(QtCore.QModelIndex())
+    dialog._remove_selected_mapping()
+    assert dialog.mapping_table.topLevelItemCount() == 1
+
+    requested: list[QtCore.QPoint] = []
+    dialog.mapping_table.context_menu_requested.disconnect(
+        dialog._show_mapping_context_menu
+    )
+    dialog.mapping_table.context_menu_requested.connect(requested.append)
+    dialog.mapping_table.keyPressEvent(None)
+    menu_event = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_Menu,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    dialog.mapping_table.keyPressEvent(menu_event)
+    assert menu_event.isAccepted()
+    assert len(requested) == 1
+
+
+def test_spreadsheet_metadata_mapping_keyboard_cursor_navigation(qtbot) -> None:
+    dialog = _SpreadsheetMetadataDialog(None)
+    qtbot.addWidget(dialog)
+    table = dialog.mapping_table
+    no_modifiers = QtCore.Qt.KeyboardModifier.NoModifier
+    action = QtWidgets.QAbstractItemView.CursorAction
+
+    assert not table.moveCursor(action.MoveNext, no_modifiers).isValid()
+
+    dialog.add_mapping_row("Temperature", name="sample_temp")
+    dialog.add_mapping_row("Mode", "attribute", "mode")
+
+    def check_move(
+        row: int,
+        column: int,
+        cursor_action: QtWidgets.QAbstractItemView.CursorAction,
+        expected: tuple[int, int],
+    ) -> None:
+        item = table.topLevelItem(row)
+        assert item is not None
+        table.setCurrentIndex(table.indexFromItem(item, column))
+        result = table.moveCursor(cursor_action, no_modifiers)
+        assert (result.row(), result.column()) == expected
+
+    check_move(0, 0, action.MoveNext, (0, 1))
+    check_move(0, 2, action.MoveNext, (1, 0))
+    check_move(0, 1, action.MovePrevious, (0, 0))
+    check_move(1, 0, action.MovePrevious, (0, 2))
+    check_move(0, 1, action.MoveLeft, (0, 0))
+    check_move(0, 0, action.MoveLeft, (0, 0))
+    check_move(0, 1, action.MoveRight, (0, 2))
+    check_move(0, 2, action.MoveRight, (0, 2))
+    check_move(1, 1, action.MoveUp, (0, 1))
+    check_move(0, 1, action.MoveUp, (0, 1))
+    check_move(0, 1, action.MoveDown, (1, 1))
+    check_move(1, 1, action.MoveDown, (1, 1))
+
+    first_item = table.topLevelItem(0)
+    last_item = table.topLevelItem(1)
+    assert first_item is not None
+    assert last_item is not None
+    table.setCurrentIndex(table.indexFromItem(first_item, 0))
+    table.moveCursor(action.MovePrevious, no_modifiers)
+    table.setCurrentIndex(table.indexFromItem(last_item, 2))
+    table.moveCursor(action.MoveNext, no_modifiers)
+    table.moveCursor(action.MovePageUp, no_modifiers)
+
+
+def test_spreadsheet_metadata_add_mapping_keyboard_opens_source_popup(qtbot) -> None:
+    dialog = _SpreadsheetMetadataDialog(None)
+    qtbot.addWidget(dialog)
+    dialog._set_columns(("Comment", "Mode"))
+    dialog.show()
+    qtbot.waitUntil(dialog.isVisible)
+
+    dialog.add_mapping_button.setFocus()
+    qtbot.keyClick(dialog.add_mapping_button, QtCore.Qt.Key.Key_Return)
+    qtbot.waitUntil(lambda: dialog.mapping_table.topLevelItemCount() == 1)
+    qtbot.waitUntil(
+        lambda: any(
+            editor.isVisible()
+            for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        )
+    )
+    editor = next(
+        editor
+        for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        if editor.isVisible()
+    )
+    assert not editor.view().isVisible()
+
+    qtbot.keyClick(editor, QtCore.Qt.Key.Key_Return)
+    qtbot.waitUntil(editor.view().isVisible)
+
+
+def test_spreadsheet_metadata_mapping_uses_fixed_destination_suggestions(qtbot) -> None:
+    expected = ("sample_temp", "hv", "chi", "xi", "delta", "alpha", "beta")
+
+    def show_popup_with_arrow(editor: QtWidgets.QComboBox) -> None:
+        option = QtWidgets.QStyleOptionComboBox()
+        editor.initStyleOption(option)
+        arrow_rect = editor.style().subControlRect(
+            QtWidgets.QStyle.ComplexControl.CC_ComboBox,
+            option,
+            QtWidgets.QStyle.SubControl.SC_ComboBoxArrow,
+            editor,
+        )
+        qtbot.mouseClick(
+            editor,
+            QtCore.Qt.MouseButton.LeftButton,
+            pos=arrow_rect.center(),
+        )
+        qtbot.waitUntil(editor.view().isVisible)
+
+    dialog = _SpreadsheetMetadataDialog(None)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitUntil(dialog.isVisible)
+    dialog._set_columns(("Temperature", "Mode"))
+    dialog.add_mapping_row("Temperature", "coordinate", "custom_coord")
+    coordinate_item = dialog.mapping_table.currentItem()
+    assert coordinate_item is not None
+    dialog.mapping_table.editItem(coordinate_item, _MAPPING_NAME_COLUMN)
+    qtbot.waitUntil(
+        lambda: any(
+            editor.isVisible()
+            for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        )
+    )
+    editor = next(
+        child
+        for child in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        if child.isVisible()
+    )
+    assert editor.isEditable()
+    coordinate_suggestions = tuple(
+        editor.itemText(index) for index in range(editor.count())
+    )
+    assert coordinate_suggestions == expected
+    assert editor.currentText() == "custom_coord"
+    assert editor.currentIndex() == -1
+    show_popup_with_arrow(editor)
+    editor.hidePopup()
+    line_edit = editor.lineEdit()
+    assert line_edit is not None
+    qtbot.keyClick(line_edit, QtCore.Qt.Key.Key_Return)
+    qtbot.waitUntil(lambda: not dialog.mapping_table.findChildren(QtWidgets.QComboBox))
+
+    dialog.add_mapping_row("Mode", "attribute", "hv")
+    attribute_item = dialog.mapping_table.currentItem()
+    assert attribute_item is not None
+    dialog.mapping_table.editItem(attribute_item, _MAPPING_NAME_COLUMN)
+    qtbot.waitUntil(
+        lambda: any(
+            editor.isVisible()
+            for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        )
+    )
+    editor = next(
+        child
+        for child in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        if child.isVisible()
+    )
+    assert editor.isEditable()
+    attribute_suggestions = tuple(
+        editor.itemText(index) for index in range(editor.count())
+    )
+    assert attribute_suggestions == expected
+    assert editor.currentText() == "hv"
+    assert editor.currentIndex() == editor.findText("hv")
+    show_popup_with_arrow(editor)
+
+
+@pytest.mark.parametrize("accept_file", [False, True])
+def test_spreadsheet_metadata_excel_browse_accept_and_cancel(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    accept_file: bool,
+) -> None:
+    selected_path = tmp_path / "metadata.xlsx"
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getOpenFileName",
+        staticmethod(
+            lambda *_args, **_kwargs: (
+                (str(selected_path), "Excel Workbooks (*.xlsx *.xlsm)")
+                if accept_file
+                else ("", "")
+            )
+        ),
+    )
+    dialog = _SpreadsheetMetadataDialog(None, initial_directory=tmp_path)
+    qtbot.addWidget(dialog)
+    requests: list[None] = []
+    monkeypatch.setattr(dialog, "_request_sheets", lambda: requests.append(None))
+
+    dialog.excel_browse_button.click()
+
+    assert dialog.excel_path_line.text() == (str(selected_path) if accept_file else "")
+    assert len(requests) == int(accept_file)
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+def test_loader_options_spreadsheet_metadata_dialog_accept_and_cancel(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    example_loader,
+    accepted: bool,
+) -> None:
+    source = erlab.io.metadata.ExcelMetadataSource(
+        tmp_path / "metadata.xlsx",
+        sheet_name="Measurements",
+        file_name_column="File",
+        coordinate_mapping={"Temperature": "sample_temp"},
+    )
+    dialog_kwargs: list[dict[str, typing.Any]] = []
+
+    class _Dialog:
+        def __init__(self, *_args, **_kwargs) -> None:
+            dialog_kwargs.append(_kwargs)
+
+        def exec(self) -> QtWidgets.QDialog.DialogCode:
+            return (
+                QtWidgets.QDialog.DialogCode.Accepted
+                if accepted
+                else QtWidgets.QDialog.DialogCode.Rejected
+            )
+
+        def selected_source(self):
+            return source
+
+    monkeypatch.setattr(manager_dialogs, "_SpreadsheetMetadataDialog", _Dialog)
+    dialog = _NameFilterDialog(
+        None,
+        {"Example Raw Data (*.h5)": (erlab.io.loaders["example"].load, {})},
+        sample_paths=[tmp_path / "scan.h5"],
+    )
+    qtbot.addWidget(dialog)
+    dialog.check_filter("Example Raw Data (*.h5)")
+
+    dialog.metadata_button.click()
+    assert dialog_kwargs[0]["sample_path"] == tmp_path / "scan.h5"
+    assert dialog_kwargs[0]["loader"] is erlab.io.loaders["example"]
+    kwargs = dialog.checked_filter()[2]
+    if accepted:
+        assert kwargs["metadata"] is source
+        dialog.metadata_clear_button.click()
+        assert "metadata" not in dialog.checked_filter()[2]
+    else:
+        assert "metadata" not in kwargs
+
+
+def test_loader_options_restore_spreadsheet_metadata_without_raw_literal(
+    qtbot,
+    tmp_path: pathlib.Path,
+    example_loader,
+) -> None:
+    source = erlab.io.metadata.ExcelMetadataSource(
+        tmp_path / "metadata.xlsx",
+        sheet_name="Measurements",
+        file_name_column="File",
+        coordinate_mapping={"Temperature": "sample_temp"},
+    )
+    dialog = _NameFilterDialog(
+        None,
+        {
+            "Example Raw Data (*.h5)": (
+                erlab.io.loaders["example"].load,
+                {"single": True, "metadata": source},
+            )
+        },
+    )
+    qtbot.addWidget(dialog)
+    dialog.check_filter("Example Raw Data (*.h5)")
+
+    assert "metadata" not in dialog.kwargs_line.text()
+    assert dialog.checked_filter()[2] == {"single": True, "metadata": source}
+    assert dialog.metadata_clear_button.isEnabled()
+
+
+def test_loader_options_spreadsheet_summary_expands_for_wrapped_text(
+    qtbot,
+    tmp_path: pathlib.Path,
+    example_loader,
+) -> None:
+    source = erlab.io.metadata.ExcelMetadataSource(
+        tmp_path / "metadata.xlsx",
+        sheet_name="A long acquisition sheet name that wraps",
+        file_name_column="File",
+    )
+    name_filter = "Example Raw Data (*.h5)"
+    dialog = _NameFilterDialog(
+        None,
+        {name_filter: (erlab.io.loaders["example"].load, {"metadata": source})},
+    )
+    qtbot.addWidget(dialog)
+    dialog.check_filter(name_filter)
+    dialog.show()
+    qtbot.waitUntil(dialog.isVisible)
+    dialog.resize(dialog.minimumSizeHint().width(), dialog.height())
+    qtbot.wait(10)
+
+    summary = dialog.metadata_summary
+    required_height = summary.heightForWidth(summary.width())
+    assert required_height > summary.fontMetrics().lineSpacing()
+    assert summary.height() >= required_height
 
 
 def test_scan_number_load_call_args_rejects_ambiguous_loader_matches(

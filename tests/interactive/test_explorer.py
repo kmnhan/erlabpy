@@ -5,6 +5,7 @@ from collections.abc import Callable
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager._base as manager_base
 from erlab.interactive.explorer._base_explorer import (
     _IGOR_PRO_MIME_TYPES,
     _PREVIEW_WORKER_STOP_TIMEOUT_MS,
@@ -986,6 +987,128 @@ def test_explorer_type_sort_uses_file_paths(
     monkeypatch.setattr(explorer._fs_model, "_find_index", _fail_find_index)
 
     explorer._tree_view.sortByColumn(2, QtCore.Qt.SortOrder.AscendingOrder)
+
+
+def test_manager_and_explorer_share_loader_options(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    example_loader,
+    example_data_dir: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    loader_name = "example"
+    name_filter = next(iter(erlab.io.loaders[loader_name].file_dialog_methods))
+    explorer_source = erlab.io.metadata.ExcelMetadataSource(
+        tmp_path / "explorer.xlsx",
+        sheet_name="Explorer",
+        file_name_column="File",
+    )
+    selected_source = erlab.io.metadata.ExcelMetadataSource(
+        tmp_path / "manager.xlsx",
+        sheet_name="Manager",
+        file_name_column="File",
+    )
+    explorer_kwargs = {loader_name: {"single": True, "metadata": explorer_source}}
+    explorer_extensions = {loader_name: {"coordinate_attrs": ["from_explorer"]}}
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show_explorer()
+        tabbed_explorer = manager.explorer
+        tabbed_explorer.add_tab(
+            root_path=example_data_dir,
+            loader_name=loader_name,
+        )
+        source_tab = tabbed_explorer.get_explorer(0)
+        assert source_tab is not None
+        source_tab.apply_loader_state(
+            kwargs_by_name=explorer_kwargs,
+            extensions_by_name=explorer_extensions,
+        )
+        source_tab.sigLoaderStateChanged.emit(
+            explorer_kwargs,
+            explorer_extensions,
+        )
+
+        for index in range(tabbed_explorer.tab_widget.count()):
+            tab = tabbed_explorer.get_explorer(index)
+            assert tab is not None
+            assert (
+                tab.loader_kwargs_by_name()[loader_name]["metadata"] is explorer_source
+            )
+        assert name_filter not in manager._recent_loader_kwargs_by_filter
+
+        class _AcceptNameFilterDialog:
+            def __init__(
+                self,
+                parent,
+                valid_loaders,
+                *,
+                loader_extensions=None,
+                sample_paths=None,
+            ) -> None:
+                assert parent is manager
+                assert valid_loaders[name_filter][1]["metadata"] is explorer_source
+                assert loader_extensions[name_filter] == {
+                    "coordinate_attrs": ["from_explorer"]
+                }
+
+            def check_filter(self, _name_filter: str | None) -> None:
+                pass
+
+            def exec(self) -> bool:
+                return True
+
+            def checked_filter(self):
+                return (
+                    name_filter,
+                    erlab.io.loaders[loader_name].load,
+                    {
+                        "single": False,
+                        "metadata": selected_source,
+                        "loader_extensions": {"coordinate_attrs": ["from_manager"]},
+                    },
+                )
+
+        monkeypatch.setattr(
+            manager_base,
+            "_NameFilterDialog",
+            _AcceptNameFilterDialog,
+        )
+        selected = manager._select_loader_options(
+            {
+                name_filter: erlab.io.loaders[loader_name].file_dialog_methods[
+                    name_filter
+                ]
+            },
+            name_filter,
+        )
+
+        assert selected is not None
+        for index in range(tabbed_explorer.tab_widget.count()):
+            tab = tabbed_explorer.get_explorer(index)
+            assert tab is not None
+            tab_kwargs = tab.loader_kwargs_by_name()[loader_name]
+            assert tab_kwargs == {"single": False, "metadata": selected_source}
+            assert tab.loader_extensions_by_name()[loader_name] == {
+                "coordinate_attrs": ["from_manager"]
+            }
+
+
+def test_shared_loader_kwargs_exclude_file_dialog_method_defaults() -> None:
+    metadata = object()
+
+    assert manager_base._loader_kwargs_without_filter_defaults(
+        {"single": True, "metadata": metadata},
+        {"single": True},
+    ) == {"metadata": metadata}
+    assert manager_base._loader_kwargs_without_filter_defaults(
+        {"single": False},
+        {"single": True},
+    ) == {"single": False}
 
 
 def test_explorer_loader_options_dialog_updates_kwargs(

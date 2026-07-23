@@ -1157,10 +1157,6 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         -----
         Operations that only emit generated code should set ``live_applicable = False``
         and raise from this method.
-
-        .. versionchanged:: 3.25.0
-           Operations receive only the current derived array. Record every input needed
-           for deterministic replay in the operation model.
         """
         raise NotImplementedError
 

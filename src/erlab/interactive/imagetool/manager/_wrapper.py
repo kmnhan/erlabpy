@@ -42,6 +42,7 @@ import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 from erlab.interactive.imagetool._load_source import (
     _default_load_source_name,
+    _deserialize_loader_kwargs,
     _load_code_from_file_details,
     _load_source_details_from_file,
     _load_source_details_from_provenance,
@@ -1171,6 +1172,7 @@ class _ManagedWindowNode(QtCore.QObject):
             return None
         try:
             selection = _parse_serialized_file_data_selection(selection)
+            restored_kwargs = _deserialize_loader_kwargs(kwargs)
         except Exception:
             return None
         if ":" in fn:
@@ -1183,9 +1185,9 @@ class _ManagedWindowNode(QtCore.QObject):
                 return None
             if not callable(func_obj):
                 return None
-            return func_obj, dict(kwargs), selection
+            return func_obj, restored_kwargs, selection
         if fn in erlab.io.loaders:
-            return fn, dict(kwargs), selection
+            return fn, restored_kwargs, selection
         return None
 
     def load_source_code(self, *, assign: str = "data") -> str | None:

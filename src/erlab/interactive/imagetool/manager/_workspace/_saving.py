@@ -21,6 +21,7 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 from erlab.interactive import _qt_state
+from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
 from erlab.interactive.imagetool.manager._widgets import (
     _strip_workspace_modified_placeholder,
 )
@@ -472,7 +473,12 @@ class _WorkspaceSaver:
             extensions_getter = getattr(explorer, "loader_extensions_by_name", None)
             if callable(extensions_getter):
                 explorer_extensions = extensions_getter()
-        state = workspace_format.WorkspaceLoaderState(
+        self._manager._sync_shared_loader_state(
+            explorer_kwargs,
+            explorer_extensions,
+            apply_explorer=False,
+        )
+        runtime_state = workspace_format.WorkspaceLoaderState(
             recent_directory=self._manager._recent_directory,
             recent_name_filter=self._manager._recent_name_filter,
             manager_loader_kwargs_by_filter={
@@ -491,8 +497,24 @@ class _WorkspaceSaver:
                 for name, extensions in explorer_extensions.items()
             },
         )
-        self._controller._loader_state = state
-        return state.model_dump(mode="json", exclude_none=True)
+        self._controller._loader_state = runtime_state
+        serialized_state = runtime_state.model_copy(
+            update={
+                "manager_loader_kwargs_by_filter": {
+                    name: _serialize_loader_kwargs(kwargs)
+                    for name, kwargs in (
+                        runtime_state.manager_loader_kwargs_by_filter.items()
+                    )
+                },
+                "explorer_loader_kwargs_by_name": {
+                    name: _serialize_loader_kwargs(kwargs)
+                    for name, kwargs in (
+                        runtime_state.explorer_loader_kwargs_by_name.items()
+                    )
+                },
+            }
+        )
+        return serialized_state.model_dump(mode="json", exclude_none=True)
 
     def _workspace_standalone_apps_snapshot(self) -> dict[str, typing.Any]:
         app_states: dict[str, dict[str, typing.Any]] = {}

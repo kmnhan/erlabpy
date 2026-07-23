@@ -7,6 +7,7 @@ __all__ = [
     "load_hdf5",
     "loader_context",
     "loaders",
+    "metadata",
     "nexusutils",
     "open_hdf5",
     "save_as_hdf5",
@@ -17,7 +18,7 @@ __all__ = [
     "utils",
 ]
 
-from . import dataloader, fitsutils, igor, nexusutils, utils
+from . import dataloader, fitsutils, igor, metadata, nexusutils, utils
 from ._namespace import (
     extend_loader,
     load,

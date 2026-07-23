@@ -42,6 +42,7 @@ COMPAT_TARGETS: tuple[str, ...] = (
     "tests/analysis/test_xps.py",
     "tests/io/test_igor.py",
     "tests/io/test_io_utils.py",
+    "tests/io/test_metadata.py",
     "tests/plotting/test_atoms.py",
     "tests/plotting/test_general.py",
     "tests/interactive/test_colors.py",

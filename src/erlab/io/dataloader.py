@@ -45,6 +45,9 @@ if typing.TYPE_CHECKING:
     import datetime
     from collections.abc import Callable, Iterator, KeysView, Sequence
 
+    from erlab.io.metadata import SpreadsheetMetadataSource
+    from erlab.io.metadata._core import _SpreadsheetMetadataValues
+
 
 class ValidationWarning(UserWarning):
     """Issued when the loaded data fails validation checks."""
@@ -549,6 +552,9 @@ class LoaderBase(metaclass=_Loader):
         progress: bool = True,
         load_kwargs: dict[str, typing.Any] | None = None,
         loader_extensions: Mapping[str, typing.Any] | None = None,
+        metadata: SpreadsheetMetadataSource | None = None,
+        file_number: int | None = None,
+        _metadata_values: _SpreadsheetMetadataValues | None = None,
         **kwargs,
     ) -> (
         xr.DataArray
@@ -624,6 +630,29 @@ class LoaderBase(metaclass=_Loader):
         loader_extensions
             Temporary extensions to loader attributes, with the same keys accepted by
             :meth:`extend_loader <erlab.io.dataloader.LoaderBase.extend_loader>`.
+        metadata
+            Optional spreadsheet metadata source used to fill scalar coordinates and
+            attributes. The behavior of the loader when `metadata` is given depends on
+            the type of ``identifier``:
+
+            - If ``identifier`` is an integer index, the loader attempts to convert the
+              spreadsheet file name column to numbers and match the index against the
+              numbers.
+
+            - If ``identifier`` is a path, the file name without its path or final
+              extension will be matched against whitespace-trimmed file name column
+              cells. If a match is not found, or if the spreadsheet file name column
+              contains a cell that corresponds to a range of indices (e.g.
+              ``f_0012~13``), the loader will attempt to infer an index with
+              :meth:`infer_index <erlab.io.dataloader.LoaderBase.infer_index>` from
+              ``identifier``, and match it against the spreadsheet file name column
+              converted to numbers. To bypass file name matching and override the
+              inferred index, pass an explicit ``file_number`` argument.
+
+        file_number
+            Explicit file number used for spreadsheet metadata when ``identifier`` is a
+            path, bypassing direct file name matching and inference. This must be
+            omitted for integer identifiers and when ``metadata`` is not given.
         **kwargs
             Additional keyword arguments are passed to :meth:`identify
             <erlab.io.dataloader.LoaderBase.identify>` and :meth:`load_single
@@ -693,8 +722,78 @@ class LoaderBase(metaclass=_Loader):
                     parallel=parallel,
                     progress=progress,
                     load_kwargs=load_kwargs,
+                    metadata=metadata,
+                    file_number=file_number,
+                    _metadata_values=_metadata_values,
                     **kwargs,
                 )
+
+        if metadata is None:
+            if file_number is not None:
+                raise ValueError("file_number requires a metadata source")
+        else:
+            from erlab.io.metadata import SpreadsheetMetadataSource
+
+            if _metadata_values is not None:
+                raise RuntimeError("Spreadsheet metadata was resolved more than once")
+            if not isinstance(metadata, SpreadsheetMetadataSource):
+                raise TypeError("metadata must be a SpreadsheetMetadataSource")
+            if isinstance(identifier, int):
+                if file_number is not None:
+                    raise ValueError(
+                        "file_number must be omitted when identifier is an integer"
+                    )
+                metadata_file_number: object = identifier
+                metadata_values = metadata._metadata_for_file_number(
+                    metadata_file_number
+                )
+            elif file_number is not None:
+                metadata_file_number = file_number
+                metadata_values = metadata._metadata_for_file_number(
+                    metadata_file_number
+                )
+            else:
+                metadata_basename = os.path.splitext(
+                    os.path.basename(os.fspath(identifier))
+                )[0]
+
+                def infer_metadata_file_number() -> int | None:
+                    try:
+                        inferred, _ = self.infer_index(metadata_basename)
+                    except NotImplementedError:
+                        return None
+                    return inferred
+
+                metadata_values, metadata_file_number = (
+                    metadata._metadata_for_file_name(
+                        metadata_basename, infer_metadata_file_number
+                    )
+                )
+                if metadata_file_number is None:
+                    raise ValueError(
+                        "file_number is required when loading spreadsheet metadata "
+                        f"because path {identifier!s} did not match a spreadsheet "
+                        f"file name and loader {self.name!r} could not infer an index"
+                    )
+
+            if metadata_values is None:
+                erlab.utils.misc.emit_user_level_warning(
+                    f"No spreadsheet metadata found for file number "
+                    f"{metadata_file_number!r} in {metadata.source_name}"
+                )
+
+            return self.load(
+                identifier,
+                data_dir=data_dir,
+                chunks=chunks,
+                single=single,
+                combine=combine,
+                parallel=parallel,
+                progress=progress,
+                load_kwargs=load_kwargs,
+                _metadata_values=metadata_values,
+                **kwargs,
+            )
 
         if self.always_single:
             single = True
@@ -778,6 +877,7 @@ class LoaderBase(metaclass=_Loader):
                         parallel=parallel,
                         progress=progress,
                         post_process=True,
+                        _metadata_values=_metadata_values,
                         **load_kwargs,
                     )
 
@@ -807,6 +907,7 @@ class LoaderBase(metaclass=_Loader):
                     new_kwargs.setdefault("combine", combine)
                     new_kwargs.setdefault("parallel", parallel)
                     new_kwargs.setdefault("load_kwargs", load_kwargs)
+                    new_kwargs.setdefault("_metadata_values", _metadata_values)
                     try:
                         return self.load(new_identifier, new_dir, **new_kwargs)
                     except Exception:
@@ -827,6 +928,8 @@ class LoaderBase(metaclass=_Loader):
             data = self.load_single(identifier, **load_kwargs)
 
         data = self.post_process_general(data)
+        if _metadata_values is not None:
+            data = _metadata_values.apply(data)
 
         if not self.skip_validate:
             self.validate(data)
@@ -1588,12 +1691,19 @@ class LoaderBase(metaclass=_Loader):
     def infer_index(self, name: str) -> tuple[int | None, dict[str, typing.Any]]:
         """Infer the index for the given file name.
 
-        This method takes a file name with the path and extension stripped, and tries to
-        infer the scan index from it. If the index can be inferred, it is returned along
-        with additional keyword arguments that should be passed to :meth:`load
-        <erlab.io.dataloader.LoaderBase.load>`. If the index is not found, `None` should
-        be returned for the index, and an empty dictionary for additional keyword
-        arguments.
+        This method takes a file name with its path and extension stripped and recovers
+        its scan index. During normal path-based loading, a successfully inferred index
+        and its additional keyword arguments are passed back to :meth:`load
+        <erlab.io.dataloader.LoaderBase.load>`, which uses :meth:`identify
+        <erlab.io.dataloader.LoaderBase.identify>` to resolve the scan. If the name is
+        not recognized, return `None` and an empty dictionary.
+
+        The default implementation converts a trailing run of decimal digits in a bare
+        file name to an integer. For example, ``scan_0004`` resolves to ``4``. Override
+        this method when the index appears elsewhere in the name, when loading by index
+        requires additional keyword arguments, or when one scan spans multiple files.
+        For multi-file data, every file in the scan should resolve to the same scan
+        index rather than to a per-file sequence number.
 
         Parameters
         ----------
@@ -1607,16 +1717,21 @@ class LoaderBase(metaclass=_Loader):
         additional_kwargs
             Additional keyword arguments to be passed to :meth:`identify
             <erlab.io.dataloader.LoaderBase.identify>` when the index is found. This
-            argument is useful when the index alone is not enough to load the data.
+            argument is useful when the index alone is not enough to load the data. The
+            default implementation returns an empty dictionary.
 
-        Note
-        ----
-        For loaders with :attr:`always_single
-        <erlab.io.dataloader.LoaderBase.always_single>` set to `True`, this method is
-        unused.
-
+        Notes
+        -----
+        Path-based loads use this method when they need to recover a numeric identifier,
+        including when a spreadsheet metadata lookup falls back from direct file-name
+        matching to numeric matching. It may therefore be called even when
+        :attr:`always_single <erlab.io.dataloader.LoaderBase.always_single>` is `True`.
         """
-        raise NotImplementedError("method must be implemented in the subclass")
+        prefix = name.rstrip("0123456789")
+        numeric_suffix = name[len(prefix) :]
+        if numeric_suffix:
+            return int(numeric_suffix), {}
+        return None, {}
 
     def files_for_summary(self, data_dir: str | os.PathLike) -> list[str | os.PathLike]:
         """Return a list of files that can be loaded by the loader.
@@ -2049,6 +2164,7 @@ class LoaderBase(metaclass=_Loader):
         parallel: bool | None = None,
         progress: bool = True,
         post_process: bool = False,
+        _metadata_values: _SpreadsheetMetadataValues | None = None,
         **kwargs,
     ) -> list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree]:
         """Load from multiple files in parallel.
@@ -2085,7 +2201,12 @@ class LoaderBase(metaclass=_Loader):
         if post_process:
 
             def _load_func(filename):
-                return self.load(filename, single=True, load_kwargs=kwargs)
+                return self.load(
+                    filename,
+                    single=True,
+                    load_kwargs=kwargs,
+                    _metadata_values=_metadata_values,
+                )
 
         else:
 
@@ -2474,6 +2595,8 @@ class LoaderRegistry(metaclass=_ReloadStableMeta):
         progress: bool = True,
         load_kwargs: dict[str, typing.Any] | None = None,
         loader_extensions: Mapping[str, typing.Any] | None = None,
+        metadata: SpreadsheetMetadataSource | None = None,
+        file_number: int | None = None,
         **kwargs,
     ) -> (
         xr.DataArray
@@ -2517,6 +2640,8 @@ class LoaderRegistry(metaclass=_ReloadStableMeta):
             progress=progress,
             load_kwargs=load_kwargs,
             loader_extensions=loader_extensions,
+            metadata=metadata,
+            file_number=file_number,
             **kwargs,
         )
 

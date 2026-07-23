@@ -22,6 +22,9 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
+from erlab.interactive.imagetool.manager._spreadsheet_metadata import (
+    _SpreadsheetMetadataDialog,
+)
 
 _BatchDialogType = type[imagetool_dialogs._DataManipulationDialog]
 
@@ -1161,6 +1164,14 @@ class _LoaderOptionsWidget(QtWidgets.QWidget):
         self._valid_loaders = valid_loaders
         self._loader_extensions = loader_extensions or {}
         self._sample_paths = tuple(pathlib.Path(p) for p in sample_paths or ())
+        self._spreadsheet_metadata_by_filter = {
+            name_filter: source
+            for name_filter, (_func, kwargs) in valid_loaders.items()
+            if isinstance(
+                (source := kwargs.get("metadata")),
+                erlab.io.metadata.SpreadsheetMetadataSource,
+            )
+        }
         self._checked_kwargs: dict[str, typing.Any] | None = None
         self._checked_loader_extensions: dict[str, typing.Any] | None = None
         self._extensions_available = False
@@ -1192,6 +1203,30 @@ class _LoaderOptionsWidget(QtWidgets.QWidget):
         self.kwargs_line.textChanged.connect(self._clear_checked_values)
 
         layout.addWidget(self.kwargs_line)
+
+        self.metadata_group = QtWidgets.QGroupBox("Spreadsheet Metadata", self)
+        metadata_layout = QtWidgets.QVBoxLayout(self.metadata_group)
+        self.metadata_summary = QtWidgets.QLabel(self.metadata_group)
+        self.metadata_summary.setWordWrap(True)
+        self.metadata_summary.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.MinimumExpanding,
+            QtWidgets.QSizePolicy.Policy.Minimum,
+        )
+        metadata_layout.addWidget(self.metadata_summary)
+        metadata_actions = QtWidgets.QHBoxLayout()
+        metadata_actions.addStretch()
+        self.metadata_button = QtWidgets.QPushButton("Configure…", self.metadata_group)
+        self.metadata_button.setObjectName("loader_spreadsheet_metadata_configure")
+        self.metadata_button.clicked.connect(self._open_spreadsheet_metadata_dialog)
+        metadata_actions.addWidget(self.metadata_button)
+        self.metadata_clear_button = QtWidgets.QPushButton(
+            "Remove", self.metadata_group
+        )
+        self.metadata_clear_button.setObjectName("loader_spreadsheet_metadata_remove")
+        self.metadata_clear_button.clicked.connect(self._clear_spreadsheet_metadata)
+        metadata_actions.addWidget(self.metadata_clear_button)
+        metadata_layout.addLayout(metadata_actions)
+        layout.addWidget(self.metadata_group)
 
         self.extensions_toggle = QtWidgets.QToolButton()
         self.extensions_toggle.setText("Loader Extensions")
@@ -1294,8 +1329,17 @@ class _LoaderOptionsWidget(QtWidgets.QWidget):
         name_filter = list(self._valid_loaders.keys())[checked_id]
         func, kargs = self._valid_loaders[name_filter]
         self.func_label.setText(f"Arguments for <code>{func.__name__}</code>:")
-        self.kwargs_line.setText(_kwargs_to_text(kargs))
+        displayed_kwargs = kargs.copy()
+        if isinstance(
+            displayed_kwargs.get("metadata"),
+            erlab.io.metadata.SpreadsheetMetadataSource,
+        ):
+            displayed_kwargs.pop("metadata")
+        self.kwargs_line.setText(_kwargs_to_text(displayed_kwargs))
         is_loader_func = _is_loader_func(func)
+        self.metadata_group.setVisible(is_loader_func)
+        self.metadata_group.setEnabled(is_loader_func)
+        self._update_spreadsheet_metadata_controls()
         self._extensions_available = is_loader_func
         self.extensions_toggle.setVisible(is_loader_func)
         self.extensions_toggle.setEnabled(is_loader_func)
@@ -1381,6 +1425,105 @@ class _LoaderOptionsWidget(QtWidgets.QWidget):
         if dialog.exec():
             line.setText(_coordinate_attrs_literal(dialog.selected_coordinate_attrs()))
 
+    @QtCore.Slot()
+    def _open_spreadsheet_metadata_dialog(self) -> None:
+        self.configure_spreadsheet_metadata()
+
+    def spreadsheet_metadata_source(
+        self,
+    ) -> erlab.io.metadata.SpreadsheetMetadataSource | None:
+        """Return the spreadsheet source for the selected loader, if configured."""
+        checked_id = self._button_group.checkedId()
+        if checked_id < 0:
+            return None
+        name_filter = list(self._valid_loaders.keys())[checked_id]
+        return self._spreadsheet_metadata_by_filter.get(name_filter)
+
+    def configure_spreadsheet_metadata(self, *, load_on_open: bool = True) -> bool:
+        """Open spreadsheet configuration, preserving the selected source settings."""
+        checked_id = self._button_group.checkedId()
+        if checked_id < 0:
+            return False
+        name_filter = list(self._valid_loaders.keys())[checked_id]
+        sample_path = self._sample_paths[0] if self._sample_paths else None
+        initial_directory = sample_path.parent if sample_path is not None else None
+        func = self._valid_loaders[name_filter][0]
+        candidate_loader = getattr(func, "__self__", None)
+        loader = (
+            candidate_loader
+            if isinstance(candidate_loader, erlab.io.dataloader.LoaderBase)
+            else None
+        )
+        dialog = _SpreadsheetMetadataDialog(
+            self,
+            self._spreadsheet_metadata_by_filter.get(name_filter),
+            initial_directory=initial_directory,
+            sample_path=sample_path,
+            loader=loader,
+            load_on_open=load_on_open,
+        )
+        if dialog.exec():
+            self._spreadsheet_metadata_by_filter[name_filter] = dialog.selected_source()
+            self._clear_checked_values()
+            self._update_spreadsheet_metadata_controls()
+            return True
+        return False
+
+    @QtCore.Slot()
+    def _clear_spreadsheet_metadata(self) -> None:
+        checked_id = self._button_group.checkedId()
+        if checked_id < 0:
+            return
+        name_filter = list(self._valid_loaders.keys())[checked_id]
+        self._spreadsheet_metadata_by_filter.pop(name_filter, None)
+        self._clear_checked_values()
+        self._update_spreadsheet_metadata_controls()
+
+    def _update_spreadsheet_metadata_controls(self) -> None:
+        checked_id = self._button_group.checkedId()
+        if checked_id < 0:
+            return
+        name_filter = list(self._valid_loaders.keys())[checked_id]
+        source = self._spreadsheet_metadata_by_filter.get(name_filter)
+        self.metadata_clear_button.setEnabled(source is not None)
+        if source is None:
+            self.metadata_summary.setText("Not configured")
+            self.metadata_summary.setToolTip("")
+            return
+        n_coordinates = len(source.coordinate_mapping)
+        n_attributes = len(source.attribute_mapping)
+        n_mappings = n_coordinates + n_attributes
+        sheet = source.sheet_name
+        sheet_text = "linked sheet" if sheet is None else str(sheet)
+        if isinstance(source, erlab.io.metadata.ExcelMetadataSource):
+            location = source.path.name
+            full_location = str(source.path)
+        elif isinstance(source, erlab.io.metadata.GoogleSheetsMetadataSource):
+            location = "Google Sheets"
+            full_location = source.share_url
+        else:
+            location = type(source).__name__
+            full_location = source.source_name
+        self.metadata_summary.setText(
+            f"{location} · {sheet_text} · {n_mappings} mapping"
+            f"{'s' if n_mappings != 1 else ''}"
+        )
+        row_text = (
+            "all data rows"
+            if source.row_range is None
+            else f"rows {source.row_range[0]}\N{EN DASH}{source.row_range[1]}"
+        )
+        self.metadata_summary.setToolTip(
+            f"{full_location}\nWorksheet: {sheet_text}\n{row_text}\n"
+            f"{n_coordinates} Coord, {n_attributes} Attr\n"
+            f"File name column: {source.file_name_column or 'not selected'}\n"
+            + (
+                "Overwrite existing values"
+                if source.overwrite
+                else "Preserve existing values"
+            )
+        )
+
     @QtCore.Slot(bool)
     def _set_extensions_expanded(self, expanded: bool) -> None:
         self.extensions_group.setVisible(expanded and self._extensions_available)
@@ -1399,10 +1542,17 @@ class _LoaderOptionsWidget(QtWidgets.QWidget):
         self,
     ) -> tuple[dict[str, typing.Any], dict[str, typing.Any]]:
         kwargs = _text_to_kwargs(self.kwargs_line.text())
+        if "metadata" in kwargs:
+            raise ValueError(
+                "Configure metadata with the Spreadsheet Metadata controls"
+            )
         loader_extensions: dict[str, typing.Any] = {}
         name_filter = list(self._valid_loaders.keys())[self._button_group.checkedId()]
         func = self._valid_loaders[name_filter][0]
         if _is_loader_func(func):
+            metadata = self._spreadsheet_metadata_by_filter.get(name_filter)
+            if metadata is not None:
+                kwargs["metadata"] = metadata
             for key, line in self.loader_extension_lines.items():
                 parsed = _text_to_loader_extension_value(key, line.text())
                 if parsed is not None:
@@ -1479,6 +1629,10 @@ class _NameFilterDialog(QtWidgets.QDialog):
         self.coordinate_attrs_picker_button = (
             self.options_widget.coordinate_attrs_picker_button
         )
+        self.metadata_group = self.options_widget.metadata_group
+        self.metadata_summary = self.options_widget.metadata_summary
+        self.metadata_button = self.options_widget.metadata_button
+        self.metadata_clear_button = self.options_widget.metadata_clear_button
 
         button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok

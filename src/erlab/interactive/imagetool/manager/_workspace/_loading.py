@@ -25,6 +25,7 @@ import erlab.interactive.imagetool.manager._workspace._storage as workspace_stor
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
 from erlab.interactive import _qt_state
+from erlab.interactive.imagetool._load_source import _deserialize_loader_kwargs
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInputDataRole,
@@ -78,6 +79,26 @@ else:
 logger = logging.getLogger(__name__)
 _WORKSPACE_LOAD_TIMING_ENV = "ERLAB_WORKSPACE_LOAD_TIMING"
 _WORKSPACE_LOAD_SUFFIX_ERROR = "ImageTool workspace files must use the .itws extension"
+
+
+def _deserialize_workspace_loader_kwargs(
+    values: Mapping[str, Mapping[str, typing.Any]],
+    *,
+    scope: str,
+) -> dict[str, dict[str, typing.Any]]:
+    """Restore valid loader arguments while isolating malformed saved entries."""
+    restored: dict[str, dict[str, typing.Any]] = {}
+    for name, kwargs in values.items():
+        try:
+            restored[str(name)] = _deserialize_loader_kwargs(kwargs)
+        except Exception:
+            logger.warning(
+                "Ignoring invalid saved %s loader arguments for %r",
+                scope,
+                name,
+                exc_info=True,
+            )
+    return restored
 
 
 class _WorkspaceLoadProfiler:
@@ -1954,35 +1975,41 @@ class _WorkspaceLoader:
             logger.warning("Ignoring invalid workspace loader state", exc_info=True)
             return
 
-        self._controller._loader_state = state
-        self._manager._recent_directory = state.recent_directory
-        self._manager._recent_name_filter = state.recent_name_filter
-        self._manager._recent_loader_kwargs_by_filter = {
-            str(name): dict(kwargs)
-            for name, kwargs in state.manager_loader_kwargs_by_filter.items()
-        }
-        self._manager._recent_loader_extensions_by_filter = {
+        manager_loader_kwargs = _deserialize_workspace_loader_kwargs(
+            state.manager_loader_kwargs_by_filter,
+            scope="manager",
+        )
+        manager_loader_extensions = {
             str(name): dict(extensions)
             for name, extensions in state.manager_loader_extensions_by_filter.items()
         }
-        explorer_kwargs = {
-            str(name): dict(kwargs)
-            for name, kwargs in state.explorer_loader_kwargs_by_name.items()
-        }
+        explorer_kwargs = _deserialize_workspace_loader_kwargs(
+            state.explorer_loader_kwargs_by_name,
+            scope="Data Explorer",
+        )
         explorer_extensions = {
             str(name): dict(extensions)
             for name, extensions in state.explorer_loader_extensions_by_name.items()
         }
-        if not apply_explorer:
-            return
-        explorer = self._manager._standalone_app_windows.get("explorer")
-        if explorer is not None and erlab.interactive.utils.qt_is_valid(explorer):
-            apply_loader_state = getattr(explorer, "apply_loader_state", None)
-            if callable(apply_loader_state):
-                apply_loader_state(
-                    kwargs_by_name=explorer_kwargs,
-                    extensions_by_name=explorer_extensions,
-                )
+        runtime_state = workspace_format.WorkspaceLoaderState(
+            recent_directory=state.recent_directory,
+            recent_name_filter=state.recent_name_filter,
+            manager_loader_kwargs_by_filter=manager_loader_kwargs,
+            manager_loader_extensions_by_filter=manager_loader_extensions,
+            explorer_loader_kwargs_by_name=explorer_kwargs,
+            explorer_loader_extensions_by_name=explorer_extensions,
+        )
+
+        self._manager._recent_directory = state.recent_directory
+        self._manager._recent_name_filter = state.recent_name_filter
+        self._manager._recent_loader_kwargs_by_filter = manager_loader_kwargs
+        self._manager._recent_loader_extensions_by_filter = manager_loader_extensions
+        self._controller._loader_state = runtime_state
+        self._manager._sync_shared_loader_state(
+            explorer_kwargs,
+            explorer_extensions,
+            apply_explorer=apply_explorer,
+        )
 
     def _restore_standalone_apps_state(
         self, manifest: Mapping[str, typing.Any] | None

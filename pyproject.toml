@@ -1,136 +1,136 @@
 [project]
 name = "erlab"
 version = "3.24.1"
-authors = [{ name = "Kimoon Higashihira Han", email = "khan@kaist.ac.kr" }]
 description = "Python package for ARPES data analysis and visualization."
 readme = "README.md"
 requires-python = ">=3.11"
-keywords = ["Condensed Matter Physics", "ARPES"]
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
+authors = [{ name = "Kimoon Higashihira Han", email = "khan@kaist.ac.kr" }]
+keywords = ["ARPES", "Condensed Matter Physics"]
 classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Science/Research",
-    "Topic :: Scientific/Engineering :: Physics",
-    "Topic :: Scientific/Engineering :: Visualization",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
-    "Operating System :: OS Independent",
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering :: Physics",
+  "Topic :: Scientific/Engineering :: Visualization",
 ]
 dependencies = [
-    "dask[distributed]>=2024.4.1",
-    "findiff>=0.12.0",
-    "h5netcdf>=1.7.1",
-    "igor2>=0.5.13",
-    "igorwriter>=0.6.1",
-    "joblib>=1.3.2",
-    "lazy-loader>=0.4",
-    "lmfit>=1.3.2",
-    "ipykernel>=6.29.5,!=7.2.0",
-    "matplotlib>=3.8.0",
-    "numba>=0.63.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
-    "numba>=0.61.0,<0.63.0; sys_platform == 'darwin' and platform_machine == 'x86_64'",
-    "numexpr>=2.11.0",
-    "numpy>=1.26.0",
-    "packaging>=24.0",
-    "pickleshare>=0.7.5",
-    "psutil>=7.2.2",
-    "pydantic>=2.11.7",
-    "pyperclip>=1.8.2",
-    "pyqtgraph>=0.13.1",
-    "pyzmq>=27.0.2",
-    "qtawesome>=1.3.1",
-    "qtconsole>=5.6.0",
-    "qtpy>=2.4.1",
-    "scipy>=1.15.0",
-    "tqdm>=4.66.2",
-    "varname>=0.13.0",
-    "xarray>=2024.10.0",
-    "xarray-lmfit>=0.5.5",
-    "pygments>=2.11.0",
-    "xraydb>=4.5.8",
-    "hdf5plugin>=6.0.0",
+  "dask[distributed]>=2024.4.1",
+  "findiff>=0.12.0",
+  "h5netcdf>=1.7.1",
+  "hdf5plugin>=6.0.0",
+  "igor2>=0.5.13",
+  "igorwriter>=0.6.1",
+  "ipykernel>=6.29.5,!=7.2.0",
+  "joblib>=1.3.2",
+  "lazy-loader>=0.4",
+  "lmfit>=1.3.2",
+  "matplotlib>=3.8.0",
+  "numba>=0.61.0,<0.63.0; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+  "numba>=0.63.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+  "numexpr>=2.11.0",
+  "numpy>=1.26.0",
+  "packaging>=24.0",
+  "pickleshare>=0.7.5",
+  "psutil>=7.2.2",
+  "pydantic>=2.11.7",
+  "pygments>=2.11.0",
+  "pyperclip>=1.8.2",
+  "pyqtgraph>=0.13.1",
+  "pyzmq>=27.0.2",
+  "qtawesome>=1.3.1",
+  "qtconsole>=5.6.0",
+  "qtpy>=2.4.1",
+  "scipy>=1.15.0",
+  "tqdm>=4.66.2",
+  "varname>=0.13.0",
+  "xarray>=2024.10.0",
+  "xarray-lmfit>=0.5.5",
+  "xraydb>=4.5.8",
 ]
 
-
-[project.optional-dependencies]
-complete = ["erlab[viz,io,perf,misc]"]
-viz = ["hvplot>=0.11.0,!=0.12.0", "ipywidgets", "seaborn>=0.13.2"]
-io = [
-    "astropy>=5.1.1",
-    "nexusformat>=1.0.6",
-    "zarr>=3.1.2",
-    "pillow>=10.0.0",
-]
-perf = ["numbagg>=0.8.1"]
-misc = ["iminuit>=2.25.2,!=2.31.2", "csaps>=1.1.0", "numdifftools>=0.9.42"]
-
-[dependency-groups]
-dev = [
-    "colorspacious>=1.1.2",
-    "commitizen>=4.3.0",
-    "coverage>=7.10.5",
-    "cz-changeup>=1.1.2",
-    "ipykernel>=6.29.5,!=7.2.0",
-    "jupyter-bokeh>=4.0.5",
-    "marimo>=0.19.11",
-    "mypy[faster-cache,reports]>=1.16.0",
-    "pooch>=1.8.0",
-    "prek>=0.2.15",
-    "pytest>=9.0.0",
-    "pytest-cov>=7.0.0",
-    "pytest-datadir>=1.5.0",
-    "pytest-env>=1.1.5",
-    "pytest-qt>=4.4.0",
-    "pytest-xdist>=3.8.0",
-    "ruff>=0.15.1",
-]
-docs = [
-    "furo>=2024.8.6",
-    "ipykernel>=6.29.5,!=7.2.0",
-    "myst-nb>=1.2.0",
-    "pybtex>=0.24.0",
-    "pyqt6>=6.8.0",
-    "sphinx>=8.1.3,<9.0.0",
-    "sphinx-autodoc-typehints>=3.0.0",
-    "sphinx-autosummary-accessors>=2025.3.1",
-    "sphinx-copybutton>=0.5.2",
-    "sphinx-design>=0.6.1",
-    "sphinx-llm>=0.3.0",
-    "sphinx-notfound-page>=1.0.4",
-    "sphinx-qt-documentation>=0.4.1",
-    "sphinxcontrib-bibtex>=2.6.3",
-    "sphinxcontrib-googleanalytics>=0.4",
-    "sphinxext-rediraffe>=0.3.0",
-]
-pyinstaller = [
-    "cmasher>=1.9.2",
-    "cmcrameri>=1.9",
-    "cmocean>=4.0.3",
-    "colorcet>=3.1.0",
-    "pyinstaller>=6.19.0",
-    "pyinstaller-versionfile>=3.0.1",
-    "pywin32>=306; sys_platform == 'win32'",
-    "requests>=2.32.0",
-    "seaborn>=0.13.2",
-]
-pyqt6 = ["pyqt6>=6.8.0"]
-pyside6 = ["pyside6>=6.8.1.1,!=6.9.1"]
-
+[project.urls]
+Changelog = "https://github.com/kmnhan/erlabpy/blob/main/CHANGELOG.md"
+Documentation = "https://erlabpy.readthedocs.io"
+Issues = "https://github.com/kmnhan/erlabpy/issues"
+Repository = "https://github.com/kmnhan/erlabpy.git"
 
 [project.scripts]
 itool-manager = "erlab.interactive.imagetool.manager:main"
 
-[project.urls]
-Documentation = "https://erlabpy.readthedocs.io"
-Repository = "https://github.com/kmnhan/erlabpy.git"
-Issues = "https://github.com/kmnhan/erlabpy/issues"
-Changelog = "https://github.com/kmnhan/erlabpy/blob/main/CHANGELOG.md"
-
 [project.entry-points."xarray.backends"]
 erlab-igor = "erlab.io.igor:IgorBackendEntrypoint"
+
+[project.optional-dependencies]
+complete = ["erlab[viz,io,perf,misc]"]
+io = [
+  "astropy>=5.1.1",
+  "nexusformat>=1.0.6",
+  "openpyxl>=3.1.5",
+  "requests>=2.32.0",
+  "zarr>=3.1.2",
+  "pillow>=10.0.0",
+]
+misc = ["iminuit>=2.25.2,!=2.31.2", "csaps>=1.1.0", "numdifftools>=0.9.42"]
+perf = ["numbagg>=0.8.1"]
+viz = ["hvplot>=0.11.0,!=0.12.0", "ipywidgets", "seaborn>=0.13.2"]
+
+[dependency-groups]
+dev = [
+  "colorspacious>=1.1.2",
+  "commitizen>=4.3.0",
+  "coverage>=7.10.5",
+  "cz-changeup>=1.1.2",
+  "ipykernel>=6.29.5,!=7.2.0",
+  "jupyter-bokeh>=4.0.5",
+  "marimo>=0.19.11",
+  "mypy[faster-cache,reports]>=1.16.0",
+  "pooch>=1.8.0",
+  "prek>=0.2.15",
+  "pytest>=9.0.0",
+  "pytest-cov>=7.0.0",
+  "pytest-datadir>=1.5.0",
+  "pytest-env>=1.1.5",
+  "pytest-qt>=4.4.0",
+  "pytest-xdist>=3.8.0",
+  "ruff>=0.15.1",
+]
+docs = [
+  "furo>=2024.8.6",
+  "ipykernel>=6.29.5,!=7.2.0",
+  "myst-nb>=1.2.0",
+  "pybtex>=0.24.0",
+  "pyqt6>=6.8.0",
+  "sphinx>=8.1.3,<9.0.0",
+  "sphinx-autodoc-typehints>=3.0.0",
+  "sphinx-autosummary-accessors>=2025.3.1",
+  "sphinx-copybutton>=0.5.2",
+  "sphinx-design>=0.6.1",
+  "sphinx-llm>=0.3.0",
+  "sphinx-notfound-page>=1.0.4",
+  "sphinx-qt-documentation>=0.4.1",
+  "sphinxcontrib-bibtex>=2.6.3",
+  "sphinxcontrib-googleanalytics>=0.4",
+  "sphinxext-rediraffe>=0.3.0",
+]
+pyinstaller = [
+  "cmasher>=1.9.2",
+  "cmcrameri>=1.9",
+  "cmocean>=4.0.3",
+  "colorcet>=3.1.0",
+  "pyinstaller>=6.19.0",
+  "pyinstaller-versionfile>=3.0.1",
+  "pywin32>=306; sys_platform == 'win32'",
+  "requests>=2.32.0",
+  "seaborn>=0.13.2",
+]
+pyqt6 = ["pyqt6>=6.8.0"]
+pyside6 = ["pyside6>=6.8.1.1,!=6.9.1"]
 
 [build-system]
 requires = ["uv_build>=0.8.13"]
@@ -145,13 +145,13 @@ tag_format = "v$version"
 changelog_start_rev = "v1.2.1"
 changelog_incremental = true
 changelog_merge_prerelease = true
-name = 'cz_changeup'
+name = "cz_changeup"
 change_type_order = [
-    "💥 Breaking Changes",
-    "✨ Features",
-    "🐞 Bug Fixes",
-    "⚡️ Performance",
-    "♻️ Code Refactor",
+  "💥 Breaking Changes",
+  "✨ Features",
+  "🐞 Bug Fixes",
+  "⚡️ Performance",
+  "♻️ Code Refactor",
 ]
 # cz-changeup configuration
 changeup_repo_base_url = "https://github.com/kmnhan/erlabpy"
@@ -161,137 +161,6 @@ changeup_link_issues = true
 changeup_scope_prefix = "**"
 changeup_scope_suffix = ""
 changeup_scope_separator = ":** "
-
-[tool.ruff]
-line-length = 88
-indent-width = 4
-
-[tool.ruff.lint]
-select = [
-    "F",
-    "E",
-    "W",
-    "I",
-    "D",
-    "UP",
-    "YTT",
-    "ASYNC",
-    "S",
-    # "FBT",
-    "B",
-    "A",
-    "C4",
-    # "DTZ",
-    "FA",
-    "ICN",
-    "LOG",
-    "G",
-    "PIE",
-    # "T20",
-    "PYI",
-    "PT",
-    "Q",
-    "RSE",
-    "RET",
-    "SIM",
-    "TID",
-    "TC",
-    "INT",
-    # "ARG",
-    # "PTH",
-    # "FIX",
-    # "PLC",
-    # "PLE",
-    # "PLW",
-    "TRY",
-    "FLY",
-    "NPY",
-    "PERF",
-    "FURB",
-    "RUF",
-]
-ignore = [
-    "S101",    # Use of assert
-    "S301",    # Suspicious pickle usage
-    "S603",    # `subprocess` call
-    "S607",    # Starting a process with a partial executable path
-    "PLW2901", # Outer variable overwritten by inner target
-    "ICN001",  # Import conventions
-    "TRY003",  # Long exception messages
-    "D100",    # Missing docstring in public module
-    "D101",    # Missing docstring in public class
-    "D102",    # Missing docstring in public method
-    "D103",    # Missing docstring in public function
-    "D104",    # Missing docstring in public package
-    "D105",    # Missing docstring in magic method
-]
-extend-select = []
-allowed-confusables = [
-    "×",
-    "−",
-    "𝑎",
-    "𝒂",
-    "𝑏",
-    "𝒃",
-    "𝑐",
-    "𝑥",
-    "𝑦",
-    "𝑧",
-    "𝛼",
-    "γ",
-    "𝛾",
-    "ν",
-    "α",
-]
-exclude = ["*.ipynb"]
-
-[tool.ruff.lint.pydocstyle]
-convention = "numpy"
-
-[tool.ruff.lint.flake8-builtins]
-builtins-allowed-modules = ["array", "io"]
-
-[tool.ruff.lint.isort]
-split-on-trailing-comma = false
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-skip-magic-trailing-comma = false
-line-ending = "auto"
-docstring-code-format = true
-docstring-code-line-length = "dynamic"
-
-[tool.pytest]
-minversion = "9.0"
-addopts = [
-    "-ra",
-    "--strict-config",
-    "--strict-markers",
-    "--import-mode=importlib",
-]
-pythonpath = ["src"]
-testpaths = ["tests"]
-log_cli_level = "INFO"
-xfail_strict = true
-filterwarnings = [
-    "always",
-    'ignore:.*unclosed file.*igorwriter/builtins/.*:ResourceWarning',
-]
-qt_log_level_fail = "CRITICAL"
-qt_log_ignore = [
-    "This plugin does not support raise()",
-    "This plugin does not support propagateSizeHints()",
-    "Populating font family aliases.*",
-]
-markers = [
-    "compat: compatibility smoke tests for non-primary CI lanes",
-    "gui: tests that require Qt or GUI-related infrastructure",
-    "serial: tests with legacy process-isolation risk",
-]
-
-[tool.pytest_env]
-DISPLAY = ":99.0"
 
 [tool.coverage.run]
 source = ["src"]
@@ -304,24 +173,24 @@ patch = ["subprocess", "execv", "_exit", "fork"]
 
 [tool.coverage.report]
 exclude_also = [
-    "@numba.njit",
-    "@numba.vectorize",
-    "@cfunc",
-    "get_ipython()",
-    "from IPython",
-    "def mouseDragEvent",
-    "def .*_drag",
-    "def _link_splitters",
-    "def draw_mode",
-    "QtWidgets.QApplication(sys.argv)",
-    "QtWidgets.QMessageBox.question",
-    "if not qapp:",
-    "if execute is None:",
-    "qapp.exec()",
-    'if __name__ == "__main__:"',
-    "except varname.VarnameRetrievingError:",
-    "if typing.TYPE_CHECKING:",
-    "raise LookupError",
+  "@numba.njit",
+  "@numba.vectorize",
+  "@cfunc",
+  "get_ipython()",
+  "from IPython",
+  "def mouseDragEvent",
+  "def .*_drag",
+  "def _link_splitters",
+  "def draw_mode",
+  "QtWidgets.QApplication(sys.argv)",
+  "QtWidgets.QMessageBox.question",
+  "if not qapp:",
+  "if execute is None:",
+  "qapp.exec()",
+  'if __name__ == "__main__:"',
+  "except varname.VarnameRetrievingError:",
+  "if typing.TYPE_CHECKING:",
+  "raise LookupError",
 ]
 
 [tool.mypy]
@@ -332,17 +201,17 @@ warn_unused_ignores = true
 warn_unreachable = false
 allow_redefinition = true
 check_untyped_defs = false
-exclude = ['^docs/', '^tests/', '^build/', '_deprecated/']
+exclude = ["^docs/", "^tests/", "^build/", "_deprecated/"]
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 disable_error_code = ["import-untyped"]
 pretty = true
 
 [[tool.mypy.overrides]]
 module = [
-    "erlab.interactive.derivative",
-    "erlab.interactive.fermiedge",
-    "erlab.interactive.kspace",
-    "erlab.interactive._mesh",
+  "erlab.interactive.derivative",
+  "erlab.interactive.fermiedge",
+  "erlab.interactive.kspace",
+  "erlab.interactive._mesh",
 ]
 disable_error_code = ["attr-defined"]
 
@@ -351,3 +220,128 @@ disable_error_code = ["attr-defined"]
 [[tool.mypy.overrides]]
 module = ["numba", "numba.*"]
 follow_imports = "skip"
+
+[tool.pytest]
+addopts = [
+  "--import-mode=importlib",
+  "--strict-config",
+  "--strict-markers",
+  "-ra",
+]
+filterwarnings = [
+  "always",
+  "ignore:.*unclosed file.*igorwriter/builtins/.*:ResourceWarning",
+]
+log_cli_level = "INFO"
+markers = [
+  "compat: compatibility smoke tests for non-primary CI lanes",
+  "gui: tests that require Qt or GUI-related infrastructure",
+  "serial: tests with legacy process-isolation risk",
+]
+minversion = "9.0"
+pythonpath = ["src"]
+strict_xfail = true
+testpaths = ["tests"]
+qt_log_level_fail = "CRITICAL"
+qt_log_ignore = [
+  "This plugin does not support raise()",
+  "This plugin does not support propagateSizeHints()",
+  "Populating font family aliases.*",
+]
+
+[tool.pytest_env]
+DISPLAY = ":99.0"
+
+[tool.ruff]
+line-length = 88
+indent-width = 4
+
+[tool.ruff.lint]
+select = [
+  "F",
+  "E",
+  "W",
+  "I",
+  "D",
+  "UP",
+  "YTT",
+  "ASYNC",
+  "S",
+  # "FBT",
+  "B",
+  "A",
+  "C4",
+  # "DTZ",
+  "FA",
+  "ICN",
+  "LOG",
+  "G",
+  "PIE",
+  # "T20",
+  "PYI",
+  "PT",
+  "Q",
+  "RSE",
+  "RET",
+  "SIM",
+  "TID",
+  "TC",
+  "INT",
+  # "ARG",
+  # "PTH",
+  # "FIX",
+  # "PLC",
+  # "PLE",
+  # "PLW",
+  "TRY",
+  "FLY",
+  "NPY",
+  "PERF",
+  "FURB",
+  "RUF",
+]
+ignore = [
+  "S101",  # Use of assert
+  "S301",  # Suspicious pickle usage
+  "S603",  # `subprocess` call
+  "S607",  # Starting a process with a partial executable path
+  "PLW2901",  # Outer variable overwritten by inner target
+  "ICN001",  # Import conventions
+  "TRY003",  # Long exception messages
+  "D100",  # Missing docstring in public module
+  "D101",  # Missing docstring in public class
+  "D102",  # Missing docstring in public method
+  "D103",  # Missing docstring in public function
+  "D104",  # Missing docstring in public package
+  "D105",  # Missing docstring in magic method
+]
+extend-select = []
+allowed-confusables = [
+  "×",
+  "−",
+  "𝑎",
+  "𝒂",
+  "𝑏",
+  "𝒃",
+  "𝑐",
+  "𝑥",
+  "𝑦",
+  "𝑧",
+  "𝛼",
+  "γ",
+  "𝛾",
+  "ν",
+  "α",
+]
+exclude = ["*.ipynb"]
+pydocstyle.convention = "numpy"
+flake8-builtins.allowed-modules = ["array", "io"]
+isort.split-on-trailing-comma = false
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"

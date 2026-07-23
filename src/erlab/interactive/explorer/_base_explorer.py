@@ -914,6 +914,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
     sigDirectoryChanged = QtCore.Signal(str)
     sigCloseRequested = QtCore.Signal(object)
+    sigLoaderStateChanged = QtCore.Signal(object, object)
     sigStateChanged = QtCore.Signal()
 
     def __init__(
@@ -1428,6 +1429,10 @@ class _DataExplorer(QtWidgets.QMainWindow):
         selected_extensions = selected_kwargs.pop("loader_extensions", {})
         self._loader_kwargs_by_name[loader_name] = selected_kwargs
         self._loader_extensions_by_name[loader_name] = selected_extensions
+        self.sigLoaderStateChanged.emit(
+            self.loader_kwargs_by_name(),
+            self.loader_extensions_by_name(),
+        )
         self._emit_workspace_state_changed()
 
     def _manager_load_kwargs(
