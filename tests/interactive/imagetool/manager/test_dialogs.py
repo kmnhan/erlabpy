@@ -1068,8 +1068,18 @@ def test_spreadsheet_metadata_mapping_reorder_defensive_paths(qtbot) -> None:
             )
         )
     )
-    dialog._remove_selected_mapping()
-    assert dialog.mapping_table.topLevelItemCount() == 1
+    active_editor = next(
+        editor
+        for editor in dialog.mapping_table.findChildren(QtWidgets.QComboBox)
+        if editor.isVisible()
+    )
+    active_editor.hidePopup()
+    qtbot.mouseClick(
+        dialog.remove_mapping_button,
+        QtCore.Qt.MouseButton.LeftButton,
+    )
+    qtbot.waitUntil(lambda: dialog.mapping_table.topLevelItemCount() == 1)
+    qtbot.waitUntil(lambda: not dialog.mapping_table.findChildren(QtWidgets.QComboBox))
 
     dialog.mapping_table.setCurrentIndex(QtCore.QModelIndex())
     dialog._remove_selected_mapping()
