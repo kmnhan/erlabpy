@@ -847,9 +847,21 @@ def symmetrize(
                 above = above.assign_coords({dim: below[dim]})
             case "full":
                 if n_below > n_above:
-                    above = above.interp({dim: below[dim]}).fillna(0.0)
+                    above = (
+                        above.assign_coords(
+                            {dim: below[dim].isel({dim: slice(-n_above, None)})}
+                        )
+                        .reindex({dim: below[dim]}, fill_value=0.0)
+                        .fillna(0.0)
+                    )
                 else:
-                    below = below.interp({dim: above[dim]}).fillna(0.0)
+                    below = (
+                        below.assign_coords(
+                            {dim: above[dim].isel({dim: slice(-n_below, None)})}
+                        )
+                        .reindex({dim: above[dim]}, fill_value=0.0)
+                        .fillna(0.0)
+                    )
 
         # Symmetrize
         sym_below = (below - above) if subtract else (below + above)
@@ -861,6 +873,7 @@ def symmetrize(
                 overlap_divisor,
                 dims=(dim,),
                 coords={dim: sym_below[dim]},
+                name=sym_below.name,
             )
 
         # Retain coordinate attributes
