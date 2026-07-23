@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import threading
 import typing
 
 from qtpy import QtCore, QtGui, QtWidgets
@@ -372,6 +374,7 @@ class _SpreadsheetDiscoveryWorker(QtCore.QRunnable):
     ) -> None:
         super().__init__()
         self.setAutoDelete(False)
+        self._cancelled = threading.Event()
         self.signals = _SpreadsheetDiscoverySignals()
         self.request_id = request_id
         self.operation = operation
@@ -379,11 +382,19 @@ class _SpreadsheetDiscoveryWorker(QtCore.QRunnable):
         self.preview_file_name = preview_file_name
         self.infer_file_number = infer_file_number
 
+    def cancel(self) -> None:
+        """Suppress results from this request and skip work that has not started."""
+        self._cancelled.set()
+
     @QtCore.Slot()
     def run(self) -> None:
         try:
+            if self._cancelled.is_set():
+                return
             if self.operation == "sheets":
                 sheet_names = self.source.get_sheet_names()
+                if self._cancelled.is_set():
+                    return
                 try:
                     selected_sheet: str | None = self.source.get_selected_sheet_name()
                 except ValueError:
@@ -406,16 +417,62 @@ class _SpreadsheetDiscoveryWorker(QtCore.QRunnable):
                     self.infer_file_number or (lambda: None),
                 )
         except Exception as exc:
-            detail = f"{type(exc).__name__}: {exc}"
-            self.signals.failed.emit(self.request_id, self.operation, detail)
+            if not self._cancelled.is_set():
+                detail = f"{type(exc).__name__}: {exc}"
+                self.signals.failed.emit(self.request_id, self.operation, detail)
         else:
-            self.signals.succeeded.emit(
-                self.request_id,
-                self.operation,
-                result,
-            )
+            if not self._cancelled.is_set():
+                self.signals.succeeded.emit(
+                    self.request_id,
+                    self.operation,
+                    result,
+                )
         finally:
             self.signals.finished.emit(self)
+
+
+_DISCOVERY_BROKER_ATTRIBUTE = "_erlab_spreadsheet_discovery_broker"
+
+
+class _SpreadsheetDiscoveryBroker(QtCore.QObject):
+    """Keep spreadsheet discovery workers alive independently of their dialogs."""
+
+    def __init__(self, parent: QtCore.QObject) -> None:
+        super().__init__(parent)
+        self._workers: set[_SpreadsheetDiscoveryWorker] = set()
+
+    def start(self, worker: _SpreadsheetDiscoveryWorker) -> None:
+        pool = QtCore.QThreadPool.globalInstance()
+        if pool is None:  # pragma: no cover - Qt creates it with the application
+            raise RuntimeError("Qt's global thread pool is unavailable")
+        self._workers.add(worker)
+        worker.signals.finished.connect(self._worker_finished)
+        try:
+            pool.start(worker)
+        except Exception:
+            self._workers.discard(worker)
+            with contextlib.suppress(TypeError, RuntimeError):
+                worker.signals.finished.disconnect(self._worker_finished)
+            raise
+
+    @QtCore.Slot(object)
+    def _worker_finished(self, worker: object) -> None:
+        if isinstance(worker, _SpreadsheetDiscoveryWorker):
+            self._workers.discard(worker)
+
+
+def _spreadsheet_discovery_broker() -> _SpreadsheetDiscoveryBroker:
+    """Return the discovery worker owner associated with the current application."""
+    application = QtWidgets.QApplication.instance()
+    if application is None:
+        raise RuntimeError("Spreadsheet discovery requires a QApplication")
+    broker = getattr(application, _DISCOVERY_BROKER_ATTRIBUTE, None)
+    if not isinstance(broker, _SpreadsheetDiscoveryBroker) or not (
+        erlab.interactive.utils.qt_is_valid(broker)
+    ):
+        broker = _SpreadsheetDiscoveryBroker(application)
+        setattr(application, _DISCOVERY_BROKER_ATTRIBUTE, broker)
+    return broker
 
 
 def _column_display_entries(columns: tuple[str, ...]) -> list[tuple[str, str]]:
@@ -500,9 +557,6 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         )
         self._preferred_sheet: str | int | None = None
         self._workers: set[_SpreadsheetDiscoveryWorker] = set()
-        self._threadpool = QtCore.QThreadPool(self)
-        self._threadpool.setMaxThreadCount(2)
-        self._threadpool.setExpiryTimeout(0)
 
         layout = QtWidgets.QVBoxLayout(self)
         self._setup_source_group(layout)
@@ -765,7 +819,7 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
     @QtCore.Slot()
     def _source_input_edited(self) -> None:
         self._request_id += 1
-        self._threadpool.clear()
+        self._cancel_discovery_requests()
         self._last_discovery_error = None
         self.sheet_combo.blockSignals(True)
         self.sheet_combo.clear()
@@ -887,7 +941,7 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
     ) -> None:
         self._request_id += 1
         request_id = self._request_id
-        self._threadpool.clear()
+        self._cancel_discovery_requests()
         if operation != "preview":
             self._last_discovery_error = None
         worker = _SpreadsheetDiscoveryWorker(
@@ -902,7 +956,19 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
         worker.signals.failed.connect(self._request_failed)
         worker.signals.finished.connect(self._worker_finished)
         self._set_busy(True, status)
-        self._threadpool.start(worker)
+        try:
+            _spreadsheet_discovery_broker().start(worker)
+        except Exception as exc:
+            self._workers.discard(worker)
+            self._request_failed(
+                request_id,
+                operation,
+                f"{type(exc).__name__}: {exc}",
+            )
+
+    def _cancel_discovery_requests(self) -> None:
+        for worker in tuple(self._workers):
+            worker.cancel()
 
     @QtCore.Slot(int, str, object)
     def _request_succeeded(
@@ -1263,5 +1329,5 @@ class _SpreadsheetMetadataDialog(QtWidgets.QDialog):
 
     def reject(self) -> None:
         self._request_id += 1
-        self._threadpool.clear()
+        self._cancel_discovery_requests()
         super().reject()

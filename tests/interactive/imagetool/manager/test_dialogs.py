@@ -36,6 +36,8 @@ from erlab.interactive.imagetool.manager._spreadsheet_metadata import (
     _MAPPING_NAME_COLUMN,
     _MAPPING_VALUE_ROLE,
     _column_display_entries,
+    _spreadsheet_discovery_broker,
+    _SpreadsheetDiscoveryWorker,
     _SpreadsheetMetadataDialog,
 )
 
@@ -561,6 +563,7 @@ def test_spreadsheet_metadata_dialog_ignores_result_after_cancel(
 ) -> None:
     started = threading.Event()
     release = threading.Event()
+    selected_sheet_requests: list[None] = []
 
     def get_sheet_names(_self) -> list[str]:
         started.set()
@@ -576,7 +579,7 @@ def test_spreadsheet_metadata_dialog_ignores_result_after_cancel(
     monkeypatch.setattr(
         erlab.io.metadata.GoogleSheetsMetadataSource,
         "get_selected_sheet_name",
-        lambda _self: "Measurements",
+        lambda _self: selected_sheet_requests.append(None) or "Measurements",
     )
     dialog = _SpreadsheetMetadataDialog(None)
     qtbot.addWidget(dialog)
@@ -595,6 +598,78 @@ def test_spreadsheet_metadata_dialog_ignores_result_after_cancel(
 
     assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
     assert dialog.sheet_combo.count() == 0
+    assert selected_sheet_requests == []
+
+
+def test_cancelled_spreadsheet_discovery_skips_queued_work(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[None] = []
+    source = erlab.io.metadata.GoogleSheetsMetadataSource(
+        "https://docs.google.com/spreadsheets/d/test-sheet/edit?usp=sharing"
+    )
+    monkeypatch.setattr(
+        source,
+        "get_sheet_names",
+        lambda: requests.append(None) or ["Measurements"],
+    )
+    worker = _SpreadsheetDiscoveryWorker(1, "sheets", source)
+    worker.cancel()
+    broker = _spreadsheet_discovery_broker()
+
+    broker.start(worker)
+    qtbot.waitUntil(lambda: worker not in broker._workers)
+
+    assert requests == []
+
+
+def test_spreadsheet_metadata_dialog_can_be_destroyed_during_discovery(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    source_returned = threading.Event()
+
+    def get_sheet_names(_self) -> list[str]:
+        started.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("test did not release spreadsheet discovery")
+        source_returned.set()
+        return ["Measurements"]
+
+    monkeypatch.setattr(
+        erlab.io.metadata.GoogleSheetsMetadataSource,
+        "get_sheet_names",
+        get_sheet_names,
+    )
+    dialog = _SpreadsheetMetadataDialog(None)
+    dialog.source_type_combo.setCurrentIndex(
+        dialog.source_type_combo.findData("google_sheets")
+    )
+    dialog.google_url_line.setText(
+        "https://docs.google.com/spreadsheets/d/test-sheet/edit?usp=sharing"
+    )
+    dialog.refresh_button.click()
+    qtbot.waitUntil(started.is_set)
+
+    try:
+        dialog.reject()
+        dialog.deleteLater()
+        QtWidgets.QApplication.sendPostedEvents(
+            dialog,
+            QtCore.QEvent.Type.DeferredDelete,
+        )
+
+        assert not erlab.interactive.utils.qt_is_valid(dialog)
+        assert not source_returned.is_set()
+    finally:
+        release.set()
+
+    qtbot.waitUntil(source_returned.is_set)
+    broker = _spreadsheet_discovery_broker()
+    qtbot.waitUntil(lambda: not broker._workers)
 
 
 def test_spreadsheet_metadata_dialog_restores_excel_source(
@@ -811,6 +886,31 @@ def test_spreadsheet_metadata_dialog_reports_background_read_error(
     assert dialog._last_discovery_error is not None
     assert dialog.sheet_combo.count() == 0
     assert not dialog.progress_bar.isVisible()
+
+
+def test_spreadsheet_metadata_dialog_reports_worker_start_error(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_start(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("thread pool unavailable")
+
+    monkeypatch.setattr(QtCore.QThreadPool, "start", fail_start)
+    dialog = _SpreadsheetMetadataDialog(None)
+    qtbot.addWidget(dialog)
+    dialog.source_type_combo.setCurrentIndex(
+        dialog.source_type_combo.findData("google_sheets")
+    )
+    dialog.google_url_line.setText(
+        "https://docs.google.com/spreadsheets/d/test-sheet/edit?usp=sharing"
+    )
+
+    dialog.refresh_button.click()
+
+    assert not dialog._busy
+    assert not dialog._workers
+    assert dialog._last_discovery_error == ("RuntimeError: thread pool unavailable")
+    assert not _spreadsheet_discovery_broker()._workers
 
 
 def test_spreadsheet_metadata_dialog_validates_mappings(
