@@ -1388,7 +1388,8 @@ def test_manager_recent_workspaces_dedupe_move_to_top_and_cap(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    paths = [tmp_path / f"workspace-{idx}.itws" for idx in range(12)]
+    limit = erlab.interactive.options.model.io.recent_workspace_limit
+    paths = [tmp_path / f"workspace-{idx}.itws" for idx in range(limit + 2)]
     for path in paths:
         path.touch()
 
@@ -1404,15 +1405,8 @@ def test_manager_recent_workspaces_dedupe_move_to_top_and_cap(
 
         assert manager._workspace_controller._recent_workspace_paths() == [
             paths[6].resolve(),
-            paths[11].resolve(),
-            paths[10].resolve(),
-            paths[9].resolve(),
-            paths[8].resolve(),
-            paths[7].resolve(),
-            paths[5].resolve(),
-            paths[4].resolve(),
-            paths[3].resolve(),
-            paths[2].resolve(),
+            *(path.resolve() for path in reversed(paths[7:])),
+            *(path.resolve() for path in reversed(paths[2:6])),
         ]
 
 
@@ -1429,7 +1423,8 @@ def test_manager_recent_workspace_normalization_and_settings(
     data_file.touch()
 
     assert workspace_controller._WorkspaceController._normalize_recent_workspace_paths(
-        [data_file, workspace, workspace]
+        [data_file, workspace, workspace],
+        limit=20,
     ) == [workspace.resolve()]
 
     with manager_context() as manager:
@@ -1455,6 +1450,49 @@ def test_manager_recent_workspace_normalization_and_settings(
             lambda: _ObjectSettings(),
         )
         assert manager._workspace_controller._recent_workspace_paths() == []
+
+
+def test_manager_recent_workspace_limit_setting_prunes_history(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    paths = [tmp_path / f"workspace-{idx}.itws" for idx in range(5)]
+    for path in paths:
+        path.touch()
+
+    with manager_context() as manager:
+        manager._workspace_controller._set_recent_workspace_paths(paths)
+        manager.open_settings()
+        dialog = manager._additional_windows.get("settings")
+        assert isinstance(dialog, erlab.interactive._options.OptionDialog)
+        limit_control = dialog.findChild(
+            QtWidgets.QSpinBox,
+            "settingsControl_user_io__recent_workspace_limit",
+        )
+        if limit_control is None:
+            raise AssertionError("Recent workspace limit setting was not found")
+
+        limit_control.setValue(3)
+        manager._workspace_controller._populate_open_recent_menu()
+
+        expected = [path.resolve() for path in paths[:3]]
+        assert manager._workspace_controller._recent_workspace_paths() == expected
+        assert manager_widgets._manager_settings().value(
+            manager_widgets._RECENT_WORKSPACES_SETTINGS_KEY
+        ) == [str(path) for path in expected]
+        actions = action_map_by_object_name(manager.open_recent_menu)
+        assert {
+            name
+            for name in actions
+            if name.startswith("manager_recent_workspace_action_")
+        } == {
+            "manager_recent_workspace_action_0",
+            "manager_recent_workspace_action_1",
+            "manager_recent_workspace_action_2",
+        }
 
 
 def test_manager_open_recent_workspace_flow(

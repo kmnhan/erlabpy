@@ -41,8 +41,8 @@ _METADATA_DERIVATION_COPYABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 1
 _METADATA_DERIVATION_ROW_ROLE = _METADATA_DERIVATION_CODE_ROLE + 2
 _METADATA_DERIVATION_ACTIVATABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 3
 _QWIDGETSIZE_MAX = 16777215
+_MANAGER_SETTINGS_PATH_ENV_VAR = "ERLAB_IMAGETOOL_MANAGER_SETTINGS_PATH"
 _RECENT_WORKSPACES_SETTINGS_KEY = "recent_workspaces"
-_MAX_RECENT_WORKSPACES = 10
 _DEPENDENCY_STATUS_LABELS: dict[str, str] = {
     "current": "Current",
     "changed": "Changed",
@@ -76,6 +76,11 @@ class _TrustedScriptReplayCancelled(RuntimeError):
 
 
 def _manager_settings() -> QtCore.QSettings:
+    if settings_path := os.environ.get(_MANAGER_SETTINGS_PATH_ENV_VAR):
+        return QtCore.QSettings(
+            settings_path,
+            QtCore.QSettings.Format.IniFormat,
+        )
     return QtCore.QSettings(
         QtCore.QSettings.Format.IniFormat,
         QtCore.QSettings.Scope.UserScope,

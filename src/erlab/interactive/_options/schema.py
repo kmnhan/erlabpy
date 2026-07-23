@@ -278,6 +278,13 @@ class IOOptions(BaseModel):
         ),
         json_schema_extra={"ui_type": "directory_path"},
     )
+    recent_workspace_limit: int = Field(
+        default=20,
+        title="Recent workspace limit",
+        description="Maximum number of workspace files kept in File > Open Recent.",
+        ge=1,
+        le=50,
+    )
 
     dask: DaskOptions = Field(default_factory=DaskOptions, title="Dask")
     workspace: WorkspaceOptions = Field(

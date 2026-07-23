@@ -76,14 +76,19 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _TEST_OPTIONS_ENV_VAR = "ERLAB_INTERACTIVE_OPTIONS_PATH"
 _TEST_OPTIONS_MANAGED_ENV_VAR = "ERLAB_INTERACTIVE_OPTIONS_PATH_TEST_MANAGED"
 _TEST_INTERACTIVE_OPTIONS_PATHS: list[pathlib.Path] = []
+_TEST_MANAGER_SETTINGS_ENV_VAR = "ERLAB_IMAGETOOL_MANAGER_SETTINGS_PATH"
+_TEST_MANAGER_SETTINGS_MANAGED_ENV_VAR = (
+    "ERLAB_IMAGETOOL_MANAGER_SETTINGS_PATH_TEST_MANAGED"
+)
+_TEST_MANAGER_SETTINGS_PATHS: list[pathlib.Path] = []
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
     if (
         _TEST_OPTIONS_ENV_VAR not in os.environ
         or os.environ.get(_TEST_OPTIONS_MANAGED_ENV_VAR) == "1"
     ):
-        worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
         settings_path = pathlib.Path(tempfile.gettempdir()) / (
             "erlabpy-test-interactive-options-"
             f"{worker_id}-{os.getpid()}-{uuid.uuid4().hex}.ini"
@@ -91,6 +96,18 @@ def pytest_configure(config: pytest.Config) -> None:
         os.environ[_TEST_OPTIONS_ENV_VAR] = str(settings_path)
         os.environ[_TEST_OPTIONS_MANAGED_ENV_VAR] = "1"
         _TEST_INTERACTIVE_OPTIONS_PATHS.append(settings_path)
+
+    if (
+        _TEST_MANAGER_SETTINGS_ENV_VAR not in os.environ
+        or os.environ.get(_TEST_MANAGER_SETTINGS_MANAGED_ENV_VAR) == "1"
+    ):
+        settings_path = pathlib.Path(tempfile.gettempdir()) / (
+            "erlabpy-test-imagetool-manager-"
+            f"{worker_id}-{os.getpid()}-{uuid.uuid4().hex}.ini"
+        )
+        os.environ[_TEST_MANAGER_SETTINGS_ENV_VAR] = str(settings_path)
+        os.environ[_TEST_MANAGER_SETTINGS_MANAGED_ENV_VAR] = "1"
+        _TEST_MANAGER_SETTINGS_PATHS.append(settings_path)
 
 
 def _load_ci_test_groups_module():
@@ -194,22 +211,23 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 @pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    for settings_path in _TEST_INTERACTIVE_OPTIONS_PATHS:
+    qapp = QtWidgets.QApplication.instance()
+    if qapp is not None:
+        # pytest-qt closes registered widgets with deleteLater(), but processEvents()
+        # does not guarantee that DeferredDelete events run before interpreter shutdown.
+        for _ in range(2):
+            QtWidgets.QApplication.sendPostedEvents(
+                None, int(QtCore.QEvent.Type.DeferredDelete.value)
+            )
+            QtWidgets.QApplication.sendPostedEvents(None, 0)
+            qapp.processEvents()
+
+    for settings_path in (
+        *_TEST_INTERACTIVE_OPTIONS_PATHS,
+        *_TEST_MANAGER_SETTINGS_PATHS,
+    ):
         with contextlib.suppress(OSError):
             settings_path.unlink()
-
-    qapp = QtWidgets.QApplication.instance()
-    if qapp is None:
-        return
-
-    # pytest-qt closes registered widgets with deleteLater(), but processEvents()
-    # does not guarantee that DeferredDelete events run before interpreter shutdown.
-    for _ in range(2):
-        QtWidgets.QApplication.sendPostedEvents(
-            None, int(QtCore.QEvent.Type.DeferredDelete.value)
-        )
-        QtWidgets.QApplication.sendPostedEvents(None, 0)
-        qapp.processEvents()
 
 
 @pytest.fixture(autouse=True)

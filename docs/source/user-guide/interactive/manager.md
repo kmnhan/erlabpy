@@ -364,8 +364,14 @@ workspace file to import into the current one.
 
 Saved ImageTool workspaces can be reloaded via {menuselection}`File --> Open Workspace…`
 ({kbd}`Ctrl+O`) or by dragging the `.itws` file back into the manager to recreate your
-windows exactly as they were. A list of recent workspaces is available in
-{menuselection}`File --> Open Recent`.
+windows exactly as they were. By default, the 20 most recent workspaces are available
+in {menuselection}`File --> Open Recent`. Change the number kept with
+{guilabel}`Recent workspace limit` under {guilabel}`Settings` → {guilabel}`I/O`.
+
+:::{versionchanged} 3.25.0
+{menuselection}`File --> Open Recent` now keeps 20 workspaces instead of 10 by
+default, and the limit can be changed in {guilabel}`Settings`.
+:::
 
 To check where the open manager is saved, choose {menuselection}`File --> Workspace Properties`
 ({kbd}`Alt+Return`).

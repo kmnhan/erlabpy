@@ -26,7 +26,6 @@ import erlab.interactive.imagetool.viewer_linking
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager._widgets import (
-    _MAX_RECENT_WORKSPACES,
     _RECENT_WORKSPACES_SETTINGS_KEY,
     _WORKSPACE_SAVE_SHORTCUT_OBJECT_NAME,
     _WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS,
@@ -93,6 +92,8 @@ class _WorkspaceController:
     @staticmethod
     def _normalize_recent_workspace_paths(
         paths: Iterable[str | os.PathLike[str]],
+        *,
+        limit: int,
     ) -> list[pathlib.Path]:
         recent_paths: list[pathlib.Path] = []
         seen: set[str] = set()
@@ -105,11 +106,12 @@ class _WorkspaceController:
                 continue
             recent_paths.append(path)
             seen.add(key)
-            if len(recent_paths) >= _MAX_RECENT_WORKSPACES:
+            if len(recent_paths) >= limit:
                 break
         return recent_paths
 
     def _recent_workspace_paths(self) -> list[pathlib.Path]:
+        limit = erlab.interactive.options.model.io.recent_workspace_limit
         settings = _manager_settings()
         settings.sync()
         values = settings.value(_RECENT_WORKSPACES_SETTINGS_KEY, [])
@@ -119,12 +121,21 @@ class _WorkspaceController:
             stored_paths = [str(value) for value in values if value]
         else:
             stored_paths = []
-        return self._normalize_recent_workspace_paths(stored_paths)
+        recent_paths = self._normalize_recent_workspace_paths(
+            stored_paths,
+            limit=limit,
+        )
+        if len(stored_paths) > limit:
+            self._set_recent_workspace_paths(recent_paths)
+        return recent_paths
 
     def _set_recent_workspace_paths(
         self, paths: Iterable[str | os.PathLike[str]]
     ) -> None:
-        recent_paths = self._normalize_recent_workspace_paths(paths)
+        recent_paths = self._normalize_recent_workspace_paths(
+            paths,
+            limit=erlab.interactive.options.model.io.recent_workspace_limit,
+        )
         settings = _manager_settings()
         if recent_paths:
             settings.setValue(
