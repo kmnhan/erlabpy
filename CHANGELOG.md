@@ -1,3 +1,59 @@
+## Unreleased
+
+### ✨ Features
+
+- **imagetool:** improve window layout (#477) ([2fdfb9d](https://github.com/kmnhan/erlabpy/commit/2fdfb9dab7f77c662554b91d52dfdecf6d663d17))
+
+  ImageTool windows can now be resized to be even smaller. Also added a context menu item to ImageTool manager that helps distribute multiple ImageTool windows across the screen.
+
+- **io:** fill metadata from spreadsheets (#474) ([a5d96a2](https://github.com/kmnhan/erlabpy/commit/a5d96a2bb013fe3089b12f702e417bbf21c724dc))
+
+  Adds a way to load metadata from spreadsheets (Excel or Google Sheets) into data coordinates and attributes when loading data. This is useful for endstations that do not provide sufficient metadata in the raw data files. The behavior can be set up using the new `metadata` argument to `erlab.io.load`, or interactively in ImageTool Manager. See the [user guide](https://erlabpy.readthedocs.io/en/stable/user-guide/io.html#filling-metadata-from-a-spreadsheet) for more information.
+
+- **manager:** add provenance reordering (#470) ([1ef894e](https://github.com/kmnhan/erlabpy/commit/1ef894ef01056c5cac0eac640846d1bbb43c5732))
+
+  ImageTool Manager now lets users rearrange compatible operations through `Reorder Steps…` in the provenance context menu.
+
+- **manager:** add acquisition context and metadata editor (#472) ([52d7b79](https://github.com/kmnhan/erlabpy/commit/52d7b79017fada8e33d5a674f3c8ef913547ecbd))
+
+  Add workspace-scoped Acquisition Context settings for assigning or replacing scalar coordinates and attributes as new data files are loaded. This is useful when conducting experiments at endstations that produce data with insufficient metadata.
+
+  Also introduces a Metadata Editor window that works on selected ImageTool rows in ImageTool manager. The new window allows editing coordinates and attributes in a logbook-like spreadsheet interface.
+
+  See the updated ImageTool manager user guide for more information.
+
+- **manager:** drag tool references into console (#473) ([48f5bf7](https://github.com/kmnhan/erlabpy/commit/48f5bf721a96794ffe98637c8e00e8e94fb44749))
+
+  Typing `tools[...].children[...].children[...]` expressions in the console to access deeply nested tools was inconvenient. This commit adds a convenient way: to access nested tools, drag a single ImageTool or child-tool row from the manager tree into the embedded console to insert its current `tools[...]` expression. Nested rows include their complete `.children[...]` path automatically.
+
+- **figurecomposer:** add generated palette modes (#469) ([165455d](https://github.com/kmnhan/erlabpy/commit/165455d682fd7b650dbec79a0bfc42ba7e74f40e))
+
+  Adds seaborn's cubehelix, diverging, light, and dark palette editor UI with live previews to the set palette step.
+
+- **manager:** reveal windows in manager (#462) ([89a6eee](https://github.com/kmnhan/erlabpy/commit/89a6eee07a3f6430ac850697592dbb3f20920655))
+
+  Add a Window menu action that selects the corresponding ImageTool, tool, or figure source in ImageTool Manager.
+
+### 🐞 Bug Fixes
+
+- **manager:** allow dropping files with mixed extensions (#475) ([f8fd75e](https://github.com/kmnhan/erlabpy/commit/f8fd75eae8df056a567e625d0303b9ebe0bccc04))
+
+- **manager:** fix deferred tool duplication and linking (#471) ([4e67ce3](https://github.com/kmnhan/erlabpy/commit/4e67ce3dd6433a4431508dc1a0a77dbd2b1bcdeb))
+
+- **interactive:** keep colormap thumbnails visible (#466) ([f4435a6](https://github.com/kmnhan/erlabpy/commit/f4435a6a9825c5d22ce0649a0f47ea645d861291))
+
+- **io:** preserve loader identity for shared file filters (#465) ([6516432](https://github.com/kmnhan/erlabpy/commit/65164326300e76e60ed40ff4bfedfee115feb230))
+
+  Fixes an issue where selecting "DA30 Raw Data" from file dialogs would silently use the `kriss` loader.
+
+- **imagetool:** support readonly arrays in fast binning (#464) ([d6a94a0](https://github.com/kmnhan/erlabpy/commit/d6a94a0e2b4c7c5ce7ca61843acba26c12d6f4af))
+
+  Fixes an issue where binning would not work on some read-only arrays, like those loaded from DA30 `.zip` files.
+
+### ♻️ Code Refactor
+
+- **manager:** move data size to details tab (#480) ([7d1ed4f](https://github.com/kmnhan/erlabpy/commit/7d1ed4f1162babb31d3351ac094bcd145bbc5cda))
+
 ## v3.24.1 (2026-07-12)
 
 ### 🐞 Bug Fixes
