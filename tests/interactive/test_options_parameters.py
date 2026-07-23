@@ -17,7 +17,72 @@ from erlab.interactive._options.parameters import (
     StylesheetListWidget,
     _stylesheet_names,
 )
-from erlab.interactive._widgets import _CenteredIconToolButton
+from erlab.interactive._widgets import _CenteredIconToolButton, _Separator
+
+
+@pytest.mark.parametrize(
+    ("orientation", "expected_hint"),
+    [
+        (QtCore.Qt.Orientation.Horizontal, QtCore.QSize(7, 1)),
+        (QtCore.Qt.Orientation.Vertical, QtCore.QSize(1, 7)),
+    ],
+)
+@pytest.mark.parametrize("background", ["#202020", "#f0f0f0"])
+@pytest.mark.parametrize("device_pixel_ratio", [1, 2])
+def test_separator_draws_inset_palette_aware_hairline(
+    qtbot,
+    orientation: QtCore.Qt.Orientation,
+    expected_hint: QtCore.QSize,
+    background: str,
+    device_pixel_ratio: int,
+) -> None:
+    separator = _Separator(orientation, inset=3)
+    qtbot.addWidget(separator)
+    separator.resize(21, 21)
+    palette = separator.palette()
+    palette.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor(background))
+    palette.setColor(
+        QtGui.QPalette.ColorRole.WindowText,
+        QtGui.QColor("#ffffff" if background == "#202020" else "#202020"),
+    )
+    separator.setPalette(palette)
+
+    image_size = 21 * device_pixel_ratio
+    image = QtGui.QImage(image_size, image_size, QtGui.QImage.Format.Format_ARGB32)
+    image.setDevicePixelRatio(device_pixel_ratio)
+    background_color = palette.color(QtGui.QPalette.ColorRole.Window)
+    image.fill(background_color)
+    painter = QtGui.QPainter(image)
+    separator.render(painter, QtCore.QPoint())
+    painter.end()
+
+    assert separator.orientation == orientation
+    assert separator.inset == 3
+    assert separator.sizeHint() == expected_hint
+    assert separator.minimumSizeHint() == expected_hint
+    assert image.pixelColor(image_size // 2, image_size // 2) != background_color
+    if orientation == QtCore.Qt.Orientation.Horizontal:
+        painted_rows = sum(
+            any(
+                image.pixelColor(x, y) != background_color for x in range(image.width())
+            )
+            for y in range(image.height())
+        )
+        assert painted_rows == device_pixel_ratio
+    else:
+        painted_columns = sum(
+            any(
+                image.pixelColor(x, y) != background_color
+                for y in range(image.height())
+            )
+            for x in range(image.width())
+        )
+        assert painted_columns == device_pixel_ratio
+
+
+def test_separator_rejects_negative_inset() -> None:
+    with pytest.raises(ValueError, match="negative"):
+        _Separator(inset=-1)
 
 
 def test_colorlistwidget_initialization(qtbot):

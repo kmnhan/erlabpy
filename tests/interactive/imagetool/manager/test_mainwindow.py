@@ -15,12 +15,14 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._acquisition_context as acquisition_context
+import erlab.interactive.imagetool.manager._actions as manager_actions
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._io as manager_io
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._metadata_editor as metadata_editor
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
+import erlab.interactive.imagetool.manager._window_layout as window_layout
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.utils
 from erlab.interactive._figurecomposer import (
@@ -285,6 +287,9 @@ def test_managed_window_actions_reveal_tree_and_figure_rows(
         child_uid = manager.add_childtool(child_tool, 0, show=False)
         figure_tool = FigureComposerTool(test_data)
         figure_uid = manager.add_figuretool(figure_tool, show=False)
+        second_figure_uid = manager.add_figuretool(
+            FigureComposerTool(test_data + 1), show=False
+        )
 
         root_menu = typing.cast(
             "erlab.interactive.imagetool._mainwindow.ItoolMenuBar",
@@ -309,6 +314,7 @@ def test_managed_window_actions_reveal_tree_and_figure_rows(
         assert manager.reveal_nodes((child_uid, second_uid, child_uid, "missing"))
         assert manager.tree_view.selected_imagetool_indices == [1]
         assert manager.tree_view.selected_childtool_uids == [child_uid]
+        assert manager._selected_layout_uids() == [child_uid, second_uid]
         assert not manager.reveal_nodes(("missing",))
 
         figure_tool.reveal_in_manager_action.trigger()
@@ -320,7 +326,24 @@ def test_managed_window_actions_reveal_tree_and_figure_rows(
             for item in figure_pane.list_widget.selectedItems()
         }
         assert selected_figure_uids == {figure_uid}
+        assert manager._selected_layout_uids() == [figure_uid]
         assert not manager.tree_view.selectedIndexes()
+
+        figure_pane.list_widget.clearSelection()
+        first_figure_item = manager._figure_collection.item_for_uid(figure_uid)
+        second_figure_item = manager._figure_collection.item_for_uid(second_figure_uid)
+        assert first_figure_item is not None
+        assert second_figure_item is not None
+        first_figure_item.setSelected(True)
+        second_figure_item.setSelected(True)
+        manager._figure_collection._selection_changed()
+        assert manager._selected_layout_uids() == [figure_uid, second_figure_uid]
+        assert manager.arrange_windows_action.isEnabled()
+        manager._figure_collection._show_menu(QtCore.QPoint())
+        figure_menu = manager._figure_collection._menu
+        assert figure_menu is not None
+        assert manager.arrange_windows_action in figure_menu.actions()
+        manager._figure_collection.close_menu()
 
         child_node = manager._child_node(child_uid)
         manager_ref = child_node._manager
@@ -330,6 +353,174 @@ def test_managed_window_actions_reveal_tree_and_figure_rows(
         manager._remove_childtool(child_uid)
         assert not child_node.reveal_in_manager()
         assert not child_tool.reveal_in_manager_action.isVisible()
+
+
+def test_arrange_selected_windows_accepts_and_cancels(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, test_data)
+        first = erlab.interactive.utils.ToolWindow()
+        second = erlab.interactive.utils.ToolWindow()
+        first_uid = manager.add_childtool(first, 0)
+        second_uid = manager.add_childtool(second, 0)
+        select_child_tool(manager, first_uid)
+        select_child_tool(manager, second_uid)
+        manager._update_actions()
+
+        first.hide()
+        second.showMinimized()
+        qtbot.wait_until(lambda: not first.isVisible() and second.isMinimized())
+        original = [
+            (window.isVisible(), window.windowState(), window.geometry())
+            for window in (first, second)
+        ]
+
+        assert manager.arrange_windows_action.isEnabled()
+        assert manager.arrange_windows_action in manager.view_menu.actions()
+        assert manager.arrange_windows_action in manager.tree_view._menu.actions()
+        manager.arrange_windows_action.trigger()
+        dialog = manager._actions_controller._window_layout_dialog
+        qtbot.wait_until(dialog.isVisible)
+        dialog.reject()
+        assert [
+            (window.isVisible(), window.windowState(), window.geometry())
+            for window in (first, second)
+        ] == original
+
+        manager.arrange_windows_action.trigger()
+        qtbot.wait_until(dialog.isVisible)
+        dialog.layout_buttons["grid_row"].click()
+        dialog.primary_count_spin.setValue(2)
+        dialog.spacing_spin.setValue(12)
+        dialog.accept()
+
+        expected = window_layout.window_layout_rects(
+            manager.screen().availableGeometry(), 2, "grid_row", 2, 12, False
+        )
+        qtbot.wait_until(
+            lambda: all(
+                window.isVisible() and not window.isMinimized()
+                for window in (first, second)
+            )
+        )
+        assert [first.frameGeometry(), second.frameGeometry()] == expected
+        qtbot.wait_until(
+            lambda: all(
+                manager._child_node(uid)._recent_geometry == window.geometry()
+                for uid, window in zip(
+                    (first_uid, second_uid), (first, second), strict=True
+                )
+            )
+        )
+
+
+def test_arrange_selected_windows_preserves_geometry_when_layout_does_not_fit(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager_actions, "frame_rects_fit_windows", lambda *_: False)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *args, **_kwargs: warnings.append(args),
+    )
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, test_data)
+        windows = [
+            erlab.interactive.utils.ToolWindow(),
+            erlab.interactive.utils.ToolWindow(),
+        ]
+        for window in windows:
+            uid = manager.add_childtool(window, 0)
+            select_child_tool(manager, uid)
+        original = [window.geometry() for window in windows]
+
+        manager.arrange_selected_windows()
+        manager._actions_controller._window_layout_dialog.accept()
+
+        assert warnings
+        assert [window.geometry() for window in windows] == original
+
+
+def test_arrange_selected_windows_rolls_back_geometry_on_error(
+    qtbot,
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    errors: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager_actions, "frame_rects_fit_windows", lambda *_: True)
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *args, **_kwargs: errors.append(args),
+    )
+    original_frame_margins = manager_actions.frame_margins
+    calls = 0
+
+    def fail_second_window(window):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("synthetic geometry failure")
+        return original_frame_margins(window)
+
+    monkeypatch.setattr(manager_actions, "frame_margins", fail_second_window)
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, test_data)
+        windows = [
+            erlab.interactive.utils.ToolWindow(),
+            erlab.interactive.utils.ToolWindow(),
+        ]
+        uids = [manager.add_childtool(window, 0) for window in windows]
+        for uid in uids:
+            select_child_tool(manager, uid)
+        windows[0].setGeometry(80, 90, 320, 240)
+        windows[0].showMaximized()
+        windows[1].hide()
+        qtbot.wait_until(
+            lambda: windows[0].isMaximized() and not windows[1].isVisible()
+        )
+        normal_geometry = windows[0].normalGeometry()
+        assert normal_geometry.isValid()
+        original = [
+            (window.isVisible(), window.windowState(), window.geometry())
+            for window in windows
+        ]
+
+        caplog.clear()
+        manager.arrange_selected_windows()
+        manager._actions_controller._window_layout_dialog.accept()
+
+        assert errors
+        error_record = next(
+            record
+            for record in caplog.records
+            if record.getMessage() == "Error while arranging selected windows"
+        )
+        assert error_record.suppress_ui_alert
+        assert [
+            (window.isVisible(), window.windowState(), window.geometry())
+            for window in windows
+        ] == original
+        windows[0].showNormal()
+        qtbot.wait_until(lambda: windows[0].geometry() == normal_geometry)
 
 
 def test_reveal_nodes_restores_minimized_manager(

@@ -33,6 +33,12 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _StoreDialog,
 )
 from erlab.interactive.imagetool.manager._widgets import _WATCHED_VAR_COLORS
+from erlab.interactive.imagetool.manager._window_layout import (
+    _WindowLayoutDialog,
+    frame_margins,
+    frame_rects_fit_windows,
+    window_layout_rects,
+)
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
@@ -60,6 +66,8 @@ class _ActionsController:
         self.__rename_dialog: _RenameDialog | None = None
         self.__concat_dialog: _ConcatDialog | None = None
         self.__batch_dialog: _BatchOperationDialog | None = None
+        self.__window_layout_dialog: _WindowLayoutDialog | None = None
+        self._window_layout_target_uids: tuple[str, ...] = ()
 
     @property
     def _rename_dialog(self) -> _RenameDialog:
@@ -98,6 +106,131 @@ class _ActionsController:
             [self._manager._tool_graph.root_wrappers[i].name for i in root_selected],
         )
         dlg.open()
+
+    @property
+    def _window_layout_dialog(self) -> _WindowLayoutDialog:
+        if self.__window_layout_dialog is None:
+            self.__window_layout_dialog = _WindowLayoutDialog(self._manager)
+            self.__window_layout_dialog.accepted.connect(self._apply_window_layout)
+        return self.__window_layout_dialog
+
+    def arrange_selected_windows(self) -> None:
+        """Open layout controls for the selected managed windows."""
+        target_uids = tuple(self._manager._selected_layout_uids())
+        if len(target_uids) < 2:
+            return
+        self._window_layout_target_uids = target_uids
+        dialog = self._window_layout_dialog
+        dialog.set_window_count(len(target_uids))
+        dialog.open()
+
+    @staticmethod
+    def _restore_window_layout_snapshots(
+        snapshots: list[
+            tuple[
+                QtWidgets.QWidget,
+                bool,
+                QtCore.Qt.WindowState,
+                QtCore.QRect,
+            ]
+        ],
+    ) -> None:
+        for window, visible, state, geometry in snapshots:
+            window.showNormal()
+            window.setGeometry(geometry)
+            window.setWindowState(state)
+            window.setVisible(visible)
+
+    def _apply_window_layout(self) -> None:
+        dialog = self.__window_layout_dialog
+        if dialog is None:
+            return
+        windows: list[QtWidgets.QWidget] = []
+        for uid in self._window_layout_target_uids:
+            node = self._manager._tool_graph.nodes.get(uid)
+            if node is None or not node.materialize_pending_workspace_payload():
+                return
+            window = node.window
+            if window is None or not erlab.interactive.utils.qt_is_valid(window):
+                return
+            windows.append(window)
+
+        screen = self._manager.screen() or QtGui.QGuiApplication.primaryScreen()
+        if screen is None:  # pragma: no cover
+            return
+        try:
+            frame_rects = window_layout_rects(
+                screen.availableGeometry(),
+                len(windows),
+                dialog.layout_mode,
+                dialog.primary_count,
+                dialog.spacing,
+                dialog.reverse_order,
+            )
+        except ValueError as error:
+            QtWidgets.QMessageBox.warning(
+                self._manager,
+                "Unable to Arrange Windows",
+                str(error),
+            )
+            return
+        snapshots: list[
+            tuple[
+                QtWidgets.QWidget,
+                bool,
+                QtCore.Qt.WindowState,
+                QtCore.QRect,
+            ]
+        ] = []
+        for window in windows:
+            state = window.windowState()
+            geometry = window.normalGeometry()
+            if not (
+                state
+                & (
+                    QtCore.Qt.WindowState.WindowMaximized
+                    | QtCore.Qt.WindowState.WindowFullScreen
+                )
+                and geometry.isValid()
+            ):
+                geometry = window.geometry()
+            snapshots.append((window, window.isVisible(), state, geometry))
+        try:
+            with self._manager._workspace_load_context():
+                for window in windows:
+                    window.showNormal()
+                    window.ensurePolished()
+                layout_fits = frame_rects_fit_windows(windows, frame_rects)
+                if not layout_fits:
+                    self._restore_window_layout_snapshots(snapshots)
+            if not layout_fits:
+                QtWidgets.QMessageBox.warning(
+                    self._manager,
+                    "Unable to Arrange Windows",
+                    "The selected layout does not leave enough room for the "
+                    "minimum size of every window. Reduce the spacing or use fewer "
+                    "rows or columns.",
+                )
+                return
+            for window, frame_rect in zip(windows, frame_rects, strict=True):
+                window.setGeometry(frame_rect.marginsRemoved(frame_margins(window)))
+                window.show()
+                window.raise_()
+        except (RuntimeError, TypeError, ValueError):
+            with self._manager._workspace_load_context():
+                self._restore_window_layout_snapshots(snapshots)
+            logger.exception(
+                "Error while arranging selected windows",
+                extra={"suppress_ui_alert": True},
+            )
+            erlab.interactive.utils.MessageDialog.critical(
+                self._manager,
+                "Error",
+                "An error occurred while arranging the selected windows.",
+                detailed_text=erlab.interactive.utils._format_traceback(
+                    traceback.format_exc()
+                ),
+            )
 
     def duplicate_selected(self) -> None:
         """Duplicate selected windows."""

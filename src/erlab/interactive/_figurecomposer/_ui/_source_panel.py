@@ -21,6 +21,7 @@ from erlab.interactive._figurecomposer._ui._reorder_list import (
 from erlab.interactive._figurecomposer._ui._source_inspector import (
     SourceInspectorWidget,
 )
+from erlab.interactive._widgets import _Separator
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping, Sequence
@@ -332,10 +333,8 @@ class FigureSourcePanel(QtWidgets.QWidget):
         font = label.font()
         font.setBold(True)
         label.setFont(font)
-        line = QtWidgets.QFrame(section)
+        line = _Separator(parent=section)
         line.setObjectName("figureComposerSourceSelectionSectionLine")
-        line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
         layout.addWidget(label)
         layout.addWidget(line, 1)
         return section

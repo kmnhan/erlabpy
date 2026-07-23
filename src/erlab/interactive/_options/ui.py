@@ -22,6 +22,7 @@ from erlab.interactive._options.parameters import (
     StylesheetListWidget,
 )
 from erlab.interactive._options.schema import AppOptions
+from erlab.interactive._widgets import _Separator
 
 _Scope = typing.Literal["user", "workspace"]
 _CATEGORY_ORDER = ("colors", "io", "ktool", "figure")
@@ -583,9 +584,7 @@ class OptionDialog(QtWidgets.QDialog):
                 )
             layout.addWidget(row)
             if path != paths[-1]:
-                line = QtWidgets.QFrame(page)
-                line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-                line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+                line = _Separator(parent=page)
                 layout.addWidget(line)
         layout.addStretch(1)
         scroll.setWidget(page)

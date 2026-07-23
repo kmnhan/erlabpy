@@ -41,6 +41,7 @@ from erlab.interactive._figurecomposer._ui._axes_widgets import (
     _GridSpecViewWidget,
 )
 from erlab.interactive._figurecomposer._ui._panel_controls import _step_toolbar_button
+from erlab.interactive._widgets import _Separator
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable
@@ -350,12 +351,12 @@ class FigureLayoutPanel(QtWidgets.QWidget):
         container_layout = QtWidgets.QVBoxLayout(self.gridspec_editor_container)
         container_layout.setContentsMargins(0, 2, 0, 2)
         container_layout.setSpacing(4)
-        self.gridspec_editor_top_line = QtWidgets.QFrame(self.gridspec_editor_container)
+        self.gridspec_editor_top_line = _Separator(
+            parent=self.gridspec_editor_container
+        )
         self.gridspec_editor_top_line.setObjectName(
             "figureComposerGridSpecEditorTopLine"
         )
-        self.gridspec_editor_top_line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        self.gridspec_editor_top_line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
         container_layout.addWidget(self.gridspec_editor_top_line)
 
         self.gridspec_editor_widget = QtWidgets.QWidget(self.gridspec_editor_container)
@@ -457,14 +458,12 @@ class FigureLayoutPanel(QtWidgets.QWidget):
         editor_layout.addWidget(self.gridspec_status_label)
 
         container_layout.addWidget(self.gridspec_editor_widget)
-        self.gridspec_editor_bottom_line = QtWidgets.QFrame(
-            self.gridspec_editor_container
+        self.gridspec_editor_bottom_line = _Separator(
+            parent=self.gridspec_editor_container
         )
         self.gridspec_editor_bottom_line.setObjectName(
             "figureComposerGridSpecEditorBottomLine"
         )
-        self.gridspec_editor_bottom_line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        self.gridspec_editor_bottom_line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
         container_layout.addWidget(self.gridspec_editor_bottom_line)
         layout.addWidget(self.gridspec_editor_container, 2, 0, 1, 5)
 

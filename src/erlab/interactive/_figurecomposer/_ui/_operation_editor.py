@@ -21,6 +21,7 @@ from erlab.interactive._figurecomposer._ui._editor_controls import (
     PlainTextControlAdapter,
     SignalValueControlAdapter,
 )
+from erlab.interactive._widgets import _Separator
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -1084,9 +1085,7 @@ class FigureOperationEditor(QtWidgets.QWidget):
         label_font = label.font()
         label_font.setBold(True)
         label.setFont(label_font)
-        line = QtWidgets.QFrame(section)
-        line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        line = _Separator(parent=section)
         if object_name:
             line.setObjectName(f"{object_name}Line")
 

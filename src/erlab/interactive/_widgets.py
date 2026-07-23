@@ -1,6 +1,78 @@
 from qtpy import QtCore, QtGui, QtWidgets
 
 
+class _Separator(QtWidgets.QWidget):
+    """Draw a subtle, palette-aware one-pixel separator."""
+
+    def __init__(
+        self,
+        orientation: QtCore.Qt.Orientation = QtCore.Qt.Orientation.Horizontal,
+        parent: QtWidgets.QWidget | None = None,
+        *,
+        inset: int = 0,
+    ) -> None:
+        super().__init__(parent)
+        if inset < 0:
+            raise ValueError("Separator inset cannot be negative")
+        self._orientation = orientation
+        self._inset = inset
+        if orientation == QtCore.Qt.Orientation.Horizontal:
+            self.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding,
+                QtWidgets.QSizePolicy.Policy.Fixed,
+            )
+        else:
+            self.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Fixed,
+                QtWidgets.QSizePolicy.Policy.Expanding,
+            )
+
+    @property
+    def orientation(self) -> QtCore.Qt.Orientation:
+        """Return the direction in which the separator extends."""
+        return self._orientation
+
+    @property
+    def inset(self) -> int:
+        """Return the space left at both ends of the separator."""
+        return self._inset
+
+    def sizeHint(self) -> QtCore.QSize:
+        length = 2 * self._inset + 1
+        if self._orientation == QtCore.Qt.Orientation.Horizontal:
+            return QtCore.QSize(length, 1)
+        return QtCore.QSize(1, length)
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        return self.sizeHint()
+
+    def paintEvent(self, event: QtGui.QPaintEvent | None) -> None:
+        del event
+        if self._orientation == QtCore.Qt.Orientation.Horizontal:
+            if self.width() <= 2 * self._inset:
+                return
+            center = self.height() / 2
+            start = QtCore.QPointF(self._inset, center)
+            end = QtCore.QPointF(self.width() - self._inset, center)
+        else:
+            if self.height() <= 2 * self._inset:
+                return
+            center = self.width() / 2
+            start = QtCore.QPointF(center, self._inset)
+            end = QtCore.QPointF(center, self.height() - self._inset)
+
+        color = self.palette().color(QtGui.QPalette.ColorRole.WindowText)
+        background = self.palette().color(QtGui.QPalette.ColorRole.Window)
+        color.setAlphaF(0.18 if background.lightnessF() < 0.5 else 0.14)
+
+        painter = QtGui.QPainter(self)
+        pen = QtGui.QPen(color)
+        pen.setWidthF(1.0)
+        painter.setPen(pen)
+        painter.drawLine(start, end)
+        painter.end()
+
+
 class _CenteredIconToolButton(QtWidgets.QToolButton):
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)

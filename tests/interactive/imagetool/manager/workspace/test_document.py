@@ -33,7 +33,6 @@ from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._model import full_data
 from erlab.interactive.imagetool._provenance._operations import GaussianFilterOperation
-from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch, replace_data
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
@@ -548,10 +547,7 @@ def test_manager_link_action_links_colors(
         assert proxy is not None
         assert proxy.link_colors is True
 
-        control = (
-            manager.get_imagetool(0).docks[1].widget().findChild(ItoolColormapControls)
-        )
-        assert control is not None
+        control = manager.get_imagetool(0).colormap_controls
         control._set_gamma(1.5)
         assert manager.get_imagetool(1).slicer_area.colormap_properties[
             "gamma"

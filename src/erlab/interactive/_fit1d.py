@@ -23,6 +23,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive.utils
+from erlab.interactive._widgets import _Separator
 
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Mapping
@@ -1449,9 +1450,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_tab_layout.addStretch()
         self._right_layout.addStretch(1)
 
-        separator = QtWidgets.QFrame()
-        separator.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        separator.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        separator = _Separator()
         self._right_layout.addWidget(separator)
         self._right_layout.addLayout(self.fit_buttons)
         self._right_layout.addWidget(stats_group)

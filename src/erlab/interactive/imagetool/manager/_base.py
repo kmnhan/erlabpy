@@ -140,6 +140,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     edit_note_action: QtGui.QAction
     copy_note_action: QtGui.QAction
     clear_note_action: QtGui.QAction
+    arrange_windows_action: QtGui.QAction
     hide_action: QtGui.QAction
     left_tabs: QtWidgets.QTabWidget
     link_action: QtGui.QAction
@@ -373,6 +374,32 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         ]
         selected.extend(self._selected_figure_uids())
         return selected
+
+    def _selected_layout_uids(self) -> list[str]:
+        figure_uids = self._selected_figure_uids()
+        if figure_uids:
+            return figure_uids
+
+        def _index_path(index: QtCore.QModelIndex) -> tuple[int, ...]:
+            rows: list[int] = []
+            while index.isValid():
+                rows.append(index.row())
+                index = index.parent()
+            return tuple(reversed(rows))
+
+        output: list[str] = []
+        seen: set[str] = set()
+        for index in sorted(self.tree_view.selectedIndexes(), key=_index_path):
+            pointer = index.internalPointer()
+            uid = (
+                pointer
+                if isinstance(pointer, str)
+                else typing.cast("typing.Any", pointer).uid
+            )
+            if isinstance(uid, str) and uid not in seen:
+                output.append(uid)
+                seen.add(uid)
+        return output
 
     def _selected_figure_source_targets(self) -> list[int | str]:
         return list(self._selected_imagetool_targets())

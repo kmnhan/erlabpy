@@ -35,6 +35,7 @@ from erlab.interactive._figurecomposer._ui import (
 )
 from erlab.interactive._options import options
 from erlab.interactive._options.schema import FigureOptions
+from erlab.interactive._widgets import _Separator
 from erlab.interactive.imagetool._provenance._graph import (
     ReplayGraphError,
     compile_replay_graph,
@@ -395,10 +396,9 @@ def _assert_step_editor_section(
     assert label is not None
     assert label.font().bold()
 
-    line = section.findChild(QtWidgets.QFrame, f"{object_name}Line")
+    line = section.findChild(_Separator, f"{object_name}Line")
     assert line is not None
-    assert line.frameShape() == QtWidgets.QFrame.Shape.HLine
-    assert line.frameShadow() == QtWidgets.QFrame.Shadow.Sunken
+    assert line.orientation == QtCore.Qt.Orientation.Horizontal
     return section
 
 
