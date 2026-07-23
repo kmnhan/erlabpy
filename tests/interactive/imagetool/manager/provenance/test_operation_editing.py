@@ -1580,14 +1580,20 @@ def test_analysis_tool_provenance_prefixes_are_editable_and_replayable(
 ) -> None:
     assert tool_cls.COPY_PROVENANCE is not None
     file_spec = _manager_provenance_file_spec(pathlib.Path("scan.h5"))
+    seed_code = (
+        typing.cast("str", file_spec.seed_code) if file_backed else "derived = data"
+    )
+    file_load_source = file_spec.file_load_source if file_backed else None
+    if file_load_source is not None:
+        file_load_source = file_load_source.model_copy(
+            update={"load_code": seed_code.replace("derived =", "data =", 1)}
+        )
     spec = script(
         *operations,
         start_label=f"Start from current {case_name} input data",
-        seed_code=(
-            typing.cast("str", file_spec.seed_code) if file_backed else "derived = data"
-        ),
+        seed_code=seed_code,
         active_name=active_name,
-        file_load_source=file_spec.file_load_source if file_backed else None,
+        file_load_source=file_load_source,
     )
     node = _fake_edit_node(spec)
     if not file_backed:
@@ -1624,3 +1630,23 @@ def test_analysis_tool_provenance_prefixes_are_editable_and_replayable(
             ) is not None
         if should_be_editable:
             assert controller.can_edit_row(row) == (True, "")
+        if row.replay_ref is None or row.replay_ref.kind != "operation":
+            continue
+        group = provenance_edit_controller._editable_group_range_for_ref(
+            spec,
+            row.replay_ref,
+        )
+        if group is None:
+            deletion_candidate = spec._replace_operation_ref(row.replay_ref, ())
+        else:
+            deletion_candidate = spec._replace_operation_range_ref(
+                row.replay_ref,
+                group[0],
+                group[1],
+                (),
+            )
+        should_be_deletable = controller._script_spec_replayable_for_node(
+            node,
+            deletion_candidate,
+        )
+        assert controller.can_delete_row(row)[0] is should_be_deletable

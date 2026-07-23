@@ -684,10 +684,7 @@ class _ProvenanceEditController:
                     )
             except (IndexError, ValueError):
                 return False, "This script row is not a replayable step."
-            if not (
-                script_provenance_replayable(candidate)
-                or script_provenance_requires_trust(candidate)
-            ):
+            if not self._script_spec_replayable_for_node(node, candidate):
                 return False, "Deleting this script step would make replay invalid."
         if spec.kind in {"full_data", "public_data", "selection"}:
             if row.scope == "source" and node.parent_uid is not None:
