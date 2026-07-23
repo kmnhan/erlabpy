@@ -525,7 +525,7 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
             reducer="mean",
         ),
         ThinOperation(mode="per_dim", factors={"x": 2}),
-        SymmetrizeOperation(dim="x", center=1.0),
+        SymmetrizeOperation(dim="x", center=1.0, average=True),
         SymmetrizeNfoldOperation(
             fold=4,
             axes=("x", "y"),
@@ -3395,7 +3395,12 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
 
     symmetrize_spec = full_data(
         SymmetrizeOperation(
-            dim="x", center=1.0, subtract=True, mode="valid", part="below"
+            dim="x",
+            center=1.0,
+            subtract=True,
+            average=True,
+            mode="valid",
+            part="below",
         )
     )
     assert symmetrize_spec.apply(data).attrs["last_op"] == "symmetrize"
@@ -6475,9 +6480,9 @@ def test_console_pattern_matches_public_parameter_aliases() -> None:
 
 def test_console_pattern_matches_new_replayable_operations() -> None:
     data = xr.DataArray(
-        np.arange(6.0).reshape(2, 3),
+        np.arange(8.0).reshape(2, 4),
         dims=("x", "eV"),
-        coords={"x": [0.0, 1.0], "eV": [0.0, 1.0, 2.0]},
+        coords={"x": [0.0, 1.0], "eV": [0.0, 1.0, 2.0, 3.0]},
     )
 
     aggregate_operation = operation_from_console_call(
@@ -6501,6 +6506,17 @@ def test_console_pattern_matches_new_replayable_operations() -> None:
             receiver_data=data,
         )
     )
+    symmetrize_operation = operation_from_console_call(
+        ConsoleCall(
+            func=erlab.analysis.transform.symmetrize,
+            kwargs={"dim": "eV", "center": 1.5, "average": True},
+            display_code=(
+                "era.transform.symmetrize(data, dim='eV', center=1.5, average=True)"
+            ),
+            has_extra_tracked_inputs=False,
+            receiver_data=data,
+        )
+    )
 
     assert aggregate_operation == QSelAggregationOperation(dims=("x",), func="sum")
     assert leading_edge_operation == LeadingEdgeOperation(
@@ -6508,9 +6524,23 @@ def test_console_pattern_matches_new_replayable_operations() -> None:
         dim="eV",
         direction="negative",
     )
+    assert symmetrize_operation == SymmetrizeOperation(
+        dim="eV",
+        center=1.5,
+        average=True,
+    )
     xr.testing.assert_identical(
         aggregate_operation.apply(data),
         data.qsel.sum("x"),
+    )
+    xr.testing.assert_identical(
+        symmetrize_operation.apply(data),
+        erlab.analysis.transform.symmetrize(
+            data,
+            dim="eV",
+            center=1.5,
+            average=True,
+        ),
     )
 
 

@@ -713,6 +713,7 @@ def symmetrize(
     *,
     center: float = 0.0,
     subtract: bool = False,
+    average: bool = False,
     mode: typing.Literal["full", "valid"] = "full",
     part: typing.Literal["both", "below", "above"] = "both",
     interp_kw: dict[str, typing.Any] | None = None,
@@ -721,8 +722,8 @@ def symmetrize(
     Symmetrize a DataArray along a specified dimension around a given center.
 
     This function takes an input DataArray and symmetrizes its values along the
-    specified dimension by reflecting and summing the data in regions below and above a
-    given center.
+    specified dimension by reflecting and combining the data in regions below and
+    above a given center.
 
     The operation assumes that the coordinate corresponding to the dimension is evenly
     spaced. Internally, the function interpolates the data to a shifted coordinate grid
@@ -742,6 +743,10 @@ def symmetrize(
         If True, the reflected part is subtracted from the original data instead of
         being added, resulting in an antisymmetrized output instead of a symmetrized
         one. Default is False (i.e., the reflected part is added).
+    average : bool, optional
+        If True, divide the summed or subtracted values by 2 where the original and
+        reflected coordinate ranges overlap. Values outside the overlapping region
+        remain unchanged when ``mode="full"``. Default is False.
     mode: {'valid', 'full'}, optional
         How to handle the parts of the symmetrized data that does not overlap with the
         original data. If 'valid', only the part that exists in both the original and
@@ -758,8 +763,8 @@ def symmetrize(
     Returns
     -------
     DataArray
-        A symmetrized DataArray where each value is the sum of its original and
-        reflected counterpart.
+        A symmetrized DataArray containing the sum or difference of each value and its
+        reflected counterpart, optionally divided by 2 in the overlapping region.
 
     Examples
     --------
@@ -848,6 +853,15 @@ def symmetrize(
 
         # Symmetrize
         sym_below = (below - above) if subtract else (below + above)
+        if average:
+            overlap_size = min(n_below, n_above)
+            overlap_divisor = np.ones(sym_below.sizes[dim], dtype=float)
+            overlap_divisor[-overlap_size:] = 2.0
+            sym_below = sym_below / xr.DataArray(
+                overlap_divisor,
+                dims=(dim,),
+                coords={dim: sym_below[dim]},
+            )
 
         # Retain coordinate attributes
         sym_below = sym_below.assign_coords(

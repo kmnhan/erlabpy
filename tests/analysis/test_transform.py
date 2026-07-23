@@ -479,6 +479,43 @@ def test_symmetrize_subtract():
     np.testing.assert_allclose(sym_da.values, expected, rtol=1e-5)
 
 
+@pytest.mark.parametrize(
+    ("mode", "subtract", "expected"),
+    [
+        (
+            "full",
+            False,
+            [1.5, 1.5, 2.5, 3.5, 4.5, 5.0, 5.0, 4.5, 3.5, 2.5, 1.5, 1.5],
+        ),
+        (
+            "full",
+            True,
+            [1.5, 1.0, 1.0, 1.0, 1.0, 0.5, -0.5, -1.0, -1.0, -1.0, -1.0, -1.5],
+        ),
+        (
+            "valid",
+            False,
+            [1.5, 2.5, 3.5, 4.5, 5.0, 5.0, 4.5, 3.5, 2.5, 1.5],
+        ),
+    ],
+)
+def test_symmetrize_average(mode, subtract, expected):
+    da = xr.DataArray(
+        np.array([1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1, 0], dtype=float),
+        dims="x",
+        coords={"x": np.linspace(-6, 5, 12)},
+    )
+    sym_da = symmetrize(
+        da,
+        "x",
+        center=0.0,
+        subtract=subtract,
+        average=True,
+        mode=mode,
+    )
+    np.testing.assert_allclose(sym_da.values, expected, rtol=1e-5)
+
+
 def test_symmetrize_non_uniform() -> None:
     # Test that symmetrize raises an error when the coordinate is non-uniform.
     da = xr.DataArray(
