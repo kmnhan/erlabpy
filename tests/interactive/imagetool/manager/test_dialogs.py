@@ -41,8 +41,6 @@ from erlab.interactive.imagetool.manager._spreadsheet_metadata import (
     _MAPPING_NAME_COLUMN,
     _MAPPING_VALUE_ROLE,
     _column_display_entries,
-    _spreadsheet_discovery_broker,
-    _SpreadsheetDiscoveryBroker,
     _SpreadsheetDiscoveryWorker,
     _SpreadsheetMetadataDialog,
 )
@@ -569,12 +567,14 @@ def test_spreadsheet_metadata_dialog_ignores_result_after_cancel(
 ) -> None:
     started = threading.Event()
     release = threading.Event()
+    source_returned = threading.Event()
     selected_sheet_requests: list[None] = []
 
     def get_sheet_names(_self) -> list[str]:
         started.set()
         if not release.wait(timeout=5):
             raise TimeoutError("test did not release spreadsheet discovery")
+        source_returned.set()
         return ["Measurements"]
 
     monkeypatch.setattr(
@@ -600,7 +600,16 @@ def test_spreadsheet_metadata_dialog_ignores_result_after_cancel(
 
     dialog.reject()
     release.set()
-    qtbot.waitUntil(lambda: not dialog._workers)
+    qtbot.waitUntil(source_returned.is_set)
+    qtbot.waitUntil(
+        lambda: (
+            not any(
+                thread.name.startswith("SpreadsheetDiscovery-")
+                for thread in threading.enumerate()
+            )
+        )
+    )
+    dialog._drain_discovery_results()
 
     assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
     assert dialog.sheet_combo.count() == 0
@@ -608,10 +617,12 @@ def test_spreadsheet_metadata_dialog_ignores_result_after_cancel(
 
 
 def test_cancelled_spreadsheet_discovery_skips_queued_work(
-    qtbot,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     requests: list[None] = []
+    result_queue: queue.SimpleQueue[tuple[_SpreadsheetDiscoveryWorker, str, object]] = (
+        queue.SimpleQueue()
+    )
     source = erlab.io.metadata.GoogleSheetsMetadataSource(
         "https://docs.google.com/spreadsheets/d/test-sheet/edit?usp=sharing"
     )
@@ -620,13 +631,18 @@ def test_cancelled_spreadsheet_discovery_skips_queued_work(
         "get_sheet_names",
         lambda: requests.append(None) or ["Measurements"],
     )
-    worker = _SpreadsheetDiscoveryWorker(1, "sheets", source)
+    worker = _SpreadsheetDiscoveryWorker(
+        1,
+        "sheets",
+        source,
+        result_queue=result_queue,
+    )
     worker.cancel()
-    broker = _spreadsheet_discovery_broker()
+    worker.start()
 
-    broker.start(worker)
-    qtbot.waitUntil(lambda: worker not in broker._workers)
-
+    result_worker, status, _result = result_queue.get(timeout=5)
+    assert result_worker is worker
+    assert status == "cancelled"
     assert requests == []
 
 
@@ -674,70 +690,23 @@ def test_spreadsheet_metadata_dialog_can_be_destroyed_during_discovery(
         release.set()
 
     qtbot.waitUntil(source_returned.is_set)
-    broker = _spreadsheet_discovery_broker()
-    qtbot.waitUntil(lambda: not broker._workers)
-
-
-def test_spreadsheet_discovery_shutdown_abandons_active_work(qtbot) -> None:
-    application = typing.cast(
-        "QtWidgets.QApplication", QtWidgets.QApplication.instance()
-    )
-    broker = _SpreadsheetDiscoveryBroker(application)
-    started = threading.Event()
-    release = threading.Event()
-    source_returned = threading.Event()
-    results: list[object] = []
-
-    class Source:
-        def get_sheet_names(self) -> list[str]:
-            started.set()
-            if not release.wait(timeout=5):
-                raise TimeoutError("test did not release spreadsheet discovery")
-            source_returned.set()
-            return ["Measurements"]
-
-        def get_selected_sheet_name(self) -> str:
-            return "Measurements"
-
-    worker = _SpreadsheetDiscoveryWorker(
-        1,
-        "sheets",
-        typing.cast("typing.Any", Source()),
-    )
-    broker.succeeded.connect(lambda *args: results.append(args))
-    broker.failed.connect(lambda *args: results.append(args))
-    broker.finished.connect(lambda *args: results.append(args))
-    broker.start(worker)
-    qtbot.waitUntil(started.is_set)
-
-    broker.shutdown()
-    broker.shutdown()
-    assert broker._shutting_down
-    assert not broker._workers
-    assert not broker._result_timer.isActive()
-    with pytest.raises(RuntimeError, match="application is shutting down"):
-        broker.start(worker)
-
-    release.set()
-    qtbot.waitUntil(source_returned.is_set)
-    broker._drain_results()
-    assert results == []
-
-    broker.deleteLater()
-    QtWidgets.QApplication.sendPostedEvents(
-        broker,
-        QtCore.QEvent.Type.DeferredDelete,
+    qtbot.waitUntil(
+        lambda: (
+            not any(
+                thread.name.startswith("SpreadsheetDiscovery-")
+                for thread in threading.enumerate()
+            )
+        )
     )
 
 
 def test_spreadsheet_discovery_limits_parallel_work(qtbot) -> None:
-    application = typing.cast(
-        "QtWidgets.QApplication", QtWidgets.QApplication.instance()
-    )
-    broker = _SpreadsheetDiscoveryBroker(application)
     release = threading.Event()
     started: list[int] = []
     started_lock = threading.Lock()
+    result_queue: queue.SimpleQueue[tuple[_SpreadsheetDiscoveryWorker, str, object]] = (
+        queue.SimpleQueue()
+    )
 
     class Source:
         def __init__(self, index: int) -> None:
@@ -753,36 +722,35 @@ def test_spreadsheet_discovery_limits_parallel_work(qtbot) -> None:
         def get_selected_sheet_name(self) -> str:
             return "Measurements"
 
-    for index in range(3):
-        broker.start(
-            _SpreadsheetDiscoveryWorker(
-                index,
-                "sheets",
-                typing.cast("typing.Any", Source(index)),
-            )
+    workers = [
+        _SpreadsheetDiscoveryWorker(
+            index,
+            "sheets",
+            typing.cast("typing.Any", Source(index)),
+            result_queue=result_queue,
         )
+        for index in range(3)
+    ]
+    for worker in workers:
+        worker.start()
 
     qtbot.waitUntil(lambda: len(started) == 2)
-    assert len(broker._threads) == 2
     assert len(started) == 2
 
     release.set()
-    qtbot.waitUntil(lambda: not broker._workers)
+    results = [result_queue.get(timeout=5) for _worker in workers]
     assert sorted(started) == [0, 1, 2]
-
-    broker.shutdown()
-    broker.deleteLater()
+    assert {status for _worker, status, _result in results} == {"succeeded"}
 
 
-def test_spreadsheet_discovery_shutdown_cancels_queued_work(qtbot) -> None:
-    application = typing.cast(
-        "QtWidgets.QApplication", QtWidgets.QApplication.instance()
-    )
-    broker = _SpreadsheetDiscoveryBroker(application)
+def test_spreadsheet_discovery_cancels_queued_work(qtbot) -> None:
     release = threading.Event()
     started: list[int] = []
     returned: list[int] = []
     state_lock = threading.Lock()
+    result_queue: queue.SimpleQueue[tuple[_SpreadsheetDiscoveryWorker, str, object]] = (
+        queue.SimpleQueue()
+    )
 
     class Source:
         def __init__(self, index: int) -> None:
@@ -805,55 +773,31 @@ def test_spreadsheet_discovery_shutdown_cancels_queued_work(qtbot) -> None:
             index,
             "sheets",
             typing.cast("typing.Any", Source(index)),
+            result_queue=result_queue,
         )
         for index in range(3)
     ]
     for worker in workers:
-        broker.start(worker)
+        worker.start()
 
     qtbot.waitUntil(lambda: len(started) == 2)
-    broker.shutdown()
-
-    assert all(worker._cancelled.is_set() for worker in workers)
+    for worker in workers:
+        worker.cancel()
     release.set()
-    qtbot.waitUntil(lambda: len(returned) == 2)
+    results = [result_queue.get(timeout=5) for _worker in workers]
+
+    assert {status for _worker, status, _result in results} == {"cancelled"}
+    assert sorted(returned) == sorted(started)
     assert len(started) == 2
 
-    broker.deleteLater()
-
-
-def test_spreadsheet_discovery_cleans_up_partial_thread_start(
-    qtbot,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    application = typing.cast(
-        "QtWidgets.QApplication", QtWidgets.QApplication.instance()
-    )
-    broker = _SpreadsheetDiscoveryBroker(application)
-    original_start = threading.Thread.start
-    started_threads: list[threading.Thread] = []
-
-    def fail_second_start(thread: threading.Thread) -> None:
-        if started_threads:
-            raise RuntimeError("second worker thread unavailable")
-        original_start(thread)
-        started_threads.append(thread)
-
-    monkeypatch.setattr(threading.Thread, "start", fail_second_start)
-
-    with pytest.raises(RuntimeError, match="second worker thread unavailable"):
-        broker.start(
-            _SpreadsheetDiscoveryWorker(
-                1,
-                "sheets",
-                typing.cast("typing.Any", object()),
+    qtbot.waitUntil(
+        lambda: (
+            not any(
+                thread.name.startswith("SpreadsheetDiscovery-")
+                for thread in threading.enumerate()
             )
         )
-
-    assert broker._threads == []
-    qtbot.waitUntil(lambda: not started_threads[0].is_alive())
-    broker.shutdown()
-    broker.deleteLater()
+    )
 
 
 def test_spreadsheet_discovery_preview_requires_file_name() -> None:
@@ -864,8 +808,8 @@ def test_spreadsheet_discovery_preview_requires_file_name() -> None:
         1,
         "preview",
         typing.cast("typing.Any", object()),
+        result_queue=result_queue,
     )
-    worker.set_result_queue(result_queue)
 
     worker.run()
 
@@ -879,12 +823,12 @@ def test_spreadsheet_discovery_does_not_delay_application_exit() -> None:
     script = textwrap.dedent(
         """
         import threading
+        import queue
 
         from qtpy import QtCore, QtWidgets
 
         from erlab.interactive.imagetool.manager._spreadsheet_metadata import (
             _SpreadsheetDiscoveryWorker,
-            _spreadsheet_discovery_broker,
         )
 
         started = threading.Event()
@@ -899,8 +843,13 @@ def test_spreadsheet_discovery_does_not_delay_application_exit() -> None:
                 return "Measurements"
 
         application = QtWidgets.QApplication([])
-        worker = _SpreadsheetDiscoveryWorker(1, "sheets", Source())
-        _spreadsheet_discovery_broker().start(worker)
+        worker = _SpreadsheetDiscoveryWorker(
+            1,
+            "sheets",
+            Source(),
+            result_queue=queue.SimpleQueue(),
+        )
+        worker.start()
 
         def quit_when_started():
             if started.is_set():
@@ -1160,13 +1109,8 @@ def test_spreadsheet_metadata_dialog_reports_worker_start_error(
         raise RuntimeError("worker thread unavailable")
 
     monkeypatch.setattr(threading.Thread, "start", fail_start)
-    application = typing.cast(
-        "QtWidgets.QApplication", QtWidgets.QApplication.instance()
-    )
-    broker = _SpreadsheetDiscoveryBroker(application)
     dialog = _SpreadsheetMetadataDialog(None)
     qtbot.addWidget(dialog)
-    dialog._discovery_broker = broker
     dialog.source_type_combo.setCurrentIndex(
         dialog.source_type_combo.findData("google_sheets")
     )
@@ -1179,8 +1123,7 @@ def test_spreadsheet_metadata_dialog_reports_worker_start_error(
     assert not dialog._busy
     assert not dialog._workers
     assert dialog._last_discovery_error == ("RuntimeError: worker thread unavailable")
-    assert not broker._workers
-    broker.deleteLater()
+    assert not dialog._discovery_timer.isActive()
 
 
 def test_spreadsheet_metadata_dialog_validates_mappings(
