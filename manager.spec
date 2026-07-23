@@ -5,7 +5,7 @@ import pathlib
 import sys
 
 import pyinstaller_versionfile
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 erlab_version_str = importlib.metadata.version("erlab")
 
@@ -29,7 +29,8 @@ manager_dir = (
     / "interactive/imagetool/manager"
 )
 
-datas = []
+# Dask checks pandas distribution metadata when tokenizing xarray indexes.
+datas = copy_metadata("pandas")
 binaries = []
 hiddenimports = [
     "PyQt6",

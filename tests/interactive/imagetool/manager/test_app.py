@@ -1060,6 +1060,12 @@ def test_manager_packaging_includes_pdf_backend() -> None:
     assert '"matplotlib.backends.backend_pdf"' in spec_text
 
 
+def test_manager_packaging_includes_pandas_metadata() -> None:
+    spec_text = pathlib.Path("manager.spec").read_text()
+
+    assert 'copy_metadata("pandas")' in spec_text
+
+
 def test_launch_new_manager_instance_uses_detached_source_process(monkeypatch) -> None:
     calls: list[tuple[list[str], dict[str, typing.Any]]] = []
 
