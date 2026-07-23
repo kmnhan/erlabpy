@@ -696,7 +696,13 @@ def _plot_slices_selection_cache_key(
     qsel_kw: Mapping[str, typing.Any],
     cache_key: Hashable | None,
 ) -> Hashable:
-    map_key = tuple((id(m.data), tuple(m.dims), tuple(m.shape)) for m in maps)
+    # A caller-supplied key owns source identity. Recomputing it here would use
+    # temporary transposed views and prevent reuse across plot_slices calls.
+    map_key = (
+        ()
+        if cache_key is not None
+        else tuple((id(m.data), tuple(m.dims), tuple(m.shape)) for m in maps)
+    )
     qsel_key = tuple(
         sorted(
             (key, _hashable_plot_slices_value(value)) for key, value in qsel_kw.items()
@@ -722,6 +728,8 @@ def _plot_slices_selected_maps(
     selected = tuple(m.qsel(**qsel_kw) for m in maps)
     if selection_cache is not None and cache_key is not None:
         selection_cache[cache_key] = selected
+        # Cache insertion may replace lazy arrays with their persisted equivalents.
+        return selection_cache.get(cache_key, selected)
     return selected
 
 

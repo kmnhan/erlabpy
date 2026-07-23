@@ -512,7 +512,7 @@ def test_figure_composer_plot_slices_default_colormap_editor_uses_stylesheet(
         mpl_style.reload_library()
 
 
-def test_figure_composer_plot_slices_reuses_selection_cache_per_render(
+def test_figure_composer_plot_slices_reuses_selection_cache_across_redraws(
     qtbot, monkeypatch
 ) -> None:
     data = _figure_composer_image_source("data")
@@ -568,7 +568,7 @@ def test_figure_composer_plot_slices_reuses_selection_cache_per_render(
 
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
 
-    assert len(calls) == 2
+    assert len(calls) == 1
 
 
 def test_figure_composer_plot_slices_selection_error_details() -> None:

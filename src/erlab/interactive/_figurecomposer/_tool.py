@@ -37,6 +37,7 @@ from erlab.interactive.imagetool._provenance._operations import (
 # isort: off
 from qtpy import QtCore, QtGui, QtWidgets
 
+from matplotlib import colormaps
 from matplotlib.figure import Figure
 # isort: on
 
@@ -109,13 +110,18 @@ from erlab.interactive._figurecomposer._model._state import (
     FigureSourceState,
     FigureSubplotsState,
 )
+from erlab.interactive._figurecomposer._norms import _matplotlib_cmap_name
 from erlab.interactive._figurecomposer._operations import _registry
+from erlab.interactive._figurecomposer._operations._plot_slices._cache import (
+    _PlotSlicesSelectionCache,
+)
 from erlab.interactive._figurecomposer._operations._plot_slices._model import (
     _effective_extra_kwargs,
     _effective_slice_kwargs,
     _is_slice_kwarg_key,
     _operation_dim_names,
     _plot_slices_panel_keys,
+    _plot_slices_shape,
     _selection_updates_from_kwargs,
     _selection_values,
     _selection_width,
@@ -358,9 +364,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._preview_render_update_pending = False
         self._preview_render_update_generation = 0
         self._operation_render_errors: dict[str, str] = {}
-        self._plot_slices_selection_cache: (
-            MutableMapping[Hashable, tuple[xr.DataArray, ...]] | None
-        ) = None
+        self._plot_slices_cache = _PlotSlicesSelectionCache()
+        self._plot_slices_cache_source_revision = -1
         self._figure_resize_render_generation = 0
         self._figure_resize_history_pending = False
         self._figure_resize_history_timer = QtCore.QTimer(self)
@@ -430,6 +435,24 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def set_options_getter(self, getter: Callable[[], AppOptions] | None) -> None:
         self._options_getter = getter
+
+    def _plot_slices_cache_for_render(
+        self,
+    ) -> MutableMapping[Hashable, tuple[xr.DataArray, ...]] | None:
+        source_revision = self._document.source_revision
+        if source_revision != self._plot_slices_cache_source_revision:
+            self._plot_slices_cache.clear()
+            self._plot_slices_cache_source_revision = source_revision
+        if any(
+            operation.enabled
+            and operation.kind == FigureOperationKind.CUSTOM
+            and operation.trusted
+            and bool(operation.code.strip())
+            for operation in self._document.recipe.operations
+        ):
+            self._plot_slices_cache.clear()
+            return None
+        return self._plot_slices_cache
 
     @contextlib.contextmanager
     def _figure_options_context(self) -> Iterator[None]:
@@ -782,6 +805,103 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             ):
                 return index, operation, typing.cast("tuple[int, int]", panel_key)
         return None
+
+    def _try_update_live_colormap(
+        self,
+        index: int,
+        previous: FigureOperationState,
+        updated: FigureOperationState,
+    ) -> bool:
+        """Update verified live image artists for one cmap-only recipe edit."""
+        if (
+            self._closing
+            or self._rendering
+            or self._auto_redraw_dirty
+            or self._preview_render_update_pending
+            or not self._auto_redraw_enabled()
+        ):
+            return False
+        if (
+            updated.kind
+            not in (FigureOperationKind.PLOT_ARRAY, FigureOperationKind.PLOT_SLICES)
+            or updated.model_copy(update={"cmap": previous.cmap}) != previous
+            or "cmap" in updated.extra_kwargs
+            or updated.operation_id in self._operation_render_errors
+            or self.operation_editor.has_input_error(updated)
+            or any(
+                operation.enabled and operation.kind == FigureOperationKind.CUSTOM
+                for operation in self._document.recipe.operations
+            )
+            or any(
+                operation.enabled and operation.kind == FigureOperationKind.METHOD
+                for operation in self._document.recipe.operations[index + 1 :]
+            )
+        ):
+            return False
+
+        try:
+            if updated.kind == FigureOperationKind.PLOT_ARRAY:
+                expected_panel_keys = {(0, 0)}
+            else:
+                shape = _plot_slices_shape(self._document, updated)
+                if (
+                    not shape.valid
+                    or shape.plot_ndim != 2
+                    or updated.panel_styles_enabled
+                    or bool(updated.panel_styles)
+                ):
+                    return False
+                expected_panel_keys = {
+                    (key.map_index, key.slice_index)
+                    for key in _plot_slices_panel_keys(
+                        self._document, self._source_display_name, updated
+                    )
+                }
+        except Exception:
+            return False
+
+        window = self._figure_window
+        if (
+            window is None
+            or not erlab.interactive.utils.qt_is_valid(window)
+            or not window.isVisible()
+        ):
+            return False
+        canvas = window.canvas
+        if not erlab.interactive.utils.qt_is_valid(canvas):
+            return False
+
+        tagged_mappables: list[tuple[typing.Any, tuple[int, int]]] = []
+        for axis in window.figure.axes:
+            for mappable in (*axis.images, *axis.collections):
+                target = self._image_mappable_target(
+                    mappable, self._document.recipe.operations
+                )
+                if (
+                    target is not None
+                    and target[1].operation_id == updated.operation_id
+                ):
+                    tagged_mappables.append((mappable, target[2]))
+        if (
+            len(tagged_mappables) != len(expected_panel_keys)
+            or {panel_key for _mappable, panel_key in tagged_mappables}
+            != expected_panel_keys
+        ):
+            return False
+
+        try:
+            cmap_name = updated.cmap
+            if cmap_name is None:
+                cmap_name = str(self._editor_styled_rcparams_value("image.cmap"))
+            cmap = colormaps.get_cmap(_matplotlib_cmap_name(cmap_name))
+            for mappable, _panel_key in tagged_mappables:
+                mappable.set_cmap(cmap)
+            self._mark_preview_pixmap_stale()
+            if not self._cache_live_canvas_preview(redraw=True):
+                return False
+        except Exception:
+            return False
+        return True
 
     def _operation_with_colorbar_clim(
         self,
@@ -2772,16 +2892,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return False
         current = self._current_operation()
         preview_affected = False
+        operation_changes: list[
+            tuple[int, FigureOperationState, FigureOperationState]
+        ] = []
 
         def tracked_update(
             index: int, operation: FigureOperationState
         ) -> FigureOperationState:
             nonlocal preview_affected
             updated = updater(index, operation)
-            if updated != operation and self._operation_change_affects_preview(
-                operation, updated
-            ):
-                preview_affected = True
+            if updated != operation:
+                operation_changes.append((index, operation, updated))
+                if self._operation_change_affects_preview(operation, updated):
+                    preview_affected = True
             return updated
 
         if not self._document.update_operations_by_ids(
@@ -2802,10 +2925,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._queue_operation_editor_update()
             else:
                 self._update_operation_editor_safely()
-        self._notify_operation_changed(
-            preview_affected=render and preview_affected,
-            defer_render=defer_render,
-        )
+        if (
+            render
+            and preview_affected
+            and not defer_render
+            and len(operation_changes) == 1
+            and self._try_update_live_colormap(*operation_changes[0])
+        ):
+            self.sigInfoChanged.emit()
+        else:
+            self._notify_operation_changed(
+                preview_affected=render and preview_affected,
+                defer_render=defer_render,
+            )
         self._write_state()
         return True
 
@@ -4043,6 +4175,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @property
     def tool_data(self) -> xr.DataArray:
+        """Return the live primary source; call ``touch_source_data`` after edits."""
         if self._document.recipe.primary_source in self._document.source_data:
             return self._document.source_data[self._document.recipe.primary_source]
         return next(iter(self._document.source_data.values()))
@@ -4074,6 +4207,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._document.replace_source_payloads(source_data, {})
         self._refresh_source_list()
         self._mark_preview_pixmap_stale()
+
+    def touch_source_data(self) -> None:
+        """Invalidate prepared selections after editing source arrays in place.
+
+        .. versionadded:: 3.25.0
+        """
+        self._document.touch_source_payloads()
+        self._maybe_redraw_plot()
+        self.sigDataChanged.emit()
+        self.sigInfoChanged.emit()
 
     def rebase_source_node_uids(self, uid_map: Mapping[str, str]) -> None:
         if not uid_map:
@@ -4603,33 +4746,45 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             self.sigInfoChanged.emit()
 
-    def _canvas_preview_pixmap(self) -> QtGui.QPixmap | None:
-        if self._closing or not erlab.interactive.utils.qt_is_valid(self):
-            return None
+    def _cache_live_canvas_preview(self, *, redraw: bool) -> bool:
+        if (
+            self._closing
+            or not erlab.interactive.utils.qt_is_valid(self)
+            or not self._document.recipe.operations
+        ):
+            return False
         window = self._figure_window
         if window is None or not erlab.interactive.utils.qt_is_valid(window):
-            return None
+            return False
         if not window.isVisible():
-            return None
+            return False
 
         try:
             canvas = window.canvas
             if not erlab.interactive.utils.qt_is_valid(canvas):
-                return None
-            with self._figure_options_context(), _figure_style_context():
-                canvas.draw()
+                return False
+            if redraw:
+                with self._figure_options_context(), _figure_style_context():
+                    canvas.draw()
             width, height = canvas.get_width_height(physical=True)
             if width <= 0 or height <= 0:
-                return None
+                return False
             image = QtGui.QImage(
                 canvas.buffer_rgba(),
                 width,
                 height,
                 QtGui.QImage.Format.Format_RGBA8888,
             )
-            return QtGui.QPixmap.fromImage(image.copy())
+            preview = QtGui.QPixmap.fromImage(image.copy())
         except Exception:
-            return None
+            return False
+        if preview.isNull():
+            return False
+        self._preview_pixmap_cache = preview
+        self._preview_pixmap_generation += 1
+        self._preview_thumbnail_cache.clear()
+        self._preview_pixmap_stale = False
+        return True
 
     def _fallback_preview_pixmap(self) -> QtGui.QPixmap | None:
         if self._closing or not erlab.interactive.utils.qt_is_valid(self):
@@ -4672,9 +4827,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if not self._document.recipe.operations:
             self._clear_preview_pixmap_cache(stale=False)
             return None
-        preview = self._canvas_preview_pixmap()
-        if preview is None and allow_offscreen:
-            preview = self._fallback_preview_pixmap()
+        if self._cache_live_canvas_preview(redraw=True):
+            return self._preview_pixmap_cache
+        preview = self._fallback_preview_pixmap() if allow_offscreen else None
         if preview is None:
             return self._preview_pixmap_cache
         self._preview_pixmap_cache = preview
@@ -4708,6 +4863,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return self._document.recipe.sources
 
     def source_data(self) -> dict[str, xr.DataArray]:
+        """Return live sources; call ``touch_source_data`` after in-place edits."""
         return dict(self._document.source_data)
 
     @staticmethod

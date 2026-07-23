@@ -985,6 +985,41 @@ def test_qt_is_valid_rejects_deleted_widget(qtbot) -> None:
     qtbot.wait_until(lambda: not qt_is_valid(widget), timeout=1000)
 
 
+def test_accept_dialog_queries_modal_state_on_gui_thread(
+    qapp, accept_dialog, monkeypatch
+) -> None:
+    original_active_modal_widget = QtWidgets.QApplication.activeModalWidget
+    query_threads: list[QtCore.QThread] = []
+
+    def _active_modal_widget() -> QtWidgets.QWidget | None:
+        query_threads.append(QtCore.QThread.currentThread())
+        return original_active_modal_widget()
+
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "activeModalWidget",
+        _active_modal_widget,
+    )
+
+    dialog = QtWidgets.QDialog()
+    accept_dialog(dialog.exec)
+
+    assert query_threads
+    assert all(thread == qapp.thread() for thread in query_threads)
+
+
+def test_accept_dialog_unwinds_modal_when_callback_raises(accept_dialog) -> None:
+    dialog = QtWidgets.QDialog()
+
+    def _raise_from_callback(_dialog: QtWidgets.QDialog) -> None:
+        raise RuntimeError("callback failed")
+
+    with pytest.raises(RuntimeError, match="callback failed"):
+        accept_dialog(dialog.exec, pre_call=_raise_from_callback)
+
+    assert not dialog.isVisible()
+
+
 def test_wait_dialog_suppresses_nested_dialog(qtbot) -> None:
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)

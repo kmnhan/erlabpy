@@ -475,7 +475,7 @@ def test_figure_composer_persists_compact_preview_cache_without_rendering(
         pytest.fail("saving a preview cache must not render the figure")
 
     monkeypatch.setattr(tool, "refresh_preview_pixmap", fail_render)
-    monkeypatch.setattr(tool, "_canvas_preview_pixmap", fail_render)
+    monkeypatch.setattr(tool, "_cache_live_canvas_preview", fail_render)
     monkeypatch.setattr(tool, "_fallback_preview_pixmap", fail_render)
 
     ds = tool.to_dataset()
@@ -771,7 +771,7 @@ def test_figure_composer_skips_preview_cache_when_unrendered(
         pytest.fail("saving without a preview cache must not render the figure")
 
     monkeypatch.setattr(tool, "refresh_preview_pixmap", fail_render)
-    monkeypatch.setattr(tool, "_canvas_preview_pixmap", fail_render)
+    monkeypatch.setattr(tool, "_cache_live_canvas_preview", fail_render)
     monkeypatch.setattr(tool, "_fallback_preview_pixmap", fail_render)
 
     ds = tool.to_dataset()

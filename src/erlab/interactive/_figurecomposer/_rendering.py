@@ -316,26 +316,23 @@ def _render_into_figure(
 ) -> None:
     from erlab.interactive._figurecomposer._operations import _registry
 
+    # Custom code may mutate source arrays even when no Plot Slices step renders.
+    tool._plot_slices_cache_for_render()
     render_errors: dict[str, str] = {}
-    previous_plot_slices_cache = tool._plot_slices_selection_cache
-    tool._plot_slices_selection_cache = {}
-    try:
-        with _tool_figure_options_context(tool), _figure_style_context():
-            axs = _make_axes(tool, figure, sync_visible=sync_visible)
-            for operation in tool._document.recipe.operations:
-                if not operation.enabled:
-                    continue
-                spec = _registry.spec_for(operation.kind)
-                if spec.has_invalid_target(
-                    tool._document, operation
-                ) or tool.operation_editor.has_input_error(operation):
-                    continue
-                try:
-                    spec.render(tool, operation, figure, axs)
-                except Exception as exc:
-                    render_errors[operation.operation_id] = _render_error_text(exc)
-    finally:
-        tool._plot_slices_selection_cache = previous_plot_slices_cache
+    with _tool_figure_options_context(tool), _figure_style_context():
+        axs = _make_axes(tool, figure, sync_visible=sync_visible)
+        for operation in tool._document.recipe.operations:
+            if not operation.enabled:
+                continue
+            spec = _registry.spec_for(operation.kind)
+            if spec.has_invalid_target(
+                tool._document, operation
+            ) or tool.operation_editor.has_input_error(operation):
+                continue
+            try:
+                spec.render(tool, operation, figure, axs)
+            except Exception as exc:
+                render_errors[operation.operation_id] = _render_error_text(exc)
     tool._set_operation_render_errors(render_errors)
 
 
@@ -378,6 +375,7 @@ def _render_preview(
     if tool._rendering:
         return
     tool._rendering = True
+    preview_cached = False
     try:
         window = _valid_figure_window(tool)
         if show_window is None:
@@ -397,9 +395,11 @@ def _render_preview(
             except Exception as exc:
                 _set_preview_draw_error(tool, exc)
             else:
+                preview_cached = tool._cache_live_canvas_preview(redraw=False)
                 tool.canvas.flush_events()
         elif (window := _valid_figure_window(tool)) is not None and window.isVisible():
             window.canvas.draw_idle()
     finally:
-        tool._mark_preview_pixmap_stale()
+        if not preview_cached:
+            tool._mark_preview_pixmap_stale()
         tool._rendering = False

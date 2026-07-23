@@ -509,73 +509,6 @@ def manager_context() -> Callable[
     return _ctx
 
 
-class _DialogDetectionThread(QtCore.QThread):
-    sigUpdate = QtCore.Signal(object)
-    sigTimeout = QtCore.Signal(int)
-    sigTrigger = QtCore.Signal(int, object)
-    sigPreCall = QtCore.Signal(int, object)
-
-    def __init__(
-        self,
-        parent: QtCore.QObject | None,
-        index: int,
-        pre_call: Callable | None,
-        timeout: float,
-        ignored_dialog: QtWidgets.QDialog | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.pre_call = pre_call
-        self.index = index
-        self.timeout = timeout
-        self.ignored_dialog = ignored_dialog
-        self._precall_called = threading.Event()
-
-    def precall_called(self):
-        if self.isRunning():
-            self.mutex.lock()
-        self._precall_called.set()
-        if self.isRunning():
-            self.mutex.unlock()
-
-    def run(self):
-        self.mutex = QtCore.QMutex()
-        time.sleep(0.001)
-        start_time = time.perf_counter()
-
-        dialog = None
-
-        log.debug("looking for dialog %d...", self.index)
-        while dialog is None and time.perf_counter() - start_time < self.timeout:
-            candidate = QtWidgets.QApplication.activeModalWidget()
-            # The next detector starts before accepting the current modal so
-            # synchronous child dialogs are not missed; ignore that modal
-            # while it closes.
-            if (
-                candidate is not None
-                and candidate is not self.ignored_dialog
-                and not isinstance(candidate, _WaitDialog)
-            ):
-                dialog = candidate
-            time.sleep(0.01)
-
-        if dialog is None or isinstance(dialog, _WaitDialog):
-            log.debug("emitting timeout %d", self.index)
-            self.sigTimeout.emit(self.index)
-            return
-
-        log.debug("dialog %d detected: %s", self.index, dialog)
-
-        if self.pre_call is not None:
-            log.debug("pre_call %d...", self.index)
-            self.sigPreCall.emit(self.index, dialog)
-            while not self._precall_called.is_set():
-                time.sleep(0.01)
-            log.debug("pre_call %d done", self.index)
-
-        log.debug("emitting trigger for %d", self.index + 1)
-        self.sigTrigger.emit(self.index + 1, dialog)
-
-
 class _DialogHandler(QtCore.QObject):
     """Accept a dialog during testing.
 
@@ -619,6 +552,9 @@ class _DialogHandler(QtCore.QObject):
     def __init__(self, qtbot):
         super().__init__()
         self._qtbot = qtbot
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(10)
+        self._timer.timeout.connect(self._poll_dialog)
 
     def __call__(
         self,
@@ -628,99 +564,122 @@ class _DialogHandler(QtCore.QObject):
         accept_call: Callable | Sequence[Callable | None] | None = None,
         chained_dialogs: int = 1,
     ):
+        if chained_dialogs < 1:
+            raise ValueError("chained_dialogs must be at least 1")
+
         self.timeout: float = timeout
-        self._timed_out = False
+        self._timed_out_index: int | None = None
+        self._callback_error: BaseException | None = None
 
         if not isinstance(pre_call, Sequence):
             pre_call = [pre_call] + [None] * (chained_dialogs - 1)
-
         if not isinstance(accept_call, Sequence):
             accept_call = [accept_call] + [None] * (chained_dialogs - 1)
-        self._pre_call_list = pre_call
-        self._accept_call_list = accept_call
+
+        if len(pre_call) != chained_dialogs:
+            raise ValueError("pre_call must contain one item per chained dialog")
+        if len(accept_call) != chained_dialogs:
+            raise ValueError("accept_call must contain one item per chained dialog")
+
+        self._pre_call_list = list(pre_call)
+        self._accept_call_list = list(accept_call)
         self._max_index = chained_dialogs - 1
+        self._index = 0
+        self._ignored_dialog: QtWidgets.QDialog | None = None
+        self._deadline = time.perf_counter() + timeout
+        self._timer.start()
 
-        with self._qtbot.wait_signal(self.sigFinished, timeout=round(timeout * 1e3)):
-            self.trigger_index(0, dialog_trigger)
+        try:
+            with self._qtbot.wait_signal(
+                self.sigFinished,
+                timeout=round(timeout * chained_dialogs * 1e3) + 1000,
+            ):
+                dialog_trigger()
+        finally:
+            self._timer.stop()
 
-    @QtCore.Slot(int)
-    def _timeout(self, index: int) -> None:
-        log.debug("timeout %d", index)
-        self._timed_out = True
-        if hasattr(self, "_handler") and self._handler.isRunning():
-            self._handler.wait()
-            self._handler = None
-
-        pytest.fail(
-            f"No dialog for index {index} was created after {self.timeout} seconds."
-        )
-
-    @QtCore.Slot(int, object)
-    def trigger_index(
-        self, index: int, dialog_or_trigger: QtWidgets.QDialog | Callable
-    ) -> None:
-        """Trigger the dialog creation.
-
-        Parameters
-        ----------
-        index
-            The index of the dialog to trigger, starting from 0. If the index is greater
-            than 0, ``dialog_or_trigger`` should be a dialog.
-        dialog_or_trigger
-            The callable that triggers the dialog creation or a previously created
-            dialog which will create the next dialog upon acceptance.
-        """
-        log.debug("index %d triggered", index)
-
-        if index <= self._max_index:
-            if hasattr(self, "_handler") and self._handler.isRunning():
-                self._handler.wait()
-                self._handler = None
-
-            self._handler = _DialogDetectionThread(
-                self,
-                index,
-                self._pre_call_list[index],
-                self.timeout,
-                (
-                    dialog_or_trigger
-                    if isinstance(dialog_or_trigger, QtWidgets.QDialog)
-                    else None
-                ),
+        if self._callback_error is not None:
+            raise self._callback_error
+        if self._timed_out_index is not None:
+            pytest.fail(
+                f"No dialog for index {self._timed_out_index} was created after "
+                f"{self.timeout} seconds."
             )
-            self._handler.sigTimeout.connect(self._timeout)
-            self._handler.sigTrigger.connect(self.trigger_index)
-            self._handler.sigPreCall.connect(self.handle_pre_call)
-            self._handler.start()
 
-        if isinstance(dialog_or_trigger, QtWidgets.QDialog):
-            accept_call = self._accept_call_list[index - 1]
+    @QtCore.Slot()
+    def _poll_dialog(self) -> None:
+        if time.perf_counter() >= self._deadline:
+            self._finish_timeout()
+            return
 
+        candidate = QtWidgets.QApplication.activeModalWidget()
+        if (
+            candidate is None
+            or candidate is self._ignored_dialog
+            or isinstance(candidate, _WaitDialog)
+        ):
+            return
+
+        dialog = typing.cast("QtWidgets.QDialog", candidate)
+        index = self._index
+        log.debug("dialog %d detected: %s", index, dialog)
+        self._timer.stop()
+
+        try:
+            pre_call = self._pre_call_list[index]
+            if pre_call is not None:
+                pre_call(dialog)
+
+            self._index += 1
+            if self._index <= self._max_index:
+                # Poll for the next dialog before accepting the current one because
+                # accepting may synchronously open another modal dialog.
+                self._ignored_dialog = dialog
+                self._deadline = time.perf_counter() + self.timeout
+                self._timer.start()
+
+            accept_call = self._accept_call_list[index]
             if accept_call is not None:
-                accept_call(dialog_or_trigger)
+                accept_call(dialog)
+            elif (
+                isinstance(dialog, QtWidgets.QMessageBox)
+                and dialog.defaultButton() is not None
+            ):
+                dialog.defaultButton().click()
             else:
-                if (
-                    isinstance(dialog_or_trigger, QtWidgets.QMessageBox)
-                    and dialog_or_trigger.defaultButton() is not None
-                ):
-                    dialog_or_trigger.defaultButton().click()
-                else:
-                    dialog_or_trigger.accept()
-            log.debug("finished %d", index - 1)
+                dialog.accept()
+        except BaseException as exc:
+            self._timer.stop()
+            self._callback_error = exc
+            if qt_is_valid(dialog):
+                dialog.reject()
+            self.sigFinished.emit()
+            return
 
-            if index > self._max_index:
-                log.debug("all dialogs finished, emitting sigFinished")
-                self.sigFinished.emit()
+        log.debug("finished %d", index)
+        if self._index > self._max_index:
+            self.sigFinished.emit()
 
+    def _finish_timeout(self) -> None:
+        self._timer.stop()
+        self._timed_out_index = self._index
+        log.debug("timeout %d", self._index)
+
+        # Unwind a nested QDialog.exec() before reporting the failure. Otherwise
+        # pytest cannot leave dialog_trigger(), and the test process hangs.
+        active_dialog = QtWidgets.QApplication.activeModalWidget()
+        if isinstance(active_dialog, QtWidgets.QDialog):
+            active_dialog.reject()
         else:
-            dialog_or_trigger()
+            for widget in QtWidgets.QApplication.topLevelWidgets():
+                if (
+                    isinstance(widget, QtWidgets.QDialog)
+                    and widget.isVisible()
+                    and widget.isModal()
+                ):
+                    widget.reject()
 
-    @QtCore.Slot(int, object)
-    def handle_pre_call(self, index: int, dialog: QtWidgets.QDialog) -> None:
-        log.debug("pre-call callable received")
-        self._pre_call_list[index](dialog)
-        log.debug("pre-call successfully called")
-        self._handler.precall_called()
+        self.sigFinished.emit()
 
 
 @pytest.fixture

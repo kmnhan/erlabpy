@@ -125,6 +125,7 @@ class FigureDocument:
         source_data: Mapping[str, xr.DataArray] | None = None,
         source_selection_base_data: Mapping[str, xr.DataArray] | None = None,
     ) -> None:
+        self._source_revision = 0
         self._recipe = recipe.model_copy(
             update={"sources": self.normalized_source_states(recipe.sources)}
         )
@@ -150,6 +151,11 @@ class FigureDocument:
         """Unselected parent payloads used to replay source selections."""
         return self._source_selection_base_data
 
+    @property
+    def source_revision(self) -> int:
+        """Monotonic generation for source-payload changes."""
+        return self._source_revision
+
     def replace_recipe(self, recipe: FigureRecipeState) -> bool:
         """Replace the complete recipe after validating document invariants."""
         if recipe == self._recipe:
@@ -168,6 +174,11 @@ class FigureDocument:
         updated_selection_base_data = dict(selection_base_data)
         self._source_data = updated_source_data
         self._source_selection_base_data = updated_selection_base_data
+        self.touch_source_payloads()
+
+    def touch_source_payloads(self) -> None:
+        """Advance the source generation after an in-place payload edit."""
+        self._source_revision += 1
 
     def replace_setup(self, setup: FigureSubplotsState) -> bool:
         """Replace the complete validated figure layout setup."""

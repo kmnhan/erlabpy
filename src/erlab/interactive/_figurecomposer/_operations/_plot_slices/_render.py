@@ -51,10 +51,11 @@ def _render_plot_slices(
     if not maps:
         return
     kwargs = _plot_slices_kwargs(tool, operation)
-    if _plot_slices_uses_transformed_line_maps(tool, operation):
+    transformed = _plot_slices_uses_transformed_line_maps(tool, operation)
+    if transformed:
         maps = _plot_slices_transformed_maps(tool, operation, maps)
         kwargs = _plot_slices_transformed_kwargs(tool, operation)
-    selection_cache = tool._plot_slices_selection_cache
+    selection_cache = None if transformed else tool._plot_slices_cache_for_render()
     if selection_cache is not None:
         kwargs["_selection_cache"] = selection_cache
         kwargs["_selection_cache_key"] = _plot_slices_selection_cache_key(
@@ -143,10 +144,8 @@ def _plot_slices_axes(
 def _plot_slices_selection_cache_key(
     operation: FigureOperationState, maps: Sequence[xr.DataArray]
 ) -> tuple[object, ...]:
-    source_key = tuple(
-        (source,) for source in _plot_slices_selection_sources(operation)
-    )
+    source_key = tuple(_plot_slices_selection_sources(operation))
     map_key = tuple(
         (id(data.data), tuple(data.dims), tuple(data.shape)) for data in maps
     )
-    return (source_key, map_key)
+    return (operation.transpose, source_key, map_key)
