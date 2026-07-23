@@ -1054,14 +1054,11 @@ class _ManagedWindowNode(QtCore.QObject):
             return pending_info
         data = self._metadata_data()
         if data is None:
-            return erlab.interactive.utils._apply_qt_accent_color(
-                f"Added {self.added_time_display}"
-            )
+            return ""
         data = erlab.utils.array.sort_coord_order(data)
         text = erlab.utils.formatting.format_darr_html(
             data,
-            show_size=True,
-            additional_info=[f"Added {self.added_time_display}"],
+            show_size=False,
         )
         return erlab.interactive.utils._apply_qt_accent_color(text)
 
@@ -1255,14 +1252,36 @@ class _ManagedWindowNode(QtCore.QObject):
                 "Kind",
                 kind_value,
             ),
+        ]
+
+        data = self._metadata_data()
+        size_data = data
+        if size_data is None and self.pending_workspace_memory_payload is not None:
+            try:
+                size_data = self.manager._pending_workspace_imagetool_metadata_data(
+                    self
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to read data size for pending workspace node %s",
+                    self.uid,
+                    exc_info=True,
+                )
+        if size_data is not None:
+            fields.append(
+                _MetadataField(
+                    "Size",
+                    erlab.utils.formatting.format_nbytes(size_data.nbytes),
+                )
+            )
+        fields.append(
             _MetadataField(
                 "Added",
                 self.added_time_display,
                 monospace=True,
-            ),
-        ]
+            )
+        )
 
-        data = self._metadata_data()
         load_source_details = self._load_source_details()
         if load_source_details is not None:
             fields.append(

@@ -215,7 +215,11 @@ def test_manager_added_time_display_uses_zone_name_and_offset(
             )
             == expected
         )
-        assert f"Added {expected}" in node.info_text
+        assert next(
+            field.value for field in node.metadata_fields if field.label == "Size"
+        ) == erlab.utils.formatting.format_nbytes(test_data.nbytes)
+        assert expected not in node.info_text
+        assert "Size " not in node.info_text
 
 
 def test_imagetool_dataset_uses_window_state_and_keeps_rect_fallback(

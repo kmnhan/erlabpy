@@ -218,6 +218,10 @@ def test_manager_pending_memory_sidebar_shows_metadata_without_materializing(
         assert "sample" in info_text
         assert "TiSe2" in info_text
         assert "temperature" in info_text
+        assert "Added" not in info_text
+        assert "Size " not in info_text
+        fields = {field.label: field.value for field in wrapper.metadata_fields}
+        assert fields["Size"] == erlab.utils.formatting.format_nbytes(data.nbytes)
         assert wrapper.pending_workspace_memory_payload is not None
 
         wrapper.name = "renamed_metadata"
@@ -306,6 +310,8 @@ def test_pending_workspace_metadata_coord_load_failure_falls_back(
     assert "float64 [2]" in info
     assert "float64 [3]" in info
     assert "float64 scalar" in info
+    assert "Added" not in info
+    assert "Size " not in info
     assert node.pending_workspace_memory_payload == (fname, "0/imagetool")
 
 
@@ -1027,6 +1033,7 @@ def test_pending_toolwindow_metadata_and_preview_helpers(
         assert "NestedTool" in text
         assert "source_data" in text
         assert "stale" in text
+        assert "Added" not in text
         assert loader.pending._pending_workspace_info_text(node) == text
 
         preview = node.pending_workspace_tool_preview_image()

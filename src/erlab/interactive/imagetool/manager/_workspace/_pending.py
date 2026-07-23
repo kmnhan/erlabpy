@@ -244,15 +244,13 @@ class _PendingWorkspacePayloads:
                 data = self._pending_workspace_data_with_saved_dim_order(data, attrs)
                 data = erlab.utils.array._restore_nonuniform_dims(data)
                 data = erlab.utils.array.sort_coord_order(data)
-                additional_info = [f"Added {node.added_time_display}"]
                 try:
                     metadata_data = self._pending_workspace_data_with_loaded_coords(
                         data
                     )
                     text = erlab.utils.formatting.format_darr_html(
                         metadata_data,
-                        show_size=True,
-                        additional_info=additional_info,
+                        show_size=False,
                     )
                 except Exception:
                     logger.debug(
@@ -261,9 +259,8 @@ class _PendingWorkspacePayloads:
                     )
                     text = erlab.utils.formatting.format_darr_html(
                         data,
-                        show_size=True,
+                        show_size=False,
                         load_values=False,
-                        additional_info=additional_info,
                     )
                 return erlab.interactive.utils._apply_qt_accent_color(text)
             finally:
@@ -295,7 +292,6 @@ class _PendingWorkspacePayloads:
         )
         if source_state is not None:
             lines.append(f"<p>Source: {html.escape(source_state)}</p>")
-        lines.append(f"<p>Added {html.escape(node.added_time_display)}</p>")
         return erlab.interactive.utils._apply_qt_accent_color("".join(lines))
 
     def _pending_workspace_info_text(

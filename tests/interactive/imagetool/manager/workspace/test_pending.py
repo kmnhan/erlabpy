@@ -1555,6 +1555,9 @@ def test_wrapper_pending_workspace_branch_helpers(
             tmp_path / "source.itws", "0/imagetool"
         )
         assert wrapper._metadata_data() is None
+        fields = {field.label: field.value for field in wrapper.metadata_fields}
+        assert "Size" not in fields
+        assert fields["Added"] == wrapper.added_time_display
         assert wrapper._pending_workspace_load_source_details() is None
 
         for raw_state in (b"\xff", "{not-json", json.dumps({"file_path": 1})):
@@ -1643,7 +1646,7 @@ def test_wrapper_pending_workspace_branch_helpers(
             created_time="2026-01-02T03:04:05+00:00",
         )
         try:
-            assert "Added" in empty_node.info_text
+            assert empty_node.info_text == ""
             assert empty_node.persistence_data_backing() == (None, ())
         finally:
             empty_node.deleteLater()
