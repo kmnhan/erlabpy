@@ -37,6 +37,7 @@ from erlab.interactive.imagetool._provenance._operations import (
 # isort: off
 from qtpy import QtCore, QtGui, QtWidgets
 
+from matplotlib import colormaps
 from matplotlib.figure import Figure
 # isort: on
 
@@ -109,6 +110,7 @@ from erlab.interactive._figurecomposer._model._state import (
     FigureSourceState,
     FigureSubplotsState,
 )
+from erlab.interactive._figurecomposer._norms import _matplotlib_cmap_name
 from erlab.interactive._figurecomposer._operations import _registry
 from erlab.interactive._figurecomposer._operations._plot_slices._cache import (
     _PlotSlicesSelectionCache,
@@ -119,6 +121,7 @@ from erlab.interactive._figurecomposer._operations._plot_slices._model import (
     _is_slice_kwarg_key,
     _operation_dim_names,
     _plot_slices_panel_keys,
+    _plot_slices_shape,
     _selection_updates_from_kwargs,
     _selection_values,
     _selection_width,
@@ -802,6 +805,100 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             ):
                 return index, operation, typing.cast("tuple[int, int]", panel_key)
         return None
+
+    def _try_update_live_colormap(
+        self,
+        index: int,
+        previous: FigureOperationState,
+        updated: FigureOperationState,
+    ) -> bool:
+        """Update verified live image artists for one cmap-only recipe edit."""
+        if (
+            self._closing
+            or self._rendering
+            or self._auto_redraw_dirty
+            or self._preview_render_update_pending
+            or not self._auto_redraw_enabled()
+        ):
+            return False
+        if (
+            updated.kind
+            not in (FigureOperationKind.PLOT_ARRAY, FigureOperationKind.PLOT_SLICES)
+            or updated.model_copy(update={"cmap": previous.cmap}) != previous
+            or "cmap" in updated.extra_kwargs
+            or updated.operation_id in self._operation_render_errors
+            or self.operation_editor.has_input_error(updated)
+            or any(
+                operation.enabled
+                and operation.kind
+                in (FigureOperationKind.METHOD, FigureOperationKind.CUSTOM)
+                for operation in self._document.recipe.operations[index + 1 :]
+            )
+        ):
+            return False
+
+        try:
+            if updated.kind == FigureOperationKind.PLOT_ARRAY:
+                expected_panel_keys = {(0, 0)}
+            else:
+                shape = _plot_slices_shape(self._document, updated)
+                if (
+                    not shape.valid
+                    or shape.plot_ndim != 2
+                    or updated.panel_styles_enabled
+                    or bool(updated.panel_styles)
+                ):
+                    return False
+                expected_panel_keys = {
+                    (key.map_index, key.slice_index)
+                    for key in _plot_slices_panel_keys(
+                        self._document, self._source_display_name, updated
+                    )
+                }
+        except Exception:
+            return False
+
+        window = self._figure_window
+        if (
+            window is None
+            or not erlab.interactive.utils.qt_is_valid(window)
+            or not window.isVisible()
+        ):
+            return False
+        canvas = window.canvas
+        if not erlab.interactive.utils.qt_is_valid(canvas):
+            return False
+
+        tagged_mappables: list[tuple[typing.Any, tuple[int, int]]] = []
+        for axis in window.figure.axes:
+            for mappable in (*axis.images, *axis.collections):
+                target = self._image_mappable_target(
+                    mappable, self._document.recipe.operations
+                )
+                if (
+                    target is not None
+                    and target[1].operation_id == updated.operation_id
+                ):
+                    tagged_mappables.append((mappable, target[2]))
+        if (
+            len(tagged_mappables) != len(expected_panel_keys)
+            or {panel_key for _mappable, panel_key in tagged_mappables}
+            != expected_panel_keys
+        ):
+            return False
+
+        try:
+            cmap_name = updated.cmap
+            if cmap_name is None:
+                cmap_name = str(self._editor_styled_rcparams_value("image.cmap"))
+            cmap = colormaps.get_cmap(_matplotlib_cmap_name(cmap_name))
+            for mappable, _panel_key in tagged_mappables:
+                mappable.set_cmap(cmap)
+            self._mark_preview_pixmap_stale()
+            canvas.draw_idle()
+        except Exception:
+            return False
+        return True
 
     def _operation_with_colorbar_clim(
         self,
@@ -2792,16 +2889,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return False
         current = self._current_operation()
         preview_affected = False
+        operation_changes: list[
+            tuple[int, FigureOperationState, FigureOperationState]
+        ] = []
 
         def tracked_update(
             index: int, operation: FigureOperationState
         ) -> FigureOperationState:
             nonlocal preview_affected
             updated = updater(index, operation)
-            if updated != operation and self._operation_change_affects_preview(
-                operation, updated
-            ):
-                preview_affected = True
+            if updated != operation:
+                operation_changes.append((index, operation, updated))
+                if self._operation_change_affects_preview(operation, updated):
+                    preview_affected = True
             return updated
 
         if not self._document.update_operations_by_ids(
@@ -2822,10 +2922,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._queue_operation_editor_update()
             else:
                 self._update_operation_editor_safely()
-        self._notify_operation_changed(
-            preview_affected=render and preview_affected,
-            defer_render=defer_render,
-        )
+        if (
+            render
+            and preview_affected
+            and not defer_render
+            and len(operation_changes) == 1
+            and self._try_update_live_colormap(*operation_changes[0])
+        ):
+            self.sigInfoChanged.emit()
+        else:
+            self._notify_operation_changed(
+                preview_affected=render and preview_affected,
+                defer_render=defer_render,
+            )
         self._write_state()
         return True
 
