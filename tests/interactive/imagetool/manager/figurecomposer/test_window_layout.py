@@ -2988,6 +2988,80 @@ def test_figure_composer_preview_uses_live_canvas_without_rerender(
     assert tool.canvas is live_canvas
 
 
+def test_figure_composer_visible_redraw_caches_drawn_canvas(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    qtbot.waitUntil(lambda: tool.figure_window.isVisible(), timeout=1000)
+    tool._clear_preview_pixmap_cache(stale=True)
+    previous_generation = tool.preview_pixmap_generation
+
+    draw_calls = 0
+    original_draw = tool.canvas.draw
+
+    def counted_draw() -> None:
+        nonlocal draw_calls
+        draw_calls += 1
+        original_draw()
+
+    monkeypatch.setattr(tool.canvas, "draw", counted_draw)
+
+    figurecomposer_rendering._render_preview(tool, show_window=True)
+
+    assert draw_calls == 1
+    assert tool.preview_pixmap is not None
+    assert not tool.preview_pixmap.isNull()
+    assert tool.preview_pixmap_generation == previous_generation + 1
+    assert not tool.preview_pixmap_stale
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "single_shot",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a current canvas preview should not schedule another draw"
+        ),
+    )
+    tool.request_preview_pixmap_update(delay_ms=0)
+
+
+def test_figure_composer_post_draw_invalidation_keeps_preview_stale(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    qtbot.waitUntil(lambda: tool.figure_window.isVisible(), timeout=1000)
+    tool._clear_preview_pixmap_cache(stale=True)
+
+    flush_calls = 0
+
+    def flush_events() -> None:
+        nonlocal flush_calls
+        flush_calls += 1
+        if flush_calls == 2:
+            tool._mark_preview_pixmap_stale()
+
+    monkeypatch.setattr(tool.canvas, "flush_events", flush_events)
+
+    figurecomposer_rendering._render_preview(tool, show_window=True)
+
+    assert flush_calls == 2
+    assert tool.preview_pixmap is not None
+    assert tool.preview_pixmap_stale
+
+
 def test_figure_composer_hidden_preview_does_not_create_window(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0),

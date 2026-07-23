@@ -4634,33 +4634,45 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             self.sigInfoChanged.emit()
 
-    def _canvas_preview_pixmap(self) -> QtGui.QPixmap | None:
-        if self._closing or not erlab.interactive.utils.qt_is_valid(self):
-            return None
+    def _cache_live_canvas_preview(self, *, redraw: bool) -> bool:
+        if (
+            self._closing
+            or not erlab.interactive.utils.qt_is_valid(self)
+            or not self._document.recipe.operations
+        ):
+            return False
         window = self._figure_window
         if window is None or not erlab.interactive.utils.qt_is_valid(window):
-            return None
+            return False
         if not window.isVisible():
-            return None
+            return False
 
         try:
             canvas = window.canvas
             if not erlab.interactive.utils.qt_is_valid(canvas):
-                return None
-            with self._figure_options_context(), _figure_style_context():
-                canvas.draw()
+                return False
+            if redraw:
+                with self._figure_options_context(), _figure_style_context():
+                    canvas.draw()
             width, height = canvas.get_width_height(physical=True)
             if width <= 0 or height <= 0:
-                return None
+                return False
             image = QtGui.QImage(
                 canvas.buffer_rgba(),
                 width,
                 height,
                 QtGui.QImage.Format.Format_RGBA8888,
             )
-            return QtGui.QPixmap.fromImage(image.copy())
+            preview = QtGui.QPixmap.fromImage(image.copy())
         except Exception:
-            return None
+            return False
+        if preview.isNull():
+            return False
+        self._preview_pixmap_cache = preview
+        self._preview_pixmap_generation += 1
+        self._preview_thumbnail_cache.clear()
+        self._preview_pixmap_stale = False
+        return True
 
     def _fallback_preview_pixmap(self) -> QtGui.QPixmap | None:
         if self._closing or not erlab.interactive.utils.qt_is_valid(self):
@@ -4703,9 +4715,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if not self._document.recipe.operations:
             self._clear_preview_pixmap_cache(stale=False)
             return None
-        preview = self._canvas_preview_pixmap()
-        if preview is None and allow_offscreen:
-            preview = self._fallback_preview_pixmap()
+        if self._cache_live_canvas_preview(redraw=True):
+            return self._preview_pixmap_cache
+        preview = self._fallback_preview_pixmap() if allow_offscreen else None
         if preview is None:
             return self._preview_pixmap_cache
         self._preview_pixmap_cache = preview

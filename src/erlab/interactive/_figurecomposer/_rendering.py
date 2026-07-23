@@ -375,6 +375,7 @@ def _render_preview(
     if tool._rendering:
         return
     tool._rendering = True
+    preview_cached = False
     try:
         window = _valid_figure_window(tool)
         if show_window is None:
@@ -394,9 +395,11 @@ def _render_preview(
             except Exception as exc:
                 _set_preview_draw_error(tool, exc)
             else:
+                preview_cached = tool._cache_live_canvas_preview(redraw=False)
                 tool.canvas.flush_events()
         elif (window := _valid_figure_window(tool)) is not None and window.isVisible():
             window.canvas.draw_idle()
     finally:
-        tool._mark_preview_pixmap_stale()
+        if not preview_cached:
+            tool._mark_preview_pixmap_stale()
         tool._rendering = False
