@@ -548,7 +548,6 @@ def test_manager_registry_lock_assigns_unique_concurrent_indexes(tmp_path) -> No
     worker_code = """
 import pathlib
 import sys
-import time
 
 import erlab.interactive.imagetool.manager._registry as registry
 
@@ -558,11 +557,12 @@ registry._LOCK_PATH = registry._REGISTRY_PATH.with_suffix(
 )
 record = registry.reserve_manager_record(host="localhost")
 print(record.index, flush=True)
-time.sleep(1.0)
+sys.stdin.read(1)
 """
     processes = [
         subprocess.Popen(
             [sys.executable, "-c", worker_code, str(registry_path)],
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -570,8 +570,33 @@ time.sleep(1.0)
         for _ in range(3)
     ]
 
+    stdout_pipes = []
+    for process in processes:
+        assert process.stdout is not None
+        stdout_pipes.append(process.stdout)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(processes)) as executor:
+        index_futures = [
+            executor.submit(stdout_pipe.readline) for stdout_pipe in stdout_pipes
+        ]
+        _done, pending = concurrent.futures.wait(index_futures, timeout=30)
+        if pending:
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+            outputs = [process.communicate() for process in processes]
+            details = "\n".join(
+                f"pid={process.pid} returncode={process.returncode} "
+                f"stdout={(future.result() + stdout)!r} stderr={stderr!r}"
+                for process, future, (stdout, stderr) in zip(
+                    processes, index_futures, outputs, strict=True
+                )
+            )
+            pytest.fail(f"Timed out waiting for registry lock workers:\n{details}")
+
+    index_lines = [future.result() for future in index_futures]
     try:
-        outputs = [process.communicate(timeout=30) for process in processes]
+        outputs = [process.communicate(input="\n", timeout=30) for process in processes]
     except subprocess.TimeoutExpired as exc:
         for process in processes:
             if process.poll() is None:
@@ -579,16 +604,19 @@ time.sleep(1.0)
         outputs = [process.communicate() for process in processes]
         details = "\n".join(
             f"pid={process.pid} returncode={process.returncode} "
-            f"stdout={stdout!r} stderr={stderr!r}"
-            for process, (stdout, stderr) in zip(processes, outputs, strict=True)
+            f"stdout={(index_line + stdout)!r} stderr={stderr!r}"
+            for process, index_line, (stdout, stderr) in zip(
+                processes, index_lines, outputs, strict=True
+            )
         )
         pytest.fail(f"Timed out waiting for registry lock workers: {exc}\n{details}")
 
-    indexes = sorted(int(stdout.strip()) for stdout, _stderr in outputs)
-
-    assert indexes == [0, 1, 2]
     for process, (_stdout, stderr) in zip(processes, outputs, strict=True):
         assert process.returncode == 0, stderr
+
+    indexes = sorted(int(index_line.strip()) for index_line in index_lines)
+
+    assert indexes == [0, 1, 2]
 
 
 def test_manager_registry_heartbeat_runs_refresh_off_gui_thread(
