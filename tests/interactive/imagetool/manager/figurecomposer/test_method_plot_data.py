@@ -31,6 +31,9 @@ from erlab.interactive._figurecomposer._operations._method import (
     _editor as method_editor,
 )
 from erlab.interactive._figurecomposer._operations._method import (
+    _execution as method_execution,
+)
+from erlab.interactive._figurecomposer._operations._method import (
     _plot_data as method_plot_data,
 )
 from erlab.interactive._figurecomposer._operations._method import (
@@ -607,7 +610,9 @@ def test_figure_composer_axes_plot_data_mode_switches_editor(qtbot) -> None:
     assert operation.method_plot_yerr is None
 
 
-def test_figure_composer_axes_plot_method_picks_data_render_and_codegen(qtbot) -> None:
+def test_figure_composer_axes_plot_method_picks_data_render_and_codegen(
+    qtbot, monkeypatch
+) -> None:
     x_source = xr.DataArray(
         np.array([10.0, 20.0, 30.0]),
         dims=("kx",),
@@ -651,6 +656,15 @@ def test_figure_composer_axes_plot_method_picks_data_render_and_codegen(qtbot) -
     )
     qtbot.addWidget(tool)
 
+    preparation_calls: list[None] = []
+    original_picked_plot_args = method_execution._picked_plot_args
+
+    def counted_picked_plot_args(*args, **kwargs):
+        preparation_calls.append(None)
+        return original_picked_plot_args(*args, **kwargs)
+
+    monkeypatch.setattr(method_execution, "_picked_plot_args", counted_picked_plot_args)
+
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
     assert tool._operation_render_errors == {}
     line = tool.figure.axes[0].lines[0]
@@ -670,6 +684,20 @@ def test_figure_composer_axes_plot_method_picks_data_render_and_codegen(qtbot) -
     generated_line = namespace["axs"][0, 0].lines[0]
     np.testing.assert_allclose(generated_line.get_xdata(), x_source.coords["kx"].values)
     np.testing.assert_allclose(generated_line.get_ydata(), y_source.values)
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    operation = tool.tool_status.operations[0]
+    tool._document.replace_operation(
+        0, operation.model_copy(update={"method_kwargs": {"color": "C3"}})
+    )
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert preparation_calls == [None]
+
+    tool._document.replace_source_payloads(
+        {"x_data": x_source, "y_data": y_source + 1.0}, {}
+    )
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert preparation_calls == [None, None]
 
 
 def test_figure_composer_axes_errorbar_method_picks_data_render_and_codegen(

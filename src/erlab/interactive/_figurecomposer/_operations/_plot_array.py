@@ -54,7 +54,7 @@ from erlab.interactive._figurecomposer._ui._editor_controls import (
 from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Hashable
 
     import matplotlib.axes
     import xarray as xr
@@ -248,20 +248,54 @@ def _plot_array_kwargs(operation: FigureOperationState) -> dict[str, typing.Any]
 def _render_plot_array(
     tool: FigureComposerTool, operation: FigureOperationState, axs: typing.Any
 ) -> None:
-    data = _selected_plot_array_data(tool._document, operation)
+    cache_fields = ("sources", "transpose", "crop")
+    if operation.crop:
+        cache_fields += ("xlim", "ylim")
+    cache_key = tool._operation_render_cache_key(operation, cache_fields)
+
+    def prepare_data() -> xr.DataArray | None:
+        data = _selected_plot_array_data(tool._document, operation)
+        if data is None:
+            return None
+        if operation.transpose:
+            data = data.T
+        if not operation.crop:
+            return data
+        indexers: dict[Hashable, slice] = {}
+        if operation.xlim is not None:
+            limit = (
+                operation.xlim
+                if isinstance(operation.xlim, tuple)
+                else (-operation.xlim, operation.xlim)
+            )
+            indexers[data.dims[1]] = slice(*limit)
+        if operation.ylim is not None:
+            limit = (
+                operation.ylim
+                if isinstance(operation.ylim, tuple)
+                else (-operation.ylim, operation.ylim)
+            )
+            indexers[data.dims[0]] = slice(*limit)
+        return data.sel(indexers) if indexers else data
+
+    data = typing.cast(
+        "xr.DataArray | None",
+        tool._cached_render_data(("plot-array", cache_key), prepare_data),
+    )
     if data is None:
         return
-    if operation.transpose:
-        data = data.T
     if data.ndim != 2:
         raise ValueError("Image Plot requires a 2D DataArray")
     axis = _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
     if isinstance(axis, (list, tuple)) or hasattr(axis, "flat"):
         raise ValueError("Image Plot requires exactly one target axis")
+    kwargs = _plot_array_kwargs(operation)
+    if operation.crop:
+        kwargs["crop"] = False
     image = eplt.plot_array(
         data,
         ax=typing.cast("matplotlib.axes.Axes", axis),
-        **_plot_array_kwargs(operation),
+        **kwargs,
     )
     if image is not None:
         tagged_image = typing.cast("typing.Any", image)

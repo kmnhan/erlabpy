@@ -167,13 +167,29 @@ def _render_photon_energy_overlay(
     if not axes:
         return
 
-    kz_values, x_dim = _kz_values(_source_data(tool, operation), operation)
+    kz_values, x_dim = _photon_energy_render_data(tool, operation)
     for axis in axes:
         for index in range(kz_values.sizes["hv"]):
             kz = kz_values.isel(hv=index)
             axis.plot(kz[x_dim], kz, **_line_kwargs(operation, kz))
         if operation.show_legend:
             axis.legend(**operation.legend_kw)
+
+
+def _photon_energy_render_data(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> tuple[xr.DataArray, str]:
+    cache_key = tool._operation_render_cache_key(
+        operation,
+        ("hv_overlay_source", "photon_energies", "binding_energy"),
+    )
+    return typing.cast(
+        "tuple[xr.DataArray, str]",
+        tool._cached_render_data(
+            ("photon-energy-curves", cache_key),
+            lambda: _kz_values(_source_data(tool, operation), operation),
+        ),
+    )
 
 
 def _label_code(operation: FigureOperationState) -> str:
@@ -219,8 +235,7 @@ def _photon_energy_code_lines(
 ) -> list[str]:
     if operation.hv_overlay_source is None:
         raise ValueError("Select a source data array for the photon-energy overlay")
-    data = _source_data(tool, operation)
-    _, x_dim = _kz_values(data, operation)
+    _, x_dim = _photon_energy_render_data(tool, operation)
     source_code = _valid_source_variable(operation.hv_overlay_source)
     values_code = _photon_energies_code(operation.photon_energies)
     call_code = f"{source_code}.kspace.hv_to_kz({values_code})"

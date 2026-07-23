@@ -512,7 +512,7 @@ def test_figure_composer_plot_slices_default_colormap_editor_uses_stylesheet(
         mpl_style.reload_library()
 
 
-def test_figure_composer_plot_slices_reuses_selection_cache_per_render(
+def test_figure_composer_plot_slices_reuses_selection_cache_across_redraws(
     qtbot, monkeypatch
 ) -> None:
     data = _figure_composer_image_source("data")
@@ -568,7 +568,33 @@ def test_figure_composer_plot_slices_reuses_selection_cache_per_render(
 
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
 
+    assert len(calls) == 1
+
+    replacement = data + 1.0
+    tool._document.replace_source_payloads({"data": replacement}, {})
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
     assert len(calls) == 2
+
+    custom = FigureOperationState.custom(label="custom", code="pass", trusted=True)
+    tool._document.replace_recipe(
+        tool.tool_status.model_copy(
+            update={"operations": (*tool.tool_status.operations, custom)}
+        )
+    )
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    assert len(calls) == 4
+
+    tool._document.replace_recipe(
+        tool.tool_status.model_copy(
+            update={"operations": tool.tool_status.operations[:-1]}
+        )
+    )
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    assert len(calls) == 5
 
 
 def test_figure_composer_plot_slices_selection_error_details() -> None:

@@ -2270,6 +2270,67 @@ def test_figure_composer_one_profile_per_axis_codegen_broadcasts_profiles(
         np.testing.assert_allclose(axis.lines[0].get_ydata(), profile.values + index)
 
 
+def test_figure_composer_line_preparation_cache_reuses_data_for_style_changes(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("cut", "kx"),
+        coords={"cut": [0.0, 1.0, 2.0], "kx": [-1.0, -0.5, 0.5, 1.0]},
+        name="data",
+    )
+    operation = FigureOperationState.line(label="line", source="data").model_copy(
+        update={"line_iter_dim": "cut", "line_x": "kx"}
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    selection_calls: list[None] = []
+    transform_calls: list[None] = []
+    original_selection = figurecomposer_line_profile._line_data_items_with_sources
+    original_transform = figurecomposer_line_profile.transform_profiles
+
+    def counted_selection(*args, **kwargs):
+        selection_calls.append(None)
+        return original_selection(*args, **kwargs)
+
+    def counted_transform(*args, **kwargs):
+        transform_calls.append(None)
+        return original_transform(*args, **kwargs)
+
+    monkeypatch.setattr(
+        figurecomposer_line_profile,
+        "_line_data_items_with_sources",
+        counted_selection,
+    )
+    monkeypatch.setattr(
+        figurecomposer_line_profile, "transform_profiles", counted_transform
+    )
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    styled = operation.model_copy(update={"line_kw": {"linewidth": 2.0}})
+    tool._document.replace_operation(0, styled)
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    assert selection_calls == [None]
+    assert transform_calls == [None]
+
+    tool._document.replace_source_payloads({"data": data + 1.0}, {})
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    assert selection_calls == [None, None]
+    assert transform_calls == [None, None]
+
+
 def test_figure_composer_regular_line_profiles_render_on_each_selected_axis(
     qtbot,
 ) -> None:

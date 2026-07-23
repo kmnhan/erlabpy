@@ -772,7 +772,7 @@ def test_figure_composer_photon_energy_overlay_state_round_trip() -> None:
 
 @pytest.mark.parametrize(("configuration", "x_dim"), [(1, "kx"), (2, "ky")])
 def test_figure_composer_photon_energy_overlay_render_and_code(
-    qtbot, configuration: int, x_dim: str
+    qtbot, monkeypatch, configuration: int, x_dim: str
 ) -> None:
     data = _photon_energy_source(configuration)
     hv_values = (30.0, 45.0, 60.0)
@@ -790,6 +790,15 @@ def test_figure_composer_photon_energy_overlay_render_and_code(
     )
     tool = _photon_energy_tool(operation, data)
     qtbot.addWidget(tool)
+
+    preparation_calls: list[None] = []
+    original_kz_values = figurecomposer_photon_energy._kz_values
+
+    def counted_kz_values(*args, **kwargs):
+        preparation_calls.append(None)
+        return original_kz_values(*args, **kwargs)
+
+    monkeypatch.setattr(figurecomposer_photon_energy, "_kz_values", counted_kz_values)
 
     figure = Figure(figsize=(3, 3))
     FigureCanvasAgg(figure)
@@ -818,6 +827,23 @@ def test_figure_composer_photon_energy_overlay_render_and_code(
     assert generated_axis.get_legend() is not None
     assert generated_axis.get_legend().get_title().get_text() == "Photon energy"
     assert generated_axis.get_legend().get_frame_on() is False
+    assert preparation_calls == [None]
+
+    preparation_calls.clear()
+    figurecomposer_rendering._render_into_figure(tool, figure, sync_visible=False)
+    styled = operation.model_copy(update={"line_kw": {"linewidth": 2.0}})
+    tool._document.replace_operation(0, styled)
+    figurecomposer_rendering._render_into_figure(tool, figure, sync_visible=False)
+    assert preparation_calls == []
+
+    changed_energies = styled.model_copy(update={"photon_energies": (35.0, 50.0)})
+    tool._document.replace_operation(0, changed_energies)
+    figurecomposer_rendering._render_into_figure(tool, figure, sync_visible=False)
+    assert preparation_calls == [None]
+
+    tool._document.replace_source_payloads({"hvdep_kconv": data.copy()}, {})
+    figurecomposer_rendering._render_into_figure(tool, figure, sync_visible=False)
+    assert preparation_calls == [None, None]
 
 
 def test_figure_composer_photon_energy_overlay_multiple_axes_code(qtbot) -> None:

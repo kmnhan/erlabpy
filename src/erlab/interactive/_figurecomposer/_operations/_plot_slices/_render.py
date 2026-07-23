@@ -52,7 +52,39 @@ def _render_plot_slices(
         return
     kwargs = _plot_slices_kwargs(tool, operation)
     if _plot_slices_uses_transformed_line_maps(tool, operation):
-        maps = _plot_slices_transformed_maps(tool, operation, maps)
+        transform_key = tool._operation_render_cache_key(
+            operation,
+            (
+                "sources",
+                "map_selections",
+                "slice_dim",
+                "slice_values_mode",
+                "slice_values",
+                "slice_values_thin",
+                "slice_width",
+                "slice_kwargs",
+                "extra_kwargs",
+                "line_iter_dim",
+                "line_normalize",
+                "line_scales",
+                "line_offsets",
+                "line_offset_source",
+                "line_offset_coord",
+                "line_offset_scale",
+            ),
+        )
+        input_maps = maps
+
+        def transformed_maps_factory() -> list[xr.DataArray]:
+            return _plot_slices_transformed_maps(tool, operation, input_maps)
+
+        maps = typing.cast(
+            "list[xr.DataArray]",
+            tool._cached_render_data(
+                ("plot-slices-transformed-maps", transform_key),
+                transformed_maps_factory,
+            ),
+        )
         kwargs = _plot_slices_transformed_kwargs(tool, operation)
     selection_cache = tool._plot_slices_selection_cache
     if selection_cache is not None:

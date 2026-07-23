@@ -1185,8 +1185,27 @@ def _add_line_fill_controls(
 def _render_line(
     tool: FigureComposerTool, operation: FigureOperationState, axs: typing.Any
 ) -> None:
-    line_entries = _line_data_items_with_sources(
-        tool._document, tool._source_display_name, operation
+    data_key = tool._operation_render_cache_key(
+        operation,
+        (
+            "map_selections",
+            "line_source",
+            "line_selection",
+            "line_y",
+            "line_iter_dim",
+            "line_reduce",
+            "line_reduce_coarsen",
+            "line_reduce_thin",
+        ),
+    )
+    line_entries = typing.cast(
+        "list[tuple[xr.DataArray, str | None]]",
+        tool._cached_render_data(
+            ("line-profile-inputs", data_key),
+            lambda: _line_data_items_with_sources(
+                tool._document, tool._source_display_name, operation
+            ),
+        ),
     )
     if not line_entries:
         return
@@ -1195,10 +1214,48 @@ def _render_line(
     axes = _iter_axes(
         _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
     )
+    transform_key = tool._operation_render_cache_key(
+        operation,
+        (
+            "map_selections",
+            "line_source",
+            "line_selection",
+            "line_y",
+            "line_iter_dim",
+            "line_reduce",
+            "line_reduce_coarsen",
+            "line_reduce_thin",
+            "line_normalize",
+            "line_scales",
+            "line_offsets",
+            "line_offset_source",
+            "line_offset_coord",
+            "line_offset_scale",
+        ),
+    )
     if operation.line_placement == "one_per_axis":
+        if len(line_items) == 1 and len(axes) > 1:
+            line_items = line_items * len(axes)
+            sources = sources * len(axes)
+        input_line_items = line_items
+        line_items = typing.cast(
+            "list[xr.DataArray]",
+            tool._cached_render_data(
+                ("line-profile-transforms", transform_key, len(axes)),
+                lambda: transform_profiles(operation, input_line_items),
+            ),
+        )
         _render_one_profile_per_axis(tool, operation, axes, line_items, sources)
         return
-    line_items = transform_profiles(operation, line_items)
+    line_items = typing.cast(
+        "list[xr.DataArray]",
+        tool._cached_render_data(
+            ("line-profile-transforms", transform_key),
+            lambda: transform_profiles(
+                operation, [profile for profile, _source in line_entries]
+            ),
+        ),
+    )
     styles = _line_styles_for_profiles(operation, line_items, sources)
     for axis in axes:
         for line_data, kwargs in zip(line_items, styles, strict=True):
@@ -1223,7 +1280,6 @@ def _render_one_profile_per_axis(
     elif len(profiles) == 1 and len(axes) > 1:
         profiles = profiles * len(axes)
         sources = sources * len(axes)
-    profiles = transform_profiles(operation, profiles)
     styles = _line_styles_for_profiles(operation, profiles, sources)
     for axis, profile, kwargs in zip(axes, profiles, styles, strict=True):
         coordinate = _line_coordinate(profile, operation.line_x)

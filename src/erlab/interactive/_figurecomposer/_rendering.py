@@ -317,8 +317,14 @@ def _render_into_figure(
     from erlab.interactive._figurecomposer._operations import _registry
 
     render_errors: dict[str, str] = {}
+    tool._sync_render_data_caches()
+    cache_safe = tool._render_data_cache_safe()
+    previous_cache_enabled = tool._render_data_cache_enabled
     previous_plot_slices_cache = tool._plot_slices_selection_cache
-    tool._plot_slices_selection_cache = {}
+    tool._render_data_cache_enabled = previous_cache_enabled and cache_safe
+    if not tool._render_data_cache_enabled:
+        tool._clear_render_data_caches()
+        tool._plot_slices_selection_cache = {}
     try:
         with _tool_figure_options_context(tool), _figure_style_context():
             axs = _make_axes(tool, figure, sync_visible=sync_visible)
@@ -335,7 +341,10 @@ def _render_into_figure(
                 except Exception as exc:
                     render_errors[operation.operation_id] = _render_error_text(exc)
     finally:
+        tool._render_data_cache_enabled = previous_cache_enabled
         tool._plot_slices_selection_cache = previous_plot_slices_cache
+        if not cache_safe:
+            tool._clear_render_data_caches()
     tool._set_operation_render_errors(render_errors)
 
 
@@ -378,6 +387,7 @@ def _render_preview(
     if tool._rendering:
         return
     tool._rendering = True
+    preview_captured = False
     try:
         window = _valid_figure_window(tool)
         if show_window is None:
@@ -398,8 +408,13 @@ def _render_preview(
                 _set_preview_draw_error(tool, exc)
             else:
                 tool.canvas.flush_events()
+                preview = tool._canvas_preview_pixmap(draw=False)
+                if preview is not None:
+                    tool._store_preview_pixmap(preview)
+                    preview_captured = True
         elif (window := _valid_figure_window(tool)) is not None and window.isVisible():
             window.canvas.draw_idle()
     finally:
-        tool._mark_preview_pixmap_stale()
+        if not preview_captured:
+            tool._mark_preview_pixmap_stale()
         tool._rendering = False

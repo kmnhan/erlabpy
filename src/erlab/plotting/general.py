@@ -342,10 +342,13 @@ def plot_array(
         improps.setdefault(k, v)
 
     if crop:
+        crop_indexers = {}
         if xlim is not None:
-            arr = arr.copy(deep=True).sel({arr.dims[1]: slice(*xlim)})
+            crop_indexers[arr.dims[1]] = slice(*xlim)
         if ylim is not None:
-            arr = arr.copy(deep=True).sel({arr.dims[0]: slice(*ylim)})
+            crop_indexers[arr.dims[0]] = slice(*ylim)
+        if crop_indexers:
+            arr = arr.sel(crop_indexers)
 
     if func is not None:
         arr = func(arr.copy(deep=True), **func_args)
@@ -1185,12 +1188,14 @@ def plot_slices(
                             norm = copy.deepcopy(cmap_norm[j])
                 else:
                     norm = copy.deepcopy(cmap_norm)
+                plot_array_kwargs = dict(kwargs)
+                plot_array_kwargs["crop"] = False
                 plot_array(
                     dat_sel,
                     ax=ax,
                     norm=typing.cast("plt.Normalize", norm),
                     cmap=cmap,
-                    **kwargs,
+                    **plot_array_kwargs,
                 )
 
     if len(plot_dims) == 2:

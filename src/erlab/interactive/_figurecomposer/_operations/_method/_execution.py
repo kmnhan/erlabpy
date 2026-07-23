@@ -67,6 +67,39 @@ if typing.TYPE_CHECKING:
 _TransformComponent = typing.Literal["data", "axes", "figure", "dpi"]
 
 
+def _picked_plot_render_data(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    spec: MethodSpec,
+) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
+    cache_key = tool._operation_render_cache_key(
+        operation,
+        (
+            "method_family",
+            "method_name",
+            "method_plot_data_mode",
+            "method_plot_x",
+            "method_plot_y",
+            "method_plot_xerr",
+            "method_plot_yerr",
+        ),
+    )
+
+    def prepare() -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
+        args = _picked_plot_args(tool._document.source_data, operation, spec)
+        error_kwargs = (
+            _picked_plot_error_kwargs(tool._document.source_data, operation)
+            if _is_axes_errorbar_method(spec)
+            else {}
+        )
+        return args, error_kwargs
+
+    return typing.cast(
+        "tuple[tuple[typing.Any, ...], dict[str, typing.Any]]",
+        tool._cached_render_data(("method-plot-data", cache_key), prepare),
+    )
+
+
 def _first_live_axis(
     tool: FigureComposerTool, selection: FigureAxesSelectionState
 ) -> Axes | None:
@@ -100,7 +133,7 @@ def _method_call_args(
     default_axis: Axes | None = None,
 ) -> tuple[typing.Any, ...]:
     if _is_axes_plot_method(spec) and operation.method_plot_data_mode == "from_data":
-        return _picked_plot_args(tool._document.source_data, operation, spec)
+        return _picked_plot_render_data(tool, operation, spec)[0]
     if (
         default_axis is None
         and spec.family == FigureMethodFamily.AXES
@@ -267,7 +300,7 @@ def _render_args_kwargs(
     ):
         kwargs.pop("xerr", None)
         kwargs.pop("yerr", None)
-        kwargs.update(_picked_plot_error_kwargs(tool._document.source_data, operation))
+        kwargs.update(_picked_plot_render_data(tool, operation, spec)[1])
     if _method_has_transform_control(spec):
         kwargs.pop("transform", None)
     if spec.text_values_policy == MethodTextValuesPolicy.POSITIONAL:

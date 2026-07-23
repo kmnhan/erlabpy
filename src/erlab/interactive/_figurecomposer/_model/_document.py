@@ -6,6 +6,7 @@ import collections
 import typing
 import uuid
 
+from erlab.interactive._figurecomposer._cache import _persist_dask_value
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_all_axes_ids,
@@ -125,6 +126,8 @@ class FigureDocument:
         source_data: Mapping[str, xr.DataArray] | None = None,
         source_selection_base_data: Mapping[str, xr.DataArray] | None = None,
     ) -> None:
+        self._recipe_revision = 0
+        self._source_revision = 0
         self._recipe = recipe.model_copy(
             update={"sources": self.normalized_source_states(recipe.sources)}
         )
@@ -141,6 +144,11 @@ class FigureDocument:
         return self._recipe
 
     @property
+    def recipe_revision(self) -> int:
+        """Monotonic revision for changes to the figure recipe."""
+        return self._recipe_revision
+
+    @property
     def source_data(self) -> Mapping[str, xr.DataArray]:
         """Effective source payloads used by figure operations."""
         return self._source_data
@@ -150,12 +158,18 @@ class FigureDocument:
         """Unselected parent payloads used to replay source selections."""
         return self._source_selection_base_data
 
+    @property
+    def source_revision(self) -> int:
+        """Monotonic revision for atomic source-payload replacements."""
+        return self._source_revision
+
     def replace_recipe(self, recipe: FigureRecipeState) -> bool:
         """Replace the complete recipe after validating document invariants."""
         if recipe == self._recipe:
             return False
         self._validate_operation_id_sequence(recipe.operations)
         self._recipe = recipe
+        self._recipe_revision += 1
         return True
 
     def replace_source_payloads(
@@ -168,6 +182,7 @@ class FigureDocument:
         updated_selection_base_data = dict(selection_base_data)
         self._source_data = updated_source_data
         self._source_selection_base_data = updated_selection_base_data
+        self._source_revision += 1
 
     def replace_setup(self, setup: FigureSubplotsState) -> bool:
         """Replace the complete validated figure layout setup."""
@@ -1040,7 +1055,8 @@ class FigureDocument:
     ) -> xr.DataArray:
         """Return the public source payload after applying its saved selection."""
         selected = _selected_source_data(data, source)
-        return selected.rename(data.name).copy(deep=False)
+        selected = selected.rename(data.name).copy(deep=False)
+        return typing.cast("xr.DataArray", _persist_dask_value(selected))
 
     def source_selection_input_data(self, source_name: str) -> xr.DataArray | None:
         """Return the raw input to which a source selection applies."""

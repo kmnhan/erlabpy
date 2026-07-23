@@ -48,6 +48,11 @@ import erlab.interactive._figurecomposer._codegen
 import erlab.interactive._figurecomposer._provenance
 import erlab.interactive._figurecomposer._ui._toolbar_dialogs
 import erlab.interactive._qt_state as _qt_state
+from erlab.interactive._figurecomposer._cache import (
+    _BoundedCache,
+    _operation_cache_key,
+    _persist_dask_value,
+)
 from erlab.interactive._figurecomposer._defaults import (
     _figure_draw_context,
     _figure_style_context,
@@ -358,9 +363,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._preview_render_update_pending = False
         self._preview_render_update_generation = 0
         self._operation_render_errors: dict[str, str] = {}
-        self._plot_slices_selection_cache: (
-            MutableMapping[Hashable, tuple[xr.DataArray, ...]] | None
-        ) = None
+        self._prepared_render_data = _BoundedCache()
+        self._plot_slices_selection_cache: MutableMapping[Hashable, typing.Any] = (
+            _BoundedCache(persist_dask=True)
+        )
+        self._render_cache_source_revision = -1
+        self._render_data_cache_enabled = True
+        self._last_preview_render_signature: tuple[object, ...] | None = None
         self._figure_resize_render_generation = 0
         self._figure_resize_history_pending = False
         self._figure_resize_history_timer = QtCore.QTimer(self)
@@ -430,6 +439,47 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def set_options_getter(self, getter: Callable[[], AppOptions] | None) -> None:
         self._options_getter = getter
+        self._last_preview_render_signature = None
+
+    def _sync_render_data_caches(self) -> None:
+        source_revision = self._document.source_revision
+        if source_revision == self._render_cache_source_revision:
+            return
+        self._clear_render_data_caches()
+
+    def _clear_render_data_caches(self) -> None:
+        self._prepared_render_data.clear()
+        self._plot_slices_selection_cache.clear()
+        self._render_cache_source_revision = self._document.source_revision
+
+    def _render_data_cache_safe(self) -> bool:
+        return not any(
+            operation.enabled
+            and operation.kind == FigureOperationKind.CUSTOM
+            and operation.trusted
+            and bool(operation.code.strip())
+            for operation in self._document.recipe.operations
+        )
+
+    def _cached_render_data(
+        self, key: Hashable, factory: Callable[[], typing.Any]
+    ) -> typing.Any:
+        """Return persisted prepared data reused until source or key changes."""
+        self._sync_render_data_caches()
+        if not self._render_data_cache_enabled or not self._render_data_cache_safe():
+            return factory()
+        try:
+            return self._prepared_render_data[key]
+        except KeyError:
+            value = _persist_dask_value(factory())
+            self._prepared_render_data[key] = value
+            return value
+
+    @staticmethod
+    def _operation_render_cache_key(
+        operation: FigureOperationState, fields: tuple[str, ...]
+    ) -> tuple[tuple[str, Hashable], ...]:
+        return _operation_cache_key(operation, fields)
 
     @contextlib.contextmanager
     def _figure_options_context(self) -> Iterator[None]:
@@ -593,14 +643,64 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         check = getattr(self, "auto_redraw_check", None)
         return not isinstance(check, QtWidgets.QCheckBox) or check.isChecked()
 
+    def _preview_render_signature(self) -> tuple[object, ...] | None:
+        window = self._figure_window
+        if (
+            window is None
+            or not erlab.interactive.utils.qt_is_valid(window)
+            or not window.isVisible()
+        ):
+            return None
+        if not self._render_data_cache_safe():
+            return None
+        options_signature: object = None
+        if self._options_getter is not None:
+            with contextlib.suppress(Exception):
+                options = self._options_getter()
+                options_signature = options.model_dump_json()
+        try:
+            canvas = window.canvas
+            if not erlab.interactive.utils.qt_is_valid(canvas):
+                return None
+            canvas_size = canvas.size()
+            device_pixel_ratio = canvas.devicePixelRatioF()
+        except RuntimeError:
+            return None
+        return (
+            id(window.figure),
+            self._document.recipe_revision,
+            self._document.source_revision,
+            canvas_size.width(),
+            canvas_size.height(),
+            device_pixel_ratio,
+            options_signature,
+        )
+
     def _redraw_plot(
-        self, *, show_window: bool | None = None, emit_info: bool = False
+        self,
+        *,
+        show_window: bool | None = None,
+        emit_info: bool = False,
+        force: bool = False,
     ) -> None:
         self._cancel_preview_render_update()
+        signature = self._preview_render_signature()
+        if (
+            not force
+            and not self._preview_pixmap_stale
+            and signature is not None
+            and signature == (self._last_preview_render_signature)
+        ):
+            self._auto_redraw_dirty = False
+            if emit_info:
+                self.sigInfoChanged.emit()
+            return
         if show_window is None:
             _render_preview(self)
         else:
             _render_preview(self, show_window=show_window)
+        if not self._preview_pixmap_stale:
+            self._last_preview_render_signature = self._preview_render_signature()
         self._auto_redraw_dirty = False
         if emit_info:
             self.sigInfoChanged.emit()
@@ -624,7 +724,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @QtCore.Slot()
     def _redraw_plot_requested(self) -> None:
-        self._redraw_plot(emit_info=True)
+        self._redraw_plot(emit_info=True, force=True)
 
     def _request_show_figure_window(self, *, activate: bool) -> None:
         if self._closing:
@@ -2849,7 +2949,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         previous: FigureOperationState,
         updated: FigureOperationState,
     ) -> bool:
-        return previous.enabled or updated.enabled
+        if previous.enabled != updated.enabled:
+            return True
+        if not previous.enabled:
+            return False
+        return previous.model_copy(update={"label": updated.label}) != updated
 
     def _notify_operation_changed(
         self, *, preview_affected: bool, defer_render: bool = False
@@ -4603,7 +4707,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             self.sigInfoChanged.emit()
 
-    def _canvas_preview_pixmap(self) -> QtGui.QPixmap | None:
+    def _canvas_preview_pixmap(self, *, draw: bool = True) -> QtGui.QPixmap | None:
         if self._closing or not erlab.interactive.utils.qt_is_valid(self):
             return None
         window = self._figure_window
@@ -4616,8 +4720,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             canvas = window.canvas
             if not erlab.interactive.utils.qt_is_valid(canvas):
                 return None
-            with self._figure_options_context(), _figure_style_context():
-                canvas.draw()
+            if draw:
+                with self._figure_options_context(), _figure_style_context():
+                    canvas.draw()
             width, height = canvas.get_width_height(physical=True)
             if width <= 0 or height <= 0:
                 return None
@@ -4630,6 +4735,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return QtGui.QPixmap.fromImage(image.copy())
         except Exception:
             return None
+
+    def _store_preview_pixmap(self, preview: QtGui.QPixmap) -> None:
+        self._preview_pixmap_cache = preview
+        self._preview_pixmap_generation += 1
+        self._preview_thumbnail_cache.clear()
+        self._preview_pixmap_stale = False
 
     def _fallback_preview_pixmap(self) -> QtGui.QPixmap | None:
         if self._closing or not erlab.interactive.utils.qt_is_valid(self):
@@ -4677,10 +4788,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             preview = self._fallback_preview_pixmap()
         if preview is None:
             return self._preview_pixmap_cache
-        self._preview_pixmap_cache = preview
-        self._preview_pixmap_generation += 1
-        self._preview_thumbnail_cache.clear()
-        self._preview_pixmap_stale = False
+        self._store_preview_pixmap(preview)
         return preview
 
     def _preview_thumbnail_pixmap(self, size: QtCore.QSize) -> QtGui.QPixmap | None:

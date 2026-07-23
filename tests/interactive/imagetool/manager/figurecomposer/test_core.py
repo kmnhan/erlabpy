@@ -12,6 +12,7 @@ import pytest
 import xarray as xr
 from qtpy import QtGui, QtWidgets
 
+import erlab.interactive._figurecomposer._cache as figurecomposer_cache
 import erlab.interactive._figurecomposer._model._gridspec as figurecomposer_gridspec
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._text as figurecomposer_text
@@ -134,6 +135,71 @@ def test_figure_document_replaces_source_payloads_together() -> None:
 
     assert document.source_data["data"] is data
     assert document.source_selection_base_data == {}
+
+
+def test_figure_composer_prepared_data_cache_is_bounded_and_persists_dask() -> None:
+    import dask
+    import dask.array as da
+
+    cache = figurecomposer_cache._BoundedCache(max_entries=2, max_bytes=32)
+    cache["first"] = np.arange(2.0)
+    cache["second"] = np.arange(2.0)
+    assert cache["first"].tolist() == [0.0, 1.0]
+    cache["third"] = np.arange(2.0)
+    assert list(cache) == ["first", "third"]
+
+    cache["first"] = np.arange(10.0)
+    assert cache["first"].tolist() == [0.0, 1.0]
+
+    compute_calls: list[None] = []
+
+    @dask.delayed
+    def load_values() -> np.ndarray:
+        compute_calls.append(None)
+        return np.arange(4.0)
+
+    lazy = xr.DataArray(
+        da.from_delayed(load_values(), shape=(4,), dtype=float),
+        dims="x",
+        name="lazy",
+    )
+    persisted_cache = figurecomposer_cache._BoundedCache(
+        max_entries=2, max_bytes=1024, persist_dask=True
+    )
+    with dask.config.set(scheduler="synchronous"):
+        persisted_cache["lazy"] = lazy
+        np.testing.assert_allclose(persisted_cache["lazy"].values, np.arange(4.0))
+        np.testing.assert_allclose(persisted_cache["lazy"].values, np.arange(4.0))
+    assert compute_calls == [None]
+
+
+def test_figure_document_persists_selected_dask_source() -> None:
+    import dask
+    import dask.array as da
+
+    compute_calls: list[None] = []
+
+    @dask.delayed
+    def load_values() -> np.ndarray:
+        compute_calls.append(None)
+        return np.arange(12.0).reshape(3, 4)
+
+    lazy = xr.DataArray(
+        da.from_delayed(load_values(), shape=(3, 4), dtype=float),
+        dims=("x", "y"),
+        coords={"x": np.arange(3.0), "y": np.arange(4.0)},
+        name="lazy",
+    )
+    selected_source = FigureSourceState(
+        name="selected",
+        selection_source="lazy",
+        qsel={"x": 1.0},
+    )
+    with dask.config.set(scheduler="synchronous"):
+        selected = FigureDocument.source_data_from_selection(lazy, selected_source)
+        np.testing.assert_allclose(selected.values, np.arange(4.0, 8.0))
+        np.testing.assert_allclose(selected.values, np.arange(4.0, 8.0))
+    assert compute_calls == [None]
 
 
 def test_figure_document_replaces_only_valid_layout_setup() -> None:
@@ -1097,6 +1163,49 @@ def test_figure_composer_redraw_and_preview_cache_edges(qtbot, monkeypatch) -> N
         restored._preview_pixmap_stale
         == saved.attrs[figurecomposer_tool_module._PERSISTED_PREVIEW_CACHE_STALE_ATTR]
     )
+
+
+def test_figure_composer_visible_redraw_draws_once_and_skips_unchanged(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+
+    canvas = tool.figure_window.canvas
+    original_draw = canvas.draw
+    draw_calls: list[None] = []
+
+    def record_draw() -> None:
+        draw_calls.append(None)
+        original_draw()
+
+    monkeypatch.setattr(canvas, "draw", record_draw)
+
+    tool._redraw_plot(force=True)
+    assert draw_calls == [None]
+    assert not tool.preview_pixmap_stale
+
+    tool._redraw_plot()
+    assert draw_calls == [None]
+
+    tool._mark_preview_pixmap_stale()
+    tool._redraw_plot()
+    assert draw_calls == [None, None]
+
+    operation = tool.tool_status.operations[0]
+    tool._document.replace_operation(0, operation.model_copy(update={"cmap": "plasma"}))
+    tool._redraw_plot()
+    assert draw_calls == [None, None, None]
+
+    tool._redraw_plot(force=True)
+    assert draw_calls == [None, None, None, None]
 
 
 def test_figure_composer_preview_draw_error_ignores_missing_operation(qtbot) -> None:

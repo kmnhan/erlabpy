@@ -934,11 +934,20 @@ def test_figure_composer_plot_array_render_and_generated_code(
     )
     qtbot.addWidget(tool)
     captured: list[tuple[xr.DataArray, dict[str, typing.Any]]] = []
+    preparation_calls: list[None] = []
+    original_selected_data = figurecomposer_plot_array._selected_plot_array_data
 
     def capture_plot_array(arr, **kwargs):
         captured.append((arr, kwargs))
 
+    def counted_selected_data(*args, **kwargs):
+        preparation_calls.append(None)
+        return original_selected_data(*args, **kwargs)
+
     monkeypatch.setattr(eplt, "plot_array", capture_plot_array)
+    monkeypatch.setattr(
+        figurecomposer_plot_array, "_selected_plot_array_data", counted_selected_data
+    )
     figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
 
     assert len(captured) == 1
@@ -959,6 +968,17 @@ def test_figure_composer_plot_array_render_and_generated_code(
     assert "eplt.plot_array(data_selected.T" in code
     namespace = _exec_generated_code(code, {"data": data})
     assert "fig" in namespace
+
+    preparation_calls.clear()
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    styled = tool.tool_status.operations[0].model_copy(update={"cmap": "viridis"})
+    tool._document.replace_operation(0, styled)
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert preparation_calls == []
+
+    tool._document.replace_source_payloads({"data": data + 1.0}, {})
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert preparation_calls == [None]
 
 
 def test_figure_composer_plot_array_aspect_control_updates_recipe(qtbot) -> None:
@@ -1325,7 +1345,7 @@ def test_figure_composer_plot_array_helper_edges(qtbot, monkeypatch) -> None:
         lambda arr, **kwargs: rendered.append((arr, kwargs)),
     )
     figurecomposer_plot_array._render_plot_array(
-        empty_tool,
+        base_tool,
         FigureOperationState.plot_array(label="missing", source="missing"),
         None,
     )
