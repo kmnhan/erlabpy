@@ -205,7 +205,10 @@ class _PendingWorkspacePayloads:
         loaded_coords = {
             key: coord.copy(deep=False).load() for key, coord in data.coords.items()
         }
-        return data.copy(deep=False).assign_coords(loaded_coords)
+        loaded = data.copy(deep=False).assign_coords(loaded_coords)
+        return erlab.utils.array.sort_coord_order(
+            loaded, tuple(data.coords), dims_first=False
+        )
 
     def _pending_workspace_imagetool_metadata_data(
         self, node: _ImageToolWrapper | _ManagedWindowNode
