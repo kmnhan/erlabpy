@@ -8,6 +8,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.plotting as eplt
+from erlab.interactive._figurecomposer._cache import _freeze_cache_value
 from erlab.interactive._figurecomposer._code import _axes_code, _maybe_squeeze_drop_code
 from erlab.interactive._figurecomposer._model._gridspec import _gridspec_valid_axes_ids
 from erlab.interactive._figurecomposer._model._sources import (
@@ -52,9 +53,10 @@ from erlab.interactive._figurecomposer._ui._editor_controls import (
     ComboBoxDataControlAdapter,
 )
 from erlab.interactive._figurecomposer._ui._operation_editor import StepSection
+from erlab.plotting.general import _prepare_plot_array_data
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Hashable
+    from collections.abc import Callable
 
     import matplotlib.axes
     import xarray as xr
@@ -248,10 +250,21 @@ def _plot_array_kwargs(operation: FigureOperationState) -> dict[str, typing.Any]
 def _render_plot_array(
     tool: FigureComposerTool, operation: FigureOperationState, axs: typing.Any
 ) -> None:
-    cache_fields = ("sources", "transpose", "crop")
-    if operation.crop:
-        cache_fields += ("xlim", "ylim")
-    cache_key = tool._operation_render_cache_key(operation, cache_fields)
+    kwargs = _plot_array_kwargs(operation)
+    xlim = typing.cast(
+        "float | tuple[float | None, float | None] | None", kwargs.get("xlim")
+    )
+    ylim = typing.cast(
+        "float | tuple[float | None, float | None] | None", kwargs.get("ylim")
+    )
+    crop = typing.cast("bool", kwargs.get("crop", False))
+    rad2deg = typing.cast(
+        "bool | tuple[str, ...] | list[str]", kwargs.get("rad2deg", False)
+    )
+    cache_key = (
+        tool._operation_render_cache_key(operation, ("sources", "transpose")),
+        _freeze_cache_value((xlim, ylim, crop, rad2deg)),
+    )
 
     def prepare_data() -> xr.DataArray | None:
         data = _selected_plot_array_data(tool._document, operation)
@@ -259,24 +272,14 @@ def _render_plot_array(
             return None
         if operation.transpose:
             data = data.T
-        if not operation.crop:
-            return data
-        indexers: dict[Hashable, slice] = {}
-        if operation.xlim is not None:
-            limit = (
-                operation.xlim
-                if isinstance(operation.xlim, tuple)
-                else (-operation.xlim, operation.xlim)
-            )
-            indexers[data.dims[1]] = slice(*limit)
-        if operation.ylim is not None:
-            limit = (
-                operation.ylim
-                if isinstance(operation.ylim, tuple)
-                else (-operation.ylim, operation.ylim)
-            )
-            indexers[data.dims[0]] = slice(*limit)
-        return data.sel(indexers) if indexers else data
+        prepared, _xlim, _ylim = _prepare_plot_array_data(
+            data,
+            xlim=xlim,
+            ylim=ylim,
+            crop=crop,
+            rad2deg=rad2deg,
+        )
+        return prepared
 
     data = typing.cast(
         "xr.DataArray | None",
@@ -289,9 +292,8 @@ def _render_plot_array(
     axis = _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
     if isinstance(axis, (list, tuple)) or hasattr(axis, "flat"):
         raise ValueError("Image Plot requires exactly one target axis")
-    kwargs = _plot_array_kwargs(operation)
-    if operation.crop:
-        kwargs["crop"] = False
+    kwargs["crop"] = False
+    kwargs["rad2deg"] = False
     image = eplt.plot_array(
         data,
         ax=typing.cast("matplotlib.axes.Axes", axis),

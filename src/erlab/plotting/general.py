@@ -223,6 +223,52 @@ def _imshow_nonuniform(
     return im
 
 
+def _plot_array_rad2deg_dims(
+    arr: xr.DataArray, rad2deg: bool | Iterable[str]
+) -> tuple[str, ...]:
+    if rad2deg is False:
+        return ()
+    if np.iterable(rad2deg):
+        return tuple(rad2deg)
+    return tuple(
+        dim for dim in ["phi", "theta", "beta", "alpha", "chi"] if dim in arr.dims
+    )
+
+
+def _prepare_plot_array_data(
+    arr: xr.DataArray,
+    *,
+    xlim: float | tuple[float | None, float | None] | None,
+    ylim: float | tuple[float | None, float | None] | None,
+    crop: bool,
+    rad2deg: bool | Iterable[str],
+) -> tuple[
+    xr.DataArray,
+    tuple[float | None, float | None] | None,
+    tuple[float | None, float | None] | None,
+]:
+    """Apply coordinate conversion and cropping in plot display coordinates."""
+    if xlim is not None and not isinstance(xlim, Iterable):
+        xlim = (-xlim, xlim)
+    if ylim is not None and not isinstance(ylim, Iterable):
+        ylim = (-ylim, ylim)
+
+    conv_dims = _plot_array_rad2deg_dims(arr, rad2deg)
+    if conv_dims:
+        arr = arr.assign_coords({dim: np.rad2deg(arr[dim]) for dim in conv_dims})
+
+    if crop:
+        crop_indexers = {}
+        if xlim is not None:
+            crop_indexers[arr.dims[1]] = slice(*xlim)
+        if ylim is not None:
+            crop_indexers[arr.dims[0]] = slice(*ylim)
+        if crop_indexers:
+            arr = arr.sel(crop_indexers)
+
+    return arr, xlim, ylim
+
+
 def plot_array(
     arr: xr.DataArray,
     ax: matplotlib.axes.Axes | None = None,
@@ -307,20 +353,13 @@ def plot_array(
     if ax is None:
         ax = plt.gca()
 
-    if xlim is not None and not isinstance(xlim, Iterable):
-        xlim = (-xlim, xlim)
-
-    if ylim is not None and not isinstance(ylim, Iterable):
-        ylim = (-ylim, ylim)
-
-    if rad2deg is not False:
-        if np.iterable(rad2deg):
-            conv_dims = rad2deg
-        else:
-            conv_dims = [
-                d for d in ["phi", "theta", "beta", "alpha", "chi"] if d in arr.dims
-            ]
-        arr = arr.assign_coords({d: np.rad2deg(arr[d]) for d in conv_dims})
+    arr, xlim, ylim = _prepare_plot_array_data(
+        arr,
+        xlim=xlim,
+        ylim=ylim,
+        crop=crop,
+        rad2deg=rad2deg,
+    )
 
     norm_kw = {}
     if "vmin" in improps:
@@ -340,15 +379,6 @@ def plot_array(
     improps_default = {"aspect": "auto", "origin": "lower", "rasterized": rasterized}
     for k, v in improps_default.items():
         improps.setdefault(k, v)
-
-    if crop:
-        crop_indexers = {}
-        if xlim is not None:
-            crop_indexers[arr.dims[1]] = slice(*xlim)
-        if ylim is not None:
-            crop_indexers[arr.dims[0]] = slice(*ylim)
-        if crop_indexers:
-            arr = arr.sel(crop_indexers)
 
     if func is not None:
         arr = func(arr.copy(deep=True), **func_args)
@@ -951,6 +981,12 @@ def plot_slices(
 
     kwargs = values.copy()
 
+    rad2deg = typing.cast("bool | Iterable[str]", kwargs.get("rad2deg", False))
+    if rad2deg is not False and np.iterable(rad2deg):
+        rad2deg = tuple(rad2deg)
+        kwargs["rad2deg"] = rad2deg
+    converted_dims = set(_plot_array_rad2deg_dims(maps[0], rad2deg))
+
     plot_dims: list[str] = [str(d) for d in dims if d not in sel_dims]
 
     if len(plot_dims) not in (1, 2):
@@ -1019,10 +1055,22 @@ def plot_slices(
 
         elif len(plot_dims) == 2:
             if xlim is not None:
-                qsel_kw[plot_dims[1]] = slice(*xlim)
+                xlim_selection = xlim
+                if plot_dims[1] in converted_dims:
+                    xlim_selection = tuple(
+                        None if value is None else float(np.deg2rad(value))
+                        for value in xlim
+                    )
+                qsel_kw[plot_dims[1]] = slice(*xlim_selection)
 
             if ylim is not None:
-                qsel_kw[plot_dims[0]] = slice(*ylim)
+                ylim_selection = ylim
+                if plot_dims[0] in converted_dims:
+                    ylim_selection = tuple(
+                        None if value is None else float(np.deg2rad(value))
+                        for value in ylim
+                    )
+                qsel_kw[plot_dims[0]] = slice(*ylim_selection)
 
     if slice_width is not None and slice_dim is not None:
         if isinstance(slice_width, Collection):
@@ -1190,7 +1238,7 @@ def plot_slices(
                 else:
                     norm = copy.deepcopy(cmap_norm)
                 plot_array_kwargs = dict(kwargs)
-                plot_array_kwargs["crop"] = False
+                plot_array_kwargs["crop"] = crop
                 plot_array(
                     dat_sel,
                     ax=ax,

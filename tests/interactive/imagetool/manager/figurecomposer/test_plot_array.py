@@ -981,6 +981,66 @@ def test_figure_composer_plot_array_render_and_generated_code(
     assert preparation_calls == [None]
 
 
+def test_figure_composer_plot_array_caches_conversion_aware_crop(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(63.0).reshape(7, 9),
+        dims=("beta", "alpha"),
+        coords={
+            "beta": np.deg2rad(np.linspace(-60.0, 60.0, 7)),
+            "alpha": np.deg2rad(np.linspace(-80.0, 80.0, 9)),
+        },
+        name="data",
+    )
+    operation = FigureOperationState.plot_array(
+        label="plot_array", source="data"
+    ).model_copy(
+        update={
+            "crop": True,
+            "xlim": (-30.0, 30.0),
+            "ylim": (-30.0, 30.0),
+            "extra_kwargs": {"rad2deg": True},
+        }
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(operation,),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+
+    preparation_calls: list[bool] = []
+    original_prepare = figurecomposer_plot_array._prepare_plot_array_data
+
+    def counted_prepare(*args, **kwargs):
+        preparation_calls.append(kwargs["rad2deg"])
+        return original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(
+        figurecomposer_plot_array, "_prepare_plot_array_data", counted_prepare
+    )
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    assert preparation_calls == [True]
+    assert tool.figure.axes[0].images[0].get_array().shape == (3, 3)
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    assert preparation_calls == [True]
+
+    updated = tool.tool_status.operations[0].model_copy(
+        update={"extra_kwargs": {"rad2deg": False}}
+    )
+    tool._document.replace_operation(0, updated)
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    assert preparation_calls == [True, False]
+    assert tool.figure.axes[0].images[0].get_array().shape == (7, 9)
+
+
 def test_figure_composer_plot_array_aspect_control_updates_recipe(qtbot) -> None:
     data = _figure_composer_image_source("data").isel(eV=0)
     operation = FigureOperationState.plot_array(

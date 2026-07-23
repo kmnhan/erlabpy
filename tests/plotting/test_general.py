@@ -630,6 +630,32 @@ def test_plot_slices_with_2d_and_crop_and_limits():
     plt.close(fig)
 
 
+def test_plot_slices_crops_after_radian_coordinate_conversion() -> None:
+    data = xr.DataArray(
+        np.arange(63.0).reshape(1, 7, 9),
+        dims=("eV", "beta", "alpha"),
+        coords={
+            "eV": [0.0],
+            "beta": np.deg2rad(np.linspace(-60.0, 60.0, 7)),
+            "alpha": np.deg2rad(np.linspace(-80.0, 80.0, 9)),
+        },
+    )
+
+    fig, axes = plot_slices(
+        data,
+        eV=[0.0],
+        crop=True,
+        xlim=(10.0, 50.0),
+        ylim=(-30.0, 30.0),
+        rad2deg=True,
+    )
+
+    assert axes[0, 0].images[0].get_array().shape == (3, 2)
+    assert axes[0, 0].get_xlim() == (10.0, 50.0)
+    assert axes[0, 0].get_ylim() == (-30.0, 30.0)
+    plt.close(fig)
+
+
 def test_plot_slices_with_annotate_false():
     x = np.linspace(0, 1, 8)
     y = np.linspace(0, 1, 8)
