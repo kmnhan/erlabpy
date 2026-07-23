@@ -1612,9 +1612,8 @@ def test_ptable_cross_section_plot_keeps_minimum_height_when_window_shrinks(
         win.inspector.cross_section_plot.plot_widget.height()
         >= CrossSectionPlot._PLOT_WIDGET_MIN_HEIGHT
     )
-    assert (
-        win.inspector.cross_section_plot.visibleRegion().boundingRect().height()
-        >= win.inspector.cross_section_plot.plot_widget.height()
+    assert win.inspector.cross_section_plot.rect().contains(
+        win.inspector.cross_section_plot.plot_widget.geometry()
     )
 
     win.close()
