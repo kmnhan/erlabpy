@@ -708,7 +708,17 @@ def test_ptable_launcher_and_search_highlight(
         win.periodic_table.palette().color(QtGui.QPalette.ColorRole.Window)
         == win._theme.table_surface
     )
-    assert win._theme.table_surface.lightness() > win._theme.window.lightness()
+    app = QtWidgets.QApplication.instance()
+    assert app is not None
+    app_palette = app.palette()
+    assert win._theme.panel == app_palette.color(QtGui.QPalette.ColorRole.Window)
+    assert win._theme.panel_alt == app_palette.color(QtGui.QPalette.ColorRole.Button)
+    assert win._theme.table_surface == app_palette.color(QtGui.QPalette.ColorRole.Base)
+    assert win._theme.input_bg == app_palette.color(QtGui.QPalette.ColorRole.Base)
+    assert win._theme.border == app_palette.color(QtGui.QPalette.ColorRole.Mid)
+    assert win._theme.muted_text == app_palette.color(
+        QtGui.QPalette.ColorRole.PlaceholderText
+    )
     assert win.category_legend.parent() is win.periodic_table
     periodic_table_layout = win.periodic_table.layout()
     assert periodic_table_layout is not None
@@ -1110,7 +1120,7 @@ def test_ptable_launcher_and_search_highlight(
         assert separator.autoFillBackground() is True
         assert (
             separator.palette().color(QtGui.QPalette.ColorRole.Window)
-            == win._theme.border_soft
+            == win._theme.border
         )
     assert win.inspector.plot_frame.minimumWidth() == 320
     assert win.inspector.plot_frame.maximumWidth() == 320
@@ -1147,6 +1157,10 @@ def test_ptable_dark_mode_theme(
     original_palette = QtGui.QPalette(app.palette())
     app.setPalette(_dark_palette())
     try:
+        reference_table = QtWidgets.QTableWidget()
+        qtbot.addWidget(reference_table)
+        reference_table.ensurePolished()
+
         win = PeriodicTableWindow()
         _show_window(qtbot, win)
 
@@ -1167,11 +1181,16 @@ def test_ptable_dark_mode_theme(
             win.periodic_table.palette().color(QtGui.QPalette.ColorRole.Window)
             == win._theme.table_surface
         )
-        assert win._theme.table_surface.lightness() < win._theme.window.lightness()
-        assert (
-            win.inspector.levels_table.palette().color(QtGui.QPalette.ColorRole.Base)
-            == win._theme.panel
+        assert win._theme.table_surface == app.palette().color(
+            QtGui.QPalette.ColorRole.Base
         )
+        for role in (
+            QtGui.QPalette.ColorRole.Base,
+            QtGui.QPalette.ColorRole.AlternateBase,
+        ):
+            assert win.inspector.levels_table.palette().color(
+                role
+            ) == reference_table.palette().color(role)
         assert (
             win.inspector.cross_section_plot.plot_widget.backgroundBrush()
             .color()
@@ -1593,9 +1612,8 @@ def test_ptable_cross_section_plot_keeps_minimum_height_when_window_shrinks(
         win.inspector.cross_section_plot.plot_widget.height()
         >= CrossSectionPlot._PLOT_WIDGET_MIN_HEIGHT
     )
-    assert (
-        win.inspector.cross_section_plot.visibleRegion().boundingRect().height()
-        >= win.inspector.cross_section_plot.plot_widget.height()
+    assert win.inspector.cross_section_plot.rect().contains(
+        win.inspector.cross_section_plot.plot_widget.geometry()
     )
 
     win.close()

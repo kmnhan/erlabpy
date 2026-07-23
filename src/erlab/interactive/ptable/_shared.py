@@ -50,7 +50,6 @@ class ThemeColors:
     table_surface: QtGui.QColor
     input_bg: QtGui.QColor
     border: QtGui.QColor
-    border_soft: QtGui.QColor
     text: QtGui.QColor
     muted_text: QtGui.QColor
     disabled_text: QtGui.QColor
@@ -287,6 +286,7 @@ def _theme_colors() -> ThemeColors:
     palette = QtWidgets.QApplication.palette()
     window = palette.color(QtGui.QPalette.ColorRole.Window)
     base = palette.color(QtGui.QPalette.ColorRole.Base)
+    button = palette.color(QtGui.QPalette.ColorRole.Button)
     text = palette.color(QtGui.QPalette.ColorRole.WindowText)
     border_source = palette.color(QtGui.QPalette.ColorRole.Mid)
     accent = _palette_accent(palette)
@@ -299,21 +299,11 @@ def _theme_colors() -> ThemeColors:
     palette_is_dark = text.lightness() > window.lightness()
     is_dark = erlab.interactive.colors.is_dark_mode() or palette_is_dark
 
-    muted_text = (
-        placeholder
-        if placeholder.isValid() and placeholder != text
-        else _blend_colors(text, window, 0.42 if is_dark else 0.5)
-    )
-    panel = _blend_colors(base, text, 0.06 if is_dark else 0.015)
-    panel_alt = _blend_colors(window, text, 0.12 if is_dark else 0.03)
-    table_surface = _blend_colors(
-        window,
-        QtGui.QColor("#000000") if is_dark else QtGui.QColor("#ffffff"),
-        0.14 if is_dark else 0.34,
-    )
-    input_bg = _blend_colors(base, text, 0.03 if is_dark else 0.0)
-    border = _blend_colors(border_source, text, 0.18 if is_dark else 0.08)
-    border_soft = _blend_colors(border, panel, 0.35 if is_dark else 0.25)
+    panel = window
+    panel_alt = button
+    table_surface = base
+    input_bg = base
+    border = border_source
     hover_accent = _blend_colors(accent, QtGui.QColor("#14b8a6"), 0.35)
     search_accent = _blend_colors(accent, QtGui.QColor("#f59e0b"), 0.55)
     invalid_border = _blend_colors(accent, QtGui.QColor("#ef4444"), 0.85)
@@ -360,9 +350,8 @@ def _theme_colors() -> ThemeColors:
         table_surface=table_surface,
         input_bg=input_bg,
         border=border,
-        border_soft=border_soft,
         text=text,
-        muted_text=muted_text,
+        muted_text=placeholder,
         disabled_text=disabled,
         accent=accent,
         hover_accent=hover_accent,
