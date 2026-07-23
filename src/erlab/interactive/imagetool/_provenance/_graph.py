@@ -501,6 +501,7 @@ def _validate_script_provenance(
     has_replay_step = False
     active_available = spec.active_name in available_names
     current_name: str | None = spec.active_name if active_available else None
+
     if spec.seed_code:
         has_replay_step = True
         if strict_replay_code:
@@ -589,6 +590,9 @@ def _validate_script_provenance(
             current_name = preferred_name
             available_names.add(preferred_name)
             active_available = preferred_name == spec.active_name
+        elif index == len(spec.operations) - 1:
+            current_name = spec.active_name
+            active_available = True
         else:
             active_available = active_available or current_name == spec.active_name
     if not has_replay_step:
@@ -1214,11 +1218,15 @@ def _compile_spec(
                 )
                 if pending_output_name is None:  # pragma: no cover - validation guard.
                     raise ReplayGraphError("Script provenance has no replay code")
+                operation_name = (
+                    active_name if index == len(operations) - 1 else pending_output_name
+                )
                 pending_codes.append(
                     _operation_replay_code(
                         operation,
-                        active_name=pending_output_name,
+                        active_name=operation_name,
                         context_name=pending_output_name,
+                        parent_name=pending_output_name,
                         reserved_names=graph.reserved_names,
                     )
                 )

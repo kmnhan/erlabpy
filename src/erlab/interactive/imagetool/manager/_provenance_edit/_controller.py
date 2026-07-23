@@ -326,6 +326,26 @@ class _ProvenanceEditController:
                     return names
         return ()
 
+    def _script_spec_replayable_for_node(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        spec: ToolProvenanceSpec,
+    ) -> bool:
+        external_input_names = set(self._script_replay_source_input_names(spec))
+        if external_input_names and not node.has_replay_source:
+            return False
+        if external_input_names:
+            return script_provenance_replayable(
+                spec,
+                external_input_names=external_input_names,
+            ) or script_provenance_requires_trust(
+                spec,
+                external_input_names=external_input_names,
+            )
+        return script_provenance_replayable(spec) or script_provenance_requires_trust(
+            spec
+        )
+
     def can_reorder_steps(self) -> tuple[bool, str]:
         node = self._metadata_node()
         if not self._node_editable(node):
@@ -664,10 +684,7 @@ class _ProvenanceEditController:
                     )
             except (IndexError, ValueError):
                 return False, "This script row is not a replayable step."
-            if not (
-                script_provenance_replayable(candidate)
-                or script_provenance_requires_trust(candidate)
-            ):
+            if not self._script_spec_replayable_for_node(node, candidate):
                 return False, "Deleting this script step would make replay invalid."
         if spec.kind in {"full_data", "public_data", "selection"}:
             if row.scope == "source" and node.parent_uid is not None:
@@ -715,10 +732,7 @@ class _ProvenanceEditController:
                 return True, ""
         if spec.kind == "script":
             input_spec = spec._prefix_before_ref(row.edit_ref)
-            if not (
-                script_provenance_replayable(input_spec)
-                or script_provenance_requires_trust(input_spec)
-            ):
+            if not self._script_spec_replayable_for_node(node, input_spec):
                 return False, "This script step cannot be replayed."
         active_filter_ref = self._active_filter_ref(node, spec)
         if (
@@ -771,10 +785,7 @@ class _ProvenanceEditController:
         if candidate == spec:
             return False, "Already at this provenance step."
         if spec.kind == "script":
-            if not (
-                script_provenance_replayable(candidate)
-                or script_provenance_requires_trust(candidate)
-            ):
+            if not self._script_spec_replayable_for_node(node, candidate):
                 return False, "This script step cannot be replayed."
             if not all(
                 self._manager._script_input_can_reload(

@@ -132,6 +132,28 @@ def _file_spec(path: pathlib.Path | str, *, selected_index: int = 0):
     )
 
 
+def test_script_compiler_assigns_final_output_after_pending_seed() -> None:
+    data = xr.DataArray(
+        np.arange(3.0)[None, :],
+        dims=("singleton", "x"),
+    )
+    spec = script(
+        SqueezeOperation(),
+        start_label="Start from data",
+        seed_code="intermediate = data",
+        active_name="result",
+    )
+
+    assert script_provenance_replayable(
+        spec,
+        external_input_names={"data"},
+    )
+    xr.testing.assert_identical(
+        replay_script_provenance(spec, {"data": data}),
+        data.squeeze(),
+    )
+
+
 def _erlab_file_spec(path: pathlib.Path | str, loader: str):
     return file_load(
         start_label=f"Load {path}",

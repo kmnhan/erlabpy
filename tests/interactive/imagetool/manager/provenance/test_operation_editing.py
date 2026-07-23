@@ -10,6 +10,12 @@ from qtpy import QtCore, QtWidgets
 import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
+from erlab.interactive._fit1d import Fit1DTool
+from erlab.interactive._fit2d import Fit2DTool
+from erlab.interactive._mesh import MeshTool
+from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.fermiedge import GoldTool, ResolutionTool
+from erlab.interactive.imagetool import _kspace_conversion
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
     ToolProvenanceOperation,
@@ -20,20 +26,29 @@ from erlab.interactive.imagetool._provenance._model import (
     full_data,
     script,
     selection,
+    stamp_operation_group,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AffineCoordOperation,
     DivideByCoordOperation,
     GaussianFilterOperation,
+    ImageDerivativeOperation,
     IselOperation,
+    KspaceConfigurationOperation,
+    KspaceConvertOperation,
+    KspaceSetNormalOperation,
     LeadingEdgeOperation,
+    ModelFitOperation,
     NormalizeOperation,
     QSelAggregationOperation,
     QSelOperation,
+    RemoveMeshOperation,
     ScriptCodeOperation,
     SelOperation,
     SortByOperation,
     TransposeOperation,
+    UniformInterpolationOperation,
+    _ModelFitParameterSpec,
 )
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager._provenance_edit import (
@@ -42,6 +57,7 @@ from erlab.interactive.imagetool.manager._provenance_edit import (
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _editors as provenance_editors,
 )
+from erlab.interactive.kspace import KspaceTool
 
 from ._common import (
     _fake_edit_controller,
@@ -1424,3 +1440,213 @@ def test_tool_provenance_spec_row_reference_helpers_cover_edge_branches() -> Non
     assert file_spec._operation_for_ref(stage_ref) == sel
     assert file_spec._prefix_through_ref(_ProvenanceStepRef("file_load")).steps == ()
     assert file_spec._prefix_before_ref(stage_ref).operations == (isel,)
+
+
+def _analysis_tool_provenance_cases() -> tuple[
+    tuple[
+        str,
+        type,
+        tuple[ToolProvenanceOperation, ...],
+        str,
+    ],
+    ...,
+]:
+    kspace_operations = stamp_operation_group(
+        (
+            KspaceConfigurationOperation(configuration=2),
+            KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
+            KspaceConvertOperation(bounds=None, resolution=None),
+        ),
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    )
+    model_fit = ModelFitOperation(
+        fit_dim="x",
+        model="PolynomialModel",
+        model_kwargs={"degree": 1},
+        parameters={
+            "c0": _ModelFitParameterSpec(value=0.0),
+            "c1": _ModelFitParameterSpec(value=1.0),
+        },
+        method="leastsq",
+        parameter="c1",
+        output="value",
+    )
+    remove_mesh = RemoveMeshOperation(
+        first_order_peaks=((5, 5), (5, 7), (5, 3)),
+        order=1,
+        n_pad=0,
+        roi_hw=2,
+        output="corrected",
+    )
+    return (
+        (
+            DerivativeTool.tool_name,
+            DerivativeTool,
+            (
+                UniformInterpolationOperation(sizes={"x": 5}),
+                GaussianFilterOperation(sigma={"x": 1.0}),
+                ImageDerivativeOperation(
+                    method="diffn",
+                    kwargs={"coord": "x", "order": 2},
+                ),
+                TransposeOperation(),
+            ),
+            "result",
+        ),
+        (
+            KspaceTool.tool_name,
+            KspaceTool,
+            kspace_operations,
+            "converted",
+        ),
+        (
+            GoldTool.tool_name,
+            GoldTool,
+            (
+                ScriptCodeOperation(
+                    label="Fit and correct current data",
+                    code="corrected = derived",
+                ),
+            ),
+            "corrected",
+        ),
+        (
+            ResolutionTool.tool_name,
+            ResolutionTool,
+            (
+                ScriptCodeOperation(
+                    label="Fit the current averaged edge distribution",
+                    code="result = derived",
+                ),
+            ),
+            "result",
+        ),
+        (
+            Fit1DTool.tool_name,
+            Fit1DTool,
+            (
+                ScriptCodeOperation(
+                    label="Fit current data with the current model",
+                    code="result = derived",
+                ),
+            ),
+            "result",
+        ),
+        (
+            Fit2DTool.tool_name,
+            Fit2DTool,
+            (
+                IselOperation(kwargs={"y": slice(0, 3)}),
+                model_fit,
+            ),
+            "parameter_values",
+        ),
+        (
+            f"{Fit2DTool.tool_name}-stderr",
+            Fit2DTool,
+            (
+                IselOperation(kwargs={"y": slice(0, 3)}),
+                model_fit.model_copy(update={"output": "stderr"}),
+            ),
+            "parameter_stderr",
+        ),
+        (
+            f"{MeshTool.tool_name}-corrected",
+            MeshTool,
+            (remove_mesh,),
+            "corrected",
+        ),
+        (
+            f"{MeshTool.tool_name}-mesh",
+            MeshTool,
+            (remove_mesh.model_copy(update={"output": "mesh"}),),
+            "mesh",
+        ),
+    )
+
+
+@pytest.mark.parametrize("file_backed", [False, True], ids=["memory", "file"])
+@pytest.mark.parametrize(
+    ("case_name", "tool_cls", "operations", "active_name"),
+    _analysis_tool_provenance_cases(),
+    ids=[case[0] for case in _analysis_tool_provenance_cases()],
+)
+def test_analysis_tool_provenance_prefixes_are_editable_and_replayable(
+    case_name: str,
+    tool_cls: type,
+    operations: tuple[ToolProvenanceOperation, ...],
+    active_name: str,
+    file_backed: bool,
+) -> None:
+    assert tool_cls.COPY_PROVENANCE is not None
+    file_spec = _manager_provenance_file_spec(pathlib.Path("scan.h5"))
+    seed_code = (
+        typing.cast("str", file_spec.seed_code) if file_backed else "derived = data"
+    )
+    file_load_source = file_spec.file_load_source if file_backed else None
+    if file_load_source is not None:
+        file_load_source = file_load_source.model_copy(
+            update={"load_code": seed_code.replace("derived =", "data =", 1)}
+        )
+    spec = script(
+        *operations,
+        start_label=f"Start from current {case_name} input data",
+        seed_code=seed_code,
+        active_name=active_name,
+        file_load_source=file_load_source,
+    )
+    node = _fake_edit_node(spec)
+    if not file_backed:
+        node.replay_source_data = xr.DataArray(
+            np.arange(5.0),
+            dims=("x",),
+        )
+        node.has_replay_source = True
+    controller = _fake_edit_controller(node)
+
+    rows = list(spec.display_rows())
+    for row in rows:
+        rows.extend(row.children)
+
+    for row in rows:
+        if row.replay_ref is not None:
+            prefix = spec._prefix_through_ref(row.replay_ref)
+            assert controller._script_spec_replayable_for_node(node, prefix), (
+                f"{case_name} row {row.replay_ref!r} has a non-replayable prefix"
+            )
+        if row.edit_ref is None:
+            continue
+        if row.edit_ref.kind == "file_load":
+            should_be_editable = True
+        else:
+            operation = spec._operation_for_ref(row.edit_ref)
+            should_be_editable = (
+                isinstance(operation, ScriptCodeOperation)
+                and operation.copyable
+                and operation.code is not None
+            ) or provenance_editors._dialog_match_for_operation_ref(
+                spec,
+                row.edit_ref,
+            ) is not None
+        if should_be_editable:
+            assert controller.can_edit_row(row) == (True, "")
+        if row.replay_ref is None or row.replay_ref.kind != "operation":
+            continue
+        group = provenance_edit_controller._editable_group_range_for_ref(
+            spec,
+            row.replay_ref,
+        )
+        if group is None:
+            deletion_candidate = spec._replace_operation_ref(row.replay_ref, ())
+        else:
+            deletion_candidate = spec._replace_operation_range_ref(
+                row.replay_ref,
+                group[0],
+                group[1],
+                (),
+            )
+        should_be_deletable = controller._script_spec_replayable_for_node(
+            node,
+            deletion_candidate,
+        )
+        assert controller.can_delete_row(row)[0] is should_be_deletable

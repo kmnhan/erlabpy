@@ -3125,7 +3125,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             raise ValueError("This provenance row cannot be replayed as a prefix")
         end = ref.operation_index + 1
         if self.kind in {"script", "file"}:
-            return self.model_copy(update={"steps": self.steps[:end]})
+            return self._prefix_with_steps(self.steps[:end])
         return self.model_copy(
             update={"source_operations": self.source_operations[:end]}
         )
@@ -3135,10 +3135,38 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if ref.kind != "operation" or ref.operation_index is None:
             return self._prefix_through_ref(ref)
         if self.kind in {"script", "file"}:
-            return self.model_copy(update={"steps": self.steps[: ref.operation_index]})
+            return self._prefix_with_steps(self.steps[: ref.operation_index])
         return self.model_copy(
             update={"source_operations": self.source_operations[: ref.operation_index]}
         )
+
+    def _prefix_with_steps(self, steps: Sequence[ReplayStep]) -> ToolProvenanceSpec:
+        """Return a replay prefix with the name produced by its final step."""
+        updates: dict[str, typing.Any] = {"steps": tuple(steps)}
+        if len(steps) == len(self.steps):
+            return self.model_copy(update=updates)
+        if self.kind == "script":
+            current_name = (
+                self.active_name
+                if self.seed_code is None
+                else self._script_seed_output_name()
+            )
+            for step in steps:
+                operation = step.operation
+                if _operation_is(operation, "script_code"):
+                    code = typing.cast("str | None", getattr(operation, "code", None))
+                    if code is not None and self.active_name is not None:
+                        current_name = _script_codes_output_name(
+                            (code,),
+                            active_name=self.active_name,
+                            current_name=current_name,
+                        )
+                    continue
+                if preferred_name := operation.preferred_replay_output_name():
+                    current_name = preferred_name
+            if current_name is not None:
+                updates["active_name"] = current_name
+        return self.model_copy(update=updates)
 
     def _script_seed_output_name(self) -> str | None:
         """Return the variable produced by this script spec's seed code."""
