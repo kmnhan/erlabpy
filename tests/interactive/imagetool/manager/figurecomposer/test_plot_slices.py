@@ -597,6 +597,55 @@ def test_figure_composer_plot_slices_reuses_selection_cache_across_redraws(
     assert len(calls) == 5
 
 
+def test_figure_composer_plot_slices_uses_persisted_selection_on_first_render(
+    qtbot,
+) -> None:
+    import dask
+    import dask.array as da
+
+    eager = _figure_composer_image_source("data")
+    compute_calls: list[None] = []
+
+    @dask.delayed
+    def load_values() -> np.ndarray:
+        compute_calls.append(None)
+        return eager.values
+
+    data = eager.copy(
+        data=da.from_delayed(load_values(), shape=eager.shape, dtype=eager.dtype)
+    )
+    operation = FigureOperationState.plot_slices(
+        label="slices",
+        sources=("data",),
+        axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+        slice_dim="eV",
+        slice_values=(0.0, 0.5),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+        source_data={"data": data},
+    )
+    qtbot.addWidget(tool)
+
+    with dask.config.set(scheduler="synchronous"):
+        figurecomposer_rendering._render_into_figure(
+            tool, tool.figure, sync_visible=False
+        )
+        assert compute_calls == [None]
+
+        figurecomposer_rendering._render_into_figure(
+            tool, tool.figure, sync_visible=False
+        )
+
+    assert compute_calls == [None]
+
+
 def test_figure_composer_plot_slices_selection_error_details() -> None:
     plain = str(FigureComposerPlotSlicesSelectionError())
     assert "Details:" not in plain

@@ -362,6 +362,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._operation_editor_update_pending = False
         self._preview_render_update_pending = False
         self._preview_render_update_generation = 0
+        self._redraw_generation = 0
         self._operation_render_errors: dict[str, str] = {}
         self._prepared_render_data = _BoundedCache()
         self._plot_slices_selection_cache: MutableMapping[Hashable, typing.Any] = (
@@ -683,7 +684,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         emit_info: bool = False,
         force: bool = False,
     ) -> None:
+        self._redraw_generation += 1
+        redraw_generation = self._redraw_generation
         self._cancel_preview_render_update()
+        if self._rendering:
+            self._last_preview_render_signature = None
+            self._auto_redraw_dirty = True
+            self._mark_preview_pixmap_stale()
+            self._queue_preview_render_update()
+            if emit_info:
+                self.sigInfoChanged.emit()
+            return
         signature = self._preview_render_signature()
         if (
             not force
@@ -699,6 +710,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             _render_preview(self)
         else:
             _render_preview(self, show_window=show_window)
+        if redraw_generation != self._redraw_generation:
+            self._last_preview_render_signature = None
+            self._auto_redraw_dirty = True
+            self._mark_preview_pixmap_stale()
+            if emit_info:
+                self.sigInfoChanged.emit()
+            return
         if not self._preview_pixmap_stale:
             self._last_preview_render_signature = self._preview_render_signature()
         self._auto_redraw_dirty = False

@@ -6,7 +6,6 @@ import collections
 import typing
 import uuid
 
-from erlab.interactive._figurecomposer._cache import _persist_dask_value
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_all_axes_ids,
@@ -1055,8 +1054,7 @@ class FigureDocument:
     ) -> xr.DataArray:
         """Return the public source payload after applying its saved selection."""
         selected = _selected_source_data(data, source)
-        selected = selected.rename(data.name).copy(deep=False)
-        return typing.cast("xr.DataArray", _persist_dask_value(selected))
+        return selected.rename(data.name).copy(deep=False)
 
     def source_selection_input_data(self, source_name: str) -> xr.DataArray | None:
         """Return the raw input to which a source selection applies."""

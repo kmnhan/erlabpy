@@ -173,7 +173,7 @@ def test_figure_composer_prepared_data_cache_is_bounded_and_persists_dask() -> N
     assert compute_calls == [None]
 
 
-def test_figure_document_persists_selected_dask_source() -> None:
+def test_figure_document_keeps_selected_dask_sources_lazy() -> None:
     import dask
     import dask.array as da
 
@@ -190,16 +190,47 @@ def test_figure_document_persists_selected_dask_source() -> None:
         coords={"x": np.arange(3.0), "y": np.arange(4.0)},
         name="lazy",
     )
-    selected_source = FigureSourceState(
-        name="selected",
-        selection_source="lazy",
-        qsel={"x": 1.0},
+    first_source = FigureSourceState(
+        name="first", selection_source="lazy", qsel={"x": 1.0}
+    )
+    second_source = FigureSourceState(
+        name="second", selection_source="lazy", qsel={"x": 2.0}
     )
     with dask.config.set(scheduler="synchronous"):
-        selected = FigureDocument.source_data_from_selection(lazy, selected_source)
-        np.testing.assert_allclose(selected.values, np.arange(4.0, 8.0))
-        np.testing.assert_allclose(selected.values, np.arange(4.0, 8.0))
+        first = FigureDocument.source_data_from_selection(lazy, first_source)
+        second = FigureDocument.source_data_from_selection(lazy, second_source)
+        assert compute_calls == []
+        assert dask.base.is_dask_collection(second)
+        np.testing.assert_allclose(first.values, np.arange(4.0, 8.0))
     assert compute_calls == [None]
+
+
+def test_figure_document_dask_selection_errors_remain_lazy() -> None:
+    import dask
+    import dask.array as da
+
+    @dask.delayed
+    def fail_to_load() -> np.ndarray:
+        raise RuntimeError("backend read failed")
+
+    lazy = xr.DataArray(
+        da.from_delayed(fail_to_load(), shape=(2, 3), dtype=float),
+        dims=("x", "y"),
+        coords={"x": [0, 1], "y": [0, 1, 2]},
+        name="lazy",
+    )
+    document = FigureDocument(
+        FigureRecipeState(
+            sources=(FigureSourceState(name="lazy"),), primary_source="lazy"
+        ),
+        source_data={"lazy": lazy},
+    )
+
+    with dask.config.set(scheduler="synchronous"):
+        result = document.update_source_selection_dimension(("lazy",), "x", "isel", 0)
+        assert result.updated == ("lazy",)
+        with pytest.raises(RuntimeError, match="backend read failed"):
+            _ = document.source_data["lazy"].values
 
 
 def test_figure_document_replaces_only_valid_layout_setup() -> None:
@@ -1206,6 +1237,29 @@ def test_figure_composer_visible_redraw_draws_once_and_skips_unchanged(
 
     tool._redraw_plot(force=True)
     assert draw_calls == [None, None, None, None]
+
+    operation = tool.tool_status.operations[0]
+    tool._rendering = True
+    try:
+        tool._document.replace_operation(
+            0, operation.model_copy(update={"cmap": "magma"})
+        )
+        tool._redraw_plot()
+    finally:
+        tool._rendering = False
+
+    assert draw_calls == [None, None, None, None]
+    assert tool.figure.axes[0].images[0].get_cmap().name == "plasma"
+    assert tool._last_preview_render_signature is None
+    assert tool._auto_redraw_dirty
+    assert tool.preview_pixmap_stale
+
+    tool._redraw_plot()
+
+    assert draw_calls == [None, None, None, None, None]
+    assert tool.figure.axes[0].images[0].get_cmap().name == "magma"
+    assert not tool._auto_redraw_dirty
+    assert not tool.preview_pixmap_stale
 
 
 def test_figure_composer_preview_draw_error_ignores_missing_operation(qtbot) -> None:
