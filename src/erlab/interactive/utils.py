@@ -635,8 +635,58 @@ class _WaitDialog(QtWidgets.QDialog):
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
 
     def set_message(self, message: str) -> None:
+        if not qt_is_valid(self, self._label):
+            return
         self._label.setText(message)
         self.adjustSize()
+
+
+class _WaitPanel(QtWidgets.QFrame):
+    def __init__(self, parent: QtWidgets.QWidget, message: str) -> None:
+        super().__init__(parent.window())
+        self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        self.setAutoFillBackground(True)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        self._label = QtWidgets.QLabel(message)
+        layout.addWidget(self._label)
+
+        # Keep native window modality without presenting a second wait surface.
+        self._modal_guard = QtWidgets.QDialog(self)
+        self._modal_guard.setModal(True)
+        self._modal_guard.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        self._modal_guard.setAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen)
+
+    def open(self) -> None:
+        if not qt_is_valid(self, self._modal_guard):
+            return
+        self._modal_guard.open()
+        self.show_centered()
+
+    def close(self) -> bool:
+        if qt_is_valid(self._modal_guard):
+            self._modal_guard.close()
+            if qt_is_valid(self._modal_guard):
+                self._modal_guard.deleteLater()
+        return super().close()
+
+    def show_centered(self) -> None:
+        if not qt_is_valid(self):
+            return
+        parent = self.parentWidget()
+        if parent is None or not qt_is_valid(parent):
+            return
+        self.adjustSize()
+        self.move(parent.rect().center() - self.rect().center())
+        self.show()
+        self.raise_()
+        self.repaint()
+
+    def set_message(self, message: str) -> None:
+        if not qt_is_valid(self, self._label):
+            return
+        self._label.setText(message)
+        self.show_centered()
 
 
 class _SuppressedWaitDialog:
@@ -647,7 +697,7 @@ class _SuppressedWaitDialog:
 @contextlib.contextmanager
 def wait_dialog(
     parent: QtWidgets.QWidget, message: str
-) -> Iterator[_WaitDialog | _SuppressedWaitDialog]:
+) -> Iterator[_WaitDialog | _WaitPanel | _SuppressedWaitDialog]:
     """Show a wait dialog while executing a block of code.
 
     This context manager creates a simple dialog with a message while the block of code
@@ -671,17 +721,23 @@ def wait_dialog(
         yield _SuppressedWaitDialog()
         return
 
-    dialog = _WaitDialog(parent, message)
+    if sys.platform == "darwin":
+        indicator = _WaitDialog(parent, message)
+    else:
+        indicator = _WaitPanel(parent, message)
+
     _WAIT_DIALOG_DEPTH += 1
     try:
-        dialog.open()
-        yield dialog
+        indicator.open()
+        yield indicator
     finally:
         try:
-            try:
-                dialog.close()
-            finally:
-                dialog.deleteLater()
+            if qt_is_valid(indicator):
+                try:
+                    indicator.close()
+                finally:
+                    if qt_is_valid(indicator):
+                        indicator.deleteLater()
         finally:
             _WAIT_DIALOG_DEPTH -= 1
 

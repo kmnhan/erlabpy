@@ -1020,50 +1020,195 @@ def test_accept_dialog_unwinds_modal_when_callback_raises(accept_dialog) -> None
     assert not dialog.isVisible()
 
 
-def test_wait_dialog_suppresses_nested_dialog(qtbot) -> None:
+@pytest.mark.parametrize(
+    ("platform", "indicator_type_name"),
+    [("darwin", "_WaitDialog"), ("win32", "_WaitPanel")],
+)
+def test_wait_dialog_uses_platform_indicator_and_suppresses_nested(
+    qtbot, monkeypatch, platform: str, indicator_type_name: str
+) -> None:
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", platform)
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)
 
     with erlab.interactive.utils.wait_dialog(parent, "Outer") as outer:
-        assert isinstance(outer, erlab.interactive.utils._WaitDialog)
+        assert isinstance(outer, getattr(erlab.interactive.utils, indicator_type_name))
         assert outer.layout().getContentsMargins() == (24, 20, 24, 20)
         assert outer.sizeHint().height() >= outer._label.sizeHint().height() + 20 * 2
-        outer.set_message("Outer updated")
+        outer.set_message("A substantially longer outer message")
+        updated_width = outer.sizeHint().width()
 
         with erlab.interactive.utils.wait_dialog(parent, "Inner") as inner:
-            assert not isinstance(inner, QtWidgets.QDialog)
+            assert isinstance(inner, erlab.interactive.utils._SuppressedWaitDialog)
             inner.set_message("Inner ignored")
-            assert outer._label.text() == "Outer updated"
+            assert outer.sizeHint().width() == updated_width
 
 
-def test_wait_dialog_constructor_failure_does_not_suppress_later_dialogs(
+def test_wait_panel_paints_synchronously_and_repaints_message_updates(
     qtbot, monkeypatch
 ) -> None:
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
+    paint_sizes: list[QtCore.QSize] = []
+
+    class RecordingWaitPanel(erlab.interactive.utils._WaitPanel):
+        def paintEvent(self, event: QtGui.QPaintEvent | None) -> None:
+            paint_sizes.append(self.size())
+            super().paintEvent(event)
+
+    monkeypatch.setattr(erlab.interactive.utils, "_WaitPanel", RecordingWaitPanel)
+    window = QtWidgets.QMainWindow()
+    child = QtWidgets.QWidget()
+    window.setCentralWidget(child)
+    window.resize(640, 360)
+    qtbot.addWidget(window)
+    with qtbot.waitExposed(window):
+        window.show()
+
+    with erlab.interactive.utils.wait_dialog(child, "Short") as panel:
+        assert isinstance(panel, RecordingWaitPanel)
+        assert panel.parentWidget() is window
+        assert paint_sizes
+        initial_paint_count = len(paint_sizes)
+        initial_width = panel.width()
+
+        panel.set_message("A substantially longer wait-panel message")
+
+        assert len(paint_sizes) > initial_paint_count
+        assert panel.width() > initial_width
+        center_delta = panel.geometry().center() - window.rect().center()
+        assert center_delta.manhattanLength() <= 1
+
+
+def test_wait_panel_blocks_parent_input_without_showing_modal_guard(
+    qtbot, monkeypatch
+) -> None:
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
+    window = QtWidgets.QMainWindow()
+    button = QtWidgets.QPushButton()
+    window.setCentralWidget(button)
+    window.resize(640, 360)
+    qtbot.addWidget(window)
+    with qtbot.waitExposed(window):
+        window.show()
+    click_count = 0
+
+    def _record_click() -> None:
+        nonlocal click_count
+        click_count += 1
+
+    button.clicked.connect(_record_click)
+    click_position = button.mapTo(window, button.rect().center())
+
+    with erlab.interactive.utils.wait_dialog(window, "Blocking input") as panel:
+        assert isinstance(panel, erlab.interactive.utils._WaitPanel)
+        modal_guard = panel._modal_guard
+        assert modal_guard.windowModality() == QtCore.Qt.WindowModality.WindowModal
+        assert modal_guard.testAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen)
+        assert QtWidgets.QApplication.activeModalWidget() is modal_guard
+        modal_handle = modal_guard.windowHandle()
+        assert modal_handle is not None
+        assert not modal_handle.isVisible()
+        assert not modal_handle.isExposed()
+
+        QtCore.QTimer.singleShot(
+            0,
+            lambda: QtTest.QTest.mouseClick(
+                window.windowHandle(),
+                QtCore.Qt.MouseButton.LeftButton,
+                pos=click_position,
+            ),
+        )
+        QtWidgets.QApplication.processEvents()
+        assert click_count == 0
+
+    assert QtWidgets.QApplication.activeModalWidget() is not modal_guard
+    QtTest.QTest.mouseClick(
+        window.windowHandle(),
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=click_position,
+    )
+    QtWidgets.QApplication.processEvents()
+    assert click_count == 1
+
+
+@pytest.mark.parametrize(
+    ("platform", "indicator_type_name"),
+    [("darwin", "_WaitDialog"), ("win32", "_WaitPanel")],
+)
+def test_wait_indicator_constructor_failure_does_not_suppress_later_indicators(
+    qtbot, monkeypatch, platform: str, indicator_type_name: str
+) -> None:
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", platform)
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)
     original_depth = erlab.interactive.utils._WAIT_DIALOG_DEPTH
 
-    class BrokenWaitDialog:
+    class BrokenWaitIndicator:
         def __init__(self, *_args, **_kwargs) -> None:
-            raise RuntimeError("dialog construction failed")
+            raise RuntimeError("indicator construction failed")
 
-    original_wait_dialog = erlab.interactive.utils._WaitDialog
-    monkeypatch.setattr(erlab.interactive.utils, "_WaitDialog", BrokenWaitDialog)
-    try:
-        with (
-            pytest.raises(RuntimeError, match="dialog construction failed"),
-            erlab.interactive.utils.wait_dialog(parent, "Broken"),
-        ):
-            pass
-    finally:
-        monkeypatch.setattr(
-            erlab.interactive.utils, "_WaitDialog", original_wait_dialog
-        )
+    original_indicator_type = getattr(erlab.interactive.utils, indicator_type_name)
+    monkeypatch.setattr(
+        erlab.interactive.utils, indicator_type_name, BrokenWaitIndicator
+    )
+    with (
+        pytest.raises(RuntimeError, match="indicator construction failed"),
+        erlab.interactive.utils.wait_dialog(parent, "Broken"),
+    ):
+        pass
 
     current_depth = erlab.interactive.utils._WAIT_DIALOG_DEPTH
     assert current_depth == original_depth
-    with erlab.interactive.utils.wait_dialog(parent, "Outer") as dialog:
-        assert isinstance(dialog, erlab.interactive.utils._WaitDialog)
+    monkeypatch.setattr(
+        erlab.interactive.utils, indicator_type_name, original_indicator_type
+    )
+    with erlab.interactive.utils.wait_dialog(parent, "Outer") as indicator:
+        assert isinstance(indicator, original_indicator_type)
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_wait_indicator_parent_destruction_is_safe(
+    qtbot, monkeypatch, platform: str
+) -> None:
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", platform)
+    parent = QtWidgets.QWidget()
+    original_depth = erlab.interactive.utils._WAIT_DIALOG_DEPTH
+
+    with erlab.interactive.utils.wait_dialog(parent, "Lifetime check") as indicator:
+        modal_guard = getattr(indicator, "_modal_guard", None)
+        parent.deleteLater()
+        QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+        assert not qt_is_valid(parent)
+        assert not qt_is_valid(indicator)
+        if modal_guard is not None:
+            assert not qt_is_valid(modal_guard)
+
+    assert original_depth == erlab.interactive.utils._WAIT_DIALOG_DEPTH
+
+
+@pytest.mark.parametrize(
+    ("platform", "indicator_type_name"),
+    [("darwin", "_WaitDialog"), ("win32", "_WaitPanel")],
+)
+def test_wait_indicator_body_exception_restores_depth(
+    qtbot, monkeypatch, platform: str, indicator_type_name: str
+) -> None:
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", platform)
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    original_depth = erlab.interactive.utils._WAIT_DIALOG_DEPTH
+
+    with (
+        pytest.raises(RuntimeError, match="operation failed"),
+        erlab.interactive.utils.wait_dialog(parent, "Outer"),
+    ):
+        raise RuntimeError("operation failed")
+
+    assert original_depth == erlab.interactive.utils._WAIT_DIALOG_DEPTH
+    with erlab.interactive.utils.wait_dialog(parent, "Later") as indicator:
+        assert isinstance(
+            indicator, getattr(erlab.interactive.utils, indicator_type_name)
+        )
 
 
 def test_set_widget_cursor_skips_native_cursor_updates_on_macos(
