@@ -1966,6 +1966,38 @@ def test_figure_composer_editor_factories_preserve_mixed_and_missing_values(
     _activate_combo_index(mixed_name_combo, mixed_name_combo.currentIndex())
     assert committed == before
 
+    with pytest.raises(ValueError, match="same length"):
+        tool.operation_editor.labeled_combo(
+            ("C",),
+            ("Row", "Column"),
+            None,
+            committed.append,
+        )
+
+    mixed_labeled_combo = tool.operation_editor.labeled_combo(
+        ("C", "F"),
+        ("Row", "Column"),
+        None,
+        committed.append,
+        mixed=True,
+    )
+    before = list(committed)
+    assert mixed_labeled_combo.currentData() is _editor_controls.MIXED_VALUE
+    _activate_combo_index(
+        mixed_labeled_combo,
+        mixed_labeled_combo.currentIndex(),
+    )
+    assert committed == before
+
+    unmatched_labeled_combo = tool.operation_editor.labeled_combo(
+        ("C", "F"),
+        ("Row", "Column"),
+        "K",
+        committed.append,
+    )
+    assert unmatched_labeled_combo.findData("K") == -1
+    assert unmatched_labeled_combo.currentData() == "C"
+
     mixed_check = tool.operation_editor.check_box(False, committed.append, mixed=True)
     assert mixed_check.checkState() == QtCore.Qt.CheckState.PartiallyChecked
     before = list(committed)

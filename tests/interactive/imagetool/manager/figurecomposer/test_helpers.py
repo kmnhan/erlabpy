@@ -448,6 +448,11 @@ def test_figure_composer_axes_helpers_parse_safe_expressions() -> None:
         nrows=2,
         ncols=2,
     ) == (slice(None), slice(None))
+    assert figurecomposer_axes._compact_axes_index(
+        ((0, 0), (0, 1)),
+        nrows=2,
+        ncols=3,
+    ) == (0, slice(None, 2))
     assert (
         figurecomposer_axes._compact_axes_index(
             ((0, 0), (1, 1)),
