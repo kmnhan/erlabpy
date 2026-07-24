@@ -29,9 +29,6 @@ from erlab.interactive._figurecomposer._operations._method import (
 from erlab.interactive._figurecomposer._operations._method import (
     _execution as method_execution,
 )
-from erlab.interactive._figurecomposer._ui import (
-    _operation_panel as figurecomposer_operation_panel,
-)
 
 from ._common import (
     _activate_combo_text,
@@ -1238,15 +1235,15 @@ def test_figure_composer_method_draw_time_text_error_is_non_modal(qtbot) -> None
 
     tool._redraw_plot(show_window=True)
 
-    render_error = tool._operation_render_errors[title_operation.operation_id]
+    assert tool._operation_render_errors == {}
+    render_error = tool._preview_render_error
+    assert render_error is not None
     assert "ValueError" in render_error
     assert "ParseException" in render_error
-    item = tool.operation_panel.operation_list.topLevelItem(1)
-    assert item is not None
-    assert _operation_status_codes(tool, 1) == ("render_error",)
-    assert "ParseException" in item.toolTip(
-        figurecomposer_operation_panel._OPERATION_LIST_STATUS_COLUMN
-    )
+    assert _operation_status_codes(tool, 1) == ()
+    status = tool.findChild(QtWidgets.QStatusBar, "figureComposerPreviewRenderStatus")
+    assert status is not None
+    assert not status.isHidden()
 
     tool._replace_operation(
         1,
@@ -1254,7 +1251,7 @@ def test_figure_composer_method_draw_time_text_error_is_non_modal(qtbot) -> None
     )
     tool._redraw_plot(show_window=True)
 
-    assert title_operation.operation_id not in tool._operation_render_errors
-    item = tool.operation_panel.operation_list.topLevelItem(1)
-    assert item is not None
+    assert tool._operation_render_errors == {}
+    assert tool._preview_render_error is None
     assert _operation_status_codes(tool, 1) == ()
+    assert status.isHidden()

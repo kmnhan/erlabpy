@@ -74,6 +74,9 @@ class _WorkspaceSaveSnapshot:
     attr_updates: tuple[
         tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]], ...
     ] = ()
+    serialized_tool_data_references: tuple[
+        tuple[str, dict[str, dict[str, typing.Any]]], ...
+    ] = ()
 
     def close(self) -> None:
         if self.full_tree is not None:
@@ -175,6 +178,56 @@ class _WorkspaceSaver:
         self._manager = manager
         self._controller = controller
 
+    @staticmethod
+    def _serialized_tool_data_references(
+        datasets: Iterable[xr.Dataset],
+    ) -> tuple[tuple[str, dict[str, dict[str, typing.Any]]], ...]:
+        references_by_uid: dict[str, dict[str, dict[str, typing.Any]]] = {}
+        for ds in datasets:
+            if ds.attrs.get("manager_node_kind") != "tool":
+                continue
+            uid = ds.attrs.get("manager_node_uid")
+            if not isinstance(uid, str) or not uid:
+                continue
+            references_by_uid[uid] = (
+                erlab.interactive.utils.ToolWindow._saved_tool_data_references(ds)
+            )
+        return tuple(sorted(references_by_uid.items()))
+
+    @classmethod
+    def _serialized_tool_data_references_from_tree(
+        cls,
+        tree: xr.DataTree,
+        *,
+        exclude_payload_paths: Iterable[str] = (),
+    ) -> tuple[tuple[str, dict[str, dict[str, typing.Any]]], ...]:
+        excluded = {path.strip("/") for path in exclude_payload_paths}
+        return cls._serialized_tool_data_references(
+            node.to_dataset(inherit=False)
+            for node in tree.subtree
+            if node.path.strip("/") not in excluded
+        )
+
+    @classmethod
+    def _serialized_tool_data_references_from_delta(
+        cls,
+        rewrite_groups: Iterable[tuple[str, dict[str, xr.Dataset]]],
+        attr_updates: Iterable[
+            tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]]
+        ],
+    ) -> tuple[tuple[str, dict[str, dict[str, typing.Any]]], ...]:
+        datasets = [
+            ds
+            for _group_path, constructor in rewrite_groups
+            for ds in constructor.values()
+        ]
+        datasets.extend(
+            ds
+            for _payload_path, _attrs, (_node_path, constructor) in attr_updates
+            for ds in constructor.values()
+        )
+        return cls._serialized_tool_data_references(datasets)
+
     def _annotate_workspace_dataset(
         self,
         ds: xr.Dataset,
@@ -273,7 +326,10 @@ class _WorkspaceSaver:
             if not tool.can_save_and_load():
                 return
             with tool._save_tool_data_reference_context(
-                self._manager._tool_graph.nodes
+                self._manager._tool_graph.nodes,
+                reference_validator=(
+                    self._controller._tool_data_reference_matches_current_data
+                ),
             ):
                 ds = tool.to_dataset()
             ds.attrs["tool_title"] = _strip_workspace_modified_placeholder(
@@ -751,6 +807,11 @@ class _WorkspaceSaver:
         serialize_uids.update(
             uid for uid in state.dirty_state if uid in self._manager._tool_graph.nodes
         )
+        serialize_uids.update(
+            self._workspace_stale_reference_rewrite_uids(
+                frozenset(self._manager._tool_graph.nodes)
+            )
+        )
         return serialize_uids
 
     def _workspace_full_save_manifest_first_snapshot(
@@ -985,6 +1046,9 @@ class _WorkspaceSaver:
             copy_source=str(workspace_path),
             copy_groups=tuple(copy_groups),
             copy_group_sources=tuple(copy_group_sources),
+            serialized_tool_data_references=(
+                self._serialized_tool_data_references_from_tree(tree)
+            ),
         )
 
     def _write_full_workspace_file(
@@ -1010,6 +1074,7 @@ class _WorkspaceSaver:
                 copy_group_sources=snapshot.copy_group_sources,
                 compression_mode=snapshot.compression_mode,
             )
+            self._controller._commit_saved_tool_data_references(snapshot)
         finally:
             snapshot.close()
 
@@ -1068,7 +1133,23 @@ class _WorkspaceSaver:
                 continue
             if tool._persistence_reference_node_uids() - available_uids:
                 rewrite_uids.append(uid)
+                continue
+            references = node._workspace_tool_data_references
+            if not references:
+                continue
+            if not self._workspace_tool_references_match_current_snapshots(
+                references.values()
+            ):
+                rewrite_uids.append(uid)
         return sorted(rewrite_uids, key=self._workspace_node_path)
+
+    def _workspace_tool_references_match_current_snapshots(
+        self, references: Iterable[Mapping[str, typing.Any]]
+    ) -> bool:
+        return all(
+            self._controller._tool_data_reference_matches_current_snapshot(reference)
+            for reference in references
+        )
 
     def _save_workspace_delta(self, fname: str | os.PathLike[str]) -> None:
         delta_save_count = self._manager._workspace_state.delta_save_count + 1
@@ -1085,6 +1166,7 @@ class _WorkspaceSaver:
                 snapshot.root_attrs,
                 compression_mode=snapshot.compression_mode,
             )
+            self._controller._commit_saved_tool_data_references(snapshot)
             self._manager._workspace_state.delta_save_count = snapshot.delta_save_count
             self._manager._workspace_state.set_repack_estimate(
                 estimated_obsolete_bytes=snapshot.estimated_obsolete_bytes,
@@ -1365,11 +1447,8 @@ class _WorkspaceSaver:
                 continue
             if kind != "manager_node":
                 return False
-            referenced_uid = reference.get("node_uid")
-            if (
-                not isinstance(referenced_uid, str)
-                or not referenced_uid
-                or referenced_uid not in self._manager._tool_graph.nodes
+            if not self._controller._tool_data_reference_matches_current_snapshot(
+                reference
             ):
                 return False
         return True
@@ -1461,6 +1540,11 @@ class _WorkspaceSaver:
             compression_mode=self._workspace_compression_mode(),
             rewrite_groups=tuple(rewrite_groups),
             attr_updates=tuple(attr_updates),
+            serialized_tool_data_references=(
+                self._serialized_tool_data_references_from_delta(
+                    rewrite_groups, attr_updates
+                )
+            ),
         )
 
     def _workspace_save_snapshot(
@@ -1542,6 +1626,16 @@ class _WorkspaceSaver:
             copy_source=copy_source,
             copy_groups=copy_groups,
             copy_group_sources=pending_copy_groups,
+            serialized_tool_data_references=(
+                self._serialized_tool_data_references_from_tree(
+                    tree,
+                    exclude_payload_paths=(
+                        destination_path
+                        for _source_path, destination_path, attrs in copy_groups
+                        if attrs is None
+                    ),
+                )
+            ),
         )
 
     def _workspace_file_repack_snapshot(
@@ -1660,6 +1754,10 @@ class _WorkspaceSaver:
                     else:
                         tool = node.tool_window
                         if tool is None or not tool.can_save_and_load():
+                            continue
+                        if not self._workspace_tool_references_match_current_snapshots(
+                            node._workspace_tool_data_references.values()
+                        ):
                             continue
                 kind = "imagetool" if node.is_imagetool else "tool"
                 source_path = identities.get((uid, kind))

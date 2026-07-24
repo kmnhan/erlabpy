@@ -134,6 +134,7 @@ from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
     _live_layout_axes,
+    _render_error_text,
     _render_into_figure,
     _render_preview,
     _rendered_output_figure,
@@ -364,6 +365,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._preview_render_update_pending = False
         self._preview_render_update_generation = 0
         self._operation_render_errors: dict[str, str] = {}
+        self._preview_render_error: str | None = None
         self._plot_slices_cache = _PlotSlicesSelectionCache()
         self._plot_slices_cache_source_revision = -1
         self._figure_resize_render_generation = 0
@@ -2671,6 +2673,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         current = self._current_operation()
         self._update_source_status(current[1] if current is not None else None)
 
+    def _set_preview_render_error(self, error: str | None) -> None:
+        if error == self._preview_render_error:
+            return
+        self._preview_render_error = error
+        status_bar = typing.cast("QtWidgets.QStatusBar", self.statusBar())
+        status_bar.setObjectName("figureComposerPreviewRenderStatus")
+        if error is None:
+            status_bar.clearMessage()
+            status_bar.hide()
+        else:
+            status_bar.showMessage(f"Preview render error: {error}")
+            status_bar.show()
+
     @QtCore.Slot()
     def _operation_editor_validation_changed(self) -> None:
         self._refresh_operation_list()
@@ -4787,10 +4802,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 QtGui.QImage.Format.Format_RGBA8888,
             )
             preview = QtGui.QPixmap.fromImage(image.copy())
-        except Exception:
+        except Exception as exc:
+            self._set_preview_render_error(_render_error_text(exc))
             return False
         if preview.isNull():
             return False
+        self._set_preview_render_error(None)
         self._preview_pixmap_cache = preview
         self._preview_pixmap_generation += 1
         self._preview_thumbnail_cache.clear()
@@ -4815,10 +4832,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     with _figure_draw_context():
                         canvas.draw()
                     width, height = canvas.get_width_height()
-                except Exception:
+                except Exception as exc:
+                    self._set_preview_render_error(_render_error_text(exc))
                     return None
                 if width <= 0 or height <= 0:
                     return None
+                self._set_preview_render_error(None)
                 image = QtGui.QImage(
                     canvas.buffer_rgba(),
                     width,

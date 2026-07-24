@@ -223,6 +223,14 @@ def _imshow_nonuniform(
     return im
 
 
+def _validate_image_norm(norm: matplotlib.colors.Normalize, values: np.ndarray) -> None:
+    """Resolve data-dependent limits before an image artist is added."""
+    norm.autoscale_None(np.ma.masked_invalid(values, copy=False))
+    if norm.vmin is None or norm.vmax is None:
+        return
+    norm(np.asarray((norm.vmin, norm.vmax)))
+
+
 def plot_array(
     arr: xr.DataArray,
     ax: matplotlib.axes.Axes | None = None,
@@ -350,10 +358,13 @@ def plot_array(
     if func is not None:
         arr = func(arr.copy(deep=True), **func_args)
 
+    values = arr.values
+    _validate_image_norm(norm, values)
+
     if erlab.utils.array.is_dims_uniform(arr, rtol=rtol, atol=atol):
         improps.setdefault("interpolation", "none")
         img = ax.imshow(
-            arr.values, norm=norm, extent=array_extent(arr, rtol, atol), **improps
+            values, norm=norm, extent=array_extent(arr, rtol, atol), **improps
         )
     else:
         improps.setdefault("interpolation", "nearest")
@@ -361,7 +372,7 @@ def plot_array(
             ax,
             x=arr[arr.dims[1]].values,
             y=arr[arr.dims[0]].values,
-            A=arr.values,
+            A=values,
             norm=norm,
             **improps,
         )

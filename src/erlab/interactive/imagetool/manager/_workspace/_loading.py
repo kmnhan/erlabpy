@@ -415,6 +415,21 @@ class _WorkspaceLoader:
         if pending is None:
             raise ValueError("Node has no pending ImageTool workspace payload")
         workspace_path, payload_path = pending
+        return self._workspace_imagetool_reference_dataset_at(
+            workspace_path,
+            payload_path,
+            owner_node=owner_node,
+            reference_datasets=reference_datasets,
+        )
+
+    def _workspace_imagetool_reference_dataset_at(
+        self,
+        workspace_path: str | os.PathLike[str],
+        payload_path: str,
+        *,
+        owner_node: _ImageToolWrapper | _ManagedWindowNode | None = None,
+        reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] | None = None,
+    ) -> xr.Dataset:
         key = self._workspace_reference_key(workspace_path, payload_path)
 
         def _open() -> xr.Dataset:
@@ -432,6 +447,49 @@ class _WorkspaceLoader:
         if owner_node is not None:
             return owner_node._workspace_reference_dataset(key, _open)
         raise RuntimeError("Pending workspace reference data requires an owner")
+
+    def _saved_workspace_reference_source_data(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        *,
+        snapshot_token: str,
+        data_role: ScriptInputDataRole,
+        owner_node: _ImageToolWrapper | _ManagedWindowNode | None,
+        reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] | None,
+    ) -> xr.DataArray | None:
+        if not node.is_imagetool:
+            return None
+        pending_owner = (
+            None if owner_node is None else owner_node.pending_workspace_tool_payload
+        )
+        workspace_path = (
+            pending_owner[0]
+            if pending_owner is not None
+            else self._manager._workspace_state.path
+        )
+        if workspace_path is None:
+            return None
+        payload_path = self._controller.saving._workspace_payload_path(node.uid)
+        opened = self._workspace_imagetool_reference_dataset_at(
+            workspace_path,
+            payload_path,
+            owner_node=owner_node,
+            reference_datasets=reference_datasets,
+        )
+        ds = workspace_format._restore_workspace_dataset_attrs(opened.copy(deep=False))
+        saved_token = workspace_format._decode_workspace_attr_text(
+            ds.attrs.get("manager_node_snapshot_token")
+            if data_role == "displayed"
+            else ds.attrs.get("manager_node_source_snapshot_token")
+        )
+        if saved_token != snapshot_token:
+            return None
+        return self.pending._workspace_imagetool_source_data(
+            node,
+            opened,
+            attrs=None,
+            data_role=data_role,
+        )
 
     @staticmethod
     def _workspace_imagetool_payload_data(ds: xr.Dataset) -> xr.DataArray:
@@ -514,6 +572,22 @@ class _WorkspaceLoader:
             if data_role not in {"source", "displayed"}:
                 return None
             try:
+                source_node = self._manager._node_for_target(target)
+                snapshot_token = payload.get("node_snapshot_token")
+                if (
+                    isinstance(snapshot_token, str)
+                    and snapshot_token
+                    and snapshot_token != source_node.snapshot_token_for_role(data_role)
+                ):
+                    saved_data = self._saved_workspace_reference_source_data(
+                        source_node,
+                        snapshot_token=snapshot_token,
+                        data_role=typing.cast("ScriptInputDataRole", data_role),
+                        owner_node=owner_node,
+                        reference_datasets=reference_datasets,
+                    )
+                    if saved_data is not None:
+                        return saved_data
                 return _source_data_for_target(
                     target,
                     typing.cast("ScriptInputDataRole", data_role),

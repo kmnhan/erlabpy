@@ -14,6 +14,8 @@ import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
+import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
+import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 from erlab.interactive._figurecomposer import (
     FigureComposerTool,
     FigureOperationState,
@@ -27,9 +29,13 @@ from erlab.interactive.imagetool.manager._figurecomposer import _collection
 from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
     activate_widget_shortcut,
+    adopt_workspace_path,
     select_child_tool,
     select_tools,
     trigger_menu_action,
+)
+from tests.interactive.imagetool.manager.workspace._support import (
+    _request_workspace_save_as_and_wait,
 )
 
 from ._common import (
@@ -1268,6 +1274,444 @@ def test_manager_workspace_figure_sources_save_as_references(
         source_data = restored.source_data()
         xr.testing.assert_identical(source_data["first"], first)
         xr.testing.assert_identical(source_data["second"], second)
+
+
+def test_manager_figure_workspace_reference_helper_edges(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        name="data",
+    )
+
+    with manager_context() as manager:
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+
+        controller = manager._workspace_controller
+        loader = controller.loading
+        saver = controller.saving
+        root_node = manager._node_for_target(0)
+        figure_node = manager._child_node(figure_uid)
+        stale_revision = "stale-snapshot"
+        current_reference = {
+            "kind": "manager_node",
+            "node_uid": root_node.uid,
+            "node_snapshot_token": root_node.snapshot_token,
+            "data_role": "displayed",
+        }
+
+        assert not controller._tool_data_reference_matches_current_snapshot(
+            {"kind": "manager_node", "node_uid": ""}
+        )
+        assert not controller._tool_data_reference_matches_current_snapshot(
+            {
+                "kind": "manager_node",
+                "node_uid": root_node.uid,
+                "data_role": "invalid",
+            }
+        )
+
+        def unavailable_data(_data_role: str) -> xr.DataArray:
+            raise RuntimeError("unavailable")
+
+        with monkeypatch.context() as context:
+            context.setattr(root_node, "data_for_role", unavailable_data)
+            assert not controller._tool_data_reference_matches_current_data(
+                current_reference, data
+            )
+
+        snapshot = workspace_saving._WorkspaceSaveSnapshot(
+            generation=0,
+            root_attrs={},
+            delta_save_count=0,
+            serialized_tool_data_references=(
+                ("missing", {}),
+                (root_node.uid, {}),
+            ),
+        )
+        controller._commit_saved_tool_data_references(snapshot)
+
+        invalid_tool_dataset = xr.Dataset(
+            attrs={"manager_node_kind": "tool", "manager_node_uid": ""}
+        )
+        assert saver._serialized_tool_data_references((invalid_tool_dataset,)) == ()
+        assert figure_uid not in saver._workspace_stale_reference_rewrite_uids(
+            frozenset(manager._tool_graph.nodes)
+        )
+
+        assert (
+            loader._saved_workspace_reference_source_data(
+                figure_node,
+                snapshot_token=stale_revision,
+                data_role="displayed",
+                owner_node=None,
+                reference_datasets={},
+            )
+            is None
+        )
+        assert (
+            loader._saved_workspace_reference_source_data(
+                root_node,
+                snapshot_token=stale_revision,
+                data_role="displayed",
+                owner_node=None,
+                reference_datasets={},
+            )
+            is None
+        )
+
+        workspace_path = tmp_path / "reference-helper-edges.itws"
+        saver._save_workspace_document(workspace_path, force_full=True)
+        adopt_workspace_path(manager, workspace_path)
+        reference_datasets: dict[tuple[Path, str], xr.Dataset] = {}
+        try:
+            assert (
+                loader._saved_workspace_reference_source_data(
+                    root_node,
+                    snapshot_token=stale_revision,
+                    data_role="displayed",
+                    owner_node=figure_node,
+                    reference_datasets=reference_datasets,
+                )
+                is None
+            )
+            _parent_data, resolver = loader._workspace_tool_restore_references(
+                xr.Dataset(),
+                parent_target=None,
+                owner_node=figure_node,
+                reference_datasets=reference_datasets,
+            )
+            xr.testing.assert_identical(
+                resolver(
+                    {
+                        "kind": "manager_node",
+                        "node_uid": root_node.uid,
+                        "data_role": "displayed",
+                    }
+                ),
+                root_node.data_for_role("displayed"),
+            )
+            xr.testing.assert_identical(
+                resolver(
+                    {
+                        **current_reference,
+                        "node_snapshot_token": stale_revision,
+                    }
+                ),
+                root_node.data_for_role("displayed"),
+            )
+        finally:
+            loader._close_workspace_reference_datasets(reference_datasets)
+
+
+def test_manager_workspace_embeds_figure_snapshot_after_source_transpose(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("kx", "eV"),
+        coords={
+            "kx": [-0.5, 0.0, 0.5],
+            "eV": [-1.0, -0.5, 0.0, 0.5],
+        },
+        name="cut",
+    )
+
+    with manager_context() as manager:
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure_tool = _materialized_figure_tool(manager, figure_uid)
+        primary_source = figure_tool.tool_status.primary_source
+        captured = figure_tool.source_data()[primary_source]
+        assert captured.dims == data.dims
+
+        [operation] = figure_tool.tool_status.operations
+        figure_tool.tool_status = figure_tool.tool_status.model_copy(
+            update={"operations": (operation.model_copy(update={"transpose": True}),)}
+        )
+        source_state = figure_tool.source_states()[0]
+        root_node = manager._tool_graph.root_wrappers[0]
+        assert source_state.node_snapshot_token == root_node.snapshot_token
+
+        workspace_path = tmp_path / "figure-source-transpose.itws"
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: workspace_path,
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+        saved_figure = workspace_arrays._read_workspace_dataset_group_h5py(
+            workspace_path,
+            f"figures/{figure_uid}/tool",
+            preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
+        )
+        assert saved_figure is not None
+        saved_references = FigureComposerTool._saved_tool_data_references(saved_figure)
+        assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME in saved_references
+        assert (
+            manager._child_node(figure_uid)._workspace_tool_data_references
+            == saved_references
+        )
+        manager._workspace_controller._mark_workspace_clean()
+
+        root.slicer_area.transpose_main_image()
+
+        assert root_node.data_for_role("displayed").dims == ("eV", "kx")
+        assert root_node.snapshot_token != source_state.node_snapshot_token
+        assert figure_tool.source_data()[primary_source].dims == data.dims
+
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=False
+        )
+        rewritten_figure = workspace_arrays._read_workspace_dataset_group_h5py(
+            workspace_path,
+            f"figures/{figure_uid}/tool",
+            preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
+        )
+        assert rewritten_figure is not None
+        rewritten_references = FigureComposerTool._saved_tool_data_references(
+            rewritten_figure
+        )
+        assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME not in rewritten_references
+        assert (
+            rewritten_figure[erlab.interactive.utils._SAVED_TOOL_DATA_NAME].size
+            == data.size
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+
+        restored = _materialized_figure_tool(manager, figure_uid)
+        restored_source = restored.source_data()[restored.tool_status.primary_source]
+        xr.testing.assert_identical(restored_source, data)
+        assert restored.tool_status.operations[0].transpose is True
+
+        figure = Figure()
+        figurecomposer_tool_module._render_into_figure(
+            restored, figure, sync_visible=False
+        )
+        assert figure.axes[0].images[0].get_array().shape == data.T.shape
+
+
+def test_manager_failed_save_keeps_last_saved_figure_references(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("kx", "eV"),
+        coords={
+            "kx": [-0.5, 0.0, 0.5],
+            "eV": [-1.0, -0.5, 0.0, 0.5],
+        },
+        name="cut",
+    )
+
+    with manager_context() as manager:
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        _materialized_figure_tool(manager, figure_uid)
+        figure_node = manager._child_node(figure_uid)
+
+        workspace_path = tmp_path / "failed-figure-source-transpose.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+        adopt_workspace_path(manager, workspace_path)
+        saved_references = dict(figure_node._workspace_tool_data_references)
+        assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME in saved_references
+        manager._workspace_controller._mark_workspace_clean()
+
+        root.slicer_area.transpose_main_image()
+
+        def _raise_write_error(*_args, **_kwargs) -> None:
+            raise RuntimeError("write failed")
+
+        monkeypatch.setattr(
+            workspace_storage,
+            "_write_workspace_transaction_file",
+            _raise_write_error,
+        )
+
+        with pytest.raises(RuntimeError, match="write failed"):
+            manager._workspace_controller.saving._save_workspace_document(
+                workspace_path, force_full=False
+            )
+
+        assert figure_node._workspace_tool_data_references == saved_references
+
+
+def test_manager_full_save_fallback_preserves_figure_source_snapshot(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("kx", "eV"),
+        coords={
+            "kx": [-0.5, 0.0, 0.5],
+            "eV": [-1.0, -0.5, 0.0, 0.5],
+        },
+        name="cut",
+    )
+
+    with manager_context() as manager:
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        figure = _materialized_figure_tool(manager, figure_uid)
+        source_name = figure.tool_status.primary_source
+
+        source_path = tmp_path / "full-save-source.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            source_path, force_full=True
+        )
+        adopt_workspace_path(manager, source_path)
+        manager._workspace_controller._mark_workspace_clean()
+
+        root.slicer_area.transpose_main_image()
+        monkeypatch.setattr(
+            manager._workspace_controller.saving,
+            "_workspace_full_save_manifest_first_snapshot",
+            lambda *_args, **_kwargs: None,
+        )
+        target_path = tmp_path / "full-save-target.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            target_path, force_full=True
+        )
+
+        saved_figure = workspace_arrays._read_workspace_dataset_group_h5py(
+            target_path,
+            f"figures/{figure_uid}/tool",
+            preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
+        )
+        assert saved_figure is not None
+        assert (
+            erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+            not in FigureComposerTool._saved_tool_data_references(saved_figure)
+        )
+        assert manager._child_node(figure_uid)._workspace_tool_data_references == {}
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            target_path,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        restored = _materialized_figure_tool(manager, figure_uid)
+        xr.testing.assert_identical(restored.source_data()[source_name], data)
+
+
+def test_manager_incremental_save_preserves_pending_figure_snapshot(
+    qtbot,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("kx", "eV"),
+        coords={"kx": [-0.5, 0.0, 0.5], "eV": [-1.0, -0.5, 0.0, 0.5]},
+        name="pending_cut",
+    )
+
+    with manager_context() as manager:
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+
+        workspace_path = tmp_path / "pending-figure-source-transpose.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+
+        source_node = manager._tool_graph.root_wrappers[0]
+        figure_node = manager._child_node(figure_uid)
+        assert figure_node.pending_workspace_tool_payload is not None
+        if source_node.pending_workspace_memory_payload is not None:
+            assert source_node.materialize_pending_workspace_payload()
+        assert source_node.imagetool is not None
+        assert figure_node.pending_workspace_tool_payload is not None
+
+        source_node.slicer_area.transpose_main_image()
+        assert source_node.data_for_role("displayed").dims == ("eV", "kx")
+
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=False
+        )
+        rewritten_figure = workspace_arrays._read_workspace_dataset_group_h5py(
+            workspace_path,
+            f"figures/{figure_uid}/tool",
+            preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
+        )
+        assert rewritten_figure is not None
+        assert (
+            erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+            not in FigureComposerTool._saved_tool_data_references(rewritten_figure)
+        )
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        restored = _materialized_figure_tool(manager, figure_uid)
+        restored_source = restored.source_data()[restored.tool_status.primary_source]
+        xr.testing.assert_identical(restored_source, data)
 
 
 def test_manager_pending_figure_source_reference_uses_saved_imagetool_dim_order(

@@ -10,6 +10,8 @@ import pytest
 import xarray as xr
 from matplotlib import colors as mcolors
 from matplotlib import style as mpl_style
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 from qtpy import QtCore, QtWidgets
 
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
@@ -25,6 +27,7 @@ from erlab.interactive._figurecomposer import (
     FigureGridSpecGridState,
     FigureGridSpecLayoutState,
     FigureGridSpecSpanState,
+    FigureMethodFamily,
     FigureOperationKind,
     FigureOperationState,
     FigureRecipeState,
@@ -92,6 +95,43 @@ def _activate_source_selection_mode(
     assert index >= 0
     combo.setCurrentIndex(index)
     combo.activated.emit(index)
+
+
+def test_figure_composer_invalid_image_norm_is_owned_by_image_step(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(1.0, 10.0).reshape(3, 3),
+        dims=("eV", "kx"),
+        coords={"eV": [-1.0, 0.0, 1.0], "kx": [-0.5, 0.0, 0.5]},
+        name="data",
+    )
+    valid_image = FigureOperationState.plot_array(label="valid image", source="data")
+    invalid_image = FigureOperationState.plot_array(
+        label="invalid image", source="data"
+    ).model_copy(update={"vmax": 0.0})
+    fermiline = FigureOperationState.method(
+        family=FigureMethodFamily.ERLAB,
+        name="fermiline",
+    )
+    labels = FigureOperationState.method(
+        family=FigureMethodFamily.ERLAB,
+        name="label_subplots",
+    )
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(FigureSourceState(name="data"),),
+        operations=(valid_image, invalid_image, fermiline, labels),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    figure = Figure()
+    canvas = FigureCanvasAgg(figure)
+
+    figurecomposer_rendering._render_into_figure(tool, figure, sync_visible=False)
+    canvas.draw()
+
+    assert set(tool._operation_render_errors) == {invalid_image.operation_id}
+    assert "minvalue" in tool._operation_render_errors[invalid_image.operation_id]
+    assert len(figure.axes[0].images) == 1
 
 
 def test_figure_composer_plot_array_source_selector_clears_legacy_selection(

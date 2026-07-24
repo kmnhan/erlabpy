@@ -243,7 +243,7 @@ class _FigureComposerWorkflowController(QtCore.QObject):
         reserved = set(reserved_sources)
         for target in resolved_targets:
             node = self._host._node_for_target(target)
-            data = node.current_source_data()
+            data = node.data_for_role("displayed")
             source = self._figure_source_from_node(node, data, reserved)
             source_data[source.name] = data
             sources.append(source)
@@ -575,9 +575,13 @@ class _FigureComposerWorkflowController(QtCore.QObject):
         if not isinstance(tool, FigureComposerTool):
             return False
 
-        data = source_node.current_source_data()
+        current_source = self._figure_source_state(tool, source_name)
+        if current_source is None:
+            return False
+        data_role = current_source.data_role
+        data = source_node.data_for_role(data_role)
         source = FigureSourceState.from_script_input(
-            self._host._script_input_for_node(source_node)
+            self._host._script_input_for_node(source_node, data_role=data_role)
         )
         if not tool.replace_source(source_name, source, data):
             return False

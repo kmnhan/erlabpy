@@ -1099,21 +1099,63 @@ def test_figure_composer_redraw_and_preview_cache_edges(qtbot, monkeypatch) -> N
     )
 
 
-def test_figure_composer_preview_draw_error_ignores_missing_operation(qtbot) -> None:
+def test_figure_composer_preview_draw_error_is_not_assigned_to_operation(
+    qtbot,
+) -> None:
     data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    operation = FigureOperationState.line(label="line", source="data")
     tool = FigureComposerTool(
         data,
         recipe=FigureRecipeState(
             sources=(FigureSourceState(name="data"),),
-            operations=(),
+            operations=(operation,),
             primary_source="data",
         ),
     )
     qtbot.addWidget(tool)
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
 
     figurecomposer_rendering._set_preview_draw_error(tool, RuntimeError("boom"))
 
     assert tool._operation_render_errors == {}
+    assert tool._preview_render_error == "RuntimeError: boom"
+    status = tool.findChild(QtWidgets.QStatusBar, "figureComposerPreviewRenderStatus")
+    assert status is not None
+    assert not status.isHidden()
+
+
+def test_figure_composer_preview_draw_failures_are_figure_level(
+    qtbot, monkeypatch
+) -> None:
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    qtbot.waitUntil(lambda: tool.figure_window.isVisible(), timeout=1000)
+
+    def fail_live_draw() -> None:
+        raise RuntimeError("live draw failed")
+
+    monkeypatch.setattr(tool.canvas, "draw", fail_live_draw)
+
+    assert not tool._cache_live_canvas_preview(redraw=True)
+    assert tool._preview_render_error == "RuntimeError: live draw failed"
+
+    tool._set_preview_render_error(None)
+    figurecomposer_rendering._render_preview(tool, show_window=False)
+    assert tool._preview_render_error == "RuntimeError: live draw failed"
+
+    def fail_fallback_draw(_canvas) -> None:
+        raise RuntimeError("fallback draw failed")
+
+    monkeypatch.setattr(FigureCanvasAgg, "draw", fail_fallback_draw)
+
+    assert tool._fallback_preview_pixmap() is None
+    assert tool._preview_render_error == "RuntimeError: fallback draw failed"
 
 
 def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:

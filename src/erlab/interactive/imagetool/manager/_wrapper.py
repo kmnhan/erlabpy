@@ -566,6 +566,9 @@ class _ManagedWindowNode(QtCore.QObject):
             value.slicer_area.sigHistoryChanged.connect(
                 self._handle_imagetool_state_changed
             )
+            value.slicer_area.sigShapeChanged.connect(
+                self._handle_imagetool_displayed_layout_changed
+            )
             value.slicer_area.sigDataEdited.connect(self._handle_imagetool_data_edited)
             value.slicer_area.sigSourceDataChanged.connect(
                 self._handle_imagetool_source_data_changed
@@ -708,6 +711,10 @@ class _ManagedWindowNode(QtCore.QObject):
         with contextlib.suppress(TypeError, RuntimeError):
             old.slicer_area.sigHistoryChanged.disconnect(
                 self._handle_imagetool_state_changed
+            )
+        with contextlib.suppress(TypeError, RuntimeError):
+            old.slicer_area.sigShapeChanged.disconnect(
+                self._handle_imagetool_displayed_layout_changed
             )
         with contextlib.suppress(TypeError, RuntimeError):
             old.slicer_area.sigDataEdited.disconnect(self._handle_imagetool_data_edited)
@@ -2160,6 +2167,10 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         self.manager._note_interaction_activity()
         self.manager._mark_node_state_dirty(self.uid)
+
+    @QtCore.Slot()
+    def _handle_imagetool_displayed_layout_changed(self) -> None:
+        self._advance_displayed_snapshot_token(defer_refresh=True)
 
     @QtCore.Slot()
     def _handle_imagetool_data_edited(self) -> None:

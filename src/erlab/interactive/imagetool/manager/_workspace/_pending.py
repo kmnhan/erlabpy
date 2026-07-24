@@ -172,11 +172,25 @@ class _PendingWorkspacePayloads:
             owner_node=owner_node,
             reference_datasets=reference_datasets,
         )
+        return self._workspace_imagetool_source_data(
+            node,
+            opened,
+            attrs=node.pending_workspace_payload_attrs,
+            data_role=data_role,
+        )
+
+    def _workspace_imagetool_source_data(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        opened: xr.Dataset,
+        *,
+        attrs: Mapping[typing.Any, typing.Any] | None,
+        data_role: ScriptInputDataRole,
+    ) -> xr.DataArray:
         ds = workspace_format._restore_workspace_dataset_attrs(opened.copy(deep=False))
         ds = _serialization.restore_private_coords(ds, _ITOOL_DATA_NAME)
         name = None if node.name == "" else node.name
         data = self._loader._workspace_imagetool_payload_data(ds).rename(name)
-        attrs = node.pending_workspace_payload_attrs
         if attrs is None:
             attrs = ds.attrs
         data = self._pending_workspace_data_with_saved_dim_order(data, attrs)
