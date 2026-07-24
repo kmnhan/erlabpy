@@ -1135,6 +1135,7 @@ def test_wait_panel_discards_input_queued_during_synchronous_work(
 
     assert not panel.isVisible()
     assert QtWidgets.QApplication.activeModalWidget() is modal_guard
+    modal_guard._continue_event_drain()
     qtbot.waitUntil(
         lambda: QtWidgets.QApplication.activeModalWidget() is not modal_guard,
         timeout=1000,
@@ -1170,6 +1171,67 @@ def test_wait_panel_pending_input_drain_is_safe_if_parent_is_destroyed(
     assert not qt_is_valid(panel)
     assert not qt_is_valid(modal_guard)
     QtWidgets.QApplication.processEvents()
+
+
+def test_wait_panel_releases_without_event_dispatcher(qtbot, monkeypatch) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    panel = erlab.interactive.utils._WaitPanel(parent, "No dispatcher")
+    modal_guard = panel._modal_guard
+    monkeypatch.setattr(
+        QtCore.QAbstractEventDispatcher,
+        "instance",
+        lambda: None,
+    )
+
+    modal_guard.release_after_event_drain()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+    assert not qt_is_valid(panel)
+    assert not qt_is_valid(modal_guard)
+
+
+def test_wait_panel_ignores_centering_after_reparenting(qtbot) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    panel = erlab.interactive.utils._WaitPanel(parent, "Detached")
+    qtbot.addWidget(panel)
+    panel.setParent(None)
+
+    panel.show_centered()
+
+    assert not panel.isVisible()
+
+
+def test_wait_panel_finishes_after_modal_guard_is_destroyed(qtbot) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    panel = erlab.interactive.utils._WaitPanel(parent, "Missing guard")
+    modal_guard = panel._modal_guard
+    modal_guard.deleteLater()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    assert qt_is_valid(panel)
+    assert not qt_is_valid(modal_guard)
+
+    panel._finish()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+    assert not qt_is_valid(panel)
+
+
+def test_wait_modal_guard_finishes_after_reparenting(qtbot) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    panel = erlab.interactive.utils._WaitPanel(parent, "Detached guard")
+    modal_guard = panel._modal_guard
+    qtbot.addWidget(modal_guard)
+    modal_guard.setParent(None)
+
+    modal_guard._release()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+    assert qt_is_valid(panel)
+    assert not qt_is_valid(modal_guard)
 
 
 @pytest.mark.parametrize(
@@ -1223,6 +1285,16 @@ def test_wait_indicator_parent_destruction_is_safe(
         assert not qt_is_valid(indicator)
         if modal_guard is not None:
             assert not qt_is_valid(modal_guard)
+
+        indicator.set_message("Ignored after destruction")
+        indicator._finish()
+        if modal_guard is not None:
+            indicator.open()
+            indicator.show_centered()
+            modal_guard.release_after_event_drain()
+            modal_guard._event_loop_awake()
+            modal_guard._continue_event_drain()
+            modal_guard._release()
 
     assert original_depth == erlab.interactive.utils._WAIT_DIALOG_DEPTH
 
