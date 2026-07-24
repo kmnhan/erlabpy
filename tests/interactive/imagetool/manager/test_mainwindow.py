@@ -300,6 +300,21 @@ def test_managed_window_actions_reveal_tree_and_figure_rows(
         assert child_tool._tool_window_menu.menuAction().isVisible()
         assert figure_tool._tool_window_menu.menuAction().isVisible()
 
+        reveal_shortcut = QtGui.QKeySequence("Ctrl+Shift+M")
+        for reveal_action in (
+            root_tool.reveal_in_manager_act,
+            child_tool.reveal_in_manager_action,
+            figure_tool.reveal_in_manager_action,
+        ):
+            assert (
+                reveal_action.shortcut().matches(reveal_shortcut)
+                == QtGui.QKeySequence.SequenceMatch.ExactMatch
+            )
+            assert (
+                reveal_action.shortcutContext()
+                == QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
+            )
+
         manager.tree_view.clearSelection()
         root_tool.reveal_in_manager_act.trigger()
         assert manager.tree_view.selected_imagetool_indices == [0]
