@@ -5,7 +5,7 @@ from pyqtgraph.colormap import modulatedBarData
 
 import erlab.plotting as eplt
 
-plt.style.use("khan")
+plt.style.use("erlab.general")
 
 gamma = 0.3
 
