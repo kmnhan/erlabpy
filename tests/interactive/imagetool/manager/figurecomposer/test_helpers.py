@@ -443,6 +443,19 @@ def test_figure_composer_axes_helpers_parse_safe_expressions() -> None:
 
     assert figurecomposer_axes._compact_axes_code(()) is None
     assert figurecomposer_axes._compact_axes_iterable_code((), nrows=2, ncols=2) is None
+    assert figurecomposer_axes._compact_axes_index(
+        ((0, 0), (0, 1), (1, 0), (1, 1)),
+        nrows=2,
+        ncols=2,
+    ) == (slice(None), slice(None))
+    assert (
+        figurecomposer_axes._compact_axes_index(
+            ((0, 0), (1, 1)),
+            nrows=2,
+            ncols=2,
+        )
+        is None
+    )
     assert figurecomposer_axes._axes_expression_value("axs", axs) is axs
     assert figurecomposer_axes._axes_expression_value("ax", axs) == "ax00"
     assert figurecomposer_axes._axes_expression_value("axs[-1, 0]", axs) == "ax10"
@@ -902,7 +915,7 @@ def test_figure_composer_rendering_helpers_cover_selection_edges(qtbot) -> None:
     tool = FigureComposerTool(
         data,
         recipe=FigureRecipeState(
-            setup=FigureSubplotsState(nrows=1, ncols=1, sharex=False, sharey=False),
+            setup=FigureSubplotsState(nrows=2, ncols=2, sharex=False, sharey=False),
             sources=(FigureSourceState(name="data", label="data"),),
             primary_source="data",
         ),
@@ -911,7 +924,35 @@ def test_figure_composer_rendering_helpers_cover_selection_edges(qtbot) -> None:
     assert "sharex" not in figurecomposer_rendering._setup_kwargs(tool._document)
     assert "sharey" not in figurecomposer_rendering._setup_kwargs(tool._document)
 
-    fig, axs = plt.subplots(1, 1, squeeze=False)
+    fig, axs = plt.subplots(2, 2, squeeze=False)
+    rectangular = figurecomposer_rendering._axes_from_selection(
+        tool,
+        FigureAxesSelectionState(axes=((0, 0), (0, 1), (1, 0), (1, 1))),
+        axs,
+        for_plot_slices=False,
+    )
+    assert isinstance(rectangular, np.ndarray)
+    assert rectangular.shape == (2, 2)
+    assert rectangular[1, 0] is axs[1, 0]
+
+    plot_slices_axes = figurecomposer_rendering._axes_from_selection(
+        tool,
+        FigureAxesSelectionState(axes=((0, 0), (0, 1), (1, 0), (1, 1))),
+        axs,
+        for_plot_slices=True,
+    )
+    assert isinstance(plot_slices_axes, np.ndarray)
+    assert plot_slices_axes.shape == (4,)
+
+    irregular = figurecomposer_rendering._axes_from_selection(
+        tool,
+        FigureAxesSelectionState(axes=((0, 0), (1, 1))),
+        axs,
+        for_plot_slices=False,
+    )
+    assert isinstance(irregular, np.ndarray)
+    assert irregular.shape == (2,)
+
     with pytest.raises(ValueError, match="outside the current figure"):
         figurecomposer_rendering._axes_from_selection(
             tool,

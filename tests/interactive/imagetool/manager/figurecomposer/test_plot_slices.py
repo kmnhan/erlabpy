@@ -2215,6 +2215,10 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert view_page is not None
     assert crop_check is not None
     assert order_combo is not None
+    assert [order_combo.itemData(index) for index in range(order_combo.count())] == [
+        "C",
+        "F",
+    ]
     assert transpose_check is not None
     assert same_limits_combo is not None
     assert axis_combo is not None

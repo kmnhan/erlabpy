@@ -950,6 +950,37 @@ class FigureOperationEditor(QtWidgets.QWidget):
         adapter.connect_commit(self.connect_signal, changed)
         return combo
 
+    def labeled_combo(
+        self,
+        values: Sequence[str],
+        labels: Sequence[str],
+        current: str | None,
+        changed: Callable[[str], None],
+        *,
+        parent: QtWidgets.QWidget | None = None,
+        mixed: bool = False,
+        enabled: bool = True,
+    ) -> QtWidgets.QComboBox:
+        if len(values) != len(labels):
+            raise ValueError("combo values and labels must have the same length")
+        combo = QtWidgets.QComboBox(parent or self._current_page() or self)
+        self.mark_control(combo)
+        adapter = ComboBoxDataControlAdapter(combo)
+        if mixed:
+            adapter.set_mixed(True)
+        for value, label in zip(values, labels, strict=True):
+            combo.addItem(label, value)
+        if not mixed and current is not None:
+            index = combo.findData(current)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        combo.setEnabled(enabled)
+        adapter.connect_commit(
+            self.connect_signal,
+            lambda value: changed(typing.cast("str", value)),
+        )
+        return combo
+
     def source_combo(
         self,
         values: Sequence[str],

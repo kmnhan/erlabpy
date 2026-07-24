@@ -15,6 +15,7 @@ import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
 import erlab.interactive._figurecomposer._ui._tick_params as figurecomposer_tick_params
 import erlab.interactive._stylesheets
+import erlab.plotting as eplt
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
     FigureComposerTool,
@@ -1493,6 +1494,141 @@ def test_figure_composer_batch_incompatible_methods_disable_editor(qtbot) -> Non
     )
 
 
+@pytest.mark.parametrize(
+    ("method_name", "method_args", "text_values"),
+    [
+        (
+            "label_subplots",
+            (),
+            tuple(f"label-{index}" for index in range(9)),
+        ),
+        (
+            "label_subplot_properties",
+            ({"value": list(range(9))},),
+            (),
+        ),
+        (
+            "set_titles",
+            (),
+            tuple(f"title-{index}" for index in range(9)),
+        ),
+        (
+            "set_xlabels",
+            (),
+            tuple(f"x-{index}" for index in range(9)),
+        ),
+        (
+            "set_ylabels",
+            (),
+            tuple(f"y-{index}" for index in range(9)),
+        ),
+    ],
+)
+def test_figure_composer_ordered_methods_preserve_rectangular_axes(
+    qtbot, monkeypatch, method_name, method_args, text_values
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    axes = FigureAxesSelectionState(
+        axes=tuple((row, col) for row in range(3) for col in range(3))
+    )
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.ERLAB,
+        name=method_name,
+        axes=axes,
+    ).model_copy(
+        update={
+            "method_args": method_args,
+            "method_kwargs": {"order": "F"},
+            "text_values": text_values,
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=3, ncols=3),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    calls: list[tuple[tuple[int, ...], str | None]] = []
+
+    def capture_axes(axes, *_args, **kwargs) -> None:
+        calls.append((np.asarray(axes, dtype=object).shape, kwargs.get("order")))
+
+    monkeypatch.setattr(eplt, method_name, capture_axes)
+
+    preview_figure = plt.figure()
+    figurecomposer_rendering._render_into_figure(
+        tool, preview_figure, sync_visible=False
+    )
+    assert calls == [((3, 3), "F")]
+
+    calls.clear()
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    assert calls == [((3, 3), "F")]
+
+    plt.close(preview_figure)
+    plt.close(namespace["fig"])
+
+
+def test_figure_composer_label_subplots_preserves_empty_text_rows(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.ERLAB,
+        name="label_subplots",
+        axes=FigureAxesSelectionState(axes=((0, 0), (0, 1), (0, 2))),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=3),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.operation_editor.select_section("method")
+    text_edit = tool.operation_editor.stack.currentWidget().findChild(
+        QtWidgets.QPlainTextEdit,
+        "figureComposerMethodTextValuesEdit",
+    )
+    assert text_edit is not None
+
+    text_edit.setPlainText("first\n\nthird")
+    operation = tool.tool_status.operations[0]
+    assert operation.text_values == ("first", "", "third")
+    _args, kwargs = method_execution._render_args_kwargs(
+        tool,
+        operation,
+        method_catalog._method_spec(operation),
+    )
+    assert kwargs["values"] == ["first", "", "third"]
+
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    assert all(len(axis.artists) == 1 for axis in namespace["axs"].flat)
+    plt.close(namespace["fig"])
+
+    text_edit.setPlainText("")
+    assert tool.tool_status.operations[0].text_values == ()
+
+
 def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
@@ -1613,7 +1749,12 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
         edit.editingFinished.emit()
 
     def set_combo(page: QtWidgets.QWidget, name: str, text: str) -> None:
-        _activate_combo_text(combo_box(page, name), text)
+        combo = combo_box(page, name)
+        index = combo.findData(text)
+        if index >= 0:
+            _activate_combo_index(combo, index)
+        else:
+            _activate_combo_text(combo, text)
 
     def operation(row: int) -> FigureOperationState:
         return tool.tool_status.operations[row]
@@ -1623,6 +1764,11 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     assert operation(0).method_args == (True,)
 
     page = select_method(1)
+    order_combo = combo_box(page, "figureComposerERLabLabelSubplotsOrderCombo")
+    assert [order_combo.itemData(index) for index in range(order_combo.count())] == [
+        "C",
+        "F",
+    ]
     spin_box(page, "figureComposerERLabLabelSubplotsStartEdit").setValue(3)
     set_combo(page, "figureComposerERLabLabelSubplotsOrderCombo", "F")
     set_combo(page, "figureComposerERLabLabelSubplotsLocCombo", "lower right")
