@@ -1675,6 +1675,9 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     }
 
     page = select_method(3)
+    nice_colorbar_index = spin_box(page, "figureComposerERLabNiceColorbarIndexEdit")
+    assert nice_colorbar_index.value() == -1
+    nice_colorbar_index.setValue(-2)
     double_spin_box(page, "figureComposerERLabNiceColorbarWidthEdit").setValue(10.0)
     double_spin_box(page, "figureComposerERLabNiceColorbarAspectEdit").setValue(4.0)
     double_spin_box(page, "figureComposerERLabNiceColorbarPadEdit").setValue(2.0)
@@ -1686,6 +1689,7 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
         page, "figureComposerERLabNiceColorbarTickLabelsEdit", "low, mid, high"
     )
     assert operation(3).method_kwargs == {
+        "index": -2,
         "width": 10.0,
         "aspect": 4.0,
         "pad": 2.0,
@@ -1697,11 +1701,15 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     }
 
     page = select_method(4)
-    spin_box(page, "figureComposerERLabProportionalColorbarIndexEdit").setValue(0)
+    proportional_colorbar_index = spin_box(
+        page, "figureComposerERLabProportionalColorbarIndexEdit"
+    )
+    assert proportional_colorbar_index.value() == -1
+    proportional_colorbar_index.setValue(-2)
     set_combo(page, "figureComposerERLabProportionalColorbarImageOnlyCombo", "True")
     set_line_edit(page, "figureComposerERLabProportionalColorbarTicksEdit", "[0, 1]")
     assert operation(4).method_kwargs == {
-        "index": 0,
+        "index": -2,
         "image_only": True,
         "ticks": [0, 1],
     }
