@@ -14,6 +14,7 @@ import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
+import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 from erlab.interactive._figurecomposer import (
     FigureComposerTool,
@@ -1273,6 +1274,144 @@ def test_manager_workspace_figure_sources_save_as_references(
         source_data = restored.source_data()
         xr.testing.assert_identical(source_data["first"], first)
         xr.testing.assert_identical(source_data["second"], second)
+
+
+def test_manager_figure_workspace_reference_helper_edges(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        name="data",
+    )
+
+    with manager_context() as manager:
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+
+        controller = manager._workspace_controller
+        loader = controller.loading
+        saver = controller.saving
+        root_node = manager._node_for_target(0)
+        figure_node = manager._child_node(figure_uid)
+        stale_revision = "stale-snapshot"
+        current_reference = {
+            "kind": "manager_node",
+            "node_uid": root_node.uid,
+            "node_snapshot_token": root_node.snapshot_token,
+            "data_role": "displayed",
+        }
+
+        assert not controller._tool_data_reference_matches_current_snapshot(
+            {"kind": "manager_node", "node_uid": ""}
+        )
+        assert not controller._tool_data_reference_matches_current_snapshot(
+            {
+                "kind": "manager_node",
+                "node_uid": root_node.uid,
+                "data_role": "invalid",
+            }
+        )
+
+        def unavailable_data(_data_role: str) -> xr.DataArray:
+            raise RuntimeError("unavailable")
+
+        with monkeypatch.context() as context:
+            context.setattr(root_node, "data_for_role", unavailable_data)
+            assert not controller._tool_data_reference_matches_current_data(
+                current_reference, data
+            )
+
+        snapshot = workspace_saving._WorkspaceSaveSnapshot(
+            generation=0,
+            root_attrs={},
+            delta_save_count=0,
+            serialized_tool_data_references=(
+                ("missing", {}),
+                (root_node.uid, {}),
+            ),
+        )
+        controller._commit_saved_tool_data_references(snapshot)
+
+        invalid_tool_dataset = xr.Dataset(
+            attrs={"manager_node_kind": "tool", "manager_node_uid": ""}
+        )
+        assert saver._serialized_tool_data_references((invalid_tool_dataset,)) == ()
+        assert figure_uid not in saver._workspace_stale_reference_rewrite_uids(
+            frozenset(manager._tool_graph.nodes)
+        )
+
+        assert (
+            loader._saved_workspace_reference_source_data(
+                figure_node,
+                snapshot_token=stale_revision,
+                data_role="displayed",
+                owner_node=None,
+                reference_datasets={},
+            )
+            is None
+        )
+        assert (
+            loader._saved_workspace_reference_source_data(
+                root_node,
+                snapshot_token=stale_revision,
+                data_role="displayed",
+                owner_node=None,
+                reference_datasets={},
+            )
+            is None
+        )
+
+        workspace_path = tmp_path / "reference-helper-edges.itws"
+        saver._save_workspace_document(workspace_path, force_full=True)
+        adopt_workspace_path(manager, workspace_path)
+        reference_datasets: dict[tuple[Path, str], xr.Dataset] = {}
+        try:
+            assert (
+                loader._saved_workspace_reference_source_data(
+                    root_node,
+                    snapshot_token=stale_revision,
+                    data_role="displayed",
+                    owner_node=figure_node,
+                    reference_datasets=reference_datasets,
+                )
+                is None
+            )
+            _parent_data, resolver = loader._workspace_tool_restore_references(
+                xr.Dataset(),
+                parent_target=None,
+                owner_node=figure_node,
+                reference_datasets=reference_datasets,
+            )
+            xr.testing.assert_identical(
+                resolver(
+                    {
+                        "kind": "manager_node",
+                        "node_uid": root_node.uid,
+                        "data_role": "displayed",
+                    }
+                ),
+                root_node.data_for_role("displayed"),
+            )
+            xr.testing.assert_identical(
+                resolver(
+                    {
+                        **current_reference,
+                        "node_snapshot_token": stale_revision,
+                    }
+                ),
+                root_node.data_for_role("displayed"),
+            )
+        finally:
+            loader._close_workspace_reference_datasets(reference_datasets)
 
 
 def test_manager_workspace_embeds_figure_snapshot_after_source_transpose(

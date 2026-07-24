@@ -550,6 +550,21 @@ def test_manager_figure_source_helper_edge_contracts(
             )
 
         with monkeypatch.context() as context:
+            context.setattr(
+                manager._figure_workflows,
+                "_figure_source_live_node",
+                lambda *_args: manager._node_for_target(0),
+            )
+            context.setattr(
+                manager._figure_workflows,
+                "_figure_source_state",
+                lambda *_args: None,
+            )
+            assert not manager._figure_workflows._refresh_figure_source(
+                figure_uid, source_alias
+            )
+
+        with monkeypatch.context() as context:
             context.setattr(manager, "_figure_uids", lambda: ("missing",))
             manager._figure_workflows._refresh_figure_source_controls()
 

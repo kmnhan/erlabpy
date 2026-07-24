@@ -2677,10 +2677,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if error == self._preview_render_error:
             return
         self._preview_render_error = error
-        status_bar = self.statusBar()
-        if status_bar is None:
-            status_bar = QtWidgets.QStatusBar(self)
-            self.setStatusBar(status_bar)
+        status_bar = typing.cast("QtWidgets.QStatusBar", self.statusBar())
         status_bar.setObjectName("figureComposerPreviewRenderStatus")
         if error is None:
             status_bar.clearMessage()

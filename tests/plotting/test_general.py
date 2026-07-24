@@ -5,6 +5,7 @@ import pytest
 import xarray as xr
 
 import erlab.accessors.general as accessor_general
+import erlab.plotting.general as plotting_general
 from erlab.plotting.general import (
     clean_labels,
     fermiline,
@@ -52,6 +53,16 @@ def test_plot_array_norm_ignores_nonfinite_data(invalid: float) -> None:
         assert image.norm.vmax == 4.0
     finally:
         plt.close(figure)
+
+
+def test_validate_image_norm_allows_unresolved_limits(monkeypatch) -> None:
+    norm = matplotlib.colors.Normalize()
+    monkeypatch.setattr(norm, "autoscale_None", lambda _values: None)
+
+    plotting_general._validate_image_norm(norm, np.arange(4.0))
+
+    assert norm.vmin is None
+    assert norm.vmax is None
 
 
 def test_plot_slices_selects_slice_stack_once_per_map(monkeypatch) -> None:
