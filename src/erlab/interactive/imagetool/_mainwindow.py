@@ -485,6 +485,10 @@ class ImageTool(BaseImageTool):
         )
         self.reveal_in_manager_act.setObjectName("itool_reveal_in_manager_action")
         self.reveal_in_manager_act.setIcon(QtGui.QIcon.fromTheme("go-jump"))
+        self.reveal_in_manager_act.setShortcut("Ctrl+Shift+M")
+        self.reveal_in_manager_act.setShortcutContext(
+            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
         self.reveal_in_manager_act.setVisible(False)
         self.reveal_in_manager_act.triggered.connect(self._reveal_in_manager)
 

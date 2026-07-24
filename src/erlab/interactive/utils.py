@@ -3319,6 +3319,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         )
         self.reveal_in_manager_action.setObjectName("tool_reveal_in_manager_action")
         self.reveal_in_manager_action.setIcon(QtGui.QIcon.fromTheme("go-jump"))
+        self.reveal_in_manager_action.setShortcut("Ctrl+Shift+M")
+        self.reveal_in_manager_action.setShortcutContext(
+            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
         self.reveal_in_manager_action.triggered.connect(self._reveal_in_manager)
         self._tool_window_menu.addAction(self.reveal_in_manager_action)
         typing.cast("QtGui.QAction", self._tool_window_menu.menuAction()).setVisible(
