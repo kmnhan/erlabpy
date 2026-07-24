@@ -261,6 +261,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
             self.graphics_layout.addItem(self.hists[i], i, 1)
             plot.addItem(self.images[i])
             self.hists[i].setImageItem(self.images[i])
+            self._register_plot_appearance(("input", "result")[i], self.hists[i])
             # plot.showGrid(x=True, y=True, alpha=0.5)
 
         self.plots[0].setXLink(self.plots[1])

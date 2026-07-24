@@ -446,9 +446,19 @@ def test_fit2d_status_and_persistence_preserve_transpose_orientation(qtbot) -> N
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
+    win.cbar.set_colormap("plasma", 0.6, reverse=True, high_contrast=True)
+    win.cbar.setSpanRegion((0.5, 1.0))
     win._do_transpose()
     win.y_index_spin.setValue(3)
     status = win.tool_status
+    assert win.cbar.colormap_properties == {
+        "cmap": "plasma",
+        "gamma": pytest.approx(0.6),
+        "reverse": True,
+        "high_contrast": True,
+        "zero_centered": False,
+    }
+    assert win.cbar.spanRegion() == pytest.approx((0.5, 1.0))
 
     win_restored = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win_restored)
@@ -463,11 +473,16 @@ def test_fit2d_status_and_persistence_preserve_transpose_orientation(qtbot) -> N
     assert isinstance(win_roundtripped, Fit2DTool)
     xr.testing.assert_identical(win_roundtripped.tool_data, data.transpose("x", "y"))
     assert win_roundtripped.y_index_spin.value() == 3
+    assert win_roundtripped.cbar.colormap_properties == win.cbar.colormap_properties
+    assert win_roundtripped.cbar.spanRegion() == pytest.approx((0.5, 1.0))
 
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) + 1.0
     win_roundtripped.update_data(updated)
     xr.testing.assert_identical(win_roundtripped.tool_data, updated.transpose("x", "y"))
+    qtbot.wait_until(
+        lambda: win_roundtripped.cbar.spanRegion() == pytest.approx((0.5, 1.0))
+    )
 
 
 def test_fit2d_saved_dims_ignore_missing_or_incompatible_state() -> None:

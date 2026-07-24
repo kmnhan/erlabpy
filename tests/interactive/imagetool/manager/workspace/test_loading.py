@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping
 
 import h5py
 import numpy as np
+import pyqtgraph as pg
 import pytest
 import xarray
 import xarray as xr
@@ -1839,6 +1840,65 @@ def test_manager_workspace_partially_loads_corrupted_child_with_warning(
         assert dialog.parent is manager
         assert f"0/childtools/{child_uid}" in dialog.kwargs["informative_text"]
         assert "Input DataArray must be 2D" in dialog.kwargs["detailed_text"]
+
+
+def test_manager_workspace_roundtrips_child_plot_appearance(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("y", "x"),
+        name="source",
+    )
+    with manager_context() as manager:
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        child = DerivativeTool(data)
+        child_uid = manager.add_childtool(child, 0, show=False)
+        manager._workspace_controller._mark_workspace_clean()
+
+        histogram = child.hists[0]
+        histogram.gradient.setColorMap(
+            pg.colormap.get("plasma", source="matplotlib", skipCache=True)
+        )
+        histogram.gradient.sigGradientChangeFinished.emit(histogram.gradient)
+        histogram.region.lines[0].sigDragged.emit(histogram.region.lines[0])
+        histogram.setLevels(3.0, 18.0)
+        histogram.sigLevelChangeFinished.emit(histogram)
+        qtbot.wait_until(lambda: manager.is_workspace_modified)
+        expected_positions, expected_colors = histogram.gradient.colorMap().getStops(
+            pg.ColorMap.BYTE
+        )
+
+        fname = tmp_path / "child-plot-appearance.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            fname, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+
+        node = manager._child_node(child_uid)
+        if node.pending_workspace_payload is not None:
+            assert node.materialize_pending_workspace_payload()
+        restored = node.tool_window
+        assert isinstance(restored, DerivativeTool)
+        assert restored.hists[0].getLevels() == pytest.approx((3.0, 18.0))
+        actual_positions, actual_colors = (
+            restored.hists[0].gradient.colorMap().getStops(pg.ColorMap.BYTE)
+        )
+        np.testing.assert_allclose(actual_positions, expected_positions)
+        np.testing.assert_array_equal(actual_colors, expected_colors)
+        assert not manager.is_workspace_modified
 
 
 def test_manager_workspace_no_loaded_windows_error_without_skipped_nodes(

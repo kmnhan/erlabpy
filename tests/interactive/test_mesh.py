@@ -321,6 +321,24 @@ def test_meshtool_autofind_and_persistence(
     assert warnings
     assert "No mesh data" in warnings[-1]
 
+    expected_appearance = []
+    for index, (colorbar, cmap) in enumerate(
+        zip(
+            (win.cbar_data, win.cbar_mesh, win.cbar_fft, win.cbar_mask),
+            ("plasma", "cividis", "magma", "viridis"),
+            strict=True,
+        )
+    ):
+        gamma = 0.6 + 0.1 * index
+        colorbar.set_colormap(cmap, gamma, reverse=bool(index % 2))
+        lower, upper = colorbar.limits
+        levels = (
+            float(lower + 0.2 * (upper - lower)),
+            float(lower + 0.8 * (upper - lower)),
+        )
+        colorbar.setSpanRegion(levels)
+        expected_appearance.append((colorbar.colormap_properties, levels))
+
     state_file = tmp_path / "meshtool_state.h5"
     saved_code = win.copy_code()
     win.to_file(state_file)
@@ -333,6 +351,18 @@ def test_meshtool_autofind_and_persistence(
     assert restored.data_name == "mesh_input"
     assert restored.copy_code() == saved_code
     xr.testing.assert_identical(restored.tool_data, win.tool_data)
+    for colorbar, (properties, levels) in zip(
+        (
+            restored.cbar_data,
+            restored.cbar_mesh,
+            restored.cbar_fft,
+            restored.cbar_mask,
+        ),
+        expected_appearance,
+        strict=True,
+    ):
+        assert colorbar.colormap_properties == properties
+        assert colorbar.spanRegion() == pytest.approx(levels)
 
     namespace: dict[str, object] = {
         "era": erlab.analysis,
@@ -354,6 +384,8 @@ def test_meshtool_deferred_restore_queues_initial_preview(
 ) -> None:
     win: MeshTool = meshtool(meshy_data, data_name="mesh_input", execute=False)
     qtbot.addWidget(win)
+    win.cbar_fft.set_colormap("plasma", 0.7, reverse=True)
+    win.cbar_fft.setSpanRegion((-1.0, 1.0))
     saved = win.to_dataset()
     calls: list[tuple[MeshTool, bool]] = []
     original = MeshTool.set_data_beforecalc
@@ -386,6 +418,16 @@ def test_meshtool_deferred_restore_queues_initial_preview(
     restored.show()
 
     qtbot.wait_until(lambda: calls == [(restored, True)], timeout=5000)
+    qtbot.wait_until(
+        lambda: restored.cbar_fft.spanRegion() == pytest.approx((-1.0, 1.0))
+    )
+    assert restored.cbar_fft.colormap_properties == {
+        "cmap": "plasma",
+        "gamma": pytest.approx(0.7),
+        "reverse": True,
+        "high_contrast": False,
+        "zero_centered": False,
+    }
 
 
 def test_meshtool_autofind_invalid_peaks_warns_and_keeps_values(

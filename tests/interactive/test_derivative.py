@@ -4,6 +4,7 @@ import typing
 from types import SimpleNamespace
 
 import numpy as np
+import pyqtgraph as pg
 import pytest
 import xarray as xr
 from pydantic import BaseModel, ValidationError
@@ -142,6 +143,49 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
         assert win_restored.source_auto_update is True
         assert win_restored.source_state == "stale"
         check_generated_code(win_restored)
+
+
+def test_dtool_plot_appearance_roundtrip_and_image_refresh(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape((5, 5)),
+        dims=("x", "y"),
+        name="data",
+    )
+    win = DerivativeTool(data)
+    qtbot.addWidget(win)
+
+    expected_colormaps: list[tuple[np.ndarray, np.ndarray]] = []
+    for index, (name, levels) in enumerate(
+        (("plasma", (3.0, 18.0)), ("cividis", (4.0, 20.0)))
+    ):
+        histogram = win.hists[index]
+        histogram.gradient.setColorMap(
+            pg.colormap.get(name, source="matplotlib", skipCache=True)
+        )
+        histogram.gradient.sigGradientChangeFinished.emit(histogram.gradient)
+        histogram.region.lines[0].sigDragged.emit(histogram.region.lines[0])
+        histogram.setLevels(*levels)
+        histogram.sigLevelChangeFinished.emit(histogram)
+        expected_colormaps.append(
+            histogram.gradient.colorMap().getStops(pg.ColorMap.BYTE)
+        )
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+    assert isinstance(restored, DerivativeTool)
+    for index, expected_levels in enumerate(((3.0, 18.0), (4.0, 20.0))):
+        assert restored.hists[index].getLevels() == pytest.approx(expected_levels)
+        actual_positions, actual_colors = (
+            restored.hists[index].gradient.colorMap().getStops(pg.ColorMap.BYTE)
+        )
+        expected_positions, expected_colors = expected_colormaps[index]
+        np.testing.assert_allclose(actual_positions, expected_positions)
+        np.testing.assert_array_equal(actual_colors, expected_colors)
+
+    restored.images[1].setImage(np.arange(100.0, 125.0).reshape(5, 5), autoLevels=True)
+    qtbot.wait_until(
+        lambda: restored.hists[1].getLevels() == pytest.approx((4.0, 20.0))
+    )
 
 
 def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:

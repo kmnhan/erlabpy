@@ -514,17 +514,12 @@ class _ColorBarEditWidget(QtWidgets.QWidget):
         gamma: float = self._gamma_widget.value()
         reverse: bool = self._reversed_check.isChecked()
         high_contrast: bool = self._high_contrast_check.isChecked()
-
-        for img_ref in self.cb.images:
-            img = img_ref()
-            if img is not None:
-                img.set_colormap(
-                    cmap_name,
-                    gamma,
-                    reverse=reverse,
-                    high_contrast=high_contrast,
-                    update=True,
-                )
+        self.cb.set_colormap(
+            cmap_name,
+            gamma,
+            reverse=reverse,
+            high_contrast=high_contrast,
+        )
 
     def populate_cmap_info(self) -> None:
         self._cmap_combo._populate()
@@ -551,6 +546,9 @@ class _ColorBarEditWidget(QtWidgets.QWidget):
 
 
 class BetterColorBarItem(pg.PlotItem):
+    sigColorChanged = QtCore.Signal()  #: :meta private:
+    sigLevelsChangeFinished = QtCore.Signal()  #: :meta private:
+
     def __init__(
         self,
         parent: QtWidgets.QWidget | None = None,
@@ -686,7 +684,19 @@ class BetterColorBarItem(pg.PlotItem):
     def limits(self) -> tuple[float, float]:
         if self._fixedlimits is not None:
             return self._fixedlimits
-        return self.primary_image().quickMinMax(targetSize=2**16)
+        image = self.primary_image()
+        limits = tuple(float(value) for value in image.quickMinMax(targetSize=2**16))
+        if all(np.isfinite(value) for value in limits):
+            return typing.cast("tuple[float, float]", limits)
+        levels = image.getLevels()
+        if levels is not None:
+            finite_levels = tuple(float(value) for value in levels)
+            if all(np.isfinite(value) for value in finite_levels):
+                return typing.cast(
+                    "tuple[float, float]",
+                    tuple(sorted(finite_levels)),
+                )
+        return (0.0, 1.0)
 
     def _normalized_transform(self) -> QtGui.QTransform:
         mn, mx = self.limits
@@ -792,7 +802,7 @@ class BetterColorBarItem(pg.PlotItem):
 
     @QtCore.Slot()
     def level_change_fin(self) -> None:
-        pass
+        self.sigLevelsChangeFinished.emit()
 
     def spanRegion(self) -> tuple[float, float]:
         return self._span_units_to_levels(self._span.getRegion())
@@ -856,7 +866,7 @@ class BetterColorBarItem(pg.PlotItem):
 
         # self.primary_image().sigImageChanged.connect(self.limit_changed)
         # self.primary_image().sigColorChanged.connect(self.color_changed)
-        self.primary_image().sigColorChanged.connect(self.limit_changed)
+        self.primary_image().sigColorChanged.connect(self._image_color_changed)
         # else:
         # print("hello")
 
@@ -874,6 +884,60 @@ class BetterColorBarItem(pg.PlotItem):
         self.image_changed()
         # self.color_changed()
         self.limit_changed()
+
+    @QtCore.Slot()
+    def _image_color_changed(self) -> None:
+        self.limit_changed()
+        self.sigColorChanged.emit()
+
+    @property
+    def colormap_properties(self) -> dict[str, typing.Any] | None:
+        """Return the semantic ERLab colormap settings for the primary image."""
+        if self._primary_image is None:
+            return None
+        image = self.primary_image()
+        if image is None:
+            return None
+        cmap = image.getColorMap()
+        if cmap is None:
+            return None
+        attrs = getattr(cmap, "_erlab_attrs", None)
+        if not isinstance(attrs, dict):
+            return None
+        return {
+            "cmap": cmap.name,
+            "gamma": float(attrs.get("gamma", 1.0)),
+            "reverse": bool(attrs.get("reverse", False)),
+            "high_contrast": bool(attrs.get("high_contrast", False)),
+            "zero_centered": bool(attrs.get("zero_centered", False)),
+        }
+
+    def set_colormap(
+        self,
+        cmap: pg.ColorMap | str,
+        gamma: float,
+        reverse: bool = False,
+        high_contrast: bool = False,
+        zero_centered: bool = False,
+    ) -> None:
+        """Apply one ERLab colormap configuration to every controlled image."""
+        for image_ref in tuple(self.images):
+            image = image_ref()
+            if image is not None:
+                image.set_colormap(
+                    cmap,
+                    gamma,
+                    reverse=reverse,
+                    high_contrast=high_contrast,
+                    zero_centered=zero_centered,
+                )
+
+    def set_pg_colormap(self, cmap: pg.ColorMap) -> None:
+        """Apply a raw pyqtgraph colormap to every controlled image."""
+        for image_ref in tuple(self.images):
+            image = image_ref()
+            if image is not None:
+                image.set_pg_colormap(cmap)
 
     def image_level_changed(self) -> None:
         levels = self.primary_image().getLevels()
