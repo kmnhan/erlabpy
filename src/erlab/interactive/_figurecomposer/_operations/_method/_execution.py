@@ -44,6 +44,7 @@ from erlab.interactive._figurecomposer._operations._method._state import (
     _label_values,
     _method_args,
     _method_has_transform_control,
+    _method_kwargs,
     _subplots_adjust_values,
 )
 from erlab.interactive._figurecomposer._rendering import (
@@ -259,8 +260,7 @@ def _render_args_kwargs(
             default_axis=axis if default_axis is None else default_axis,
         )
     )
-    kwargs = dict(spec.default_kwargs)
-    kwargs.update(operation.method_kwargs)
+    kwargs = _method_kwargs(operation, spec)
     if (
         _is_axes_errorbar_method(spec)
         and operation.method_plot_data_mode == "from_data"
@@ -301,8 +301,7 @@ def _code_args_kwargs(
     axis_code: str | None = None,
 ) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
     args = list(_method_code_call_args(tool, operation, spec))
-    kwargs = dict(spec.default_kwargs)
-    kwargs.update(operation.method_kwargs)
+    kwargs = _method_kwargs(operation, spec)
     if (
         _is_axes_errorbar_method(spec)
         and operation.method_plot_data_mode == "from_data"

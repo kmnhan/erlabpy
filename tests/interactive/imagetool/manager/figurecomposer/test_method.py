@@ -1628,6 +1628,65 @@ def test_figure_composer_label_subplots_preserves_empty_text_rows(qtbot) -> None
     text_edit.setPlainText("")
     assert tool.tool_status.operations[0].text_values == ()
 
+    text_edit.setPlainText(" \t ")
+    operation = tool.tool_status.operations[0]
+    assert operation.text_values == ()
+    _args, kwargs = method_execution._render_args_kwargs(
+        tool,
+        operation,
+        method_catalog._method_spec(operation),
+    )
+    assert "values" not in kwargs
+
+
+@pytest.mark.parametrize("legacy_order", ["A", "K"])
+def test_figure_composer_legacy_method_order_normalizes_to_c(
+    qtbot, monkeypatch, legacy_order
+) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.ERLAB,
+        name="label_subplots",
+    ).model_copy(update={"method_kwargs": {"order": legacy_order}})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    spec = method_catalog._method_spec(operation)
+    assert (
+        method_execution._render_args_kwargs(tool, operation, spec)[1]["order"] == "C"
+    )
+
+    tool.operation_editor.select_section("method")
+    order_combo = tool.operation_editor.stack.currentWidget().findChild(
+        QtWidgets.QComboBox,
+        "figureComposerERLabLabelSubplotsOrderCombo",
+    )
+    assert order_combo is not None
+    assert order_combo.currentData() == "C"
+
+    calls: list[str] = []
+
+    def capture_order(_axes, **kwargs) -> None:
+        calls.append(kwargs["order"])
+
+    monkeypatch.setattr(eplt, "label_subplots", capture_order)
+    preview_figure = plt.figure()
+    figurecomposer_rendering._render_into_figure(
+        tool, preview_figure, sync_visible=False
+    )
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    assert calls == ["C", "C"]
+    plt.close(preview_figure)
+    plt.close(namespace["fig"])
+
 
 def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     data = xr.DataArray(

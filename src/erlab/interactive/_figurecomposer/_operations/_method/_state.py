@@ -82,6 +82,27 @@ def _method_kwarg_value(
     return operation.method_kwargs.get(key, default)
 
 
+def _normalized_method_control_value(
+    control: MethodControlSpec, value: typing.Any
+) -> typing.Any:
+    if control.option_labels and str(value) not in control.options:
+        return control.default
+    return value
+
+
+def _method_kwargs(
+    operation: FigureOperationState, spec: MethodSpec
+) -> dict[str, typing.Any]:
+    kwargs = dict(spec.default_kwargs)
+    kwargs.update(operation.method_kwargs)
+    for control in spec.controls:
+        if control.key is not None and control.key in kwargs:
+            kwargs[control.key] = _normalized_method_control_value(
+                control, kwargs[control.key]
+            )
+    return kwargs
+
+
 def _is_axes_plot_method(spec: MethodSpec) -> bool:
     return is_axes_plot_data_method(spec.family, spec.name)
 
