@@ -89,6 +89,56 @@ class _WorkspaceController:
         self._background_save_requested = False
         self._shutdown_compaction_attempted = False
 
+    def _tool_data_reference_matches_current_snapshot(
+        self, reference: Mapping[str, typing.Any]
+    ) -> bool:
+        if reference.get("kind") != "manager_node":
+            return True
+        node_uid = reference.get("node_uid")
+        if not isinstance(node_uid, str) or not node_uid:
+            return False
+        node = self._manager._tool_graph.nodes.get(node_uid)
+        if node is None:
+            return False
+        data_role = reference.get("data_role", "displayed")
+        if data_role not in {"source", "displayed"}:
+            return False
+        snapshot_token = reference.get("node_snapshot_token")
+        return snapshot_token is None or (
+            isinstance(snapshot_token, str)
+            and snapshot_token != ""
+            and snapshot_token == node.snapshot_token_for_role(data_role)
+        )
+
+    def _tool_data_reference_matches_current_data(
+        self, reference: Mapping[str, typing.Any], data: xr.DataArray
+    ) -> bool:
+        if not self._tool_data_reference_matches_current_snapshot(reference):
+            return False
+        if reference.get("kind") != "manager_node":
+            return True
+        node_uid = typing.cast("str", reference.get("node_uid"))
+        node = self._manager._tool_graph.nodes[node_uid]
+        data_role = typing.cast(
+            "typing.Literal['source', 'displayed']",
+            reference.get("data_role", "displayed"),
+        )
+        try:
+            resolved = node.data_for_role(data_role)
+        except Exception:
+            return False
+        return erlab.interactive.utils.ToolWindow._reference_resolves_current_tool_data(
+            resolved, data
+        )
+
+    def _commit_saved_tool_data_references(
+        self, snapshot: workspace_saving._WorkspaceSaveSnapshot
+    ) -> None:
+        for uid, references in snapshot.serialized_tool_data_references:
+            node = self._manager._tool_graph.nodes.get(uid)
+            if node is not None and not node.is_imagetool:
+                node._set_workspace_tool_data_references(references)
+
     @staticmethod
     def _normalize_recent_workspace_paths(
         paths: Iterable[str | os.PathLike[str]],
@@ -601,7 +651,8 @@ class _WorkspaceController:
             reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] = {}
             try:
                 with tool._save_tool_data_reference_context(
-                    self._manager._tool_graph.nodes
+                    self._manager._tool_graph.nodes,
+                    reference_validator=self._tool_data_reference_matches_current_data,
                 ):
                     ds = tool.to_dataset()
                 references = type(tool)._saved_tool_data_references(ds)
@@ -1571,6 +1622,7 @@ class _WorkspaceController:
             self._manager._workspace_state.schema_version = (
                 workspace_format._current_workspace_schema_version()
             )
+        self._commit_saved_tool_data_references(snapshot)
         self._manager._workspace_state.needs_full_save = False
         self._manager._workspace_state.delta_save_count = snapshot.delta_save_count
         self._manager._workspace_state.set_repack_estimate(
@@ -1865,6 +1917,7 @@ class _WorkspaceController:
                         on_finished(False)
                     return
 
+            self._commit_saved_tool_data_references(snapshot)
             self._manager._workspace_state.needs_full_save = False
             self._manager._workspace_state.delta_save_count = snapshot.delta_save_count
             self._manager._workspace_state.set_repack_estimate(

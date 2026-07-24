@@ -1099,21 +1099,31 @@ def test_figure_composer_redraw_and_preview_cache_edges(qtbot, monkeypatch) -> N
     )
 
 
-def test_figure_composer_preview_draw_error_ignores_missing_operation(qtbot) -> None:
+def test_figure_composer_preview_draw_error_is_not_assigned_to_operation(
+    qtbot,
+) -> None:
     data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    operation = FigureOperationState.line(label="line", source="data")
     tool = FigureComposerTool(
         data,
         recipe=FigureRecipeState(
             sources=(FigureSourceState(name="data"),),
-            operations=(),
+            operations=(operation,),
             primary_source="data",
         ),
     )
     qtbot.addWidget(tool)
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
 
     figurecomposer_rendering._set_preview_draw_error(tool, RuntimeError("boom"))
 
     assert tool._operation_render_errors == {}
+    assert tool._preview_render_error == "RuntimeError: boom"
+    status = tool.findChild(QtWidgets.QStatusBar, "figureComposerPreviewRenderStatus")
+    assert status is not None
+    assert not status.isHidden()
 
 
 def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:

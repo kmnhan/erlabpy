@@ -14,6 +14,46 @@ from erlab.plotting.general import (
 )
 
 
+@pytest.mark.parametrize(
+    "x",
+    [
+        np.array([0.0, 1.0, 2.0]),
+        np.array([0.0, 1.0, 3.0]),
+    ],
+    ids=("uniform", "nonuniform"),
+)
+def test_plot_array_validates_norm_before_adding_image(x) -> None:
+    data = xr.DataArray(
+        np.arange(1.0, 7.0).reshape(2, 3),
+        dims=("y", "x"),
+        coords={"y": [0.0, 1.0], "x": x},
+    )
+    figure, axis = plt.subplots()
+    try:
+        with pytest.raises(ValueError, match="minvalue"):
+            plot_array(data, ax=axis, vmax=0.0, colorbar=True)
+        assert not axis.images
+        assert figure.axes == [axis]
+    finally:
+        plt.close(figure)
+
+
+@pytest.mark.parametrize("invalid", [np.nan, np.inf], ids=("nan", "infinity"))
+def test_plot_array_norm_ignores_nonfinite_data(invalid: float) -> None:
+    data = xr.DataArray(
+        np.array([[1.0, 2.0], [invalid, 4.0]]),
+        dims=("y", "x"),
+    )
+    figure, axis = plt.subplots()
+    try:
+        image = plot_array(data, ax=axis)
+        figure.canvas.draw()
+        assert image.norm.vmin == 1.0
+        assert image.norm.vmax == 4.0
+    finally:
+        plt.close(figure)
+
+
 def test_plot_slices_selects_slice_stack_once_per_map(monkeypatch) -> None:
     eV = np.array([0.0, 1.0, 2.0])
     y = np.array([0.0, 1.0, 2.0, 3.0])

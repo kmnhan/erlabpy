@@ -3372,6 +3372,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         )
         self._save_tool_data_references = False
         self._save_tool_data_reference_node_uids: frozenset[str] | None = None
+        self._save_tool_data_reference_validator: (
+            Callable[[Mapping[str, typing.Any], xr.DataArray], bool] | None
+        ) = None
         self._prev_states: collections.deque[M] = collections.deque(maxlen=5000)
         self._next_states: collections.deque[M] = collections.deque(maxlen=5000)
         self._write_history = True
@@ -5162,20 +5165,28 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     @contextlib.contextmanager
     def _save_tool_data_reference_context(
-        self, available_node_uids: Iterable[str] | None = None
+        self,
+        available_node_uids: Iterable[str] | None = None,
+        *,
+        reference_validator: (
+            Callable[[Mapping[str, typing.Any], xr.DataArray], bool] | None
+        ) = None,
     ) -> Iterator[None]:
         """Temporarily prefer manager references over embedded data payloads."""
         previous_enabled = self._save_tool_data_references
         previous_uids = self._save_tool_data_reference_node_uids
+        previous_validator = self._save_tool_data_reference_validator
         self._save_tool_data_references = True
         self._save_tool_data_reference_node_uids = (
             None if available_node_uids is None else frozenset(available_node_uids)
         )
+        self._save_tool_data_reference_validator = reference_validator
         try:
             yield
         finally:
             self._save_tool_data_references = previous_enabled
             self._save_tool_data_reference_node_uids = previous_uids
+            self._save_tool_data_reference_validator = previous_validator
 
     @staticmethod
     def _reference_resolves_current_tool_data(
@@ -5220,6 +5231,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         kind = payload.get("kind")
         if not isinstance(kind, str) or not kind:
             raise ValueError("tool data reference payload must define a non-empty kind")
+        validator = self._save_tool_data_reference_validator
+        if validator is not None and not validator(payload, data):
+            return None
         return payload
 
     def _saved_tool_data_dataset(self) -> xr.Dataset:
