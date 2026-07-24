@@ -1930,6 +1930,15 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
             MethodCallPolicy.AX_KEYWORD,
         ),
         controls=(
+            _int_kwarg(
+                "Mappable index",
+                "index",
+                "figureComposerERLabNiceColorbarIndexEdit",
+                "Mappable index to use when inferring from the target axes.",
+                default=-1,
+                minimum=-999,
+                maximum=999,
+            ),
             _float_kwarg(
                 "Width",
                 "width",
@@ -2016,7 +2025,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabProportionalColorbarIndexEdit",
                 "Mappable index to use when inferring from the target axes.",
                 default=-1,
-                minimum=-1,
+                minimum=-999,
                 maximum=999,
             ),
             _bool_kwarg_combo(
