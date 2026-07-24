@@ -63,6 +63,7 @@ from erlab.interactive._figurecomposer._operations._method._state import (
     _method_has_transform_control,
     _method_kwarg_value,
     _method_transfer_updates,
+    _normalized_method_control_value,
     _optional_float_from_text,
     _optional_int_from_text,
     _optional_literal_from_text,
@@ -271,7 +272,7 @@ def _build_method_editor(
             layout,
             "Text",
             text_edit,
-            "One text value per line for methods that apply labels or annotations.",
+            "One text value per line. A blank line leaves the matching axis empty.",
         )
 
     for control in spec.controls:
@@ -650,18 +651,36 @@ def _add_method_control_row(
                         _method_kwarg_value(target, key, control.default)
                     )
 
+            def control_value_getter(
+                target: FigureOperationState,
+            ) -> typing.Any:
+                return _normalized_method_control_value(
+                    control, kwarg_value_getter(target)
+                )
+
             mixed = editor.batch_is_mixed(
                 operation,
-                kwarg_value_getter,
+                control_value_getter,
             )
             if control.none_label is None:
-                combo = editor.combo(
-                    control.options,
-                    None if mixed else str(kwarg_value_getter(operation)),
-                    _method_kwarg_callback(editor, key),
-                    parent=layout.parentWidget(),
-                    mixed=mixed,
-                )
+                current = None if mixed else str(control_value_getter(operation))
+                if control.option_labels:
+                    combo = editor.labeled_combo(
+                        control.options,
+                        control.option_labels,
+                        current,
+                        _method_kwarg_callback(editor, key),
+                        parent=layout.parentWidget(),
+                        mixed=mixed,
+                    )
+                else:
+                    combo = editor.combo(
+                        control.options,
+                        current,
+                        _method_kwarg_callback(editor, key),
+                        parent=layout.parentWidget(),
+                        mixed=mixed,
+                    )
             else:
                 combo = editor.optional_name_combo(
                     control.options,
@@ -1579,12 +1598,15 @@ def _update_current_method_text_values(
         _operation_index: int, operation: FigureOperationState
     ) -> FigureOperationState:
         spec = _method_spec(operation)
-        return operation.model_copy(
-            update={
-                "text_values": _text_tuple_from_text(
-                    text, preserve_empty=spec.preserves_empty_text
-                )
-            }
+        values = (
+            ()
+            if (
+                not text.strip()
+                and "\n" not in text
+                and spec.text_values_policy == MethodTextValuesPolicy.KWARG
+            )
+            else _text_tuple_from_text(text, preserve_empty=spec.preserves_empty_text)
         )
+        return operation.model_copy(update={"text_values": values})
 
     editor.request_transform(update_text_values)

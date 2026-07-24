@@ -18,7 +18,10 @@ from erlab.interactive._figurecomposer._defaults import (
     _figure_style_context,
     _tool_figure_options_context,
 )
-from erlab.interactive._figurecomposer._model._axes import _axes_expression_value
+from erlab.interactive._figurecomposer._model._axes import (
+    _axes_expression_value,
+    _compact_axes_index,
+)
 from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_region_valid,
@@ -289,9 +292,17 @@ def _axes_from_selection(
 
     if selection.invalid_axes(tool._document.recipe.setup):
         raise ValueError("Selected axes are outside the current figure layout")
-    selected = [
-        axs[row, col] for row, col in selection.valid_axes(tool._document.recipe.setup)
-    ]
+    setup = tool._document.recipe.setup
+    valid_axes = selection.valid_axes(setup)
+    if not for_plot_slices:
+        compact_index = _compact_axes_index(
+            valid_axes,
+            nrows=setup.nrows,
+            ncols=setup.ncols,
+        )
+        if compact_index is not None:
+            return axs[compact_index]
+    selected = [axs[row, col] for row, col in valid_axes]
     if not selected:
         raise ValueError("No axes are selected for this operation")
     if for_plot_slices:

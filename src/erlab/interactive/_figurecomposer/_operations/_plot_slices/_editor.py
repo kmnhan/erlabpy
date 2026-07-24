@@ -571,8 +571,9 @@ def _build_plot_slices_editor(
         object_name="figureComposerPlotSlicesViewPanelsSection",
     )
     order_mixed = editor.batch_is_mixed(operation, lambda target: target.order)
-    order_combo = editor.combo(
+    order_combo = editor.labeled_combo(
         ["C", "F"],
+        ["C (Row)", "F (Column)"],
         None if order_mixed else operation.order,
         lambda text: editor.request_update_rebuild(order=text),
         parent=view_page,

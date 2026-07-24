@@ -176,6 +176,7 @@ class MethodControlSpec:
     arg_index: int | None = None
     key: str | None = None
     options: tuple[str, ...] = ()
+    option_labels: tuple[str, ...] = ()
     default: typing.Any = None
     minimum: int | float | None = None
     maximum: int | float | None = None
@@ -424,6 +425,7 @@ def _kwarg_combo(
     tooltip: str,
     *,
     none_label: str | None = None,
+    option_labels: Sequence[str] = (),
 ) -> MethodControlSpec:
     return MethodControlSpec(
         kind=MethodControlKind.KWARG_COMBO,
@@ -432,6 +434,7 @@ def _kwarg_combo(
         object_name=object_name,
         tooltip=tooltip,
         options=tuple(options),
+        option_labels=tuple(option_labels),
         default=default,
         none_label=none_label,
     )
@@ -655,7 +658,10 @@ _SCALE_OPTIONS = tuple(matplotlib.scale.get_scale_names())
 _DEFAULT_SCALE = "log" if "log" in _SCALE_OPTIONS else _SCALE_OPTIONS[0]
 
 
-_FLATTEN_ORDER_OPTIONS = ("C", "F", "A", "K")
+_FLATTEN_ORDER_OPTIONS = ("C", "F")
+
+
+_FLATTEN_ORDER_LABELS = ("C (Row)", "F (Column)")
 
 
 _COLORBAR_ORIENTATION_OPTIONS = ("vertical", "horizontal")
@@ -1835,6 +1841,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
         target_domain=MethodTargetDomain.AXES,
         call_policy=MethodCallPolicy.AXES_POSITIONAL,
         text_values_policy=MethodTextValuesPolicy.KWARG,
+        preserves_empty_text=True,
         controls=(
             _int_kwarg(
                 "Start from",
@@ -1852,6 +1859,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "C",
                 "figureComposerERLabLabelSubplotsOrderCombo",
                 "Flattening order used to match labels to axes.",
+                option_labels=_FLATTEN_ORDER_LABELS,
             ),
             *_label_subplots_text_controls(
                 "figureComposerERLabLabelSubplots",
@@ -1910,6 +1918,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "C",
                 "figureComposerERLabLabelPropertiesOrderCombo",
                 "Flattening order used to match property values to axes.",
+                option_labels=_FLATTEN_ORDER_LABELS,
             ),
             *_label_subplots_text_controls(
                 "figureComposerERLabLabelProperties",
@@ -2097,6 +2106,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "C",
                 "figureComposerERLabSetTitlesOrderCombo",
                 "Flattening order used to match titles to axes.",
+                option_labels=_FLATTEN_ORDER_LABELS,
             ),
         ),
     ),
@@ -2117,6 +2127,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "C",
                 "figureComposerERLabSetXLabelsOrderCombo",
                 "Flattening order used to match x labels to axes.",
+                option_labels=_FLATTEN_ORDER_LABELS,
             ),
         ),
     ),
@@ -2137,6 +2148,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "C",
                 "figureComposerERLabSetYLabelsOrderCombo",
                 "Flattening order used to match y labels to axes.",
+                option_labels=_FLATTEN_ORDER_LABELS,
             ),
         ),
     ),

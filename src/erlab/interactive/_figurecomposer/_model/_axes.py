@@ -40,18 +40,32 @@ def _compact_axes_code(
     ):
         return "axs"
 
-    rows = tuple(sorted({row for row, _col in axes_tuple}))
-    cols = tuple(sorted({col for _row, col in axes_tuple}))
-    if not _is_contiguous(rows) or not _is_contiguous(cols):
+    bounds = _compact_axes_bounds(axes_tuple)
+    if bounds is None:
         return None
-    rectangular_axes = tuple((row, col) for row in rows for col in cols)
-    if set(axes_tuple) != set(rectangular_axes):
-        return None
+    row_start, row_stop, col_start, col_stop = bounds
     return (
         "axs["
-        f"{_axis_index_code(rows[0], rows[-1] + 1, nrows)}, "
-        f"{_axis_index_code(cols[0], cols[-1] + 1, ncols)}"
+        f"{_axis_index_code(row_start, row_stop, nrows)}, "
+        f"{_axis_index_code(col_start, col_stop, ncols)}"
         "]"
+    )
+
+
+def _compact_axes_index(
+    axes: Sequence[tuple[int, int]],
+    *,
+    nrows: int | None = None,
+    ncols: int | None = None,
+) -> tuple[int | slice, int | slice] | None:
+    """Return NumPy indices that preserve a rectangular axes selection."""
+    bounds = _compact_axes_bounds(tuple(dict.fromkeys(axes)))
+    if bounds is None:
+        return None
+    row_start, row_stop, col_start, col_stop = bounds
+    return (
+        _axis_index(row_start, row_stop, nrows),
+        _axis_index(col_start, col_stop, ncols),
     )
 
 
@@ -74,8 +88,32 @@ def _compact_axes_iterable_code(
     return f"({items})"
 
 
+def _compact_axes_bounds(
+    axes: Sequence[tuple[int, int]],
+) -> tuple[int, int, int, int] | None:
+    axes_tuple = tuple(dict.fromkeys(axes))
+    if not axes_tuple:
+        return None
+    rows = tuple(sorted({row for row, _col in axes_tuple}))
+    cols = tuple(sorted({col for _row, col in axes_tuple}))
+    if not _is_contiguous(rows) or not _is_contiguous(cols):
+        return None
+    rectangular_axes = tuple((row, col) for row in rows for col in cols)
+    if set(axes_tuple) != set(rectangular_axes):
+        return None
+    return rows[0], rows[-1] + 1, cols[0], cols[-1] + 1
+
+
 def _is_contiguous(values: Sequence[int]) -> bool:
     return bool(values) and list(values) == list(range(values[0], values[-1] + 1))
+
+
+def _axis_index(start: int, stop: int, size: int | None) -> int | slice:
+    if stop == start + 1:
+        return start
+    if start == 0 and size is not None and stop == size:
+        return slice(None)
+    return slice(None if start == 0 else start, stop)
 
 
 def _axis_index_code(start: int, stop: int, size: int | None) -> str:

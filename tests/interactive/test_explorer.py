@@ -225,24 +225,25 @@ def test_explorer_close_stops_preview_workers(
 
 
 def test_explorer_close_ignores_busy_preview_workers(
-    qtbot, example_loader, example_data_dir: pathlib.Path
+    qtbot,
 ) -> None:
     class _BusyDataExplorer(_DataExplorer):
-        def __init__(self, *args, **kwargs) -> None:
+        def __init__(self) -> None:
+            QtWidgets.QMainWindow.__init__(self)
             self.stopped_preview_workers = False
             self.defer_preview_stop = True
-            super().__init__(*args, **kwargs)
 
         def _stop_preview_workers(
             self, timeout_ms: int = _PREVIEW_WORKER_STOP_TIMEOUT_MS
         ) -> bool:
+            del timeout_ms
             self.stopped_preview_workers = True
             if self.defer_preview_stop:
                 self._preview_stopping = True
                 return False
             return True
 
-    explorer = _BusyDataExplorer(root_path=example_data_dir, loader_name="example")
+    explorer = _BusyDataExplorer()
     qtbot.addWidget(explorer)
     event = QtGui.QCloseEvent()
 
