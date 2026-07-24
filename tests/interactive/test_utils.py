@@ -17,6 +17,7 @@ import qtpy
 import xarray as xr
 from qtpy import PYQT6, QtCore, QtGui, QtTest, QtWidgets
 
+import erlab.interactive._plot_state
 import erlab.interactive.colors
 import erlab.interactive.utils
 from erlab.interactive.imagetool._provenance._model import (
@@ -755,6 +756,255 @@ def test_tool_window_without_plot_appearance_attr_uses_defaults(qtbot) -> None:
     qtbot.addWidget(restored)
     assert isinstance(restored, _PlotPersistentTool)
     assert restored.colorbar.colormap_properties["cmap"] == "viridis"
+
+
+def test_plot_appearance_validation_and_colormap_sampling(caplog) -> None:
+    plot_state = erlab.interactive._plot_state
+
+    with pytest.raises(pydantic.ValidationError):
+        plot_state.GradientStopState(
+            position=np.nan,
+            color=(0, 0, 0, 255),
+        )
+    with pytest.raises(pydantic.ValidationError):
+        plot_state.GradientStopState(
+            position=0.5,
+            color=(0, 0, 0, 256),
+        )
+    with pytest.raises(pydantic.ValidationError):
+        plot_state.PowerNormState(gamma=np.inf)
+    with pytest.raises(pydantic.ValidationError):
+        plot_state.PlotAppearanceState(
+            colormap=plot_state.NamedColormapState(name="viridis"),
+            levels=(2.0, 1.0),
+        )
+    with pytest.raises(TypeError):
+        plot_state._parse_tool_view_state(1)
+    with pytest.raises(TypeError):
+        plot_state._parse_tool_view_state("[]")
+
+    payload = json.dumps(
+        {
+            "version": 1,
+            "plots": {
+                "": {
+                    "colormap": {
+                        "kind": "named",
+                        "name": "viridis",
+                    }
+                }
+            },
+        }
+    ).encode()
+    with caplog.at_level(logging.WARNING, logger="erlab.interactive._plot_state"):
+        parsed = plot_state._parse_tool_view_state(payload)
+    assert parsed.plots == {}
+
+    positions = np.linspace(0.0, 1.0, 300)
+    colors = np.column_stack(
+        (
+            np.linspace(0, 255, 300, dtype=np.uint8),
+            np.zeros(300, dtype=np.uint8),
+            np.full(300, 127, dtype=np.uint8),
+            np.full(300, 255, dtype=np.uint8),
+        )
+    )
+    sampled = plot_state._sample_colormap(pg.ColorMap(positions, colors))
+    assert len(sampled.stops) == 256
+    assert sampled.stops[0].position == 0.0
+    assert sampled.stops[-1].position == 1.0
+
+    gradient = plot_state._gradient_state(
+        {
+            "mode": "unsupported",
+            "ticks": [
+                (1.0, (255, 255, 255, 255)),
+                (0.0, (0, 0, 0, 255)),
+            ],
+        }
+    )
+    assert gradient.mode == "rgb"
+    assert tuple(stop.position for stop in gradient.stops) == (0.0, 1.0)
+
+
+def test_better_colorbar_plot_adapter_fallbacks(qtbot, caplog) -> None:
+    plot_state = erlab.interactive._plot_state
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("y", "x"),
+        name="data",
+    )
+    win = _PlotPersistentTool(data)
+    qtbot.addWidget(win)
+    adapter = win._plot_state_registry._adapters["data"]
+
+    custom = pg.ColorMap(
+        (0.0, 1.0),
+        ((10, 20, 30, 255), (240, 230, 220, 255)),
+    )
+    win.colorbar.set_pg_colormap(custom)
+    missing = plot_state.PlotAppearanceState(
+        colormap=plot_state.NamedColormapState(
+            name="__missing_erlab_colormap__",
+            reverse=True,
+        ),
+        norm=plot_state.PowerNormState(gamma=0.75),
+    )
+    with caplog.at_level(logging.WARNING, logger="erlab.interactive._plot_state"):
+        adapter.set_desired_state(missing)
+
+    assert isinstance(
+        adapter.desired_state.colormap,
+        plot_state.GradientColormapState,
+    )
+    assert adapter.desired_state.norm is None
+
+    gradient = plot_state.PlotAppearanceState(
+        colormap=plot_state.GradientColormapState(
+            stops=(
+                plot_state.GradientStopState(
+                    position=0.0,
+                    color=(0, 0, 0, 255),
+                ),
+                plot_state.GradientStopState(
+                    position=1.0,
+                    color=(255, 255, 255, 255),
+                ),
+            )
+        ),
+        norm=plot_state.PowerNormState(
+            gamma=0.5,
+            high_contrast=True,
+            zero_centered=True,
+        ),
+    )
+    adapter.set_desired_state(gradient)
+    assert win.colorbar.colormap_properties == {
+        "cmap": "saved-gradient",
+        "gamma": pytest.approx(0.5),
+        "reverse": False,
+        "high_contrast": True,
+        "zero_centered": True,
+    }
+
+    adapter._target_ref = lambda: None
+    assert adapter.capture() is None
+    adapter.apply(gradient)
+
+
+def test_histogram_plot_adapter_named_colormaps_and_level_changes(
+    qtbot, caplog
+) -> None:
+    plot_state = erlab.interactive._plot_state
+    image = pg.ImageItem(np.arange(25.0).reshape(5, 5))
+    histogram = pg.HistogramLUTItem(image=image)
+    changed: list[str] = []
+    adapter = plot_state._HistogramLUTAdapter(
+        histogram,
+        changed=changed.append,
+        image_changed=lambda: None,
+    )
+
+    named = plot_state.PlotAppearanceState(
+        colormap=plot_state.NamedColormapState(name="plasma", reverse=True),
+        levels=(2.0, 20.0),
+    )
+    adapter.set_desired_state(named)
+    assert histogram.getLevels() == pytest.approx((2.0, 20.0))
+    saved = adapter.capture()
+    assert isinstance(saved.colormap, plot_state.GradientColormapState)
+
+    positions_before, colors_before = histogram.gradient.colorMap().getStops(
+        pg.ColorMap.BYTE
+    )
+    missing = named.model_copy(
+        update={
+            "colormap": plot_state.NamedColormapState(name="__missing_erlab_colormap__")
+        }
+    )
+    with caplog.at_level(logging.WARNING, logger="erlab.interactive._plot_state"):
+        adapter.apply(missing)
+    positions_after, colors_after = histogram.gradient.colorMap().getStops(
+        pg.ColorMap.BYTE
+    )
+    np.testing.assert_array_equal(positions_after, positions_before)
+    np.testing.assert_array_equal(colors_after, colors_before)
+
+    histogram.region.moving = True
+    adapter._level_region_changed()
+    adapter._level_change_finished()
+    assert changed == ["levels"]
+    adapter._level_change_finished()
+    assert changed == ["levels"]
+
+    adapter._applying = True
+    adapter._level_change_start()
+    adapter._applying = False
+    assert not adapter._level_change_started
+
+    adapter._target_ref = lambda: None
+    assert adapter.capture() is None
+    adapter.apply(named)
+
+
+def test_plot_state_registry_defensive_paths(monkeypatch) -> None:
+    plot_state = erlab.interactive._plot_state
+    parent = QtCore.QObject()
+    state_changes: list[None] = []
+    info_changes: list[None] = []
+    registry = plot_state.ToolPlotStateRegistry(
+        parent,
+        state_changed=lambda: state_changes.append(None),
+        info_changed=lambda: info_changes.append(None),
+    )
+
+    assert registry.state_json() is None
+    registry.restore_json(None)
+    with pytest.raises(ValueError, match="non-empty"):
+        registry.register("", pg.HistogramLUTItem())
+    with pytest.raises(TypeError):
+        registry.register("unsupported", object())
+
+    restored = plot_state.ToolViewState(
+        plots={
+            "late": plot_state.PlotAppearanceState(
+                colormap=plot_state.NamedColormapState(name="viridis")
+            )
+        }
+    )
+    registry.restore_json(restored.model_dump_json())
+    histogram = pg.HistogramLUTItem()
+    registry.register("late", histogram)
+    assert "late" not in registry._restored_states
+
+    registry._queue_change("missing", "color")
+    adapter = registry._adapters["late"]
+    adapter._target_ref = lambda: None
+    registry._queue_change("late", "color")
+
+    adapter.desired_state = None
+    registry._pending_changes.update(("late", "missing"))
+    registry._flush_pending()
+    assert not state_changes
+    assert not info_changes
+
+    base_adapter = plot_state._PlotAppearanceAdapter(
+        parent,
+        changed=lambda _component: None,
+        image_changed=lambda: None,
+    )
+    with pytest.raises(NotImplementedError):
+        base_adapter.capture()
+    with pytest.raises(NotImplementedError):
+        base_adapter.apply(
+            plot_state.PlotAppearanceState(
+                colormap=plot_state.NamedColormapState(name="viridis")
+            )
+        )
+    base_adapter._connect(parent, parent.destroyed, lambda: None)
+    monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", lambda _obj: False)
+    base_adapter.disconnect()
+    assert base_adapter._connections == []
 
 
 def test_tool_window_direct_restore_runs_deferred_task_eagerly(qtbot) -> None:

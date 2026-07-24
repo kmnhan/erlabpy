@@ -413,6 +413,23 @@ def test_colorbar_normalized_helpers_handle_invalid_limits(qtbot, monkeypatch):
     assert colorbar._span_unit_to_level(0.5) == 5.0
 
 
+def test_colorbar_nonfinite_limits_and_missing_colormap_metadata() -> None:
+    image = BetterImageItem(np.zeros((2, 2)))
+    colorbar = BetterColorBarItem()
+
+    assert colorbar.colormap_properties is None
+
+    colorbar._primary_image = lambda: None
+    assert colorbar.colormap_properties is None
+
+    colorbar._primary_image = lambda: image
+    image.setImage(np.full((2, 2), np.nan), autoLevels=False)
+    image.setLevels((np.nan, np.nan))
+    with pytest.warns(RuntimeWarning, match="All-NaN slice"):
+        assert colorbar.limits == (0.0, 1.0)
+    assert colorbar.colormap_properties is None
+
+
 def test_colorbar_syncs_unset_levels_and_reset_paths(qtbot):
     image = BetterImageItem(np.arange(100, dtype=float).reshape(10, 10))
     image.set_colormap("viridis", gamma=1.0)
