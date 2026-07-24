@@ -8,7 +8,7 @@
 
   `erlab.helvetica` sets the text and math font to Helvetica.
 
-  `erlab.stixsans-fallback` enables missing glyphs to fall back to STIX Sans, which is especially useful when using `nature` or `erlab.helvetica` styles.
+  `erlab.stixsans-fallback` enables missing glyphs to fall back to STIX Sans, which is especially useful when using `erlab.arial` or `erlab.helvetica` styles.
 
 - **io.plugins:** add data loader for NSRRC TPS Beamline 39A (#485) ([7effe60](https://github.com/kmnhan/erlabpy/commit/7effe60ebb0e4483fbbe790df46ae4cc592a616e))
 

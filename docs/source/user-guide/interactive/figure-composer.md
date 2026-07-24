@@ -188,6 +188,6 @@ available. Unavailable styles remain visible in Settings, are skipped while rend
 and when copying generated code, and become active again after the `.mplstyle` file is
 restored and the list is reloaded.
 
-In addition to the default stylesheets provided with Matplotlib, the list includes some
-stylesheets provided by ERLab, such as `khan`, `times`, and `nature`. Try them out to
-see how they affect the figures.
+In addition to the default stylesheets provided with Matplotlib, the list includes
+stylesheets provided by ERLab, such as `erlab.general`, `erlab.nature`,
+`erlab.arial`, and `erlab.times`. Try them out to see how they affect the figures.
