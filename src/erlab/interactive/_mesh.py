@@ -262,6 +262,10 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
         for cbar in (self.cbar_data, self.cbar_mesh, self.cbar_fft, self.cbar_mask):
             cbar.set_dimensions(horiz_pad=30, vert_pad=30)
             cbar.setPreferredWidth(60)
+        self._register_plot_appearance("data", self.cbar_data)
+        self._register_plot_appearance("mesh", self.cbar_mesh)
+        self._register_plot_appearance("fft", self.cbar_fft)
+        self._register_plot_appearance("mask", self.cbar_mask)
 
         for i in range(1, len(self.image_plots)):
             self.image_plots[i].setXLink(self.image_plots[0])

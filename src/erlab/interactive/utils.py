@@ -43,6 +43,7 @@ from qtpy import PYQT6, PYSIDE6, QtCore, QtGui, QtWidgets, uic
 
 import erlab
 from erlab.interactive import _qt_state
+from erlab.interactive._plot_state import TOOL_VIEW_STATE_ATTR, ToolPlotStateRegistry
 from erlab.interactive._widgets import _Separator
 from erlab.utils._code import (
     _parse_single_arg,
@@ -3252,6 +3253,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         ) = None
         self._managed_reveal_callback: Callable[[], bool] | None = None
         self._output_imagetool_targets: dict[str, str | QtWidgets.QWidget] = {}
+        self._plot_state_registry = ToolPlotStateRegistry(
+            self,
+            state_changed=self.sigStateChanged.emit,
+            info_changed=self.sigInfoChanged.emit,
+        )
         self._save_tool_data_references = False
         self._save_tool_data_reference_node_uids: frozenset[str] | None = None
         self._prev_states: collections.deque[M] = collections.deque(maxlen=5000)
@@ -3344,6 +3350,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         if left is None or right is None:
             return left is right
         return left.model_dump() == right.model_dump()
+
+    def _register_plot_appearance(self, plot_id: str, target: object) -> None:
+        """Register a colorbar or histogram under a stable semantic plot ID."""
+        self._plot_state_registry.register(plot_id, target)
 
     @property
     def undoable(self) -> bool:
@@ -4955,6 +4965,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             "tool_window_state": _qt_state.qt_window_state_json(self),
             "erlab_version": erlab.__version__,
         }
+        view_state = self._plot_state_registry.state_json()
+        if view_state is not None:
+            attrs[TOOL_VIEW_STATE_ATTR] = view_state
         if self._source_spec is not None:
             attrs[_TOOL_SOURCE_SPEC_ATTR] = json.dumps(
                 self._source_spec.model_dump(mode="json")
@@ -5127,6 +5140,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
         Deferred restore work is flushed before serialization unless a subclass
         save hook explicitly preserves a raw persisted payload unchanged.
+
+        .. versionchanged:: 3.26.0
+           Colormaps, normalization settings, and manually selected color limits
+           for registered plots are included in saved tools and workspaces.
 
         Returns
         -------
@@ -5423,6 +5440,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     )
             tool._restore_persistence_payload(ds)
             tool._restore_persistence_data_items(data_items, ds)
+            tool._plot_state_registry.restore_json(ds.attrs.get(TOOL_VIEW_STATE_ATTR))
             tool.setWindowTitle(ds.attrs["tool_title"])
             if (
                 not _qt_state.restore_qt_window_state(
@@ -5434,6 +5452,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             tool._reset_history_stack()
             if not defer_restore_work:
                 tool._flush_restore_work()
+            tool._plot_state_registry.reapply()
             restore_succeeded = True
         finally:
             tool._restoring_from_dataset = previous_restoring
@@ -5585,6 +5604,8 @@ class AnalysisWindow(ToolWindow):
             # "refresh_all",
         ]:
             setattr(self, n, getattr(self.aw, n))
+        for index, histogram in enumerate(self.aw.hists):
+            self._register_plot_appearance(f"analysis-{index}", histogram)
         layout.addWidget(self.aw)
         layout.addWidget(self.controlgroup)
 

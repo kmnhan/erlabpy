@@ -658,6 +658,7 @@ class Fit2DTool(Fit1DTool):
         self.cbar.set_dimensions(vert_pad=40)
         self.cbar.setPreferredWidth(60)
         self.plot_widget.addItem(self.cbar, 0, 2, 2, 1)
+        self._register_plot_appearance("data", self.cbar)
         self.image_plot_legend: pg.LegendItem = self.image_plot.addLegend(offset=(5, 5))
         self.image_plot_legend.setVisible(False)
         if hasattr(self.image_plot_legend, "sigSampleClicked"):  # pragma: no branch

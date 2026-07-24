@@ -5,6 +5,7 @@ import typing
 from collections.abc import Callable, Iterator
 
 import numpy as np
+import pyqtgraph as pg
 import pytest
 import scipy
 import xarray as xr
@@ -216,6 +217,13 @@ def test_goldtool_roundtrip_unfitted(qtbot, gold) -> None:
     win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
     qtbot.addWidget(win)
     _configure_goldtool_state(win, fitted=False, spline=True)
+    win.hists[0].gradient.setColorMap(
+        pg.colormap.get("plasma", source="matplotlib", skipCache=True)
+    )
+    win.hists[0].gradient.sigGradientChangeFinished.emit(win.hists[0].gradient)
+    expected_positions, expected_colors = (
+        win.hists[0].gradient.colorMap().getStops(pg.ColorMap.BYTE)
+    )
 
     with tempfile.TemporaryDirectory() as tmp_dir_name:
         filename = f"{tmp_dir_name}/goldtool_unfitted.h5"
@@ -229,6 +237,11 @@ def test_goldtool_roundtrip_unfitted(qtbot, gold) -> None:
         assert win_restored.result is None
         assert not hasattr(win_restored, "edge_center")
         assert not hasattr(win_restored, "edge_stderr")
+        actual_positions, actual_colors = (
+            win_restored.hists[0].gradient.colorMap().getStops(pg.ColorMap.BYTE)
+        )
+        np.testing.assert_allclose(actual_positions, expected_positions)
+        np.testing.assert_array_equal(actual_colors, expected_colors)
 
 
 def test_fit1d_persistence_helper_edges(qtbot, monkeypatch, gold) -> None:

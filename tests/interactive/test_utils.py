@@ -11,11 +11,13 @@ import warnings
 import lmfit
 import numpy as np
 import pydantic
+import pyqtgraph as pg
 import pytest
 import qtpy
 import xarray as xr
 from qtpy import PYQT6, QtCore, QtGui, QtTest, QtWidgets
 
+import erlab.interactive.colors
 import erlab.interactive.utils
 from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
@@ -182,6 +184,36 @@ class _PersistentTool(erlab.interactive.utils.ToolWindow[_PersistentToolState]):
 
     def update_data(self, new_data: xr.DataArray) -> None:
         self._data = new_data
+
+
+class _PlotPersistentTool(_PersistentTool):
+    tool_name = "plot-persistent-dummy"
+
+    def __init__(self, data: xr.DataArray) -> None:
+        super().__init__(data)
+        self.graphics = pg.GraphicsLayoutWidget()
+        self.setCentralWidget(self.graphics)
+        self.image_plot = self.graphics.addPlot(row=0, col=0)
+        self.image = xImageItem(axisOrder="row-major")
+        self.image.setImage(np.asarray(data))
+        self.image.set_colormap("viridis", 1.0)
+        self.image_plot.addItem(self.image)
+        self.colorbar = erlab.interactive.colors.BetterColorBarItem(image=self.image)
+        self.graphics.addItem(self.colorbar, row=0, col=1)
+        self._register_plot_appearance("data", self.colorbar)
+
+    def replace_plot(self) -> erlab.interactive.colors.BetterColorBarItem:
+        old_colorbar = self.colorbar
+        self.graphics.removeItem(old_colorbar)
+        self.image_plot.removeItem(self.image)
+        self.image = xImageItem(axisOrder="row-major")
+        self.image.setImage(np.asarray(self.tool_data))
+        self.image.set_colormap("viridis", 1.0)
+        self.image_plot.addItem(self.image)
+        self.colorbar = erlab.interactive.colors.BetterColorBarItem(image=self.image)
+        self.graphics.addItem(self.colorbar, row=0, col=1)
+        self._register_plot_appearance("data", self.colorbar)
+        return old_colorbar
 
 
 class _DeferredRestoreToolState(pydantic.BaseModel):
@@ -428,6 +460,301 @@ def test_tool_window_from_dataset_starts_with_clean_history(qtbot) -> None:
     assert duplicated.tool_status == _PersistentToolState(value=1)
     assert not duplicated.undoable
     assert not duplicated.redoable
+
+
+def test_tool_window_plot_appearance_roundtrip_duplicate_and_rebuild(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(100.0).reshape(10, 10),
+        dims=("y", "x"),
+        name="data",
+    )
+    win = _PlotPersistentTool(data)
+    qtbot.addWidget(win)
+    state_changes: list[None] = []
+    info_changes: list[None] = []
+    data_changes: list[None] = []
+    win.sigStateChanged.connect(lambda: state_changes.append(None))
+    win.sigInfoChanged.connect(lambda: info_changes.append(None))
+    win.sigDataChanged.connect(lambda: data_changes.append(None))
+
+    win.colorbar.set_colormap(
+        "plasma",
+        0.4,
+        reverse=True,
+        high_contrast=True,
+        zero_centered=True,
+    )
+    win.colorbar.setSpanRegion((10.0, 60.0))
+
+    qtbot.wait_until(lambda: len(state_changes) == 1)
+    assert len(info_changes) == 1
+    assert len(data_changes) == 0
+    saved = win.to_dataset()
+    view_state = json.loads(saved.attrs["tool_view_state"])
+    assert view_state["version"] == 1
+    assert set(view_state["plots"]) == {"data"}
+
+    for restored in (
+        erlab.interactive.utils.ToolWindow.from_dataset(saved),
+        win.duplicate(),
+    ):
+        qtbot.addWidget(restored)
+        assert isinstance(restored, _PlotPersistentTool)
+        assert restored.colorbar.colormap_properties == {
+            "cmap": "plasma",
+            "gamma": pytest.approx(0.4),
+            "reverse": True,
+            "high_contrast": True,
+            "zero_centered": True,
+        }
+        assert restored.colorbar.spanRegion() == pytest.approx((10.0, 60.0))
+
+        restored.image.setImage(
+            np.arange(100.0, 200.0).reshape(10, 10),
+            autoLevels=True,
+        )
+        qtbot.wait_until(
+            lambda restored=restored: (
+                restored.colorbar.spanRegion() == pytest.approx((10.0, 60.0))
+            )
+        )
+
+    old_colorbar = win.replace_plot()
+    assert win.colorbar.colormap_properties == {
+        "cmap": "plasma",
+        "gamma": pytest.approx(0.4),
+        "reverse": True,
+        "high_contrast": True,
+        "zero_centered": True,
+    }
+    assert win.colorbar.spanRegion() == pytest.approx((10.0, 60.0))
+
+    old_colorbar.set_colormap("magma", 1.0)
+    qtbot.wait(1)
+    assert win.colorbar.colormap_properties["cmap"] == "plasma"
+
+
+def test_tool_window_custom_plot_colormap_roundtrip(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("y", "x"),
+        name="data",
+    )
+    win = _PlotPersistentTool(data)
+    qtbot.addWidget(win)
+    custom = pg.ColorMap(
+        (0.0, 0.35, 1.0),
+        ((5, 10, 20, 255), (60, 120, 180, 200), (250, 240, 220, 255)),
+    )
+    win.colorbar.set_pg_colormap(custom)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+    assert isinstance(restored, _PlotPersistentTool)
+    assert restored.colorbar.colormap_properties is None
+    actual_positions, actual_colors = restored.image.getColorMap().getStops(
+        pg.ColorMap.BYTE
+    )
+    expected_positions, expected_colors = custom.getStops(pg.ColorMap.BYTE)
+    np.testing.assert_allclose(actual_positions, expected_positions)
+    np.testing.assert_array_equal(actual_colors, expected_colors)
+
+
+def test_tool_window_equal_plot_limits_roundtrip(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("y", "x"),
+        name="data",
+    )
+    win = _PlotPersistentTool(data)
+    qtbot.addWidget(win)
+    win.colorbar.setSpanRegion((5.0, 5.0))
+
+    saved = win.to_dataset()
+    assert json.loads(saved.attrs["tool_view_state"])["plots"]["data"]["levels"] == [
+        5.0,
+        5.0,
+    ]
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+    assert isinstance(restored, _PlotPersistentTool)
+    assert restored.colorbar.spanRegion() == pytest.approx((5.0, 5.0))
+    assert restored.image.getLevels() == pytest.approx((5.0, 5.0))
+
+
+@pytest.mark.parametrize("levels", [(5.0, 20.0), (5.0, 5.0)])
+def test_tool_window_plot_appearance_survives_nonfinite_image_range(
+    qtbot, levels: tuple[float, float]
+) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("y", "x"),
+        name="data",
+    )
+    win = _PlotPersistentTool(data)
+    qtbot.addWidget(win)
+    win.colorbar.setSpanRegion(levels)
+    qtbot.wait_until(lambda: win.colorbar.spanRegion() == pytest.approx(levels))
+
+    win.image.setImage(np.full((5, 5), np.nan), autoLevels=True)
+    qtbot.wait_until(lambda: win.colorbar.spanRegion() == pytest.approx(levels))
+
+    assert win.image.getLevels() == pytest.approx(levels)
+    saved = json.loads(win.to_dataset().attrs["tool_view_state"])
+    assert saved["plots"]["data"]["levels"] == list(levels)
+
+
+def test_tool_window_preserves_plot_state_awaiting_registration(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("y", "x"),
+        name="data",
+    )
+    saved = _PlotPersistentTool(data).to_dataset()
+    view_state = json.loads(saved.attrs["tool_view_state"])
+    view_state["plots"]["deferred"] = view_state["plots"]["data"]
+    saved.attrs["tool_view_state"] = json.dumps(view_state)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+    assert isinstance(restored, _PlotPersistentTool)
+
+    resaved = json.loads(restored.to_dataset().attrs["tool_view_state"])
+    assert resaved["plots"]["deferred"] == view_state["plots"]["deferred"]
+
+
+def test_tool_window_plot_registry_disconnects_before_qt_children(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("y", "x"),
+        name="data",
+    )
+    win = _PlotPersistentTool(data)
+    qtbot.addWidget(win)
+    registry = win._plot_state_registry
+    assert registry._adapters
+
+    win.deleteLater()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    qtbot.wait_until(lambda: not qt_is_valid(win), timeout=1000)
+
+    assert registry._adapters == {}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{not-json",
+        json.dumps({"version": 999, "plots": {}}),
+        json.dumps({"version": 1, "plots": []}),
+    ],
+)
+def test_tool_window_ignores_invalid_plot_appearance(
+    qtbot, caplog, payload: str
+) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("y", "x"),
+        name="data",
+    )
+    saved = _PlotPersistentTool(data).to_dataset()
+    saved.attrs["tool_view_state"] = payload
+
+    with caplog.at_level(logging.WARNING, logger="erlab.interactive._plot_state"):
+        restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+    assert isinstance(restored, _PlotPersistentTool)
+    assert restored.colorbar.colormap_properties["cmap"] == "viridis"
+    assert "Ignoring invalid saved tool view state" in caplog.text
+
+
+def test_tool_window_plot_appearance_skips_bad_plot_and_missing_colormap(
+    qtbot, caplog
+) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("y", "x"),
+        name="data",
+    )
+    saved = _PlotPersistentTool(data).to_dataset()
+    view_state = json.loads(saved.attrs["tool_view_state"])
+    view_state["plots"]["data"] = {
+        "colormap": {
+            "kind": "named",
+            "name": "__missing_erlab_colormap__",
+            "reverse": True,
+        },
+        "norm": {
+            "kind": "power",
+            "gamma": 0.75,
+            "high_contrast": True,
+            "zero_centered": True,
+        },
+        "levels": [5.0, 20.0],
+    }
+    view_state["plots"]["invalid"] = {"colormap": {"kind": "gradient", "stops": []}}
+    saved.attrs["tool_view_state"] = json.dumps(view_state)
+
+    with caplog.at_level(logging.WARNING, logger="erlab.interactive._plot_state"):
+        restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+    assert isinstance(restored, _PlotPersistentTool)
+    assert restored.colorbar.colormap_properties == {
+        "cmap": "viridis",
+        "gamma": pytest.approx(0.75),
+        "reverse": True,
+        "high_contrast": True,
+        "zero_centered": True,
+    }
+    assert restored.colorbar.spanRegion() == pytest.approx((5.0, 20.0))
+    assert "Ignoring invalid saved plot appearance for invalid" in caplog.text
+    assert "__missing_erlab_colormap__" in caplog.text
+    assert (
+        sum(
+            "__missing_erlab_colormap__" in record.getMessage()
+            for record in caplog.records
+        )
+        == 1
+    )
+
+    caplog.clear()
+    restored.image.setImage(
+        np.arange(100.0, 125.0).reshape(5, 5),
+        autoLevels=True,
+    )
+    qtbot.wait_until(
+        lambda: restored.colorbar.spanRegion() == pytest.approx((5.0, 20.0))
+    )
+    assert restored.colorbar.colormap_properties == {
+        "cmap": "viridis",
+        "gamma": pytest.approx(0.75),
+        "reverse": True,
+        "high_contrast": True,
+        "zero_centered": True,
+    }
+    assert "__missing_erlab_colormap__" not in caplog.text
+    canonical = json.loads(restored.to_dataset().attrs["tool_view_state"])
+    assert canonical["plots"]["data"]["colormap"] == {
+        "kind": "named",
+        "name": "viridis",
+        "reverse": True,
+    }
+
+
+def test_tool_window_without_plot_appearance_attr_uses_defaults(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape(5, 5),
+        dims=("y", "x"),
+        name="data",
+    )
+    saved = _PlotPersistentTool(data).to_dataset()
+    del saved.attrs["tool_view_state"]
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+    assert isinstance(restored, _PlotPersistentTool)
+    assert restored.colorbar.colormap_properties["cmap"] == "viridis"
 
 
 def test_tool_window_direct_restore_runs_deferred_task_eagerly(qtbot) -> None:
