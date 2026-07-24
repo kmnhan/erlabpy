@@ -189,6 +189,35 @@ def test_write_full_workspace_tree_file_skips_missing_copy_source_group(
     assert _read_transaction_test_value(fname) == 3.0
 
 
+def test_write_full_workspace_tree_file_reports_missing_backing_source(
+    tmp_path,
+) -> None:
+    fname = tmp_path / "missing-backing-source-target.itws"
+    missing_source = tmp_path / "deleted-source.itws"
+    _write_transaction_test_workspace(fname)
+    original_contents = fname.read_bytes()
+
+    with pytest.raises(
+        workspace_storage._WorkspaceBackingFileNotFoundError
+    ) as exc_info:
+        workspace_storage._write_full_workspace_tree_file(
+            fname,
+            None,
+            _transaction_test_root_attrs(),
+            copy_group_sources=(
+                (
+                    str(missing_source),
+                    "0/imagetool",
+                    "0/imagetool",
+                    None,
+                ),
+            ),
+        )
+
+    assert exc_info.value.source_path == str(missing_source)
+    assert fname.read_bytes() == original_contents
+
+
 def test_write_full_workspace_tree_file_replaces_stale_root_attrs(tmp_path) -> None:
 
     fname = tmp_path / "root-attrs.itws"

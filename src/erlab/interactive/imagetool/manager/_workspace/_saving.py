@@ -80,24 +80,34 @@ class _WorkspaceSaveSnapshot:
             self.full_tree.close()
 
 
+@dataclass(frozen=True)
+class _WorkspaceSaveError:
+    traceback_text: str
+    missing_source_path: str | None = None
+
+
 class _WorkspaceSaveWorkerSignals(QtCore.QObject):
-    finished = QtCore.Signal(bool, float, str)
+    finished = QtCore.Signal(float, object)
 
 
 class _WorkspaceSaveResultReceiver(QtCore.QObject):
     def __init__(
         self,
         *,
-        callback: Callable[[bool, float, str], None] | None = None,
+        callback: Callable[[float, _WorkspaceSaveError | None], None] | None = None,
         parent: QtCore.QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._callback = callback
 
-    @QtCore.Slot(bool, float, str)
-    def finish(self, ok: bool, elapsed: float, error_text: str) -> None:
+    @QtCore.Slot(float, object)
+    def finish(
+        self,
+        elapsed: float,
+        error: _WorkspaceSaveError | None,
+    ) -> None:
         if self._callback is not None:
-            self._callback(ok, elapsed, error_text)
+            self._callback(elapsed, error)
 
 
 class _WorkspaceSaveWorker(QtCore.QRunnable):
@@ -113,8 +123,7 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
 
     def run(self) -> None:
         start_time = time.perf_counter()
-        error_text = ""
-        ok = False
+        error: _WorkspaceSaveError | None = None
         try:
             if self._snapshot.file_repack:
                 workspace_storage._write_full_workspace_tree_file(
@@ -144,13 +153,17 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
                     copy_group_sources=self._snapshot.copy_group_sources,
                     compression_mode=self._snapshot.compression_mode,
                 )
-            ok = True
+        except workspace_storage._WorkspaceBackingFileNotFoundError as exc:
+            error = _WorkspaceSaveError(
+                traceback_text=traceback.format_exc(),
+                missing_source_path=exc.source_path,
+            )
         except Exception:
-            error_text = traceback.format_exc()
+            error = _WorkspaceSaveError(traceback_text=traceback.format_exc())
         finally:
             with contextlib.suppress(Exception):
                 self._snapshot.close()
-        self.signals.finished.emit(ok, time.perf_counter() - start_time, error_text)
+        self.signals.finished.emit(time.perf_counter() - start_time, error)
 
 
 class _WorkspaceSaver:

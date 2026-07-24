@@ -1131,7 +1131,9 @@ def test_manager_shutdown_compaction_logs_failure(
         with caplog.at_level(logging.ERROR):
             assert manager._workspace_controller._compact_workspace_before_shutdown()
             assert len(pool.workers) == 1
-            pool.workers[0].finish(ok=False, error_text="compact failed")
+            pool.workers[0].finish(
+                error=workspace_saving._WorkspaceSaveError("compact failed"),
+            )
             qtbot.wait_until(lambda: not manager._workspace_state.save_in_progress)
 
     assert "Failed to compact workspace before shutdown" in caplog.text
@@ -1307,10 +1309,13 @@ class _DeferredWorkspaceSaveWorker:
         self._snapshot = snapshot
 
     def finish(
-        self, *, ok: bool = True, elapsed: float = 0.0, error_text: str = ""
+        self,
+        *,
+        elapsed: float = 0.0,
+        error: workspace_saving._WorkspaceSaveError | None = None,
     ) -> None:
         self._snapshot.close()
-        self.signals.finished.emit(ok, elapsed, error_text)
+        self.signals.finished.emit(elapsed, error)
 
 
 class _DeferredWorkspaceSaveThreadPool:
@@ -1374,6 +1379,40 @@ def _compact_workspace_before_shutdown_and_wait(
     return requested
 
 
+def test_workspace_save_worker_reports_missing_backing_source(tmp_path) -> None:
+    missing_source = tmp_path / "deleted-source.itws"
+    target = tmp_path / "target.itws"
+    snapshot = workspace_saving._WorkspaceSaveSnapshot(
+        generation=0,
+        root_attrs=_transaction_test_root_attrs(),
+        delta_save_count=0,
+        full_tree=xr.DataTree(),
+        copy_group_sources=(
+            (
+                str(missing_source),
+                "0/imagetool",
+                "0/imagetool",
+                None,
+            ),
+        ),
+    )
+    worker = workspace_saving._WorkspaceSaveWorker(target, snapshot)
+    results: list[tuple[float, workspace_saving._WorkspaceSaveError | None]] = []
+    receiver = workspace_saving._WorkspaceSaveResultReceiver(
+        callback=lambda elapsed, error: results.append((elapsed, error)),
+        parent=worker.signals,
+    )
+    worker.signals.finished.connect(receiver.finish)
+
+    worker.run()
+
+    assert len(results) == 1
+    _elapsed, error = results[0]
+    assert isinstance(error, workspace_saving._WorkspaceSaveError)
+    assert error.missing_source_path == str(missing_source)
+    assert error.traceback_text
+
+
 def test_manager_async_save_request_error_paths(
     qtbot,
     monkeypatch,
@@ -1390,10 +1429,19 @@ def test_manager_async_save_request_error_paths(
 
     monkeypatch.setattr(erlab.interactive.utils.MessageDialog, "critical", _critical)
     with manager_context() as manager:
-        manager._show_workspace_save_worker_error("Traceback text")
+        manager._show_workspace_save_worker_error(
+            workspace_saving._WorkspaceSaveError("Traceback text")
+        )
         assert critical_calls[-1][2] == (
             "An error occurred while saving the workspace file."
         )
+
+        missing_error = workspace_saving._WorkspaceSaveError(
+            traceback_text="Missing source traceback",
+            missing_source_path=str(tmp_path / "deleted-source.itws"),
+        )
+        manager._show_workspace_save_worker_error(missing_error)
+        assert len(critical_calls) == 2
 
         manager._workspace_state.path = tmp_path / "workspace.itws"
         manager._workspace_state.save_in_progress = True
@@ -1667,7 +1715,7 @@ def test_manager_background_workspace_save_failure_restores_state(
             lambda title, text: operation_errors.append((title, text)),
         )
         _fname = _bind_dirty_workspace_for_save_test(manager, tmp_path)
-        errors: list[str] = []
+        errors: list[workspace_saving._WorkspaceSaveError] = []
         monkeypatch.setattr(
             manager._workspace_controller.saving,
             "_workspace_save_snapshot",
@@ -1679,11 +1727,13 @@ def test_manager_background_workspace_save_failure_restores_state(
         assert manager._workspace_controller.save()
         assert manager._workspace_state.save_in_progress
 
-        pool.workers[0].finish(ok=False, error_text="worker boom")
+        pool.workers[0].finish(
+            error=workspace_saving._WorkspaceSaveError("worker boom"),
+        )
         qtbot.wait_until(lambda: not manager._workspace_state.save_in_progress)
 
         assert errors
-        assert "worker boom" in errors[-1]
+        assert "worker boom" in errors[-1].traceback_text
         assert manager.save_action.isEnabled()
         assert manager.save_as_action.isEnabled()
         assert manager.compact_workspace_action.isEnabled()
@@ -4033,7 +4083,7 @@ def test_workspace_save_worker_start_and_finish_error_branches(
             on_finished=lambda *_args: (_ for _ in ()).throw(RuntimeError("boom")),
         )
         assert pool.worker is not None
-        pool.worker.signals.finished.emit(True, 0.1, "")
+        pool.worker.signals.finished.emit(0.1, None)
         assert errors == [
             (
                 "Error while saving workspace",
@@ -4084,9 +4134,8 @@ def test_background_workspace_save_finish_branches(
             snapshot=typing.cast(
                 "workspace_saving._WorkspaceSaveSnapshot", types.SimpleNamespace()
             ),
-            ok=True,
             worker_elapsed=0.1,
-            error_text="",
+            error=None,
             origin=None,
             snapshot_elapsed=0.0,
             started_at=time.perf_counter(),
@@ -4117,9 +4166,8 @@ def test_background_workspace_save_finish_branches(
             snapshot=typing.cast(
                 "workspace_saving._WorkspaceSaveSnapshot", types.SimpleNamespace()
             ),
-            ok=True,
             worker_elapsed=0.1,
-            error_text="",
+            error=None,
             origin=None,
             snapshot_elapsed=0.0,
             started_at=time.perf_counter(),
@@ -4213,20 +4261,23 @@ def test_workspace_save_and_save_as_error_continuation_branches(
             "_workspace_full_save_snapshot",
             lambda generation, **_kwargs: snapshot(generation),
         )
-        worker_errors: list[str] = []
+        worker_errors: list[workspace_saving._WorkspaceSaveError] = []
         monkeypatch.setattr(
             manager, "_show_workspace_save_worker_error", worker_errors.append
         )
 
         def _fail_worker(_fname, _snapshot, *, on_finished, on_start_error=None):
             del on_start_error
-            on_finished(False, 0.1, "write failed")
+            on_finished(
+                0.1,
+                workspace_saving._WorkspaceSaveError("write failed"),
+            )
             return True
 
         monkeypatch.setattr(controller, "_start_workspace_save_worker", _fail_worker)
         finished.clear()
         assert controller.save_as(native=False, on_finished=finished.append)
-        assert worker_errors == ["write failed"]
+        assert [error.traceback_text for error in worker_errors] == ["write failed"]
         assert finished == [False]
 
         manager._workspace_controller._mark_workspace_clean()
@@ -4236,7 +4287,7 @@ def test_workspace_save_and_save_as_error_continuation_branches(
         ):
             del on_start_error
             manager._workspace_controller._mark_node_state_dirty(uid)
-            on_finished(True, 0.1, "")
+            on_finished(0.1, None)
             return True
 
         monkeypatch.setattr(
@@ -4303,7 +4354,7 @@ def test_workspace_save_completion_ignores_inactive_document(
             del on_start_error
             manager._workspace_state.advance_document_identity()
             manager._workspace_state.path = tmp_path / "replacement.itws"
-            on_finished(True, 0.1, "")
+            on_finished(0.1, None)
             return True
 
         monkeypatch.setattr(
@@ -4357,7 +4408,7 @@ def test_workspace_save_as_completion_ignores_inactive_document(
         ) -> bool:
             del on_start_error
             manager._workspace_state.advance_document_identity()
-            on_finished(True, 0.1, "")
+            on_finished(0.1, None)
             return True
 
         monkeypatch.setattr(
