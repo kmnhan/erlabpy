@@ -1674,6 +1674,62 @@ def test_figure_composer_hide_cancels_deferred_figure_window(
     assert calls == []
 
 
+def test_managed_figure_composer_close_hides_and_reopens_plot(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        tool = FigureComposerTool(
+            xr.DataArray(
+                np.arange(4.0),
+                dims=("x",),
+                coords={"x": np.arange(4.0)},
+            )
+        )
+        figure_uid = manager.add_figuretool(tool, show=True)
+        qtbot.waitUntil(
+            lambda: (
+                tool.isVisible()
+                and tool._figure_window is not None
+                and tool._figure_window.isVisible()
+            ),
+            timeout=5000,
+        )
+        figure_window = tool.figure_window
+
+        tool.close()
+
+        assert figure_uid in manager._tool_graph.nodes
+        assert not tool.isVisible()
+        assert not tool._closing
+        assert tool._figure_window is figure_window
+        assert not figure_window.isVisible()
+
+        manager.show_childtool(figure_uid)
+        qtbot.waitUntil(
+            lambda: tool.isVisible() and figure_window.isVisible(),
+            timeout=5000,
+        )
+
+        resized_width = tool.layout_panel.width_spin.value() + 0.5
+        tool.layout_panel.width_spin.setValue(resized_width)
+        tool.layout_panel.width_spin.editingFinished.emit()
+        assert np.isclose(tool.tool_status.setup.figsize[0], resized_width)
+
+        figure_window.hide()
+        tool.show_figure_button.click()
+        tool.show_figure_button.click()
+        qtbot.waitUntil(figure_window.isVisible, timeout=5000)
+
+        manager._remove_childtool(figure_uid)
+        qtbot.waitUntil(
+            lambda: not erlab.interactive.utils.qt_is_valid(tool),
+            timeout=5000,
+        )
+
+
 def test_figure_composer_show_composer_from_figure_window(qtbot, monkeypatch) -> None:
     tool = FigureComposerTool(_figure_composer_image_source("data"))
     qtbot.addWidget(tool)

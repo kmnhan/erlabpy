@@ -1135,6 +1135,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             super().hideEvent(event)
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        # Managed composers stay registered after a native window close and can be
+        # reopened. Preserve their live editors unless the owner is deleting them.
+        if (
+            event is not None
+            and self._is_in_manager()
+            and not self.testAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+            and not erlab.interactive.utils._application_quit_requested()
+        ):
+            event.ignore()
+            self.hide()
+            return
         self.operation_editor.flush_pending_commits()
         self._flush_pending_figure_resize_history_write()
         self._closing = True
