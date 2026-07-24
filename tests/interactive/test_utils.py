@@ -1033,8 +1033,14 @@ def test_wait_dialog_uses_platform_indicator_and_suppresses_nested(
 
     with erlab.interactive.utils.wait_dialog(parent, "Outer") as outer:
         assert isinstance(outer, getattr(erlab.interactive.utils, indicator_type_name))
-        assert outer.layout().getContentsMargins() == (24, 20, 24, 20)
-        assert outer.sizeHint().height() >= outer._label.sizeHint().height() + 20 * 2
+        if isinstance(outer, erlab.interactive.utils._WaitDialog):
+            assert outer.layout().getContentsMargins() == (24, 20, 24, 20)
+            assert (
+                outer.sizeHint().height() >= outer._label.sizeHint().height() + 20 * 2
+            )
+        else:
+            assert outer.margin() == 20
+            assert outer.sizeHint().height() >= outer.fontMetrics().height() + 20 * 2
         outer.set_message("A substantially longer outer message")
         updated_width = outer.sizeHint().width()
 
@@ -1068,18 +1074,23 @@ def test_wait_panel_paints_synchronously_and_repaints_message_updates(
         assert isinstance(panel, RecordingWaitPanel)
         assert panel.parentWidget() is window
         assert paint_sizes
-        initial_paint_count = len(paint_sizes)
         initial_width = panel.width()
 
-        panel.set_message("A substantially longer wait-panel message")
+        for message in (
+            "Loading workspace... (1/12)",
+            "Loading workspace... (2/12)",
+            "Loading workspace... (12/12)",
+        ):
+            paint_count = len(paint_sizes)
+            panel.set_message(message)
+            assert len(paint_sizes) > paint_count
 
-        assert len(paint_sizes) > initial_paint_count
         assert panel.width() > initial_width
         center_delta = panel.geometry().center() - window.rect().center()
         assert center_delta.manhattanLength() <= 1
 
 
-def test_wait_panel_blocks_parent_input_without_showing_modal_guard(
+def test_wait_panel_discards_input_queued_during_synchronous_work(
     qtbot, monkeypatch
 ) -> None:
     monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
@@ -1098,6 +1109,16 @@ def test_wait_panel_blocks_parent_input_without_showing_modal_guard(
 
     button.clicked.connect(_record_click)
     click_position = button.mapTo(window, button.rect().center())
+    click_attempted = False
+
+    def _click_parent_window() -> None:
+        nonlocal click_attempted
+        click_attempted = True
+        QtTest.QTest.mouseClick(
+            window.windowHandle(),
+            QtCore.Qt.MouseButton.LeftButton,
+            pos=click_position,
+        )
 
     with erlab.interactive.utils.wait_dialog(window, "Blocking input") as panel:
         assert isinstance(panel, erlab.interactive.utils._WaitPanel)
@@ -1110,17 +1131,18 @@ def test_wait_panel_blocks_parent_input_without_showing_modal_guard(
         assert not modal_handle.isVisible()
         assert not modal_handle.isExposed()
 
-        QtCore.QTimer.singleShot(
-            0,
-            lambda: QtTest.QTest.mouseClick(
-                window.windowHandle(),
-                QtCore.Qt.MouseButton.LeftButton,
-                pos=click_position,
-            ),
-        )
-        QtWidgets.QApplication.processEvents()
-        assert click_count == 0
+        QtCore.QTimer.singleShot(0, _click_parent_window)
 
+    assert not panel.isVisible()
+    assert QtWidgets.QApplication.activeModalWidget() is modal_guard
+    qtbot.waitUntil(
+        lambda: QtWidgets.QApplication.activeModalWidget() is not modal_guard,
+        timeout=1000,
+    )
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+
+    assert click_attempted
+    assert click_count == 0
     assert QtWidgets.QApplication.activeModalWidget() is not modal_guard
     QtTest.QTest.mouseClick(
         window.windowHandle(),
@@ -1129,6 +1151,25 @@ def test_wait_panel_blocks_parent_input_without_showing_modal_guard(
     )
     QtWidgets.QApplication.processEvents()
     assert click_count == 1
+
+
+def test_wait_panel_pending_input_drain_is_safe_if_parent_is_destroyed(
+    qtbot, monkeypatch
+) -> None:
+    monkeypatch.setattr(erlab.interactive.utils.sys, "platform", "win32")
+    parent = QtWidgets.QWidget()
+
+    with erlab.interactive.utils.wait_dialog(parent, "Lifetime check") as panel:
+        assert isinstance(panel, erlab.interactive.utils._WaitPanel)
+        modal_guard = panel._modal_guard
+
+    assert qt_is_valid(panel, modal_guard)
+    parent.deleteLater()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    assert not qt_is_valid(parent)
+    assert not qt_is_valid(panel)
+    assert not qt_is_valid(modal_guard)
+    QtWidgets.QApplication.processEvents()
 
 
 @pytest.mark.parametrize(
