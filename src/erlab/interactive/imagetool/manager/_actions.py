@@ -11,6 +11,7 @@ import uuid
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool import _kspace_conversion
 from erlab.interactive.imagetool._mainwindow import ImageTool
@@ -1409,17 +1410,44 @@ class _ActionsController:
             ),
         )
 
-    def _show_workspace_save_worker_error(self, error_text: str) -> None:
-        logger.error(
-            "Error while saving workspace\n%s",
-            error_text,
-            extra={"suppress_ui_alert": True},
-        )
+    def _show_workspace_save_worker_error(
+        self, error: workspace_saving._WorkspaceSaveError
+    ) -> None:
+        source_path = error.missing_source_path
+        if source_path is None:
+            title = "Error"
+            text = "An error occurred while saving the workspace file."
+            logger.error(
+                "Error while saving workspace\n%s",
+                error.traceback_text,
+                extra={"suppress_ui_alert": True},
+            )
+        else:
+            title = "Workspace Backing File Missing"
+            text = (
+                "ImageTool Manager could not save this workspace because it still "
+                "needs data from a workspace file that was moved or deleted:\n\n"
+                f"{source_path}\n\n"
+                "Restore the file to this location and try again. This may be a source "
+                "workspace containing deferred items rather than the workspace you "
+                "were trying to save.\n\n"
+                "If the file was permanently deleted, items that were not loaded into "
+                "memory cannot be recovered. Items already loaded may remain available "
+                "in the current session."
+            )
+            logger.error(
+                "Error while saving workspace; backing file is missing: %s\n%s",
+                source_path,
+                error.traceback_text,
+                extra={"suppress_ui_alert": True},
+            )
         erlab.interactive.utils.MessageDialog.critical(
             self._manager,
-            "Error",
-            "An error occurred while saving the workspace file.",
-            detailed_text=erlab.interactive.utils._format_traceback(error_text),
+            title,
+            text,
+            detailed_text=erlab.interactive.utils._format_traceback(
+                error.traceback_text
+            ),
         )
 
     def add_widget(self, widget: QtWidgets.QWidget) -> None:

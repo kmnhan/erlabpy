@@ -88,6 +88,7 @@ if typing.TYPE_CHECKING:
     import numpy as np
     import xarray as xr
 
+    import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
     from erlab.interactive._figurecomposer import (
         FigureAxesSelectionState,
         FigureOperationState,
@@ -2646,8 +2647,10 @@ class ImageToolManager(_ImageToolManagerBase):
     def _show_operation_error(self, log_message: str, text: str) -> None:
         self._actions_controller._show_operation_error(log_message, text)
 
-    def _show_workspace_save_worker_error(self, error_text: str) -> None:
-        self._actions_controller._show_workspace_save_worker_error(error_text)
+    def _show_workspace_save_worker_error(
+        self, error: workspace_saving._WorkspaceSaveError
+    ) -> None:
+        self._actions_controller._show_workspace_save_worker_error(error)
 
     def add_widget(self, widget: QtWidgets.QWidget) -> None:
         self._actions_controller.add_widget(widget)

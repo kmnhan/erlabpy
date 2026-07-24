@@ -1424,7 +1424,9 @@ class _WorkspaceController:
         fname: str | os.PathLike[str],
         snapshot: workspace_saving._WorkspaceSaveSnapshot,
         *,
-        on_finished: Callable[[bool, float, str], None],
+        on_finished: Callable[
+            [float, workspace_saving._WorkspaceSaveError | None], None
+        ],
         on_start_error: Callable[[], None] | None = None,
     ) -> bool:
         thread_pool = QtCore.QThreadPool.globalInstance()
@@ -1437,7 +1439,10 @@ class _WorkspaceController:
         worker = workspace_saving._WorkspaceSaveWorker(fname, snapshot)
         previous_action_states = self._set_workspace_save_actions_enabled(False)
 
-        def _finish(ok: bool, elapsed: float, error_text: str) -> None:
+        def _finish(
+            elapsed: float,
+            error: workspace_saving._WorkspaceSaveError | None,
+        ) -> None:
             self._manager._workspace_state.save_in_progress = False
             self._restore_workspace_save_actions_enabled(previous_action_states)
             self._manager._update_actions()
@@ -1447,7 +1452,7 @@ class _WorkspaceController:
             if receiver is not None:
                 receiver.deleteLater()
             try:
-                on_finished(ok, elapsed, error_text)
+                on_finished(elapsed, error)
             except Exception:
                 logger.exception(
                     "Error while finishing workspace save",
@@ -1506,9 +1511,8 @@ class _WorkspaceController:
         old_workspace_path: pathlib.Path | None,
         backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]],
         snapshot: workspace_saving._WorkspaceSaveSnapshot,
-        ok: bool,
         worker_elapsed: float,
-        error_text: str,
+        error: workspace_saving._WorkspaceSaveError | None,
         origin: QtWidgets.QWidget | None,
         snapshot_elapsed: float,
         started_at: float,
@@ -1528,9 +1532,9 @@ class _WorkspaceController:
                 extra={"suppress_ui_alert": True},
             )
             return False
-        if not ok:
+        if error is not None:
             self._manager._status_bar.clearMessage()
-            self._manager._show_workspace_save_worker_error(error_text)
+            self._manager._show_workspace_save_worker_error(error)
             if restore_focus:
                 self._restore_focus_after_workspace_save(origin)
             return False
@@ -1600,9 +1604,8 @@ class _WorkspaceController:
         old_workspace_path: pathlib.Path | None,
         backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]],
         snapshot: workspace_saving._WorkspaceSaveSnapshot,
-        ok: bool,
         worker_elapsed: float,
-        error_text: str,
+        error: workspace_saving._WorkspaceSaveError | None,
         origin: QtWidgets.QWidget | None,
         snapshot_elapsed: float,
         started_at: float,
@@ -1616,9 +1619,8 @@ class _WorkspaceController:
                 old_workspace_path=old_workspace_path,
                 backing_snapshot=backing_snapshot,
                 snapshot=snapshot,
-                ok=ok,
                 worker_elapsed=worker_elapsed,
-                error_text=error_text,
+                error=error,
                 origin=origin,
                 snapshot_elapsed=snapshot_elapsed,
                 started_at=started_at,
@@ -1707,22 +1709,19 @@ class _WorkspaceController:
         return self._start_workspace_save_worker(
             workspace_path,
             snapshot,
-            on_finished=lambda ok, elapsed, error_text: (
-                self._finish_background_workspace_save(
-                    document_id=document_id,
-                    workspace_path=workspace_path,
-                    old_workspace_path=old_workspace_path,
-                    backing_snapshot=backing_snapshot,
-                    snapshot=snapshot,
-                    ok=ok,
-                    worker_elapsed=elapsed,
-                    error_text=error_text,
-                    origin=origin,
-                    snapshot_elapsed=snapshot_elapsed,
-                    started_at=started_at,
-                    restore_focus=restore_focus,
-                    on_finished=on_finished,
-                )
+            on_finished=lambda elapsed, error: self._finish_background_workspace_save(
+                document_id=document_id,
+                workspace_path=workspace_path,
+                old_workspace_path=old_workspace_path,
+                backing_snapshot=backing_snapshot,
+                snapshot=snapshot,
+                worker_elapsed=elapsed,
+                error=error,
+                origin=origin,
+                snapshot_elapsed=snapshot_elapsed,
+                started_at=started_at,
+                restore_focus=restore_focus,
+                on_finished=on_finished,
             ),
             on_start_error=_start_error,
         )
@@ -1795,7 +1794,10 @@ class _WorkspaceController:
                 access.release()
             raise RuntimeError("Workspace save snapshot was not created")
 
-        def _finish_save_as(ok: bool, worker_elapsed: float, error_text: str) -> None:
+        def _finish_save_as(
+            worker_elapsed: float,
+            error: workspace_saving._WorkspaceSaveError | None,
+        ) -> None:
             nonlocal access
             total_elapsed = time.perf_counter() - started_at
             logger.debug(
@@ -1819,9 +1821,9 @@ class _WorkspaceController:
                 if on_finished is not None:
                     on_finished(False)
                 return
-            if not ok:
+            if error is not None:
                 self._manager._status_bar.clearMessage()
-                self._manager._show_workspace_save_worker_error(error_text)
+                self._manager._show_workspace_save_worker_error(error)
                 access.release()
                 self._restore_focus_after_workspace_save(origin)
                 if on_finished is not None:
@@ -1942,7 +1944,10 @@ class _WorkspaceController:
             )
             return False
 
-        def _finish_compaction(ok: bool, _elapsed: float, error_text: str) -> None:
+        def _finish_compaction(
+            _elapsed: float,
+            error: workspace_saving._WorkspaceSaveError | None,
+        ) -> None:
             if self._manager._workspace_state.document_id != document_id:
                 logger.info(
                     "Ignoring completed shutdown compaction for inactive document",
@@ -1951,10 +1956,10 @@ class _WorkspaceController:
                 if on_finished is not None:
                     on_finished()
                 return
-            if not ok:
+            if error is not None:
                 logger.error(
                     "Failed to compact workspace before shutdown%s",
-                    f":\n{error_text}" if error_text else "",
+                    f":\n{error.traceback_text}",
                     extra={"suppress_ui_alert": True},
                 )
             else:

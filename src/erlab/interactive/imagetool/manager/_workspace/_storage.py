@@ -50,6 +50,18 @@ _WorkspaceCopyGroupWithSource: typing.TypeAlias = tuple[
 ]
 
 
+class _WorkspaceBackingFileNotFoundError(FileNotFoundError):
+    """A workspace payload source disappeared before it could be copied."""
+
+    def __init__(self, source_path: str | os.PathLike[str]) -> None:
+        self.source_path = os.fsdecode(source_path)
+        super().__init__(
+            errno.ENOENT,
+            "Workspace backing file is missing",
+            self.source_path,
+        )
+
+
 @dataclass(frozen=True)
 class _WorkspaceDocumentLockInfo:
     path: str
@@ -725,26 +737,27 @@ def _write_full_workspace_tree_file(
             _write_root_attrs_to_open_workspace_file(tmp_file, root_attrs, replace=True)
 
         for source_fname, copy_jobs in copy_jobs_by_source.items():
-            with (
-                workspace_arrays._workspace_file_lock(source_fname),
-                h5py.File(source_fname, "r") as source_file,
-                h5py.File(tmp_fname, "a") as tmp_file,
-            ):
-                for source_path, destination_path, attrs, required in copy_jobs:
-                    destination_path = destination_path.strip("/")
-                    if workspace_arrays._copy_workspace_h5_group_to_open_file(
-                        source_file,
-                        tmp_file,
-                        source_path,
-                        destination_path,
-                        attrs,
-                    ):
-                        copied_paths.add(destination_path)
-                    elif required:
-                        raise ValueError(
-                            "Required workspace payload group "
-                            f"{source_path!r} was not found in {source_fname!r}"
-                        )
+            with workspace_arrays._workspace_file_lock(source_fname):
+                try:
+                    source_file = h5py.File(source_fname, "r")
+                except FileNotFoundError as exc:
+                    raise _WorkspaceBackingFileNotFoundError(source_fname) from exc
+                with source_file, h5py.File(tmp_fname, "a") as tmp_file:
+                    for source_path, destination_path, attrs, required in copy_jobs:
+                        destination_path = destination_path.strip("/")
+                        if workspace_arrays._copy_workspace_h5_group_to_open_file(
+                            source_file,
+                            tmp_file,
+                            source_path,
+                            destination_path,
+                            attrs,
+                        ):
+                            copied_paths.add(destination_path)
+                        elif required:
+                            raise ValueError(
+                                "Required workspace payload group "
+                                f"{source_path!r} was not found in {source_fname!r}"
+                            )
 
         if tree is not None:
             for node in sorted(tree.subtree, key=lambda value: value.path.count("/")):
