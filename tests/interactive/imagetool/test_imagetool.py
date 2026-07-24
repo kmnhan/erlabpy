@@ -2064,6 +2064,9 @@ def test_plot_with_matplotlib_executes_in_manager(qtbot, monkeypatch) -> None:
     win.slicer_area.manual_limits.clear()
 
     class _Manager:
+        def _node_uid_from_window(self, _window):
+            return None
+
         def target_from_slicer_area(self, slicer_area):
             assert slicer_area is win.slicer_area
             return 0
@@ -2137,6 +2140,9 @@ def test_plot_with_matplotlib_accepts_spaced_selection_dim(qtbot, monkeypatch) -
     warnings_shown: list[tuple[QtWidgets.QWidget | None, str, str]] = []
 
     class _Manager:
+        def _node_uid_from_window(self, _window):
+            return None
+
         def target_from_slicer_area(self, slicer_area):
             assert slicer_area is win.slicer_area
             return 0
@@ -2240,6 +2246,9 @@ def test_plot_with_matplotlib_preserves_state_with_editable_selection_dim(
     win.slicer_area.set_manual_limits({"alpha": [1.0, 3.0], "eV": [0.5, 2.5]})
 
     class _Manager:
+        def _node_uid_from_window(self, _window):
+            return None
+
         def target_from_slicer_area(self, slicer_area):
             assert slicer_area is win.slicer_area
             return 0
