@@ -635,8 +635,118 @@ class _WaitDialog(QtWidgets.QDialog):
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
 
     def set_message(self, message: str) -> None:
+        if not qt_is_valid(self, self._label):
+            return
         self._label.setText(message)
         self.adjustSize()
+
+    def _finish(self) -> None:
+        if not qt_is_valid(self):
+            return
+        self.close()
+        if qt_is_valid(self):
+            self.deleteLater()
+
+
+class _WaitModalGuard(QtWidgets.QDialog):
+    def __init__(self, parent: QtWidgets.QWidget) -> None:
+        super().__init__(parent)
+        self.setModal(True)
+        self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen)
+        self._dispatcher: QtCore.QAbstractEventDispatcher | None = None
+        self._event_loop_passes = 0
+
+    def release_after_event_drain(self) -> None:
+        if not qt_is_valid(self) or self._dispatcher is not None:
+            return
+        dispatcher = QtCore.QAbstractEventDispatcher.instance()
+        if dispatcher is None or not qt_is_valid(dispatcher):
+            self._release()
+            return
+        self._dispatcher = dispatcher
+        # Dispatcher signal order differs across QPA backends. Two wake boundaries
+        # keep modality active for at least one complete native-event drain.
+        dispatcher.awake.connect(self._event_loop_awake)
+        QtCore.QTimer.singleShot(0, self._continue_event_drain)
+
+    @QtCore.Slot()
+    def _event_loop_awake(self) -> None:
+        if not qt_is_valid(self):
+            return
+        self._event_loop_passes += 1
+        if self._event_loop_passes < 2:
+            QtCore.QTimer.singleShot(0, self._continue_event_drain)
+            return
+        self._release()
+
+    @QtCore.Slot()
+    def _continue_event_drain(self) -> None:
+        if self._dispatcher is not None and qt_is_valid(self._dispatcher):
+            self._dispatcher.wakeUp()
+
+    def _release(self) -> None:
+        dispatcher = self._dispatcher
+        self._dispatcher = None
+        if dispatcher is not None and qt_is_valid(dispatcher):
+            with contextlib.suppress(TypeError, RuntimeError):
+                dispatcher.awake.disconnect(self._event_loop_awake)
+        if not qt_is_valid(self):
+            return
+        panel = self.parentWidget()
+        self.close()
+        if panel is not None and qt_is_valid(panel):
+            panel.deleteLater()
+        elif qt_is_valid(self):
+            self.deleteLater()
+
+
+class _WaitPanel(QtWidgets.QLabel):
+    def __init__(self, parent: QtWidgets.QWidget, message: str) -> None:
+        super().__init__(message, parent.window())
+        self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        self.setMargin(20)
+        self.setAutoFillBackground(True)
+        self._modal_guard = _WaitModalGuard(self)
+
+    def open(self) -> None:
+        if not qt_is_valid(self, self._modal_guard):
+            return
+        self._modal_guard.open()
+        self.show_centered()
+
+    def show_centered(self) -> None:
+        if not qt_is_valid(self):
+            return
+        parent = self.parentWidget()
+        if parent is None or not qt_is_valid(parent):
+            return
+        previous_geometry = self.geometry() if self.isVisible() else QtCore.QRect()
+        self.adjustSize()
+        self.move(parent.rect().center() - self.rect().center())
+        self.show()
+        self.raise_()
+        dirty_region = self.geometry()
+        if previous_geometry.isValid():
+            dirty_region = dirty_region.united(previous_geometry)
+        parent.repaint(dirty_region)
+        self.repaint()
+
+    def set_message(self, message: str) -> None:
+        if not qt_is_valid(self):
+            return
+        self.setText(message)
+        self.show_centered()
+
+    def _finish(self) -> None:
+        if not qt_is_valid(self):
+            return
+        self.hide()
+        if qt_is_valid(self._modal_guard):
+            self._modal_guard.release_after_event_drain()
+        else:
+            self.deleteLater()
 
 
 class _SuppressedWaitDialog:
@@ -647,7 +757,7 @@ class _SuppressedWaitDialog:
 @contextlib.contextmanager
 def wait_dialog(
     parent: QtWidgets.QWidget, message: str
-) -> Iterator[_WaitDialog | _SuppressedWaitDialog]:
+) -> Iterator[_WaitDialog | _WaitPanel | _SuppressedWaitDialog]:
     """Show a wait dialog while executing a block of code.
 
     This context manager creates a simple dialog with a message while the block of code
@@ -671,17 +781,19 @@ def wait_dialog(
         yield _SuppressedWaitDialog()
         return
 
-    dialog = _WaitDialog(parent, message)
+    if sys.platform == "darwin":
+        indicator = _WaitDialog(parent, message)
+    else:
+        indicator = _WaitPanel(parent, message)
+
     _WAIT_DIALOG_DEPTH += 1
     try:
-        dialog.open()
-        yield dialog
+        indicator.open()
+        yield indicator
     finally:
         try:
-            try:
-                dialog.close()
-            finally:
-                dialog.deleteLater()
+            if qt_is_valid(indicator):
+                indicator._finish()
         finally:
             _WAIT_DIALOG_DEPTH -= 1
 
