@@ -29,8 +29,9 @@ manager_dir = (
     / "interactive/imagetool/manager"
 )
 
-# Dask checks pandas distribution metadata when tokenizing xarray indexes.
-datas = copy_metadata("pandas")
+# Dask checks pandas distribution metadata when tokenizing xarray indexes, and
+# xarray-lmfit reads its version from distribution metadata.
+datas = copy_metadata("pandas") + copy_metadata("xarray-lmfit")
 binaries = []
 hiddenimports = [
     "PyQt6",
