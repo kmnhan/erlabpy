@@ -955,10 +955,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         ):
             return
         self._pending_splitter_restore_queued = True
-        erlab.interactive.utils.single_shot(
-            self, 0, self._apply_pending_splitter_restore
+        QtCore.QMetaObject.invokeMethod(
+            self,
+            "_apply_pending_splitter_restore",
+            QtCore.Qt.ConnectionType.QueuedConnection,
         )
 
+    @QtCore.Slot()
     def _apply_pending_splitter_restore(self) -> None:
         sizes = self._pending_splitter_sizes
         if sizes is None:
@@ -969,10 +972,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._apply_splitter_sizes(sizes)
         # QSplitter may not report the restored sizes until the next layout pass.
         # Keep the serialized sizes pending for state reads until then.
-        erlab.interactive.utils.single_shot(
-            self, 0, self._finish_pending_splitter_restore
+        QtCore.QMetaObject.invokeMethod(
+            self,
+            "_finish_pending_splitter_restore",
+            QtCore.Qt.ConnectionType.QueuedConnection,
         )
 
+    @QtCore.Slot()
     def _finish_pending_splitter_restore(self) -> None:
         self._pending_splitter_sizes = None
         self._pending_splitter_restore_queued = False
@@ -3732,6 +3738,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
         if has_deferred_show_work and not self._deferred_show_restore_queued:
             self._deferred_show_restore_queued = True
-            erlab.interactive.utils.single_shot(
-                self, 0, self._flush_deferred_show_restore
+            QtCore.QMetaObject.invokeMethod(
+                self,
+                "_flush_deferred_show_restore",
+                QtCore.Qt.ConnectionType.QueuedConnection,
             )

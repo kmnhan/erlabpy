@@ -1588,6 +1588,21 @@ def test_accept_dialog_queries_modal_state_on_gui_thread(
     assert all(thread == qapp.thread() for thread in query_threads)
 
 
+def test_accept_dialog_finds_visible_modal_when_active_modal_is_missing(
+    accept_dialog, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "activeModalWidget",
+        lambda: None,
+    )
+    dialog = QtWidgets.QDialog()
+
+    accept_dialog(dialog.exec)
+
+    assert not dialog.isVisible()
+
+
 def test_accept_dialog_unwinds_modal_when_callback_raises(accept_dialog) -> None:
     dialog = QtWidgets.QDialog()
 
