@@ -554,7 +554,10 @@ class ToolPlotStateRegistry(QtCore.QObject):
         state_changed: Callable[[], None],
         info_changed: Callable[[], None],
     ) -> None:
-        super().__init__(parent)
+        # The registry must outlive the observed window's QObject child teardown so
+        # PySide6 can deliver ``destroyed`` while the cleanup receiver is still valid.
+        # ToolWindow keeps the Python owner reference until the window is destroyed.
+        super().__init__()
         self._state_changed = state_changed
         self._info_changed = info_changed
         self._adapters: dict[str, _PlotAppearanceAdapter] = {}
@@ -564,7 +567,7 @@ class ToolPlotStateRegistry(QtCore.QObject):
         self._flush_timer = QtCore.QTimer(self)
         self._flush_timer.setSingleShot(True)
         self._flush_timer.timeout.connect(self._flush_pending)
-        parent.destroyed.connect(self._disconnect_all)
+        parent.destroyed.connect(self._dispose)
 
     def _adapter(
         self,
@@ -636,13 +639,17 @@ class ToolPlotStateRegistry(QtCore.QObject):
         self._pending_reapply.add(plot_id)
         self._flush_timer.start(0)
 
-    def _disconnect_all(self, *_args) -> None:
+    def _dispose(self, *_args) -> None:
         self._flush_timer.stop()
         for adapter in self._adapters.values():
             adapter.disconnect()
         self._adapters.clear()
+        self._restored_states.clear()
         self._pending_changes.clear()
         self._pending_reapply.clear()
+        self._state_changed = lambda: None
+        self._info_changed = lambda: None
+        self.deleteLater()
 
     def _flush_pending(self) -> None:
         changed = False

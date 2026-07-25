@@ -625,7 +625,7 @@ def test_tool_window_preserves_plot_state_awaiting_registration(qtbot) -> None:
     assert resaved["plots"]["deferred"] == view_state["plots"]["deferred"]
 
 
-def test_tool_window_plot_registry_disconnects_before_qt_children(qtbot) -> None:
+def test_tool_window_plot_registry_outlives_window_for_cleanup(qtbot) -> None:
     data = xr.DataArray(
         np.arange(25.0).reshape(5, 5),
         dims=("y", "x"),
@@ -635,12 +635,15 @@ def test_tool_window_plot_registry_disconnects_before_qt_children(qtbot) -> None
     qtbot.addWidget(win)
     registry = win._plot_state_registry
     assert registry._adapters
+    assert registry.parent() is None
 
     win.deleteLater()
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
     qtbot.wait_until(lambda: not qt_is_valid(win), timeout=1000)
-
     assert registry._adapters == {}
+
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    qtbot.wait_until(lambda: not qt_is_valid(registry), timeout=1000)
 
 
 @pytest.mark.parametrize(
