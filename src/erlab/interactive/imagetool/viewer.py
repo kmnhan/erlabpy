@@ -3942,20 +3942,25 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self, watched: QtCore.QObject | None, event: QtCore.QEvent | None
     ) -> bool:
         if watched in self._splitter_handles and event is not None:
-            if event.type() == QtCore.QEvent.Type.MouseButtonPress:
+            event_type = event.type()
+            if event_type == QtCore.QEvent.Type.MouseButtonPress:
                 mouse_event = typing.cast("QtGui.QMouseEvent", event)
                 if mouse_event.button() == QtCore.Qt.MouseButton.LeftButton:
                     self._begin_splitter_move(self._splitter_handles[watched])
-            elif event.type() == QtCore.QEvent.Type.MouseButtonRelease:
-                mouse_event = typing.cast("QtGui.QMouseEvent", event)
-                if mouse_event.button() == QtCore.Qt.MouseButton.LeftButton:
-                    generation = self._splitter_move_generation
-                    erlab.interactive.utils.single_shot(
-                        self,
-                        0,
-                        lambda: self._finish_splitter_move(generation),
-                        watched,
-                    )
+            elif self._splitter_move_active and (
+                event_type == QtCore.QEvent.Type.UngrabMouse
+                or (
+                    event_type == QtCore.QEvent.Type.MouseButtonRelease
+                    and typing.cast("QtGui.QMouseEvent", event).button()
+                    == QtCore.Qt.MouseButton.LeftButton
+                )
+            ):
+                generation = self._splitter_move_generation
+                erlab.interactive.utils.single_shot(
+                    self,
+                    0,
+                    lambda: self._finish_splitter_move(generation),
+                )
         return super().eventFilter(watched, event)
 
     def changeEvent(self, evt: QtCore.QEvent | None) -> None:

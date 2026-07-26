@@ -6005,6 +6005,48 @@ def test_splitter_click_does_not_replace_constrained_layout(qtbot) -> None:
     win.close()
 
 
+def test_splitter_mouse_ungrab_finishes_move(qtbot) -> None:
+    win = ImageTool(
+        xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=("x", "y"))
+    )
+    qtbot.addWidget(win)
+    win.resize(900, 900)
+    with qtbot.waitExposed(win):
+        win.show()
+
+    area = win.slicer_area
+    initial_layout = copy.deepcopy(area.splitter_sizes)
+    area.flush_history()
+    splitter = area._splitters[0]
+    handle = splitter.handle(1)
+    center = handle.rect().center()
+    start_position = splitter.sizes()[0]
+
+    QtTest.QTest.mousePress(handle, QtCore.Qt.MouseButton.LeftButton, pos=center)
+    splitter.moveSplitter(start_position + 40, 1)
+    QtWidgets.QApplication.sendEvent(
+        handle, QtCore.QEvent(QtCore.QEvent.Type.UngrabMouse)
+    )
+    qtbot.wait_until(lambda: not area._splitter_move_active)
+
+    assert not area._history_group_active
+    assert len(area._prev_states) == 1
+    assert all(
+        path and path[0] == "splitter_sizes"
+        for path in area._prev_states[-1].changed_paths
+    )
+    moved_layout = copy.deepcopy(area.splitter_sizes)
+    assert moved_layout != initial_layout
+
+    area.undo()
+    assert area.splitter_sizes == initial_layout
+    area.redo()
+    assert area.splitter_sizes == moved_layout
+
+    QtTest.QTest.mouseRelease(handle, QtCore.Qt.MouseButton.LeftButton, pos=center)
+    win.close()
+
+
 def test_splitter_no_net_drag_does_not_replace_constrained_layout(qtbot) -> None:
     win = ImageTool(
         xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=("x", "y"))
