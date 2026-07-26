@@ -83,6 +83,7 @@ _TEST_MANAGER_SETTINGS_MANAGED_ENV_VAR = (
     "ERLAB_IMAGETOOL_MANAGER_SETTINGS_PATH_TEST_MANAGED"
 )
 _TEST_MANAGER_SETTINGS_PATHS: list[pathlib.Path] = []
+_XDIST_WORKER_ERRORS: list[str] = []
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -211,21 +212,18 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.compat)
 
 
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node: typing.Any, error: object | None) -> None:
+    if error is not None:
+        _XDIST_WORKER_ERRORS.append(f"{node.gateway.id}: {error}")
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     qapp = QtWidgets.QApplication.instance()
     if qapp is not None:
-        # pyqtgraph creates parentless context menus, and some GUI tests keep their
-        # Python owners alive in reference cycles until interpreter shutdown. Retire
-        # every remaining top-level widget while Qt is fully initialized, then collect
-        # those cycles and drain any deletions that collection exposes.
-        for widget in QtWidgets.QApplication.topLevelWidgets():
-            if not qt_is_valid(widget):
-                continue
-            widget.close()
-            if qt_is_valid(widget):
-                widget.deleteLater()
-
+        # pytest-qt closes registered widgets with deleteLater(), but processEvents()
+        # does not guarantee that DeferredDelete events run before interpreter shutdown.
         for _ in range(2):
             QtWidgets.QApplication.sendPostedEvents(
                 None, int(QtCore.QEvent.Type.DeferredDelete.value)
@@ -233,15 +231,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             QtWidgets.QApplication.sendPostedEvents(None, 0)
             qapp.processEvents()
 
+        # Collect Python-owned Qt reference cycles while the binding is still fully
+        # initialized, then deliver any DeferredDelete events exposed by collection.
         gc.collect()
-
-        for widget in QtWidgets.QApplication.topLevelWidgets():
-            if not qt_is_valid(widget):
-                continue
-            widget.close()
-            if qt_is_valid(widget):
-                widget.deleteLater()
-
         for _ in range(2):
             QtWidgets.QApplication.sendPostedEvents(
                 None, int(QtCore.QEvent.Type.DeferredDelete.value)
@@ -255,6 +247,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     ):
         with contextlib.suppress(OSError):
             settings_path.unlink()
+
+    if _XDIST_WORKER_ERRORS:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 @pytest.fixture(autouse=True)

@@ -146,6 +146,7 @@ jobs:
           xdist_args=(
             -n auto
             --dist=loadgroup
+            --max-worker-restart=0
           )
           uv run pytest \
             "${common_args[@]}" \

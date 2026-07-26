@@ -97,6 +97,18 @@ def test_collection_marker_hook_runs_before_xdist_loadgroup() -> None:
     assert hook_options["tryfirst"]
 
 
+def test_xdist_worker_error_fails_session(monkeypatch) -> None:
+    node = types.SimpleNamespace(gateway=types.SimpleNamespace(id="gw0"))
+    session = types.SimpleNamespace(exitstatus=pytest.ExitCode.OK)
+    monkeypatch.setattr(_CONFTEST.QtWidgets.QApplication, "instance", lambda: None)
+    monkeypatch.setattr(_CONFTEST, "_XDIST_WORKER_ERRORS", [])
+
+    _CONFTEST.pytest_testnodedown(node, "Not properly terminated")
+    _CONFTEST.pytest_sessionfinish(session, pytest.ExitCode.OK)
+
+    assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
+
+
 def test_serial_xdist_group_serializes_manager_context_tests() -> None:
     slicer_group = _CONFTEST.serial_xdist_group(
         "tests/interactive/imagetool/test_slicer.py",
