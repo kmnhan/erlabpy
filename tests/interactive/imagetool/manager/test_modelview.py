@@ -251,6 +251,61 @@ def test_link_selected_aligns_to_current_imagetool(
             assert not manager.get_imagetool(index).slicer_area.undoable
 
 
+def test_link_selected_aligns_to_current_child_imagetool(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.zeros((5, 5)), dims=("x", "y"))
+        parent = itool(data, manager=False, execute=False)
+        target = itool(data, manager=False, execute=False)
+        child = itool(data, manager=False, execute=False)
+        assert isinstance(parent, erlab.interactive.imagetool.ImageTool)
+        assert isinstance(target, erlab.interactive.imagetool.ImageTool)
+        assert isinstance(child, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(parent, show=False)
+        manager.add_imagetool(target, show=False)
+        child_uid = manager.add_imagetool_child(
+            child,
+            0,
+            show=False,
+            source_spec=full_data(),
+            source_auto_update=True,
+        )
+
+        child_sizes = child.slicer_area.splitter_sizes
+        child_sizes[0] = [300, 100]
+        child.slicer_area.splitter_sizes = child_sizes
+        target_sizes = target.slicer_area.splitter_sizes
+        target_sizes[0] = [100, 300]
+        target.slicer_area.splitter_sizes = target_sizes
+        child.slicer_area.flush_history()
+        target.slicer_area.flush_history()
+
+        select_tools(manager, [1])
+        select_child_tool(manager, child_uid)
+        child_index = manager.tree_view._model._row_index(child_uid)
+        manager.tree_view.selectionModel().setCurrentIndex(
+            child_index,
+            QtCore.QItemSelectionModel.SelectionFlag.NoUpdate,
+        )
+
+        manager.link_selected(deselect=False)
+
+        np.testing.assert_allclose(
+            np.asarray(target.slicer_area.splitter_sizes[0])
+            / sum(target.slicer_area.splitter_sizes[0]),
+            np.asarray(child.slicer_area.splitter_sizes[0])
+            / sum(child.slicer_area.splitter_sizes[0]),
+            atol=0.01,
+        )
+        assert not child.slicer_area.undoable
+        assert not target.slicer_area.undoable
+
+
 def test_link_badge_falls_back_to_live_linker(
     qtbot,
     monkeypatch,

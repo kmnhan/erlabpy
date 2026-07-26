@@ -5971,6 +5971,7 @@ def test_linked_splitter_fallback_history_preserves_other_rows(qtbot) -> None:
     assert target.splitter_sizes[0] == initial_layout[0]
     assert target.splitter_sizes[1] == target_layout[1]
 
+    target._next_states.clear()
     source.redo()
     assert target.splitter_sizes[0] == moved_layout[0]
     assert target.splitter_sizes[1] == target_layout[1]
@@ -6116,6 +6117,63 @@ def test_discarded_history_group_cancels_splitter_commit(qtbot) -> None:
     win.close()
 
 
+def test_splitter_finish_ignores_stale_release_and_cleans_uninitialized_move(
+    qtbot,
+) -> None:
+    win = ImageTool(
+        xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=("x", "y"))
+    )
+    qtbot.addWidget(win)
+    win.resize(900, 900)
+    with qtbot.waitExposed(win):
+        win.show()
+
+    area = win.slicer_area
+    area._finish_splitter_move()
+    area._begin_splitter_move(0)
+    stale_generation = area._splitter_move_generation
+    area._begin_splitter_move(0)
+
+    area._finish_splitter_move(stale_generation)
+    assert area._splitter_move_active
+
+    area._finish_splitter_move()
+    assert not area._splitter_move_active
+
+    area._splitter_layout = None
+    area._pending_splitter_sizes = None
+    splitter = area._splitters[0]
+    area._begin_splitter_move(0)
+    splitter.moveSplitter(splitter.sizes()[0] + 20, 1)
+    area._discard_pending_history_entry()
+
+    area._finish_splitter_move()
+
+    assert not area._splitter_move_active
+    assert area._splitter_move_indices == ()
+    assert area._splitter_move_start_sizes is None
+    win.close()
+
+
+def test_splitter_event_filter_ignores_unrelated_and_non_left_events(qtbot) -> None:
+    win = ImageTool(
+        xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=("x", "y"))
+    )
+    qtbot.addWidget(win)
+    with qtbot.waitExposed(win):
+        win.show()
+
+    area = win.slicer_area
+    assert not area.eventFilter(None, None)
+    handle = area._splitters[0].handle(1)
+    center = handle.rect().center()
+
+    QtTest.QTest.mousePress(handle, QtCore.Qt.MouseButton.RightButton, pos=center)
+    assert not area._splitter_move_active
+    QtTest.QTest.mouseRelease(handle, QtCore.Qt.MouseButton.RightButton, pos=center)
+    win.close()
+
+
 def test_linked_splitters_skip_incompatible_dimensions(qtbot) -> None:
     data2d = xr.DataArray(np.zeros((5, 5)), dims=("x", "y"))
     data3d = xr.DataArray(np.zeros((5, 5, 5)), dims=("x", "y", "z"))
@@ -6127,6 +6185,10 @@ def test_linked_splitters_skip_incompatible_dimensions(qtbot) -> None:
         win.slicer_area.flush_history()
 
     original_sizes = win3d.slicer_area.splitter_sizes
+    with win3d.slicer_area.link_sync_suppressed():
+        win3d.slicer_area._set_linked_splitter_sizes(
+            win2d.slicer_area.splitter_sizes, 2
+        )
     win2d.slicer_area._set_linked_splitter_sizes(
         [[300, 100], *win2d.slicer_area.splitter_sizes[1:]], 2
     )
@@ -6134,7 +6196,52 @@ def test_linked_splitters_skip_incompatible_dimensions(qtbot) -> None:
     assert win3d.slicer_area.splitter_sizes == original_sizes
     assert not win3d.slicer_area.undoable
 
+    win2d.slicer_area.undo()
+    assert win3d.slicer_area.splitter_sizes == original_sizes
+
     win2d.slicer_area.unlink()
+    win2d.close()
+    win3d.close()
+
+
+def test_splitter_layout_helpers_skip_incompatible_targets(qtbot) -> None:
+    win2d = ImageTool(xr.DataArray(np.zeros((5, 5)), dims=("x", "y")))
+    win3d = ImageTool(xr.DataArray(np.zeros((5, 5, 5)), dims=("x", "y", "z")))
+    for win in (win2d, win3d):
+        qtbot.addWidget(win)
+        with qtbot.waitExposed(win):
+            win.show()
+        win.slicer_area.flush_history()
+
+    area2d = win2d.slicer_area
+    area3d = win3d.slicer_area
+    area2d._pending_splitter_sizes = None
+    area2d._splitter_layout = None
+    realized_layout = [splitter.sizes() for splitter in area2d._splitters]
+    assert area2d.splitter_sizes == realized_layout
+    assert area2d._capture_splitter_layout((0,)) == realized_layout
+
+    requested_layout = copy.deepcopy(realized_layout)
+    requested_layout[0] = list(reversed(requested_layout[0]))
+    incompatible_layout = copy.deepcopy(area3d.splitter_sizes)
+    imagetool_viewer_linking.apply_splitter_layout(
+        (area2d, area3d),
+        requested_layout,
+        area2d.data.ndim,
+    )
+
+    assert area2d.splitter_sizes == requested_layout
+    assert area3d.splitter_sizes == incompatible_layout
+    assert not area2d.undoable
+    assert not area3d.undoable
+
+    proxy = imagetool_viewer_linking.SlicerLinkProxy(
+        area2d,
+        align_splitters=False,
+    )
+    with pytest.raises(ValueError, match="Source is not linked"):
+        proxy.align_splitter_sizes(area3d)
+    proxy.unlink_all()
     win2d.close()
     win3d.close()
 

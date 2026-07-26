@@ -18,6 +18,7 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
 import erlab.interactive.imagetool.manager._workspace._pending as workspace_pending
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
+import erlab.interactive.imagetool.viewer_linking as imagetool_viewer_linking
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._model import FileDataSelection, full_data
@@ -310,6 +311,74 @@ def test_link_selected_uses_pending_current_imagetool_layout(
         assert not target.undoable
 
 
+@pytest.mark.parametrize("materialize_target", [False, True])
+def test_link_imagetools_handles_missing_pending_source_layout(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    materialize_target: bool,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for offset in (0, 100):
+            root = itool(
+                xr.DataArray(
+                    np.arange(offset, offset + 25).reshape((5, 5)),
+                    dims=("x", "y"),
+                ),
+                manager=False,
+                execute=False,
+            )
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+            root.hide()
+
+        fname = tmp_path / "missing-pending-source-layout.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            fname, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+
+        wrappers = [manager._tool_graph.root_wrappers[index] for index in range(2)]
+        wrappers[0].update_pending_workspace_payload_attrs({"itool_state": "{"})
+        target = manager.get_imagetool(1).slicer_area if materialize_target else None
+        expected_sizes = target.splitter_sizes if target is not None else None
+        apply_calls: list[
+            tuple[
+                tuple[erlab.interactive.imagetool.ImageSlicerArea, ...],
+                list[list[int]],
+                int,
+            ]
+        ] = []
+        original_apply = imagetool_viewer_linking.apply_splitter_layout
+
+        def record_apply(slicers, sizes, source_ndim) -> None:
+            slicers = tuple(slicers)
+            apply_calls.append((slicers, sizes, source_ndim))
+            original_apply(slicers, sizes, source_ndim)
+
+        monkeypatch.setattr(
+            imagetool_viewer_linking, "apply_splitter_layout", record_apply
+        )
+
+        manager.link_imagetools(0, 1, link_colors=False)
+
+        assert wrappers[0].workspace_link_key == wrappers[1].workspace_link_key
+        if target is None:
+            assert apply_calls == []
+        else:
+            assert len(apply_calls) == 1
+            slicers, sizes, source_ndim = apply_calls[0]
+            assert slicers == (target,)
+            assert sizes == expected_sizes
+            assert source_ndim == target.data.ndim
+
+
 def test_materializing_restored_link_preserves_saved_layouts(
     qtbot,
     tmp_path,
@@ -400,6 +469,30 @@ def test_pending_link_state_operation_variants_update_saved_state(
 
         array_slicer, state = new_state()
         try:
+            assert not loader.pending._update_pending_link_state_for_operation(
+                state,
+                array_slicer,
+                source,
+                "_set_linked_splitter_sizes",
+                {"sizes": [[1, 2]], "source_ndim": data.ndim + 1},
+            )
+            assert not loader.pending._update_pending_link_state_for_operation(
+                state,
+                array_slicer,
+                source,
+                "_set_linked_splitter_sizes",
+                {"sizes": ((1, 2),), "source_ndim": data.ndim},
+            )
+            splitter_sizes = [[1, 2]]
+            assert loader.pending._update_pending_link_state_for_operation(
+                state,
+                array_slicer,
+                source,
+                "_set_linked_splitter_sizes",
+                {"sizes": splitter_sizes, "source_ndim": data.ndim},
+            )
+            assert state["splitter_sizes"] == splitter_sizes
+            assert state["splitter_sizes"] is not splitter_sizes
             assert not loader.pending._update_pending_link_state_for_operation(
                 state, array_slicer, source, "refresh", {}
             )
@@ -960,6 +1053,77 @@ def test_pending_workspace_saved_dim_order_handles_invalid_state(monkeypatch) ->
         )
         is data
     )
+
+
+@pytest.mark.parametrize(
+    "raw_state",
+    [
+        b"\xff",
+        1,
+        "{",
+        "[]",
+        "{}",
+        json.dumps({"slice": {"dims": "xy"}, "splitter_sizes": []}),
+        json.dumps({"slice": {"dims": ["x"]}, "splitter_sizes": [["bad"]]}),
+        json.dumps({"slice": {"dims": ["x"]}, "splitter_sizes": [[1], "bad"]}),
+    ],
+    ids=[
+        "invalid-utf8",
+        "non-string",
+        "invalid-json",
+        "non-mapping",
+        "missing-layout",
+        "invalid-dims",
+        "invalid-size",
+        "invalid-row",
+    ],
+)
+def test_pending_workspace_splitter_layout_rejects_invalid_state(
+    raw_state: typing.Any,
+) -> None:
+    node = types.SimpleNamespace(
+        pending_workspace_payload_attrs={"itool_state": raw_state}
+    )
+
+    assert (
+        workspace_pending._PendingWorkspacePayloads._pending_workspace_splitter_layout(
+            node
+        )
+        is None
+    )
+
+
+def test_pending_workspace_splitter_layout_update_validates_destination() -> None:
+    class PendingNode:
+        def __init__(self, state: typing.Any) -> None:
+            self.attrs = {"itool_state": json.dumps(state)}
+            self.cache_clear_count = 0
+
+        @property
+        def pending_workspace_payload_attrs(self) -> dict[str, typing.Any]:
+            return dict(self.attrs)
+
+        def update_pending_workspace_payload_attrs(
+            self, attrs: dict[str, typing.Any]
+        ) -> None:
+            self.attrs = dict(attrs)
+
+        def _clear_pending_workspace_link_slicer_cache(self) -> None:
+            self.cache_clear_count += 1
+
+    pending_cls = workspace_pending._PendingWorkspacePayloads
+    node = PendingNode({"slice": [], "splitter_sizes": [[1, 2]]})
+    assert not pending_cls._set_pending_workspace_splitter_layout(node, [[2, 1]], 2)
+
+    node = PendingNode({"slice": {"dims": ["x"]}, "splitter_sizes": [[1, 2]]})
+    assert not pending_cls._set_pending_workspace_splitter_layout(node, [[2, 1]], 2)
+    assert not pending_cls._set_pending_workspace_splitter_layout(node, [[1, 2]], 1)
+
+    sizes = [[2, 1]]
+    assert pending_cls._set_pending_workspace_splitter_layout(node, sizes, 1)
+    sizes[0][0] = 99
+    assert json.loads(node.attrs["itool_state"])["splitter_sizes"] == [[2, 1]]
+    assert node.cache_clear_count == 1
 
 
 def test_pending_workspace_source_data_decodes_saved_state_attrs(
