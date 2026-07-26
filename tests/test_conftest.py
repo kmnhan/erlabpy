@@ -133,11 +133,18 @@ def test_xdist_worker_error_fails_session(monkeypatch) -> None:
     assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
 
 
+def test_pyqt_exit_cleanup_is_captured_before_runtime_imports() -> None:
+    if _CONFTEST.API_NAME != "PyQt6":
+        pytest.skip("PyQt6 is not active")
+
+    assert _CONFTEST.QTCORE_EXIT_CLEANUP is not None
+
+
 @pytest.mark.parametrize(
     ("worker_id", "expected_py_owned", "expected_retained"),
     [(None, False, False), ("gw0", True, True)],
 )
-def test_pyqt_sessionfinish_releases_app_ownership_only_in_serial_process(
+def test_pyqt_sessionfinish_releases_wrapper_ownership_only_in_serial_process(
     worker_id: str | None,
     expected_py_owned: bool,
     expected_retained: bool,
@@ -161,15 +168,20 @@ def test_pyqt_sessionfinish_releases_app_ownership_only_in_serial_process(
             "-c",
             (
                 "import importlib.util, pathlib, sys, types; "
-                "from PyQt6 import sip; "
-                "from pytestqt import plugin as pytestqt_plugin; "
                 "path = pathlib.Path(sys.argv[1]); "
                 "spec = importlib.util.spec_from_file_location("
                 "'sessionfinish_conftest', path); "
                 "module = importlib.util.module_from_spec(spec); "
                 "spec.loader.exec_module(module); "
+                "from PyQt6 import sip; "
+                "from pytestqt import plugin as pytestqt_plugin; "
                 "app = module.QtWidgets.QApplication([]); "
                 "pytestqt_plugin._qapp_instance = app; "
+                "unregistered = []; "
+                "original_unregister = module.atexit.unregister; "
+                "module.atexit.unregister = lambda func: ("
+                "unregistered.append(func), original_unregister(func)"
+                ")[1]; "
                 "widget = module.QtWidgets.QWidget(); "
                 "widget.deleteLater(); "
                 "request = types.SimpleNamespace("
@@ -181,17 +193,26 @@ def test_pyqt_sessionfinish_releases_app_ownership_only_in_serial_process(
                 "next(drain, None); "
                 "drained = sip.isdeleted(widget); "
                 "widget = module.QtWidgets.QWidget(); "
+                "graphics_item = module.QtWidgets.QGraphicsLineItem(); "
                 "session = types.SimpleNamespace("
                 "exitstatus=module.pytest.ExitCode.OK); "
                 "module.pytest_sessionfinish(session, module.pytest.ExitCode.OK); "
-                "owned = sip.ispyowned(app); "
+                "owned = ("
+                "sip.ispyowned(app), "
+                "sip.ispyowned(widget), "
+                "sip.ispyowned(graphics_item)"
+                "); "
                 "app_deleted = sip.isdeleted(app); "
                 "widget_deleted = sip.isdeleted(widget); "
                 "retained = pytestqt_plugin._qapp_instance is app; "
-                "print(owned, app_deleted, widget_deleted, drained, retained); "
-                "widget_deleted or sip.delete(widget); "
-                "pytestqt_plugin._qapp_instance = None; "
-                "owned and sip.delete(app)"
+                "cleanup_captured = "
+                "module.QTCORE_EXIT_CLEANUP is not None; "
+                "cleanup_unregistered = "
+                "module.QTCORE_EXIT_CLEANUP in unregistered; "
+                "print("
+                "owned, app_deleted, widget_deleted, drained, retained, "
+                "cleanup_captured, cleanup_unregistered"
+                ")"
             ),
             str(path),
         ],
@@ -202,7 +223,8 @@ def test_pyqt_sessionfinish_releases_app_ownership_only_in_serial_process(
     )
 
     assert result.stdout.strip().splitlines()[-1] == (
-        f"{expected_py_owned} False False True {expected_retained}"
+        f"({expected_py_owned}, {expected_py_owned}, {expected_py_owned}) "
+        f"False False True {expected_retained} True {worker_id is None}"
     )
 
 

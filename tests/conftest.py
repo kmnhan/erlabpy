@@ -38,7 +38,11 @@ import pytest
 import requests
 import xarray as xr
 from numpy.testing import assert_almost_equal
-from qtpy import API_NAME, QtCore, QtWidgets
+
+# Import before erlab so PyQt's atexit callback can be captured on first import.
+# isort: off
+from tests._qt_helpers import API_NAME, QTCORE_EXIT_CLEANUP, QtCore, QtWidgets
+# isort: on
 
 import erlab
 import erlab.interactive.imagetool.manager as imagetool_manager
@@ -224,6 +228,19 @@ def _drop_invalid_qtbot_widgets(item: pytest.Item) -> None:
     ]
 
 
+def _release_pyqt_owned_wrappers() -> None:
+    """Relinquish residual SIP-owned C++ instances before Python finalization."""
+    from PyQt6 import sip
+
+    for obj in gc.get_objects():
+        if (
+            isinstance(obj, sip.wrapper)
+            and not sip.isdeleted(obj)
+            and sip.ispyowned(obj)
+        ):
+            sip.transferto(obj, None)
+
+
 @pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_runtest_teardown(item: pytest.Item):
     # pytest-qt retains weak Python references to registered widgets. Under PySide,
@@ -264,17 +281,18 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             qapp.processEvents()
 
         if API_NAME == "PyQt6" and serial_process:
-            # pytest-qt keeps its session QApplication wrapper alive until Python
-            # finalization. Relinquish Python ownership so SIP does not destroy the
-            # live C++ application after Qt callbacks have begun shutting down, then
-            # release pytest-qt's intentional module-global reference while SIP is
-            # still fully initialized.
-            from PyQt6 import sip
+            # pytest-qt and the exercised GUI code can retain Python-owned SIP
+            # wrappers until interpreter finalization. SIP otherwise destroys their
+            # C++ instances in an arbitrary order after Qt callbacks have begun
+            # shutting down. Relinquish every surviving wrapper while SIP is still
+            # fully initialized.
             from pytestqt import plugin as pytestqt_plugin
 
-            sip.transferto(qapp, None)
             if pytestqt_plugin._qapp_instance is qapp:
                 pytestqt_plugin._qapp_instance = None
+            _release_pyqt_owned_wrappers()
+            if QTCORE_EXIT_CLEANUP is not None:
+                atexit.unregister(QTCORE_EXIT_CLEANUP)
 
     for settings_path in (
         *_TEST_INTERACTIVE_OPTIONS_PATHS,
