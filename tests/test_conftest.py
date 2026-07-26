@@ -143,12 +143,15 @@ def test_pyqt_sessionfinish_releases_app_ownership_only_in_serial_process(
                 "module = importlib.util.module_from_spec(spec); "
                 "spec.loader.exec_module(module); "
                 "app = module.QtWidgets.QApplication([]); "
+                "widget = module.QtWidgets.QWidget(); "
                 "session = types.SimpleNamespace("
                 "exitstatus=module.pytest.ExitCode.OK); "
                 "module.pytest_sessionfinish(session, module.pytest.ExitCode.OK); "
                 "owned = sip.ispyowned(app); "
-                "deleted = sip.isdeleted(app); "
-                "print(owned, deleted); "
+                "app_deleted = sip.isdeleted(app); "
+                "widget_deleted = sip.isdeleted(widget); "
+                "print(owned, app_deleted, widget_deleted); "
+                "widget_deleted or sip.delete(widget); "
                 "owned and sip.delete(app)"
             ),
             str(path),
@@ -159,7 +162,9 @@ def test_pyqt_sessionfinish_releases_app_ownership_only_in_serial_process(
         env=env,
     )
 
-    assert result.stdout.strip().splitlines()[-1] == f"{expected_py_owned} False"
+    assert result.stdout.strip().splitlines()[-1] == (
+        f"{expected_py_owned} False {not expected_py_owned}"
+    )
 
 
 def test_serial_xdist_group_serializes_manager_context_tests() -> None:
