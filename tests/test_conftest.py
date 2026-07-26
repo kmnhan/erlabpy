@@ -109,6 +109,58 @@ def test_xdist_worker_error_fails_session(monkeypatch) -> None:
     assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
 
 
+@pytest.mark.parametrize(
+    ("worker_id", "expected_deleted"),
+    [(None, True), ("gw0", False)],
+)
+def test_pyqt_sessionfinish_deletes_app_only_in_serial_process(
+    worker_id: str | None,
+    expected_deleted: bool,
+) -> None:
+    if importlib.util.find_spec("PyQt6") is None:
+        pytest.skip("PyQt6 is not installed")
+
+    path = pathlib.Path(__file__).with_name("conftest.py")
+    env = os.environ.copy()
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    env["PYTEST_QT_API"] = "pyqt6"
+    env["QT_API"] = "pyqt6"
+    if worker_id is None:
+        env.pop("PYTEST_XDIST_WORKER", None)
+    else:
+        env["PYTEST_XDIST_WORKER"] = worker_id
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import importlib.util, pathlib, sys, types; "
+                "from PyQt6 import sip; "
+                "path = pathlib.Path(sys.argv[1]); "
+                "spec = importlib.util.spec_from_file_location("
+                "'sessionfinish_conftest', path); "
+                "module = importlib.util.module_from_spec(spec); "
+                "spec.loader.exec_module(module); "
+                "app = module.QtWidgets.QApplication([]); "
+                "session = types.SimpleNamespace("
+                "exitstatus=module.pytest.ExitCode.OK); "
+                "module.pytest_sessionfinish(session, module.pytest.ExitCode.OK); "
+                "deleted = sip.isdeleted(app); "
+                "print(deleted); "
+                "deleted or sip.delete(app)"
+            ),
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.stdout.strip().splitlines()[-1] == str(expected_deleted)
+
+
 def test_serial_xdist_group_serializes_manager_context_tests() -> None:
     slicer_group = _CONFTEST.serial_xdist_group(
         "tests/interactive/imagetool/test_slicer.py",

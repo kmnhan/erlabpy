@@ -38,7 +38,7 @@ import pytest
 import requests
 import xarray as xr
 from numpy.testing import assert_almost_equal
-from qtpy import QtCore, QtWidgets
+from qtpy import API_NAME, QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager as imagetool_manager
@@ -241,6 +241,14 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             )
             QtWidgets.QApplication.sendPostedEvents(None, 0)
             qapp.processEvents()
+
+        if API_NAME == "PyQt6" and os.environ.get("PYTEST_XDIST_WORKER") is None:
+            # pytest-qt keeps its session QApplication wrapper alive until Python
+            # finalization. Destroy the C++ application while SIP and Qt callbacks are
+            # still initialized instead of relying on interpreter teardown order.
+            from PyQt6 import sip
+
+            sip.delete(qapp)
 
     for settings_path in (
         *_TEST_INTERACTIVE_OPTIONS_PATHS,
