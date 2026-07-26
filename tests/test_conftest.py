@@ -110,12 +110,12 @@ def test_xdist_worker_error_fails_session(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("worker_id", "expected_deleted"),
-    [(None, True), ("gw0", False)],
+    ("worker_id", "expected_py_owned"),
+    [(None, False), ("gw0", True)],
 )
-def test_pyqt_sessionfinish_deletes_app_only_in_serial_process(
+def test_pyqt_sessionfinish_releases_app_ownership_only_in_serial_process(
     worker_id: str | None,
-    expected_deleted: bool,
+    expected_py_owned: bool,
 ) -> None:
     if importlib.util.find_spec("PyQt6") is None:
         pytest.skip("PyQt6 is not installed")
@@ -146,9 +146,10 @@ def test_pyqt_sessionfinish_deletes_app_only_in_serial_process(
                 "session = types.SimpleNamespace("
                 "exitstatus=module.pytest.ExitCode.OK); "
                 "module.pytest_sessionfinish(session, module.pytest.ExitCode.OK); "
+                "owned = sip.ispyowned(app); "
                 "deleted = sip.isdeleted(app); "
-                "print(deleted); "
-                "deleted or sip.delete(app)"
+                "print(owned, deleted); "
+                "owned and sip.delete(app)"
             ),
             str(path),
         ],
@@ -158,7 +159,7 @@ def test_pyqt_sessionfinish_deletes_app_only_in_serial_process(
         env=env,
     )
 
-    assert result.stdout.strip().splitlines()[-1] == str(expected_deleted)
+    assert result.stdout.strip().splitlines()[-1] == f"{expected_py_owned} False"
 
 
 def test_serial_xdist_group_serializes_manager_context_tests() -> None:

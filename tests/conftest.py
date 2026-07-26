@@ -244,11 +244,11 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
         if API_NAME == "PyQt6" and os.environ.get("PYTEST_XDIST_WORKER") is None:
             # pytest-qt keeps its session QApplication wrapper alive until Python
-            # finalization. Destroy the C++ application while SIP and Qt callbacks are
-            # still initialized instead of relying on interpreter teardown order.
+            # finalization. Relinquish Python ownership so SIP does not destroy the
+            # live C++ application after Qt callbacks have begun shutting down.
             from PyQt6 import sip
 
-            sip.delete(qapp)
+            sip.transferto(qapp, None)
 
     for settings_path in (
         *_TEST_INTERACTIVE_OPTIONS_PATHS,
