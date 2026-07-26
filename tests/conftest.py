@@ -1,3 +1,4 @@
+import atexit
 import contextlib
 import csv
 import datetime
@@ -890,7 +891,11 @@ def ip_shell():
     yield ip_session
 
     ip_session.run_line_magic("unload_ext", "erlab.interactive")
-    ip_session.user_ns.clear()
+    history_thread = getattr(ip_session.history_manager, "save_thread", None)
+    atexit.unregister(ip_session.atexit_operations)
+    if history_thread is not None:
+        history_thread.stop()
+    ip_session.atexit_operations()
     ip_session.clear_instance()
     with contextlib.suppress(AttributeError):
         del start_ipython.already_called
