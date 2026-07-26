@@ -276,7 +276,7 @@ def _drain_deferred_qt_deletes_after_test(
     request: pytest.FixtureRequest,
 ) -> Iterator[None]:
     yield
-    if request.node.get_closest_marker("gui") is None:
+    if API_NAME != "PyQt6" or request.node.get_closest_marker("gui") is None:
         return
     if QtWidgets.QApplication.instance() is not None:
         for _ in range(2):
