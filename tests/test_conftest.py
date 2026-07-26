@@ -140,6 +140,22 @@ def test_pyqt_exit_cleanup_is_captured_before_runtime_imports() -> None:
     assert _CONFTEST.QTCORE_EXIT_CLEANUP is not None
 
 
+def test_pyqt_wrapper_release_ignores_dead_weak_proxies(monkeypatch) -> None:
+    if _CONFTEST.API_NAME != "PyQt6":
+        pytest.skip("PyQt6 is not active")
+
+    class Value:
+        pass
+
+    value = Value()
+    proxy = weakref.proxy(value)
+    del value
+
+    monkeypatch.setattr(_CONFTEST.gc, "get_objects", lambda: [proxy])
+
+    _CONFTEST._release_pyqt_owned_wrappers()
+
+
 @pytest.mark.parametrize(
     ("worker_id", "expected_py_owned", "expected_retained"),
     [(None, False, False), ("gw0", True, True)],

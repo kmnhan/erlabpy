@@ -234,7 +234,7 @@ def _release_pyqt_owned_wrappers() -> None:
 
     for obj in gc.get_objects():
         if (
-            isinstance(obj, sip.wrapper)
+            issubclass(type(obj), sip.wrapper)
             and not sip.isdeleted(obj)
             and sip.ispyowned(obj)
         ):
