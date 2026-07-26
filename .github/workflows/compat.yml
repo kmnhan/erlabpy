@@ -141,6 +141,7 @@ jobs:
           common_args=(
             -v
             -o faulthandler_timeout=300
+            -o faulthandler_exit_on_timeout=true
             -o junit_family=legacy
           )
           xdist_args=(

@@ -296,6 +296,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._pending_plotitem_states: list[PlotItemState] | None = None
         self._pending_splitter_sizes: list[list[int]] | None = None
         self._pending_splitter_restore_queued = False
+        # Requested relative weights, independent of Qt's constrained pixel sizes.
+        self._splitter_layout: list[list[int]] | None = None
+        self._splitter_handles: dict[QtWidgets.QSplitterHandle, int] = {}
+        self._splitter_move_active = False
+        self._splitter_move_indices: tuple[int, ...] = ()
+        self._splitter_move_start_sizes: list[list[int]] | None = None
+        self._splitter_move_generation = 0
         self._deferred_show_restore_queued = False
         self._axes_signals_connected = False
         self._axes_signal_connected_indices: set[int] = set()
@@ -619,6 +626,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 # inactive axes after their placeholder widgets exist.
                 for index in self._secondary_plot_construction_order():
                     self._build_axes_widget(index)
+                self._install_splitter_handle_event_filters()
                 if hasattr(self, "_array_slicer"):
                     cached_cursor_colors = [
                         QtGui.QColor(color) for color in self.cursor_colors
@@ -919,16 +927,104 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def splitter_sizes(self) -> list[list[int]]:
         if self._pending_splitter_sizes is not None:
             return copy.deepcopy(self._pending_splitter_sizes)
+        if self._splitter_layout is not None:
+            return copy.deepcopy(self._splitter_layout)
         return [s.sizes() for s in self._splitters]
 
     @splitter_sizes.setter
     def splitter_sizes(self, sizes: list[list[int]]) -> None:
         if self._secondary_plots_materialized:
-            self._apply_splitter_sizes(self._normalize_splitter_sizes(sizes))
+            sizes = self._normalize_splitter_sizes(sizes)
+            self._splitter_layout = copy.deepcopy(sizes)
+            self._apply_splitter_sizes(sizes)
             self._pending_splitter_sizes = None
             self._pending_splitter_restore_queued = False
         else:
+            self._splitter_layout = copy.deepcopy(sizes)
             self._pending_splitter_sizes = copy.deepcopy(sizes)
+
+    @link_slicer
+    @record_history
+    def _set_linked_splitter_sizes(
+        self, sizes: list[list[int]], source_ndim: int
+    ) -> None:
+        if self.data.ndim != source_ndim:
+            return
+        self.splitter_sizes = sizes
+
+    def _install_splitter_handle_event_filters(self) -> None:
+        for splitter_index, splitter in enumerate(self._splitters):
+            for handle_index in range(1, splitter.count()):
+                handle = splitter.handle(handle_index)
+                if handle is not None and handle not in self._splitter_handles:
+                    handle.installEventFilter(self)
+                    self._splitter_handles[handle] = splitter_index
+
+    def _begin_splitter_move(self, splitter_index: int) -> None:
+        self.end_history_group()
+        self._splitter_move_generation += 1
+        self._splitter_move_active = True
+        coupled_index = {1: 4, 4: 1}.get(splitter_index)
+        self._splitter_move_indices = (
+            (splitter_index,)
+            if coupled_index is None
+            else (splitter_index, coupled_index)
+        )
+        self._splitter_move_start_sizes = [
+            self._splitters[index].sizes() for index in self._splitter_move_indices
+        ]
+        self.begin_history_group(None)
+        transaction_id = (
+            self.next_linked_history_transaction_id()
+            if self.is_linked or self._managed_link_sync_enabled(color=False)
+            else None
+        )
+        self.begin_history_entry(transaction_id)
+
+    def _finish_splitter_move(self, generation: int | None = None) -> None:
+        stale_generation = (
+            generation is not None and generation != self._splitter_move_generation
+        )
+        if not self._splitter_move_active or stale_generation:
+            return
+        history_group_active = self._history_group_active
+        try:
+            current_sizes = [
+                self._splitters[index].sizes() for index in self._splitter_move_indices
+            ]
+            if current_sizes != self._splitter_move_start_sizes:
+                if history_group_active:
+                    # Non-opaque QSplitters commit their final sizes only after the
+                    # handle's release handler runs. Commit the rendered result once,
+                    # at the gesture boundary.
+                    self._set_linked_splitter_sizes(
+                        self._capture_splitter_layout(self._splitter_move_indices),
+                        self.data.ndim,
+                    )
+                elif self._splitter_layout is not None:
+                    # Closing the tool can discard the history group before the
+                    # queued release handler runs. Restore the last committed layout
+                    # instead of leaving the uncommitted drag visible on reopen.
+                    self._apply_splitter_sizes(self._splitter_layout)
+        finally:
+            self._splitter_move_active = False
+            self._splitter_move_indices = ()
+            self._splitter_move_start_sizes = None
+            if history_group_active:
+                self.end_history_group()
+
+    def _capture_splitter_layout(
+        self, splitter_indices: tuple[int, ...]
+    ) -> list[list[int]]:
+        if self._splitter_layout is None:
+            self._splitter_layout = [splitter.sizes() for splitter in self._splitters]
+        else:
+            self._splitter_layout = self._normalize_splitter_sizes(
+                self._splitter_layout
+            )
+            for index in splitter_indices:
+                self._splitter_layout[index] = self._splitters[index].sizes()
+        return copy.deepcopy(self._splitter_layout)
 
     def _apply_splitter_sizes(self, sizes: list[list[int]]) -> None:
         for s, size in zip(self._splitters, sizes, strict=True):
@@ -969,6 +1065,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return
         sizes = self._normalize_splitter_sizes(sizes)
         self._pending_splitter_sizes = copy.deepcopy(sizes)
+        self._splitter_layout = copy.deepcopy(sizes)
         self._apply_splitter_sizes(sizes)
         # QSplitter may not report the restored sizes until the next layout pass.
         # Keep the serialized sizes pending for state reads until then.
@@ -1393,6 +1490,43 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._write_history = original
 
     @contextlib.contextmanager
+    def history_neutral(self):
+        """Exclude a state mutation from any open history entry."""
+        pending_entry = self._pending_history_entry
+        before_state = (
+            self._history_state_snapshot() if pending_entry is not None else None
+        )
+        try:
+            with self.history_suppressed():
+                yield
+        finally:
+            if (
+                pending_entry is not None
+                and before_state is not None
+                and self._pending_history_entry is pending_entry
+                and erlab.interactive.utils.qt_is_valid(self)
+            ):
+                after_state = self._history_state_snapshot()
+                neutral_paths = _history.changed_paths(before_state, after_state)
+                if neutral_paths:
+                    pending_entry.before_state = typing.cast(
+                        "dict[str, typing.Any]",
+                        _history.patch_state(
+                            pending_entry.before_state,
+                            after_state,
+                            neutral_paths,
+                        ),
+                    )
+                    pending_entry.after_state = typing.cast(
+                        "dict[str, typing.Any]",
+                        _history.patch_state(
+                            pending_entry.after_state,
+                            after_state,
+                            neutral_paths,
+                        ),
+                    )
+
+    @contextlib.contextmanager
     def link_sync_suppressed(self):
         self._link_sync_suppressed += 1
         try:
@@ -1410,17 +1544,33 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @QtCore.Slot()
     def begin_history_group(
-        self, timeout_ms: int = _HISTORY_GROUP_IDLE_TIMEOUT_MS
+        self, timeout_ms: int | None = _HISTORY_GROUP_IDLE_TIMEOUT_MS
     ) -> None:
         self._history_group_active = True
-        self._history_group_timer.start(timeout_ms)
+        if timeout_ms is None:
+            self._history_group_timer.stop()
+        else:
+            self._history_group_timer.start(timeout_ms)
 
     @QtCore.Slot()
     def end_history_group(self) -> None:
+        transaction_id = (
+            self._pending_history_entry.transaction_id
+            if self._pending_history_entry is not None
+            else None
+        )
         self.finalize_history_entry()
         if erlab.interactive.utils.qt_is_valid(self._history_group_timer):
             self._history_group_timer.stop()
         self._history_group_active = False
+        if transaction_id is not None and self._linking_proxy is not None:
+            for target in tuple(self.linked_slicers):
+                target._finalize_linked_history_transaction(transaction_id)
+
+    def _finalize_linked_history_transaction(self, transaction_id: str) -> None:
+        entry = self._pending_history_entry
+        if entry is not None and entry.transaction_id == transaction_id:
+            self.finalize_history_entry()
 
     def _discard_pending_history_entry(self) -> None:
         self._pending_history_entry = None
@@ -1430,9 +1580,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._history_group_timer.stop()
 
     def _history_state_snapshot(self) -> ImageSlicerState:
-        state = copy.deepcopy(self.state)
-        state.pop("splitter_sizes", None)
-        return state
+        return copy.deepcopy(self.state)
 
     def next_linked_history_transaction_id(self) -> str:
         if (
@@ -1534,8 +1682,43 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 emit_filter_edited=emit_filter_edited,
             )
 
+    @staticmethod
+    def _is_splitter_history_entry(entry: _history.HistoryEntry) -> bool:
+        return bool(entry.changed_paths) and all(
+            bool(path) and path[0] == "splitter_sizes" for path in entry.changed_paths
+        )
+
+    @staticmethod
+    def _mapped_splitter_history_entry(
+        source_entry: _history.HistoryEntry,
+        current: ImageSlicerState,
+        *,
+        undo: bool,
+    ) -> _history.HistoryEntry:
+        source_state = source_entry.before_state if undo else source_entry.after_state
+        destination = _history.patch_state(
+            current,
+            source_state,
+            source_entry.changed_paths,
+        )
+        if undo:
+            before_state, after_state = destination, copy.deepcopy(current)
+        else:
+            before_state, after_state = copy.deepcopy(current), destination
+        return _history.HistoryEntry(
+            before_state=typing.cast("dict[str, typing.Any]", before_state),
+            after_state=typing.cast("dict[str, typing.Any]", after_state),
+            changed_paths=source_entry.changed_paths,
+            transaction_id=source_entry.transaction_id,
+            created_at=source_entry.created_at,
+        )
+
     def _apply_matching_linked_history_entry(
-        self, transaction_id: str, *, undo: bool
+        self,
+        source_entry: _history.HistoryEntry,
+        source_ndim: int,
+        *,
+        undo: bool,
     ) -> None:
         self.end_history_group()
         stack = self._prev_states if undo else self._next_states
@@ -1543,16 +1726,27 @@ class ImageSlicerArea(QtWidgets.QWidget):
             (
                 candidate
                 for candidate in reversed(stack)
-                if candidate.transaction_id == transaction_id
+                if candidate.transaction_id == source_entry.transaction_id
             ),
             None,
         )
-        if entry is None or not _history.entry_matches_current(
-            entry, self._history_state_snapshot(), undo=undo
-        ):
-            return
-
-        stack.remove(entry)
+        current = self._history_state_snapshot()
+        if entry is None:
+            if (
+                self.data.ndim != source_ndim
+                or not self._is_splitter_history_entry(source_entry)
+                or not _history.entry_matches_current(source_entry, current, undo=undo)
+            ):
+                return
+            entry = self._mapped_splitter_history_entry(
+                source_entry,
+                current,
+                undo=undo,
+            )
+        else:
+            if not _history.entry_matches_current(entry, current, undo=undo):
+                return
+            stack.remove(entry)
         self._apply_history_entry(entry, undo=undo)
         if undo:
             self._next_states.append(entry)
@@ -1563,10 +1757,29 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _propagate_history_entry(
         self, entry: _history.HistoryEntry, *, undo: bool
     ) -> None:
-        if entry.transaction_id is None or self._linking_proxy is None:
+        if entry.transaction_id is None:
             return
-        for target in tuple(self.linked_slicers):
-            target._apply_matching_linked_history_entry(entry.transaction_id, undo=undo)
+        if self._linking_proxy is not None:
+            for target in tuple(self.linked_slicers):
+                target._apply_matching_linked_history_entry(
+                    entry,
+                    self.data.ndim,
+                    undo=undo,
+                )
+        if any(path and path[0] == "splitter_sizes" for path in entry.changed_paths):
+            self._sync_managed_workspace_link(
+                "_set_linked_splitter_sizes",
+                {
+                    "sizes": self.splitter_sizes,
+                    "source_ndim": self.data.ndim,
+                },
+                tuple(self.data.dims),
+                False,
+                False,
+                False,
+                entry.transaction_id,
+                False,
+            )
 
     @QtCore.Slot()
     def write_state(self) -> None:
@@ -3675,8 +3888,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self.data.ndim == 4:
             full = r0 + r1 - d
             sizes[3] = (full / 4, full / 4, full / 2)
-        for split, sz in zip(self._splitters, sizes, strict=True):
-            split.setSizes(tuple(round(s * scale) for s in sz))
+        splitter_sizes = [[round(size * scale) for size in row] for row in sizes]
+        if self._pending_splitter_sizes is None:
+            self._splitter_layout = copy.deepcopy(splitter_sizes)
+        self._apply_splitter_sizes(splitter_sizes)
 
         for i in range(8):
             visible: bool = i not in invalid
@@ -3722,6 +3937,31 @@ class ImageSlicerArea(QtWidgets.QWidget):
         elif value == self.array_slicer.snap_to_data:
             return
         self.array_slicer.snap_to_data = value
+
+    def eventFilter(
+        self, watched: QtCore.QObject | None, event: QtCore.QEvent | None
+    ) -> bool:
+        if watched in self._splitter_handles and event is not None:
+            event_type = event.type()
+            if event_type == QtCore.QEvent.Type.MouseButtonPress:
+                mouse_event = typing.cast("QtGui.QMouseEvent", event)
+                if mouse_event.button() == QtCore.Qt.MouseButton.LeftButton:
+                    self._begin_splitter_move(self._splitter_handles[watched])
+            elif self._splitter_move_active and (
+                event_type == QtCore.QEvent.Type.UngrabMouse
+                or (
+                    event_type == QtCore.QEvent.Type.MouseButtonRelease
+                    and typing.cast("QtGui.QMouseEvent", event).button()
+                    == QtCore.Qt.MouseButton.LeftButton
+                )
+            ):
+                generation = self._splitter_move_generation
+                erlab.interactive.utils.single_shot(
+                    self,
+                    0,
+                    lambda: self._finish_splitter_move(generation),
+                )
+        return super().eventFilter(watched, event)
 
     def changeEvent(self, evt: QtCore.QEvent | None) -> None:
         if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:

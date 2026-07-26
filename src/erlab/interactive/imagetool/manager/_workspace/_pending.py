@@ -86,6 +86,85 @@ class _PendingWorkspacePayloads:
         self._controller = controller
 
     @staticmethod
+    def _pending_workspace_state(
+        node: _ImageToolWrapper | _ManagedWindowNode,
+    ) -> tuple[dict[str, typing.Any], dict[str, typing.Any]] | None:
+        attrs = node.pending_workspace_payload_attrs
+        if attrs is None:
+            return None
+        raw_state = attrs.get("itool_state")
+        if isinstance(raw_state, bytes):
+            try:
+                raw_state = raw_state.decode()
+            except UnicodeDecodeError:
+                return None
+        if not isinstance(raw_state, str):
+            return None
+        try:
+            state = json.loads(raw_state)
+        except Exception:
+            logger.debug("Ignoring invalid pending ImageTool state", exc_info=True)
+            return None
+        if not isinstance(state, collections.abc.Mapping):
+            return None
+        return attrs, dict(state)
+
+    @classmethod
+    def _pending_workspace_splitter_layout(
+        cls,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+    ) -> tuple[list[list[int]], int] | None:
+        pending_state = cls._pending_workspace_state(node)
+        if pending_state is None:
+            return None
+        _, state = pending_state
+        slice_state = state.get("slice")
+        sizes = state.get("splitter_sizes")
+        if not isinstance(slice_state, collections.abc.Mapping) or not isinstance(
+            sizes, list
+        ):
+            return None
+        dims = slice_state.get("dims")
+        if not isinstance(dims, (list, tuple)):
+            return None
+        try:
+            normalized_sizes = [
+                [int(value) for value in splitter_sizes]
+                for splitter_sizes in sizes
+                if isinstance(splitter_sizes, list)
+            ]
+        except (TypeError, ValueError):
+            return None
+        if len(normalized_sizes) != len(sizes):
+            return None
+        return normalized_sizes, len(dims)
+
+    @classmethod
+    def _set_pending_workspace_splitter_layout(
+        cls,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        sizes: list[list[int]],
+        source_ndim: int,
+    ) -> bool:
+        pending_state = cls._pending_workspace_state(node)
+        if pending_state is None:
+            return False
+        attrs, state = pending_state
+        slice_state = state.get("slice")
+        if not isinstance(slice_state, collections.abc.Mapping):
+            return False
+        dims = slice_state.get("dims")
+        if not isinstance(dims, (list, tuple)) or len(dims) != source_ndim:
+            return False
+        if state.get("splitter_sizes") == sizes:
+            return False
+        state["splitter_sizes"] = copy.deepcopy(sizes)
+        attrs["itool_state"] = json.dumps(state)
+        node.update_pending_workspace_payload_attrs(attrs)
+        node._clear_pending_workspace_link_slicer_cache()
+        return True
+
+    @staticmethod
     def _pending_workspace_data_with_saved_dim_order(
         data: xr.DataArray, attrs: Mapping[typing.Any, typing.Any]
     ) -> xr.DataArray:
@@ -1349,6 +1428,14 @@ class _PendingWorkspacePayloads:
         funcname: str,
         arguments: dict[str, typing.Any],
     ) -> bool:
+        if funcname == "_set_linked_splitter_sizes":
+            if array_slicer._obj.ndim != int(arguments["source_ndim"]):
+                return False
+            sizes = arguments["sizes"]
+            if not isinstance(sizes, list):
+                return False
+            state["splitter_sizes"] = copy.deepcopy(sizes)
+            return True
         if funcname in {"refresh", "refresh_current"}:
             return False
         if funcname == "view_all":

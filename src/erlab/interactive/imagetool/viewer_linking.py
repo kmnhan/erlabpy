@@ -215,6 +215,19 @@ def link_slicer(
     return my_decorator
 
 
+def apply_splitter_layout(
+    slicers: Iterable[ImageSlicerArea],
+    sizes: list[list[int]],
+    source_ndim: int,
+) -> None:
+    """Apply a layout to compatible slicers outside user history."""
+    for slicer in tuple(slicers):
+        if slicer.data.ndim != source_ndim:
+            continue
+        with slicer.history_neutral():
+            slicer.splitter_sizes = sizes
+
+
 class SlicerLinkProxy:
     """Internal class for handling linked `ImageSlicerArea` s.
 
@@ -224,11 +237,20 @@ class SlicerLinkProxy:
         The slicers to link.
     link_colors
         Whether to sync color related changes, by default `True`.
+    align_splitters
+        Whether compatible slicers should adopt the existing linked layout when joining
+        the link, by default `True`.
 
     """
 
-    def __init__(self, *slicers: ImageSlicerArea, link_colors: bool = True) -> None:
+    def __init__(
+        self,
+        *slicers: ImageSlicerArea,
+        link_colors: bool = True,
+        align_splitters: bool = True,
+    ) -> None:
         self.link_colors = link_colors
+        self._align_splitters = align_splitters
 
         self._children: weakref.WeakSet[ImageSlicerArea] = weakref.WeakSet()
         for s in slicers:
@@ -252,12 +274,34 @@ class SlicerLinkProxy:
             if slicer_area._linking_proxy == self:
                 return
             raise ValueError("Already linked to another proxy.")
+        splitter_source = None
+        if self._align_splitters:
+            splitter_source = next(
+                (
+                    child
+                    for child in self.children
+                    if child.data.ndim == slicer_area.data.ndim
+                ),
+                None,
+            )
         self.children.add(slicer_area)
         slicer_area._linking_proxy = self
+        if splitter_source is not None:
+            self.align_splitter_sizes(splitter_source)
 
     def remove(self, slicer_area: ImageSlicerArea) -> None:
         self.children.remove(slicer_area)
         slicer_area._linking_proxy = None
+
+    def align_splitter_sizes(self, source: ImageSlicerArea) -> None:
+        """Align compatible linked layouts to ``source`` without recording history."""
+        if source not in self.children:
+            raise ValueError("Source is not linked to this proxy.")
+        apply_splitter_layout(
+            self.children,
+            source.splitter_sizes,
+            source.data.ndim,
+        )
 
     def sync(
         self,
@@ -293,6 +337,11 @@ class SlicerLinkProxy:
         if color and not self.link_colors:
             return
         for target in self.children.difference({source}):
+            if (
+                funcname == "_set_linked_splitter_sizes"
+                and target.data.ndim != arguments["source_ndim"]
+            ):
+                continue
             converted_args = self.convert_args(
                 source,
                 target,

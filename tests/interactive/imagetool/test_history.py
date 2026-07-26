@@ -131,11 +131,17 @@ def test_history_value_formatting_handles_edge_values() -> None:
     assert _history._format_value(long_text) == f"{long_text[:93]}..."
 
 
-def test_changed_paths_ignores_splitter_sizes() -> None:
+def test_changed_paths_includes_splitter_sizes() -> None:
     before = {"splitter_sizes": [1, 2], "value": 1}
     after = {"splitter_sizes": [3, 4], "value": 2}
 
-    assert _history.changed_paths(before, after) == frozenset({("value",)})
+    assert _history.changed_paths(before, after) == frozenset(
+        {
+            ("splitter_sizes", 0),
+            ("splitter_sizes", 1),
+            ("value",),
+        }
+    )
 
 
 @pytest.mark.parametrize(
@@ -402,6 +408,17 @@ def test_describe_state_change_reports_axis_inversions():
 
     assert label == "Axis inversion changed"
     assert details == ("Axis inversion changed",)
+
+
+def test_describe_state_change_reports_plot_layout() -> None:
+    prev = _base_state()
+    curr = copy.deepcopy(prev)
+    curr["splitter_sizes"] = [[200, 100]]
+
+    label, details = _history.describe_state_change(prev, curr)
+
+    assert label == "Plot layout changed"
+    assert details == ("Plot layout proportions changed",)
 
 
 @pytest.mark.parametrize(
