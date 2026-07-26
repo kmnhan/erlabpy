@@ -144,13 +144,23 @@ def test_pyqt_sessionfinish_releases_app_ownership_only_in_serial_process(
                 "spec.loader.exec_module(module); "
                 "app = module.QtWidgets.QApplication([]); "
                 "widget = module.QtWidgets.QWidget(); "
+                "widget.deleteLater(); "
+                "request = types.SimpleNamespace("
+                "node=types.SimpleNamespace("
+                "get_closest_marker=lambda name: True)); "
+                "drain = module._drain_deferred_qt_deletes_after_test.__wrapped__("
+                "request); "
+                "next(drain); "
+                "next(drain, None); "
+                "drained = sip.isdeleted(widget); "
+                "widget = module.QtWidgets.QWidget(); "
                 "session = types.SimpleNamespace("
                 "exitstatus=module.pytest.ExitCode.OK); "
                 "module.pytest_sessionfinish(session, module.pytest.ExitCode.OK); "
                 "owned = sip.ispyowned(app); "
                 "app_deleted = sip.isdeleted(app); "
                 "widget_deleted = sip.isdeleted(widget); "
-                "print(owned, app_deleted, widget_deleted); "
+                "print(owned, app_deleted, widget_deleted, drained); "
                 "widget_deleted or sip.delete(widget); "
                 "owned and sip.delete(app)"
             ),
@@ -163,7 +173,7 @@ def test_pyqt_sessionfinish_releases_app_ownership_only_in_serial_process(
     )
 
     assert result.stdout.strip().splitlines()[-1] == (
-        f"{expected_py_owned} False {not expected_py_owned}"
+        f"{expected_py_owned} False {not expected_py_owned} True"
     )
 
 

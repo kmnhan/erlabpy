@@ -292,6 +292,20 @@ def _restore_interactive_options_between_tests() -> Iterator[None]:
         erlab.interactive.options.restore()
 
 
+@pytest.fixture(autouse=True)
+def _drain_deferred_qt_deletes_after_test(
+    request: pytest.FixtureRequest,
+) -> Iterator[None]:
+    yield
+    if request.node.get_closest_marker("gui") is None:
+        return
+    if QtWidgets.QApplication.instance() is not None:
+        for _ in range(2):
+            QtWidgets.QApplication.sendPostedEvents(
+                None, int(QtCore.QEvent.Type.DeferredDelete.value)
+            )
+
+
 @pytest.fixture(scope="session")
 def cluster():
     with LocalCluster(
