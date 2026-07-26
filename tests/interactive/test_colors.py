@@ -642,6 +642,27 @@ def test_colormap_combobox_blocked_updates_keep_thumbnail_and_signal_state(
     assert not combo.itemIcon(combo.currentIndex()).isNull()
 
 
+def test_colormap_combobox_population_handles_reentrant_deletion(
+    qapp, monkeypatch
+) -> None:
+    combo = ColorMapComboBox()
+    monkeypatch.setattr(
+        erlab.interactive.colors,
+        "pg_colormap_names",
+        lambda *args, **kwargs: [],
+    )
+
+    def delete_combo(self, index) -> None:
+        self.deleteLater()
+        qapp.sendPostedEvents(self, int(QtCore.QEvent.Type.DeferredDelete.value))
+
+    monkeypatch.setattr(ColorMapComboBox, "load_thumbnail", delete_combo)
+
+    combo._populate()
+
+    assert not erlab.interactive.utils.qt_is_valid(combo)
+
+
 def test_colormap_combobox_close_blocks_teardown_signals(qtbot) -> None:
     combo = ColorMapComboBox()
     qtbot.addWidget(combo)

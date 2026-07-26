@@ -72,13 +72,13 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         ):  # pragma: no cover
             return
         self._populated = True
-        with QtCore.QSignalBlocker(self):
-            for name in pg_colormap_names("matplotlib", exclude_local=True):
-                self._add_colormap_item(name)
-            if self.default_cmap is not None:
-                self.setCurrentText(self.default_cmap)
-            self.load_thumbnail(self.currentIndex())
-        self.blockSignals(False)
+        for name in pg_colormap_names("matplotlib", exclude_local=True):
+            self._add_colormap_item(name)
+        if self.default_cmap is not None:
+            self.setCurrentText(self.default_cmap)
+        self.load_thumbnail(self.currentIndex())
+        if erlab.interactive.utils.qt_is_valid(self):
+            self.blockSignals(False)
 
     def ensure_populated(self) -> None:
         """Populate the colormap list before the combo box is shown."""
