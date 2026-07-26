@@ -4,6 +4,7 @@ import pathlib
 import subprocess
 import sys
 import types
+import weakref
 
 import pytest
 
@@ -97,6 +98,29 @@ def test_collection_marker_hook_runs_before_xdist_loadgroup() -> None:
     assert hook_options["tryfirst"]
 
 
+def test_qtbot_teardown_drops_deleted_widget_wrappers(monkeypatch) -> None:
+    class Widget:
+        pass
+
+    valid_widget = Widget()
+    invalid_widget = Widget()
+    item = types.SimpleNamespace(
+        qt_widgets=[
+            (weakref.ref(valid_widget), None),
+            (weakref.ref(invalid_widget), None),
+        ]
+    )
+    monkeypatch.setattr(
+        _CONFTEST,
+        "qt_is_valid",
+        lambda widget: widget is valid_widget,
+    )
+
+    _CONFTEST._drop_invalid_qtbot_widgets(item)
+
+    assert item.qt_widgets == [(weakref.ref(valid_widget), None)]
+
+
 def test_xdist_worker_error_fails_session(monkeypatch) -> None:
     node = types.SimpleNamespace(gateway=types.SimpleNamespace(id="gw0"))
     session = types.SimpleNamespace(exitstatus=pytest.ExitCode.OK)
@@ -110,12 +134,13 @@ def test_xdist_worker_error_fails_session(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("worker_id", "expected_py_owned"),
-    [(None, False), ("gw0", True)],
+    ("worker_id", "expected_py_owned", "expected_retained"),
+    [(None, False, False), ("gw0", True, True)],
 )
 def test_pyqt_sessionfinish_releases_app_ownership_only_in_serial_process(
     worker_id: str | None,
     expected_py_owned: bool,
+    expected_retained: bool,
 ) -> None:
     if importlib.util.find_spec("PyQt6") is None:
         pytest.skip("PyQt6 is not installed")
@@ -137,12 +162,14 @@ def test_pyqt_sessionfinish_releases_app_ownership_only_in_serial_process(
             (
                 "import importlib.util, pathlib, sys, types; "
                 "from PyQt6 import sip; "
+                "from pytestqt import plugin as pytestqt_plugin; "
                 "path = pathlib.Path(sys.argv[1]); "
                 "spec = importlib.util.spec_from_file_location("
                 "'sessionfinish_conftest', path); "
                 "module = importlib.util.module_from_spec(spec); "
                 "spec.loader.exec_module(module); "
                 "app = module.QtWidgets.QApplication([]); "
+                "pytestqt_plugin._qapp_instance = app; "
                 "widget = module.QtWidgets.QWidget(); "
                 "widget.deleteLater(); "
                 "request = types.SimpleNamespace("
@@ -160,8 +187,10 @@ def test_pyqt_sessionfinish_releases_app_ownership_only_in_serial_process(
                 "owned = sip.ispyowned(app); "
                 "app_deleted = sip.isdeleted(app); "
                 "widget_deleted = sip.isdeleted(widget); "
-                "print(owned, app_deleted, widget_deleted, drained); "
+                "retained = pytestqt_plugin._qapp_instance is app; "
+                "print(owned, app_deleted, widget_deleted, drained, retained); "
                 "widget_deleted or sip.delete(widget); "
+                "pytestqt_plugin._qapp_instance = None; "
                 "owned and sip.delete(app)"
             ),
             str(path),
@@ -173,7 +202,7 @@ def test_pyqt_sessionfinish_releases_app_ownership_only_in_serial_process(
     )
 
     assert result.stdout.strip().splitlines()[-1] == (
-        f"{expected_py_owned} False False True"
+        f"{expected_py_owned} False False True {expected_retained}"
     )
 
 

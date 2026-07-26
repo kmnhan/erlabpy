@@ -213,6 +213,26 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.compat)
 
 
+def _drop_invalid_qtbot_widgets(item: pytest.Item) -> None:
+    widgets = getattr(item, "qt_widgets", None)
+    if not widgets:
+        return
+    item.qt_widgets = [
+        (widget_ref, before_close_func)
+        for widget_ref, before_close_func in widgets
+        if (widget := widget_ref()) is not None and qt_is_valid(widget)
+    ]
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item: pytest.Item):
+    # pytest-qt retains weak Python references to registered widgets. Under PySide,
+    # a wrapper can remain alive after its C++ widget has been destroyed; calling
+    # close() on that wrapper can crash instead of raising a deleted-object error.
+    _drop_invalid_qtbot_widgets(item)
+    return (yield)
+
+
 @pytest.hookimpl(optionalhook=True)
 def pytest_testnodedown(node: typing.Any, error: object | None) -> None:
     if error is not None:
@@ -246,10 +266,15 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         if API_NAME == "PyQt6" and serial_process:
             # pytest-qt keeps its session QApplication wrapper alive until Python
             # finalization. Relinquish Python ownership so SIP does not destroy the
-            # live C++ application after Qt callbacks have begun shutting down.
+            # live C++ application after Qt callbacks have begun shutting down, then
+            # release pytest-qt's intentional module-global reference while SIP is
+            # still fully initialized.
             from PyQt6 import sip
+            from pytestqt import plugin as pytestqt_plugin
 
             sip.transferto(qapp, None)
+            if pytestqt_plugin._qapp_instance is qapp:
+                pytestqt_plugin._qapp_instance = None
 
     for settings_path in (
         *_TEST_INTERACTIVE_OPTIONS_PATHS,
