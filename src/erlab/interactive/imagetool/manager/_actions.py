@@ -385,10 +385,19 @@ class _ActionsController:
 
     def link_selected(self, link_colors: bool = True, deselect: bool = True) -> None:
         """Link selected ImageTool windows."""
+        targets = self._manager._selected_imagetool_targets()
+        current = self._manager.tree_view.currentIndex().internalPointer()
+        if isinstance(current, _ImageToolWrapper):
+            current_target: int | str | None = current.index
+        elif isinstance(current, str) and self._manager._is_imagetool_target(current):
+            current_target = current
+        else:
+            current_target = None
+        if current_target in targets:
+            targets.remove(current_target)
+            targets.insert(0, current_target)
         self._manager.unlink_selected(deselect=False)
-        self._manager.link_imagetools(
-            *self._manager._selected_imagetool_targets(), link_colors=link_colors
-        )
+        self._manager.link_imagetools(*targets, link_colors=link_colors)
         if deselect:
             self._manager.tree_view.deselect_all()
 
@@ -1023,16 +1032,42 @@ class _ActionsController:
             nodes.append(node)
             if node.imagetool is not None:
                 slicers.append(node.slicer_area)
+        pending_payloads = self._manager._workspace_controller.loading.pending
+        source_node = nodes[0]
+        source_layout = (
+            (
+                source_node.slicer_area.splitter_sizes,
+                source_node.slicer_area.data.ndim,
+            )
+            if source_node.imagetool is not None
+            else pending_payloads._pending_workspace_splitter_layout(source_node)
+        )
+        if source_layout is None and slicers:
+            source_layout = (slicers[0].splitter_sizes, slicers[0].data.ndim)
         if len(slicers) > 1:
             linker = erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy(
                 *slicers,
                 link_colors=link_colors,
+                align_splitters=False,
             )
             self._manager._link_registry.append(linker)
         link_key = uuid.uuid4().hex
         for node in nodes:
             node.set_workspace_link_state(link_key, link_colors=link_colors)
             self._manager._mark_node_state_dirty(node.uid)
+        if source_layout is not None:
+            sizes, source_ndim = source_layout
+            erlab.interactive.imagetool.viewer_linking.apply_splitter_layout(
+                slicers,
+                sizes,
+                source_ndim,
+            )
+            for node in nodes:
+                pending_payloads._set_pending_workspace_splitter_layout(
+                    node,
+                    sizes,
+                    source_ndim,
+                )
         self._manager._sigReloadLinkers.emit()
 
     def name_of_imagetool(self, index: int) -> str:

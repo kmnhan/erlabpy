@@ -222,7 +222,8 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - When comparing data in several ImageTool windows, you can link them either at creation
   (`eri.itool([data1, data2], link=True)`) or inside the manager. Linked windows
-  maintain synchronized slicing positions, bin widths, and cursor counts.
+  maintain synchronized slicing positions, bin widths, cursor counts, and plot layout
+  proportions.
 
 (imagetool-cursors)=
 

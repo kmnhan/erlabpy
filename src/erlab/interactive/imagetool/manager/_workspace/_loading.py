@@ -1183,6 +1183,7 @@ class _WorkspaceLoader:
             linker = erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy(
                 *slicers,
                 link_colors=group_colors.get(link_group, True),
+                align_splitters=False,
             )
             self._manager._link_registry.append(linker)
             self._manager._sigReloadLinkers.emit()
@@ -1209,6 +1210,7 @@ class _WorkspaceLoader:
         linker = erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy(
             *(linked_node.slicer_area for linked_node in linked_nodes),
             link_colors=node.workspace_link_colors,
+            align_splitters=False,
         )
         self._manager._link_registry.append(linker)
         self._manager._sigReloadLinkers.emit()

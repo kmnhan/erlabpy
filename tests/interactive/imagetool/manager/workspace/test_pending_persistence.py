@@ -11,7 +11,7 @@ import h5py
 import numpy as np
 import pytest
 import xarray as xr
-from qtpy import QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
@@ -150,6 +150,218 @@ def test_manager_save_updates_pending_linked_partner_state(
         )
         reloaded_partner = manager.get_imagetool(1).slicer_area
         assert reloaded_partner.array_slicer.get_index(0, 0) == 3
+
+
+def test_pending_linked_splitter_sizes_follow_undo_redo(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for offset in (0, 100):
+            data = xr.DataArray(
+                np.arange(offset, offset + 25, dtype=np.float64).reshape((5, 5)),
+                dims=("x", "y"),
+            )
+            root = itool(data, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+            root.hide()
+        manager.link_imagetools(0, 1, link_colors=False)
+
+        fname = tmp_path / "pending-linked-splitters.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            fname, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+
+        wrappers = [manager._tool_graph.root_wrappers[index] for index in range(2)]
+        loaded = manager.get_imagetool(0).slicer_area
+        loaded.flush_history()
+        pending_attrs = wrappers[1].pending_workspace_payload_attrs
+        assert pending_attrs is not None
+        initial_sizes = json.loads(pending_attrs["itool_state"])["splitter_sizes"]
+        changed_sizes = [[300, 100], *loaded.splitter_sizes[1:]]
+
+        loaded._set_linked_splitter_sizes(changed_sizes, loaded.data.ndim)
+
+        def pending_sizes() -> list[list[int]]:
+            attrs = wrappers[1].pending_workspace_payload_attrs
+            assert attrs is not None
+            return json.loads(attrs["itool_state"])["splitter_sizes"]
+
+        def proportions(sizes: list[int]) -> np.ndarray:
+            return np.asarray(sizes) / sum(sizes)
+
+        np.testing.assert_allclose(
+            proportions(pending_sizes()[0]), proportions(changed_sizes[0])
+        )
+        assert wrappers[1].pending_workspace_memory_payload is not None
+
+        loaded.undo()
+        np.testing.assert_allclose(
+            proportions(pending_sizes()[0]),
+            proportions(initial_sizes[0]),
+            atol=0.001,
+        )
+
+        loaded.redo()
+        np.testing.assert_allclose(
+            proportions(pending_sizes()[0]),
+            proportions(changed_sizes[0]),
+            atol=0.001,
+        )
+
+        partner = manager.get_imagetool(1).slicer_area
+        loaded.undo()
+        for area in (loaded, partner):
+            np.testing.assert_allclose(
+                proportions(area.splitter_sizes[0]),
+                proportions(initial_sizes[0]),
+                atol=0.001,
+            )
+        assert partner.redoable
+
+        partner.redo()
+        for area in (loaded, partner):
+            np.testing.assert_allclose(
+                proportions(area.splitter_sizes[0]),
+                proportions(changed_sizes[0]),
+                atol=0.001,
+            )
+
+
+@pytest.mark.parametrize("materialize_target_before_link", [False, True])
+def test_link_selected_uses_pending_current_imagetool_layout(
+    qtbot,
+    tmp_path,
+    materialize_target_before_link: bool,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for sizes in ([300, 100], [100, 300]):
+            root = itool(
+                xr.DataArray(np.zeros((5, 5)), dims=("x", "y")),
+                manager=False,
+                execute=False,
+            )
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            splitter_sizes = root.slicer_area.splitter_sizes
+            splitter_sizes[0] = list(sizes)
+            root.slicer_area.splitter_sizes = splitter_sizes
+            manager.add_imagetool(root, show=False)
+            root.hide()
+
+        fname = tmp_path / "pending-link-layout-source.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            fname, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+
+        wrappers = [manager._tool_graph.root_wrappers[index] for index in range(2)]
+        source_attrs = wrappers[1].pending_workspace_payload_attrs
+        assert source_attrs is not None
+        expected_sizes = json.loads(source_attrs["itool_state"])["splitter_sizes"][0]
+        target = (
+            manager.get_imagetool(0).slicer_area
+            if materialize_target_before_link
+            else None
+        )
+
+        select_tools(manager, [0, 1])
+        manager.tree_view.selectionModel().setCurrentIndex(
+            manager.tree_view._model._row_index(1),
+            QtCore.QItemSelectionModel.SelectionFlag.NoUpdate,
+        )
+        manager.link_selected(deselect=False)
+
+        for wrapper in wrappers:
+            updated_attrs = wrapper.pending_workspace_payload_attrs
+            if updated_attrs is None:
+                continue
+            updated_sizes = json.loads(updated_attrs["itool_state"])["splitter_sizes"][
+                0
+            ]
+            np.testing.assert_allclose(
+                np.asarray(updated_sizes) / sum(updated_sizes),
+                np.asarray(expected_sizes) / sum(expected_sizes),
+                atol=0.01,
+            )
+
+        if target is None:
+            target = manager.get_imagetool(0).slicer_area
+        actual_sizes = target.splitter_sizes[0]
+        np.testing.assert_allclose(
+            np.asarray(actual_sizes) / sum(actual_sizes),
+            np.asarray(expected_sizes) / sum(expected_sizes),
+            atol=0.01,
+        )
+        assert wrappers[1].pending_workspace_memory_payload is not None
+        assert not target.undoable
+
+
+def test_materializing_restored_link_preserves_saved_layouts(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for sizes in ([300, 100], [100, 300]):
+            root = itool(
+                xr.DataArray(np.zeros((5, 5)), dims=("x", "y")),
+                manager=False,
+                execute=False,
+            )
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+            splitter_sizes = root.slicer_area.splitter_sizes
+            splitter_sizes[0] = list(sizes)
+            root.slicer_area.splitter_sizes = splitter_sizes
+            root.hide()
+        manager.link_imagetools(0, 1)
+
+        # Linked tools saved before splitter synchronization could retain distinct
+        # layouts. Recreate that valid legacy state without propagating the assignment.
+        for index, sizes in enumerate(([300, 100], [100, 300])):
+            area = manager.get_imagetool(index).slicer_area
+            splitter_sizes = area.splitter_sizes
+            splitter_sizes[0] = list(sizes)
+            area.splitter_sizes = splitter_sizes
+
+        fname = tmp_path / "restored-linked-layouts.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            fname, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+
+        wrappers = [manager._tool_graph.root_wrappers[index] for index in range(2)]
+        expected_sizes = []
+        for wrapper in wrappers:
+            attrs = wrapper.pending_workspace_payload_attrs
+            assert attrs is not None
+            expected_sizes.append(json.loads(attrs["itool_state"])["splitter_sizes"])
+
+        areas = [manager.get_imagetool(index).slicer_area for index in range(2)]
+
+        assert areas[0].is_linked
+        assert areas[1].is_linked
+        assert areas[0].splitter_sizes == expected_sizes[0]
+        assert areas[1].splitter_sizes == expected_sizes[1]
 
 
 def test_pending_link_state_operation_variants_update_saved_state(

@@ -244,8 +244,8 @@ and right-click context menus:
 
 - {guilabel}`Link` / {guilabel}`Unlink`
 
-  {kbd}`Ctrl+L` links the selected windows so they share cursors and slices;
-  {kbd}`Ctrl+Shift+L` removes the links.
+  {kbd}`Ctrl+L` links the selected windows so they share cursors, slices, and plot
+  layout proportions. {kbd}`Ctrl+Shift+L` removes the links.
 
 - {guilabel}`Offload to Workspace`
 

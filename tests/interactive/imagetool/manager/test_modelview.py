@@ -210,6 +210,47 @@ def test_childtool_hover_preview_hides_missing_imageitem_pixmap(
     assert not delegate.preview_popup.isVisible()
 
 
+def test_link_selected_aligns_to_current_imagetool(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        for sizes in ([300, 100], [100, 300]):
+            tool = itool(
+                xr.DataArray(np.zeros((5, 5)), dims=("x", "y")),
+                manager=False,
+                execute=False,
+            )
+            assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+            splitter_sizes = tool.slicer_area.splitter_sizes
+            splitter_sizes[0] = list(sizes)
+            tool.slicer_area.splitter_sizes = splitter_sizes
+            tool.slicer_area.flush_history()
+            manager.add_imagetool(tool, show=False)
+
+        select_tools(manager, [0, 1])
+        selection_model = manager.tree_view.selectionModel()
+        selection_model.setCurrentIndex(
+            manager.tree_view._model._row_index(1),
+            QtCore.QItemSelectionModel.SelectionFlag.NoUpdate,
+        )
+        source_sizes = manager.get_imagetool(1).slicer_area._splitters[0].sizes()
+
+        manager.link_selected(deselect=False)
+
+        target_sizes = manager.get_imagetool(0).slicer_area._splitters[0].sizes()
+        np.testing.assert_allclose(
+            np.asarray(target_sizes) / sum(target_sizes),
+            np.asarray(source_sizes) / sum(source_sizes),
+            atol=0.01,
+        )
+        for index in (0, 1):
+            assert not manager.get_imagetool(index).slicer_area.undoable
+
+
 def test_link_badge_falls_back_to_live_linker(
     qtbot,
     monkeypatch,

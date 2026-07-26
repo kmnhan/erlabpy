@@ -137,20 +137,17 @@ def _changed_paths(
     return {
         path
         for path in paths
-        if not (path == "splitter_sizes" or path.startswith("splitter_sizes."))
-        and prev_flat.get(path, _MISSING) != curr_flat.get(path, _MISSING)
+        if prev_flat.get(path, _MISSING) != curr_flat.get(path, _MISSING)
     }
 
 
 def changed_paths(
-    prev: Mapping[str, typing.Any], curr: Mapping[str, typing.Any]
+    prev: Mapping[str, typing.Any],
+    curr: Mapping[str, typing.Any],
 ) -> frozenset[_StatePath]:
     paths: set[_StatePath] = set()
 
     def visit(old: typing.Any, new: typing.Any, prefix: _StatePath = ()) -> None:
-        if prefix and prefix[0] == "splitter_sizes":
-            return
-
         if isinstance(old, Mapping) and isinstance(new, Mapping):
             for key in set(old) | set(new):
                 visit(
@@ -556,6 +553,14 @@ def _describe_state_change_rows(
         summaries.append("Axis inversion changed")
         details.append(_detail_note("Axis inversion changed"))
         _consume(changes, "axis_inversions", prefixes=("axis_inversions",))
+
+    if any(
+        path == "splitter_sizes" or path.startswith("splitter_sizes.")
+        for path in changes
+    ):
+        summaries.append("Plot layout changed")
+        details.append(_detail_note("Plot layout proportions changed"))
+        _consume(changes, "splitter_sizes", prefixes=("splitter_sizes",))
 
     if any(
         path == "filter_operation" or path.startswith("filter_operation.")
