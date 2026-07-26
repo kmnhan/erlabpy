@@ -224,18 +224,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     qapp = QtWidgets.QApplication.instance()
     if qapp is not None:
         serial_process = os.environ.get("PYTEST_XDIST_WORKER") is None
-        if serial_process:
-            # Some Qt helpers create parentless widgets that pytest-qt cannot track.
-            # Retire them while Qt is fully initialized instead of leaving their
-            # destruction to Python's arbitrary interpreter-finalization order.
-            for widget in QtWidgets.QApplication.topLevelWidgets():
-                if not qt_is_valid(widget):
-                    continue
-                with contextlib.suppress(RuntimeError):
-                    widget.close()
-                if qt_is_valid(widget):
-                    widget.deleteLater()
-
         # pytest-qt closes registered widgets with deleteLater(), but processEvents()
         # does not guarantee that DeferredDelete events run before interpreter shutdown.
         for _ in range(2):
@@ -248,15 +236,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         # Collect Python-owned Qt reference cycles while the binding is still fully
         # initialized, then deliver any DeferredDelete events exposed by collection.
         gc.collect()
-        if serial_process:
-            for widget in QtWidgets.QApplication.topLevelWidgets():
-                if not qt_is_valid(widget):
-                    continue
-                with contextlib.suppress(RuntimeError):
-                    widget.close()
-                if qt_is_valid(widget):
-                    widget.deleteLater()
-
         for _ in range(2):
             QtWidgets.QApplication.sendPostedEvents(
                 None, int(QtCore.QEvent.Type.DeferredDelete.value)

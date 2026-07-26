@@ -173,7 +173,7 @@ def test_pyqt_sessionfinish_releases_app_ownership_only_in_serial_process(
     )
 
     assert result.stdout.strip().splitlines()[-1] == (
-        f"{expected_py_owned} False {not expected_py_owned} True"
+        f"{expected_py_owned} False False True"
     )
 
 
