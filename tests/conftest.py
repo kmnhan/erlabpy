@@ -2,6 +2,7 @@ import contextlib
 import csv
 import datetime
 import functools
+import gc
 import importlib.util
 import logging
 import os
@@ -214,8 +215,33 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     qapp = QtWidgets.QApplication.instance()
     if qapp is not None:
-        # pytest-qt closes registered widgets with deleteLater(), but processEvents()
-        # does not guarantee that DeferredDelete events run before interpreter shutdown.
+        # pyqtgraph creates parentless context menus, and some GUI tests keep their
+        # Python owners alive in reference cycles until interpreter shutdown. Retire
+        # every remaining top-level widget while Qt is fully initialized, then collect
+        # those cycles and drain any deletions that collection exposes.
+        for widget in QtWidgets.QApplication.topLevelWidgets():
+            if not qt_is_valid(widget):
+                continue
+            widget.close()
+            if qt_is_valid(widget):
+                widget.deleteLater()
+
+        for _ in range(2):
+            QtWidgets.QApplication.sendPostedEvents(
+                None, int(QtCore.QEvent.Type.DeferredDelete.value)
+            )
+            QtWidgets.QApplication.sendPostedEvents(None, 0)
+            qapp.processEvents()
+
+        gc.collect()
+
+        for widget in QtWidgets.QApplication.topLevelWidgets():
+            if not qt_is_valid(widget):
+                continue
+            widget.close()
+            if qt_is_valid(widget):
+                widget.deleteLater()
+
         for _ in range(2):
             QtWidgets.QApplication.sendPostedEvents(
                 None, int(QtCore.QEvent.Type.DeferredDelete.value)
