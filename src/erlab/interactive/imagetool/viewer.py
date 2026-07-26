@@ -989,12 +989,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return
         history_group_active = self._history_group_active
         try:
-            if history_group_active:
-                current_sizes = [
-                    self._splitters[index].sizes()
-                    for index in self._splitter_move_indices
-                ]
-                if current_sizes != self._splitter_move_start_sizes:
+            current_sizes = [
+                self._splitters[index].sizes() for index in self._splitter_move_indices
+            ]
+            if current_sizes != self._splitter_move_start_sizes:
+                if history_group_active:
                     # Non-opaque QSplitters commit their final sizes only after the
                     # handle's release handler runs. Commit the rendered result once,
                     # at the gesture boundary.
@@ -1002,6 +1001,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
                         self._capture_splitter_layout(self._splitter_move_indices),
                         self.data.ndim,
                     )
+                elif self._splitter_layout is not None:
+                    # Closing the tool can discard the history group before the
+                    # queued release handler runs. Restore the last committed layout
+                    # instead of leaving the uncommitted drag visible on reopen.
+                    self._apply_splitter_sizes(self._splitter_layout)
         finally:
             self._splitter_move_active = False
             self._splitter_move_indices = ()
@@ -3953,16 +3957,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
                         watched,
                     )
         return super().eventFilter(watched, event)
-
-    def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
-        super().resizeEvent(event)
-        if (
-            self._secondary_plots_materialized
-            and self._splitter_layout is not None
-            and self._pending_splitter_sizes is None
-            and not (self._splitter_move_active and self._history_group_active)
-        ):
-            self._apply_splitter_sizes(self._splitter_layout)
 
     def changeEvent(self, evt: QtCore.QEvent | None) -> None:
         if evt is not None and evt.type() == QtCore.QEvent.Type.PaletteChange:

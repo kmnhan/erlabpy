@@ -175,6 +175,7 @@ jobs:
           mapfile -t targets < "$RUNNER_TEMP/targets.txt"
           pytest_args=(
             -o faulthandler_timeout=300
+            -o faulthandler_exit_on_timeout=true
             --cov erlab
             --cov-report=
             --junitxml "junit-${{ matrix.group }}.xml"
@@ -269,6 +270,7 @@ jobs:
             uv run pytest \
             -m compat \
             -o faulthandler_timeout=300 \
+            -o faulthandler_exit_on_timeout=true \
             --junitxml "junit-smoke-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml" \
             -o junit_family=legacy \
             "${targets[@]}"

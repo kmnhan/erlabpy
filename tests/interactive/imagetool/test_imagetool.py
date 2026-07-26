@@ -5774,6 +5774,41 @@ def _apply_constrained_splitter_geometry(qtbot, area, splitter_index: int = 0) -
     )
 
 
+def test_window_resize_preserves_splitter_layout_without_reapplying_sizes(
+    qtbot, monkeypatch
+) -> None:
+    win = ImageTool(
+        xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=("x", "y"))
+    )
+    qtbot.addWidget(win)
+    win.resize(600, 700)
+    with qtbot.waitExposed(win):
+        win.show()
+
+    area = win.slicer_area
+    requested_layout = copy.deepcopy(area.splitter_sizes)
+    requested_layout[0] = [300, 100]
+    area.splitter_sizes = requested_layout
+    initial_proportions = _realized_splitter_proportions(area)
+    previous_total = sum(area._splitters[0].sizes())
+    apply_calls: list[list[list[int]]] = []
+    monkeypatch.setattr(
+        area,
+        "_apply_splitter_sizes",
+        lambda sizes: apply_calls.append(copy.deepcopy(sizes)),
+    )
+
+    win.resize(900, 900)
+    qtbot.wait_until(lambda: sum(area._splitters[0].sizes()) != previous_total)
+
+    assert apply_calls == []
+    for actual, expected in zip(
+        _realized_splitter_proportions(area), initial_proportions, strict=True
+    ):
+        np.testing.assert_allclose(actual, expected, atol=0.03)
+    win.close()
+
+
 @pytest.mark.parametrize("opaque_resize", [True, False])
 def test_linked_manual_splitter_move_undo_redo(qtbot, opaque_resize: bool) -> None:
     win0, win1 = _linked_pair(qtbot)
