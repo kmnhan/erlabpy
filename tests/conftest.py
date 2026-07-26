@@ -630,10 +630,6 @@ class _DialogHandler(QtCore.QObject):
 
     @QtCore.Slot()
     def _poll_dialog(self) -> None:
-        if time.perf_counter() >= self._deadline:
-            self._finish_timeout()
-            return
-
         candidate = QtWidgets.QApplication.activeModalWidget()
         if (
             candidate is None
@@ -655,6 +651,8 @@ class _DialogHandler(QtCore.QObject):
                 None,
             )
         if candidate is None:
+            if time.perf_counter() >= self._deadline:
+                self._finish_timeout()
             return
 
         dialog = typing.cast("QtWidgets.QDialog", candidate)
