@@ -1,3 +1,55 @@
+## v3.25.1 (2026-07-27)
+
+### 🐞 Bug Fixes
+
+- **interactive:** sync linked ImageTool splitter layouts (#509) ([55d997a](https://github.com/kmnhan/erlabpy/commit/55d997aff57890db237c4220cb599b0c03b8afeb))
+
+- **interactive:** stabilize queued Qt restore events (#507) ([5a4a60b](https://github.com/kmnhan/erlabpy/commit/5a4a60b541bd9fd05eeff0bdafdceb535a243314))
+
+- **manager:** bundle xarray-lmfit version metadata (#506) ([068ebfe](https://github.com/kmnhan/erlabpy/commit/068ebfe9f3de9546df830b0d022314665d87c90c))
+
+- **figurecomposer:** preserve source orientation and report render errors correctly (#504) ([5ce68ec](https://github.com/kmnhan/erlabpy/commit/5ce68ecebef4a7526d62ed5c83221bb7dc59bbe3))
+
+  Figure Composer now attributes invalid image color limits to the plot step that caused the error instead of marking unrelated steps. Figure sources also retain their displayed ImageTool orientation across workspace saves, deferred loading, and reopen cycles.
+
+- **figurecomposer:** honor subplot ordering (#502) ([18c0b58](https://github.com/kmnhan/erlabpy/commit/18c0b5894e9d3a95f63a5983e596e0759c3a5cde))
+
+  Keep rectangular axes selections two-dimensional during live rendering so row- and column-major order match generated code.
+
+- **figurecomposer:** support negative indices for colorbar mappable selection (#503) ([2f53022](https://github.com/kmnhan/erlabpy/commit/2f530221dc5066ec2af6e868e4e9f41b15f1d31c))
+
+- **figurecomposer:** catch close operations (#501) ([b7345b9](https://github.com/kmnhan/erlabpy/commit/b7345b9b752ee3d352cd9802cb0f5b1b43fcaf79))
+
+  Fixes an issue where the `Show Plot` button would not work after closing and reopening a figure composer window.
+
+- **manager:** show better error message when save fails due to deleted workspace file (#500) ([11fb832](https://github.com/kmnhan/erlabpy/commit/11fb83258add8edaf3d4e4abee24783edf7e2911))
+
+  Detects when a workspace save still depends on a backing `.itws` file that has been moved or deleted and shows an informative error message.
+
+- **interactive:** persist tool plot color settings to workspace files (#498) ([5ac1af1](https://github.com/kmnhan/erlabpy/commit/5ac1af132a42415bd02848e64bd58f4288e6796d))
+
+- **interactive:** show wait indicators on Windows and Linux (#497) ([6830062](https://github.com/kmnhan/erlabpy/commit/6830062097d3eff64853909c6d148e0f5494a217))
+
+- **imagetool:** harden controls bar teardown (#495) ([4cb79bd](https://github.com/kmnhan/erlabpy/commit/4cb79bd20c75d314ec3cdb56fbff7c3028d6ce86))
+
+- **manager:** preserve deferred coordinate order (#490) ([1e6c588](https://github.com/kmnhan/erlabpy/commit/1e6c588efce08944b508ac615f47554895fbbd6c))
+
+  Keep the saved coordinate order when deferred ImageTool metadata loads coordinate values, so dimension coordinates remain at the top of the summary.
+
+### ♻️ Code Refactor
+
+- **plotting:** add prefixed matplotlib stylesheets (#499) ([597998b](https://github.com/kmnhan/erlabpy/commit/597998b215f4ad41de7de93e555830e48a0a359e))
+
+  Adds `erlab.general`, `erlab.nature`, `erlab.arial`, and `erlab.times` stylesheets. Existing unprefixed styles remain available for compatibility, while documentation now recommends the new namespaced styles for gradual migration.
+
+- **manager:** add reveal-in-manager shortcut (#496) ([ad02bd2](https://github.com/kmnhan/erlabpy/commit/ad02bd2688d26fcf3d18cf6700d6dfe20c9497e5))
+
+  Enables Ctrl+Shift+M (Command+Shift+M on macOS) in tools to select their corresponding manager entry.
+
+- **analysis.transform:** add overlap averaging option to `symmetrize` (#491) ([c8f941e](https://github.com/kmnhan/erlabpy/commit/c8f941ee616e8cb0177c1f84acff5bbebab3ff6a))
+
+  Adds an option to `era.transform.symmetrize()` that toggles averaging the overlapping region.
+
 ## v3.25.0 (2026-07-23)
 
 ### ✨ Features
