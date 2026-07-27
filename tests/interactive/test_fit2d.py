@@ -1174,7 +1174,6 @@ def test_fit2d_sequence_skips_visible_refresh_for_hidden_steps(
         return clock_values.pop(0) if clock_values else 100.10
 
     refresh_modes: list[tuple[bool, bool, bool]] = []
-    original_refresh = win._refresh_contents_from_index
 
     def _refresh_contents_from_index(
         *,
@@ -1184,22 +1183,25 @@ def test_fit2d_sequence_skips_visible_refresh_for_hidden_steps(
         emit_info: bool = True,
         emit_param_changed: bool = True,
     ) -> None:
+        del mark_fit_stale, elapsed
         refresh_modes.append((update_widgets, emit_info, emit_param_changed))
-        original_refresh(
-            mark_fit_stale=mark_fit_stale,
-            update_widgets=update_widgets,
-            elapsed=elapsed,
-            emit_info=emit_info,
-            emit_param_changed=emit_param_changed,
-        )
 
     started_steps: list[int] = []
+    pending_callbacks = []
     monkeypatch.setattr(fit2d_module.time, "monotonic", _monotonic)
     monkeypatch.setattr(
         win, "_refresh_contents_from_index", _refresh_contents_from_index
     )
     monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
     monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
+
+    def _queue_single_shot(receiver, msec, callback, *guards) -> None:
+        assert receiver is win
+        assert msec == 0
+        assert not guards
+        pending_callbacks.append(callback)
+
+    monkeypatch.setattr(erlab.interactive.utils, "single_shot", _queue_single_shot)
 
     def _start_fit_worker(
         fit_data,
@@ -1221,10 +1223,8 @@ def test_fit2d_sequence_skips_visible_refresh_for_hidden_steps(
     monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
 
     win._run_fit_2d("up")
-    qtbot.waitUntil(
-        lambda: win._fit_2d_total == 0 and not win._fit_2d_indices,
-        timeout=1000,
-    )
+    while pending_callbacks:
+        pending_callbacks.pop(0)()
 
     assert started_steps == [1, 2, 3]
     assert sum(not update for update, _, _ in refresh_modes) > 0

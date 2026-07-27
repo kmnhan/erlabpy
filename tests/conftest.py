@@ -1,7 +1,9 @@
+import atexit
 import contextlib
 import csv
 import datetime
 import functools
+import gc
 import importlib.util
 import logging
 import os
@@ -36,7 +38,11 @@ import pytest
 import requests
 import xarray as xr
 from numpy.testing import assert_almost_equal
-from qtpy import QtCore, QtWidgets
+
+# Import before erlab so PyQt's atexit callback can be captured on first import.
+# isort: off
+from tests._qt_helpers import API_NAME, QTCORE_EXIT_CLEANUP, QtCore, QtWidgets
+# isort: on
 
 import erlab
 import erlab.interactive.imagetool.manager as imagetool_manager
@@ -82,6 +88,7 @@ _TEST_MANAGER_SETTINGS_MANAGED_ENV_VAR = (
     "ERLAB_IMAGETOOL_MANAGER_SETTINGS_PATH_TEST_MANAGED"
 )
 _TEST_MANAGER_SETTINGS_PATHS: list[pathlib.Path] = []
+_XDIST_WORKER_ERRORS: list[str] = []
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -210,10 +217,50 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.compat)
 
 
+def _drop_invalid_qtbot_widgets(item: pytest.Item) -> None:
+    widgets = getattr(item, "qt_widgets", None)
+    if not widgets:
+        return
+    item.qt_widgets = [
+        (widget_ref, before_close_func)
+        for widget_ref, before_close_func in widgets
+        if (widget := widget_ref()) is not None and qt_is_valid(widget)
+    ]
+
+
+def _release_pyqt_owned_wrappers() -> None:
+    """Relinquish residual SIP-owned C++ instances before Python finalization."""
+    from PyQt6 import sip
+
+    for obj in gc.get_objects():
+        if (
+            issubclass(type(obj), sip.wrapper)
+            and not sip.isdeleted(obj)
+            and sip.ispyowned(obj)
+        ):
+            sip.transferto(obj, None)
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item: pytest.Item):
+    # pytest-qt retains weak Python references to registered widgets. Under PySide,
+    # a wrapper can remain alive after its C++ widget has been destroyed; calling
+    # close() on that wrapper can crash instead of raising a deleted-object error.
+    _drop_invalid_qtbot_widgets(item)
+    return (yield)
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node: typing.Any, error: object | None) -> None:
+    if error is not None:
+        _XDIST_WORKER_ERRORS.append(f"{node.gateway.id}: {error}")
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     qapp = QtWidgets.QApplication.instance()
     if qapp is not None:
+        serial_process = os.environ.get("PYTEST_XDIST_WORKER") is None
         # pytest-qt closes registered widgets with deleteLater(), but processEvents()
         # does not guarantee that DeferredDelete events run before interpreter shutdown.
         for _ in range(2):
@@ -223,12 +270,39 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             QtWidgets.QApplication.sendPostedEvents(None, 0)
             qapp.processEvents()
 
+        # Collect Python-owned Qt reference cycles while the binding is still fully
+        # initialized, then deliver any DeferredDelete events exposed by collection.
+        gc.collect()
+        for _ in range(2):
+            QtWidgets.QApplication.sendPostedEvents(
+                None, int(QtCore.QEvent.Type.DeferredDelete.value)
+            )
+            QtWidgets.QApplication.sendPostedEvents(None, 0)
+            qapp.processEvents()
+
+        if API_NAME == "PyQt6" and serial_process:
+            # pytest-qt and the exercised GUI code can retain Python-owned SIP
+            # wrappers until interpreter finalization. SIP otherwise destroys their
+            # C++ instances in an arbitrary order after Qt callbacks have begun
+            # shutting down. Relinquish every surviving wrapper while SIP is still
+            # fully initialized.
+            from pytestqt import plugin as pytestqt_plugin
+
+            if pytestqt_plugin._qapp_instance is qapp:
+                pytestqt_plugin._qapp_instance = None
+            _release_pyqt_owned_wrappers()
+            if QTCORE_EXIT_CLEANUP is not None:
+                atexit.unregister(QTCORE_EXIT_CLEANUP)
+
     for settings_path in (
         *_TEST_INTERACTIVE_OPTIONS_PATHS,
         *_TEST_MANAGER_SETTINGS_PATHS,
     ):
         with contextlib.suppress(OSError):
             settings_path.unlink()
+
+    if _XDIST_WORKER_ERRORS:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 @pytest.fixture(autouse=True)
@@ -238,6 +312,20 @@ def _restore_interactive_options_between_tests() -> Iterator[None]:
         yield
     finally:
         erlab.interactive.options.restore()
+
+
+@pytest.fixture(autouse=True)
+def _drain_deferred_qt_deletes_after_test(
+    request: pytest.FixtureRequest,
+) -> Iterator[None]:
+    yield
+    if API_NAME != "PyQt6" or request.node.get_closest_marker("gui") is None:
+        return
+    if QtWidgets.QApplication.instance() is not None:
+        for _ in range(2):
+            QtWidgets.QApplication.sendPostedEvents(
+                None, int(QtCore.QEvent.Type.DeferredDelete.value)
+            )
 
 
 @pytest.fixture(scope="session")
@@ -609,10 +697,6 @@ class _DialogHandler(QtCore.QObject):
 
     @QtCore.Slot()
     def _poll_dialog(self) -> None:
-        if time.perf_counter() >= self._deadline:
-            self._finish_timeout()
-            return
-
         candidate = QtWidgets.QApplication.activeModalWidget()
         if (
             candidate is None
@@ -634,6 +718,8 @@ class _DialogHandler(QtCore.QObject):
                 None,
             )
         if candidate is None:
+            if time.perf_counter() >= self._deadline:
+                self._finish_timeout()
             return
 
         dialog = typing.cast("QtWidgets.QDialog", candidate)
@@ -871,7 +957,11 @@ def ip_shell():
     yield ip_session
 
     ip_session.run_line_magic("unload_ext", "erlab.interactive")
-    ip_session.user_ns.clear()
+    history_thread = getattr(ip_session.history_manager, "save_thread", None)
+    atexit.unregister(ip_session.atexit_operations)
+    if history_thread is not None:
+        history_thread.stop()
+    ip_session.atexit_operations()
     ip_session.clear_instance()
     with contextlib.suppress(AttributeError):
         del start_ipython.already_called

@@ -182,7 +182,7 @@ jobs:
             -o junit_family=legacy
           )
           if [[ "${{ matrix.use-xdist }}" == "true" ]]; then
-            pytest_args+=(-n auto --dist=loadgroup)
+            pytest_args+=(-n auto --dist=loadgroup --max-worker-restart=0)
           fi
           uv run pytest "${pytest_args[@]}" "${targets[@]}"
 

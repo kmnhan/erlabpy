@@ -316,6 +316,31 @@ def test_manager_console_shutdown_blocks_late_kernel_start(
         assert console_widget.kernel_manager.kernel is None
 
 
+@pytest.mark.parametrize("has_history_thread", [True, False])
+def test_manager_console_shutdown_stops_ipython_history_thread(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    has_history_thread: bool,
+) -> None:
+    with manager_context() as manager:
+        manager.ensure_console_initialized()
+        console_widget = manager.console._console_widget
+        console_widget.initialize_kernel()
+        shell = console_widget.kernel_manager.kernel.shell
+        history_thread = shell.history_manager.save_thread
+        assert history_thread.is_alive()
+        if not has_history_thread:
+            history_thread.stop()
+            shell.history_manager.save_thread = None
+
+        console_widget.shutdown_kernel()
+
+        assert not history_thread.is_alive()
+        assert console_widget.kernel_manager.kernel is None
+        assert not shell.__class__.initialized()
+
+
 def test_manager_console_event_filter_ignores_invalid_events(
     qtbot,
     monkeypatch,

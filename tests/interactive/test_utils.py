@@ -1603,6 +1603,27 @@ def test_accept_dialog_finds_visible_modal_when_active_modal_is_missing(
     assert not dialog.isVisible()
 
 
+def test_accept_dialog_processes_visible_modal_after_deadline(accept_dialog) -> None:
+    dialog = QtWidgets.QDialog()
+
+    def _show_after_deadline() -> None:
+        dialog.setModal(True)
+        dialog.show()
+        accept_dialog._deadline = float("-inf")
+
+    accept_dialog(_show_after_deadline)
+
+    assert not dialog.isVisible()
+
+
+def test_accept_dialog_times_out_when_no_modal_exists(accept_dialog) -> None:
+    def _expire_deadline() -> None:
+        accept_dialog._deadline = float("-inf")
+
+    with pytest.raises(pytest.fail.Exception, match="No dialog for index 0"):
+        accept_dialog(_expire_deadline)
+
+
 def test_accept_dialog_unwinds_modal_when_callback_raises(accept_dialog) -> None:
     dialog = QtWidgets.QDialog()
 

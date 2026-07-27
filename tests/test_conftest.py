@@ -4,6 +4,7 @@ import pathlib
 import subprocess
 import sys
 import types
+import weakref
 
 import pytest
 
@@ -95,6 +96,152 @@ def test_is_deleted_qt_wrapper_error_matches_deleted_wrapper_message() -> None:
 def test_collection_marker_hook_runs_before_xdist_loadgroup() -> None:
     hook_options = _CONFTEST.pytest_collection_modifyitems.pytest_impl
     assert hook_options["tryfirst"]
+
+
+def test_qtbot_teardown_drops_deleted_widget_wrappers(monkeypatch) -> None:
+    class Widget:
+        pass
+
+    valid_widget = Widget()
+    invalid_widget = Widget()
+    item = types.SimpleNamespace(
+        qt_widgets=[
+            (weakref.ref(valid_widget), None),
+            (weakref.ref(invalid_widget), None),
+        ]
+    )
+    monkeypatch.setattr(
+        _CONFTEST,
+        "qt_is_valid",
+        lambda widget: widget is valid_widget,
+    )
+
+    _CONFTEST._drop_invalid_qtbot_widgets(item)
+
+    assert item.qt_widgets == [(weakref.ref(valid_widget), None)]
+
+
+def test_xdist_worker_error_fails_session(monkeypatch) -> None:
+    node = types.SimpleNamespace(gateway=types.SimpleNamespace(id="gw0"))
+    session = types.SimpleNamespace(exitstatus=pytest.ExitCode.OK)
+    monkeypatch.setattr(_CONFTEST.QtWidgets.QApplication, "instance", lambda: None)
+    monkeypatch.setattr(_CONFTEST, "_XDIST_WORKER_ERRORS", [])
+
+    _CONFTEST.pytest_testnodedown(node, "Not properly terminated")
+    _CONFTEST.pytest_sessionfinish(session, pytest.ExitCode.OK)
+
+    assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
+
+
+def test_pyqt_exit_cleanup_is_captured_before_runtime_imports() -> None:
+    if _CONFTEST.API_NAME != "PyQt6":
+        pytest.skip("PyQt6 is not active")
+
+    assert _CONFTEST.QTCORE_EXIT_CLEANUP is not None
+
+
+def test_pyqt_wrapper_release_ignores_dead_weak_proxies(monkeypatch) -> None:
+    if _CONFTEST.API_NAME != "PyQt6":
+        pytest.skip("PyQt6 is not active")
+
+    class Value:
+        pass
+
+    value = Value()
+    proxy = weakref.proxy(value)
+    del value
+
+    monkeypatch.setattr(_CONFTEST.gc, "get_objects", lambda: [proxy])
+
+    _CONFTEST._release_pyqt_owned_wrappers()
+
+
+@pytest.mark.parametrize(
+    ("worker_id", "expected_py_owned", "expected_retained"),
+    [(None, False, False), ("gw0", True, True)],
+)
+def test_pyqt_sessionfinish_releases_wrapper_ownership_only_in_serial_process(
+    worker_id: str | None,
+    expected_py_owned: bool,
+    expected_retained: bool,
+) -> None:
+    if importlib.util.find_spec("PyQt6") is None:
+        pytest.skip("PyQt6 is not installed")
+
+    path = pathlib.Path(__file__).with_name("conftest.py")
+    env = os.environ.copy()
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    env["PYTEST_QT_API"] = "pyqt6"
+    env["QT_API"] = "pyqt6"
+    if worker_id is None:
+        env.pop("PYTEST_XDIST_WORKER", None)
+    else:
+        env["PYTEST_XDIST_WORKER"] = worker_id
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import importlib.util, pathlib, sys, types; "
+                "path = pathlib.Path(sys.argv[1]); "
+                "spec = importlib.util.spec_from_file_location("
+                "'sessionfinish_conftest', path); "
+                "module = importlib.util.module_from_spec(spec); "
+                "spec.loader.exec_module(module); "
+                "from PyQt6 import sip; "
+                "from pytestqt import plugin as pytestqt_plugin; "
+                "app = module.QtWidgets.QApplication([]); "
+                "pytestqt_plugin._qapp_instance = app; "
+                "unregistered = []; "
+                "original_unregister = module.atexit.unregister; "
+                "module.atexit.unregister = lambda func: ("
+                "unregistered.append(func), original_unregister(func)"
+                ")[1]; "
+                "widget = module.QtWidgets.QWidget(); "
+                "widget.deleteLater(); "
+                "request = types.SimpleNamespace("
+                "node=types.SimpleNamespace("
+                "get_closest_marker=lambda name: True)); "
+                "drain = module._drain_deferred_qt_deletes_after_test.__wrapped__("
+                "request); "
+                "next(drain); "
+                "next(drain, None); "
+                "drained = sip.isdeleted(widget); "
+                "widget = module.QtWidgets.QWidget(); "
+                "graphics_item = module.QtWidgets.QGraphicsLineItem(); "
+                "session = types.SimpleNamespace("
+                "exitstatus=module.pytest.ExitCode.OK); "
+                "module.pytest_sessionfinish(session, module.pytest.ExitCode.OK); "
+                "owned = ("
+                "sip.ispyowned(app), "
+                "sip.ispyowned(widget), "
+                "sip.ispyowned(graphics_item)"
+                "); "
+                "app_deleted = sip.isdeleted(app); "
+                "widget_deleted = sip.isdeleted(widget); "
+                "retained = pytestqt_plugin._qapp_instance is app; "
+                "cleanup_captured = "
+                "module.QTCORE_EXIT_CLEANUP is not None; "
+                "cleanup_unregistered = "
+                "module.QTCORE_EXIT_CLEANUP in unregistered; "
+                "print("
+                "owned, app_deleted, widget_deleted, drained, retained, "
+                "cleanup_captured, cleanup_unregistered"
+                ")"
+            ),
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.stdout.strip().splitlines()[-1] == (
+        f"({expected_py_owned}, {expected_py_owned}, {expected_py_owned}) "
+        f"False False True {expected_retained} True {worker_id is None}"
+    )
 
 
 def test_serial_xdist_group_serializes_manager_context_tests() -> None:

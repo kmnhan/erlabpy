@@ -1,3 +1,4 @@
+import atexit
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -46,6 +47,11 @@ def test_load(expected_dir, args, expected) -> None:
     xr.testing.assert_allclose(loaded, expected_data, rtol=1e-6, atol=1e-6)
     # Properly clean up the IPython session
     if ip_session:
+        history_thread = getattr(ip_session.history_manager, "save_thread", None)
+        atexit.unregister(ip_session.atexit_operations)
+        if history_thread is not None:
+            history_thread.stop()
+        ip_session.atexit_operations()
         ip_session.clear_instance()
     del start_ipython.already_called
 

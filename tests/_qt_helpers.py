@@ -1,6 +1,35 @@
 from __future__ import annotations
 
-from qtpy import QtCore
+import atexit
+import importlib
+import typing
+
+if typing.TYPE_CHECKING:
+    from collections.abc import Callable
+
+QTCORE_EXIT_CLEANUP: Callable[..., object] | None = None
+_original_atexit_register = atexit.register
+
+
+def _capture_pyqt_exit_notifier(
+    func: Callable[..., object], *args: object, **kwargs: object
+) -> Callable[..., object]:
+    global QTCORE_EXIT_CLEANUP
+
+    if getattr(func, "__name__", None) == "_qtcore_cleanup":
+        QTCORE_EXIT_CLEANUP = func
+    return _original_atexit_register(func, *args, **kwargs)
+
+
+atexit.register = _capture_pyqt_exit_notifier
+try:
+    qtpy = importlib.import_module("qtpy")
+    QtCore = importlib.import_module("qtpy.QtCore")
+    QtWidgets = importlib.import_module("qtpy.QtWidgets")
+finally:
+    atexit.register = _original_atexit_register
+
+API_NAME = qtpy.API_NAME
 
 
 def signal_receiver_count(obj: QtCore.QObject, signal: object, signal_name: str) -> int:

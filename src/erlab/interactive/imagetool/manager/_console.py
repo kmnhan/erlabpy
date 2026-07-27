@@ -20,6 +20,7 @@ from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperat
 __all__ = ["ToolNamespace", "ToolsNamespace", "_ImageToolManagerJupyterConsole"]
 
 import ast
+import atexit
 import contextlib
 import functools
 import importlib
@@ -2155,11 +2156,12 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
     def shutdown_kernel(self) -> None:
         self._kernel_shutdown_requested = True
         if self.kernel_manager.kernel:
+            shell = self.kernel_manager.kernel.shell
+            history_thread = getattr(shell.history_manager, "save_thread", None)
             if self._tools_namespace is not None:
                 self._tools_namespace.unbind_shell()
                 self._tools_namespace = None
             if self._erlab_io_hooks_registered:
-                shell = self.kernel_manager.kernel.shell
                 with contextlib.suppress(KeyError, ValueError):
                     shell.events.unregister(
                         "pre_run_cell", self._restore_erlab_io_state
@@ -2171,6 +2173,13 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
                 self._erlab_io_hooks_registered = False
             self.kernel_client.stop_channels()
             self.kernel_manager.shutdown_kernel()
+            atexit.unregister(shell.atexit_operations)
+            if history_thread is not None:
+                history_thread.stop()
+            try:
+                shell.atexit_operations()
+            finally:
+                shell.__class__.clear_instance()
 
     def _banner_default(self) -> str:
         banner = super()._banner_default()
