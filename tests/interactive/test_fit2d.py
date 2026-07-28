@@ -145,6 +145,7 @@ def _seed_fit2d_full_results(win: Fit2DTool, model, params) -> None:
             params=params,
             max_nfev=10,
         ).load()
+        fit_ds = win._fit_result_with_range(fit_ds)
         result = fit_ds.modelfit_results.compute().item()
         win._result_ds_full[idx] = fit_ds
         win._params_full[idx] = result.params.copy()
@@ -158,8 +159,36 @@ def _seed_fit2d_full_results(win: Fit2DTool, model, params) -> None:
 
 def _seed_fit2d_param_results(win: Fit2DTool, params_list) -> None:
     win._params_full = [params.copy() for params in params_list]
-    win._result_ds_full = [_fit_result_dataset(params) for params in params_list]
+    win._result_ds_full = [
+        win._fit_result_with_range(_fit_result_dataset(params))
+        for params in params_list
+    ]
     win._update_param_plot_options()
+
+
+def _fit_slices_with_ranges(
+    win: Fit2DTool, fit_ranges: list[tuple[float, float]]
+) -> None:
+    for index, fit_range in enumerate(fit_ranges):
+        win._set_current_index(index)
+        win.domain_min_spin.setValue(fit_range[0])
+        win.domain_max_spin.setValue(fit_range[1])
+        fit_ds = (
+            win._fit_data()
+            .xlm.modelfit(
+                win._coord_name,
+                model=win._model,
+                params=win._params,
+                method=win.method_combo.currentText(),
+            )
+            .load()
+        )
+        win._last_result_ds = fit_ds
+        result = fit_ds.modelfit_results.compute().item()
+        win._params = result.params.copy()
+        win._sync_fit_result_state()
+    win._fit_is_current = True
+    win._update_full_fit_saveable()
 
 
 def _lmfit_json_with_callable_pyversion(
@@ -1777,6 +1806,257 @@ def test_fit2d_full_copy_fit_data_name_with_domain_and_normalization(qtbot) -> N
     assert ".isel(" in lines[0]
     assert lines[1] == 'data_crop_norm = data_crop / data_crop.mean("x")'
     assert win._full_copy_fit_data_name("data") == "data_crop_norm"
+
+
+def test_fit2d_uniform_slice_ranges_keep_single_crop_code(qtbot) -> None:
+    x = np.linspace(-1.0, 1.0, 9)
+    data = xr.DataArray(
+        np.stack((x**2 + 0.1 * x, x**2 - 0.2 * x)),
+        dims=("slice", "x"),
+        coords={"slice": [10.0, 20.0], "x": x},
+    )
+    model = erlab.analysis.fit.models.PolynomialModel(degree=1)
+    win = erlab.interactive.ftool(
+        data,
+        model=model,
+        params=model.make_params(c0=0.0, c1=0.0),
+        execute=False,
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win.domain_min_spin.setValue(-0.6)
+    win.domain_max_spin.setValue(0.6)
+    expected_lines: list[str] = []
+    expected_name = win._full_copy_fit_data_name("data", lines=expected_lines)
+
+    _fit_slices_with_ranges(win, [(-0.6, 0.6), (-0.6, 0.6)])
+    actual_lines: list[str] = []
+    actual_name = win._full_copy_fit_data_name("data", lines=actual_lines)
+
+    assert actual_name == expected_name == "data_crop"
+    assert (
+        actual_lines
+        == expected_lines
+        == ["data_crop = data.sel(x=slice(-0.6, 0.6)).isel(slice=slice(0, 2))"]
+    )
+
+
+def test_fit2d_records_range_from_dispatched_fit_data(qtbot) -> None:
+    x = np.linspace(-1.0, 1.0, 9)
+    data = xr.DataArray(
+        np.stack((x**2 + 0.1 * x, x**2 - 0.2 * x)),
+        dims=("slice", "x"),
+        coords={"slice": [10.0, 20.0], "x": x},
+    )
+    model = erlab.analysis.fit.models.PolynomialModel(degree=1)
+    win = erlab.interactive.ftool(
+        data,
+        model=model,
+        params=model.make_params(c0=0.0, c1=0.0),
+        execute=False,
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win.domain_min_spin.setValue(-0.6)
+    win.domain_max_spin.setValue(0.6)
+    dispatched_data = win._fit_data()
+    result_ds = dispatched_data.xlm.modelfit(
+        win._coord_name,
+        model=win._model,
+        params=win._params,
+    ).load()
+
+    win.domain_min_spin.setValue(-1.0)
+    win.domain_max_spin.setValue(0.0)
+    win._set_fit_ds(result_ds, 0.0)
+
+    assert win._last_result_ds is not None
+    assert win._fit_result_range(win._last_result_ds) == (-0.6, 0.6)
+
+    overwritten = win._fit_result_with_range(win._last_result_ds, (-0.5, 0.5))
+    assert win._fit_result_range(overwritten) == (-0.5, 0.5)
+
+
+@pytest.mark.parametrize("descending", [False, True])
+@pytest.mark.parametrize("slice_dim", ["slice", "bound"])
+def test_fit2d_mixed_slice_ranges_copy_and_output_provenance(
+    qtbot, descending, slice_dim
+) -> None:
+    x = np.linspace(-1.0, 1.0, 9)
+    if descending:
+        x = x[::-1]
+    data = xr.DataArray(
+        np.stack((x**2 + 0.1 * x, x**2 - 0.2 * x)),
+        dims=(slice_dim, "x"),
+        coords={slice_dim: [10.0, 20.0], "x": x},
+        name="spectrum",
+    )
+    model = erlab.analysis.fit.models.PolynomialModel(degree=1)
+    win = erlab.interactive.ftool(
+        data,
+        model=model,
+        params=model.make_params(c0=0.0, c1=0.0),
+        data_name="source_spectrum",
+        execute=False,
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    fit_ranges = [(-1.0, 0.0), (0.0, 1.0)]
+    _fit_slices_with_ranges(win, fit_ranges)
+    assert [
+        win._fit_result_range(result_ds)
+        for result_ds in win._result_ds_full
+        if result_ds is not None
+    ] == fit_ranges
+
+    current_spec = win.current_provenance_spec()
+    assert current_spec is not None
+    current_code = current_spec.display_code()
+    assert current_code is not None
+    copied_code = win._copy_code_full()
+    assert copied_code
+
+    for code in (current_code, copied_code):
+        namespace = {
+            "source_spectrum": data,
+            "era": erlab.analysis,
+            "xr": xr,
+        }
+        exec(code, namespace)  # noqa: S102
+        result = namespace["result"]
+        assert isinstance(result, xr.Dataset)
+        for index, fit_range in enumerate(fit_ranges):
+            actual_x = result["x"].where(
+                result.modelfit_data.isel({slice_dim: index}).notnull(), drop=True
+            )
+            expected_x = x[(x >= fit_range[0]) & (x <= fit_range[1])]
+            np.testing.assert_allclose(actual_x, expected_x)
+
+    win.param_plot_combo.setCurrentText("c1")
+    values = win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES)
+    assert values is not None
+    output_spec = win.output_imagetool_provenance(
+        Fit2DTool.Output.PARAMETER_VALUES,
+        values,
+    )
+    assert output_spec is not None
+    assert isinstance(output_spec.operations[-1], ScriptCodeOperation)
+    replayed = replay_script_provenance(
+        output_spec,
+        {"source_spectrum": data},
+    )
+    xr.testing.assert_allclose(replayed, values)
+
+
+@pytest.mark.parametrize("descending", [False, True])
+def test_fit2d_mixed_slice_ranges_persistence_roundtrip(
+    qtbot, monkeypatch, descending
+) -> None:
+    x = np.linspace(-1.0, 1.0, 9)
+    if descending:
+        x = x[::-1]
+    data = xr.DataArray(
+        np.stack((x**2 + 0.1 * x, x**2 - 0.2 * x)),
+        dims=("slice", "x"),
+        coords={"slice": [10.0, 20.0], "x": x},
+        name="spectrum",
+    )
+    model = erlab.analysis.fit.models.PolynomialModel(degree=1)
+    win = erlab.interactive.ftool(
+        data,
+        model=model,
+        params=model.make_params(c0=0.0, c1=0.0),
+        data_name="source_spectrum",
+        execute=False,
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    fit_ranges = [(-1.0, 0.0), (0.0, 1.0)]
+    _fit_slices_with_ranges(win, fit_ranges)
+    expected_results = [
+        result_ds.copy(deep=True)
+        for result_ds in win._result_ds_full
+        if result_ds is not None
+    ]
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+    assert isinstance(restored, Fit2DTool)
+    assert [
+        restored._fit_result_range(result_ds)
+        for result_ds in restored._result_ds_full
+        if result_ds is not None
+    ] == fit_ranges
+    for index, (actual, expected) in enumerate(
+        zip(restored._result_ds_full, expected_results, strict=True)
+    ):
+        assert actual is not None
+        xr.testing.assert_identical(
+            actual.drop_vars("modelfit_results"),
+            expected.drop_vars("modelfit_results"),
+        )
+        expected_x = x[(x >= fit_ranges[index][0]) & (x <= fit_ranges[index][1])]
+        np.testing.assert_allclose(actual["x"], expected_x)
+
+    restored_spec = restored.current_provenance_spec()
+    assert restored_spec is not None
+    restored_code = restored_spec.display_code()
+    assert restored_code is not None
+    namespace = {
+        "source_spectrum": data,
+        "era": erlab.analysis,
+        "xr": xr,
+    }
+    exec(restored_code, namespace)  # noqa: S102
+    restored_result = namespace["result"]
+    assert isinstance(restored_result, xr.Dataset)
+    for index, fit_range in enumerate(fit_ranges):
+        actual_x = restored_result["x"].where(
+            restored_result.modelfit_data.isel(slice=index).notnull(), drop=True
+        )
+        expected_x = x[(x >= fit_range[0]) & (x <= fit_range[1])]
+        np.testing.assert_allclose(actual_x, expected_x)
+
+    saved_fits: list[xr.Dataset] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "save_fit_ui",
+        lambda fit_ds, *, parent: saved_fits.append(fit_ds),
+    )
+    win._save_fit_full()
+    assert len(saved_fits) == 1
+
+    reopened = erlab.interactive.ftool(saved_fits[0], execute=False)
+    qtbot.addWidget(reopened)
+    assert isinstance(reopened, Fit2DTool)
+    assert [
+        reopened._fit_result_range(result_ds)
+        for result_ds in reopened._result_ds_full
+        if result_ds is not None
+    ] == fit_ranges
+    for index, result_ds in enumerate(reopened._result_ds_full):
+        assert result_ds is not None
+        expected_x = x[(x >= fit_ranges[index][0]) & (x <= fit_ranges[index][1])]
+        np.testing.assert_allclose(result_ds["x"], expected_x)
+
+    reopened._set_current_index(0)
+    reopened.domain_min_spin.setValue(-0.5)
+    reopened.domain_max_spin.setValue(0.0)
+    refit_data = reopened._fit_data()
+    assert float(refit_data.coords[Fit2DTool._FIT_RANGE_MIN_COORD]) == -0.5
+    assert float(refit_data.coords[Fit2DTool._FIT_RANGE_MAX_COORD]) == 0.0
+    refit_ds = refit_data.xlm.modelfit(
+        reopened._coord_name,
+        model=reopened._model,
+        params=reopened._params,
+    ).load()
+    reopened._set_fit_ds(refit_ds, 0.0)
+    assert reopened._last_result_ds is not None
+    assert reopened._fit_result_range(reopened._last_result_ds) == (-0.5, 0.0)
 
 
 def test_fit2d_copy_code_full_inconsistent_expr_warning(qtbot, monkeypatch) -> None:
