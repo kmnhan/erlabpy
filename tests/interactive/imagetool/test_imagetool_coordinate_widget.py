@@ -222,6 +222,16 @@ def test_coordinate_widget_affine_scalar_coordinate_offset(qtbot):
     np.testing.assert_allclose(widget.affine_coord, arr + 0.5 - 21.2)
     np.testing.assert_allclose(_affine_preview_values(widget), arr + 0.5 - 21.2)
 
+    widget.offset_coord_combo.setCurrentIndex(widget.offset_coord_combo.findData(None))
+    assert widget.affine_offset_coord is None
+    assert widget.affine_offset_coord_sign == 1
+    assert not widget.offset_coord_sign_combo.isEnabled()
+    np.testing.assert_allclose(widget.affine_coord, arr + 0.5)
+
+    widget.offset_coord_combo.setCurrentIndex(widget.offset_coord_combo.findData("hv"))
+    widget.offset_coord_sign_combo.setCurrentIndex(
+        widget.offset_coord_sign_combo.findData(-1)
+    )
     widget.reset()
     assert widget.affine_offset_coord is None
     assert widget.affine_offset_coord_sign == 1

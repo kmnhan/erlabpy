@@ -145,9 +145,7 @@ class AffineCoordOperation(ToolProvenanceOperation):
         values = np.asarray(coord.values)
         if values.ndim != 0:
             raise ValueError(f"Offset coordinate {self.offset_coord!r} must be scalar.")
-        if not np.issubdtype(values.dtype, np.number) or np.issubdtype(
-            values.dtype, np.complexfloating
-        ):
+        if values.dtype.kind not in "iuf":
             raise ValueError(
                 f"Offset coordinate {self.offset_coord!r} must contain a real number."
             )

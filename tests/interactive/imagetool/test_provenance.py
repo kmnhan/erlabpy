@@ -2353,6 +2353,10 @@ def test_tool_provenance_affine_coord_lazy_scalar_offset_code() -> None:
         ),
         (_base_data().assign_coords(hv="21.2"), "must contain a real number"),
         (_base_data().assign_coords(hv=21.2 + 0.0j), "must contain a real number"),
+        (
+            _base_data().assign_coords(hv=np.timedelta64(1, "s")),
+            "must contain a real number",
+        ),
         (_base_data().assign_coords(hv=np.nan), "must be finite"),
     ],
 )

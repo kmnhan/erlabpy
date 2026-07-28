@@ -5184,8 +5184,7 @@ class AssignCoordsDialog(DataTransformDialog):
             values = np.asarray(coord.values)
             if (
                 values.ndim == 0
-                and np.issubdtype(values.dtype, np.number)
-                and not np.issubdtype(values.dtype, np.complexfloating)
+                and values.dtype.kind in "iuf"
                 and np.isfinite(values).item()
             ):
                 scalar_coords[str(name)] = float(values)

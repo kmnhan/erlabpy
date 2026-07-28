@@ -464,7 +464,11 @@ class CoordinateEditorWidget(QtWidgets.QWidget):
         self.update_affine_preview()
 
     def _sync_offset_coord_controls(self) -> None:
-        self.offset_coord_sign_combo.setEnabled(self.affine_offset_coord is not None)
+        has_offset_coord = self.affine_offset_coord is not None
+        self.offset_coord_sign_combo.setEnabled(has_offset_coord)
+        if not has_offset_coord:
+            with QtCore.QSignalBlocker(self.offset_coord_sign_combo):
+                self.offset_coord_sign_combo.setCurrentIndex(0)
 
     @QtCore.Slot(int)
     def _edit_mode_changed(self, _index: int) -> None:

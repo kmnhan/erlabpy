@@ -10423,6 +10423,23 @@ def test_assign_coords_restore_scalar_offset_requires_coordinate(qtbot) -> None:
     win.close()
 
 
+def test_assign_coords_ignores_scalar_timedelta_offset(qtbot) -> None:
+    data = _restore_dialog_data().assign_coords(
+        hv=21.2,
+        elapsed=np.timedelta64(1, "s"),
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = AssignCoordsDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    assert dialog.coord_widget.offset_coord_combo.findData("hv") >= 0
+    assert dialog.coord_widget.offset_coord_combo.findData("elapsed") == -1
+
+    dialog.close()
+    win.close()
+
+
 def test_squeeze_dialog_restore_operation_roundtrip(qtbot) -> None:
     data = xr.DataArray(
         np.arange(15, dtype=float).reshape((1, 3, 1, 5)),
