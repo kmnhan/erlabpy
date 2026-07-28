@@ -4640,6 +4640,7 @@ def test_details_panel_single_line_rows_stay_compact_and_elide(
         typing.cast("manager_mainwindow.ImageToolManager", manager)
     )
     long_time = "2024-01-02 03:04:05 Pacific Daylight Time (-0700)"
+    input_text = "\n".join(f"parent {index}" for index in range(7))
 
     controller._set_metadata_fields(
         [
@@ -4651,7 +4652,11 @@ def test_details_panel_single_line_rows_stay_compact_and_elide(
                 monospace=True,
                 details=details,
             ),
-            manager_wrapper._MetadataField("Inputs", "first\nsecond", wrap=True),
+            manager_wrapper._MetadataField(
+                "Inputs",
+                input_text,
+                wrap=True,
+            ),
         ]
     )
 
@@ -4662,7 +4667,10 @@ def test_details_panel_single_line_rows_stay_compact_and_elide(
     assert isinstance(kind_label, manager_widgets._ElidedValueLabel)
     assert isinstance(added_label, manager_widgets._ElidedValueLabel)
     assert isinstance(file_label, manager_widgets._ElidedValueLabel)
-    assert not isinstance(inputs_label, manager_widgets._ElidedValueLabel)
+    assert len(inputs_label.text().splitlines()) == 4
+    assert inputs_label.text().endswith("…")
+    assert inputs_label.toolTip() == input_text
+    assert inputs_label.accessibleName() == input_text
     assert added_label.full_text == long_time
     assert added_label.sizePolicy().horizontalPolicy() == (
         QtWidgets.QSizePolicy.Policy.Ignored

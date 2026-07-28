@@ -65,6 +65,7 @@ _TOOL_PREVIEW_UPDATE_DELAY_MS = 250
 _PROVENANCE_STEPS_CLIPBOARD_MIME = "application/x-erlab-imagetool-provenance-steps+json"
 _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.imagetool.provenance.steps"
 _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
+_MAXIMUM_WRAPPED_METADATA_LINES = 4
 
 
 def _provenance_step_clipboard_payload(
@@ -523,14 +524,24 @@ class _DetailsPanelController:
                     )
                 )
             elif field.wrap:
+                lines = field.value.splitlines()
+                value = field.value
+                if len(lines) > _MAXIMUM_WRAPPED_METADATA_LINES:
+                    value = "\n".join(
+                        (
+                            *lines[: _MAXIMUM_WRAPPED_METADATA_LINES - 1],
+                            "…",
+                        )
+                    )
                 value_label = QtWidgets.QLabel(
-                    field.value, self._manager.metadata_details_widget
+                    value, self._manager.metadata_details_widget
                 )
                 value_label.setTextInteractionFlags(
                     QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
                 )
-                value_label.setWordWrap(field.wrap)
+                value_label.setWordWrap(True)
                 value_label.setToolTip(field.value)
+                value_label.setAccessibleName(field.value)
                 value_label.setMinimumWidth(0)
                 size_policy = QtWidgets.QSizePolicy(
                     QtWidgets.QSizePolicy.Policy.Expanding,
