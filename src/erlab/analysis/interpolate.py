@@ -551,20 +551,30 @@ def slice_along_vector(
 def _minimize_func(
     edc_values: npt.NDArray,
     coord: npt.NDArray,
+    fraction: float,
     direction: typing.Literal["positive", "negative"],
     on_failure: typing.Literal["nan", "raise"],
 ) -> float:
+    finite = np.isfinite(coord) & np.isfinite(edc_values)
+    coord = coord[finite]
+    edc_values = edc_values[finite]
+
+    if coord.size < 2:
+        if on_failure == "nan":
+            return np.nan
+        raise ValueError(
+            "at least two finite coordinate and intensity value pairs are required"
+        )
+
     order = np.argsort(coord)
     coord = coord[order]
     edc_values = edc_values[order]
-
-    if not np.all(np.isfinite(coord)) or not np.all(np.isfinite(edc_values)):
-        if on_failure == "nan":
-            return np.nan
-        raise ValueError("coordinate and intensity values must be finite")
+    edc_values = edc_values - np.max(edc_values) * fraction
 
     try:
-        spl = scipy.interpolate.make_interp_spline(coord, edc_values)
+        spl = scipy.interpolate.make_interp_spline(
+            coord, edc_values, k=min(3, coord.size - 1)
+        )
     except ValueError:
         if on_failure == "nan":
             return np.nan
@@ -615,6 +625,10 @@ def leading_edge(
     It is calculated by interpolating each curve with a spline and finding the root of
     the function defined as the difference between the curve and the target intensity.
 
+    .. versionchanged:: 3.26.0
+        Non-finite samples are ignored when fitting each curve. The spline degree is
+        reduced when fewer than four finite samples remain.
+
     Parameters
     ----------
     darr : xr.DataArray
@@ -647,17 +661,16 @@ def leading_edge(
     if on_failure not in {"nan", "raise"}:
         raise ValueError("on_failure must be 'nan' or 'raise'")
 
-    half_max = darr.max(dim=[dim]) * fraction
-
     return xr.apply_ufunc(
         _minimize_func,
-        darr - half_max,
+        darr,
         input_core_dims=[[dim]],
         dask="parallelized",
         output_dtypes=[float],
         vectorize=True,
         kwargs={
             "coord": darr[dim].values,
+            "fraction": fraction,
             "direction": direction,
             "on_failure": on_failure,
         },
