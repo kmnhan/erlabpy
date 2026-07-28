@@ -1,3 +1,21 @@
+## v3.26.0 (2026-07-28)
+
+### ✨ Features
+
+- **imagetool:** support scalar-coordinate offsets (#511) ([3c0c955](https://github.com/kmnhan/erlabpy/commit/3c0c955efa44a95b388949b76fc2a5de99a522b0))
+
+  Allow Coordinate Editor affine transforms to add or subtract a numeric scalar coordinate.
+
+### 🐞 Bug Fixes
+
+- **ftool:** for 2D data, preserve fit ranges for each slice (#514) ([50ac60a](https://github.com/kmnhan/erlabpy/commit/50ac60a723db175510576c034b0d30d90d4b6599))
+
+- **analysis:** ignore NaNs in leading edge detection (#513) ([4597882](https://github.com/kmnhan/erlabpy/commit/459788289430eb2f4803bd53aa175c41f125ade3))
+
+- **manager:** truncate long provenance input lists (#512) ([072b13f](https://github.com/kmnhan/erlabpy/commit/072b13f192e4c48214c19b692f211baa697ace4d))
+
+- **manager:** fix slow initialization for standalone windows builds (#510) ([6ce8d3f](https://github.com/kmnhan/erlabpy/commit/6ce8d3f4112923b2fd17110e85ed3e9dfbab7204))
+
 ## v3.25.1 (2026-07-27)
 
 ### 🐞 Bug Fixes
