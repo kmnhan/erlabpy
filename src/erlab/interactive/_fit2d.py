@@ -292,6 +292,8 @@ class Fit2DTool(Fit1DTool):
     _PERSISTED_FIT_RESULT_DIM: typing.ClassVar[str] = "__ftool_fit_results_bytes__"
     _PERSISTED_FIT_INDEX_DIM: typing.ClassVar[str] = "__ftool_fit_result_index__"
     _PERSISTED_FIT_CURRENT_ATTR: typing.ClassVar[str] = "__ftool_fit_is_current__"
+    _FIT_RANGE_MIN_COORD: typing.ClassVar[str] = "__ftool_fit_range_min__"
+    _FIT_RANGE_MAX_COORD: typing.ClassVar[str] = "__ftool_fit_range_max__"
     _PARAMETER_OUTPUT_SEPARATOR: typing.ClassVar[str] = ":"
 
     class Output(enum.StrEnum):
@@ -524,7 +526,147 @@ class Fit2DTool(Fit1DTool):
             return
         self._update_param_plot()
 
+    def _data_fit_range(self, data: xr.DataArray) -> tuple[float, float]:
+        if self._coord_name in data.coords:
+            values = np.asarray(data.coords[self._coord_name].values, dtype=float)
+        elif self._coord_name in data.dims:
+            values = np.arange(data.sizes[self._coord_name], dtype=float)
+        else:
+            raise ValueError(
+                f"Fit coordinate {self._coord_name!r} was not found in the fit data."
+            )
+        finite = values[np.isfinite(values)]
+        if finite.size == 0:
+            raise ValueError("Fit coordinate does not contain any finite values.")
+        return float(np.min(finite)), float(np.max(finite))
+
+    def _current_fit_range(self) -> tuple[float, float]:
+        fit_domain = self._fit_domain()
+        if fit_domain is None:
+            return self._data_fit_range(self._data_full)
+        return self._canonical_fit_range(fit_domain)
+
+    def _fit_data(self) -> xr.DataArray:
+        fit_min, fit_max = self._current_fit_range()
+        return (
+            super()
+            ._fit_data()
+            .assign_coords(
+                {
+                    self._FIT_RANGE_MIN_COORD: fit_min,
+                    self._FIT_RANGE_MAX_COORD: fit_max,
+                }
+            )
+        )
+
+    def _fit_result_range(self, result_ds: xr.Dataset) -> tuple[float, float]:
+        if (
+            self._FIT_RANGE_MIN_COORD in result_ds.coords
+            and self._FIT_RANGE_MAX_COORD in result_ds.coords
+        ):
+            return (
+                float(result_ds.coords[self._FIT_RANGE_MIN_COORD].item()),
+                float(result_ds.coords[self._FIT_RANGE_MAX_COORD].item()),
+            )
+
+        if "modelfit_data" in result_ds:
+            fit_data = result_ds["modelfit_data"]
+            if self._coord_name in fit_data.coords:
+                coord = np.asarray(
+                    fit_data.coords[self._coord_name].values, dtype=float
+                )
+                finite = coord[np.isfinite(coord)]
+                if finite.size:
+                    return float(np.min(finite)), float(np.max(finite))
+
+        return self._data_fit_range(self._data_full)
+
+    def _fit_result_with_range(
+        self,
+        result_ds: xr.Dataset,
+        fit_range: tuple[float, float] | None = None,
+    ) -> xr.Dataset:
+        if fit_range is None:
+            if (
+                self._FIT_RANGE_MIN_COORD in result_ds.coords
+                and self._FIT_RANGE_MAX_COORD in result_ds.coords
+            ):
+                return result_ds
+            fit_range = self._fit_result_range(result_ds)
+        fit_min, fit_max = fit_range
+        return result_ds.assign_coords(
+            {
+                self._FIT_RANGE_MIN_COORD: fit_min,
+                self._FIT_RANGE_MAX_COORD: fit_max,
+            }
+        )
+
+    def _trim_fit_result_to_range(self, result_ds: xr.Dataset) -> xr.Dataset:
+        if self._coord_name not in result_ds.dims:
+            return result_ds
+        fit_min, fit_max = self._fit_result_range(result_ds)
+        if self._coord_name in result_ds.coords:
+            coord = np.asarray(result_ds.coords[self._coord_name].values, dtype=float)
+        else:
+            coord = np.arange(result_ds.sizes[self._coord_name], dtype=float)
+        keep = np.isfinite(coord) & (coord >= fit_min) & (coord <= fit_max)
+        if not keep.any() or keep.all():
+            return result_ds
+        return result_ds.isel({self._coord_name: np.flatnonzero(keep)})
+
+    def _restore_fit_coord_order(self, result_ds: xr.Dataset) -> xr.Dataset:
+        if self._coord_name not in result_ds.dims:
+            return result_ds
+        if self._coord_name in self._data_full.coords:
+            source_coord = np.asarray(self._data_full.coords[self._coord_name].values)
+        else:
+            source_coord = np.arange(self._data_full.sizes[self._coord_name])
+        result_coord = np.asarray(result_ds.get_index(self._coord_name).values)
+        ordered = source_coord[np.isin(source_coord, result_coord)]
+        if ordered.size != result_coord.size:
+            return result_ds
+        return result_ds.reindex({self._coord_name: ordered})
+
+    def _selected_fit_ranges(self) -> list[tuple[float, float]] | None:
+        results = self._result_ds_full[self._y_range_slice()]
+        if not results or any(result_ds is None for result_ds in results):
+            return None
+        return [
+            self._fit_result_range(typing.cast("xr.Dataset", result_ds))
+            for result_ds in results
+        ]
+
+    @staticmethod
+    def _common_fit_range(
+        fit_ranges: list[tuple[float, float]],
+    ) -> tuple[float, float] | None:
+        if not fit_ranges:
+            return None
+        first = fit_ranges[0]
+        if all(np.allclose(fit_range, first) for fit_range in fit_ranges[1:]):
+            return first
+        return None
+
+    @staticmethod
+    def _canonical_fit_range(
+        fit_range: tuple[float, float],
+    ) -> tuple[float, float]:
+        first, second = fit_range
+        return min(first, second), max(first, second)
+
+    def _fit_range_is_full(self, fit_range: tuple[float, float]) -> bool:
+        return bool(np.allclose(fit_range, self._data_fit_range(self._data_full)))
+
+    def _fit_range_slice(self, fit_range: tuple[float, float]) -> slice:
+        fit_min, fit_max = fit_range
+        x_values = self._x_values()
+        if x_values[-1] < x_values[0]:
+            return slice(fit_max, fit_min)
+        return slice(fit_min, fit_max)
+
     def _sync_fit_result_state(self, *, notify: bool = True) -> None:
+        if self._last_result_ds is not None:
+            self._last_result_ds = self._fit_result_with_range(self._last_result_ds)
         self._params_full[self._current_idx] = self._params
         self._params_from_coord_full[self._current_idx] = self._params_from_coord
         self._result_ds_full[self._current_idx] = self._last_result_ds
@@ -1676,6 +1818,7 @@ class Fit2DTool(Fit1DTool):
         slice_states: list[tuple[_FitRestoreState, xr.Dataset]] = []
         for idx in range(results_da.sizes[y_dim]):
             slice_ds = fit_ds.isel({y_dim: idx}).copy()
+            slice_ds = self._trim_fit_result_to_range(slice_ds)
             restore = self._parse_fit_dataset_for_restore(slice_ds, model=model)
             if restore.data.ndim != 1:
                 raise ValueError(
@@ -1725,7 +1868,9 @@ class Fit2DTool(Fit1DTool):
             )
             return ds
         saved_results = [
-            result_ds.expand_dims({self._PERSISTED_FIT_INDEX_DIM: [idx]})
+            self._fit_result_with_range(result_ds).expand_dims(
+                {self._PERSISTED_FIT_INDEX_DIM: [idx]}
+            )
             for idx, result_ds in enumerate(self._result_ds_full)
             if result_ds is not None
         ]
@@ -1737,9 +1882,10 @@ class Fit2DTool(Fit1DTool):
             data_vars="all",
             coords="all",
             compat="override",
-            join="override",
+            join="outer",
             combine_attrs="override",
         )
+        sparse = self._restore_fit_coord_order(sparse)
         ds = ds.copy()
         ds[self._PERSISTED_FIT_RESULT_VAR] = xr.DataArray(
             erlab.interactive.utils._serialize_fit_dataset_blob(sparse),
@@ -1759,9 +1905,9 @@ class Fit2DTool(Fit1DTool):
         for i, index in enumerate(sparse[self._PERSISTED_FIT_INDEX_DIM].values):
             idx = int(index)
             if 0 <= idx < y_size:
-                result_ds = sparse.isel(
-                    {self._PERSISTED_FIT_INDEX_DIM: i}, drop=True
-                ).copy()
+                result_ds = sparse.isel({self._PERSISTED_FIT_INDEX_DIM: i}).drop_vars(
+                    self._PERSISTED_FIT_INDEX_DIM
+                )
                 if self._y_dim_name in self._data_full.coords:
                     result_ds = result_ds.assign_coords(
                         {
@@ -1770,6 +1916,7 @@ class Fit2DTool(Fit1DTool):
                             ].isel({self._y_dim_name: idx})
                         }
                     )
+                result_ds = self._trim_fit_result_to_range(result_ds)
                 self._result_ds_full[idx] = result_ds
         self._refresh_contents_from_index(mark_fit_stale=not fit_is_current)
         self._update_param_plot_options()
@@ -2026,7 +2173,7 @@ class Fit2DTool(Fit1DTool):
     def _store_fit_2d_sequence_result(
         self, idx: int, result_ds: xr.Dataset, t0: float
     ) -> lmfit.model.ModelResult:
-        self._last_result_ds = result_ds.copy()
+        self._last_result_ds = self._fit_result_with_range(result_ds.copy())
         result = self._last_result_ds.modelfit_results.compute().item()
         self._params = result.params.copy()
         self._result_ds_full[idx] = self._last_result_ds
@@ -2212,17 +2359,18 @@ class Fit2DTool(Fit1DTool):
                     "in the range before saving the full fit.",
                 )
                 return
-            results.append(ds)
+            results.append(self._fit_result_with_range(ds))
         with erlab.interactive.utils.wait_dialog(self, "Combining fit results..."):
             full_ds = xr.concat(
                 results,
                 dim=self._y_dim_name,
                 data_vars="all",
-                coords="minimal",
+                coords="all",
                 compat="override",
-                join="override",
+                join="outer",
                 combine_attrs="override",
             )
+            full_ds = self._restore_fit_coord_order(full_ds)
         erlab.interactive.utils.save_fit_ui(full_ds, parent=self)
 
     def _full_fit_parameter_specs(
@@ -2381,19 +2529,68 @@ class Fit2DTool(Fit1DTool):
                 {self._y_dim_name: self._y_range_slice()}
             )
 
-        fit_domain = self._fit_domain()
-        if fit_domain is not None:
-            sel_kw = erlab.interactive.utils.format_kwargs(
-                {self._coord_name: slice(*fit_domain)}
-            )
+        fit_ranges = self._selected_fit_ranges()
+        common_fit_range = (
+            self._common_fit_range(fit_ranges) if fit_ranges is not None else None
+        )
+
+        if fit_ranges is not None and common_fit_range is None:
+            crop_name = f"{data_name}_crop"
+            range_name = f"{data_name}_fit_range"
+            fit_name = f"{data_name}_fit"
+            bound_dim = "bound"
+            if bound_dim in self._data_full.dims:
+                bound_dim = "fit_range_bound"
+                suffix = 2
+                while bound_dim in self._data_full.dims:
+                    bound_dim = f"fit_range_bound_{suffix}"
+                    suffix += 1
             if lines is not None:
-                lines.append(
-                    f"{data_name}_crop = {data_name}.sel({sel_kw}).isel({isel_kw})"
+                lines.append(f"{crop_name} = {data_name}.isel({isel_kw})")
+                lines.extend((f"{range_name} = xr.DataArray(", "    ["))
+                for fit_min, fit_max in fit_ranges:
+                    lines.append(f"        [{fit_min!r}, {fit_max!r}],")
+                lines.extend(
+                    (
+                        "    ],",
+                        "    coords={",
+                        f"        {self._y_dim_name!r}: "
+                        f"{crop_name}[{self._y_dim_name!r}],",
+                        f'        {bound_dim!r}: ["min", "max"],',
+                        "    },",
+                        f"    dims=({self._y_dim_name!r}, {bound_dim!r}),",
+                        ")",
+                        f"{fit_name} = {crop_name}.where(",
+                        f"    ({crop_name}[{self._coord_name!r}] >= "
+                        f'{range_name}.sel({bound_dim}="min"))',
+                        f"    & ({crop_name}[{self._coord_name!r}] <= "
+                        f'{range_name}.sel({bound_dim}="max"))',
+                        ")",
+                    )
                 )
+            data_name = fit_name
         else:
-            if lines is not None:
-                lines.append(f"{data_name}_crop = {data_name}.isel({isel_kw})")
-        data_name = f"{data_name}_crop"
+            if common_fit_range is None:
+                fit_domain = self._fit_domain()
+                common_fit_range = (
+                    self._data_fit_range(self._data_full)
+                    if fit_domain is None
+                    else self._canonical_fit_range(fit_domain)
+                )
+
+            if self._fit_range_is_full(common_fit_range):
+                if lines is not None:
+                    lines.append(f"{data_name}_crop = {data_name}.isel({isel_kw})")
+            else:
+                fit_slice = self._fit_range_slice(common_fit_range)
+                sel_kw = erlab.interactive.utils.format_kwargs(
+                    {self._coord_name: fit_slice}
+                )
+                if lines is not None:
+                    lines.append(
+                        f"{data_name}_crop = {data_name}.sel({sel_kw}).isel({isel_kw})"
+                    )
+            data_name = f"{data_name}_crop"
 
         if self.normalize_check.isChecked():
             if lines is not None:
@@ -2404,6 +2601,12 @@ class Fit2DTool(Fit1DTool):
             data_name = f"{data_name}_norm"
 
         return data_name
+
+    def _recorded_common_fit_range(self) -> tuple[float, float] | None:
+        fit_ranges = self._selected_fit_ranges()
+        if fit_ranges is None:
+            return self._current_fit_range()
+        return self._common_fit_range(fit_ranges)
 
     def _full_fit_expression(
         self,
@@ -2550,6 +2753,9 @@ class Fit2DTool(Fit1DTool):
         parameters = self._full_fit_parameter_specs(warn=False)
         if parameters is None:
             return None
+        fit_ranges = self._selected_fit_ranges()
+        if fit_ranges is not None and self._common_fit_range(fit_ranges) is None:
+            return None
         registry = self._model_option_registry()
         model_kwargs = (
             registry[model_choice]["kwargs"]() if model_choice in registry else {}
@@ -2612,10 +2818,12 @@ class Fit2DTool(Fit1DTool):
         assign = "parameter_stderr" if stderr else "parameter_values"
         if model_fit is not None:
             operations: list[ToolProvenanceOperation] = []
-            fit_domain = self._fit_domain()
-            if fit_domain is not None:
+            fit_range = self._recorded_common_fit_range()
+            if fit_range is not None and not self._fit_range_is_full(fit_range):
                 operations.append(
-                    SelOperation(kwargs={self._coord_name: slice(*fit_domain)})
+                    SelOperation(
+                        kwargs={self._coord_name: self._fit_range_slice(fit_range)}
+                    )
                 )
             operations.extend(
                 (
