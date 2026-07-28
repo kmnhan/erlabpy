@@ -359,6 +359,30 @@ def test_leading_edge_ignores_nan_samples() -> None:
     assert np.isnan(out.sel(idx=1).item())
 
 
+def test_leading_edge_ignores_infinite_intensity_in_maximum() -> None:
+    eV = np.linspace(-1.0, 1.0, 401)
+    edge = 0.2
+    values = 1.0 / (1.0 + np.exp((eV - edge) / 0.03))
+    values[-1] = np.inf
+    darr = xr.DataArray(values, dims=("eV",), coords={"eV": eV})
+
+    out = leading_edge(darr)
+
+    assert float(out) == pytest.approx(edge, abs=1e-3)
+
+
+def test_leading_edge_ignores_intensity_at_nonfinite_coordinate() -> None:
+    eV = np.linspace(-1.0, 1.0, 401)
+    edge = 0.2
+    values = 1.0 / (1.0 + np.exp((eV - edge) / 0.03))
+    eV[0] = np.nan
+    darr = xr.DataArray(values, dims=("eV",), coords={"eV": eV})
+
+    out = leading_edge(darr)
+
+    assert float(out) == pytest.approx(edge, abs=1e-3)
+
+
 def test_leading_edge_reduces_spline_degree_for_sparse_curve() -> None:
     eV = np.array([0.0, 1.0, 2.0, 3.0])
     values = np.array([1.0, np.nan, np.nan, 0.0])
@@ -376,13 +400,13 @@ def test_leading_edge_insufficient_finite_values_handle_failure(on_failure) -> N
 
     if on_failure == "nan":
         out = erlab.analysis.interpolate._minimize_func(
-            values, coord, "positive", on_failure
+            values, coord, 0.0, "positive", on_failure
         )
         assert np.isnan(out)
     else:
         with pytest.raises(ValueError, match="at least two finite"):
             erlab.analysis.interpolate._minimize_func(
-                values, coord, "positive", on_failure
+                values, coord, 0.0, "positive", on_failure
             )
 
 
@@ -393,13 +417,13 @@ def test_leading_edge_spline_errors_handle_failure(on_failure) -> None:
 
     if on_failure == "nan":
         out = erlab.analysis.interpolate._minimize_func(
-            values, coord, "positive", on_failure
+            values, coord, 0.0, "positive", on_failure
         )
         assert np.isnan(out)
     else:
         with pytest.raises(ValueError, match="duplicates"):
             erlab.analysis.interpolate._minimize_func(
-                values, coord, "positive", on_failure
+                values, coord, 0.0, "positive", on_failure
             )
 
 
@@ -407,7 +431,9 @@ def test_leading_edge_zero_peak_returns_peak_coord() -> None:
     coord = np.array([0.0, 1.0, 2.0, 3.0])
     values = np.array([0.0, -1.0, -1.0, -1.0])
 
-    out = erlab.analysis.interpolate._minimize_func(values, coord, "positive", "raise")
+    out = erlab.analysis.interpolate._minimize_func(
+        values, coord, 0.0, "positive", "raise"
+    )
 
     assert out == 0.0
 
@@ -416,7 +442,9 @@ def test_leading_edge_zero_endpoint_returns_endpoint() -> None:
     coord = np.array([0.0, 1.0, 2.0, 3.0])
     values = np.array([1.0, 0.5, 0.2, 0.0])
 
-    out = erlab.analysis.interpolate._minimize_func(values, coord, "positive", "raise")
+    out = erlab.analysis.interpolate._minimize_func(
+        values, coord, 0.0, "positive", "raise"
+    )
 
     assert out == 3.0
 
@@ -428,13 +456,13 @@ def test_leading_edge_zero_peak_and_endpoint_handle_failure(on_failure) -> None:
 
     if on_failure == "nan":
         out = erlab.analysis.interpolate._minimize_func(
-            values, coord, "positive", on_failure
+            values, coord, 0.0, "positive", on_failure
         )
         assert np.isnan(out)
     else:
         with pytest.raises(ValueError, match="single crossing"):
             erlab.analysis.interpolate._minimize_func(
-                values, coord, "positive", on_failure
+                values, coord, 0.0, "positive", on_failure
             )
 
 
@@ -451,13 +479,13 @@ def test_leading_edge_root_solver_errors_handle_failure(
 
     if on_failure == "nan":
         out = erlab.analysis.interpolate._minimize_func(
-            values, coord, "positive", on_failure
+            values, coord, 0.0, "positive", on_failure
         )
         assert np.isnan(out)
     else:
         with pytest.raises(ValueError, match="solver failed"):
             erlab.analysis.interpolate._minimize_func(
-                values, coord, "positive", on_failure
+                values, coord, 0.0, "positive", on_failure
             )
 
 

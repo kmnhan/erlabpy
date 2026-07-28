@@ -551,6 +551,7 @@ def slice_along_vector(
 def _minimize_func(
     edc_values: npt.NDArray,
     coord: npt.NDArray,
+    fraction: float,
     direction: typing.Literal["positive", "negative"],
     on_failure: typing.Literal["nan", "raise"],
 ) -> float:
@@ -568,6 +569,7 @@ def _minimize_func(
     order = np.argsort(coord)
     coord = coord[order]
     edc_values = edc_values[order]
+    edc_values = edc_values - np.max(edc_values) * fraction
 
     try:
         spl = scipy.interpolate.make_interp_spline(
@@ -659,17 +661,16 @@ def leading_edge(
     if on_failure not in {"nan", "raise"}:
         raise ValueError("on_failure must be 'nan' or 'raise'")
 
-    half_max = darr.max(dim=[dim]) * fraction
-
     return xr.apply_ufunc(
         _minimize_func,
-        darr - half_max,
+        darr,
         input_core_dims=[[dim]],
         dask="parallelized",
         output_dtypes=[float],
         vectorize=True,
         kwargs={
             "coord": darr[dim].values,
+            "fraction": fraction,
             "direction": direction,
             "on_failure": on_failure,
         },
