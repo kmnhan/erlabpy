@@ -5,6 +5,10 @@ import sys
 
 from qtpy import QtCore
 
+_NUMBA_CACHE_LOCATOR = (
+    "erlab.interactive.imagetool._frozen_numba_cache.PyInstallerCacheLocator"
+)
+
 
 def _cache_directory() -> pathlib.Path:
     location = QtCore.QStandardPaths.writableLocation(
@@ -36,6 +40,15 @@ def _configure_packaged_runtime_caches() -> None:
     if not (getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")):
         return
     os.environ["MPLCONFIGDIR"] = str(_mpl_cache_directory())
+    if sys.platform == "win32":
+        # PyInstaller's relative module filenames make Numba 0.66 cache hashes
+        # depend on the launch working directory. Select a frozen-app locator
+        # that stabilizes only that identity; Numba still chooses the cache root.
+        locator = os.environ.setdefault(
+            "NUMBA_CACHE_LOCATOR_CLASSES", _NUMBA_CACHE_LOCATOR
+        )
+        if numba_config := sys.modules.get("numba.core.config"):
+            numba_config.__dict__["CACHE_LOCATOR_CLASSES"] = locator
     pycache_dir = _pycache_directory()
     os.environ["PYTHONPYCACHEPREFIX"] = str(pycache_dir)
     sys.pycache_prefix = str(pycache_dir)

@@ -14,6 +14,8 @@ import typing
 import webbrowser
 from collections.abc import Callable
 
+import numba.core.caching
+import numba.core.config
 import pytest
 import xarray as xr
 import zmq
@@ -28,6 +30,7 @@ import erlab.interactive.imagetool.manager._updater_gui as manager_updater_gui
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
+from erlab.interactive.imagetool._frozen_numba_cache import PyInstallerCacheLocator
 from erlab.interactive.imagetool.manager import load_in_manager
 from erlab.interactive.imagetool.manager._server import (
     AddDataPacket,
@@ -192,6 +195,7 @@ def test_manager_main_configure_packaged_runtime_caches_skips_source_launch(
 ) -> None:
     monkeypatch.delenv("MPLCONFIGDIR", raising=False)
     monkeypatch.delenv("NUMBA_CACHE_DIR", raising=False)
+    monkeypatch.delenv("NUMBA_CACHE_LOCATOR_CLASSES", raising=False)
     monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
     monkeypatch.setattr(manager_main.sys, "frozen", True, raising=False)
     monkeypatch.delattr(manager_main.sys, "_MEIPASS", raising=False)
@@ -206,6 +210,7 @@ def test_manager_main_configure_packaged_runtime_caches_skips_source_launch(
 
     assert "MPLCONFIGDIR" not in os.environ
     assert "NUMBA_CACHE_DIR" not in os.environ
+    assert "NUMBA_CACHE_LOCATOR_CLASSES" not in os.environ
     assert "PYTHONPYCACHEPREFIX" not in os.environ
     assert manager_main.sys.pycache_prefix is None
 
@@ -216,13 +221,20 @@ def test_manager_main_configure_packaged_runtime_caches_sets_packaged_env(
     cache_root = tmp_path / "cache-root"
     monkeypatch.delenv("MPLCONFIGDIR", raising=False)
     monkeypatch.delenv("NUMBA_CACHE_DIR", raising=False)
+    monkeypatch.delenv("NUMBA_CACHE_LOCATOR_CLASSES", raising=False)
     monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
     monkeypatch.setattr(manager_main.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(manager_main.sys, "platform", "win32")
     monkeypatch.setattr(
         manager_main.sys, "_MEIPASS", str(tmp_path / "_MEI"), raising=False
     )
     monkeypatch.setattr(manager_main.sys, "pycache_prefix", None)
     monkeypatch.setattr(manager_main.sys, "dont_write_bytecode", True)
+    fake_numba_config = types.ModuleType("numba.core.config")
+    fake_numba_config.CACHE_LOCATOR_CLASSES = ""
+    monkeypatch.setitem(
+        manager_main.sys.modules, "numba.core.config", fake_numba_config
+    )
     monkeypatch.setattr(
         manager_main.QtCore.QStandardPaths,
         "writableLocation",
@@ -236,11 +248,279 @@ def test_manager_main_configure_packaged_runtime_caches_sets_packaged_env(
     pycache_dir = cache_dir / "python-pycache"
     assert os.environ["MPLCONFIGDIR"] == str(mpl_cache_dir)
     assert "NUMBA_CACHE_DIR" not in os.environ
+    assert (
+        os.environ["NUMBA_CACHE_LOCATOR_CLASSES"] == manager_main._NUMBA_CACHE_LOCATOR
+    )
+    assert fake_numba_config.CACHE_LOCATOR_CLASSES == manager_main._NUMBA_CACHE_LOCATOR
     assert os.environ["PYTHONPYCACHEPREFIX"] == str(pycache_dir)
     assert manager_main.sys.pycache_prefix == str(pycache_dir)
     assert manager_main.sys.dont_write_bytecode is False
     assert mpl_cache_dir.is_dir()
     assert pycache_dir.is_dir()
+
+
+def test_manager_main_packaged_numba_locator_is_windows_only(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("NUMBA_CACHE_LOCATOR_CLASSES", raising=False)
+    monkeypatch.setattr(manager_main.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(manager_main.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        manager_main.sys, "_MEIPASS", str(tmp_path / "_MEI"), raising=False
+    )
+    monkeypatch.setattr(
+        manager_main.QtCore.QStandardPaths,
+        "writableLocation",
+        lambda location: str(tmp_path / "cache-root"),
+    )
+
+    manager_main._configure_packaged_runtime_caches()
+
+    assert "NUMBA_CACHE_LOCATOR_CLASSES" not in os.environ
+
+
+def test_packaged_numba_cache_locator_stabilizes_relative_paths(
+    tmp_path, monkeypatch
+) -> None:
+    executable = tmp_path / "ImageTool Manager.exe"
+    executable.touch()
+    source_path = pathlib.Path("erlab/interactive/imagetool/fastbinning.py")
+    first_cwd = tmp_path / "first"
+    second_cwd = tmp_path / "second"
+    first_cwd.mkdir()
+    second_cwd.mkdir()
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "_MEI"), raising=False)
+    monkeypatch.setattr(numba.core.config, "CACHE_DIR", "")
+    monkeypatch.setattr(
+        numba.core.caching,
+        "AppDirs",
+        lambda *args, **kwargs: types.SimpleNamespace(
+            user_cache_dir=str(tmp_path / "numba-cache")
+        ),
+    )
+
+    def cached_function(value):
+        return value + 1
+
+    monkeypatch.chdir(first_cwd)
+    first_locator = PyInstallerCacheLocator.from_function(
+        cached_function, str(source_path)
+    )
+    monkeypatch.chdir(second_cwd)
+    second_locator = PyInstallerCacheLocator.from_function(
+        cached_function, str(source_path)
+    )
+
+    assert isinstance(first_locator, numba.core.caching.UserWideCacheLocator)
+    assert isinstance(second_locator, numba.core.caching.UserWideCacheLocator)
+    assert first_locator.get_cache_path() == second_locator.get_cache_path()
+
+
+def test_packaged_numba_cache_locator_preserves_external_locator_chain(
+    tmp_path, monkeypatch
+) -> None:
+    extraction_root = tmp_path / "_MEI"
+    external_source = tmp_path / "external" / "module.py"
+    external_source.parent.mkdir()
+    external_source.touch()
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(extraction_root), raising=False)
+    monkeypatch.setattr(numba.core.config, "CACHE_DIR", "")
+
+    def cached_function(value):
+        return value + 1
+
+    locator = PyInstallerCacheLocator.from_function(
+        cached_function, str(external_source)
+    )
+
+    assert type(locator) is numba.core.caching.InTreeCacheLocator
+    assert locator.get_cache_path() == str(external_source.parent / "__pycache__")
+
+
+def test_packaged_numba_cache_locator_delegates_outside_frozen_runtime(
+    tmp_path, monkeypatch
+) -> None:
+    external_source = tmp_path / "external" / "module.py"
+    external_source.parent.mkdir()
+    external_source.touch()
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    monkeypatch.setattr(numba.core.config, "CACHE_DIR", "")
+
+    def cached_function(value):
+        return value + 1
+
+    locator = PyInstallerCacheLocator.from_function(
+        cached_function, str(external_source)
+    )
+
+    assert type(locator) is numba.core.caching.InTreeCacheLocator
+
+
+def test_packaged_numba_cache_locator_honors_configured_cache_directory(
+    tmp_path, monkeypatch
+) -> None:
+    executable = tmp_path / "ImageTool Manager.exe"
+    executable.touch()
+    configured_cache = tmp_path / "configured-numba-cache"
+    source_path = pathlib.Path("erlab/interactive/imagetool/fastbinning.py")
+    first_cwd = tmp_path / "first"
+    second_cwd = tmp_path / "second"
+    first_cwd.mkdir()
+    second_cwd.mkdir()
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "_MEI"), raising=False)
+    monkeypatch.setattr(numba.core.config, "CACHE_DIR", str(configured_cache))
+
+    def cached_function(value):
+        return value + 1
+
+    monkeypatch.chdir(first_cwd)
+    first_locator = PyInstallerCacheLocator.from_function(
+        cached_function, str(source_path)
+    )
+    monkeypatch.chdir(second_cwd)
+    second_locator = PyInstallerCacheLocator.from_function(
+        cached_function, str(source_path)
+    )
+
+    assert isinstance(first_locator, numba.core.caching.UserProvidedCacheLocator)
+    assert isinstance(second_locator, numba.core.caching.UserProvidedCacheLocator)
+    assert pathlib.Path(first_locator.get_cache_path()).parent == configured_cache
+    assert first_locator.get_cache_path() == second_locator.get_cache_path()
+
+
+def test_packaged_numba_cache_locator_falls_back_from_unwritable_configured_cache(
+    tmp_path, monkeypatch
+) -> None:
+    executable = tmp_path / "ImageTool Manager.exe"
+    executable.touch()
+    source_path = pathlib.Path("erlab/interactive/imagetool/fastbinning.py")
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "_MEI"), raising=False)
+    monkeypatch.setattr(
+        numba.core.config, "CACHE_DIR", str(tmp_path / "unwritable-cache")
+    )
+    monkeypatch.setattr(
+        numba.core.caching,
+        "AppDirs",
+        lambda *args, **kwargs: types.SimpleNamespace(
+            user_cache_dir=str(tmp_path / "numba-cache")
+        ),
+    )
+
+    def _raise_oserror(self) -> None:
+        raise OSError
+
+    monkeypatch.setattr(
+        "erlab.interactive.imagetool._frozen_numba_cache."
+        "_PyInstallerUserProvidedCacheLocator.ensure_cache_path",
+        _raise_oserror,
+    )
+
+    def cached_function(value):
+        return value + 1
+
+    locator = PyInstallerCacheLocator.from_function(cached_function, str(source_path))
+
+    assert isinstance(locator, numba.core.caching.UserWideCacheLocator)
+    assert pathlib.Path(locator.get_cache_path()).parent == tmp_path / "numba-cache"
+
+
+def test_packaged_numba_cache_locator_is_loadable_by_numba(
+    tmp_path, monkeypatch
+) -> None:
+    executable = tmp_path / "ImageTool Manager.exe"
+    executable.touch()
+
+    def cached_function(value):
+        return value + 1
+
+    cached_function.__code__ = cached_function.__code__.replace(
+        co_filename="erlab/interactive/imagetool/fastbinning.py"
+    )
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "_MEI"), raising=False)
+    monkeypatch.setattr(numba.core.config, "CACHE_DIR", "")
+    monkeypatch.setattr(
+        numba.core.caching,
+        "AppDirs",
+        lambda *args, **kwargs: types.SimpleNamespace(
+            user_cache_dir=str(tmp_path / "numba-cache")
+        ),
+    )
+    monkeypatch.setattr(
+        numba.core.config,
+        "CACHE_LOCATOR_CLASSES",
+        manager_main._NUMBA_CACHE_LOCATOR,
+    )
+
+    cache = numba.core.caching.FunctionCache(cached_function)
+
+    assert isinstance(cache._impl.locator, numba.core.caching.UserWideCacheLocator)
+    assert (
+        pathlib.Path(cache._impl.locator.get_cache_path()).parent
+        == tmp_path / "numba-cache"
+    )
+
+
+def test_packaged_numba_cache_locator_stabilizes_extraction_roots(
+    tmp_path, monkeypatch
+) -> None:
+    executable = tmp_path / "ImageTool Manager.exe"
+    executable.touch()
+    relative_source = pathlib.Path("erlab/interactive/imagetool/fastbinning.py")
+    first_root = tmp_path / "_MEI-first"
+    second_root = tmp_path / "_MEI-second"
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(numba.core.config, "CACHE_DIR", "")
+    monkeypatch.setattr(
+        numba.core.caching,
+        "AppDirs",
+        lambda *args, **kwargs: types.SimpleNamespace(
+            user_cache_dir=str(tmp_path / "numba-cache")
+        ),
+    )
+
+    def cached_function(value):
+        return value + 1
+
+    monkeypatch.setattr(sys, "_MEIPASS", str(first_root), raising=False)
+    first_locator = PyInstallerCacheLocator.from_function(
+        cached_function, str(first_root / relative_source)
+    )
+    monkeypatch.setattr(sys, "_MEIPASS", str(second_root), raising=False)
+    second_locator = PyInstallerCacheLocator.from_function(
+        cached_function, str(second_root / relative_source)
+    )
+
+    assert isinstance(first_locator, numba.core.caching.UserWideCacheLocator)
+    assert isinstance(second_locator, numba.core.caching.UserWideCacheLocator)
+    assert first_locator.get_cache_path() == second_locator.get_cache_path()
+
+
+def test_packaged_numba_cache_locator_returns_none_without_a_standard_locator(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "_MEI"), raising=False)
+    monkeypatch.setattr(numba.core.config, "CACHE_DIR", "")
+    monkeypatch.setattr(numba.core.caching.CacheImpl, "_locator_classes", ())
+
+    def cached_function(value):
+        return value + 1
+
+    assert (
+        PyInstallerCacheLocator.from_function(cached_function, "<synthetic-source>")
+        is None
+    )
 
 
 def test_manager_reload(
