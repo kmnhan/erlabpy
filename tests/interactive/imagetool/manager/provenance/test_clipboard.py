@@ -1123,6 +1123,68 @@ def test_manager_paste_structured_provenance_steps_into_selected_imagetools(
         assert manager._tool_graph.root_wrappers[index_b].displayed_provenance_spec
 
 
+def test_manager_pasted_scalar_coordinate_offset_uses_each_destination_value(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    operation = AffineCoordOperation(
+        coord_name="eV",
+        scale=1.0,
+        offset=0.0,
+        offset_coord="hv",
+        offset_coord_sign=-1,
+    )
+    kinetic_energy = np.linspace(20.0, 23.0, 4)
+    data_a = xr.DataArray(
+        np.arange(4, dtype=float),
+        dims="eV",
+        coords={"eV": kinetic_energy, "hv": 21.2},
+    )
+    data_b = data_a.assign_coords(hv=40.0)
+
+    with manager_context() as manager:
+        tool_a = itool(data_a.copy(deep=True), manager=False, execute=False)
+        tool_b = itool(data_b.copy(deep=True), manager=False, execute=False)
+        assert isinstance(tool_a, erlab.interactive.imagetool.ImageTool)
+        assert isinstance(tool_b, erlab.interactive.imagetool.ImageTool)
+        index_a = manager.add_imagetool(
+            tool_a,
+            show=False,
+            provenance_spec=full_data(),
+        )
+        index_b = manager.add_imagetool(
+            tool_b,
+            show=False,
+            provenance_spec=full_data(),
+        )
+        _set_provenance_steps_clipboard((operation,))
+
+        select_tools(manager, [index_a, index_b])
+        manager._paste_provenance_steps_from_clipboard()
+
+        np.testing.assert_allclose(
+            tool_a.slicer_area._data.eV.values,
+            kinetic_energy - data_a.hv.item(),
+        )
+        np.testing.assert_allclose(
+            tool_b.slicer_area._data.eV.values,
+            kinetic_energy - data_b.hv.item(),
+        )
+        assert (
+            manager._tool_graph.root_wrappers[
+                index_a
+            ].displayed_provenance_spec.operations[-1]
+            == operation
+        )
+        assert (
+            manager._tool_graph.root_wrappers[
+                index_b
+            ].displayed_provenance_spec.operations[-1]
+            == operation
+        )
+
+
 @pytest.mark.parametrize("target_kind", ["root", "source_child"])
 def test_manager_paste_steps_preserves_nonuniform_public_dimension(
     target_kind: str,

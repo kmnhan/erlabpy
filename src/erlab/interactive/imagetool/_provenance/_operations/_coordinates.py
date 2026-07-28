@@ -107,6 +107,14 @@ class AffineCoordOperation(ToolProvenanceOperation):
     coord_name: str
     scale: float
     offset: float
+    offset_coord: str | None = pydantic.Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    offset_coord_sign: typing.Literal[-1, 1] = pydantic.Field(
+        default=1,
+        exclude_if=lambda value: value == 1,
+    )
 
     @pydantic.field_validator("scale", "offset")
     @classmethod
@@ -115,13 +123,44 @@ class AffineCoordOperation(ToolProvenanceOperation):
             raise ValueError("affine coordinate scale and offset must be finite")
         return value
 
+    @pydantic.model_validator(mode="after")
+    def _validate_offset_coord(self) -> typing.Self:
+        if self.offset_coord == "":
+            raise ValueError("affine offset coordinate name must not be empty")
+        if self.offset_coord is None and self.offset_coord_sign != 1:
+            raise ValueError(
+                "affine offset coordinate sign requires an offset coordinate"
+            )
+        return self
+
+    def _resolved_offset(self, data: xr.DataArray) -> float:
+        offset = float(self.offset)
+        if self.offset_coord is None:
+            return offset
+        if self.offset_coord not in data.coords:
+            raise ValueError(
+                f"Offset coordinate {self.offset_coord!r} is not present in the data."
+            )
+        coord = data.coords[self.offset_coord]
+        values = np.asarray(coord.values)
+        if values.ndim != 0:
+            raise ValueError(f"Offset coordinate {self.offset_coord!r} must be scalar.")
+        if values.dtype.kind not in "iuf":
+            raise ValueError(
+                f"Offset coordinate {self.offset_coord!r} must contain a real number."
+            )
+        value = float(values)
+        if not np.isfinite(value):
+            raise ValueError(f"Offset coordinate {self.offset_coord!r} must be finite.")
+        return offset + self.offset_coord_sign * value
+
     def apply(self, data: xr.DataArray) -> xr.DataArray:
         coord = data.coords[self.coord_name]
         return erlab.utils.array.sort_coord_order(
             data.assign_coords(
                 {
                     self.coord_name: coord.copy(
-                        data=self.scale * coord.values + self.offset
+                        data=self.scale * coord.values + self._resolved_offset(data)
                     )
                 }
             ),
@@ -135,6 +174,9 @@ class AffineCoordOperation(ToolProvenanceOperation):
             "scale": self.scale,
             "offset": self.offset,
         }
+        if self.offset_coord is not None:
+            label_kwargs["offset_coord"] = self.offset_coord
+            label_kwargs["offset_coord_sign"] = self.offset_coord_sign
         return f"Scale/Offset Coordinate({_format_derivation_value(label_kwargs)})"
 
     def expression_code(
@@ -154,6 +196,13 @@ class AffineCoordOperation(ToolProvenanceOperation):
         elif offset < 0.0:
             offset_code = erlab.interactive.utils._parse_single_arg(abs(offset))
             data_code = f"{data_code} - {offset_code}"
+        if self.offset_coord is not None:
+            offset_coord_code = repr(self.offset_coord)
+            scalar_offset_code = f"{input_name}[{offset_coord_code}].values.item()"
+            if self.offset_coord_sign == 1:
+                data_code = f"{data_code} + {scalar_offset_code}"
+            else:
+                data_code = f"{data_code} - {scalar_offset_code}"
         return (
             f"{input_name}.assign_coords({{{coord_name_code}: "
             f"{input_name}[{coord_name_code}].copy(data={data_code})}})"

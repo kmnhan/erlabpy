@@ -55,6 +55,7 @@ from erlab.interactive.imagetool._provenance._model import (
     selection,
 )
 from erlab.interactive.imagetool._provenance._operations import (
+    AffineCoordOperation,
     AssignAttrsOperation,
     AssignScalarCoordOperation,
     ImageDerivativeOperation,
@@ -4011,6 +4012,55 @@ def test_batch_sortby_transform_replace(
             xarray.testing.assert_identical(
                 manager.get_imagetool(index).slicer_area._data.rename(None),
                 expected_data.rename(None),
+            )
+
+
+def test_batch_affine_coord_offset_uses_each_scalar_coordinate(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    kinetic_energy = np.linspace(20.0, 23.0, 4)
+    data0 = _batch_data("scan0", dims=("x", "eV")).assign_coords(
+        eV=kinetic_energy,
+        hv=21.2,
+    )
+    data1 = _batch_data("scan1", dims=("x", "eV"), offset=100.0).assign_coords(
+        eV=kinetic_energy,
+        hv=40.0,
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, data0, data1)
+        select_tools(manager, [0, 1])
+
+        dialog = imagetool_dialogs.AssignCoordsDialog(
+            manager.get_imagetool(0).slicer_area,
+            batch_manager=manager,
+        )
+        dialog._coord_combo.setCurrentText("eV")
+        dialog.coord_widget.edit_mode_tabs.setCurrentIndex(1)
+        dialog.coord_widget.offset_coord_combo.setCurrentIndex(
+            dialog.coord_widget.offset_coord_combo.findData("hv")
+        )
+        dialog.coord_widget.offset_coord_sign_combo.setCurrentIndex(
+            dialog.coord_widget.offset_coord_sign_combo.findData(-1)
+        )
+
+        assert manager.apply_batch_transform_dialog(dialog, "replace")
+        operation = AffineCoordOperation(
+            coord_name="eV",
+            scale=1.0,
+            offset=0.0,
+            offset_coord="hv",
+            offset_coord_sign=-1,
+        )
+        for index, data in enumerate((data0, data1)):
+            xarray.testing.assert_identical(
+                manager.get_imagetool(index).slicer_area._data.rename(None),
+                operation.apply(data).rename(None),
             )
 
 

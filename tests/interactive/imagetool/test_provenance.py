@@ -2278,6 +2278,121 @@ def test_tool_provenance_affine_coord_display_code_formats_no_ops(
     )
 
 
+def test_tool_provenance_affine_coord_uses_scalar_coordinate_offset() -> None:
+    data = _base_data().assign_coords(hv=21.2)
+    operation = AffineCoordOperation(
+        coord_name="y",
+        scale=1.0,
+        offset=0.5,
+        offset_coord="hv",
+        offset_coord_sign=-1,
+    )
+
+    expected = data.assign_coords(
+        {"y": data.y.copy(data=data.y.values + 0.5 - data.hv.item())}
+    )
+    xr.testing.assert_identical(operation.apply(data), expected)
+
+    parsed = parse_tool_provenance_operation(operation.model_dump(mode="json"))
+    assert parsed == operation
+    legacy_payload = AffineCoordOperation(
+        coord_name="y",
+        scale=1.0,
+        offset=0.0,
+    ).model_dump(mode="json")
+    assert not {"offset_coord", "offset_coord_sign"} & legacy_payload.keys()
+
+    code = full_data(operation).to_replay_spec().display_code(parent_data=data)
+    assert code is not None
+    destination = data.assign_coords(hv=40.0)
+    namespace = _exec_generated_code(code, {"data": destination.copy(deep=True)})
+    xr.testing.assert_identical(
+        namespace["derived"],
+        destination.assign_coords(
+            {
+                "y": destination.y.copy(
+                    data=destination.y.values + 0.5 - destination.hv.item()
+                )
+            }
+        ),
+    )
+
+
+def test_tool_provenance_affine_coord_lazy_scalar_offset_code() -> None:
+    import dask.array as da
+
+    data = _base_data().assign_coords(
+        hv=xr.DataArray(da.from_array(np.array(40.0), chunks=()))
+    )
+    operation = AffineCoordOperation(
+        coord_name="y",
+        scale=1.0,
+        offset=0.5,
+        offset_coord="hv",
+        offset_coord_sign=-1,
+    )
+
+    code = full_data(operation).to_replay_spec().display_code(parent_data=data)
+    assert code is not None
+    namespace = _exec_generated_code(code, {"data": data})
+    xr.testing.assert_identical(
+        namespace["derived"],
+        data.assign_coords(
+            {"y": data.y.copy(data=data.y.values + 0.5 - data.hv.values.item())}
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("data", "error"),
+    [
+        (_base_data(), "is not present"),
+        (
+            _base_data().assign_coords(hv=("x", [20.0, 21.0, 22.0])),
+            "must be scalar",
+        ),
+        (_base_data().assign_coords(hv="21.2"), "must contain a real number"),
+        (_base_data().assign_coords(hv=21.2 + 0.0j), "must contain a real number"),
+        (
+            _base_data().assign_coords(hv=np.timedelta64(1, "s")),
+            "must contain a real number",
+        ),
+        (_base_data().assign_coords(hv=np.nan), "must be finite"),
+    ],
+)
+def test_tool_provenance_affine_coord_rejects_invalid_scalar_coordinate_offset(
+    data: xr.DataArray,
+    error: str,
+) -> None:
+    operation = AffineCoordOperation(
+        coord_name="y",
+        scale=1.0,
+        offset=0.0,
+        offset_coord="hv",
+    )
+    with pytest.raises(ValueError, match=error):
+        operation.apply(data)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"offset_coord": ""},
+        {"offset_coord_sign": -1},
+    ],
+)
+def test_tool_provenance_affine_coord_rejects_invalid_offset_reference(
+    kwargs: dict[str, typing.Any],
+) -> None:
+    with pytest.raises(ValidationError):
+        AffineCoordOperation(
+            coord_name="y",
+            scale=1.0,
+            offset=0.0,
+            **kwargs,
+        )
+
+
 @pytest.mark.parametrize(
     ("scale", "offset"),
     [

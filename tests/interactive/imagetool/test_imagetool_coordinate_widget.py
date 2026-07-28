@@ -157,6 +157,7 @@ def test_coordinate_widget_affine_identity(qtbot):
     assert widget.affine_offset == 0.0
     assert np.allclose(widget.affine_coord, arr)
     assert np.allclose(_affine_preview_values(widget), arr)
+    assert widget.scalar_offset_widget.isHidden()
 
 
 def test_coordinate_widget_affine_scale_offset(qtbot):
@@ -202,6 +203,40 @@ def test_coordinate_widget_affine_offset_only(qtbot):
     widget.edit_mode_tabs.setCurrentIndex(1)
     widget.offset_spin.setValue(3.0)
     assert np.allclose(widget.affine_coord, [4.0, 5.0, 7.0])
+
+
+def test_coordinate_widget_affine_scalar_coordinate_offset(qtbot):
+    arr = np.array([20.0, 21.0, 22.0])
+    widget = CoordinateEditorWidget(arr, scalar_coords={"hv": 21.2})
+    qtbot.addWidget(widget)
+    widget.edit_mode_tabs.setCurrentIndex(1)
+    assert not widget.scalar_offset_widget.isHidden()
+    widget.offset_spin.setValue(0.5)
+    widget.offset_coord_combo.setCurrentIndex(widget.offset_coord_combo.findData("hv"))
+    widget.offset_coord_sign_combo.setCurrentIndex(
+        widget.offset_coord_sign_combo.findData(-1)
+    )
+
+    assert widget.affine_offset_coord == "hv"
+    assert widget.affine_offset_coord_sign == -1
+    np.testing.assert_allclose(widget.affine_coord, arr + 0.5 - 21.2)
+    np.testing.assert_allclose(_affine_preview_values(widget), arr + 0.5 - 21.2)
+
+    widget.offset_coord_combo.setCurrentIndex(widget.offset_coord_combo.findData(None))
+    assert widget.affine_offset_coord is None
+    assert widget.affine_offset_coord_sign == 1
+    assert not widget.offset_coord_sign_combo.isEnabled()
+    np.testing.assert_allclose(widget.affine_coord, arr + 0.5)
+
+    widget.offset_coord_combo.setCurrentIndex(widget.offset_coord_combo.findData("hv"))
+    widget.offset_coord_sign_combo.setCurrentIndex(
+        widget.offset_coord_sign_combo.findData(-1)
+    )
+    widget.reset()
+    assert widget.affine_offset_coord is None
+    assert widget.affine_offset_coord_sign == 1
+    assert not widget.offset_coord_sign_combo.isEnabled()
+    np.testing.assert_allclose(widget.affine_coord, arr)
 
 
 def test_coordinate_widget_affine_reset(qtbot):

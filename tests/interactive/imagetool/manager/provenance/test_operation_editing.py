@@ -516,12 +516,18 @@ def test_manager_affine_coord_edit_opens_without_replay(
     base = xr.DataArray(
         np.arange(6, dtype=float).reshape((2, 3)),
         dims=("x", "y"),
-        coords={"x": [0.0, 1.0], "y": [10.0, 20.0, 30.0]},
+        coords={
+            "x": [0.0, 1.0],
+            "y": [10.0, 20.0, 30.0],
+            "hv": 21.2,
+        },
     )
     operation = AffineCoordOperation(
         coord_name="y",
         scale=2.0,
         offset=0.5,
+        offset_coord="hv",
+        offset_coord_sign=-1,
     )
     current = operation.apply(base)
     spec = _manager_replay_file_spec(tmp_path / "source.h5", operation)
@@ -540,6 +546,8 @@ def test_manager_affine_coord_edit_opens_without_replay(
         captured["coord_name"] = dialog.current_coord_name
         captured["scale"] = float(dialog.coord_widget.scale_spin.value())
         captured["offset"] = float(dialog.coord_widget.offset_spin.value())
+        captured["offset_coord"] = dialog.coord_widget.affine_offset_coord
+        captured["offset_coord_sign"] = dialog.coord_widget.affine_offset_coord_sign
         captured["reference_coord"] = dialog.coord_widget._old_coord.copy()
         captured["dialog_coord"] = dialog.slicer_area.data["y"].values.copy()
         return int(QtWidgets.QDialog.DialogCode.Rejected)
@@ -572,6 +580,8 @@ def test_manager_affine_coord_edit_opens_without_replay(
     assert captured["coord_name"] == "y"
     assert captured["scale"] == 2.0
     assert captured["offset"] == 0.5
+    assert captured["offset_coord"] == "hv"
+    assert captured["offset_coord_sign"] == -1
     np.testing.assert_allclose(captured["reference_coord"], base.y.values)
     np.testing.assert_allclose(captured["dialog_coord"], base.y.values)
 
@@ -697,6 +707,22 @@ def test_manager_affine_coord_edit_accept_still_replays_for_validation(
                 coords={"x": [0.0, 1.0], "y": [10.0, 20.0, 30.0]},
             ),
             id="missing-coordinate",
+        ),
+        pytest.param(
+            (
+                AffineCoordOperation(
+                    coord_name="y",
+                    scale=2.0,
+                    offset=0.5,
+                    offset_coord="y",
+                ),
+            ),
+            xr.DataArray(
+                np.arange(6, dtype=float).reshape((2, 3)),
+                dims=("x", "y"),
+                coords={"x": [0.0, 1.0], "y": [10.0, 20.0, 30.0]},
+            ),
+            id="self-referential-offset-coordinate",
         ),
     ],
 )
