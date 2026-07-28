@@ -5179,6 +5179,17 @@ class AssignCoordsDialog(DataTransformDialog):
         self._mode_tabs = QtWidgets.QTabWidget(self)
         self.layout_.addRow(self._mode_tabs)
 
+        scalar_coords: dict[str, float] = {}
+        for name, coord in self.slicer_area.data.coords.items():
+            values = np.asarray(coord.values)
+            if (
+                values.ndim == 0
+                and np.issubdtype(values.dtype, np.number)
+                and not np.issubdtype(values.dtype, np.complexfloating)
+                and np.isfinite(values).item()
+            ):
+                scalar_coords[str(name)] = float(values)
+
         existing_widget = QtWidgets.QWidget(self)
         existing_layout = QtWidgets.QVBoxLayout(existing_widget)
 
@@ -5194,7 +5205,10 @@ class AssignCoordsDialog(DataTransformDialog):
 
         self._coord_combo.currentTextChanged.connect(self._coord_selection_changed)
 
-        self.coord_widget = CoordinateEditorWidget(np.array([0, 1]))
+        self.coord_widget = CoordinateEditorWidget(
+            np.array([0, 1]),
+            scalar_coords=scalar_coords,
+        )
         self._coord_selection_changed()
         existing_layout.addWidget(self.coord_widget)
         self._mode_tabs.addTab(existing_widget, "Edit Existing")
@@ -5385,6 +5399,8 @@ class AssignCoordsDialog(DataTransformDialog):
                 coord_name=self.current_coord_name,
                 scale=self.coord_widget.affine_scale,
                 offset=self.coord_widget.affine_offset,
+                offset_coord=self.coord_widget.affine_offset_coord,
+                offset_coord_sign=self.coord_widget.affine_offset_coord_sign,
             )
         return AssignCoordsOperation(
             coord_name=self.current_coord_name,
@@ -5407,6 +5423,18 @@ class AssignCoordsDialog(DataTransformDialog):
             self.coord_widget.edit_mode_tabs.setCurrentIndex(1)
             self.coord_widget.scale_spin.setValue(float(operation.scale))
             self.coord_widget.offset_spin.setValue(float(operation.offset))
+            if operation.offset_coord is not None:
+                if not _set_combo_data(
+                    self.coord_widget.offset_coord_combo,
+                    operation.offset_coord,
+                ):
+                    raise ValueError(
+                        f"Scalar coordinate {operation.offset_coord!r} is not available"
+                    )
+                _set_combo_data(
+                    self.coord_widget.offset_coord_sign_combo,
+                    operation.offset_coord_sign,
+                )
             self.coord_widget.update_affine_preview()
             return
         if isinstance(

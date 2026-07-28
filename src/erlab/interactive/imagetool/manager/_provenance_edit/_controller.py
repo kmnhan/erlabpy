@@ -1700,6 +1700,8 @@ class _ProvenanceEditController:
             return None
         if operation.scale == 0.0:
             return None
+        if operation.offset_coord == operation.coord_name:
+            return None
 
         if dialog_match.stop != len(spec.operations):
             return None
@@ -1713,7 +1715,9 @@ class _ProvenanceEditController:
                 np.complexfloating,
             ):
                 return None
-            old_coord_values = (coord_values - operation.offset) / operation.scale
+            old_coord_values = (
+                coord_values - operation._resolved_offset(data)
+            ) / operation.scale
             if not np.all(np.isfinite(old_coord_values)):
                 return None
             return data.assign_coords(

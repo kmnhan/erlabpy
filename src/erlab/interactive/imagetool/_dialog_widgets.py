@@ -12,6 +12,9 @@ import erlab
 
 __all__ = ["CoordinateEditorWidget", "CoordinateGridWidget"]
 
+if typing.TYPE_CHECKING:
+    from collections.abc import Mapping
+
 
 class CoordinateGridWidget(QtWidgets.QWidget):
     """Edit coordinate values using start/end-or-delta controls and a table.
@@ -277,10 +280,18 @@ class CoordinateEditorWidget(QtWidgets.QWidget):
     values
         Initial reference coordinate values for both the editable value grid and affine
         preview table.
+    scalar_coords
+        Numeric scalar coordinates that can contribute a data-dependent affine offset.
     """
 
-    def __init__(self, values: npt.ArrayLike) -> None:
+    def __init__(
+        self,
+        values: npt.ArrayLike,
+        *,
+        scalar_coords: Mapping[str, float] | None = None,
+    ) -> None:
         super().__init__()
+        self._scalar_coords = dict(scalar_coords or {})
         self.init_ui(values)
         self.set_old_coord(values)
 
@@ -322,6 +333,38 @@ class CoordinateEditorWidget(QtWidgets.QWidget):
         self.offset_spin.valueChanged.connect(self.update_affine_preview)
         affine_layout.addRow("Offset", self.offset_spin)
 
+        self.scalar_offset_widget = QtWidgets.QWidget()
+        scalar_offset_layout = QtWidgets.QHBoxLayout(self.scalar_offset_widget)
+        scalar_offset_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.offset_coord_sign_combo = QtWidgets.QComboBox()
+        self.offset_coord_sign_combo.setObjectName("coordinateOffsetSignCombo")
+        self.offset_coord_sign_combo.addItem("Add", userData=1)
+        self.offset_coord_sign_combo.addItem("Subtract", userData=-1)
+        self.offset_coord_sign_combo.currentIndexChanged.connect(
+            self.update_affine_preview
+        )
+        scalar_offset_layout.addWidget(self.offset_coord_sign_combo)
+
+        self.offset_coord_combo = QtWidgets.QComboBox()
+        self.offset_coord_combo.setObjectName("coordinateOffsetCoordCombo")
+        self.offset_coord_combo.addItem("None", userData=None)
+        for name, value in self._scalar_coords.items():
+            self.offset_coord_combo.addItem(name, userData=name)
+            self.offset_coord_combo.setItemData(
+                self.offset_coord_combo.count() - 1,
+                f"Current value: {value}",
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
+        self.offset_coord_combo.currentIndexChanged.connect(self._offset_coord_changed)
+        scalar_offset_layout.addWidget(self.offset_coord_combo)
+        affine_layout.addRow("Coordinate Offset", self.scalar_offset_widget)
+        if not self._scalar_coords:
+            label = affine_layout.labelForField(self.scalar_offset_widget)
+            if label is not None:
+                label.hide()
+            self.scalar_offset_widget.hide()
+
         self.affine_table = QtWidgets.QTableWidget()
         self.affine_table.setColumnCount(2)
         self.affine_table.setHorizontalHeaderLabels(["Current", "Transformed"])
@@ -357,9 +400,35 @@ class CoordinateEditorWidget(QtWidgets.QWidget):
         return float(self.offset_spin.value())
 
     @property
+    def affine_offset_coord(self) -> str | None:
+        """Get the scalar coordinate used as an additional offset."""
+        coord_name = self.offset_coord_combo.currentData(
+            QtCore.Qt.ItemDataRole.UserRole
+        )
+        return None if coord_name is None else str(coord_name)
+
+    @property
+    def affine_offset_coord_sign(self) -> typing.Literal[-1, 1]:
+        """Get whether the scalar-coordinate offset is added or subtracted."""
+        return typing.cast(
+            "typing.Literal[-1, 1]",
+            self.offset_coord_sign_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+
+    @property
+    def _resolved_affine_offset(self) -> float:
+        offset = self.affine_offset
+        if self.affine_offset_coord is not None:
+            offset += (
+                self.affine_offset_coord_sign
+                * self._scalar_coords[self.affine_offset_coord]
+            )
+        return offset
+
+    @property
     def affine_coord(self) -> npt.NDArray:
         """Get the affine-transformed coordinates as a numpy array."""
-        return self.affine_scale * self._old_coord + self.affine_offset
+        return self.affine_scale * self._old_coord + self._resolved_affine_offset
 
     def _affine_supported(self) -> bool:
         values = np.asarray(self._old_coord)
@@ -378,10 +447,24 @@ class CoordinateEditorWidget(QtWidgets.QWidget):
         with (
             QtCore.QSignalBlocker(self.scale_spin),
             QtCore.QSignalBlocker(self.offset_spin),
+            QtCore.QSignalBlocker(self.offset_coord_combo),
+            QtCore.QSignalBlocker(self.offset_coord_sign_combo),
         ):
             self.scale_spin.setValue(1.0)
             self.offset_spin.setValue(0.0)
+            self.offset_coord_combo.setCurrentIndex(0)
+            self.offset_coord_sign_combo.setCurrentIndex(0)
+        self._sync_offset_coord_controls()
         self.update_affine_preview()
+
+    @QtCore.Slot()
+    @QtCore.Slot(int)
+    def _offset_coord_changed(self, _index: int | None = None) -> None:
+        self._sync_offset_coord_controls()
+        self.update_affine_preview()
+
+    def _sync_offset_coord_controls(self) -> None:
+        self.offset_coord_sign_combo.setEnabled(self.affine_offset_coord is not None)
 
     @QtCore.Slot(int)
     def _edit_mode_changed(self, _index: int) -> None:

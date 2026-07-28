@@ -10402,6 +10402,27 @@ def test_transform_dialog_restore_operation_roundtrip(
     win.close()
 
 
+def test_assign_coords_restore_scalar_offset_requires_coordinate(qtbot) -> None:
+    win = itool(_restore_dialog_data(), execute=False)
+    qtbot.addWidget(win)
+    dialog = AssignCoordsDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    with pytest.raises(ValueError, match="'hv' is not available"):
+        dialog.restore_transform_operation(
+            AffineCoordOperation(
+                coord_name="x",
+                scale=1.0,
+                offset=0.0,
+                offset_coord="hv",
+                offset_coord_sign=-1,
+            )
+        )
+
+    dialog.close()
+    win.close()
+
+
 def test_squeeze_dialog_restore_operation_roundtrip(qtbot) -> None:
     data = xr.DataArray(
         np.arange(15, dtype=float).reshape((1, 3, 1, 5)),
@@ -12129,6 +12150,75 @@ def test_itool_assign_coords_affine(qtbot, accept_dialog) -> None:
     assert "['y'].values - 3.7" in display_code
     assert "1.0 *" not in display_code
     assert "+ -3.7" not in display_code
+
+
+def test_itool_assign_coords_affine_scalar_coordinate_offset(
+    qtbot, accept_dialog
+) -> None:
+    data = xr.DataArray(
+        np.arange(12).reshape((3, 4)).astype(float),
+        dims=["x", "eV"],
+        coords={
+            "x": np.arange(3),
+            "eV": np.linspace(20.0, 23.0, 4),
+            "hv": 21.2,
+            "label": "scan",
+            "varying": ("x", np.arange(3)),
+            "invalid": np.nan,
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: AssignCoordsDialog) -> None:
+        dialog._coord_combo.setCurrentText("eV")
+        dialog.coord_widget.edit_mode_tabs.setCurrentIndex(1)
+        dialog.coord_widget.offset_coord_combo.setCurrentIndex(
+            _combo_index_for_data(dialog.coord_widget.offset_coord_combo, "hv")
+        )
+        dialog.coord_widget.offset_coord_sign_combo.setCurrentIndex(
+            _combo_index_for_data(dialog.coord_widget.offset_coord_sign_combo, -1)
+        )
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
+    np.testing.assert_allclose(
+        win.slicer_area._data.eV.values,
+        data.eV.values - data.hv.item(),
+    )
+    assert win.provenance_spec is not None
+    operations = [
+        operation
+        for operation in win.provenance_spec.operations
+        if isinstance(operation, AffineCoordOperation)
+    ]
+    assert operations == [
+        AffineCoordOperation(
+            coord_name="eV",
+            scale=1.0,
+            offset=0.0,
+            offset_coord="hv",
+            offset_coord_sign=-1,
+        )
+    ]
+
+    display_code = win.provenance_spec.display_code(parent_data=data)
+    assert display_code is not None
+    destination = data.assign_coords(hv=40.0)
+    namespace = _exec_generated_code(
+        display_code,
+        {"data": destination.copy(deep=True)},
+    )
+    xr.testing.assert_identical(
+        namespace["derived"],
+        destination.assign_coords(
+            {
+                "eV": destination.eV.copy(
+                    data=destination.eV.values - destination.hv.item()
+                )
+            }
+        ),
+    )
 
 
 def _combo_index_for_data(combo: QtWidgets.QComboBox, data: object) -> int:
