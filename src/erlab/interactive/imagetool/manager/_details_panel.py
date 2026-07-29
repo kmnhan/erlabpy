@@ -66,6 +66,7 @@ _PROVENANCE_STEPS_CLIPBOARD_MIME = "application/x-erlab-imagetool-provenance-ste
 _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.imagetool.provenance.steps"
 _PROVENANCE_STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
 _MAXIMUM_WRAPPED_METADATA_LINES = 4
+_MAXIMUM_DERIVATION_TOOLTIP_WIDTH = 720
 
 
 def _provenance_step_clipboard_payload(
@@ -440,7 +441,13 @@ class _DetailsPanelController:
         can_activate, activation_reason = (
             self._manager._provenance_edit_controller.can_edit_row(row)
         )
-        tooltip_lines = [entry.label]
+        tooltip_lines = [
+            self._manager.metadata_derivation_list.fontMetrics().elidedText(
+                entry.label,
+                QtCore.Qt.TextElideMode.ElideMiddle,
+                _MAXIMUM_DERIVATION_TOOLTIP_WIDTH,
+            )
+        ]
         if not can_activate and activation_reason:
             tooltip_lines.extend(("", activation_reason))
         if (
