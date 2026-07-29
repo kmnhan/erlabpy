@@ -622,6 +622,14 @@ class ToolPlotStateRegistry(QtCore.QObject):
         elif desired_state is not None:
             adapter.set_desired_state(desired_state)
 
+    def clear_manual_levels(self, plot_id: str) -> None:
+        """Let image updates control the levels for a registered plot."""
+        adapter = self._adapters[plot_id]
+        adapter.manual_levels = False
+        adapter.desired_state = adapter.capture()
+        self._pending_changes.add(plot_id)
+        self._flush_timer.start(0)
+
     def _queue_change(self, plot_id: str, component: str) -> None:
         adapter = self._adapters.get(plot_id)
         if adapter is None:

@@ -279,8 +279,8 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         self.sy_spin.valueChanged.connect(self.update_preprocess)
         self.sn_spin.valueChanged.connect(self.update_preprocess)
 
-        self.hi_spin.valueChanged.connect(self.update_image)
-        self.lo_spin.valueChanged.connect(self.update_image)
+        self.hi_spin.valueChanged.connect(self.update_color_limits)
+        self.lo_spin.valueChanged.connect(self.update_color_limits)
 
         self.tab_widget.currentChanged.connect(self.update_result)
         self.x_radio.clicked.connect(self.update_result)
@@ -396,6 +396,12 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
 
         self.images[0].setDataArray(out)
         return out
+
+    @QtCore.Slot()
+    def update_color_limits(self) -> None:
+        if not self._pause_update:
+            self._clear_manual_plot_levels("result")
+            self.update_image()
 
     @QtCore.Slot()
     def update_image(self) -> None:

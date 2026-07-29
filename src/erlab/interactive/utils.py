@@ -3474,6 +3474,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Register a colorbar or histogram under a stable semantic plot ID."""
         self._plot_state_registry.register(plot_id, target)
 
+    def _clear_manual_plot_levels(self, plot_id: str) -> None:
+        """Let image updates control the levels for a registered plot."""
+        self._plot_state_registry.clear_manual_levels(plot_id)
+
     @property
     def undoable(self) -> bool:
         """Return whether a previous tool state is available."""
