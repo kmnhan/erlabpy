@@ -4,7 +4,6 @@ from __future__ import annotations
 
 __all__ = ["_ImageToolWrapperTreeView"]
 
-import contextlib
 import functools
 import json
 import logging
@@ -118,6 +117,10 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         super().__init__(parent)
         self._manager = weakref.ref(manager)
         self._font_size = QtGui.QFont().pointSize()
+        self._scaled_font_cache: dict[tuple[str, float], QtGui.QFont] = {}
+        self._font_metrics_cache: dict[str, QtGui.QFontMetrics] = {}
+        self._text_width_cache: dict[tuple[str, str], int] = {}
+        self._link_icon_cache: dict[int, QtGui.QIcon] = {}
         self._current_editor: QtWidgets.QLineEdit | None = None
 
         # Initialize popup preview
@@ -230,6 +233,31 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         self.preview_popup.show()
 
+    def _scaled_font(self, base_font: QtGui.QFont, scale: float) -> QtGui.QFont:
+        key = (base_font.key(), scale)
+        font = self._scaled_font_cache.get(key)
+        if font is None:
+            font = QtGui.QFont(base_font)
+            font.setPointSizeF(self._font_size * scale)
+            self._scaled_font_cache[key] = font
+        return font
+
+    def _font_metrics(self, font: QtGui.QFont) -> QtGui.QFontMetrics:
+        key = font.key()
+        metrics = self._font_metrics_cache.get(key)
+        if metrics is None:
+            metrics = QtGui.QFontMetrics(font)
+            self._font_metrics_cache[key] = metrics
+        return metrics
+
+    def _text_width(self, font: QtGui.QFont, text: str) -> int:
+        key = (font.key(), text)
+        width = self._text_width_cache.get(key)
+        if width is None:
+            width = self._font_metrics(font).boundingRect(text).width()
+            self._text_width_cache[key] = width
+        return width
+
     def _compute_icons_info(
         self,
         option: QtWidgets.QStyleOptionViewItem,
@@ -281,10 +309,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             )
 
             # Use a smaller font for the watched label
-            watched_font = QtGui.QFont(option.font)
-            watched_font.setPointSizeF(self._font_size * self.watched_font_scale)
+            watched_font = self._scaled_font(option.font, self.watched_font_scale)
             watched_width = (
-                QtGui.QFontMetrics(watched_font).boundingRect(watched_text).width()
+                self._text_width(watched_font, watched_text)
                 + self.watched_rect_hpad * 2
             )
 
@@ -413,7 +440,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             )
 
             # Elide text to leave room for icons on the right
-            fm = QtGui.QFontMetrics(option.font)
+            fm = self._font_metrics(option.font)
             text = index.data(role=QtCore.Qt.ItemDataRole.DisplayRole)
             text_rect = QtCore.QRect(option.rect)
             right_badge_rect = self._leftmost_rect(dependency_rect, *icon_rects)
@@ -447,7 +474,11 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 if proxy is not None:
                     link_color = self.manager.color_for_linker(proxy)
             if link_color is not None:
-                link_icon = qta.icon("mdi6.link-variant", color=link_color)
+                color_key = link_color.rgba()
+                link_icon = self._link_icon_cache.get(color_key)
+                if link_icon is None:
+                    link_icon = qta.icon("mdi6.link-variant", color=link_color)
+                    self._link_icon_cache[color_key] = link_icon
                 self._paint_icon(painter, option, link_rect, link_icon)
 
         if watched_rect:
@@ -466,8 +497,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 linewidth=self.icon_border_width,
                 radius=self.icon_corner_radius,
             )
-            watched_font = QtGui.QFont(option.font)
-            watched_font.setPointSizeF(self._font_size * self.watched_font_scale)
+            watched_font = self._scaled_font(option.font, self.watched_font_scale)
             painter.save()
             painter.setFont(watched_font)
             painter.setPen(color)
@@ -488,9 +518,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 linewidth=self.icon_border_width,
                 radius=self.icon_corner_radius,
             )
-            dependency_font = QtGui.QFont(option.font)
-            dependency_font.setPointSizeF(
-                self._font_size * self.child_status_font_scale
+            dependency_font = self._scaled_font(
+                option.font, self.child_status_font_scale
             )
             painter.save()
             painter.setFont(dependency_font)
@@ -567,8 +596,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 linewidth=self.icon_border_width,
                 radius=self.icon_corner_radius,
             )
-            type_font = QtGui.QFont(option.font)
-            type_font.setPointSizeF(self._font_size * self.tool_type_font_scale)
+            type_font = self._scaled_font(option.font, self.tool_type_font_scale)
             painter.save()
             painter.setFont(type_font)
             painter.setPen(type_color)
@@ -596,7 +624,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 text_rect.setRight(right_badge_rect.left() - self.icon_right_pad)
 
             # Elide text if necessary
-            elided_text = QtGui.QFontMetrics(option.font).elidedText(
+            elided_text = self._font_metrics(option.font).elidedText(
                 index.data(role=QtCore.Qt.ItemDataRole.DisplayRole),
                 view.textElideMode(),
                 max(text_rect.width(), 0),
@@ -618,9 +646,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     linewidth=self.icon_border_width,
                     radius=self.icon_corner_radius,
                 )
-                status_font = QtGui.QFont(option.font)
-                status_font.setPointSizeF(
-                    self._font_size * self.child_status_font_scale
+                status_font = self._scaled_font(
+                    option.font, self.child_status_font_scale
                 )
                 painter.save()
                 painter.setFont(status_font)
@@ -720,12 +747,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         rect_size = self.icon_size + 2 * self.icon_inner_pad
         rect_y = option.rect.center().y() - (rect_size // 2)
-        badge_font = QtGui.QFont(option.font)
-        badge_font.setPointSizeF(self._font_size * self.tool_type_font_scale)
-        badge_width = (
-            QtGui.QFontMetrics(badge_font).boundingRect(text).width()
-            + self.tool_type_rect_hpad * 2
-        )
+        badge_font = self._scaled_font(option.font, self.tool_type_font_scale)
+        badge_width = self._text_width(badge_font, text) + self.tool_type_rect_hpad * 2
         rect = QtCore.QRect(option.rect.left(), rect_y, badge_width, rect_size)
         return rect, text, option.palette.color(QtGui.QPalette.ColorRole.Mid)
 
@@ -751,11 +774,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         rect_size = self.icon_size + 2 * self.icon_inner_pad
         rect_y = option.rect.center().y() - (rect_size // 2)
-        badge_font = QtGui.QFont(option.font)
-        badge_font.setPointSizeF(self._font_size * self.child_status_font_scale)
+        badge_font = self._scaled_font(option.font, self.child_status_font_scale)
         badge_width = (
-            QtGui.QFontMetrics(badge_font).boundingRect(text).width()
-            + self.child_status_rect_hpad * 2
+            self._text_width(badge_font, text) + self.child_status_rect_hpad * 2
         )
         if right_edge is None:
             right_edge = option.rect.right()
@@ -781,11 +802,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         rect_size = self.icon_size + 2 * self.icon_inner_pad
         rect_y = option.rect.center().y() - (rect_size // 2)
-        badge_font = QtGui.QFont(option.font)
-        badge_font.setPointSizeF(self._font_size * self.child_status_font_scale)
+        badge_font = self._scaled_font(option.font, self.child_status_font_scale)
         badge_width = (
-            QtGui.QFontMetrics(badge_font).boundingRect(text).width()
-            + self.child_status_rect_hpad * 2
+            self._text_width(badge_font, text) + self.child_status_rect_hpad * 2
         )
         if right_edge is None:
             right_edge = option.rect.right()
@@ -972,6 +991,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         if event is not None:  # pragma: no branch
             match event.type():
                 case (
+                    QtCore.QEvent.Type.FontChange
+                    | QtCore.QEvent.Type.ApplicationFontChange
+                ):
+                    self._font_size = QtGui.QFont().pointSize()
+                    self._scaled_font_cache.clear()
+                    self._font_metrics_cache.clear()
+                    self._text_width_cache.clear()
+                case (
                     QtCore.QEvent.Type.Resize
                     | QtCore.QEvent.Type.Leave
                     | QtCore.QEvent.Type.WindowStateChange
@@ -1033,6 +1060,10 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
     def __init__(self, manager: ImageToolManager, parent: QtCore.QObject | None = None):
         super().__init__(parent)
         self._manager = weakref.ref(manager)
+        self._structure_cache_generation = -1
+        self._root_row_cache: dict[int, int] = {}
+        self._visible_child_uids_cache: dict[str, tuple[str, ...]] = {}
+        self._visible_child_row_cache: dict[str, dict[str, int]] = {}
 
     @property
     def manager(self) -> ImageToolManager:
@@ -1066,15 +1097,51 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         node = self._node_from_uid(uid)
         return node is not None and not self.manager._is_figure_node(node)
 
-    def _childtool_uids(self, parent_wrapper: _ImageToolWrapper | str) -> list[str]:
+    def _ensure_structure_cache(self) -> None:
+        graph = self.manager._tool_graph
+        if self._structure_cache_generation == graph.structure_generation:
+            return
+        self._structure_cache_generation = graph.structure_generation
+        self._root_row_cache = {
+            tool_index: row for row, tool_index in enumerate(graph.displayed_indices)
+        }
+        self._visible_child_uids_cache.clear()
+        self._visible_child_row_cache.clear()
+
+    def _childtool_uids(
+        self, parent_wrapper: _ImageToolWrapper | str
+    ) -> tuple[str, ...]:
         if isinstance(parent_wrapper, str):
             parent_node = self._node_from_uid(parent_wrapper)
             if parent_node is None:
                 raise KeyError(parent_wrapper)
-            child_list = parent_node._childtool_indices
+            parent_uid = parent_wrapper
         else:
-            child_list = parent_wrapper._childtool_indices
-        return [uid for uid in child_list if self._is_visible_child_uid(uid)]
+            parent_node = parent_wrapper
+            parent_uid = parent_wrapper.uid
+        self._ensure_structure_cache()
+        cached = self._visible_child_uids_cache.get(parent_uid)
+        if cached is not None:
+            return cached
+        child_uids = tuple(
+            uid
+            for uid in parent_node._childtool_indices
+            if self._is_visible_child_uid(uid)
+        )
+        self._visible_child_uids_cache[parent_uid] = child_uids
+        self._visible_child_row_cache[parent_uid] = {
+            uid: row for row, uid in enumerate(child_uids)
+        }
+        return child_uids
+
+    def _childtool_row(
+        self, parent_wrapper: _ImageToolWrapper | str, uid: str
+    ) -> int | None:
+        parent_uid = (
+            parent_wrapper if isinstance(parent_wrapper, str) else parent_wrapper.uid
+        )
+        self._childtool_uids(parent_wrapper)
+        return self._visible_child_row_cache[parent_uid].get(uid)
 
     def _childtool_uid(
         self,
@@ -1104,19 +1171,18 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             parent_node = self.manager._tool_graph.nodes[parent_uid]
             if isinstance(parent_node, _ImageToolWrapper):
                 parent_index = self._row_index(parent_node.index)
-                visible_children = self._childtool_uids(parent_node)
+                row = self._childtool_row(parent_node, index_or_uid)
             else:
                 parent_index = self._row_index(parent_uid)
-                visible_children = self._childtool_uids(parent_uid)
-            if index_or_uid not in visible_children:
+                row = self._childtool_row(parent_uid, index_or_uid)
+            if row is None:
                 return QtCore.QModelIndex()
-            row = visible_children.index(index_or_uid)
             return self.index(row, 0, parent_index)
-        if index_or_uid not in self.manager._tool_graph.displayed_indices:
+        self._ensure_structure_cache()
+        row = self._root_row_cache.get(index_or_uid)
+        if row is None:
             return QtCore.QModelIndex()
-        return self.index(
-            self.manager._tool_graph.displayed_indices.index(index_or_uid), 0
-        )
+        return self.index(row, 0)
 
     def index(
         self, row: int, column: int, parent: QtCore.QModelIndex | None = None
@@ -1330,7 +1396,9 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             return
         if uid not in visible_children:
             return
-        row = visible_children.index(uid)
+        row = self._childtool_row(parent_ptr, uid)
+        if row is None:
+            return
         self.beginInsertRows(parent, row, row)
         self.endInsertRows()
 
@@ -1363,9 +1431,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 return
             uids = visible_children[row : row + count]
             self.beginRemoveRows(parent, row, row + count - 1)
-            for uid in uids:
-                with contextlib.suppress(ValueError):
-                    ptr._childtool_indices.remove(uid)
+            self.manager._tool_graph.remove_child_references(ptr.uid, uids)
             self.endRemoveRows()
             return
         if isinstance(ptr, str):
@@ -1377,9 +1443,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 return
             uids = visible_children[row : row + count]
             self.beginRemoveRows(parent, row, row + count - 1)
-            for uid in uids:
-                with contextlib.suppress(ValueError):
-                    node._childtool_indices.remove(uid)
+            self.manager._tool_graph.remove_child_references(ptr, uids)
             self.endRemoveRows()
             return
 
@@ -1645,7 +1709,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         This ensures that ``from`` is larger than ``to``.
         """
         actions: list[tuple[int, int]] = []
-        current = list_original[:]
+        current = list(list_original)
         for target_idx, value in enumerate(list_shuffled):
             curr_idx = current.index(value)
             if curr_idx != target_idx:
@@ -1685,7 +1749,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 row = parent.row() + 1
         else:
             parent_index = parent
-            original = self._childtool_uids(parent_id)
+            original = list(self._childtool_uids(parent_id))
 
         if not original or not source_rows:
             logger.debug("dropMimeData: empty target or source")
@@ -1723,10 +1787,13 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             raw_children = self.manager._tool_graph.nodes[parent_id]._childtool_indices
             if len(raw_children) != len(original):
                 modified_iter = iter(typing.cast("list[str]", modified))
-                self.manager._tool_graph.nodes[parent_id]._childtool_indices = [
-                    next(modified_iter) if self._is_visible_child_uid(uid) else uid
-                    for uid in raw_children
-                ]
+                self.manager._tool_graph.replace_child_order(
+                    parent_id,
+                    [
+                        next(modified_iter) if self._is_visible_child_uid(uid) else uid
+                        for uid in raw_children
+                    ],
+                )
                 self.layoutChanged.emit()
                 moved = True
             else:
@@ -1751,6 +1818,16 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         self._selection_model = typing.cast(
             "QtCore.QItemSelectionModel", self.selectionModel()
         )
+        self._selection_cache: tuple[tuple[int, ...], tuple[str, ...]] | None = None
+        self._selection_model.selectionChanged.connect(self._clear_selection_cache)
+        for signal in (
+            self._model.rowsInserted,
+            self._model.rowsRemoved,
+            self._model.rowsMoved,
+            self._model.modelReset,
+            self._model.layoutChanged,
+        ):
+            signal.connect(self._clear_selection_cache)
 
         self.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
@@ -1825,23 +1902,35 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
 
         The tools are ordered by their position in the list view.
         """
-        row_indices = sorted(
-            index.row()
-            for index in self.selectedIndexes()
-            if isinstance(index.internalPointer(), _ImageToolWrapper)
-        )
-        return [
-            self._model.manager._tool_graph.displayed_indices[i] for i in row_indices
-        ]
+        return list(self._selected_rows()[0])
 
     @property
     def selected_childtool_uids(self) -> list[str]:
         """UIDs of currently selected child tools."""
-        return [
-            index.internalPointer()
-            for index in self.selectedIndexes()
-            if isinstance(index.internalPointer(), str)
-        ]
+        return list(self._selected_rows()[1])
+
+    def _selected_rows(self) -> tuple[tuple[int, ...], tuple[str, ...]]:
+        cached = self._selection_cache
+        if cached is not None:
+            return cached
+        root_rows: list[int] = []
+        child_uids: list[str] = []
+        for index in self.selectedIndexes():
+            pointer = index.internalPointer()
+            if isinstance(pointer, _ImageToolWrapper):
+                root_rows.append(index.row())
+            elif isinstance(pointer, str):
+                child_uids.append(pointer)
+        displayed_indices = self._model.manager._tool_graph.displayed_indices
+        selected = (
+            tuple(displayed_indices[row] for row in sorted(root_rows)),
+            tuple(child_uids),
+        )
+        self._selection_cache = selected
+        return selected
+
+    def _clear_selection_cache(self, *_args: object) -> None:
+        self._selection_cache = None
 
     def figure_source_uids_from_mime(
         self, mime: QtCore.QMimeData | None

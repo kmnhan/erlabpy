@@ -468,9 +468,7 @@ class _ActionsController:
         return self.__batch_dialog
 
     def batch_target_count(self) -> int:
-        return sum(
-            1 for node in self._manager._tool_graph.nodes.values() if node.is_imagetool
-        )
+        return self._manager._tool_graph.nimagetools
 
     def show_batch_operations(self) -> None:
         if self._manager.batch_target_count() < 2:

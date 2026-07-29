@@ -971,6 +971,8 @@ class _ManagedWindowNode(QtCore.QObject):
         self._set_name(name, manual=True)
 
     def _set_name(self, name: str, *, manual: bool) -> None:
+        if name != self.name:
+            self.manager._tool_graph.presentation_changed()
         if self.tool_window is not None:
             self.tool_window._tool_display_name = name
             if self.manager._is_figure_node(self):
@@ -995,6 +997,7 @@ class _ManagedWindowNode(QtCore.QObject):
         if name == self.name:
             self.imagetool.setWindowTitle(self.label_text)
             return
+        self.manager._tool_graph.presentation_changed()
         slicer_area = self.slicer_area
         slicer_area._data = slicer_area._data.rename(name)
         slicer_area.array_slicer._obj = slicer_area.array_slicer._obj.rename(name)
@@ -1020,6 +1023,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 self._source_spec.append_final_rename(name)
             )
         self._derivation_display_rows_cache = None
+        self._invalidate_dependency_cache()
 
     def _file_label_paths(self) -> tuple[pathlib.Path, ...]:
         paths: list[pathlib.Path] = []
@@ -1392,6 +1396,14 @@ class _ManagedWindowNode(QtCore.QObject):
         self._tool_provenance_spec_cache.clear()
         if self.parent_uid is None or self.source_spec is None:
             self._derivation_display_rows_cache = None
+        self._invalidate_dependency_cache()
+
+    def _invalidate_dependency_cache(self) -> None:
+        manager = self._manager()
+        if manager is None:
+            return
+        if manager._tool_graph.nodes.get(self.uid) is self:
+            manager._dependency_tracker.invalidate_uid(self.uid)
 
     @property
     def displayed_provenance_spec(
@@ -1654,6 +1666,7 @@ class _ManagedWindowNode(QtCore.QObject):
     ) -> None:
         self._provenance_spec = parse_tool_provenance_spec(provenance_spec)
         self._derivation_display_rows_cache = None
+        self._invalidate_dependency_cache()
         if self.imagetool is not None:
             self.imagetool.set_provenance_spec(self.provenance_spec)
         if advance_snapshot:
@@ -1669,22 +1682,14 @@ class _ManagedWindowNode(QtCore.QObject):
     def derivation_display_rows(
         self,
     ) -> list[_ProvenanceDisplayRow]:
-        parent_snapshot_token: str | None = None
-        source_spec = self.source_spec
-        source_spec_id: int | None = None
-        snapshot_token = self.snapshot_token
-        if self.parent_uid is not None and source_spec is not None:
-            parent_snapshot_token = self.manager._parent_node(self).snapshot_token
-            source_spec_id = id(source_spec)
-            if self.tool_window is not None:
-                snapshot_token = ""
-        cache_key = (snapshot_token, parent_snapshot_token, source_spec_id)
+        cache_key = self.derivation_display_rows_cache_key
         if (
             self._derivation_display_rows_cache is not None
             and self._derivation_display_rows_cache[0] == cache_key
         ):
             return list(self._derivation_display_rows_cache[1])
 
+        source_spec = self.source_spec
         if self.parent_uid is not None and source_spec is not None:
             rows: list[_ProvenanceDisplayRow] = []
             parent = self.manager._parent_node(self)
@@ -1708,6 +1713,21 @@ class _ManagedWindowNode(QtCore.QObject):
             )
         self._derivation_display_rows_cache = (cache_key, tuple(rows))
         return list(rows)
+
+    @property
+    def derivation_display_rows_cache_key(
+        self,
+    ) -> tuple[str, str | None, int | None]:
+        parent_snapshot_token: str | None = None
+        source_spec = self.source_spec
+        source_spec_id: int | None = None
+        snapshot_token = self.snapshot_token
+        if self.parent_uid is not None and source_spec is not None:
+            parent_snapshot_token = self.manager._parent_node(self).snapshot_token
+            source_spec_id = id(source_spec)
+            if self.tool_window is not None:
+                snapshot_token = ""
+        return snapshot_token, parent_snapshot_token, source_spec_id
 
     @property
     def derivation_lines(self) -> list[str]:
@@ -1779,6 +1799,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._replay_source_pending = False
         self._source_spec = require_live_source_spec(source_spec)
         self._derivation_display_rows_cache = None
+        self._invalidate_dependency_cache()
         self._source_binding = None if self._source_spec is not None else source_binding
         if provenance_spec is not None and not isinstance(
             provenance_spec,
@@ -1829,6 +1850,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._replay_source_pending = False
         self._source_spec = require_live_source_spec(source_spec)
         self._derivation_display_rows_cache = None
+        self._invalidate_dependency_cache()
         self._source_binding = None if self._source_spec is not None else source_binding
         self._source_auto_update = bool(auto_update)
         self._source_state = state if self.has_source_binding else "fresh"
@@ -1857,6 +1879,7 @@ class _ManagedWindowNode(QtCore.QObject):
             )
         self._source_spec = None
         self._derivation_display_rows_cache = None
+        self._invalidate_dependency_cache()
         self._source_binding = None
         self._replay_source_data = None
         self._replay_source_pending = False
@@ -1883,6 +1906,7 @@ class _ManagedWindowNode(QtCore.QObject):
             )
         self._source_spec = None
         self._derivation_display_rows_cache = None
+        self._invalidate_dependency_cache()
         self._source_binding = None
         self._source_auto_update = False
         self._output_id = None
@@ -1903,6 +1927,7 @@ class _ManagedWindowNode(QtCore.QObject):
         if self._source_binding is not None:
             self._source_spec = self._source_binding.materialize(parent_data)
             self._derivation_display_rows_cache = None
+            self._invalidate_dependency_cache()
             self._source_binding = None
             return self._source_spec
         raise RuntimeError("Node is not bound to an ImageTool source.")

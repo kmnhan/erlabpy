@@ -102,6 +102,73 @@ def test_dependency_tracker_uses_passive_tool_provenance() -> None:
     assert refs[0].node_uid == "source-uid"
 
 
+def test_dependency_tracker_indexes_dependents_and_caches_status() -> None:
+    initial_snapshot = "snapshot-1"
+    source_spec = script(
+        start_label="Source",
+        seed_code="source = data",
+        active_name="source",
+    )
+    dependent_spec = script(
+        start_label="Dependent",
+        seed_code="derived = source",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="source",
+                label="Source",
+                node_uid="source-uid",
+                node_snapshot_token=initial_snapshot,
+                provenance_spec=source_spec,
+            ),
+        ),
+    )
+    snapshot = [initial_snapshot]
+    snapshot_calls: list[str] = []
+
+    def _snapshot_token_for_role(role: str) -> str:
+        snapshot_calls.append(role)
+        return snapshot[0]
+
+    source_node = types.SimpleNamespace(
+        tool_window=None,
+        provenance_spec=None,
+        snapshot_token_for_role=_snapshot_token_for_role,
+    )
+    dependent_node = types.SimpleNamespace(
+        tool_window=None,
+        provenance_spec=dependent_spec,
+    )
+    graph = types.SimpleNamespace(
+        nodes={
+            "source-uid": source_node,
+            "dependent-uid": dependent_node,
+        }
+    )
+    tracker = _ManagerDependencyTracker(typing.cast("_ManagerToolGraph", graph))
+    tracker.note_uid("source-uid")
+    tracker.note_uid("dependent-uid")
+
+    assert tracker.status_for_uid("dependent-uid") == "current"
+    assert tracker.status_for_uid("dependent-uid") == "current"
+    assert snapshot_calls == ["displayed"]
+
+    snapshot[0] = "snapshot-2"
+    assert tracker.dependent_uids("source-uid") == ["dependent-uid"]
+    assert tracker.status_for_uid("dependent-uid") == "changed"
+    assert snapshot_calls == ["displayed", "displayed"]
+
+    graph.nodes.pop("source-uid")
+    tracker.clear_uid("source-uid")
+    assert tracker.dependent_uids("source-uid") == ["dependent-uid"]
+    assert tracker.status_for_uid("dependent-uid") == "missing"
+
+    snapshot[0] = initial_snapshot
+    graph.nodes["source-uid"] = source_node
+    tracker.note_uid("source-uid")
+    assert tracker.status_for_uid("dependent-uid") == "current"
+
+
 class _InfoRefreshToolState(pydantic.BaseModel):
     value: int = 0
 
@@ -370,6 +437,15 @@ def test_link_badge_falls_back_to_live_linker(
         try:
             _paint()
             assert linker_calls == [proxy]
+            assert len(manager.tree_view._delegate._link_icon_cache) == 1
+            cached_icon = next(
+                iter(manager.tree_view._delegate._link_icon_cache.values())
+            )
+            _paint()
+            assert (
+                next(iter(manager.tree_view._delegate._link_icon_cache.values()))
+                is cached_icon
+            )
 
             wrapper.slicer_area._linking_proxy = None
             try:
@@ -379,7 +455,7 @@ def test_link_badge_falls_back_to_live_linker(
         finally:
             wrapper._workspace_link_key = link_key
 
-        assert linker_calls == [proxy]
+        assert linker_calls == [proxy, proxy]
 
 
 def test_drop_mimedata(
@@ -618,6 +694,7 @@ def test_figure_source_mime_filters_duplicates_and_malformed_rows(
 
     manager = _FakeManager()
     qtbot.addWidget(manager)
+    manager._tool_graph = types.SimpleNamespace(nodes={})
     wrapper = _ImageToolWrapper(
         typing.cast("ImageToolManager", manager),
         index=0,
@@ -962,6 +1039,65 @@ def test_tool_provenance_spec_is_cached_between_tool_signals(
         child_node._handle_tool_data_changed()
         assert child_node.displayed_provenance_spec is provenance
         assert calls == [False, True, True, True, True]
+
+
+def test_repeated_details_refresh_reuses_metadata_widgets_and_rows(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        wrapper = manager._tool_graph.root_wrappers[0]
+        wrapper.set_detached_provenance(full_data(), replay_source_data=None)
+
+        manager._set_metadata_node(wrapper)
+        labels = dict(manager._metadata_detail_labels)
+        first_item = manager.metadata_derivation_list.topLevelItem(0)
+        assert first_item is not None
+
+        manager._set_metadata_node(wrapper)
+
+        assert manager._metadata_detail_labels == labels
+        assert all(
+            manager._metadata_detail_labels[key] is value
+            for key, value in labels.items()
+        )
+        assert manager.metadata_derivation_list.topLevelItem(0) is first_item
+
+
+def test_tool_preview_refresh_uses_one_restartable_timer(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        tool = _InfoRefreshTool(test_data)
+        uid = manager.add_childtool(tool, 0, show=False)
+        select_child_tool(manager, uid)
+        requests: list[int] = []
+        monkeypatch.setattr(
+            tool,
+            "request_preview_pixmap_update",
+            lambda *, delay_ms: requests.append(delay_ms),
+            raising=False,
+        )
+        manager._details_panel._ensure_tool_preview_update_timer().setInterval(0)
+
+        manager._details_panel._schedule_tool_preview_update(uid)
+        manager._details_panel._schedule_tool_preview_update(uid)
+
+        qtbot.wait_until(lambda: requests == [0], timeout=1000)
 
 
 def test_copy_full_code_materializes_tool_provenance_on_demand(
@@ -1318,6 +1454,50 @@ def test_manager_interaction_gate_tracks_key_and_editor_focus_events(
         QtWidgets.QApplication.sendEvent(edit, focus_event)
 
         assert manager._interaction_active
+
+
+def test_manager_interaction_gate_skips_membership_for_irrelevant_events(
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        membership_checks: list[object] = []
+        monkeypatch.setattr(
+            manager._interaction_gate,
+            "_is_managed_object",
+            lambda obj: membership_checks.append(obj) or True,
+        )
+
+        assert not manager._interaction_gate._event_marks_activity(
+            manager, QtCore.QEvent(QtCore.QEvent.Type.Paint)
+        )
+        assert membership_checks == []
+
+
+def test_tree_selection_queries_share_cached_model_indexes(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        select_tools(manager, [0])
+
+        assert manager.tree_view.selected_imagetool_indices == [0]
+        cached = manager.tree_view._selection_cache
+        assert cached is not None
+        assert manager.tree_view.selected_childtool_uids == []
+        assert manager.tree_view._selection_cache is cached
+
+        manager.tree_view.clearSelection()
+        assert manager.tree_view._selection_cache == ((), ())
+        assert manager.tree_view._selection_cache is not cached
 
 
 def test_childtool_info_changed_for_unselected_node_keeps_visible_details(

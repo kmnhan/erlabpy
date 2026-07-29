@@ -1005,8 +1005,8 @@ class _PendingWorkspacePayloads:
                         )
                         node.window = tool
                         if node.parent_uid is not None:
-                            self._manager._parent_node(node).add_child_reference(
-                                node.uid, tool
+                            self._manager._tool_graph.add_child_reference(
+                                node.parent_uid, node.uid, tool
                             )
                     else:
                         state = copy.deepcopy(node.slicer_area.state)
@@ -1102,7 +1102,9 @@ class _PendingWorkspacePayloads:
                     tool.set_input_provenance_parent_fetcher(
                         _input_provenance_parent_fetcher
                     )
-                    parent.add_child_reference(node.uid, tool)
+                    self._manager._tool_graph.add_child_reference(
+                        parent.uid, node.uid, tool
+                    )
                 node._set_workspace_tool_data_references(
                     type(tool)._saved_tool_data_references(ds)
                 )

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 __all__ = ["_ManagerToolGraph"]
 
-import contextlib
 import typing
 
 from erlab.interactive.imagetool.manager._wrapper import (
@@ -26,11 +25,27 @@ class _ManagerToolGraph:
         self.nodes: dict[str, _ImageToolWrapper | _ManagedWindowNode] = {}
         self.displayed_indices: list[int] = []
         self.figure_uids: list[str] = []
+        self._figure_uid_set: set[str] = set()
+        self._imagetool_count: int = 0
+        self._structure_generation: int = 0
+        self._presentation_generation: int = 0
         self._node_uid_counter: int = 0
 
     @property
     def ntools(self) -> int:
         return len(self.root_wrappers)
+
+    @property
+    def nimagetools(self) -> int:
+        return self._imagetool_count
+
+    @property
+    def structure_generation(self) -> int:
+        return self._structure_generation
+
+    @property
+    def presentation_generation(self) -> int:
+        return self._presentation_generation
 
     @property
     def next_index(self) -> int:
@@ -105,18 +120,38 @@ class _ManagerToolGraph:
                 return uid
         return None
 
+    def is_figure_uid(self, uid: str) -> bool:
+        return uid in self._figure_uid_set
+
+    def _structure_changed(self) -> None:
+        self._structure_generation += 1
+        self._presentation_generation += 1
+
+    def presentation_changed(self) -> None:
+        self._presentation_generation += 1
+
     def register_root(self, wrapper: _ImageToolWrapper) -> None:
         self.root_wrappers[wrapper.index] = wrapper
         self.nodes[wrapper.uid] = wrapper
+        self._imagetool_count += 1
+        self._structure_changed()
 
     def register_child(self, node: _ManagedWindowNode) -> None:
         self.nodes[node.uid] = node
-        self.parent(node).add_child_reference(node.uid, node.window)
+        if node.is_imagetool:
+            self._imagetool_count += 1
+        parent = self.parent(node)
+        parent.add_child_reference(node.uid, node.window)
+        self._structure_changed()
 
     def register_figure(self, node: _ManagedWindowNode) -> None:
         self.nodes[node.uid] = node
-        if node.uid not in self.figure_uids:
+        if node.uid not in self._figure_uid_set:
             self.figure_uids.append(node.uid)
+            self._figure_uid_set.add(node.uid)
+        if node.is_imagetool:
+            self._imagetool_count += 1
+        self._structure_changed()
 
     def replace_child_references(
         self,
@@ -127,6 +162,36 @@ class _ManagerToolGraph:
         node = self.nodes[uid]
         node._childtool_indices = child_uids
         node._childtools = childtools
+        self._structure_changed()
+
+    def add_child_reference(
+        self,
+        parent_uid: str,
+        child_uid: str,
+        window: QtWidgets.QWidget | None,
+    ) -> None:
+        parent = self.nodes[parent_uid]
+        was_present = child_uid in parent._childtool_indices
+        parent.add_child_reference(child_uid, window)
+        if not was_present:
+            self._structure_changed()
+
+    def remove_child_references(
+        self, parent_uid: str, child_uids: Iterable[str]
+    ) -> None:
+        parent = self.nodes[parent_uid]
+        removed = False
+        for child_uid in child_uids:
+            if child_uid not in parent._childtool_indices:
+                continue
+            parent.remove_child_reference(child_uid)
+            removed = True
+        if removed:
+            self._structure_changed()
+
+    def replace_child_order(self, parent_uid: str, child_uids: list[str]) -> None:
+        self.nodes[parent_uid]._childtool_indices = child_uids
+        self._structure_changed()
 
     def unregister_node(
         self, uid: str
@@ -134,12 +199,16 @@ class _ManagerToolGraph:
         node = self.nodes.pop(uid, None)
         if node is None:
             return None
-        with contextlib.suppress(ValueError):
+        if uid in self._figure_uid_set:
+            self._figure_uid_set.remove(uid)
             self.figure_uids.remove(uid)
+        if node.is_imagetool:
+            self._imagetool_count -= 1
         if node.parent_uid is not None:
             parent = self.nodes.get(node.parent_uid)
             if parent is not None:
                 parent.remove_child_reference(uid)
+        self._structure_changed()
         return node
 
     def unregister_root(self, index: int) -> _ImageToolWrapper | None:
@@ -147,6 +216,8 @@ class _ManagerToolGraph:
         if wrapper is None:
             return None
         self.nodes.pop(wrapper.uid, None)
+        self._imagetool_count -= 1
+        self._structure_changed()
         return wrapper
 
     def descendant_uids(self, uid: str) -> list[str]:
@@ -176,19 +247,24 @@ class _ManagerToolGraph:
         if row is None:
             row = len(self.displayed_indices)
         self.displayed_indices.insert(row, index)
+        self._structure_changed()
 
     def remove_root_rows(self, row: int, count: int) -> None:
         del self.displayed_indices[row : row + count]
+        self._structure_changed()
 
     def clear_root_order(self) -> None:
         self.displayed_indices.clear()
+        self._structure_changed()
 
     def move_root_rows(self, moves: Iterable[tuple[int, int]]) -> None:
         for src, dest in moves:
             self.displayed_indices.insert(dest, self.displayed_indices.pop(src))
+        self._structure_changed()
 
     def remove_child_rows(self, parent_uid: str, row: int, count: int) -> None:
         del self.nodes[parent_uid]._childtool_indices[row : row + count]
+        self._structure_changed()
 
     def move_child_rows(
         self, parent_uid: str, moves: Iterable[tuple[int, int]]
@@ -196,6 +272,7 @@ class _ManagerToolGraph:
         child_uids = self.nodes[parent_uid]._childtool_indices
         for src, dest in moves:
             child_uids.insert(dest, child_uids.pop(src))
+        self._structure_changed()
 
     def reindex_roots(self) -> None:
         new_root_wrappers: dict[int, _ImageToolWrapper] = {}
@@ -205,3 +282,4 @@ class _ManagerToolGraph:
             self.root_wrappers[tool_idx]._index = row_idx
             new_root_wrappers[row_idx] = self.root_wrappers[tool_idx]
         self.root_wrappers = new_root_wrappers
+        self._structure_changed()

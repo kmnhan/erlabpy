@@ -126,6 +126,7 @@ logger = logging.getLogger(__name__)
 
 def test_register_linked_nodes_invalidates_workspace_link_color_cache() -> None:
     registered: list[tuple[str, object]] = []
+    noted_uids: list[str] = []
     graph = types.SimpleNamespace(
         register_root=lambda node: registered.append(("root", node)),
         register_child=lambda node: registered.append(("child", node)),
@@ -133,6 +134,7 @@ def test_register_linked_nodes_invalidates_workspace_link_color_cache() -> None:
     )
     manager = types.SimpleNamespace(
         _tool_graph=graph,
+        _dependency_tracker=types.SimpleNamespace(note_uid=noted_uids.append),
         _workspace_link_color_cache_dirty=False,
     )
     manager._invalidate_workspace_link_color_cache = types.MethodType(
@@ -140,12 +142,12 @@ def test_register_linked_nodes_invalidates_workspace_link_color_cache() -> None:
         manager,
     )
     nodes = {
-        "root": types.SimpleNamespace(workspace_link_key="root-link"),
+        "root": types.SimpleNamespace(uid="root", workspace_link_key="root-link"),
         "child": types.SimpleNamespace(
-            workspace_link_key="child-link", tool_window=None
+            uid="child", workspace_link_key="child-link", tool_window=None
         ),
         "figure": types.SimpleNamespace(
-            workspace_link_key="figure-link", tool_window=None
+            uid="figure", workspace_link_key="figure-link", tool_window=None
         ),
     }
 
@@ -159,6 +161,7 @@ def test_register_linked_nodes_invalidates_workspace_link_color_cache() -> None:
         assert manager._workspace_link_color_cache_dirty
 
     assert registered == [(kind, nodes[kind]) for kind in nodes]
+    assert noted_uids == list(nodes)
 
 
 def test_color_for_linker_falls_back_without_structural_link_key() -> None:

@@ -272,6 +272,9 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
     manager = types.SimpleNamespace(
         metadata_derivation_list=derivation_list,
         _metadata_node_uid=None,
+        _tool_graph=types.SimpleNamespace(
+            nodes={}, root_wrappers={}, presentation_generation=0
+        ),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda row: (row is child_row, "")
         ),
@@ -288,6 +291,7 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
         passive_displayed_provenance_spec=full_data(),
         metadata_fields=[],
         derivation_display_rows=[parent_row, sibling_row],
+        derivation_display_rows_cache_key=("node", None, None),
     )
 
     controller._set_metadata_node(node)
@@ -387,6 +391,9 @@ def test_manager_metadata_derivation_tree_populates_only_expanded_branches(
     manager = types.SimpleNamespace(
         metadata_derivation_list=derivation_list,
         _metadata_node_uid=None,
+        _tool_graph=types.SimpleNamespace(
+            nodes={}, root_wrappers={}, presentation_generation=0
+        ),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=_record_editability_check
         ),
@@ -403,6 +410,7 @@ def test_manager_metadata_derivation_tree_populates_only_expanded_branches(
         passive_displayed_provenance_spec=full_data(),
         metadata_fields=[],
         derivation_display_rows=[row],
+        derivation_display_rows_cache_key=("node", None, None),
     )
 
     controller._set_metadata_node(node)
@@ -456,6 +464,9 @@ def test_manager_metadata_derivation_state_restore_uses_indexed_lookups(
     manager = types.SimpleNamespace(
         metadata_derivation_list=derivation_list,
         _metadata_node_uid=None,
+        _tool_graph=types.SimpleNamespace(
+            nodes={}, root_wrappers={}, presentation_generation=0
+        ),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda _row: (False, "")
         ),
@@ -473,6 +484,7 @@ def test_manager_metadata_derivation_state_restore_uses_indexed_lookups(
         passive_displayed_provenance_spec=spec,
         metadata_fields=[],
         derivation_display_rows=rows,
+        derivation_display_rows_cache_key=("node", None, None),
     )
 
     controller._set_metadata_node(node)
@@ -523,6 +535,9 @@ def test_manager_metadata_display_order_does_not_materialize_collapsed_rows(
     manager = types.SimpleNamespace(
         metadata_derivation_list=derivation_list,
         _metadata_node_uid=None,
+        _tool_graph=types.SimpleNamespace(
+            nodes={}, root_wrappers={}, presentation_generation=0
+        ),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda _row: (False, "")
         ),
@@ -540,6 +555,7 @@ def test_manager_metadata_display_order_does_not_materialize_collapsed_rows(
         passive_displayed_provenance_spec=spec,
         metadata_fields=[],
         derivation_display_rows=[parent_row, sibling_row],
+        derivation_display_rows_cache_key=("node", None, None),
     )
 
     controller._set_metadata_node(node)
@@ -585,6 +601,7 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
         _tool_graph=types.SimpleNamespace(
             nodes={"n16": source_node},
             root_wrappers={4: source_node},
+            presentation_generation=0,
         ),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda _row: (False, "")
@@ -602,6 +619,7 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
         passive_displayed_provenance_spec=spec,
         metadata_fields=[],
         derivation_display_rows=spec.display_rows(),
+        derivation_display_rows_cache_key=("node", None, None),
     )
 
     controller._set_metadata_node(node)
@@ -630,7 +648,9 @@ def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None
     manager = types.SimpleNamespace(
         metadata_derivation_list=derivation_list,
         _metadata_node_uid=None,
-        _tool_graph=types.SimpleNamespace(nodes={}, root_wrappers={}),
+        _tool_graph=types.SimpleNamespace(
+            nodes={}, root_wrappers={}, presentation_generation=0
+        ),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda _row: (False, "")
         ),
@@ -647,6 +667,7 @@ def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None
         passive_displayed_provenance_spec=spec,
         metadata_fields=[],
         derivation_display_rows=spec.display_rows(),
+        derivation_display_rows_cache_key=("node", None, None),
     )
 
     controller._set_metadata_node(node)

@@ -326,7 +326,15 @@ def test_manager_figures_gallery_view_preserves_selection_and_persists(
     with manager_context() as manager:
         first_uid = manager.add_figuretool(FigureComposerTool(data), show=False)
         second_uid = manager.add_figuretool(FigureComposerTool(data), show=False)
+        first_item = manager._figure_collection.item_for_uid(first_uid)
+        second_item = manager._figure_collection.item_for_uid(second_uid)
+        assert first_item is not None
+        assert second_item is not None
         manager._figure_collection.select_uid(first_uid)
+        manager._figure_collection.sync()
+
+        assert manager._figure_collection.item_for_uid(first_uid) is first_item
+        assert manager._figure_collection.item_for_uid(second_uid) is second_item
 
         assert (
             _figure_pane(manager).list_widget.viewMode()
@@ -1093,7 +1101,12 @@ def test_manager_copy_full_code_for_file_backed_figure_composer_sources(
             item = manager.metadata_derivation_list.topLevelItem(row)
             assert item is not None
             child_counts.append(item.childCount())
-        assert child_counts == [0, 1, 1, 0]
+        assert child_counts == [0, 0, 0, 0]
+        for row in (1, 2):
+            item = manager.metadata_derivation_list.topLevelItem(row)
+            assert item is not None
+            item.setExpanded(True)
+            assert item.childCount() == 1
 
         copied: list[str] = []
         monkeypatch.setattr(

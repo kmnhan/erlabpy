@@ -1132,6 +1132,9 @@ def test_manager_source_bound_derivation_rows_are_metadata_only(
         source_display_spec=source_spec,
     )
     child.manager = types.SimpleNamespace(_parent_node=lambda _node: parent)
+    child.derivation_display_rows_cache_key = (
+        manager_wrapper._ManagedWindowNode.derivation_display_rows_cache_key.fget(child)
+    )
 
     rows = manager_wrapper._ManagedWindowNode.derivation_display_rows.fget(child)
 

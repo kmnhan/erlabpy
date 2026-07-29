@@ -1361,6 +1361,16 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
             QtCore.Qt.AspectRatioMode.IgnoreAspectRatio
         ),
     ) -> None:
+        current = self._pixmapitem.pixmap()
+        if (
+            not pixmap.isNull()
+            and self._curve_data is None
+            and self._load_button.isHidden()
+            and self._aspect_ratio_mode == aspect_ratio_mode
+            and not current.isNull()
+            and current.cacheKey() == pixmap.cacheKey()
+        ):
+            return
         self._aspect_ratio_mode = aspect_ratio_mode
         self._clear_curve()
         self._load_button.hide()

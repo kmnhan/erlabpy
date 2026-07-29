@@ -194,6 +194,7 @@ def test_manager_metadata_derivation_list_has_visible_splitter(
                         manager_wrapper._MetadataField("Kind", "ImageTool")
                     ],
                     derivation_display_rows=rows,
+                    derivation_display_rows_cache_key=("node", None, None),
                 ),
             )
         )

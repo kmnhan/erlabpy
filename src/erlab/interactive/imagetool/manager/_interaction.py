@@ -155,19 +155,25 @@ class _ManagerInteractionGate(QtCore.QObject):
     def _event_marks_activity(
         self, obj: QtCore.QObject | None, event: QtCore.QEvent
     ) -> bool:
-        if not self._is_managed_object(obj):
-            return False
         event_type = event.type()
         if event_type == QtCore.QEvent.Type.MouseMove:
-            return isinstance(event, QtGui.QMouseEvent) and bool(event.buttons())
-        if event_type in self._ACTIVE_EVENT_TYPES:
-            return True
-        return event_type in self._EDITOR_FOCUS_TYPES and isinstance(
-            obj, self._EDITOR_WIDGET_TYPES
-        )
+            relevant = isinstance(event, QtGui.QMouseEvent) and bool(event.buttons())
+        elif event_type in self._ACTIVE_EVENT_TYPES:
+            relevant = True
+        else:
+            relevant = event_type in self._EDITOR_FOCUS_TYPES and isinstance(
+                obj, self._EDITOR_WIDGET_TYPES
+            )
+        return relevant and self._is_managed_object(obj)
 
     def _is_managed_object(self, obj: QtCore.QObject | None) -> bool:
         if not isinstance(obj, QtWidgets.QWidget):
+            return False
+        try:
+            window = obj.window()
+            if window in self._roots:
+                return True
+        except RuntimeError:
             return False
         for root in tuple(self._roots):
             try:

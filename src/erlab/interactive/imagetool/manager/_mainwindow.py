@@ -1227,11 +1227,13 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _register_root_wrapper(self, wrapper: _ImageToolWrapper) -> None:
         self._tool_graph.register_root(wrapper)
+        self._dependency_tracker.note_uid(wrapper.uid)
         if wrapper.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
 
     def _register_child_node(self, node: _ManagedWindowNode) -> None:
         self._tool_graph.register_child(node)
+        self._dependency_tracker.note_uid(node.uid)
         if node.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
         if node.tool_window is not None:
@@ -1239,6 +1241,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _register_figure_node(self, node: _ManagedWindowNode) -> None:
         self._tool_graph.register_figure(node)
+        self._dependency_tracker.note_uid(node.uid)
         if node.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
         if node.tool_window is not None:

@@ -4347,19 +4347,24 @@ def test_unavailable_replay_code_details_lists_unique_labels_and_fallback() -> N
 
     details = controller._unavailable_replay_code_details(
         types.SimpleNamespace(
-            derivation_entries=(start_entry, unavailable_entry, unavailable_entry)
+            derivation_entries=(start_entry, unavailable_entry, unavailable_entry),
+            passive_displayed_provenance_spec=None,
         )
     )
     assert details.count("Opaque step") == 1
 
     fallback = controller._unavailable_replay_code_details(
-        types.SimpleNamespace(derivation_entries=(start_entry,))
+        types.SimpleNamespace(
+            derivation_entries=(start_entry,),
+            passive_displayed_provenance_spec=None,
+        )
     )
     assert fallback
 
     no_spec_node = types.SimpleNamespace(
         derivation_entries=(start_entry, unavailable_entry),
         displayed_provenance_spec=None,
+        passive_displayed_provenance_spec=None,
     )
     assert controller._unavailable_replay_code_traceback(no_spec_node) is None
     dialog_details = controller._unavailable_replay_code_dialog_details(no_spec_node)

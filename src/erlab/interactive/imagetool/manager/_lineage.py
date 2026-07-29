@@ -318,12 +318,15 @@ class _LineageController:
         return self._manager._dependency_tracker.dependent_uids(uid)
 
     def _refresh_dependency_dependents(self, uid: str) -> None:
+        refresh_figures = False
         for dependent_uid in self._manager._dependency_dependent_uids(uid):
             if self._manager._is_figure_uid(dependent_uid):
-                self._manager._figure_collection.sync()
+                refresh_figures = True
                 self._manager._update_info(uid=dependent_uid)
             else:
                 self._manager.tree_view.refresh(dependent_uid)
+        if refresh_figures:
+            self._manager._figure_collection.sync()
 
     def _script_input_name_for_node(
         self, node: _ImageToolWrapper | _ManagedWindowNode
