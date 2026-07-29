@@ -1020,7 +1020,6 @@ class _PendingWorkspacePayloads:
                     node.update_title()
                     self._loader._sync_materialized_workspace_link_group(node)
                 self._manager.tree_view.refresh(node.uid)
-                self._manager._update_info(uid=node.uid)
                 return True
         except Exception:
             logger.exception(
@@ -1126,7 +1125,6 @@ class _PendingWorkspacePayloads:
             return False
         else:
             self._manager.tree_view.refresh(node.uid)
-            self._manager._update_info(uid=node.uid)
             return True
 
     def _has_pending_workspace_linked_slicers(

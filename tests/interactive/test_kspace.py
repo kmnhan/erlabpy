@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 import scipy.optimize
 import xarray as xr
+from qtpy import QtCore
 
 import erlab
 from erlab.accessors.kspace import IncompleteDataError, MomentumAccessor
@@ -979,6 +980,51 @@ def test_ktool_clear_memory_refusal_preview_without_angle_data(qtbot, anglemap) 
     assert win.images[1].data_array is None
     assert not win.preview_symmetry_group.isEnabled()
     assert not win.bz_group.isEnabled()
+
+
+def test_ktool_angle_slice_cache_ignores_conversion_only_changes(
+    qtbot,
+    monkeypatch,
+    anglemap,
+) -> None:
+    win = ktool(anglemap, execute=False)
+    _add_hidden_tool(qtbot, win)
+    with QtCore.QSignalBlocker(win.width_spin):
+        win.width_spin.setValue(3)
+    win._angle_data_cache_key_value = None
+    win._angle_data_cache = None
+
+    mean_calls = 0
+    original_mean = xr.DataArray.mean
+
+    def _record_mean(data, *args, **kwargs):
+        nonlocal mean_calls
+        mean_calls += 1
+        return original_mean(data, *args, **kwargs)
+
+    monkeypatch.setattr(xr.DataArray, "mean", _record_mean)
+
+    first = win._angle_data()
+    with QtCore.QSignalBlocker(win._offset_spins["delta"]):
+        win._offset_spins["delta"].setValue(win._offset_spins["delta"].value() + 1)
+    win.data.attrs["cache_marker"] = "current"
+    second = win._angle_data()
+
+    second_without_marker = second.copy(deep=False)
+    second_without_marker.attrs.pop("cache_marker")
+    xr.testing.assert_identical(first, second_without_marker)
+    assert second.attrs["cache_marker"] == "current"
+    assert mean_calls == 1
+
+    with QtCore.QSignalBlocker(win.center_spin):
+        win.center_spin.setValue(
+            min(
+                win.center_spin.maximum(),
+                win.center_spin.value() + win.center_spin.singleStep(),
+            )
+        )
+    win._angle_data()
+    assert mean_calls == 2
 
 
 def test_ktool_preview_memory_estimate_recomputed_for_slice_change(

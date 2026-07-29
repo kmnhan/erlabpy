@@ -778,7 +778,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._install_selection_shortcuts(self.tree_view)
         self.tree_view._selection_model.selectionChanged.connect(self._update_actions)
         self.tree_view._selection_model.selectionChanged.connect(self._update_info)
-        self.tree_view._model.dataChanged.connect(self._update_info)
+        self.tree_view._model.dataChanged.connect(self._handle_tree_data_changed)
 
         self.left_tabs = QtWidgets.QTabWidget(left_container)
         self.left_tabs.setObjectName("manager_left_tabs")
@@ -1747,6 +1747,48 @@ class ImageToolManager(_ImageToolManagerBase):
             self._deferred_workspace_info_uids.add(uid)
             return
         self._details_panel._update_info(uid=uid)
+
+    def _handle_tree_data_changed(
+        self,
+        top_left: QtCore.QModelIndex,
+        bottom_right: QtCore.QModelIndex,
+        _roles: object = None,
+    ) -> None:
+        selected = self.tree_view.selectedIndexes()
+        root_wide_change = (
+            not top_left.parent().isValid()
+            and not bottom_right.parent().isValid()
+            and top_left.row() == 0
+            and bottom_right.row() == self.tree_view._model.rowCount() - 1
+        )
+        changed_selected = [
+            index
+            for index in selected
+            if root_wide_change
+            or (
+                index.parent() == top_left.parent()
+                and top_left.row() <= index.row() <= bottom_right.row()
+            )
+        ]
+        if not changed_selected:
+            return
+        if len(selected) != 1:
+            self._queue_idle_work(
+                ("details-refresh", "selection"),
+                self._update_info,
+            )
+            return
+        pointer = changed_selected[0].internalPointer()
+        uid = pointer if isinstance(pointer, str) else pointer.uid
+        self._schedule_details_refresh(uid)
+
+    def _schedule_details_refresh(self, uid: str) -> None:
+        if self._metadata_node_uid != uid:
+            return
+        self._queue_idle_work(
+            ("details-refresh", uid),
+            lambda: self._update_info(uid=uid),
+        )
 
     def _schedule_tool_metadata_update(self, uid: str) -> None:
         self._details_panel._schedule_tool_metadata_update(uid)

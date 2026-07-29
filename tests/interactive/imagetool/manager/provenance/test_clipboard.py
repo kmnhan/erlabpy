@@ -271,6 +271,7 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
     qtbot.addWidget(derivation_list)
     manager = types.SimpleNamespace(
         metadata_derivation_list=derivation_list,
+        _metadata_node_uid=None,
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda row: (row is child_row, "")
         ),
@@ -282,7 +283,9 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
     )
     node = types.SimpleNamespace(
         uid="node",
+        tool_window=None,
         displayed_provenance_spec=full_data(),
+        passive_displayed_provenance_spec=full_data(),
         metadata_fields=[],
         derivation_display_rows=[parent_row, sibling_row],
     )
@@ -323,6 +326,11 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
     with pytest.raises(TypeError):
         parent_tree_item.setForeground()
 
+    assert parent_item.childCount() == 0
+    assert parent_item.childIndicatorPolicy() == (
+        QtWidgets.QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
+    )
+    derivation_list.expandItem(parent_item)
     assert parent_item.childCount() == 1
     child_item = parent_item.child(0)
     assert child_item is not None
@@ -356,6 +364,192 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
     assert derivation_list.uniformRowHeights()
 
 
+def test_manager_metadata_derivation_tree_populates_only_expanded_branches(
+    qtbot,
+) -> None:
+    row = _ProvenanceDisplayRow(DerivationEntry("Leaf", None, False))
+    for depth in range(100):
+        row = _ProvenanceDisplayRow(
+            DerivationEntry(f"Level {depth}", None, False),
+            children=(row,),
+        )
+
+    derivation_list = manager_widgets._MetadataDerivationListWidget()
+    qtbot.addWidget(derivation_list)
+    editability_checks: list[_ProvenanceDisplayRow] = []
+
+    def _record_editability_check(
+        checked_row: _ProvenanceDisplayRow,
+    ) -> tuple[bool, str]:
+        editability_checks.append(checked_row)
+        return False, ""
+
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=derivation_list,
+        _metadata_node_uid=None,
+        _provenance_edit_controller=types.SimpleNamespace(
+            can_edit_row=_record_editability_check
+        ),
+        _set_metadata_fields=lambda _fields: None,
+        _update_metadata_pane=lambda: None,
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+    node = types.SimpleNamespace(
+        uid="node",
+        tool_window=None,
+        displayed_provenance_spec=full_data(),
+        passive_displayed_provenance_spec=full_data(),
+        metadata_fields=[],
+        derivation_display_rows=[row],
+    )
+
+    controller._set_metadata_node(node)
+
+    root_item = derivation_list.topLevelItem(0)
+    assert root_item is not None
+    assert derivation_list.count() == 101
+    assert root_item.childCount() == 0
+    assert editability_checks == [row]
+
+    derivation_list.expandItem(root_item)
+
+    child_item = root_item.child(0)
+    assert child_item is not None
+    assert child_item.childCount() == 0
+    assert editability_checks == [row, row.children[0]]
+
+    child_item.setSelected(True)
+    selected_rows, expanded_rows = controller._metadata_derivation_view_state()
+    assert selected_rows == frozenset({row.children[0]})
+    assert expanded_rows == frozenset({row})
+
+    controller._set_metadata_node(node)
+
+    restored_root = derivation_list.topLevelItem(0)
+    assert restored_root is not None
+    assert restored_root.isExpanded()
+    restored_child = restored_root.child(0)
+    assert restored_child is not None
+    assert restored_child.isSelected()
+
+
+def test_manager_metadata_derivation_state_restore_uses_indexed_lookups(
+    qtbot,
+    monkeypatch,
+) -> None:
+    rows = tuple(
+        _ProvenanceDisplayRow(
+            DerivationEntry(f"Parent {index}", None, False),
+            replay_ref=_ProvenanceStepRef("operation", operation_index=index),
+            children=(
+                _ProvenanceDisplayRow(
+                    DerivationEntry(f"Child {index}", None, False),
+                ),
+            ),
+        )
+        for index in range(96)
+    )
+    derivation_list = manager_widgets._MetadataDerivationListWidget()
+    qtbot.addWidget(derivation_list)
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=derivation_list,
+        _metadata_node_uid=None,
+        _provenance_edit_controller=types.SimpleNamespace(
+            can_edit_row=lambda _row: (False, "")
+        ),
+        _set_metadata_fields=lambda _fields: None,
+        _update_metadata_pane=lambda: None,
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+    spec = full_data()
+    node = types.SimpleNamespace(
+        uid="node",
+        tool_window=None,
+        displayed_provenance_spec=spec,
+        passive_displayed_provenance_spec=spec,
+        metadata_fields=[],
+        derivation_display_rows=rows,
+    )
+
+    controller._set_metadata_node(node)
+    for index in range(derivation_list.topLevelItemCount()):
+        item = derivation_list.topLevelItem(index)
+        assert item is not None
+        derivation_list.expandItem(item)
+
+    comparison_count = 0
+    original_eq = _ProvenanceDisplayRow.__eq__
+
+    def _count_row_comparisons(
+        left: _ProvenanceDisplayRow,
+        right: object,
+    ) -> bool:
+        nonlocal comparison_count
+        comparison_count += 1
+        return original_eq(left, right)
+
+    monkeypatch.setattr(_ProvenanceDisplayRow, "__eq__", _count_row_comparisons)
+
+    controller._set_metadata_node(node)
+
+    assert comparison_count < len(rows) * 2
+    for index in range(derivation_list.topLevelItemCount()):
+        item = derivation_list.topLevelItem(index)
+        assert item is not None
+        assert item.isExpanded()
+
+
+def test_manager_metadata_display_order_does_not_materialize_collapsed_rows(
+    qtbot,
+) -> None:
+    materialization_calls = 0
+
+    def _load_children() -> tuple[_ProvenanceDisplayRow, ...]:
+        nonlocal materialization_calls
+        materialization_calls += 1
+        return (_ProvenanceDisplayRow(DerivationEntry("Hidden child", None, False)),)
+
+    parent_row = _ProvenanceDisplayRow(
+        DerivationEntry("Parent", None, False),
+        _children_factory=_load_children,
+    )
+    sibling_row = _ProvenanceDisplayRow(DerivationEntry("Sibling", None, False))
+    derivation_list = manager_widgets._MetadataDerivationListWidget()
+    qtbot.addWidget(derivation_list)
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=derivation_list,
+        _metadata_node_uid=None,
+        _provenance_edit_controller=types.SimpleNamespace(
+            can_edit_row=lambda _row: (False, "")
+        ),
+        _set_metadata_fields=lambda _fields: None,
+        _update_metadata_pane=lambda: None,
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+    spec = full_data()
+    node = types.SimpleNamespace(
+        uid="node",
+        tool_window=None,
+        displayed_provenance_spec=spec,
+        passive_displayed_provenance_spec=spec,
+        metadata_fields=[],
+        derivation_display_rows=[parent_row, sibling_row],
+    )
+
+    controller._set_metadata_node(node)
+
+    sibling_item = derivation_list.topLevelItem(1)
+    assert sibling_item is not None
+    assert derivation_list.display_order(sibling_item) == 1
+    assert materialization_calls == 0
+
+
 def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
     source_spec = script(
         start_label="Build source",
@@ -387,6 +581,7 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
     )
     manager = types.SimpleNamespace(
         metadata_derivation_list=derivation_list,
+        _metadata_node_uid=None,
         _tool_graph=types.SimpleNamespace(
             nodes={"n16": source_node},
             root_wrappers={4: source_node},
@@ -402,7 +597,9 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
     )
     node = types.SimpleNamespace(
         uid="node",
+        tool_window=None,
         displayed_provenance_spec=spec,
+        passive_displayed_provenance_spec=spec,
         metadata_fields=[],
         derivation_display_rows=spec.display_rows(),
     )
@@ -432,6 +629,7 @@ def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None
     qtbot.addWidget(derivation_list)
     manager = types.SimpleNamespace(
         metadata_derivation_list=derivation_list,
+        _metadata_node_uid=None,
         _tool_graph=types.SimpleNamespace(nodes={}, root_wrappers={}),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda _row: (False, "")
@@ -444,7 +642,9 @@ def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None
     )
     node = types.SimpleNamespace(
         uid="node",
+        tool_window=None,
         displayed_provenance_spec=spec,
+        passive_displayed_provenance_spec=spec,
         metadata_fields=[],
         derivation_display_rows=spec.display_rows(),
     )
@@ -516,6 +716,7 @@ def test_manager_unavailable_replay_details_skip_replayable_script_inputs() -> N
     )
     node = types.SimpleNamespace(
         displayed_provenance_spec=spec,
+        passive_displayed_provenance_spec=spec,
         derivation_entries=spec.derivation_entries(),
         derivation_display_rows=spec.display_rows(),
     )

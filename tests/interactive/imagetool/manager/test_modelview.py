@@ -84,7 +84,13 @@ def test_dependency_tracker_uses_passive_tool_provenance() -> None:
             return _PassiveTool()
 
         @property
-        def provenance_spec(self):
+        def passive_displayed_provenance_spec(self):
+            return self.tool_window.current_provenance_spec(
+                flush_deferred_restore=False
+            )
+
+        @property
+        def displayed_provenance_spec(self):
             pytest.fail("dependency tracking must not request flushing provenance")
 
     graph = types.SimpleNamespace(nodes={"dependent-uid": _PassiveNode()})
@@ -793,8 +799,264 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
             == 1
         )
         manager._flush_idle_work(force=True)
+        assert metadata_updates == []
+        assert ("details-refresh", uid) in manager._interaction_gate.pending_keys
+        manager._flush_idle_work(force=True)
         assert metadata_updates == [uid]
         assert "updated child info final" in manager.text_box.toPlainText()
+
+
+def test_tree_data_changed_refreshes_details_only_for_selected_rows(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        (test_data + 1).qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        select_tools(manager, [0])
+        manager._flush_idle_work(force=True)
+
+        metadata_updates: list[str] = []
+        original_set_metadata_node = manager._set_metadata_node
+
+        def _record_metadata_rebuild(node) -> None:
+            metadata_updates.append(node.uid)
+            original_set_metadata_node(node)
+
+        monkeypatch.setattr(manager, "_set_metadata_node", _record_metadata_rebuild)
+
+        manager.tree_view.refresh(1)
+        manager._flush_idle_work(force=True)
+        assert metadata_updates == []
+
+        selected_uid = manager._tool_graph.root_wrappers[0].uid
+        manager.tree_view.refresh(0)
+        assert metadata_updates == []
+        assert ("details-refresh", selected_uid) in (
+            manager._interaction_gate.pending_keys
+        )
+
+        manager._flush_idle_work(force=True)
+        assert metadata_updates == [selected_uid]
+
+        tool = _InfoRefreshTool(test_data)
+        child_uid = manager.add_childtool(tool, 0, show=False)
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._flush_idle_work(force=True)
+        metadata_updates.clear()
+
+        manager.tree_view.refresh()
+        manager._flush_idle_work(force=True)
+
+        assert metadata_updates == [child_uid]
+
+
+def test_derivation_display_rows_are_cached_until_provenance_changes(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        wrapper = manager._tool_graph.root_wrappers[0]
+        wrapper.set_displayed_provenance(full_data(), advance_snapshot=False)
+        display_row_calls = 0
+        original_display_rows = ToolProvenanceSpec.display_rows
+
+        def _record_display_rows(spec, **kwargs):
+            nonlocal display_row_calls
+            display_row_calls += 1
+            return original_display_rows(spec, **kwargs)
+
+        monkeypatch.setattr(
+            ToolProvenanceSpec,
+            "display_rows",
+            _record_display_rows,
+        )
+
+        first_rows = wrapper.derivation_display_rows
+        second_rows = wrapper.derivation_display_rows
+
+        assert second_rows == first_rows
+        assert display_row_calls == 1
+
+        wrapper.set_displayed_provenance(
+            script(
+                start_label="Updated provenance",
+                seed_code="derived = data",
+                active_name="derived",
+            ),
+            advance_snapshot=False,
+        )
+
+        assert wrapper.derivation_display_rows != first_rows
+        assert display_row_calls == 2
+
+
+def test_tool_provenance_spec_is_cached_between_tool_signals(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = _InfoRefreshTool(test_data)
+        uid = manager.add_childtool(tool, 0, show=False)
+        child_node = manager._child_node(uid)
+        provenance = full_data()
+        calls: list[bool] = []
+
+        def _current_provenance_spec(*, flush_deferred_restore: bool = True):
+            calls.append(flush_deferred_restore)
+            return provenance
+
+        monkeypatch.setattr(
+            tool,
+            "current_provenance_spec",
+            _current_provenance_spec,
+        )
+        child_node._invalidate_tool_provenance_spec_cache()
+
+        manager._set_metadata_node(child_node)
+        manager._set_metadata_node(child_node)
+        assert calls == [False]
+
+        assert child_node.displayed_provenance_spec is provenance
+        assert child_node.displayed_provenance_spec is provenance
+        assert calls == [False, True]
+        initial_rows = child_node.derivation_display_rows
+
+        provenance = script(
+            start_label="Updated tool provenance",
+            seed_code="derived = data",
+            active_name="derived",
+        )
+        tool.sigStateChanged.emit()
+        assert child_node.displayed_provenance_spec is provenance
+        assert child_node.derivation_display_rows != initial_rows
+        assert calls == [False, True, True]
+
+        tool.sigInfoChanged.emit()
+        assert child_node.displayed_provenance_spec is provenance
+        assert calls == [False, True, True, True]
+
+        child_node._handle_tool_data_changed()
+        assert child_node.displayed_provenance_spec is provenance
+        assert calls == [False, True, True, True, True]
+
+
+def test_copy_full_code_materializes_tool_provenance_on_demand(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = _InfoRefreshTool(test_data)
+        tool.set_source_binding(full_data(), auto_update=False)
+        uid = manager.add_childtool(tool, 0, show=False)
+        child_node = manager._child_node(uid)
+        provenance = script(
+            start_label="Deferred tool provenance",
+            seed_code="derived = 1",
+            active_name="derived",
+        )
+        calls: list[bool] = []
+
+        def _current_provenance_spec(*, flush_deferred_restore: bool = True):
+            calls.append(flush_deferred_restore)
+            return provenance if flush_deferred_restore else None
+
+        monkeypatch.setattr(
+            tool,
+            "current_provenance_spec",
+            _current_provenance_spec,
+        )
+        copied: list[str] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "copy_to_clipboard",
+            lambda code: copied.append(code) or code,
+        )
+        child_node._invalidate_tool_provenance_spec_cache()
+
+        manager._set_metadata_node(child_node)
+
+        assert manager._metadata_full_code_available
+        assert calls == [False]
+
+        menu = manager._build_metadata_derivation_menu(include_row_actions=False)
+        assert menu is not None
+        assert manager._metadata_copy_full_action in menu.actions()
+        manager._metadata_copy_full_action.trigger()
+
+        assert calls == [False, True]
+        namespace: dict[str, object] = {}
+        exec(copied[0], namespace)  # noqa: S102
+        assert namespace["derived"] == 1
+
+
+def test_repeated_stale_propagation_does_not_refresh_unchanged_child(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = _InfoRefreshTool(test_data)
+        tool.set_source_binding(full_data(), auto_update=False)
+        uid = manager.add_childtool(tool, 0, show=False)
+        root = manager._tool_graph.root_wrappers[0]
+        refreshed_uids: list[str | None] = []
+        info_changes: list[None] = []
+        tool.sigInfoChanged.connect(lambda: info_changes.append(None))
+        monkeypatch.setattr(
+            manager.tree_view,
+            "refresh",
+            lambda target_uid=None: refreshed_uids.append(target_uid),
+        )
+
+        manager._propagate_source_change_from_uid(root.uid, test_data)
+        assert tool.source_state == "stale"
+        assert uid in refreshed_uids
+        assert info_changes == [None]
+
+        refreshed_uids.clear()
+        info_changes.clear()
+        manager._propagate_source_change_from_uid(root.uid, test_data)
+        assert refreshed_uids == []
+        assert info_changes == []
 
 
 def test_childtool_state_changed_marks_dirty_without_details_refresh(
@@ -976,7 +1238,59 @@ def test_childtool_data_changed_deduplicates_descendant_refresh(
         manager._flush_idle_work(force=True)
 
         assert propagated_uids == [uid]
-        assert refreshed_uids == [uid, uid]
+        assert refreshed_uids == [uid]
+
+
+def test_childtool_update_burst_rebuilds_selected_details_once(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = _InfoRefreshTool(test_data)
+        uid = manager.add_childtool(tool, 0, show=False)
+        qtbot.wait_until(
+            lambda: uid in manager._tool_graph.root_wrappers[0]._childtool_indices,
+            timeout=5000,
+        )
+        select_child_tool(manager, uid)
+        manager._flush_idle_work(force=True)
+
+        metadata_updates: list[str] = []
+        original_set_metadata_node = manager._set_metadata_node
+
+        def _record_metadata_rebuild(node) -> None:
+            metadata_updates.append(node.uid)
+            original_set_metadata_node(node)
+
+        monkeypatch.setattr(manager, "_set_metadata_node", _record_metadata_rebuild)
+        monkeypatch.setattr(
+            manager,
+            "_propagate_source_change_from_uid",
+            lambda _uid: None,
+        )
+
+        child_node = manager._child_node(uid)
+        child_node._handle_tool_info_changed()
+        child_node._handle_tool_info_changed()
+        child_node._handle_tool_data_changed()
+        child_node._handle_tool_data_changed()
+
+        manager._flush_idle_work(force=True)
+        assert metadata_updates == []
+        assert (
+            manager._interaction_gate.pending_keys.count(("details-refresh", uid)) == 1
+        )
+
+        manager._flush_idle_work(force=True)
+        assert metadata_updates == [uid]
 
 
 def test_manager_interaction_gate_tracks_key_and_editor_focus_events(

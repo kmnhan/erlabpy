@@ -5001,11 +5001,13 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             finally:
                 self._source_refreshing = False
             if update_complete is False:
-                self._set_source_state("stale")
+                if self._source_state != "stale":
+                    self._set_source_state("stale")
                 return
             self.finalize_source_refresh()
         else:
-            self._set_source_state("stale")
+            if self._source_state != "stale":
+                self._set_source_state("stale")
 
     def show_source_update_dialog(
         self, *, parent: QtWidgets.QWidget | None = None

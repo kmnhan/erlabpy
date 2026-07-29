@@ -185,6 +185,9 @@ class _MetadataDerivationListWidget(QtWidgets.QTreeWidget):
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
+        self._item_children_populator: (
+            Callable[[QtWidgets.QTreeWidgetItem], None] | None
+        ) = None
         self.setColumnCount(1)
         self.setHeaderHidden(True)
         self.setRootIsDecorated(True)
@@ -192,6 +195,17 @@ class _MetadataDerivationListWidget(QtWidgets.QTreeWidget):
         self.setExpandsOnDoubleClick(False)
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.context_menu_requested)
+        self.itemExpanded.connect(self._populate_item_children)
+
+    def set_item_children_populator(
+        self,
+        populator: Callable[[QtWidgets.QTreeWidgetItem], None],
+    ) -> None:
+        self._item_children_populator = populator
+
+    def _populate_item_children(self, item: QtWidgets.QTreeWidgetItem) -> None:
+        if self._item_children_populator is not None:
+            self._item_children_populator(item)
 
     def _flattened_items(self) -> list[QtWidgets.QTreeWidgetItem]:
         items: list[QtWidgets.QTreeWidgetItem] = []
@@ -218,13 +232,25 @@ class _MetadataDerivationListWidget(QtWidgets.QTreeWidget):
         self.setUniformRowHeights(enabled)
 
     def count(self) -> int:
-        return len(self._flattened_items())
+        count = 0
+        for row in range(self.topLevelItemCount()):
+            item = self.topLevelItem(row)
+            if item is not None:  # pragma: no branch - valid Qt row
+                count += self._conceptual_item_count(item)
+        return count
 
     def item(self, row: int) -> QtWidgets.QTreeWidgetItem | None:
-        items = self._flattened_items()
-        if row < 0 or row >= len(items):
+        if row < 0:
             return None
-        return items[row]
+        offset = 0
+        for top_level_row in range(self.topLevelItemCount()):
+            item = self.topLevelItem(top_level_row)
+            if item is None:  # pragma: no cover - invalid Qt tree state
+                continue
+            found, offset = self._item_at_row(item, row, offset)
+            if found is not None:
+                return found
+        return None
 
     def row(self, item: QtWidgets.QTreeWidgetItem) -> int:
         return self.display_order(item)
@@ -234,6 +260,66 @@ class _MetadataDerivationListWidget(QtWidgets.QTreeWidget):
             return self._flattened_items().index(item)
         except ValueError:
             return -1
+
+    @staticmethod
+    def _row_children(row: object) -> tuple[object, ...]:
+        materialized_children = getattr(row, "materialized_children", None)
+        if callable(materialized_children):
+            return tuple(materialized_children())
+        children = getattr(row, "children", ())
+        return tuple(children) if isinstance(children, tuple) else ()
+
+    @classmethod
+    def _conceptual_row_count(cls, row: object) -> int:
+        return 1 + sum(
+            cls._conceptual_row_count(child) for child in cls._row_children(row)
+        )
+
+    @classmethod
+    def _conceptual_item_count(
+        cls,
+        item: QtWidgets.QTreeWidgetItem,
+    ) -> int:
+        row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
+        if row is not None:
+            return cls._conceptual_row_count(row)
+        count = 1
+        for index in range(item.childCount()):
+            child = item.child(index)
+            if child is not None:  # pragma: no branch - valid Qt row
+                count += cls._conceptual_item_count(child)
+        return count
+
+    def _item_at_row(
+        self,
+        item: QtWidgets.QTreeWidgetItem,
+        target: int,
+        offset: int,
+    ) -> tuple[QtWidgets.QTreeWidgetItem | None, int]:
+        if offset == target:
+            return item, offset + 1
+        offset += 1
+        row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
+        row_children = self._row_children(row)
+        if row_children:
+            for child_index, child_row in enumerate(row_children):
+                child_count = self._conceptual_row_count(child_row)
+                if target < offset + child_count:
+                    self._populate_item_children(item)
+                    child_item = item.child(child_index)
+                    if child_item is None:  # pragma: no cover - invalid Qt tree state
+                        return None, offset + child_count
+                    return self._item_at_row(child_item, target, offset)
+                offset += child_count
+            return None, offset
+        for child_index in range(item.childCount()):
+            child_item = item.child(child_index)
+            if child_item is None:  # pragma: no cover - invalid Qt tree state
+                continue
+            found, offset = self._item_at_row(child_item, target, offset)
+            if found is not None:
+                return found, offset
+        return None, offset
 
     def keyPressEvent(self, event: QtGui.QKeyEvent | None) -> None:
         if event is None:

@@ -131,6 +131,8 @@ class _DetailsPanelController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
         self._tool_preview_update_generation = 0
+        self._note_editor_dirty = False
+        self._metadata_derivation_spec: ToolProvenanceSpec | None = None
 
     def _node_info_html(self, node: _ImageToolWrapper | _ManagedWindowNode) -> str:
         return node.info_text
@@ -184,17 +186,20 @@ class _DetailsPanelController:
             self._update_note_actions()
             return
 
-        if self._manager._notes_node_uid != node.uid:
+        target_changed = self._manager._notes_node_uid != node.uid
+        if target_changed:
             self._manager._commit_note_editor()
         self._manager._notes_node_uid = node.uid
         self._manager.notes_title_label.setText(node.display_text)
         self._manager.notes_kind_label.setText(self._note_kind_text(node))
-        self._manager._updating_note_editor = True
-        try:
-            if self._manager.notes_editor.toPlainText() != node.note:
-                self._manager.notes_editor.setPlainText(node.note)
-        finally:
-            self._manager._updating_note_editor = False
+        if target_changed or not self._note_editor_dirty:
+            self._manager._updating_note_editor = True
+            try:
+                if self._manager.notes_editor.toPlainText() != node.note:
+                    self._manager.notes_editor.setPlainText(node.note)
+            finally:
+                self._manager._updating_note_editor = False
+            self._note_editor_dirty = False
         self._manager.notes_editor.setEnabled(True)
         self._update_note_actions()
 
@@ -213,6 +218,7 @@ class _DetailsPanelController:
             return
         if self._manager._updating_note_editor:
             return
+        self._note_editor_dirty = True
         self._manager._note_commit_timer.start()
 
     def _commit_note_editor(self) -> None:
@@ -223,12 +229,15 @@ class _DetailsPanelController:
             return
         node = self._current_note_node()
         if node is None:
+            self._note_editor_dirty = False
             return
         note = self._manager.notes_editor.toPlainText()
         if node.note == note:
+            self._note_editor_dirty = False
             self._update_note_actions()
             return
         node.note = note
+        self._note_editor_dirty = False
         self._manager._mark_node_state_dirty(node.uid)
         self._manager.tree_view.refresh(node.uid)
         self._update_note_actions()
@@ -266,6 +275,7 @@ class _DetailsPanelController:
     def _clear_metadata(self) -> None:
         self._manager._metadata_full_code_available = False
         self._manager._metadata_node_uid = None
+        self._metadata_derivation_spec = None
         self._set_notes_node(None)
         with QtCore.QSignalBlocker(self._manager.metadata_derivation_list):
             self._manager.metadata_derivation_list.clear()
@@ -273,18 +283,32 @@ class _DetailsPanelController:
         self._manager._update_metadata_pane()
 
     def _set_metadata_node(self, node: _ImageToolWrapper | _ManagedWindowNode) -> None:
+        selected_rows: frozenset[_ProvenanceDisplayRow] = frozenset()
+        expanded_rows: frozenset[_ProvenanceDisplayRow] = frozenset()
+        if self._manager._metadata_node_uid == node.uid:
+            selected_rows, expanded_rows = self._metadata_derivation_view_state()
         self._set_notes_node(node)
+        displayed_spec = node.passive_displayed_provenance_spec
         self._manager._metadata_full_code_available = (
-            node.displayed_provenance_spec is not None
+            displayed_spec is not None or node.tool_window is not None
         )
+        self._metadata_derivation_spec = displayed_spec
         self._manager._metadata_node_uid = node.uid
         self._manager._set_metadata_fields(node.metadata_fields)
+        self._manager.metadata_derivation_list.set_item_children_populator(
+            self._populate_metadata_derivation_item_children
+        )
 
         with QtCore.QSignalBlocker(self._manager.metadata_derivation_list):
             self._manager.metadata_derivation_list.clear()
             for row in self._current_derivation_display_rows(node):
-                self._manager.metadata_derivation_list.addItem(
-                    self._metadata_derivation_item(row)
+                item = self._metadata_derivation_item(row)
+                self._manager.metadata_derivation_list.addItem(item)
+                self._restore_metadata_derivation_item_state(
+                    item,
+                    row,
+                    selected_rows=selected_rows,
+                    expanded_rows=expanded_rows,
                 )
         self._manager._update_metadata_pane()
 
@@ -404,7 +428,7 @@ class _DetailsPanelController:
         *,
         include_history: bool = False,
     ) -> list[_ProvenanceDisplayRow]:
-        spec = getattr(node, "displayed_provenance_spec", None)
+        spec = node.passive_displayed_provenance_spec
         rows = getattr(node, "derivation_display_rows", None)
         if rows is None:
             rows = [
@@ -428,7 +452,9 @@ class _DetailsPanelController:
         for row in rows:
             flattened.append(row)
             flattened.extend(
-                _DetailsPanelController._flatten_derivation_rows(row.children)
+                _DetailsPanelController._flatten_derivation_rows(
+                    row.materialized_children()
+                )
             )
         return flattened
 
@@ -468,9 +494,84 @@ class _DetailsPanelController:
                     QtGui.QPalette.ColorRole.Text,
                 )
             )
-        for child_row in row.children:
-            item.addChild(self._metadata_derivation_item(child_row))
+        if row.has_children:
+            item.setChildIndicatorPolicy(
+                QtWidgets.QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
+            )
         return item
+
+    def _metadata_derivation_view_state(
+        self,
+    ) -> tuple[
+        frozenset[_ProvenanceDisplayRow],
+        frozenset[_ProvenanceDisplayRow],
+    ]:
+        selected: set[_ProvenanceDisplayRow] = set()
+        expanded: set[_ProvenanceDisplayRow] = set()
+
+        def collect(item: QtWidgets.QTreeWidgetItem) -> None:
+            row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
+            if isinstance(row, _ProvenanceDisplayRow):
+                if item.isSelected():
+                    selected.add(row)
+                if item.isExpanded():
+                    expanded.add(row)
+            for index in range(item.childCount()):
+                child = item.child(index)
+                if child is not None:  # pragma: no branch - valid Qt row
+                    collect(child)
+
+        tree = self._manager.metadata_derivation_list
+        for index in range(tree.topLevelItemCount()):
+            item = tree.topLevelItem(index)
+            if item is not None:  # pragma: no branch - valid Qt row
+                collect(item)
+        return frozenset(selected), frozenset(expanded)
+
+    def _restore_metadata_derivation_item_state(
+        self,
+        item: QtWidgets.QTreeWidgetItem,
+        row: _ProvenanceDisplayRow,
+        *,
+        selected_rows: frozenset[_ProvenanceDisplayRow],
+        expanded_rows: frozenset[_ProvenanceDisplayRow],
+    ) -> None:
+        if row in selected_rows:
+            item.setSelected(True)
+        if row in expanded_rows:
+            self._populate_metadata_derivation_item_children(
+                item,
+                selected_rows=selected_rows,
+                expanded_rows=expanded_rows,
+            )
+            item.setExpanded(True)
+
+    def _populate_metadata_derivation_item_children(
+        self,
+        item: QtWidgets.QTreeWidgetItem,
+        *,
+        selected_rows: frozenset[_ProvenanceDisplayRow] = frozenset(),
+        expanded_rows: frozenset[_ProvenanceDisplayRow] = frozenset(),
+    ) -> None:
+        if item.childCount() != 0:
+            return
+        row = item.data(0, _METADATA_DERIVATION_ROW_ROLE)
+        if not isinstance(row, _ProvenanceDisplayRow):
+            return
+        for child_row in row.materialized_children():
+            current_row = self._current_derivation_display_row(
+                child_row,
+                self._metadata_derivation_spec,
+                include_history=False,
+            )
+            child_item = self._metadata_derivation_item(current_row)
+            item.addChild(child_item)
+            self._restore_metadata_derivation_item_state(
+                child_item,
+                current_row,
+                selected_rows=selected_rows,
+                expanded_rows=expanded_rows,
+            )
 
     def _set_metadata_fields(self, fields: list[_MetadataField]) -> None:
         layout = self._manager.metadata_details_layout
@@ -715,7 +816,7 @@ class _DetailsPanelController:
 
     def _update_metadata_pane(self) -> None:
         has_details = bool(self._manager._metadata_detail_labels)
-        derivation_count = self._manager.metadata_derivation_list.count()
+        derivation_count = self._manager.metadata_derivation_list.topLevelItemCount()
         has_note_target = self._manager._notes_node_uid is not None
         has_metadata = has_details or derivation_count > 0 or has_note_target
 
@@ -891,7 +992,7 @@ class _DetailsPanelController:
     def _build_metadata_derivation_menu(
         self, *, include_row_actions: bool = True
     ) -> QtWidgets.QMenu | None:
-        if self._manager.metadata_derivation_list.count() == 0:
+        if self._manager.metadata_derivation_list.topLevelItemCount() == 0:
             return None
 
         menu = QtWidgets.QMenu(self._manager.metadata_derivation_list)

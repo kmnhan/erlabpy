@@ -5808,6 +5808,39 @@ def test_script_input_code_keeps_distinct_structured_replay_nodes() -> None:
     assert code.count("xarray.load_dataarray") == 2
 
 
+def test_lazy_script_input_rows_materialize_children_once(monkeypatch) -> None:
+    nested = script(
+        start_label="Nested input",
+        seed_code="nested = data",
+        active_name="nested",
+    )
+    spec = script(
+        start_label="Outer script",
+        seed_code="derived = nested",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(name="nested", label="Nested", provenance_spec=nested),
+        ),
+    )
+    parse_calls = 0
+    original_parse = ScriptInput.parsed_provenance_spec
+
+    def _record_parse(script_input):
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_parse(script_input)
+
+    monkeypatch.setattr(ScriptInput, "parsed_provenance_spec", _record_parse)
+
+    input_row = spec.display_rows(_lazy_script_inputs=True)[1]
+    assert parse_calls == 0
+
+    children = input_row.materialized_children()
+    assert children
+    assert input_row.materialized_children() is children
+    assert parse_calls == 1
+
+
 def test_script_input_dependency_refs_recurse_and_rebase() -> None:
     left_snapshot_id = "left-snapshot"
     right_snapshot_id = "right-snapshot"
@@ -6111,6 +6144,28 @@ def test_script_input_label_is_preserved_and_defaults_to_name() -> None:
         ScriptInput(name="data_0", label=1)
     with pytest.raises(ValidationError):
         ScriptInput(name="data_0", label="\n  \t")
+
+
+def test_script_input_caches_parsed_provenance_until_payload_changes() -> None:
+    script_input = ScriptInput(
+        name="data_0",
+        provenance_spec=full_data(),
+    )
+
+    parsed = script_input.parsed_provenance_spec()
+
+    assert parsed is not None
+    assert script_input.parsed_provenance_spec() is parsed
+    assert script_input.model_copy().parsed_provenance_spec() is parsed
+
+    updated_input = script_input.model_copy(
+        update={"provenance_spec": public_data().model_dump(mode="json")}
+    )
+    updated = updated_input.parsed_provenance_spec()
+
+    assert updated is not None
+    assert updated is not parsed
+    assert updated.kind == "public_data"
 
 
 def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> None:

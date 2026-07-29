@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import functools
 import typing
 
 from qtpy import QtCore, QtWidgets
@@ -244,7 +245,43 @@ def _standalone_editor_dialog_class_for_operation_type(
     return matches[0] if matches else None
 
 
+def _operation_editor_contract_fingerprint() -> tuple[tuple[object, ...], ...]:
+    dialog_classes = (
+        *tuple(_iter_imagetool_dialog_classes(dialogs.DataTransformDialog)),
+        *tuple(_iter_imagetool_dialog_classes(dialogs.DataFilterDialog)),
+    )
+    return tuple(
+        (
+            dialog_cls,
+            dialog_cls.__module__,
+            tuple(dialog_cls.operation_types),
+            getattr(dialog_cls, "grouped_operation_only", None),
+            getattr(dialog_cls, "operation_group_kind", None),
+            getattr(dialog_cls, "restore_transform_operation", None),
+            getattr(dialog_cls, "restore_transform_operations", None),
+            getattr(dialog_cls, "restore_filter_operation", None),
+            getattr(dialog_cls, "operation_group_for_edit", None),
+        )
+        for dialog_cls in dialog_classes
+    )
+
+
+@functools.cache
+def _cached_operation_editor_contract_errors(
+    _fingerprint: tuple[tuple[object, ...], ...],
+) -> tuple[str, ...]:
+    return tuple(_compute_operation_editor_contract_errors())
+
+
 def _operation_editor_contract_errors() -> list[str]:
+    return list(
+        _cached_operation_editor_contract_errors(
+            _operation_editor_contract_fingerprint()
+        )
+    )
+
+
+def _compute_operation_editor_contract_errors() -> list[str]:
     operation_types: set[type[ToolProvenanceOperation]] = set()
     for base_cls in (dialogs.DataTransformDialog, dialogs.DataFilterDialog):
         for dialog_cls in _iter_imagetool_dialog_classes(base_cls):

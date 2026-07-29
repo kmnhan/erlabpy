@@ -5192,6 +5192,8 @@ def test_manager_notes_editor_actions(
         assert manager.notes_title_label.minimumSizeHint().width() == 0
         assert manager.notes_title_label.full_text == wrapper.display_text
         manager.notes_editor.setPlainText("root intent\nsecond line")
+        manager._set_metadata_node(wrapper)
+        assert manager.notes_editor.toPlainText() == "root intent\nsecond line"
 
         qtbot.wait_until(
             lambda: wrapper.note == "root intent\nsecond line",
@@ -8272,6 +8274,7 @@ def test_manager_ktool_output_itool_marks_stale_without_recomputing(
         select_child_tool(manager, child_uid)
         qtbot.wait(child._MANAGER_NOTIFY_DELAY_MS + 50)
         manager._flush_idle_work(force=True)
+        manager._flush_idle_work(force=True)
         metadata_updates: list[str] = []
         original_set_metadata_node = manager._set_metadata_node
 
@@ -8325,6 +8328,16 @@ def test_manager_ktool_output_itool_marks_stale_without_recomputing(
 
         assert call_count == 0
         xr.testing.assert_identical(fetch(output_uid), before)
+        assert metadata_updates == [child_uid]
+
+        state_changes: list[str] = []
+        monkeypatch.setattr(
+            output_node,
+            "_set_source_state",
+            lambda state: state_changes.append(state),
+        )
+        assert not output_node.handle_parent_source_replaced(anglemap)
+        assert state_changes == []
 
 
 def test_manager_reused_output_child_keeps_stale_state(

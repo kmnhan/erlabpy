@@ -39,10 +39,9 @@ class _ManagerDependencyTracker:
         if node is None:
             self._ref_cache.pop(uid, None)
             return ()
-        tool_window = node.tool_window
         spec = (
-            tool_window.current_provenance_spec(flush_deferred_restore=False)
-            if tool_window is not None
+            node.passive_displayed_provenance_spec
+            if node.tool_window is not None
             else node.provenance_spec
         )
         if spec is None:

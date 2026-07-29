@@ -1281,7 +1281,7 @@ def _interp_monotonic_interpn_1d(
 
     dif = np.diff(source_coord)
     tol = 1e-12
-    if not erlab.utils.array.is_monotonic(source_coord, strict=True):
+    if not (np.all(dif > 0) or np.all(dif < 0)):
         if np.all(np.abs(dif) <= tol):
             raise ValueError(
                 "Exact cut conversion is ill-defined because the exact sampled "

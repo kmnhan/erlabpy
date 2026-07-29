@@ -856,7 +856,7 @@ def test_manager_selecting_unfit_ftool_child_does_not_warn(
         assert manager.preview_widget.isVisible()
         assert not manager_preview_pixmap(manager).isNull()
         assert metadata_detail_map(manager)["Kind"] == "ftool_2d"
-        assert not manager._metadata_full_code_available
+        assert manager._metadata_full_code_available
         assert not warnings
 
 
