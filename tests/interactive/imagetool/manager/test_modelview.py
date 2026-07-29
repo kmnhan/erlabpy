@@ -28,6 +28,7 @@ from erlab.interactive.imagetool._provenance._model import (
     full_data,
     script,
 )
+from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
 from erlab.interactive.imagetool.manager import ImageToolManager, load_in_manager
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
@@ -1493,10 +1494,25 @@ def test_copy_full_code_materializes_tool_provenance_on_demand(
         tool.set_source_binding(full_data(), auto_update=False)
         uid = manager.add_childtool(tool, 0, show=False)
         child_node = manager._child_node(uid)
+        source_node = manager._tool_graph.root_wrappers[0]
+        source_provenance = script(
+            start_label="Deferred source",
+            seed_code="source = 1",
+            active_name="source",
+        )
         provenance = script(
+            ScriptCodeOperation(label="Add one", code="derived = source + 1"),
             start_label="Deferred tool provenance",
-            seed_code="derived = 1",
             active_name="derived",
+            script_inputs=(
+                ScriptInput(
+                    name="source",
+                    label="Deferred source",
+                    node_uid=source_node.uid,
+                    node_snapshot_token=source_node.snapshot_token,
+                    provenance_spec=source_provenance,
+                ),
+            ),
         )
         calls: list[bool] = []
 
@@ -1517,20 +1533,72 @@ def test_copy_full_code_materializes_tool_provenance_on_demand(
         )
         child_node._invalidate_tool_provenance_spec_cache()
 
-        manager._set_metadata_node(child_node)
+        select_child_tool(manager, uid)
 
         assert manager._metadata_full_code_available
         assert calls == [False]
+        assert manager.dependency_status_for_uid(uid) is None
+        assert uid not in manager._dependency_dependent_uids(source_node.uid)
 
         menu = manager._build_metadata_derivation_menu(include_row_actions=False)
         assert menu is not None
         assert manager._metadata_copy_full_action in menu.actions()
         manager._metadata_copy_full_action.trigger()
+        manager._flush_idle_work(force=True)
 
         assert calls == [False, True]
+        assert manager.dependency_status_for_uid(uid) == "current"
+        assert uid in manager._dependency_dependent_uids(source_node.uid)
         namespace: dict[str, object] = {}
         exec(copied[0], namespace)  # noqa: S102
-        assert namespace["derived"] == 1
+        assert namespace["derived"] == 2
+
+
+def test_full_tool_provenance_promotion_refreshes_cached_derivation(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = _InfoRefreshTool(test_data)
+        uid = manager.add_childtool(tool, 0, show=False)
+        child_node = manager._child_node(uid)
+        provenance = script(
+            start_label="Deferred tool provenance",
+            seed_code="derived = 1",
+            active_name="derived",
+        )
+        calls: list[bool] = []
+
+        def _current_provenance_spec(*, flush_deferred_restore: bool = True):
+            calls.append(flush_deferred_restore)
+            return provenance if flush_deferred_restore else None
+
+        monkeypatch.setattr(
+            tool,
+            "current_provenance_spec",
+            _current_provenance_spec,
+        )
+        child_node._invalidate_tool_provenance_spec_cache()
+        select_child_tool(manager, uid)
+
+        assert child_node.derivation_display_rows == ()
+        assert manager.metadata_derivation_list.topLevelItemCount() == 0
+        assert calls == [False]
+
+        assert child_node.derivation_code
+        manager._flush_idle_work(force=True)
+
+        assert calls == [False, True]
+        assert child_node.derivation_display_rows
+        assert manager.metadata_derivation_list.topLevelItemCount() > 0
 
 
 def test_repeated_stale_propagation_does_not_refresh_unchanged_child(
@@ -1830,6 +1898,33 @@ def test_manager_interaction_gate_tracks_key_and_editor_focus_events(
         QtWidgets.QApplication.sendEvent(edit, focus_event)
 
         assert manager._interaction_active
+
+
+def test_manager_interaction_gate_waits_for_mouse_button_release(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._interaction_gate.set_quiet_interval(1)
+        spin = QtWidgets.QSpinBox(manager)
+        qtbot.addWidget(spin)
+        spin.show()
+        calls: list[str] = []
+
+        qtbot.mousePress(spin, QtCore.Qt.MouseButton.LeftButton)
+        qtbot.wait(10)
+        manager._queue_idle_work(("test", "mouse-hold"), lambda: calls.append("done"))
+        qtbot.wait(10)
+
+        assert manager._interaction_active
+        assert calls == []
+        assert manager._interaction_gate.pending_keys == (("test", "mouse-hold"),)
+
+        qtbot.mouseRelease(spin, QtCore.Qt.MouseButton.LeftButton)
+        qtbot.wait_until(lambda: calls == ["done"], timeout=1000)
+        assert not manager._interaction_active
 
 
 def test_manager_interaction_gate_skips_membership_for_irrelevant_events(

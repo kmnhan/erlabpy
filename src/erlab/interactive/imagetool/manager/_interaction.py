@@ -61,6 +61,7 @@ class _ManagerInteractionGate(QtCore.QObject):
         self._pending_work: collections.OrderedDict[Hashable, Callable[[], None]] = (
             collections.OrderedDict()
         )
+        self._pressed_mouse_buttons: set[QtCore.Qt.MouseButton] = set()
         self._active: bool = False
         self._quiet_timer = QtCore.QTimer(self)
         self._quiet_timer.setSingleShot(True)
@@ -79,7 +80,11 @@ class _ManagerInteractionGate(QtCore.QObject):
 
     @property
     def is_active(self) -> bool:
-        return self._active or self._quiet_timer.isActive()
+        return (
+            bool(self._pressed_mouse_buttons)
+            or self._active
+            or self._quiet_timer.isActive()
+        )
 
     @property
     def pending_keys(self) -> tuple[Hashable, ...]:
@@ -148,9 +153,46 @@ class _ManagerInteractionGate(QtCore.QObject):
                 marks_activity = self._event_marks_activity(obj, event)
             except RuntimeError:
                 marks_activity = False
-            if marks_activity:
+            mouse_hold_changed = self._update_mouse_hold(event, marks_activity)
+            if marks_activity or mouse_hold_changed:
                 self.note_activity()
         return super().eventFilter(obj, event)
+
+    def _update_mouse_hold(
+        self,
+        event: QtCore.QEvent,
+        marks_activity: bool,
+    ) -> bool:
+        event_type = event.type()
+        if (
+            event_type == QtCore.QEvent.Type.MouseButtonPress
+            and marks_activity
+            and isinstance(event, QtGui.QMouseEvent)
+        ):
+            button = event.button()
+            if button != QtCore.Qt.MouseButton.NoButton:
+                self._pressed_mouse_buttons.add(button)
+            return False
+        if event_type == QtCore.QEvent.Type.MouseButtonRelease and isinstance(
+            event, QtGui.QMouseEvent
+        ):
+            button = event.button()
+            if button in self._pressed_mouse_buttons:
+                self._pressed_mouse_buttons.remove(button)
+                return True
+            return False
+        if (
+            event_type
+            in {
+                QtCore.QEvent.Type.ApplicationDeactivate,
+                QtCore.QEvent.Type.UngrabMouse,
+                QtCore.QEvent.Type.WindowDeactivate,
+            }
+            and self._pressed_mouse_buttons
+        ):
+            self._pressed_mouse_buttons.clear()
+            return True
+        return False
 
     def _event_marks_activity(
         self, obj: QtCore.QObject | None, event: QtCore.QEvent

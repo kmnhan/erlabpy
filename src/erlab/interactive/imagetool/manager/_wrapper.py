@@ -1411,13 +1411,31 @@ class _ManagedWindowNode(QtCore.QObject):
         if self.tool_window is None:
             return None
         if flush_deferred_restore not in self._tool_provenance_spec_cache:
+            had_passive_spec = False in self._tool_provenance_spec_cache
+            passive_spec = self._tool_provenance_spec_cache.get(False)
             provenance_spec = self.tool_window.current_provenance_spec(
                 flush_deferred_restore=flush_deferred_restore
             )
             self._tool_provenance_spec_cache[flush_deferred_restore] = provenance_spec
             if flush_deferred_restore:
                 self._tool_provenance_spec_cache[False] = provenance_spec
+                if had_passive_spec and passive_spec != provenance_spec:
+                    self._handle_tool_provenance_spec_promotion()
         return self._tool_provenance_spec_cache[flush_deferred_restore]
+
+    def _handle_tool_provenance_spec_promotion(self) -> None:
+        if self.parent_uid is None or self.source_spec is None:
+            self._derivation_display_rows_cache = None
+        self._invalidate_dependency_cache()
+        manager = self._manager()
+        if (
+            manager is None
+            or not erlab.interactive.utils.qt_is_valid(manager)
+            or manager._tool_graph.nodes.get(self.uid) is not self
+        ):
+            return
+        manager.tree_view.refresh(self.uid)
+        manager._schedule_details_refresh(self.uid)
 
     def _invalidate_tool_provenance_spec_cache(self) -> None:
         self._tool_provenance_spec_cache.clear()
