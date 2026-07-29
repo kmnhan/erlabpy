@@ -230,6 +230,7 @@ class _InfoRefreshTool(erlab.interactive.utils.ToolWindow[_InfoRefreshToolState]
         self._data = data
         self._status = _InfoRefreshToolState()
         self._info_text = "initial child info"
+        self.info_text_requests = 0
 
     @property
     def tool_data(self) -> xr.DataArray:
@@ -245,6 +246,7 @@ class _InfoRefreshTool(erlab.interactive.utils.ToolWindow[_InfoRefreshToolState]
 
     @property
     def info_text(self) -> str:
+        self.info_text_requests += 1
         return self._info_text
 
     def emit_info_text(self, text: str) -> None:
@@ -931,6 +933,34 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
         assert "updated child info final" in manager.text_box.toPlainText()
 
 
+def test_childtool_info_text_is_cached_until_info_changes(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = _InfoRefreshTool(test_data)
+        uid = manager.add_childtool(tool, 0, show=False)
+        child_node = manager._child_node(uid)
+        tool.info_text_requests = 0
+        child_node._invalidate_info_text_cache()
+
+        assert child_node.info_text == "initial child info"
+        assert child_node.info_text == "initial child info"
+        assert tool.info_text_requests == 1
+
+        tool.emit_info_text("updated child info")
+
+        assert child_node.info_text == "updated child info"
+        assert tool.info_text_requests == 2
+
+
 def test_tree_data_changed_refreshes_details_only_for_selected_rows(
     qtbot,
     monkeypatch,
@@ -1015,7 +1045,7 @@ def test_derivation_display_rows_are_cached_until_provenance_changes(
         first_rows = wrapper.derivation_display_rows
         second_rows = wrapper.derivation_display_rows
 
-        assert second_rows == first_rows
+        assert second_rows is first_rows
         assert display_row_calls == 1
 
         wrapper.set_displayed_provenance(
@@ -1082,11 +1112,46 @@ def test_tool_provenance_spec_is_cached_between_tool_signals(
 
         tool.sigInfoChanged.emit()
         assert child_node.displayed_provenance_spec is provenance
-        assert calls == [False, True, True, True]
+        assert calls == [False, True, True]
 
         child_node._handle_tool_data_changed()
         assert child_node.displayed_provenance_spec is provenance
-        assert calls == [False, True, True, True, True]
+        assert calls == [False, True, True, True]
+
+
+def test_manager_signals_do_not_restart_interaction_delay(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        activity_calls: list[None] = []
+        monkeypatch.setattr(
+            manager,
+            "_note_interaction_activity",
+            lambda: activity_calls.append(None),
+        )
+
+        tool = _InfoRefreshTool(test_data)
+        uid = manager.add_childtool(tool, 0, show=False)
+        child_node = manager._child_node(uid)
+        child_node._handle_tool_info_changed()
+        child_node._handle_tool_state_changed()
+        child_node._handle_tool_data_changed()
+
+        wrapper = manager._tool_graph.root_wrappers[0]
+        wrapper._handle_imagetool_state_changed()
+        wrapper._handle_imagetool_data_edited()
+        wrapper._handle_imagetool_backing_changed()
+
+        assert activity_calls == []
 
 
 def test_repeated_details_refresh_reuses_metadata_widgets_and_rows(

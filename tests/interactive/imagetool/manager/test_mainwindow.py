@@ -3220,8 +3220,13 @@ def test_manager_summary_sorts_coordinate_order_at_presentation_boundary(
         )
 
         assert "summary" in node.info_text
+        assert "summary" in node.info_text
+        assert formatted_coord_orders == [("x", "y", "aux")]
 
-    assert formatted_coord_orders == [("x", "y", "aux")]
+        node._handle_imagetool_data_edited()
+        assert "summary" in node.info_text
+
+    assert formatted_coord_orders == [("x", "y", "aux"), ("x", "y", "aux")]
 
 
 def test_details_panel_update_info_hides_missing_child_preview_pixmap(

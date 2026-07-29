@@ -438,6 +438,7 @@ class _ManagedWindowNode(QtCore.QObject):
             bool,
             ToolProvenanceSpec | None,
         ] = {}
+        self._info_text_cache: str | None = None
         self._suspend_descendant_signal_propagation: bool = False
         self._pending_workspace_payload: tuple[pathlib.Path, str] | None = None
         self._pending_workspace_payload_kind: (
@@ -534,6 +535,7 @@ class _ManagedWindowNode(QtCore.QObject):
     @window.setter
     def window(self, value: QtWidgets.QWidget | None) -> None:
         self._invalidate_tool_provenance_spec_cache()
+        self._invalidate_info_text_cache()
         if self.imagetool is not None:
             manager = self._manager()
             if manager is not None:
@@ -811,6 +813,7 @@ class _ManagedWindowNode(QtCore.QObject):
         if self._pending_workspace_payload is None:
             return
         self._pending_workspace_payload_attrs = dict(attrs)
+        self._invalidate_info_text_cache()
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
         self._pending_workspace_curve_cache = None
@@ -823,6 +826,7 @@ class _ManagedWindowNode(QtCore.QObject):
         payload_attrs: Mapping[str, typing.Any] | None = None,
     ) -> None:
         self._clear_pending_workspace_link_slicer_cache()
+        self._invalidate_info_text_cache()
         self._pending_workspace_payload_kind = kind
         self._pending_workspace_payload = (
             pathlib.Path(workspace_path),
@@ -856,6 +860,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def clear_pending_workspace_payload(self) -> None:
         self._clear_pending_workspace_link_slicer_cache()
+        self._invalidate_info_text_cache()
         self._pending_workspace_payload = None
         self._pending_workspace_payload_kind = None
         self._pending_workspace_payload_attrs = None
@@ -985,6 +990,7 @@ class _ManagedWindowNode(QtCore.QObject):
             self._rename_imagetool_data(name, record_provenance=manual)
             return
         self._name = name
+        self._invalidate_info_text_cache()
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
         self._pending_workspace_curve_cache = None
@@ -1007,6 +1013,7 @@ class _ManagedWindowNode(QtCore.QObject):
             )
         if record_provenance:
             self._record_data_rename_provenance(name)
+        self._invalidate_info_text_cache()
         self.imagetool.setWindowTitle(self.label_text)
         self.manager.tree_view.refresh(self.uid)
         self.manager._refresh_dependency_dependents(self.uid)
@@ -1071,21 +1078,25 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def info_text(self) -> str:
         if self.tool_window is not None:
-            return erlab.interactive.utils._apply_qt_accent_color(
-                self.tool_window.info_text
-            )
+            if self._info_text_cache is None:
+                self._info_text_cache = self.tool_window.info_text
+            return erlab.interactive.utils._apply_qt_accent_color(self._info_text_cache)
         pending_info, _ = self._pending_workspace_info()
         if pending_info is not None:
             return pending_info
-        data = self._metadata_data()
-        if data is None:
-            return ""
-        data = erlab.utils.array.sort_coord_order(data)
-        text = erlab.utils.formatting.format_darr_html(
-            data,
-            show_size=False,
-        )
-        return erlab.interactive.utils._apply_qt_accent_color(text)
+        if self._info_text_cache is None:
+            data = self._metadata_data()
+            if data is None:
+                return ""
+            data = erlab.utils.array.sort_coord_order(data)
+            self._info_text_cache = erlab.utils.formatting.format_darr_html(
+                data,
+                show_size=False,
+            )
+        return erlab.interactive.utils._apply_qt_accent_color(self._info_text_cache)
+
+    def _invalidate_info_text_cache(self) -> None:
+        self._info_text_cache = None
 
     def _pending_workspace_info(self) -> tuple[str | None, int | None]:
         pending = self._pending_workspace_payload
@@ -1594,6 +1605,7 @@ class _ManagedWindowNode(QtCore.QObject):
     def _advance_snapshot_token(self, *, defer_refresh: bool = False) -> None:
         if self._suspend_snapshot_token_updates:
             return
+        self._invalidate_info_text_cache()
         token = uuid.uuid4().hex
         self._snapshot_token = token
         self._source_snapshot_token = token
@@ -1602,6 +1614,7 @@ class _ManagedWindowNode(QtCore.QObject):
     def _advance_displayed_snapshot_token(self, *, defer_refresh: bool = False) -> None:
         if self._suspend_snapshot_token_updates:
             return
+        self._invalidate_info_text_cache()
         self._snapshot_token = uuid.uuid4().hex
         self._schedule_snapshot_token_refresh(defer_refresh=defer_refresh)
 
@@ -1681,13 +1694,13 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def derivation_display_rows(
         self,
-    ) -> list[_ProvenanceDisplayRow]:
+    ) -> tuple[_ProvenanceDisplayRow, ...]:
         cache_key = self.derivation_display_rows_cache_key
         if (
             self._derivation_display_rows_cache is not None
             and self._derivation_display_rows_cache[0] == cache_key
         ):
-            return list(self._derivation_display_rows_cache[1])
+            return self._derivation_display_rows_cache[1]
 
         source_spec = self.source_spec
         if self.parent_uid is not None and source_spec is not None:
@@ -1711,8 +1724,9 @@ class _ManagedWindowNode(QtCore.QObject):
                 if provenance_spec is None
                 else provenance_spec.display_rows(_lazy_script_inputs=True)
             )
-        self._derivation_display_rows_cache = (cache_key, tuple(rows))
-        return list(rows)
+        cached_rows = tuple(rows)
+        self._derivation_display_rows_cache = (cache_key, cached_rows)
+        return cached_rows
 
     @property
     def derivation_display_rows_cache_key(
@@ -2040,7 +2054,6 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def _handle_tool_data_changed(self) -> None:
         self._invalidate_tool_provenance_spec_cache()
-        self.manager._note_interaction_activity()
         self.manager._mark_node_data_dirty(self.uid)
         self._advance_snapshot_token(defer_refresh=True)
         if self._suspend_descendant_signal_propagation:
@@ -2234,8 +2247,7 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         if manager._tool_graph.nodes.get(self.uid) is not self:
             return
-        self._invalidate_tool_provenance_spec_cache()
-        manager._note_interaction_activity()
+        self._invalidate_info_text_cache()
         manager._mark_tool_info_dirty(self.uid)
         manager._queue_idle_work(
             ("tool-info-refresh", self.uid),
@@ -2261,14 +2273,12 @@ class _ManagedWindowNode(QtCore.QObject):
         if manager._tool_graph.nodes.get(self.uid) is not self:
             return
         self._invalidate_tool_provenance_spec_cache()
-        manager._note_interaction_activity()
         manager._mark_node_state_dirty(self.uid)
 
     @QtCore.Slot()
     def _handle_imagetool_state_changed(self) -> None:
         if self.manager._workspace_state.closing_document:
             return
-        self.manager._note_interaction_activity()
         self.manager._mark_node_state_dirty(self.uid)
 
     @QtCore.Slot()
@@ -2277,7 +2287,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def _handle_imagetool_data_edited(self) -> None:
-        self.manager._note_interaction_activity()
+        self._invalidate_info_text_cache()
         self.manager._mark_node_data_dirty(self.uid)
 
     @QtCore.Slot()
@@ -2286,7 +2296,6 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def _handle_imagetool_backing_changed(self) -> None:
-        self.manager._note_interaction_activity()
         self.manager._mark_node_data_dirty(self.uid)
         self._advance_snapshot_token(defer_refresh=True)
 
