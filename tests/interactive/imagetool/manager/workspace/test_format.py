@@ -1,5 +1,6 @@
 import json
 import logging
+import pathlib
 
 import numpy as np
 import pydantic
@@ -77,6 +78,21 @@ def test_workspace_file_suffix_helpers_collect_nested_inputs(tmp_path) -> None:
         workspace_loading._workspace_compact_file_suffix(stems)
         == " (scan_a, scan_b, +1)"
     )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        r"C:\Users\name\data\scan.h5",
+        r"\\server\share\data\scan.h5",
+        "C:/Users/name/data/scan.h5",
+        "/Users/name/data/scan.h5",
+    ],
+)
+def test_workspace_file_suffix_helpers_accept_cross_platform_paths(path: str) -> None:
+    spec = _workspace_test_file_spec(pathlib.Path(path))
+
+    assert workspace_loading._workspace_provenance_file_stems(spec) == ("scan",)
 
 
 @pytest.mark.parametrize(

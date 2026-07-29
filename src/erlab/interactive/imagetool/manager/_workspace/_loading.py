@@ -25,7 +25,10 @@ import erlab.interactive.imagetool.manager._workspace._storage as workspace_stor
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
 from erlab.interactive import _qt_state
-from erlab.interactive.imagetool._load_source import _deserialize_loader_kwargs
+from erlab.interactive.imagetool._load_source import (
+    _deserialize_loader_kwargs,
+    _file_path_stem,
+)
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInputDataRole,
@@ -218,7 +221,7 @@ def _workspace_provenance_file_stems(
         if current is None:
             return
         if current.file_load_source is not None:
-            stem = pathlib.Path(current.file_load_source.path).stem
+            stem = _file_path_stem(current.file_load_source.path)
             if stem not in stems:
                 stems.append(stem)
         for script_input in current.script_inputs:

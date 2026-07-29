@@ -61,6 +61,11 @@ _LoadFunc: typing.TypeAlias = tuple[
 _LoadKind: typing.TypeAlias = typing.Literal["erlab_loader", "callable"]
 
 
+def _file_path_stem(path: str | os.PathLike[str]) -> str:
+    """Return the stem of a recorded Windows or POSIX file path."""
+    return pathlib.PureWindowsPath(path).stem
+
+
 def _spreadsheet_metadata_source_config(
     source: erlab.io.metadata.SpreadsheetMetadataSource,
 ) -> dict[str, typing.Any] | None:

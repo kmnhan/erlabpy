@@ -43,6 +43,7 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 from erlab.interactive.imagetool._load_source import (
     _default_load_source_name,
     _deserialize_loader_kwargs,
+    _file_path_stem,
     _load_code_from_file_details,
     _load_source_details_from_file,
     _load_source_details_from_provenance,
@@ -352,7 +353,7 @@ def _collect_provenance_file_paths(
 def _compact_file_suffix(paths: Sequence[pathlib.Path]) -> str:
     if not paths:
         return ""
-    stems = tuple(dict.fromkeys(path.stem for path in paths))
+    stems = tuple(dict.fromkeys(_file_path_stem(path) for path in paths))
     if len(stems) <= 2:
         return f" ({', '.join(stems)})"
     return f" ({', '.join(stems[:2])}, +{len(stems) - 2})"
