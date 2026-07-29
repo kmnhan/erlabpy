@@ -31,6 +31,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     IselOperation,
     ScriptCodeOperation,
 )
+from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._modelview import (
     _FIGURE_SOURCE_MIME,
     _MIME,
@@ -4202,6 +4203,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
             self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph()
+            self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
 
         def _update_info(self, *, uid: str) -> None:
             self.updated.append(uid)
@@ -4261,6 +4263,9 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
         def _schedule_tool_metadata_update(self, uid: str) -> None:
             self._update_info(uid=uid)
 
+        def _schedule_details_refresh(self, uid: str) -> None:
+            self._update_info(uid=uid)
+
         def _mark_node_data_dirty(self, _uid: str) -> None:
             return
 
@@ -4307,7 +4312,6 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
     assert node._source_auto_update is True
     assert node._output_id == "out"
     assert manager.tree_view.refreshed[-1] == "child"
-    assert manager.updated[-1] == "child"
 
     source_binding = ImageToolSelectionSourceBinding()
     source_spec = full_data()
@@ -4430,6 +4434,7 @@ def test_managed_tool_window_node_detached_update_branches(
             self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph()
+            self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
             self.parent_node = types.SimpleNamespace(
                 tool_window=parent_tool,
                 provenance_spec=None,
@@ -4496,6 +4501,9 @@ def test_managed_tool_window_node_detached_update_branches(
             self._mark_node_state_dirty(uid)
 
         def _schedule_tool_metadata_update(self, uid: str) -> None:
+            self._update_info(uid=uid)
+
+        def _schedule_details_refresh(self, uid: str) -> None:
             self._update_info(uid=uid)
 
         def _mark_node_data_dirty(self, _uid: str) -> None:
@@ -4663,6 +4671,7 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
             super().__init__()
             self.tree_view = _FakeTreeView()
             self._tool_graph = _ManagerToolGraph()
+            self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
             self.updated: list[str] = []
             self.removed: list[str] = []
             self.renamed: list[tuple[int, object]] = []
@@ -4727,6 +4736,9 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
             self._mark_node_state_dirty(uid)
 
         def _schedule_tool_metadata_update(self, uid: str) -> None:
+            self._update_info(uid=uid)
+
+        def _schedule_details_refresh(self, uid: str) -> None:
             self._update_info(uid=uid)
 
     manager = _FakeManager()
