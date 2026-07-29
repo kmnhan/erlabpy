@@ -168,6 +168,54 @@ def test_dependency_tracker_indexes_dependents_and_caches_status() -> None:
     tracker.note_uid("source-uid")
     assert tracker.status_for_uid("dependent-uid") == "current"
 
+    tracker.queue_source_refresh("blocker-uid", "dependent-uid")
+    tracker.clear_uid("dependent-uid")
+    assert not tracker.has_pending_source_refreshes()
+
+    tracker._source_uids_by_dependent["orphan-dependent"] = {"orphan-source"}
+    tracker._remove_reverse_refs("orphan-dependent")
+
+
+def test_tool_graph_structural_mutation_helpers_update_caches() -> None:
+    class _ParentNode:
+        def __init__(self) -> None:
+            self._childtool_indices: list[str] = []
+            self._childtools: dict[str, QtWidgets.QWidget] = {}
+
+        def add_child_reference(
+            self, uid: str, window: QtWidgets.QWidget | None
+        ) -> None:
+            if uid not in self._childtool_indices:
+                self._childtool_indices.append(uid)
+            if window is not None:
+                self._childtools[uid] = window
+
+        def remove_child_reference(self, uid: str) -> None:
+            self._childtool_indices.remove(uid)
+            self._childtools.pop(uid, None)
+
+    graph = _ManagerToolGraph()
+    parent = _ParentNode()
+    graph.nodes["parent"] = typing.cast("_ImageToolWrapper", parent)
+
+    generation = graph.structure_generation
+    graph.add_child_reference("parent", "child", None)
+    assert graph.structure_generation == generation + 1
+    graph.add_child_reference("parent", "child", None)
+    assert graph.structure_generation == generation + 1
+
+    graph.remove_child_references("parent", ("missing", "child"))
+    assert parent._childtool_indices == []
+
+    graph.replace_child_order("parent", ["first", "second"])
+    graph.remove_child_rows("parent", 0, 1)
+    assert parent._childtool_indices == ["second"]
+
+    figure = types.SimpleNamespace(uid="figure", is_imagetool=True)
+    graph.register_figure(typing.cast("typing.Any", figure))
+    assert graph.is_figure_uid("figure")
+    assert graph.nimagetools == 1
+
 
 class _InfoRefreshToolState(pydantic.BaseModel):
     value: int = 0
@@ -1069,6 +1117,13 @@ def test_repeated_details_refresh_reuses_metadata_widgets_and_rows(
         )
         assert manager.metadata_derivation_list.topLevelItem(0) is first_item
 
+        invalid_item = QtWidgets.QTreeWidgetItem()
+        manager._details_panel._populate_metadata_derivation_item_children(invalid_item)
+        assert invalid_item.childCount() == 0
+
+        manager._details_panel._flush_pending_tool_metadata_updates({wrapper.uid})
+        assert manager._metadata_node_uid == wrapper.uid
+
 
 def test_tool_preview_refresh_uses_one_restartable_timer(
     qtbot,
@@ -1093,6 +1148,7 @@ def test_tool_preview_refresh_uses_one_restartable_timer(
             raising=False,
         )
         manager._details_panel._ensure_tool_preview_update_timer().setInterval(0)
+        manager._details_panel._run_scheduled_tool_preview_update()
 
         manager._details_panel._schedule_tool_preview_update(uid)
         manager._details_panel._schedule_tool_preview_update(uid)
@@ -1457,6 +1513,7 @@ def test_manager_interaction_gate_tracks_key_and_editor_focus_events(
 
 
 def test_manager_interaction_gate_skips_membership_for_irrelevant_events(
+    qtbot,
     monkeypatch: pytest.MonkeyPatch,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -1464,16 +1521,36 @@ def test_manager_interaction_gate_skips_membership_for_irrelevant_events(
 ) -> None:
     with manager_context() as manager:
         membership_checks: list[object] = []
-        monkeypatch.setattr(
-            manager._interaction_gate,
-            "_is_managed_object",
-            lambda obj: membership_checks.append(obj) or True,
-        )
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                manager._interaction_gate,
+                "_is_managed_object",
+                lambda obj: membership_checks.append(obj) or True,
+            )
 
-        assert not manager._interaction_gate._event_marks_activity(
-            manager, QtCore.QEvent(QtCore.QEvent.Type.Paint)
-        )
-        assert membership_checks == []
+            assert not manager._interaction_gate._event_marks_activity(
+                manager, QtCore.QEvent(QtCore.QEvent.Type.Paint)
+            )
+            assert membership_checks == []
+
+            mouse_move = QtGui.QMouseEvent(
+                QtCore.QEvent.Type.MouseMove,
+                QtCore.QPointF(),
+                QtCore.QPointF(),
+                QtCore.Qt.MouseButton.LeftButton,
+                QtCore.Qt.MouseButton.LeftButton,
+                QtCore.Qt.KeyboardModifier.NoModifier,
+            )
+            assert manager._interaction_gate._event_marks_activity(manager, mouse_move)
+            assert membership_checks == [manager]
+
+        class _DeletedWidget(QtWidgets.QWidget):
+            def window(self) -> QtWidgets.QWidget:
+                raise RuntimeError("wrapped C++ object was deleted")
+
+        deleted = _DeletedWidget()
+        qtbot.addWidget(deleted)
+        assert not manager._interaction_gate._is_managed_object(deleted)
 
 
 def test_tree_selection_queries_share_cached_model_indexes(
@@ -2933,6 +3010,19 @@ def test_manager_badge_hit_testing_edge_paths(
         option = delegate._option_for_index(view, index)
         _, dask_rect, _, _ = delegate._compute_icons_info(option, wrapper)
         assert dask_rect is not None
+
+        delegate._scaled_font(option.font, delegate.tool_type_font_scale)
+        delegate._font_metrics(option.font)
+        delegate._text_width(option.font, "cached")
+        assert delegate._scaled_font_cache
+        assert delegate._font_metrics_cache
+        assert delegate._text_width_cache
+        delegate.eventFilter(
+            view.viewport(), QtCore.QEvent(QtCore.QEvent.Type.FontChange)
+        )
+        assert not delegate._scaled_font_cache
+        assert not delegate._font_metrics_cache
+        assert not delegate._text_width_cache
 
         assert delegate._badge_at(option, QtCore.QModelIndex(), QtCore.QPoint()) is None
         malformed_pointer = object()

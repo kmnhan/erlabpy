@@ -330,7 +330,12 @@ def test_manager_figures_gallery_view_preserves_selection_and_persists(
         second_item = manager._figure_collection.item_for_uid(second_uid)
         assert first_item is not None
         assert second_item is not None
+        manager._figure_collection.select_uid("missing-figure")
+        assert manager._figure_collection.item_for_uid("missing-figure") is None
+
+        first_item.setText("stale display name")
         manager._figure_collection.select_uid(first_uid)
+        assert first_item.text() == manager._child_node(first_uid).display_text
         manager._figure_collection.sync()
 
         assert manager._figure_collection.item_for_uid(first_uid) is first_item
