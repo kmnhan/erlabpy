@@ -1832,6 +1832,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
             "QtCore.QItemSelectionModel", self.selectionModel()
         )
         self._selection_cache: tuple[tuple[int, ...], tuple[str, ...]] | None = None
+        self._selection_cache_generation = -1
         self._selection_model.selectionChanged.connect(self._clear_selection_cache)
         for signal in (
             self._model.rowsInserted,
@@ -1923,8 +1924,12 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         return list(self._selected_rows()[1])
 
     def _selected_rows(self) -> tuple[tuple[int, ...], tuple[str, ...]]:
+        graph = self._model.manager._tool_graph
         cached = self._selection_cache
-        if cached is not None:
+        if (
+            cached is not None
+            and self._selection_cache_generation == graph.structure_generation
+        ):
             return cached
         root_rows: list[int] = []
         child_uids: list[str] = []
@@ -1934,16 +1939,18 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
                 root_rows.append(index.row())
             elif isinstance(pointer, str):
                 child_uids.append(pointer)
-        displayed_indices = self._model.manager._tool_graph.displayed_indices
+        displayed_indices = graph.displayed_indices
         selected = (
             tuple(displayed_indices[row] for row in sorted(root_rows)),
             tuple(child_uids),
         )
         self._selection_cache = selected
+        self._selection_cache_generation = graph.structure_generation
         return selected
 
     def _clear_selection_cache(self, *_args: object) -> None:
         self._selection_cache = None
+        self._selection_cache_generation = -1
 
     def figure_source_uids_from_mime(
         self, mime: QtCore.QMimeData | None

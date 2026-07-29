@@ -28,7 +28,10 @@ from erlab.interactive.imagetool._provenance._model import (
     full_data,
     script,
 )
-from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
+from erlab.interactive.imagetool._provenance._operations import (
+    GaussianFilterOperation,
+    ScriptCodeOperation,
+)
 from erlab.interactive.imagetool.manager import ImageToolManager, load_in_manager
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
@@ -1317,6 +1320,98 @@ def test_derivation_display_rows_are_cached_until_provenance_changes(
         assert display_row_calls == 2
 
 
+def test_derivation_display_rows_track_watched_binding_changes(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        parent_tool = itool(test_data, manager=False, execute=False)
+        assert isinstance(parent_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(
+            parent_tool,
+            show=False,
+            watched_var=("watched_data", "kernel-0"),
+        )
+        parent = manager._tool_graph.root_wrappers[0]
+
+        child_tool = itool(test_data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=full_data(),
+        )
+        child = manager._child_node(child_uid)
+
+        parent_rows = parent.derivation_display_rows
+        child_rows = child.derivation_display_rows
+        select_child_tool(manager, child_uid)
+        manager._update_info()
+        initial_count = manager.metadata_derivation_list.topLevelItemCount()
+
+        parent.unwatch()
+        manager._flush_idle_work(force=True)
+
+        assert parent_rows
+        assert parent.derivation_display_rows == ()
+        assert len(child.derivation_display_rows) < len(child_rows)
+        assert (
+            manager.metadata_derivation_list.topLevelItemCount()
+            == len(child.derivation_display_rows)
+            < initial_count
+        )
+
+
+def test_derivation_display_rows_track_materialized_imagetool_state(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        parent_tool = itool(test_data, manager=False, execute=False)
+        assert isinstance(parent_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(parent_tool, show=False)
+
+        child_tool = itool(test_data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=full_data(),
+        )
+        child = manager._child_node(child_uid)
+        child.window = None
+        pending_rows = child.derivation_display_rows
+
+        operation = GaussianFilterOperation(sigma={test_data.dims[0]: 1.0})
+        restored_tool = itool(
+            test_data.copy(deep=False),
+            manager=False,
+            execute=False,
+        )
+        assert isinstance(restored_tool, erlab.interactive.imagetool.ImageTool)
+        restored_tool.slicer_area.apply_filter_operation(operation, update=False)
+
+        child.window = restored_tool
+
+        restored_rows = child.derivation_display_rows
+        assert len(restored_rows) == len(pending_rows) + 1
+        assert restored_rows[-1].entry == operation.derivation_entry()
+
+        restored_tool.slicer_area.apply_filter_operation(None, update=False)
+
+        assert child.derivation_display_rows == pending_rows
+
+
 def test_tool_provenance_spec_is_cached_between_tool_signals(
     qtbot,
     monkeypatch,
@@ -2197,6 +2292,31 @@ def test_tree_selection_queries_share_cached_model_indexes(
         manager.tree_view.clearSelection()
         assert manager.tree_view._selection_cache == ((), ())
         assert manager.tree_view._selection_cache is not cached
+
+
+def test_tree_selection_cache_tracks_root_reindexing(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        first = itool(test_data, manager=False, execute=False)
+        second = itool(test_data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(first, erlab.interactive.imagetool.ImageTool)
+        assert isinstance(second, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(first, show=False, index=1)
+        manager.add_imagetool(second, show=False, index=2)
+        selected_wrapper = manager._tool_graph.root_wrappers[1]
+        select_tools(manager, [1])
+
+        assert manager.tree_view.selected_imagetool_indices == [1]
+        manager.reindex()
+
+        assert manager._tool_graph.root_wrappers[0] is selected_wrapper
+        assert manager.tree_view.selected_imagetool_indices == [0]
 
 
 def test_childtool_info_changed_for_unselected_node_keeps_visible_details(

@@ -430,11 +430,17 @@ class _ManagedWindowNode(QtCore.QObject):
         self._output_id: str | None = None
         self._derivation_display_rows_cache: (
             tuple[
-                tuple[str, str | None, int | None],
+                tuple[
+                    str,
+                    str | None,
+                    tuple[int, int | None] | None,
+                    tuple[int, ...],
+                ],
                 tuple[_ProvenanceDisplayRow, ...],
             ]
             | None
         ) = None
+        self._derivation_display_rows_generation = 0
         self._tool_provenance_spec_cache: dict[
             bool,
             ToolProvenanceSpec | None,
@@ -1034,7 +1040,7 @@ class _ManagedWindowNode(QtCore.QObject):
             self._source_spec = require_live_source_spec(
                 self._source_spec.append_final_rename(name)
             )
-        self._derivation_display_rows_cache = None
+        self._invalidate_derivation_display_rows_cache()
         self._invalidate_dependency_cache()
 
     def _file_label_paths(self) -> tuple[pathlib.Path, ...]:
@@ -1425,7 +1431,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def _handle_tool_provenance_spec_promotion(self) -> None:
         if self.parent_uid is None or self.source_spec is None:
-            self._derivation_display_rows_cache = None
+            self._invalidate_derivation_display_rows_cache()
         self._invalidate_dependency_cache()
         manager = self._manager()
         if (
@@ -1440,7 +1446,7 @@ class _ManagedWindowNode(QtCore.QObject):
     def _invalidate_tool_provenance_spec_cache(self) -> None:
         self._tool_provenance_spec_cache.clear()
         if self.parent_uid is None or self.source_spec is None:
-            self._derivation_display_rows_cache = None
+            self._invalidate_derivation_display_rows_cache()
         self._invalidate_dependency_cache()
 
     def _invalidate_dependency_cache(self) -> None:
@@ -1714,7 +1720,7 @@ class _ManagedWindowNode(QtCore.QObject):
         advance_snapshot: bool = True,
     ) -> None:
         self._provenance_spec = parse_tool_provenance_spec(provenance_spec)
-        self._derivation_display_rows_cache = None
+        self._invalidate_derivation_display_rows_cache()
         self._invalidate_dependency_cache()
         if self.imagetool is not None:
             self.imagetool.set_provenance_spec(self.provenance_spec)
@@ -1767,17 +1773,65 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def derivation_display_rows_cache_key(
         self,
-    ) -> tuple[str, str | None, int | None]:
+    ) -> tuple[
+        str,
+        str | None,
+        tuple[int, int | None] | None,
+        tuple[int, ...],
+    ]:
         parent_snapshot_token: str | None = None
         source_spec = self.source_spec
-        source_spec_id: int | None = None
+        source_spec_key: tuple[int, int | None] | None = None
         snapshot_token = self.snapshot_token
         if self.parent_uid is not None and source_spec is not None:
-            parent_snapshot_token = self.manager._parent_node(self).snapshot_token
-            source_spec_id = id(source_spec)
+            parent = self.manager._parent_node(self)
+            parent_snapshot_token = parent.snapshot_token
+            filter_operation_id: int | None = None
+            if self.imagetool is not None:
+                filter_operation = (
+                    self.slicer_area._accepted_filter_provenance_operation
+                )
+                if filter_operation is not None:
+                    filter_operation_id = id(filter_operation)
+            source_spec_key = (id(source_spec), filter_operation_id)
             if self.tool_window is not None:
                 snapshot_token = ""
-        return snapshot_token, parent_snapshot_token, source_spec_id
+        return (
+            snapshot_token,
+            parent_snapshot_token,
+            source_spec_key,
+            self._derivation_display_rows_lineage_generation,
+        )
+
+    @property
+    def _derivation_display_rows_lineage_generation(self) -> tuple[int, ...]:
+        generation = (self._derivation_display_rows_generation,)
+        if self.parent_uid is None or self.source_spec is None:
+            return generation
+        parent = self.manager._parent_node(self)
+        return (*parent._derivation_display_rows_lineage_generation, *generation)
+
+    def _invalidate_derivation_display_rows_cache(self) -> None:
+        self._derivation_display_rows_cache = None
+        self._derivation_display_rows_generation += 1
+        manager = self._manager()
+        if (
+            manager is None
+            or not erlab.interactive.utils.qt_is_valid(manager)
+            or manager._tool_graph.nodes.get(self.uid) is not self
+        ):
+            return
+        selected_uid = manager._metadata_node_uid
+        if selected_uid is None:
+            return
+        selected = manager._tool_graph.nodes.get(selected_uid)
+        while selected is not None:
+            if selected is self:
+                manager._schedule_details_refresh(selected_uid)
+                return
+            if selected.parent_uid is None:
+                return
+            selected = manager._tool_graph.nodes.get(selected.parent_uid)
 
     @property
     def derivation_lines(self) -> list[str]:
@@ -1848,7 +1902,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._replay_source_data = None
         self._replay_source_pending = False
         self._source_spec = require_live_source_spec(source_spec)
-        self._derivation_display_rows_cache = None
+        self._invalidate_derivation_display_rows_cache()
         self._invalidate_dependency_cache()
         self._source_binding = None if self._source_spec is not None else source_binding
         if provenance_spec is not None and not isinstance(
@@ -1899,7 +1953,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._replay_source_data = None
         self._replay_source_pending = False
         self._source_spec = require_live_source_spec(source_spec)
-        self._derivation_display_rows_cache = None
+        self._invalidate_derivation_display_rows_cache()
         self._invalidate_dependency_cache()
         self._source_binding = None if self._source_spec is not None else source_binding
         self._source_auto_update = bool(auto_update)
@@ -1928,7 +1982,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 "parse_tool_provenance_spec() when deserializing saved payloads."
             )
         self._source_spec = None
-        self._derivation_display_rows_cache = None
+        self._invalidate_derivation_display_rows_cache()
         self._invalidate_dependency_cache()
         self._source_binding = None
         self._replay_source_data = None
@@ -1955,7 +2009,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 "parse_tool_provenance_spec() when deserializing saved payloads."
             )
         self._source_spec = None
-        self._derivation_display_rows_cache = None
+        self._invalidate_derivation_display_rows_cache()
         self._invalidate_dependency_cache()
         self._source_binding = None
         self._source_auto_update = False
@@ -1976,7 +2030,7 @@ class _ManagedWindowNode(QtCore.QObject):
             return self._source_spec
         if self._source_binding is not None:
             self._source_spec = self._source_binding.materialize(parent_data)
-            self._derivation_display_rows_cache = None
+            self._invalidate_derivation_display_rows_cache()
             self._invalidate_dependency_cache()
             self._source_binding = None
             return self._source_spec
@@ -2532,13 +2586,11 @@ class _ImageToolWrapper(_ManagedWindowNode):
             np.dtype(source_input_dtype) if source_input_dtype is not None else None
         )
         if watched_var is not None:
-            self.set_watched_binding(
-                *watched_var,
-                workspace_link_id=watched_workspace_link_id,
-                source_label=watched_source_label,
-                source_uid=watched_source_uid,
-                connected=watched_connected,
-            )
+            self._watched_varname, self._watched_uid = watched_var
+            self._watched_workspace_link_id = watched_workspace_link_id
+            self._watched_source_label = watched_source_label
+            self._watched_source_uid = watched_source_uid
+            self._watched_connected = watched_connected
 
         super().__init__(
             manager,
@@ -2579,12 +2631,16 @@ class _ImageToolWrapper(_ManagedWindowNode):
         connected: bool = True,
     ) -> None:
         """Bind this root ImageTool to a watched variable."""
+        provenance_changed = varname != self._watched_varname
         self._watched_varname = varname
         self._watched_uid = uid
         self._watched_workspace_link_id = workspace_link_id
         self._watched_source_label = source_label
         self._watched_source_uid = source_uid
         self._watched_connected = connected
+        if provenance_changed:
+            self._invalidate_derivation_display_rows_cache()
+            self._invalidate_dependency_cache()
 
     def watched_metadata(self) -> dict[str, typing.Any]:
         """Return JSON-serializable watched binding metadata."""
@@ -2606,7 +2662,13 @@ class _ImageToolWrapper(_ManagedWindowNode):
 
     def set_source_input_dtype(self, dtype: np.dtype[typing.Any] | str | None) -> None:
         """Track the latest dtype of the root source before UI promotion."""
-        self._source_input_dtype = np.dtype(dtype) if dtype is not None else None
+        dtype = np.dtype(dtype) if dtype is not None else None
+        if dtype == self._source_input_dtype:
+            return
+        self._source_input_dtype = dtype
+        if self.watched:
+            self._invalidate_derivation_display_rows_cache()
+            self._invalidate_dependency_cache()
         self.manager._mark_node_state_dirty(self.uid)
 
     @property
@@ -2691,6 +2753,8 @@ class _ImageToolWrapper(_ManagedWindowNode):
             self._watched_source_label = None
             self._watched_source_uid = None
             self._watched_connected = False
+            self._invalidate_derivation_display_rows_cache()
+            self._invalidate_dependency_cache()
             self.manager.tree_view.refresh(self.index)
             self.manager._mark_node_state_dirty(self.uid)
 

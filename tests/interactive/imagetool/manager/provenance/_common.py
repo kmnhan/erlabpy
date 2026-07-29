@@ -263,6 +263,8 @@ def _fake_edit_node(
         snapshot_token=f"{uid}-snapshot",
         tool_window=None,
         _derivation_display_rows_cache=None,
+        _derivation_display_rows_generation=0,
+        _derivation_display_rows_lineage_generation=(0,),
         replay_source_data=None,
         has_replay_source=False,
         source_spec=source_spec,
