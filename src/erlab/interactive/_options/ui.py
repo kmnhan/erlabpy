@@ -572,6 +572,12 @@ class OptionDialog(QtWidgets.QDialog):
 
         for path in paths:
             control = self._make_control(path)
+            # The dialog saves and refreshes immediately after each value change.
+            # Defer typed numeric changes so a refresh does not interrupt entry.
+            if isinstance(control, QtWidgets.QAbstractSpinBox):
+                control.setKeyboardTracking(False)
+            for spin in control.findChildren(QtWidgets.QAbstractSpinBox):
+                spin.setKeyboardTracking(False)
             row = _SettingsRow(scope=scope, path=path, control=control, parent=page)
             self._rows[(scope, path)] = row
             self._connect_control(row)

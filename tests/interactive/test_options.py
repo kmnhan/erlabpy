@@ -143,6 +143,13 @@ def test_dialog_native_structure(dialog: OptionDialog):
     assert container.layout().contentsMargins().right() > 0
 
 
+def test_dialog_spinboxes_disable_keyboard_tracking(dialog: OptionDialog):
+    spinboxes = dialog.findChildren(QtWidgets.QAbstractSpinBox)
+
+    assert spinboxes
+    assert all(not spin.keyboardTracking() for spin in spinboxes)
+
+
 def test_dialog_setting_descriptions_are_visible_not_duplicate_tooltips(
     dialog: OptionDialog,
 ):
