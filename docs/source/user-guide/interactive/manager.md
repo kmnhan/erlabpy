@@ -289,12 +289,15 @@ and right-click context menus:
   right-click context menu. Notes are saved with the manager workspace for ImageTool
   rows, analysis tools, child ImageTool outputs, and Figure Composer windows.
 
-Icons next to each entry indicate special states: linked windows share a colored badge,
-chunked Dask arrays show the dask icon, watched variables display their variable name,
-rows opened from another row can show the state badges described in
-{ref}`imagetool-manager-refresh`, and results that depend on several ImageTools can show
-the {guilabel}`Changed` or {guilabel}`Missing` badges described in
-{ref}`imagetool-manager-derived-data`.
+Icons and badges next to an entry show these states:
+
+- Linked windows share a colored badge.
+- Chunked Dask arrays show the Dask icon.
+- Watched variables show their variable name.
+- Rows opened from another row can show the badges described in
+  {ref}`imagetool-manager-refresh`.
+- Results that depend on several ImageTools can show the {guilabel}`Changed` or
+  {guilabel}`Missing` badges described in {ref}`imagetool-manager-derived-data`.
 
 (imagetool-manager-acquisition-context)=
 
@@ -423,7 +426,7 @@ When data changes in an ImageTool or tool, the tools and ImageTool windows it cr
 may no longer match it. The manager shows this with badges:
 
 - {guilabel}`Stale` means the ImageTool or tool that created this row changed, and this
-  row can probably be updated.
+  row can be updated.
 - {guilabel}`Unavailable` means the manager cannot repeat the saved selection or
   operation on the current data, such as when a dimension, coordinate, or selection has
   changed too much.
@@ -685,7 +688,7 @@ If several disconnected watched rows use the same variable name, `%watch my_data
 with {guilabel}`Stop Watching`, or use an editor integration that can reconnect a
 specific manager row.
 
-#### Outside IPython (e.g., marimo notebooks)
+#### Outside IPython, for example in marimo notebooks
 
 If `%watch` is not available, use the Python API directly:
 
@@ -778,7 +781,9 @@ replace_data(3, new_data, target=1)
 
 Additional functions and objects such as {data}`managers <erlab.interactive.imagetool.manager.managers>`, {func}`replace_data <erlab.interactive.imagetool.manager.replace_data>`, {func}`watch <erlab.interactive.imagetool.manager.watch>`, and {func}`manager_selection_info <erlab.interactive.imagetool.manager.manager_selection_info>` give you finer control when building custom acquisition pipelines or editor integrations.
 
-Under the hood these functions communicate with the GUI via ZeroMQ. Manager discovery is stored in a user-scoped live registry, so normal routing is intended for Python processes running in the same user session as the manager. See the API docs for details.
+These functions use ZeroMQ to communicate with the GUI. The manager uses a user-specific
+live registry for discovery. Normal routing is for Python processes in the same user
+session as the manager. See the API documentation for details.
 
 (imagetool-manager-standalone)=
 

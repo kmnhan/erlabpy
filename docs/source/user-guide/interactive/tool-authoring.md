@@ -793,7 +793,7 @@ The full `MyTool` example above already shows the preferred pattern:
 Use the current codebase as the source of truth for variants:
 
 - `DerivativeTool` is the reference for `operations_method` when generated code needs
-  more than one operation, i.e., the tool does more than a single function call.
+  more than one operation. In this case, the tool does more than a single function call.
 - `KspaceTool`, `GoldTool`, `MeshTool`, and `Fit2DTool` are good examples for
   ImageTool windows that appear as child rows of a tool in the manager.
 - `Fit1DTool` and `Fit2DTool` are good main copy-code references.
