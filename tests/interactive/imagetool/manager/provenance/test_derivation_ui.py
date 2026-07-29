@@ -36,6 +36,8 @@ from erlab.interactive.imagetool._provenance._model import (
 )
 from erlab.interactive.imagetool._provenance._operations import (
     AssignAttrsOperation,
+    AssignCoordsOperation,
+    InterpolationOperation,
     IselOperation,
     NormalizeOperation,
     QSelAggregationOperation,
@@ -83,6 +85,67 @@ def _composed_reorder_file_spec(file_path: pathlib.Path) -> ToolProvenanceSpec:
         assert composed is not None
         spec = composed
     return spec
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        AssignCoordsOperation(coord_name="x", values=np.linspace(-1.0, 1.0, 500)),
+        InterpolationOperation(dim="x", values=np.linspace(-1.0, 1.0, 500)),
+    ],
+    ids=["assign-coordinates", "interpolate"],
+)
+def test_manager_provenance_tooltip_elides_long_labels(
+    qtbot,
+    operation: AssignCoordsOperation | InterpolationOperation,
+) -> None:
+    derivation_list = manager_widgets._MetadataDerivationListWidget()
+    qtbot.addWidget(derivation_list)
+    activation_reason = "This step cannot be edited."
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=derivation_list,
+        _provenance_edit_controller=types.SimpleNamespace(
+            can_edit_row=lambda _row: (False, activation_reason)
+        ),
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+    row = _ProvenanceDisplayRow(operation.derivation_entry())
+
+    item = controller._metadata_derivation_item(row)
+
+    tooltip_label, tooltip_reason = item.toolTip().split("\n\n", maxsplit=1)
+    assert item.text() == row.entry.label
+    assert tooltip_label != row.entry.label
+    assert "…" in tooltip_label
+    assert (
+        derivation_list.fontMetrics().horizontalAdvance(tooltip_label)
+        <= manager_details_panel._MAXIMUM_DERIVATION_TOOLTIP_WIDTH
+    )
+    assert tooltip_reason == activation_reason
+    assert item.data(manager_widgets._METADATA_DERIVATION_CODE_ROLE) == row.entry.code
+
+
+def test_manager_provenance_tooltip_keeps_short_label(qtbot) -> None:
+    derivation_list = manager_widgets._MetadataDerivationListWidget()
+    qtbot.addWidget(derivation_list)
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=derivation_list,
+        _provenance_edit_controller=types.SimpleNamespace(
+            can_edit_row=lambda _row: (True, "")
+        ),
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+    row = _ProvenanceDisplayRow(
+        AssignAttrsOperation(attrs={"temperature": 20.0}).derivation_entry()
+    )
+
+    item = controller._metadata_derivation_item(row)
+
+    assert item.toolTip() == row.entry.label
 
 
 def test_manager_provenance_file_load_edit_accept_and_cancel(

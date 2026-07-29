@@ -160,16 +160,20 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 ## Working with dimensions and coordinates
 
 - The order of dimensions can be swapped using the arrow buttons in the cursor panel.
-  The direction of the arrow intuitively indicates which slice will be swapped with the
-  main view.
+  The arrow points to the slice that will swap with the main view.
 
 - Non-uniform coordinates are converted with a `_idx` suffix for plotting. Their true values are displayed in the cursor readouts.
 
-- Use {menuselection}`Edit --> Edit Coordinates` to open the {guilabel}`Coordinate Editor`
-  dialog. This is a GUI for {meth}`xarray.DataArray.assign_coords` that lets you specify
-  start/end values, edit per-point values, scale and offset a numeric scalar or 1D
-  coordinate with `new = scale * old + offset`, add a scalar coordinate, or add a 1D
-  associated coordinate along an existing dimension.
+- Use {menuselection}`Edit --> Edit Coordinates` to open the {guilabel}`Coordinate
+  Editor` dialog. This dialog is an interface for
+  {meth}`xarray.DataArray.assign_coords`. Use the dialog to do these actions:
+
+  - Set the start and end values.
+  - Edit individual values.
+  - Scale and offset a numeric scalar or 1D coordinate with
+    `new = scale * old + offset`.
+  - Add a scalar coordinate.
+  - Add a 1D associated coordinate along an existing dimension.
 
 - Use {menuselection}`Edit --> Edit Attributes` to open the {guilabel}`Attribute Editor`
   dialog. This is a GUI for {meth}`xarray.DataArray.assign_attrs` that lets you change
@@ -188,7 +192,7 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
   actions to compute the array into memory, rechunk automatically, or choose custom
   chunk shapes within ImageTool.
 
-- Overlay plots of numeric non-dimensional coordinates (e.g., temperature) on profile
+- Overlay plots of numeric non-dimensional coordinates, such as temperature, on profile
   plots from {menuselection}`View --> Plot Associated Coordinates`. Multi-dimensional
   coordinates are sliced with the active cursor and averaged over binned hidden
   dimensions. Right-click a profile plot to open associated coordinates in a new

@@ -139,9 +139,9 @@ also bring the data sources they use.
 
 ## Toolbar controls
 
-In addition to the recipe controls, plots can also be customized with the toolbar of the
-figure window. You can edit the subplot spacing and edit various figure elements from
-dialogs opened from the toolbar buttons.
+Use the toolbar in the figure window to change the plot. The subplot configuration
+button edits subplot spacing and the layout engine. The axes customization button edits
+the selected axes.
 
 (figure-composer-reproducibility)=
 

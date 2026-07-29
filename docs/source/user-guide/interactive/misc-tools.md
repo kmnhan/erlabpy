@@ -187,7 +187,8 @@ The `%dtool` line magic (see {ref}`interactive-misc-magics`) provides the same e
 
 ## goldtool
 
-Interactive tool for obtaining the shape of the Fermi edge (e.g., from a gold reference spectrum).
+Interactive tool for obtaining the shape of the Fermi edge from data such as a gold
+reference spectrum.
 
 `goldtool` can be started with {func}`erlab.interactive.goldtool`:
 
@@ -330,7 +331,8 @@ Some models have additional options that appear below the model selector that ar
 
 - {class}`ExpressionModel <lmfit.models.ExpressionModel>`:
 
-  - Edit the independent variable name in the `f(...)` header and type your formula in the expression box (e.g., `a * x + b`).
+  - Edit the independent variable name in the `f(...)` header. Then type your formula,
+    such as `a * x + b`, in the expression box.
   - Click {guilabel}`Apply` to rebuild the model from the current expression.
   - Use {guilabel}`Edit init script…` to define helper functions or constants used in the expression.
   - For more information, see the documentation for {class}`lmfit.models.ExpressionModel`.
@@ -368,9 +370,9 @@ Some models have additional options that appear below the model selector that ar
 
    - Hover over rows in the parameter table to see tooltips with additional information.
 
-   - You can choose to fix a parameter value to be equal to a coordinate variable in the
-     data (e.g., get the temperature from a `sample_temp` coordinate) by changing the
-     {guilabel}`Mode` in the {guilabel}`Parameter` panel.
+   - You can set a parameter value from a coordinate variable in the data. For example,
+     get the temperature from a `sample_temp` coordinate by changing {guilabel}`Mode` in
+     the {guilabel}`Parameter` panel.
 
    - When using {class}`MultiPeakModel <erlab.analysis.fit.models.MultiPeakModel>`,
      checking {guilabel}`Plot components` also shows lines at the peak centers in
@@ -392,7 +394,13 @@ Some models have additional options that appear below the model selector that ar
    :::{admonition} About {guilabel}`Fit ×20`
    :class: tip
 
-   {guilabel}`Fit ×20` performs a sequence of 20 fits on the *same* data. After each run, the fitted parameters are fed back in as the initial parameters for the next run. This can help in nonlinear or highly correlated models where a single fit gets close but not fully converged. Reusing the previous best-fit parameters often nudges the optimizer into a better solution without you having to manually tweak values between runs.
+   {{guilabel}`Fit ×20` performs a sequence of 20 fits on the *same* data. After each
+   run, the fitted parameters are fed back in as the initial parameters for the next
+   run. This can help in nonlinear or highly correlated models where a single fit gets
+   close but not fully converged. Reusing the previous best-fit parameters often nudges
+   the optimizer into a better solution without you having to manually tweak values
+   between runs.
+
    :::
 
 5. Use {guilabel}`Copy code` to copy the reproducible code for this fit to the
@@ -445,13 +453,16 @@ with a {guilabel}`Transpose` button and index navigation controls.
 
 For 2D data, the tool fits a *stack* of 1D curves.
 
-1. Check if the data dimensions are in the correct order. The axis you wish to sweep along is the vertical axis; if the image is rotated 90 degrees from what you expect, click {guilabel}`Transpose` to swap the axes.
+1. Check the order of the data dimensions. The sweep axis must be vertical. If the image
+   has the wrong orientation, click {guilabel}`Transpose` to swap the axes.
 
 2. Set the X window with {guilabel}`X range` or by dragging the vertical dashed lines.
 
 3. Choose the Y range to fit: use the {guilabel}`Y range` spin boxes or drag the horizontal dashed lines in the image.
 
-4. Pick a representative Y index with {guilabel}`Index` (or drag the yellow cursor), then tune the fit parameters for that slice like in the 1D workflow above. Once you are satisfied with the fit, proceed to the next step.
+4. Select a representative Y index with {guilabel}`Index`, or drag the yellow cursor.
+   Adjust the fit parameters for that slice as described in the 1D workflow. Continue
+   when the fit is satisfactory.
 
 5. Decide how parameters propagate between EDCs using {guilabel}`Fill mode`.
 
