@@ -2314,9 +2314,6 @@ class ScriptInput(pydantic.BaseModel):
         exclude_if=lambda value: value == "displayed",
     )
     provenance_spec: dict[str, typing.Any] | None = None
-    _parsed_provenance_cache: (
-        tuple[dict[str, typing.Any] | None, ToolProvenanceSpec | None] | None
-    ) = pydantic.PrivateAttr(default=None)
 
     model_config = pydantic.ConfigDict(
         frozen=True,
@@ -2385,13 +2382,13 @@ class ScriptInput(pydantic.BaseModel):
         )
 
     def parsed_provenance_spec(self) -> ToolProvenanceSpec | None:
-        cache = self._parsed_provenance_cache
+        cache = self.__dict__.get("_parsed_provenance_cache")
         if cache is None or cache[0] is not self.provenance_spec:
             cache = (
                 self.provenance_spec,
                 parse_tool_provenance_spec(self.provenance_spec),
             )
-            self._parsed_provenance_cache = cache
+            self.__dict__["_parsed_provenance_cache"] = cache
         return cache[1]
 
 
