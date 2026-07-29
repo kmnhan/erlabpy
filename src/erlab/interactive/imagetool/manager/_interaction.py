@@ -165,7 +165,11 @@ class _ManagerInteractionGate(QtCore.QObject):
     ) -> bool:
         event_type = event.type()
         if (
-            event_type == QtCore.QEvent.Type.MouseButtonPress
+            event_type
+            in {
+                QtCore.QEvent.Type.MouseButtonPress,
+                QtCore.QEvent.Type.MouseButtonDblClick,
+            }
             and marks_activity
             and isinstance(event, QtGui.QMouseEvent)
         ):
@@ -186,7 +190,6 @@ class _ManagerInteractionGate(QtCore.QObject):
             in {
                 QtCore.QEvent.Type.ApplicationDeactivate,
                 QtCore.QEvent.Type.UngrabMouse,
-                QtCore.QEvent.Type.WindowDeactivate,
             }
             and self._pressed_mouse_buttons
         ):

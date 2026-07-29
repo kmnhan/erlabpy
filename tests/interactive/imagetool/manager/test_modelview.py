@@ -1900,6 +1900,27 @@ def test_manager_interaction_gate_tracks_key_and_editor_focus_events(
         assert manager._interaction_active
 
 
+def _send_mouse_event(
+    widget: QtWidgets.QWidget,
+    event_type: QtCore.QEvent.Type,
+    button: QtCore.Qt.MouseButton,
+    buttons: QtCore.Qt.MouseButton,
+) -> None:
+    local_pos = QtCore.QPointF(widget.rect().center())
+    global_pos = QtCore.QPointF(widget.mapToGlobal(widget.rect().center()))
+    QtWidgets.QApplication.sendEvent(
+        widget,
+        QtGui.QMouseEvent(
+            event_type,
+            local_pos,
+            global_pos,
+            button,
+            buttons,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+        ),
+    )
+
+
 def test_manager_interaction_gate_waits_for_mouse_button_release(
     qtbot,
     manager_context: Callable[
@@ -1923,6 +1944,192 @@ def test_manager_interaction_gate_waits_for_mouse_button_release(
         assert manager._interaction_gate.pending_keys == (("test", "mouse-hold"),)
 
         qtbot.mouseRelease(spin, QtCore.Qt.MouseButton.LeftButton)
+        qtbot.wait_until(lambda: calls == ["done"], timeout=1000)
+        assert not manager._interaction_active
+
+
+def test_manager_interaction_gate_waits_for_double_click_release(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._interaction_gate.set_quiet_interval(1)
+        spin = QtWidgets.QSpinBox(manager)
+        qtbot.addWidget(spin)
+        spin.show()
+        calls: list[str] = []
+
+        _send_mouse_event(
+            spin,
+            QtCore.QEvent.Type.MouseButtonPress,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.LeftButton,
+        )
+        _send_mouse_event(
+            spin,
+            QtCore.QEvent.Type.MouseButtonRelease,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.NoButton,
+        )
+        _send_mouse_event(
+            spin,
+            QtCore.QEvent.Type.MouseButtonDblClick,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.LeftButton,
+        )
+        qtbot.wait(10)
+        manager._queue_idle_work(
+            ("test", "double-click-hold"), lambda: calls.append("done")
+        )
+        qtbot.wait(10)
+
+        assert manager._interaction_active
+        assert calls == []
+
+        _send_mouse_event(
+            spin,
+            QtCore.QEvent.Type.MouseButtonRelease,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.NoButton,
+        )
+        qtbot.wait_until(lambda: calls == ["done"], timeout=1000)
+        assert not manager._interaction_active
+
+
+def test_manager_interaction_gate_keeps_hold_until_outside_release(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._interaction_gate.set_quiet_interval(1)
+        spin = QtWidgets.QSpinBox(manager)
+        qtbot.addWidget(spin)
+        spin.show()
+        outside_widget = QtWidgets.QWidget()
+        qtbot.addWidget(outside_widget)
+        calls: list[str] = []
+
+        _send_mouse_event(
+            spin,
+            QtCore.QEvent.Type.MouseButtonPress,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.LeftButton,
+        )
+        QtWidgets.QApplication.sendEvent(
+            manager, QtCore.QEvent(QtCore.QEvent.Type.WindowDeactivate)
+        )
+        qtbot.wait(10)
+        manager._queue_idle_work(
+            ("test", "window-deactivate-hold"), lambda: calls.append("done")
+        )
+        qtbot.wait(10)
+
+        assert manager._interaction_active
+        assert calls == []
+
+        _send_mouse_event(
+            outside_widget,
+            QtCore.QEvent.Type.MouseButtonRelease,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.NoButton,
+        )
+        qtbot.wait_until(lambda: calls == ["done"], timeout=1000)
+        assert not manager._interaction_active
+
+
+@pytest.mark.parametrize(
+    "cancel_event_type",
+    [
+        QtCore.QEvent.Type.ApplicationDeactivate,
+        QtCore.QEvent.Type.UngrabMouse,
+    ],
+)
+def test_manager_interaction_gate_cancels_lost_mouse_hold(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    cancel_event_type: QtCore.QEvent.Type,
+) -> None:
+    with manager_context() as manager:
+        manager._interaction_gate.set_quiet_interval(1)
+        spin = QtWidgets.QSpinBox(manager)
+        qtbot.addWidget(spin)
+        spin.show()
+        calls: list[str] = []
+
+        _send_mouse_event(
+            spin,
+            QtCore.QEvent.Type.MouseButtonPress,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.LeftButton,
+        )
+        manager._queue_idle_work(
+            ("test", "cancel-mouse-hold"), lambda: calls.append("done")
+        )
+        event_target = (
+            QtWidgets.QApplication.instance()
+            if cancel_event_type == QtCore.QEvent.Type.ApplicationDeactivate
+            else spin
+        )
+        if event_target is None:
+            raise RuntimeError("QApplication is not available")
+        QtWidgets.QApplication.sendEvent(event_target, QtCore.QEvent(cancel_event_type))
+
+        qtbot.wait_until(lambda: calls == ["done"], timeout=1000)
+        assert not manager._interaction_active
+
+
+def test_manager_interaction_gate_tracks_each_pressed_mouse_button(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._interaction_gate.set_quiet_interval(1)
+        spin = QtWidgets.QSpinBox(manager)
+        qtbot.addWidget(spin)
+        spin.show()
+        calls: list[str] = []
+
+        _send_mouse_event(
+            spin,
+            QtCore.QEvent.Type.MouseButtonPress,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.LeftButton,
+        )
+        _send_mouse_event(
+            spin,
+            QtCore.QEvent.Type.MouseButtonPress,
+            QtCore.Qt.MouseButton.RightButton,
+            QtCore.Qt.MouseButton.LeftButton | QtCore.Qt.MouseButton.RightButton,
+        )
+        _send_mouse_event(
+            spin,
+            QtCore.QEvent.Type.MouseButtonRelease,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.RightButton,
+        )
+        qtbot.wait(10)
+        manager._queue_idle_work(
+            ("test", "multiple-mouse-buttons"), lambda: calls.append("done")
+        )
+        qtbot.wait(10)
+
+        assert manager._interaction_active
+        assert calls == []
+
+        _send_mouse_event(
+            spin,
+            QtCore.QEvent.Type.MouseButtonRelease,
+            QtCore.Qt.MouseButton.RightButton,
+            QtCore.Qt.MouseButton.NoButton,
+        )
         qtbot.wait_until(lambda: calls == ["done"], timeout=1000)
         assert not manager._interaction_active
 
