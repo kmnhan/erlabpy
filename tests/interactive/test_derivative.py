@@ -1,4 +1,5 @@
 import ast
+import json
 import tempfile
 import typing
 from types import SimpleNamespace
@@ -186,6 +187,33 @@ def test_dtool_plot_appearance_roundtrip_and_image_refresh(qtbot) -> None:
     qtbot.wait_until(
         lambda: restored.hists[1].getLevels() == pytest.approx((4.0, 20.0))
     )
+
+
+@pytest.mark.parametrize(
+    ("spin_name", "value"),
+    [("hi_spin", 10.0), ("lo_spin", 15.0)],
+)
+def test_dtool_color_cutoffs_override_manual_result_levels(
+    qtbot, spin_name: str, value: float
+) -> None:
+    y, x = np.mgrid[-2:3:5j, -3:4:7j]
+    data = xr.DataArray(x**4 + y**2, dims=("y", "x"), name="data")
+    win = DerivativeTool(data)
+    qtbot.addWidget(win)
+
+    histogram = win.hists[1]
+    histogram.region.lines[0].sigDragged.emit(histogram.region.lines[0])
+    histogram.setLevels(2.0, 8.0)
+    histogram.sigLevelChangeFinished.emit(histogram)
+
+    getattr(win, spin_name).setValue(value)
+    expected = win.get_levels(win.result.values)
+    qtbot.wait(10)
+
+    assert histogram.getLevels() == pytest.approx(expected)
+    assert win.images[1].getLevels() == pytest.approx(expected)
+    view_state = json.loads(win.to_dataset().attrs["tool_view_state"])
+    assert view_state["plots"]["result"]["levels"] is None
 
 
 def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:
