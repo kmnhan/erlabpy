@@ -18,6 +18,7 @@ import erlab
 import erlab.interactive._options.core
 import erlab.interactive.imagetool.manager._base as manager_base
 import erlab.interactive.imagetool.manager._io as manager_io
+import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._model import (
@@ -176,6 +177,64 @@ def test_dependency_tracker_indexes_dependents_and_caches_status() -> None:
     tracker._remove_reverse_refs("orphan-dependent")
 
 
+def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
+    class _NoIterationDict(dict[str, object]):
+        def __iter__(self):
+            pytest.fail("dependent lookup must not scan all manager nodes")
+
+    source_spec = script(
+        start_label="Source",
+        seed_code="source = data",
+        active_name="source",
+    )
+    dependent_spec = script(
+        start_label="Dependent",
+        seed_code="derived = source",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="source",
+                label="Source",
+                node_uid="source-uid",
+                provenance_spec=source_spec,
+            ),
+        ),
+    )
+    nodes = _NoIterationDict(
+        {
+            "source-uid": types.SimpleNamespace(
+                tool_window=None,
+                provenance_spec=source_spec,
+            ),
+            "dependent-b": types.SimpleNamespace(
+                tool_window=None,
+                provenance_spec=dependent_spec,
+            ),
+            "unrelated": types.SimpleNamespace(
+                tool_window=None,
+                provenance_spec=None,
+            ),
+            "dependent-a": types.SimpleNamespace(
+                tool_window=None,
+                provenance_spec=dependent_spec,
+            ),
+        }
+    )
+    graph = types.SimpleNamespace(nodes=nodes)
+    tracker = _ManagerDependencyTracker(typing.cast("_ManagerToolGraph", graph))
+    for uid in ("source-uid", "dependent-b", "unrelated", "dependent-a"):
+        tracker.note_uid(uid)
+
+    assert tracker.dependent_uids("source-uid") == [
+        "dependent-b",
+        "dependent-a",
+    ]
+    assert tracker.dependent_uids("source-uid") == [
+        "dependent-b",
+        "dependent-a",
+    ]
+
+
 def test_tool_graph_structural_mutation_helpers_update_caches() -> None:
     class _ParentNode:
         def __init__(self) -> None:
@@ -331,6 +390,127 @@ def test_childtool_hover_preview_hides_missing_imageitem_pixmap(
         painter.end()
 
     assert not delegate.preview_popup.isVisible()
+
+
+def test_imagetool_preview_image_is_cached_until_node_changes(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        node = manager._tool_graph.root_wrappers[0]
+        pixmap = QtGui.QPixmap(8, 4)
+        pixmap.fill(QtGui.QColor("red"))
+        calls: list[object] = []
+
+        def _preview(imagetool, _fallback_ratio, _fallback_pixmap):
+            calls.append(imagetool)
+            return 0.5, pixmap
+
+        monkeypatch.setattr(manager_wrapper, "_preview_from_imagetool", _preview)
+        node._invalidate_preview_image_cache()
+
+        first = node._preview_image
+        assert node._preview_image is first
+        assert calls == [node.imagetool]
+
+        node._handle_imagetool_state_changed()
+        assert node._preview_image is not first
+        assert calls == [node.imagetool, node.imagetool]
+
+        node._advance_snapshot_token()
+        assert node._preview_image[1].cacheKey() == pixmap.cacheKey()
+        assert calls == [node.imagetool, node.imagetool, node.imagetool]
+
+        missing_calls: list[object] = []
+
+        def _missing_preview(imagetool, fallback_ratio, fallback_pixmap):
+            missing_calls.append(imagetool)
+            return fallback_ratio, fallback_pixmap
+
+        monkeypatch.setattr(
+            manager_wrapper,
+            "_preview_from_imagetool",
+            _missing_preview,
+        )
+        node._invalidate_preview_image_cache()
+
+        assert node._preview_image[1].isNull()
+        assert node._preview_image[1].isNull()
+        assert missing_calls == [node.imagetool, node.imagetool]
+
+
+def test_hover_popup_skips_unchanged_widget_updates(qtbot) -> None:
+    class _Popup:
+        def __init__(self) -> None:
+            self._size = QtCore.QSize()
+            self._position = QtCore.QPoint()
+            self._visible = False
+            self.calls: list[str] = []
+
+        def size(self) -> QtCore.QSize:
+            return self._size
+
+        def setFixedSize(self, size: QtCore.QSize) -> None:
+            self.calls.append("resize")
+            self._size = QtCore.QSize(size)
+
+        def setPixmap(self, _pixmap: QtGui.QPixmap) -> None:
+            self.calls.append("pixmap")
+
+        def pos(self) -> QtCore.QPoint:
+            return self._position
+
+        def move(self, position: QtCore.QPoint) -> None:
+            self.calls.append("move")
+            self._position = QtCore.QPoint(position)
+
+        def isVisible(self) -> bool:
+            return self._visible
+
+        def show(self) -> None:
+            self.calls.append("show")
+            self._visible = True
+
+        def hide(self) -> None:
+            self.calls.append("hide")
+            self._visible = False
+
+    view = QtWidgets.QTreeView()
+    qtbot.addWidget(view)
+
+    class _Manager:
+        pass
+
+    manager = _Manager()
+    delegate = _ImageToolWrapperItemDelegate(
+        typing.cast("ImageToolManager", manager),
+        typing.cast("typing.Any", view),
+    )
+    popup = _Popup()
+    delegate.preview_popup = typing.cast("QtWidgets.QLabel", popup)
+    option = QtWidgets.QStyleOptionViewItem()
+    option.rect = QtCore.QRect(0, 0, 160, 28)
+    option.widget = view
+    pixmap = QtGui.QPixmap(8, 4)
+    pixmap.fill(QtGui.QColor("red"))
+
+    delegate._show_popup(0.5, pixmap, option)
+    delegate._show_popup(0.5, pixmap, option)
+
+    assert popup.calls == ["resize", "pixmap", "move", "show"]
+
+    delegate._show_popup(float("nan"), pixmap, option)
+    delegate._show_popup(float("nan"), pixmap, option)
+
+    assert popup.calls == ["resize", "pixmap", "move", "show", "hide"]
 
 
 def test_link_selected_aligns_to_current_imagetool(
@@ -1011,6 +1191,81 @@ def test_tree_data_changed_refreshes_details_only_for_selected_rows(
         manager._flush_idle_work(force=True)
 
         assert metadata_updates == [child_uid]
+
+
+def test_dependency_refresh_batches_contiguous_rows_by_parent(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        (test_data + 1).qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        first_uid = manager.add_childtool(_InfoRefreshTool(test_data), 0, show=False)
+        second_uid = manager.add_childtool(_InfoRefreshTool(test_data), 0, show=False)
+        manager.add_childtool(_InfoRefreshTool(test_data), 0, show=False)
+        sparse_uid = manager.add_childtool(_InfoRefreshTool(test_data), 0, show=False)
+        other_parent_uid = manager.add_childtool(
+            _InfoRefreshTool(test_data), 1, show=False
+        )
+        qtbot.wait_until(
+            lambda: (
+                len(manager._tool_graph.root_wrappers[0]._childtool_indices) == 4
+                and len(manager._tool_graph.root_wrappers[1]._childtool_indices) == 1
+            ),
+            timeout=5000,
+        )
+        root_uids = [
+            manager._tool_graph.root_wrappers[0].uid,
+            manager._tool_graph.root_wrappers[1].uid,
+        ]
+        monkeypatch.setattr(
+            manager,
+            "_dependency_dependent_uids",
+            lambda uid: (
+                [
+                    *root_uids,
+                    first_uid,
+                    second_uid,
+                    sparse_uid,
+                    other_parent_uid,
+                    "missing",
+                ]
+                if uid == "source"
+                else []
+            ),
+        )
+
+        emissions: list[tuple[str, int, int]] = []
+
+        def _record_range(
+            top: QtCore.QModelIndex,
+            bottom: QtCore.QModelIndex,
+            *_args: object,
+        ) -> None:
+            parent_index = top.parent()
+            if not parent_index.isValid():
+                emissions.append(("root", top.row(), bottom.row()))
+                return
+            parent = parent_index.internalPointer()
+            if isinstance(parent, _ImageToolWrapper):  # pragma: no branch
+                emissions.append((parent.uid, top.row(), bottom.row()))
+
+        manager.tree_view._model.dataChanged.connect(_record_range)
+        manager._refresh_dependency_dependents("source")
+
+        assert emissions == [
+            ("root", 0, 1),
+            (root_uids[0], 0, 1),
+            (root_uids[0], 3, 3),
+            (root_uids[1], 0, 0),
+        ]
 
 
 def test_derivation_display_rows_are_cached_until_provenance_changes(

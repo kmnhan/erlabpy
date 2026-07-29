@@ -27,6 +27,7 @@ import importlib
 import json
 import keyword
 import logging
+import math
 import pathlib
 import sys
 import typing
@@ -439,6 +440,7 @@ class _ManagedWindowNode(QtCore.QObject):
             ToolProvenanceSpec | None,
         ] = {}
         self._info_text_cache: str | None = None
+        self._preview_image_cache: tuple[str, tuple[float, QtGui.QPixmap]] | None = None
         self._suspend_descendant_signal_propagation: bool = False
         self._pending_workspace_payload: tuple[pathlib.Path, str] | None = None
         self._pending_workspace_payload_kind: (
@@ -536,6 +538,7 @@ class _ManagedWindowNode(QtCore.QObject):
     def window(self, value: QtWidgets.QWidget | None) -> None:
         self._invalidate_tool_provenance_spec_cache()
         self._invalidate_info_text_cache()
+        self._invalidate_preview_image_cache()
         if self.imagetool is not None:
             manager = self._manager()
             if manager is not None:
@@ -827,6 +830,7 @@ class _ManagedWindowNode(QtCore.QObject):
     ) -> None:
         self._clear_pending_workspace_link_slicer_cache()
         self._invalidate_info_text_cache()
+        self._invalidate_preview_image_cache()
         self._pending_workspace_payload_kind = kind
         self._pending_workspace_payload = (
             pathlib.Path(workspace_path),
@@ -861,6 +865,7 @@ class _ManagedWindowNode(QtCore.QObject):
     def clear_pending_workspace_payload(self) -> None:
         self._clear_pending_workspace_link_slicer_cache()
         self._invalidate_info_text_cache()
+        self._invalidate_preview_image_cache()
         self._pending_workspace_payload = None
         self._pending_workspace_payload_kind = None
         self._pending_workspace_payload_attrs = None
@@ -1350,7 +1355,18 @@ class _ManagedWindowNode(QtCore.QObject):
             if preview is not None:
                 return preview
             return float("NaN"), QtGui.QPixmap()
-        return _preview_from_imagetool(self.imagetool, float("NaN"), QtGui.QPixmap())
+        if (
+            self._preview_image_cache is not None
+            and self._preview_image_cache[0] == self.snapshot_token
+        ):
+            return self._preview_image_cache[1]
+        preview = _preview_from_imagetool(self.imagetool, float("NaN"), QtGui.QPixmap())
+        if not preview[1].isNull() and math.isfinite(preview[0]) and preview[0] > 0:
+            self._preview_image_cache = (self.snapshot_token, preview)
+        return preview
+
+    def _invalidate_preview_image_cache(self) -> None:
+        self._preview_image_cache = None
 
     @property
     def source_spec(
@@ -1606,6 +1622,7 @@ class _ManagedWindowNode(QtCore.QObject):
         if self._suspend_snapshot_token_updates:
             return
         self._invalidate_info_text_cache()
+        self._invalidate_preview_image_cache()
         token = uuid.uuid4().hex
         self._snapshot_token = token
         self._source_snapshot_token = token
@@ -1615,6 +1632,7 @@ class _ManagedWindowNode(QtCore.QObject):
         if self._suspend_snapshot_token_updates:
             return
         self._invalidate_info_text_cache()
+        self._invalidate_preview_image_cache()
         self._snapshot_token = uuid.uuid4().hex
         self._schedule_snapshot_token_refresh(defer_refresh=defer_refresh)
 
@@ -2279,6 +2297,7 @@ class _ManagedWindowNode(QtCore.QObject):
     def _handle_imagetool_state_changed(self) -> None:
         if self.manager._workspace_state.closing_document:
             return
+        self._invalidate_preview_image_cache()
         self.manager._mark_node_state_dirty(self.uid)
 
     @QtCore.Slot()
@@ -2288,6 +2307,7 @@ class _ManagedWindowNode(QtCore.QObject):
     @QtCore.Slot()
     def _handle_imagetool_data_edited(self) -> None:
         self._invalidate_info_text_cache()
+        self._invalidate_preview_image_cache()
         self.manager._mark_node_data_dirty(self.uid)
 
     @QtCore.Slot()

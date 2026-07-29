@@ -33,13 +33,13 @@ class _ManagerDependencyTracker:
             ],
         ] = {}
         self._source_uids_by_dependent: dict[str, set[str]] = {}
-        self._dependents_by_source_uid: dict[str, set[str]] = {}
-        self._unindexed_uids: set[str] = set()
+        self._dependents_by_source_uid: dict[str, dict[str, None]] = {}
+        self._unindexed_uids: dict[str, None] = {}
         self._status_cache: dict[str, _DependencyStatus | None] = {}
         self._pending_source_refresh_targets: dict[str, set[str]] = {}
 
     def note_uid(self, uid: str) -> None:
-        self._unindexed_uids.add(uid)
+        self._unindexed_uids[uid] = None
         for dependent_uid in self._dependents_by_source_uid.get(uid, ()):
             self._status_cache.pop(dependent_uid, None)
 
@@ -48,7 +48,7 @@ class _ManagerDependencyTracker:
         self._ref_cache.pop(uid, None)
         self._status_cache.pop(uid, None)
         if uid in self._graph.nodes:
-            self._unindexed_uids.add(uid)
+            self._unindexed_uids[uid] = None
 
     def refs_for_uid(self, uid: str) -> tuple[ScriptInputDependencyRef, ...]:
         node = self._graph.nodes.get(uid)
@@ -63,22 +63,22 @@ class _ManagerDependencyTracker:
         if spec is None:
             self._remove_reverse_refs(uid)
             self._ref_cache.pop(uid, None)
-            self._unindexed_uids.discard(uid)
+            self._unindexed_uids.pop(uid, None)
             self._status_cache[uid] = None
             return ()
         spec_id = id(spec)
         cached = self._ref_cache.get(uid)
         if cached is not None and cached[0] == spec_id:
-            self._unindexed_uids.discard(uid)
+            self._unindexed_uids.pop(uid, None)
             return cached[1]
         refs = script_input_dependency_refs(spec)
         self._remove_reverse_refs(uid)
         source_uids = {ref.node_uid for ref in refs}
         self._source_uids_by_dependent[uid] = source_uids
         for source_uid in source_uids:
-            self._dependents_by_source_uid.setdefault(source_uid, set()).add(uid)
+            self._dependents_by_source_uid.setdefault(source_uid, {})[uid] = None
         self._ref_cache[uid] = (spec_id, refs)
-        self._unindexed_uids.discard(uid)
+        self._unindexed_uids.pop(uid, None)
         self._status_cache.pop(uid, None)
         return refs
 
@@ -108,14 +108,14 @@ class _ManagerDependencyTracker:
 
     def dependent_uids(self, uid: str) -> list[str]:
         self._index_pending_uids()
-        dependents = self._dependents_by_source_uid.get(uid, set())
+        dependents = self._dependents_by_source_uid.get(uid, {})
         for dependent_uid in dependents:
             self._status_cache.pop(dependent_uid, None)
-        return [node_uid for node_uid in self._graph.nodes if node_uid in dependents]
+        return list(dependents)
 
     def clear_uid(self, uid: str) -> None:
         self.invalidate_uid(uid)
-        self._unindexed_uids.discard(uid)
+        self._unindexed_uids.pop(uid, None)
         self._pending_source_refresh_targets.pop(uid, None)
         for blocker_uid, target_uids in list(
             self._pending_source_refresh_targets.items()
@@ -134,7 +134,7 @@ class _ManagerDependencyTracker:
             dependents = self._dependents_by_source_uid.get(source_uid)
             if dependents is None:
                 continue
-            dependents.discard(dependent_uid)
+            dependents.pop(dependent_uid, None)
             if not dependents:
                 self._dependents_by_source_uid.pop(source_uid, None)
 

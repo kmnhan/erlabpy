@@ -128,6 +128,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         self.preview_popup.setWindowFlags(QtCore.Qt.WindowType.ToolTip)
         self.preview_popup.setScaledContents(True)
         self.preview_popup.hide()
+        self._preview_popup_pixmap_key: int | None = None
 
         # Handle preview closing
         viewport = parent.viewport()
@@ -216,22 +217,34 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         option: QtWidgets.QStyleOptionViewItem,
     ) -> None:
         if pixmap.isNull() or not math.isfinite(box_ratio) or box_ratio <= 0:
-            self.preview_popup.hide()
+            self._hide_popup()
             return
 
         popup_height = 150
+        popup_width = round(popup_height / box_ratio)
+        popup_size = QtCore.QSize(popup_width, popup_height)
+        if self.preview_popup.size() != popup_size:
+            self.preview_popup.setFixedSize(popup_size)
 
-        self.preview_popup.setFixedSize(round(popup_height / box_ratio), popup_height)
-        self.preview_popup.setPixmap(pixmap)
+        pixmap_key = pixmap.cacheKey()
+        if self._preview_popup_pixmap_key != pixmap_key:
+            self.preview_popup.setPixmap(pixmap)
+            self._preview_popup_pixmap_key = pixmap_key
 
         rect = QtCore.QRect(option.rect)
         rect.setTop(rect.center().y() + rect.height())
-        self.preview_popup.move(
-            option.widget.mapToGlobal(rect.center())
-            - QtCore.QPoint(int(self.preview_popup.width() / 2), 0)
+        popup_position = option.widget.mapToGlobal(rect.center()) - QtCore.QPoint(
+            popup_width // 2, 0
         )
+        if self.preview_popup.pos() != popup_position:
+            self.preview_popup.move(popup_position)
 
-        self.preview_popup.show()
+        if not self.preview_popup.isVisible():
+            self.preview_popup.show()
+
+    def _hide_popup(self) -> None:
+        if self.preview_popup.isVisible():
+            self.preview_popup.hide()
 
     def _scaled_font(self, base_font: QtGui.QFont, scale: float) -> QtGui.QFont:
         key = (base_font.key(), scale)
@@ -670,7 +683,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             )
         ):
             if child_node is None:
-                self.preview_popup.hide()
+                self._hide_popup()
                 return
 
             if child_node.imagetool is not None:
@@ -706,28 +719,28 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             if image_item is None or not erlab.interactive.utils.qt_is_valid(
                 image_item
             ):
-                self.preview_popup.hide()
+                self._hide_popup()
                 return
 
             view_box = image_item.getViewBox()
             if not erlab.interactive.utils.qt_is_valid(view_box):
-                self.preview_popup.hide()
+                self._hide_popup()
                 return
 
             vb_rect = view_box.rect()
             width = vb_rect.width()
             height = vb_rect.height()
             if width <= 0 or height <= 0:
-                self.preview_popup.hide()
+                self._hide_popup()
                 return
 
             try:
                 pixmap = image_item.getPixmap()
             except RuntimeError:
-                self.preview_popup.hide()
+                self._hide_popup()
                 return
             if pixmap is None or pixmap.isNull():
-                self.preview_popup.hide()
+                self._hide_popup()
                 return
 
             self._show_popup(
@@ -1003,7 +1016,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     | QtCore.QEvent.Type.Leave
                     | QtCore.QEvent.Type.WindowStateChange
                 ):
-                    self.preview_popup.hide()
+                    self._hide_popup()
                     erlab.interactive.utils.set_widget_cursor(viewport, None)
                 case QtCore.QEvent.Type.MouseMove:
                     if not isinstance(event, QtGui.QMouseEvent):
@@ -1011,7 +1024,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     pos = event.pos()
                     index = view.indexAt(pos)
                     if not index.isValid():
-                        self.preview_popup.hide()
+                        self._hide_popup()
                     if not index.isValid():
                         badge = None
                     else:
@@ -1955,6 +1968,56 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
             row_idx = self._model._row_index(idx)
             if row_idx.isValid():  # pragma: no branch
                 self._model.dataChanged.emit(row_idx, row_idx)
+
+    def refresh_many(self, targets: Iterable[int | str]) -> None:
+        """Refresh target rows in contiguous ranges grouped by parent."""
+        rows_by_parent: dict[
+            str | None,
+            tuple[QtCore.QModelIndex, set[int]],
+        ] = {}
+        for target in targets:
+            index = self._model._row_index(target)
+            if not index.isValid():
+                continue
+            parent = index.parent()
+            if parent.isValid():
+                parent_pointer = parent.internalPointer()
+                if isinstance(parent_pointer, _ImageToolWrapper):
+                    parent_uid = parent_pointer.uid
+                elif isinstance(parent_pointer, str):
+                    parent_uid = parent_pointer
+                else:  # pragma: no cover - model parents use only these two types.
+                    continue
+            else:
+                parent_uid = None
+            _, rows = rows_by_parent.setdefault(
+                parent_uid,
+                (parent, set()),
+            )
+            rows.add(index.row())
+
+        for parent, rows in rows_by_parent.values():
+            sorted_rows = sorted(rows)
+            first = previous = sorted_rows[0]
+            for row in sorted_rows[1:]:
+                if row == previous + 1:
+                    previous = row
+                    continue
+                self._emit_data_changed_rows(parent, first, previous)
+                first = row
+                previous = row
+            self._emit_data_changed_rows(parent, first, previous)
+
+    def _emit_data_changed_rows(
+        self,
+        parent: QtCore.QModelIndex,
+        first: int,
+        last: int,
+    ) -> None:
+        top = self._model.index(first, 0, parent)
+        bottom = self._model.index(last, 0, parent)
+        if top.isValid() and bottom.isValid():  # pragma: no branch
+            self._model.dataChanged.emit(top, bottom)
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent | None) -> None:
         if event is not None and event.button() == QtCore.Qt.MouseButton.LeftButton:

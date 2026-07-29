@@ -319,12 +319,14 @@ class _LineageController:
 
     def _refresh_dependency_dependents(self, uid: str) -> None:
         refresh_figures = False
+        tree_uids: list[str] = []
         for dependent_uid in self._manager._dependency_dependent_uids(uid):
             if self._manager._is_figure_uid(dependent_uid):
                 refresh_figures = True
                 self._manager._update_info(uid=dependent_uid)
             else:
-                self._manager.tree_view.refresh(dependent_uid)
+                tree_uids.append(dependent_uid)
+        self._manager.tree_view.refresh_many(tree_uids)
         if refresh_figures:
             self._manager._figure_collection.sync()
 
