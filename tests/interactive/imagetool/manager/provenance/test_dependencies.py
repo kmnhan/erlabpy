@@ -239,6 +239,21 @@ def test_manager_compact_file_suffix(tmp_path) -> None:
     assert manager_wrapper._compact_file_suffix(paths) == " (scan_a, scan_b, +1)"
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        pathlib.Path(r"C:\Users\name\data\scan.h5"),
+        pathlib.Path(r"\\server\share\data\scan.h5"),
+        pathlib.Path("C:/Users/name/data/scan.h5"),
+        pathlib.Path("/Users/name/data/scan.h5"),
+    ],
+)
+def test_manager_compact_file_suffix_accepts_cross_platform_paths(
+    path: pathlib.Path,
+) -> None:
+    assert manager_wrapper._compact_file_suffix([path]) == " (scan)"
+
+
 def test_manager_childtool_from_filtered_parent_uses_display_provenance(
     qtbot,
     manager_context: Callable[
