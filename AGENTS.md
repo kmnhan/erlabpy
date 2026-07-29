@@ -15,6 +15,15 @@ Place runtime code in `src/erlab/` (analysis routines, interactive Qt tools, IO 
 - `uv run pyinstaller manager.spec` — bundle the ImageTool manager app.
 - `uv build` — produce wheels and sdists for release.
 
+## Writing Style
+
+Use ASD-STE100 Simplified Technical English for agent responses, commit messages,
+documentation, and pull request titles and descriptions. Use short and direct
+sentences. Put one idea or instruction in each sentence. Use precise words and
+consistent terms. Do not use idioms, unnecessary jargon, or ambiguous wording.
+Keep a necessary technical term when an approved alternative is not accurate.
+Define the term when the reader might not know it.
+
 ## Documentation Workflow
 
 Sources live in `docs/source/` (MyST + Sphinx). Install extras using `uv sync --all-extras --dev --group docs`, then render locally via `uv run --directory docs make html`. Put tutorials in `docs/source/user-guide/`, guides in `docs/source/contributing.md`, and images in `docs/source/images/`. Run `make linkcheck` before pushing large doc edits to guard cross-references. The `sphinxext-rediraffe` extension is used for maintaining redirects. Add to the `rediraffe_redirects` dict in `docs/source/conf.py` when moving or renaming pages.
