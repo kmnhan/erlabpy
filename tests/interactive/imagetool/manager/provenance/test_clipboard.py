@@ -515,7 +515,7 @@ def test_manager_metadata_derivation_state_restore_uses_indexed_lookups(
         assert item.isExpanded()
 
 
-def test_manager_metadata_display_order_does_not_materialize_collapsed_rows(
+def test_manager_metadata_row_mapping_keeps_collapsed_rows_consistent(
     qtbot,
 ) -> None:
     materialization_calls = 0
@@ -564,6 +564,15 @@ def test_manager_metadata_display_order_does_not_materialize_collapsed_rows(
     assert sibling_item is not None
     assert derivation_list.display_order(sibling_item) == 1
     assert materialization_calls == 0
+    sibling_row_index = derivation_list.row(sibling_item)
+    assert sibling_row_index == 2
+    assert materialization_calls == 1
+    assert parent_row._materialized_children_cache is not None
+    parent_item = derivation_list.topLevelItem(0)
+    assert parent_item is not None
+    assert parent_item.childCount() == 0
+    assert derivation_list.item(sibling_row_index) is sibling_item
+    assert materialization_calls == 1
 
 
 def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:

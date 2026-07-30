@@ -131,6 +131,11 @@ class _ManagerToolGraph:
         self._presentation_generation += 1
 
     def register_root(self, wrapper: _ImageToolWrapper) -> None:
+        self._require_available_uid(wrapper.uid)
+        if wrapper.index in self.root_wrappers:
+            raise ValueError(
+                f"Root ImageTool index {wrapper.index} is already registered"
+            )
         self.root_wrappers[wrapper.index] = wrapper
         self.nodes[wrapper.uid] = wrapper
         self._imagetool_count += 1
@@ -142,11 +147,20 @@ class _ManagerToolGraph:
             and node.tool_window.manager_collection == "figures"
         ):
             raise ValueError("Figure nodes must use register_figure()")
+        self._require_available_uid(node.uid)
+        if node.parent_uid is None:
+            raise ValueError("Child nodes must have a registered parent")
+        parent = self.nodes.get(node.parent_uid)
+        if parent is None:
+            raise ValueError(f"Parent node UID {node.parent_uid!r} is not registered")
+        if node.uid in parent._childtool_indices:
+            raise ValueError(
+                f"Child node UID {node.uid!r} is already registered with its parent"
+            )
+        parent.add_child_reference(node.uid, node.window)
         self.nodes[node.uid] = node
         if node.is_imagetool:
             self._imagetool_count += 1
-        parent = self.parent(node)
-        parent.add_child_reference(node.uid, node.window)
         self._structure_changed()
 
     def register_figure(self, node: _ManagedWindowNode) -> None:
@@ -155,13 +169,17 @@ class _ManagerToolGraph:
             and node.tool_window.manager_collection != "figures"
         ):
             raise ValueError("Only figure tools can be registered as figure nodes")
+        self._require_available_uid(node.uid)
+        if node.uid in self._figure_uid_set:
+            raise ValueError(f"Figure node UID {node.uid!r} is already registered")
         self.nodes[node.uid] = node
-        if node.uid not in self._figure_uid_set:
-            self.figure_uids.append(node.uid)
-            self._figure_uid_set.add(node.uid)
-        if node.is_imagetool:
-            self._imagetool_count += 1
+        self.figure_uids.append(node.uid)
+        self._figure_uid_set.add(node.uid)
         self._structure_changed()
+
+    def _require_available_uid(self, uid: str) -> None:
+        if uid in self.nodes:
+            raise ValueError(f"Managed node UID {uid!r} is already registered")
 
     def update_node_window_reference(self, node: _ManagedWindowNode) -> None:
         """Synchronize the parent cache after a node replaces its window."""

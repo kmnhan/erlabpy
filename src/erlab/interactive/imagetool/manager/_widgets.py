@@ -253,7 +253,19 @@ class _MetadataDerivationListWidget(QtWidgets.QTreeWidget):
         return None
 
     def row(self, item: QtWidgets.QTreeWidgetItem) -> int:
-        return self.display_order(item)
+        offset = 0
+        for top_level_row in range(self.topLevelItemCount()):
+            top_level_item = self.topLevelItem(top_level_row)
+            if top_level_item is None:  # pragma: no cover - invalid Qt tree state
+                continue
+            found, offset = self._conceptual_row_for_item(
+                top_level_item,
+                item,
+                offset,
+            )
+            if found is not None:
+                return found
+        return -1
 
     def display_order(self, item: QtWidgets.QTreeWidgetItem) -> int:
         try:
@@ -317,6 +329,44 @@ class _MetadataDerivationListWidget(QtWidgets.QTreeWidget):
             if child_item is None:  # pragma: no cover - invalid Qt tree state
                 continue
             found, offset = self._item_at_row(child_item, target, offset)
+            if found is not None:
+                return found, offset
+        return None, offset
+
+    def _conceptual_row_for_item(
+        self,
+        current: QtWidgets.QTreeWidgetItem,
+        target: QtWidgets.QTreeWidgetItem,
+        offset: int,
+    ) -> tuple[int | None, int]:
+        if current is target:
+            return offset, offset + 1
+        offset += 1
+        row = current.data(0, _METADATA_DERIVATION_ROW_ROLE)
+        row_children = self._row_children(row)
+        if row_children:
+            for child_index, child_row in enumerate(row_children):
+                child_item = current.child(child_index)
+                if child_item is None:
+                    offset += self._conceptual_row_count(child_row)
+                    continue
+                found, offset = self._conceptual_row_for_item(
+                    child_item,
+                    target,
+                    offset,
+                )
+                if found is not None:
+                    return found, offset
+            return None, offset
+        for child_index in range(current.childCount()):
+            child_item = current.child(child_index)
+            if child_item is None:  # pragma: no cover - invalid Qt tree state
+                continue
+            found, offset = self._conceptual_row_for_item(
+                child_item,
+                target,
+                offset,
+            )
             if found is not None:
                 return found, offset
         return None, offset

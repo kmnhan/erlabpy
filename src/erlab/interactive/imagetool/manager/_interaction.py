@@ -61,7 +61,10 @@ class _ManagerInteractionGate(QtCore.QObject):
         self._pending_work: collections.OrderedDict[Hashable, Callable[[], None]] = (
             collections.OrderedDict()
         )
-        self._pressed_mouse_buttons: set[QtCore.Qt.MouseButton] = set()
+        self._pressed_mouse_button_roots: dict[
+            QtCore.Qt.MouseButton,
+            weakref.ReferenceType[QtWidgets.QWidget],
+        ] = {}
         self._active: bool = False
         self._quiet_timer = QtCore.QTimer(self)
         self._quiet_timer.setSingleShot(True)
@@ -80,8 +83,9 @@ class _ManagerInteractionGate(QtCore.QObject):
 
     @property
     def is_active(self) -> bool:
+        self._discard_dead_mouse_holds()
         return (
-            bool(self._pressed_mouse_buttons)
+            bool(self._pressed_mouse_button_roots)
             or self._active
             or self._quiet_timer.isActive()
         )
@@ -101,8 +105,17 @@ class _ManagerInteractionGate(QtCore.QObject):
             self._roots.add(widget)
 
     def unregister_window(self, widget: QtWidgets.QWidget | None) -> None:
-        if widget is not None:
-            self._roots.discard(widget)
+        if widget is None:
+            return
+        self._roots.discard(widget)
+        released = False
+        for button, root_ref in tuple(self._pressed_mouse_button_roots.items()):
+            root = root_ref()
+            if root is None or root is widget:
+                self._pressed_mouse_button_roots.pop(button, None)
+                released = True
+        if released:
+            self.note_activity()
 
     def note_activity(self) -> None:
         self._active = True
@@ -155,13 +168,14 @@ class _ManagerInteractionGate(QtCore.QObject):
                 marks_activity = self._event_marks_activity(obj, event)
             except RuntimeError:
                 marks_activity = False
-            mouse_hold_changed = self._update_mouse_hold(event, marks_activity)
+            mouse_hold_changed = self._update_mouse_hold(obj, event, marks_activity)
             if marks_activity or mouse_hold_changed:
                 self.note_activity()
         return super().eventFilter(obj, event)
 
     def _update_mouse_hold(
         self,
+        obj: QtCore.QObject | None,
         event: QtCore.QEvent,
         marks_activity: bool,
     ) -> bool:
@@ -177,14 +191,16 @@ class _ManagerInteractionGate(QtCore.QObject):
         ):
             button = event.button()
             if button != QtCore.Qt.MouseButton.NoButton:
-                self._pressed_mouse_buttons.add(button)
+                root = self._managed_root_for_object(obj)
+                if root is not None:
+                    self._pressed_mouse_button_roots[button] = weakref.ref(root)
             return False
         if event_type == QtCore.QEvent.Type.MouseButtonRelease and isinstance(
             event, QtGui.QMouseEvent
         ):
             button = event.button()
-            if button in self._pressed_mouse_buttons:
-                self._pressed_mouse_buttons.remove(button)
+            if button in self._pressed_mouse_button_roots:
+                self._pressed_mouse_button_roots.pop(button)
                 return True
             return False
         if (
@@ -193,9 +209,9 @@ class _ManagerInteractionGate(QtCore.QObject):
                 QtCore.QEvent.Type.ApplicationDeactivate,
                 QtCore.QEvent.Type.UngrabMouse,
             }
-            and self._pressed_mouse_buttons
+            and self._pressed_mouse_button_roots
         ):
-            self._pressed_mouse_buttons.clear()
+            self._pressed_mouse_button_roots.clear()
             return True
         return False
 
@@ -213,22 +229,32 @@ class _ManagerInteractionGate(QtCore.QObject):
             )
         return relevant and self._is_managed_object(obj)
 
-    def _is_managed_object(self, obj: QtCore.QObject | None) -> bool:
+    def _managed_root_for_object(
+        self, obj: QtCore.QObject | None
+    ) -> QtWidgets.QWidget | None:
         if not isinstance(obj, QtWidgets.QWidget):
-            return False
+            return None
         try:
             window = obj.window()
             if window in self._roots:
-                return True
+                return window
         except RuntimeError:
-            return False
+            return None
         for root in tuple(self._roots):
             try:
                 if obj is root or root.isAncestorOf(obj):
-                    return True
+                    return root
             except RuntimeError:
                 self._roots.discard(root)
-        return False
+        return None
+
+    def _is_managed_object(self, obj: QtCore.QObject | None) -> bool:
+        return self._managed_root_for_object(obj) is not None
+
+    def _discard_dead_mouse_holds(self) -> None:
+        for button, root_ref in tuple(self._pressed_mouse_button_roots.items()):
+            if root_ref() is None:
+                self._pressed_mouse_button_roots.pop(button, None)
 
     def _interaction_settled(self) -> None:
         self._active = False

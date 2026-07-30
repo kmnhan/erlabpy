@@ -335,6 +335,77 @@ def test_tool_graph_structural_mutation_helpers_update_caches() -> None:
         graph.register_figure(typing.cast("typing.Any", invalid_figure))
 
 
+def test_tool_graph_registration_failures_do_not_mutate_cached_state() -> None:
+    class _ParentNode:
+        def __init__(self) -> None:
+            self.uid = "root"
+            self.index = 0
+            self._childtool_indices: list[str] = []
+            self._childtools: dict[str, object] = {}
+
+        def add_child_reference(self, uid: str, window: object | None) -> None:
+            self._childtool_indices.append(uid)
+            if window is not None:
+                self._childtools[uid] = window
+
+    graph = _ManagerToolGraph()
+    missing_parent_child = types.SimpleNamespace(
+        uid="orphan",
+        parent_uid="missing",
+        is_imagetool=True,
+        window=None,
+        tool_window=None,
+    )
+    with pytest.raises(ValueError, match="Parent node UID"):
+        graph.register_child(typing.cast("typing.Any", missing_parent_child))
+
+    assert graph.nodes == {}
+    assert graph.nimagetools == 0
+    assert graph.structure_generation == 0
+
+    parent = _ParentNode()
+    graph.register_root(typing.cast("typing.Any", parent))
+    generation = graph.structure_generation
+
+    with pytest.raises(ValueError, match="index 0"):
+        graph.register_root(
+            typing.cast(
+                "typing.Any",
+                types.SimpleNamespace(uid="other-root", index=0),
+            )
+        )
+    with pytest.raises(ValueError, match="'root'"):
+        graph.register_root(
+            typing.cast(
+                "typing.Any",
+                types.SimpleNamespace(uid="root", index=1),
+            )
+        )
+
+    assert graph.root_wrappers == {0: parent}
+    assert graph.nodes == {"root": parent}
+    assert graph.nimagetools == 1
+    assert graph.structure_generation == generation
+
+    child = types.SimpleNamespace(
+        uid="child",
+        parent_uid="root",
+        is_imagetool=True,
+        window=None,
+        tool_window=None,
+    )
+    graph.register_child(typing.cast("typing.Any", child))
+    generation = graph.structure_generation
+
+    with pytest.raises(ValueError, match="'child'"):
+        graph.register_child(typing.cast("typing.Any", child))
+
+    assert graph.nodes["child"] is child
+    assert parent._childtool_indices == ["child"]
+    assert graph.nimagetools == 2
+    assert graph.structure_generation == generation
+
+
 class _InfoRefreshToolState(pydantic.BaseModel):
     value: int = 0
 
@@ -2327,6 +2398,46 @@ def test_manager_interaction_gate_cancels_lost_mouse_hold(
             raise RuntimeError("QApplication is not available")
         QtWidgets.QApplication.sendEvent(event_target, QtCore.QEvent(cancel_event_type))
 
+        qtbot.wait_until(lambda: calls == ["done"], timeout=1000)
+        assert not manager._interaction_active
+
+
+def test_manager_interaction_gate_releases_hold_with_registered_window(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._interaction_gate.set_quiet_interval(1)
+        held_root = QtWidgets.QWidget()
+        held_spin = QtWidgets.QSpinBox(held_root)
+        unrelated_root = QtWidgets.QWidget()
+        qtbot.addWidget(held_root)
+        qtbot.addWidget(unrelated_root)
+        held_root.show()
+        unrelated_root.show()
+        manager._register_interaction_window(held_root)
+        manager._register_interaction_window(unrelated_root)
+        calls: list[str] = []
+
+        _send_mouse_event(
+            held_spin,
+            QtCore.QEvent.Type.MouseButtonPress,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.LeftButton,
+        )
+        manager._queue_idle_work(
+            ("test", "unregistered-mouse-hold"),
+            lambda: calls.append("done"),
+        )
+        manager._unregister_interaction_window(unrelated_root)
+        qtbot.wait(10)
+
+        assert manager._interaction_active
+        assert calls == []
+
+        manager._unregister_interaction_window(held_root)
         qtbot.wait_until(lambda: calls == ["done"], timeout=1000)
         assert not manager._interaction_active
 
