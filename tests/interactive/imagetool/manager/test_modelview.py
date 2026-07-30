@@ -1,3 +1,4 @@
+import collections
 import contextlib
 import json
 import logging
@@ -226,10 +227,7 @@ def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
                 tool_window=None,
                 provenance_spec=dependent_spec,
             ),
-            "unrelated": types.SimpleNamespace(
-                tool_window=None,
-                provenance_spec=None,
-            ),
+            "unrelated": object(),
             "dependent-a": types.SimpleNamespace(
                 tool_window=None,
                 provenance_spec=dependent_spec,
@@ -240,6 +238,8 @@ def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
     tracker = _ManagerDependencyTracker(typing.cast("_ManagerToolGraph", graph))
     for uid in ("source-uid", "dependent-b", "unrelated", "dependent-a"):
         tracker.note_uid(uid)
+    tracker.refs_for_uid("dependent-b")
+    tracker.refs_for_uid("dependent-a")
 
     assert tracker.dependent_uids("source-uid") == [
         "dependent-b",
@@ -1642,6 +1642,105 @@ def test_tool_provenance_spec_is_cached_between_tool_signals(
         assert calls == [False, True, True, True, False, True, True]
 
 
+def test_tool_provenance_change_reindexes_and_refreshes_dependency_metadata(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = _InfoRefreshTool(test_data)
+        uid = manager.add_childtool(tool, 0, show=False)
+        child_node = manager._child_node(uid)
+        source_node = manager._tool_graph.root_wrappers[0]
+        provenance = script(
+            start_label="Initial tool provenance",
+            seed_code="derived = 1",
+            active_name="derived",
+        )
+
+        def _current_provenance_spec(*, flush_deferred_restore: bool = True):
+            del flush_deferred_restore
+            return provenance
+
+        monkeypatch.setattr(
+            tool,
+            "current_provenance_spec",
+            _current_provenance_spec,
+        )
+        child_node._invalidate_tool_provenance_spec_cache()
+        select_child_tool(manager, uid)
+        manager._flush_idle_work(force=True)
+        manager._flush_idle_work(force=True)
+
+        assert manager.dependency_status_for_uid(uid) is None
+        assert "Inputs" not in manager._metadata_detail_labels
+
+        provenance = script(
+            ScriptCodeOperation(label="Use source", code="derived = source"),
+            start_label="Updated tool provenance",
+            active_name="derived",
+            script_inputs=(
+                ScriptInput(
+                    name="source",
+                    label="Source",
+                    node_uid=source_node.uid,
+                    node_snapshot_token=source_node.snapshot_token,
+                    provenance_spec=full_data(),
+                ),
+            ),
+        )
+        tool._write_state()
+
+        assert ("dependency-index", uid) in manager._interaction_gate.pending_keys
+        manager._flush_idle_work(force=True)
+        assert ("details-refresh", uid) in manager._interaction_gate.pending_keys
+        manager._flush_idle_work(force=True)
+
+        assert manager.dependency_status_for_uid(uid) == "current"
+        assert uid in manager._dependency_dependent_uids(source_node.uid)
+        assert "Inputs" in manager._metadata_detail_labels
+
+
+def test_manager_dependency_index_job_handles_removed_and_figure_nodes() -> None:
+    uid = "figure-uid"
+    indexed_uids: list[str] = []
+    refreshed_uids: list[str] = []
+    manager = types.SimpleNamespace(
+        _dependency_index_refresh_uids={uid, "removed-uid"},
+        _tool_graph=types.SimpleNamespace(nodes={uid: object()}),
+        _dependency_tracker=types.SimpleNamespace(
+            refs_for_uid=indexed_uids.append,
+        ),
+        _is_figure_uid=lambda candidate_uid: candidate_uid == uid,
+        _schedule_details_refresh=refreshed_uids.append,
+    )
+
+    ImageToolManager._schedule_dependency_index(
+        typing.cast("ImageToolManager", manager),
+        "missing-uid",
+        refresh=True,
+    )
+    ImageToolManager._index_dependency_uid(
+        typing.cast("ImageToolManager", manager),
+        "removed-uid",
+    )
+    ImageToolManager._index_dependency_uid(
+        typing.cast("ImageToolManager", manager),
+        uid,
+    )
+
+    assert manager._dependency_index_refresh_uids == set()
+    assert indexed_uids == [uid]
+    assert refreshed_uids == [uid]
+
+
 def test_manager_signals_do_not_restart_interaction_delay(
     qtbot,
     monkeypatch,
@@ -2047,6 +2146,90 @@ def test_manager_work_batch_defers_replaced_work(
         flush_batch()
 
         assert calls == ["first", "new"]
+        assert gate.pending_keys == ()
+
+
+def test_manager_idle_batch_does_not_snapshot_full_backlog(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _NoItemsOrderedDict(
+        collections.OrderedDict[typing.Hashable, tuple[int, Callable[[], None]]]
+    ):
+        def items(self):
+            pytest.fail("idle batches must not copy the complete pending queue")
+
+    with manager_context() as manager:
+        calls: list[str] = []
+        gate = manager._interaction_gate
+        gate._work_timer.stop()
+        gate._pending_work = _NoItemsOrderedDict(gate._pending_work)
+        manager._queue_idle_work(("test", "first"), lambda: calls.append("first"))
+        manager._queue_idle_work(("test", "second"), lambda: calls.append("second"))
+        gate._work_timer.stop()
+
+        gate._run_pending_work()
+
+        assert calls == ["first", "second"]
+        assert gate.pending_keys == ()
+
+        manager._queue_idle_work(("test", "discarded"), pytest.fail)
+        gate.discard_work(("test", "discarded"))
+        assert gate.pending_keys == ()
+
+        def discard_remaining_work() -> None:
+            calls.append("discard")
+            gate.discard_work(("test", "remaining"))
+
+        manager._queue_idle_work(("test", "discard"), discard_remaining_work)
+        manager._queue_idle_work(("test", "remaining"), pytest.fail)
+        gate._work_timer.stop()
+        gate._run_pending_work()
+
+        assert calls == ["first", "second", "discard"]
+        assert gate.pending_keys == ()
+
+
+@pytest.mark.parametrize("forced", [False, True], ids=["idle", "forced"])
+def test_manager_work_batch_defers_same_callback_replacement(
+    forced: bool,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        calls: list[str] = []
+        gate = manager._interaction_gate
+
+        def second_callback() -> None:
+            calls.append("second")
+
+        def replace_second_callback() -> None:
+            calls.append("first")
+            manager._queue_idle_work(("test", "second"), second_callback)
+
+        def flush_batch() -> None:
+            if forced:
+                manager._flush_idle_work(force=True)
+            else:
+                gate._work_timer.stop()
+                gate._run_pending_work()
+
+        if forced:
+            gate.set_quiet_interval(60_000)
+            manager._note_interaction_activity()
+        manager._queue_idle_work(("test", "first"), replace_second_callback)
+        manager._queue_idle_work(("test", "second"), second_callback)
+
+        flush_batch()
+
+        assert calls == ["first"]
+        assert gate.pending_keys == (("test", "second"),)
+
+        flush_batch()
+
+        assert calls == ["first", "second"]
         assert gate.pending_keys == ()
 
 
@@ -2700,6 +2883,7 @@ def test_remove_imagetool_removes_childtools() -> None:
     removed_rows: list[int] = []
     refresh_calls: list[None] = []
     cleared_dependency_uids: list[str] = []
+    canceled_dependency_uids: list[str] = []
 
     class _DummyWrapper:
         def __init__(self):
@@ -2721,6 +2905,7 @@ def test_remove_imagetool_removes_childtools() -> None:
     tool_graph.nodes[wrapper.uid] = wrapper
     manager = types.SimpleNamespace(
         _tool_graph=tool_graph,
+        _cancel_dependency_index=canceled_dependency_uids.append,
         _workspace_link_keys_for_subtree=lambda _uid: set(),
         _mark_removed_subtree_dirty=lambda _uid: None,
         _mark_singleton_workspace_link_groups_dirty=lambda _link_keys: None,
@@ -2743,6 +2928,7 @@ def test_remove_imagetool_removes_childtools() -> None:
     assert removed_rows == [0]
     assert refresh_calls == [None]
     assert cleared_dependency_uids == [wrapper.uid]
+    assert canceled_dependency_uids == [wrapper.uid]
     assert wrapper.disposed
     assert wrapper.deleted
     assert manager._tool_graph.root_wrappers == {}

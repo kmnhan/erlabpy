@@ -109,7 +109,6 @@ class _ManagerDependencyTracker:
         return status
 
     def dependent_uids(self, uid: str) -> list[str]:
-        self._index_pending_uids()
         dependents = self._dependents_by_source_uid.get(uid, {})
         for dependent_uid in dependents:
             self._status_cache.pop(dependent_uid, None)
@@ -125,10 +124,6 @@ class _ManagerDependencyTracker:
             target_uids.discard(uid)
             if not target_uids:
                 self._pending_source_refresh_targets.pop(blocker_uid, None)
-
-    def _index_pending_uids(self) -> None:
-        for uid in tuple(self._unindexed_uids):
-            self.refs_for_uid(uid)
 
     def _remove_reverse_refs(self, dependent_uid: str) -> None:
         source_uids = self._source_uids_by_dependent.pop(dependent_uid, set())

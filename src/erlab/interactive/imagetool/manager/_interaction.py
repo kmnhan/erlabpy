@@ -58,9 +58,11 @@ class _ManagerInteractionGate(QtCore.QObject):
     def __init__(self, parent: QtCore.QObject) -> None:
         super().__init__(parent)
         self._roots: weakref.WeakSet[QtWidgets.QWidget] = weakref.WeakSet()
-        self._pending_work: collections.OrderedDict[Hashable, Callable[[], None]] = (
-            collections.OrderedDict()
-        )
+        self._pending_work: collections.OrderedDict[
+            Hashable,
+            tuple[int, Callable[[], None]],
+        ] = collections.OrderedDict()
+        self._queue_generation = 0
         self._pressed_mouse_button_roots: dict[
             QtCore.Qt.MouseButton,
             weakref.ReferenceType[QtWidgets.QWidget],
@@ -133,10 +135,14 @@ class _ManagerInteractionGate(QtCore.QObject):
             self._queued_since_flush += 1
             if key in self._pending_work:
                 self._replaced_since_flush += 1
-        self._pending_work[key] = callback
+        self._queue_generation += 1
+        self._pending_work[key] = (self._queue_generation, callback)
         if require_idle and self.is_active:
             return
         self._schedule_pending_work()
+
+    def discard_work(self, key: Hashable) -> None:
+        self._pending_work.pop(key, None)
 
     def flush(
         self,
@@ -149,15 +155,16 @@ class _ManagerInteractionGate(QtCore.QObject):
         start_time = time.perf_counter() if _manager_perf_timing_enabled() else 0.0
         flushed = 0
         pending_items = list(self._pending_work.items())
-        for key, callback in pending_items:
+        for key, pending in pending_items:
             if key_prefix is not None and not self._key_matches_prefix(key, key_prefix):
                 continue
             # An earlier callback can replace later work in this batch.
-            if self._pending_work.get(key) is not callback:
+            current = self._pending_work.get(key)
+            if current is None or current[0] != pending[0]:
                 continue
             self._pending_work.pop(key)
             flushed += 1
-            self._run_callback(callback)
+            self._run_callback(pending[1])
         self._log_flush_stats("forced", flushed, start_time)
 
     def eventFilter(
@@ -271,14 +278,19 @@ class _ManagerInteractionGate(QtCore.QObject):
         start_time = time.perf_counter() if _manager_perf_timing_enabled() else 0.0
         flushed = 0
         deadline = time.monotonic() + self._batch_budget_ms / 1000.0
-        pending_items = list(self._pending_work.items())
-        for key, callback in pending_items:
+        batch_generation = self._queue_generation
+        batch_size = len(self._pending_work)
+        for _index in range(batch_size):
             if self.is_active:
                 break
-            # Keep callbacks queued during this batch for the next event-loop turn.
-            if self._pending_work.get(key) is not callback:
+            if not self._pending_work:
+                break
+            key, pending = self._pending_work.popitem(last=False)
+            generation, callback = pending
+            if generation > batch_generation:
+                # Keep callbacks queued during this batch for the next event-loop turn.
+                self._pending_work[key] = pending
                 continue
-            self._pending_work.pop(key)
             flushed += 1
             self._run_callback(callback)
             if time.monotonic() >= deadline:

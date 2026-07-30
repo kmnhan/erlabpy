@@ -1493,18 +1493,21 @@ class _ManagedWindowNode(QtCore.QObject):
         manager.tree_view.refresh(self.uid)
         manager._schedule_details_refresh(self.uid)
 
-    def _invalidate_tool_provenance_spec_cache(self) -> None:
+    def _invalidate_tool_provenance_spec_cache(
+        self, *, refresh_dependency: bool = False
+    ) -> None:
         self._tool_provenance_spec_cache.clear()
         if self.parent_uid is None or self.source_spec is None:
             self._invalidate_derivation_display_rows_cache()
-        self._invalidate_dependency_cache()
+        self._invalidate_dependency_cache(refresh=refresh_dependency)
 
-    def _invalidate_dependency_cache(self) -> None:
+    def _invalidate_dependency_cache(self, *, refresh: bool = False) -> None:
         manager = self._manager()
         if manager is None:
             return
         if manager._tool_graph.nodes.get(self.uid) is self:
             manager._dependency_tracker.invalidate_uid(self.uid)
+            manager._schedule_dependency_index(self.uid, refresh=refresh)
 
     @property
     def displayed_provenance_spec(
@@ -2423,7 +2426,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def _handle_tool_provenance_changed(self) -> None:
-        self._invalidate_tool_provenance_spec_cache()
+        self._invalidate_tool_provenance_spec_cache(refresh_dependency=True)
 
     @QtCore.Slot()
     def _handle_imagetool_state_changed(self) -> None:

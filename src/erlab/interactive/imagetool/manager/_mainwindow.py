@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import gc
 import logging
 import sys
@@ -246,6 +247,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._workspace_link_color_indices: dict[str, int] = {}
         self._workspace_link_color_cache_dirty = True
         self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
+        self._dependency_index_refresh_uids: set[str] = set()
         self._trusted_script_replay_keys: set[str] = set()
         self._lineage_controller = _LineageController(self)
         self._provenance_edit_controller = _ProvenanceEditController(self)
@@ -1229,12 +1231,14 @@ class ImageToolManager(_ImageToolManagerBase):
     def _register_root_wrapper(self, wrapper: _ImageToolWrapper) -> None:
         self._tool_graph.register_root(wrapper)
         self._dependency_tracker.note_uid(wrapper.uid)
+        self._schedule_dependency_index(wrapper.uid, refresh=False)
         if wrapper.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
 
     def _register_child_node(self, node: _ManagedWindowNode) -> None:
         self._tool_graph.register_child(node)
         self._dependency_tracker.note_uid(node.uid)
+        self._schedule_dependency_index(node.uid, refresh=False)
         if node.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
         if node.tool_window is not None:
@@ -1243,6 +1247,7 @@ class ImageToolManager(_ImageToolManagerBase):
     def _register_figure_node(self, node: _ManagedWindowNode) -> None:
         self._tool_graph.register_figure(node)
         self._dependency_tracker.note_uid(node.uid)
+        self._schedule_dependency_index(node.uid, refresh=False)
         if node.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
         if node.tool_window is not None:
@@ -1254,6 +1259,7 @@ class ImageToolManager(_ImageToolManagerBase):
             return
         if node.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
+        self._cancel_dependency_index(uid)
         self._dependency_tracker.clear_uid(uid)
         if not self._workspace_state.closing_document:
             self._refresh_dependency_dependents(uid)
@@ -1460,6 +1466,7 @@ class ImageToolManager(_ImageToolManagerBase):
             self._remove_uid_target(uid)
 
         self._tool_graph.unregister_root(index)
+        self._cancel_dependency_index(wrapper.uid)
         self._dependency_tracker.clear_uid(wrapper.uid)
         if wrapper.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
@@ -1825,6 +1832,33 @@ class ImageToolManager(_ImageToolManagerBase):
         require_idle: bool = True,
     ) -> None:
         self._interaction_gate.queue_work(key, callback, require_idle=require_idle)
+
+    def _schedule_dependency_index(self, uid: str, *, refresh: bool) -> None:
+        if uid not in self._tool_graph.nodes:
+            return
+        if refresh:
+            self._dependency_index_refresh_uids.add(uid)
+        self._queue_idle_work(
+            ("dependency-index", uid),
+            functools.partial(self._index_dependency_uid, uid),
+        )
+
+    def _cancel_dependency_index(self, uid: str) -> None:
+        self._dependency_index_refresh_uids.discard(uid)
+        self._interaction_gate.discard_work(("dependency-index", uid))
+
+    def _index_dependency_uid(self, uid: str) -> None:
+        refresh = uid in self._dependency_index_refresh_uids
+        self._dependency_index_refresh_uids.discard(uid)
+        if uid not in self._tool_graph.nodes:
+            return
+        self._dependency_tracker.refs_for_uid(uid)
+        if not refresh:
+            return
+        if self._is_figure_uid(uid):
+            self._schedule_details_refresh(uid)
+        else:
+            self.tree_view.refresh(uid)
 
     def _flush_idle_work(
         self,
