@@ -208,7 +208,7 @@ class _FigureCollectionController(QtCore.QObject):
         self._menu: QtWidgets.QMenu | None = None
         self._items_by_uid: dict[str, QtWidgets.QListWidgetItem] = {}
         self._placeholder_pixmap_cache: (
-            tuple[tuple[int, int, int], QtGui.QPixmap] | None
+            tuple[tuple[int, int, int, int], QtGui.QPixmap] | None
         ) = None
         self._refreshing = False
         self._view_mode = self._read_view_mode_setting()
@@ -570,8 +570,15 @@ class _FigureCollectionController(QtCore.QObject):
 
     def _placeholder_pixmap(self) -> QtGui.QPixmap:
         size = _FigureCollectionPane.thumbnail_size(self._gallery_size_name)
-        color = self._parent_widget.palette().color(QtGui.QPalette.ColorRole.Base)
-        cache_key = (size.width(), size.height(), color.rgba())
+        palette = self._parent_widget.palette()
+        color = palette.color(QtGui.QPalette.ColorRole.Base)
+        border_color = palette.color(QtGui.QPalette.ColorRole.Mid)
+        cache_key = (
+            size.width(),
+            size.height(),
+            color.rgba(),
+            border_color.rgba(),
+        )
         cached = self._placeholder_pixmap_cache
         if cached is not None and cached[0] == cache_key:
             return cached[1]
@@ -581,9 +588,7 @@ class _FigureCollectionController(QtCore.QObject):
         try:
             painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
             rect = QtCore.QRectF(pixmap.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-            painter.setPen(
-                self._parent_widget.palette().color(QtGui.QPalette.ColorRole.Mid)
-            )
+            painter.setPen(border_color)
             painter.drawRoundedRect(rect, 3.0, 3.0)
         finally:
             painter.end()

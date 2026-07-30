@@ -742,6 +742,31 @@ def test_manager_provenance_operation_editor_contract_is_valid() -> None:
     provenance_editors._validate_operation_editor_contract()
 
 
+def test_manager_provenance_editor_contract_cache_tracks_derived_state() -> None:
+    class _MutableScriptDialog(imagetool_dialogs.DataTransformDialog):
+        __module__ = imagetool_dialogs.__name__
+        operation_types = (ScriptCodeOperation,)
+
+        def restore_transform_operation(
+            self,
+            operation: ToolProvenanceOperation,
+        ) -> None:
+            del operation
+
+    try:
+        initial_errors = provenance_editors._operation_editor_contract_errors()
+        _MutableScriptDialog.grouped_operation_only = True
+        grouped_errors = provenance_editors._operation_editor_contract_errors()
+    finally:
+        _MutableScriptDialog.operation_types = ()
+
+    assert not any("_MutableScriptDialog declares" in error for error in initial_errors)
+    assert any(
+        "_MutableScriptDialog declares ScriptCodeOperation as a grouped editor" in error
+        for error in grouped_errors
+    )
+
+
 def test_manager_provenance_editor_contract_rejects_group_without_matcher() -> None:
     class _MissingGroupMatcherDialog(imagetool_dialogs.DataTransformDialog):
         __module__ = imagetool_dialogs.__name__

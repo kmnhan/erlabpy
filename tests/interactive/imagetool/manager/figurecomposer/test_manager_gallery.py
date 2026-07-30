@@ -67,6 +67,32 @@ def _figure_pane(manager):
     return pane
 
 
+def test_figure_placeholder_cache_tracks_fill_and_border_palette(qtbot) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    controller = _collection._FigureCollectionController(
+        typing.cast("typing.Any", None), parent
+    )
+    palette = QtGui.QPalette(parent.palette())
+    palette.setColor(QtGui.QPalette.ColorRole.Base, QtGui.QColor("#101010"))
+    palette.setColor(QtGui.QPalette.ColorRole.Mid, QtGui.QColor("#202020"))
+    parent.setPalette(palette)
+
+    first = controller._placeholder_pixmap()
+    first_key = controller._placeholder_pixmap_cache
+    assert first_key is not None
+
+    palette.setColor(QtGui.QPalette.ColorRole.Mid, QtGui.QColor("#f0f0f0"))
+    parent.setPalette(palette)
+    second = controller._placeholder_pixmap()
+    second_key = controller._placeholder_pixmap_cache
+    assert second_key is not None
+
+    assert first.cacheKey() != second.cacheKey()
+    assert first_key[0][2] == second_key[0][2]
+    assert first_key[0][3] != second_key[0][3]
+
+
 def test_selected_figure_details_track_root_reindexing(
     qtbot,
     manager_context: Callable[

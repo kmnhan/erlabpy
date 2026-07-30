@@ -761,9 +761,13 @@ class _ManagedWindowNode(QtCore.QObject):
     ) -> None:
         if self._tool_window is not expected:
             return
+        self._tool_window = None
+        self._tool_window_destroyed_callback = None
+        self._close_workspace_reference_datasets()
         manager = self._manager()
         if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
             return
+        manager._unregister_interaction_window(expected)
         if manager._tool_graph.nodes.get(self.uid) is not self:
             return
         manager._remove_childtool(self.uid)

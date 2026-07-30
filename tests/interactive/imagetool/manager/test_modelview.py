@@ -38,6 +38,7 @@ from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTr
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 from erlab.interactive.imagetool.manager._modelview import (
     _FIGURE_SOURCE_MIME,
+    _MAX_TEXT_WIDTH_CACHE_SIZE,
     _MIME,
     _ImageToolWrapperItemDelegate,
     _ImageToolWrapperItemModel,
@@ -1592,6 +1593,59 @@ def test_managed_node_window_replacement_preserves_classification(
         assert node.tool_window is replacement_tool
         assert manager._parent_node(node)._childtools[uid] is replacement_tool
         assert erlab.interactive.utils.qt_is_valid(replacement_tool)
+
+
+def test_destroyed_managed_tool_releases_node_resources(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _ReferenceDataset:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    with manager_context() as manager:
+        parent = itool(test_data, manager=False, execute=False)
+        assert isinstance(parent, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(parent, show=False)
+        tool = _InfoRefreshTool(test_data)
+        qtbot.addWidget(tool)
+        uid = manager.add_childtool(tool, 0, show=False)
+        node = manager._child_node(uid)
+        reference_dataset = _ReferenceDataset()
+        node._adopt_workspace_reference_datasets(
+            {
+                (pathlib.Path("workspace.itws"), "references/source"): typing.cast(
+                    "xr.Dataset", reference_dataset
+                )
+            }
+        )
+        node._set_workspace_tool_data_references({"source": {"kind": "manager_node"}})
+
+        original_qt_is_valid = erlab.interactive.utils.qt_is_valid
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "qt_is_valid",
+            lambda *objects: (
+                False
+                if any(obj is tool for obj in objects)
+                else original_qt_is_valid(*objects)
+            ),
+        )
+        node._handle_tool_window_destroyed(tool)
+
+        assert uid not in manager._tool_graph.nodes
+        assert node._tool_window is None
+        assert node._tool_window_destroyed_callback is None
+        assert not node._workspace_reference_datasets
+        assert not node._workspace_tool_data_references
+        assert reference_dataset.closed
 
 
 def test_tool_provenance_spec_is_cached_between_tool_signals(
@@ -4227,6 +4281,14 @@ def test_manager_badge_hit_testing_edge_paths(
         assert delegate._scaled_font_cache
         assert delegate._font_metrics_cache
         assert delegate._text_width_cache
+        for value in range(_MAX_TEXT_WIDTH_CACHE_SIZE + 1):
+            delegate._text_width(option.font, f"watched-{value}")
+        assert len(delegate._text_width_cache) == _MAX_TEXT_WIDTH_CACHE_SIZE
+        assert (option.font.key(), "watched-0") not in delegate._text_width_cache
+        assert (
+            option.font.key(),
+            f"watched-{_MAX_TEXT_WIDTH_CACHE_SIZE}",
+        ) in delegate._text_width_cache
         delegate.eventFilter(
             view.viewport(), QtCore.QEvent(QtCore.QEvent.Type.FontChange)
         )

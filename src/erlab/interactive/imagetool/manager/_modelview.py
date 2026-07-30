@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __all__ = ["_ImageToolWrapperTreeView"]
 
+import collections
 import functools
 import json
 import logging
@@ -30,6 +31,7 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_MAX_TEXT_WIDTH_CACHE_SIZE = 256
 _NODE_UID_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 128
 _TOOL_TYPE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 129
 _RowBadgeKind = typing.Literal[
@@ -119,7 +121,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         self._font_size = QtGui.QFont().pointSize()
         self._scaled_font_cache: dict[tuple[str, float], QtGui.QFont] = {}
         self._font_metrics_cache: dict[str, QtGui.QFontMetrics] = {}
-        self._text_width_cache: dict[tuple[str, str], int] = {}
+        self._text_width_cache: collections.OrderedDict[tuple[str, str], int] = (
+            collections.OrderedDict()
+        )
         self._link_icon_cache: dict[int, QtGui.QIcon] = {}
         self._current_editor: QtWidgets.QLineEdit | None = None
 
@@ -265,10 +269,13 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
     def _text_width(self, font: QtGui.QFont, text: str) -> int:
         key = (font.key(), text)
-        width = self._text_width_cache.get(key)
-        if width is None:
+        try:
+            width = self._text_width_cache.pop(key)
+        except KeyError:
             width = self._font_metrics(font).boundingRect(text).width()
-            self._text_width_cache[key] = width
+        self._text_width_cache[key] = width
+        if len(self._text_width_cache) > _MAX_TEXT_WIDTH_CACHE_SIZE:
+            self._text_width_cache.popitem(last=False)
         return width
 
     def _compute_icons_info(
