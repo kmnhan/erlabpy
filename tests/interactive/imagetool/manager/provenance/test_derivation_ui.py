@@ -1180,6 +1180,19 @@ def test_manager_filtered_root_retains_source_when_provenance_becomes_durable(
         assert root.provenance_spec is None
         assert root.displayed_provenance_spec is not None
 
+        select_tools(manager, [0])
+        manager._update_info(uid=root.uid)
+        original_item = manager.metadata_derivation_list.topLevelItem(0)
+        assert original_item is not None
+        first_displayed_spec = root.passive_displayed_provenance_spec
+        second_displayed_spec = root.passive_displayed_provenance_spec
+        assert first_displayed_spec == second_displayed_spec
+        assert first_displayed_spec is not second_displayed_spec
+
+        manager._update_info(uid=root.uid)
+
+        assert manager.metadata_derivation_list.topLevelItem(0) is original_item
+
         replay_source = root.resolved_replay_source_data()
         assert replay_source is not None
         xr.testing.assert_identical(replay_source, source)
@@ -1201,7 +1214,6 @@ def test_manager_filtered_root_retains_source_when_provenance_becomes_durable(
             tool.slicer_area._data,
         )
 
-        select_tools(manager, [0])
         manager._update_info(uid=root.uid)
         assert manager._provenance_edit_controller.can_reorder_steps() == (True, "")
 

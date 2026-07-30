@@ -1,8 +1,10 @@
 import enum
+import gc
 import pathlib
 import types
 import typing
 import warnings
+import weakref
 from collections.abc import Sequence
 
 import numpy as np
@@ -765,6 +767,29 @@ def test_manager_provenance_editor_contract_cache_tracks_derived_state() -> None
         "_MutableScriptDialog declares ScriptCodeOperation as a grouped editor" in error
         for error in grouped_errors
     )
+
+
+def test_manager_provenance_editor_contract_cache_does_not_retain_dialogs() -> None:
+    def validate_transient_dialog() -> weakref.ReferenceType[type[object]]:
+        class _TransientScriptDialog(imagetool_dialogs.DataTransformDialog):
+            __module__ = imagetool_dialogs.__name__
+            operation_types = (ScriptCodeOperation,)
+
+            def restore_transform_operation(
+                self,
+                operation: ToolProvenanceOperation,
+            ) -> None:
+                del operation
+
+        dialog_ref = weakref.ref(_TransientScriptDialog)
+        provenance_editors._operation_editor_contract_errors()
+        _TransientScriptDialog.operation_types = ()
+        return dialog_ref
+
+    dialog_ref = validate_transient_dialog()
+    gc.collect()
+
+    assert dialog_ref() is None
 
 
 def test_manager_provenance_editor_contract_rejects_group_without_matcher() -> None:

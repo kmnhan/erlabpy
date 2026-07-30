@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import ast
 import dataclasses
-import functools
 import typing
+import weakref
 
 from qtpy import QtCore, QtWidgets
 
@@ -286,17 +286,51 @@ def _operation_editor_contract_states() -> tuple[_OperationEditorContractState, 
     return tuple(states)
 
 
-@functools.cache
-def _cached_operation_editor_contract_errors(
+def _operation_editor_contract_fingerprint(
     states: tuple[_OperationEditorContractState, ...],
-) -> tuple[str, ...]:
-    return tuple(_compute_operation_editor_contract_errors(states))
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (
+            weakref.ref(state.dialog_cls),
+            state.dialog_cls.__module__,
+            state.dialog_cls.__name__,
+            state.dialog_cls.__qualname__,
+            tuple(
+                (
+                    weakref.ref(operation_type),
+                    operation_type.__module__,
+                    operation_type.__name__,
+                    operation_type.__qualname__,
+                )
+                for operation_type in state.operation_types
+            ),
+            state.kind,
+            state.supports_restore,
+            state.grouped,
+            state.overrides_group_matcher,
+        )
+        for state in states
+    )
+
+
+# Keep only weak class identities so runtime dialog classes remain collectible.
+_operation_editor_contract_cache: (
+    tuple[tuple[tuple[object, ...], ...], tuple[str, ...]] | None
+) = None
 
 
 def _operation_editor_contract_errors() -> list[str]:
-    return list(
-        _cached_operation_editor_contract_errors(_operation_editor_contract_states())
-    )
+    global _operation_editor_contract_cache
+
+    states = _operation_editor_contract_states()
+    fingerprint = _operation_editor_contract_fingerprint(states)
+    cached = _operation_editor_contract_cache
+    if cached is None or cached[0] != fingerprint:
+        errors = tuple(_compute_operation_editor_contract_errors(states))
+        _operation_editor_contract_cache = (fingerprint, errors)
+    else:
+        errors = cached[1]
+    return list(errors)
 
 
 def _compute_operation_editor_contract_errors(

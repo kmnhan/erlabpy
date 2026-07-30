@@ -245,6 +245,14 @@ class _MetadataDerivationListWidget(QtWidgets.QTreeWidget):
         return count
 
     def item(self, row: int) -> QtWidgets.QTreeWidgetItem | None:
+        """Return a materialized item without populating lazy branches."""
+        items = self._flattened_items()
+        if not 0 <= row < len(items):
+            return None
+        return items[row]
+
+    def conceptual_item(self, row: int) -> QtWidgets.QTreeWidgetItem | None:
+        """Return a conceptual row, materializing its branch as needed."""
         if row < 0:
             return None
         offset = 0
@@ -258,6 +266,11 @@ class _MetadataDerivationListWidget(QtWidgets.QTreeWidget):
         return None
 
     def row(self, item: QtWidgets.QTreeWidgetItem) -> int:
+        """Return the materialized row without populating lazy branches."""
+        return self.display_order(item)
+
+    def conceptual_row(self, item: QtWidgets.QTreeWidgetItem) -> int:
+        """Return the conceptual row, materializing lazy row data as needed."""
         offset = 0
         for top_level_row in range(self.topLevelItemCount()):
             top_level_item = self.topLevelItem(top_level_row)

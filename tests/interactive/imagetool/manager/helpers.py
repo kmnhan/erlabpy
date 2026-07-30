@@ -424,7 +424,7 @@ def manager_preview_pixmap(manager: ImageToolManager) -> QtGui.QPixmap:
 
 def metadata_derivation_texts(manager: ImageToolManager) -> list[str]:
     return [
-        manager.metadata_derivation_list.item(row).text()
+        manager.metadata_derivation_list.conceptual_item(row).text()
         for row in range(manager.metadata_derivation_list.conceptual_count())
     ]
 

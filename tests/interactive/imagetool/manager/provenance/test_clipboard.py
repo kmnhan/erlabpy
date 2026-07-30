@@ -355,9 +355,16 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
     assert derivation_list.item(1) is child_item
     assert derivation_list.item(2) is sibling_item
     assert derivation_list.item(3) is None
+    assert derivation_list.conceptual_item(0) is parent_item
+    assert derivation_list.conceptual_item(1) is child_item
+    assert derivation_list.conceptual_item(2) is sibling_item
+    assert derivation_list.conceptual_item(3) is None
     assert derivation_list.row(parent_item) == 0
     assert derivation_list.row(child_item) == 1
     assert derivation_list.row(sibling_item) == 2
+    assert derivation_list.conceptual_row(parent_item) == 0
+    assert derivation_list.conceptual_row(child_item) == 1
+    assert derivation_list.conceptual_row(sibling_item) == 2
     assert derivation_list.display_order(child_item) == 1
     assert (
         derivation_list.display_order(
@@ -517,6 +524,55 @@ def test_manager_metadata_derivation_state_restore_uses_indexed_lookups(
         assert item.isExpanded()
 
 
+def test_manager_metadata_derivation_refresh_uses_stable_cache_key(qtbot) -> None:
+    row = _ProvenanceDisplayRow(DerivationEntry("Source", None, False))
+    derivation_list = manager_widgets._MetadataDerivationListWidget()
+    qtbot.addWidget(derivation_list)
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=derivation_list,
+        _metadata_node_uid=None,
+        _tool_graph=types.SimpleNamespace(
+            nodes={}, root_wrappers={}, presentation_generation=0
+        ),
+        _provenance_edit_controller=types.SimpleNamespace(
+            can_edit_row=lambda _row: (False, "")
+        ),
+        _set_metadata_fields=lambda _fields: None,
+        _update_metadata_pane=lambda: None,
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+    spec = full_data()
+    node = types.SimpleNamespace(
+        uid="node",
+        tool_window=None,
+        displayed_provenance_spec=spec,
+        passive_displayed_provenance_spec=spec,
+        metadata_fields=[],
+        derivation_display_rows=(row,),
+        derivation_display_rows_cache_key=("snapshot", None, None),
+    )
+
+    controller._set_metadata_node(node)
+    original_item = derivation_list.topLevelItem(0)
+    assert original_item is not None
+
+    equivalent_spec = full_data()
+    assert equivalent_spec == spec
+    assert equivalent_spec is not spec
+    node.passive_displayed_provenance_spec = equivalent_spec
+    controller._set_metadata_node(node)
+
+    assert derivation_list.topLevelItem(0) is original_item
+    assert controller._metadata_derivation_spec is equivalent_spec
+
+    node.derivation_display_rows_cache_key = ("next-snapshot", None, None)
+    controller._set_metadata_node(node)
+
+    assert derivation_list.topLevelItem(0) is not original_item
+
+
 def test_manager_metadata_row_mapping_keeps_collapsed_rows_consistent(
     qtbot,
 ) -> None:
@@ -567,13 +623,18 @@ def test_manager_metadata_row_mapping_keeps_collapsed_rows_consistent(
     assert derivation_list.display_order(sibling_item) == 1
     assert materialization_calls == 0
     sibling_row_index = derivation_list.row(sibling_item)
-    assert sibling_row_index == 2
+    assert sibling_row_index == 1
+    assert derivation_list.item(sibling_row_index) is sibling_item
+    assert materialization_calls == 0
+
+    sibling_conceptual_row = derivation_list.conceptual_row(sibling_item)
+    assert sibling_conceptual_row == 2
     assert materialization_calls == 1
     assert parent_row._materialized_children_cache is not None
     parent_item = derivation_list.topLevelItem(0)
     assert parent_item is not None
     assert parent_item.childCount() == 0
-    assert derivation_list.item(sibling_row_index) is sibling_item
+    assert derivation_list.conceptual_item(sibling_conceptual_row) is sibling_item
     assert materialization_calls == 1
 
 

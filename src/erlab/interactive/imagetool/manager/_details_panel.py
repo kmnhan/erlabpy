@@ -305,7 +305,6 @@ class _DetailsPanelController:
 
         derivation_key = (
             node.uid,
-            id(displayed_spec),
             node.derivation_display_rows_cache_key,
             self._manager._tool_graph.presentation_generation,
         )
