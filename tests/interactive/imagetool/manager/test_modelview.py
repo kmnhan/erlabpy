@@ -269,7 +269,8 @@ def test_tool_graph_structural_mutation_helpers_update_caches() -> None:
             self._childtool_indices.remove(uid)
             self._childtools.pop(uid, None)
 
-    graph = _ManagerToolGraph()
+    presentation_changes: list[None] = []
+    graph = _ManagerToolGraph(lambda: presentation_changes.append(None))
     parent = _ParentNode()
     graph.nodes["parent"] = typing.cast("_ImageToolWrapper", parent)
 
@@ -282,9 +283,21 @@ def test_tool_graph_structural_mutation_helpers_update_caches() -> None:
     graph.remove_child_references("parent", ("missing", "child"))
     assert parent._childtool_indices == []
 
-    graph.replace_child_order("parent", ["first", "second"])
+    child_uids = ["first", "second"]
+    childtools = {"first": typing.cast("QtWidgets.QWidget", object())}
+    graph.replace_child_references("parent", child_uids, childtools)
+    child_uids.clear()
+    childtools.clear()
+    assert parent._childtool_indices == ["first", "second"]
+    assert set(parent._childtools) == {"first"}
+
+    child_order = ["second", "first"]
+    graph.replace_child_order("parent", child_order)
+    child_order.reverse()
+    assert parent._childtool_indices == ["second", "first"]
+
     graph.remove_child_rows("parent", 0, 1)
-    assert parent._childtool_indices == ["second"]
+    assert parent._childtool_indices == ["first"]
 
     figure = types.SimpleNamespace(
         uid="figure",
@@ -333,6 +346,7 @@ def test_tool_graph_structural_mutation_helpers_update_caches() -> None:
     )
     with pytest.raises(ValueError, match="figure tools"):
         graph.register_figure(typing.cast("typing.Any", invalid_figure))
+    assert len(presentation_changes) == graph.presentation_generation
 
 
 def test_tool_graph_registration_failures_do_not_mutate_cached_state() -> None:

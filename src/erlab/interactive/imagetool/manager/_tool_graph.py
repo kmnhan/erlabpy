@@ -12,7 +12,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
     from qtpy import QtWidgets
 
@@ -20,7 +20,10 @@ if typing.TYPE_CHECKING:
 class _ManagerToolGraph:
     """Own root/child manager nodes and their display order."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        presentation_changed_callback: Callable[[], None] | None = None,
+    ) -> None:
         self.root_wrappers: dict[int, _ImageToolWrapper] = {}
         self.nodes: dict[str, _ImageToolWrapper | _ManagedWindowNode] = {}
         self.displayed_indices: list[int] = []
@@ -29,6 +32,7 @@ class _ManagerToolGraph:
         self._imagetool_count: int = 0
         self._structure_generation: int = 0
         self._presentation_generation: int = 0
+        self._presentation_changed_callback = presentation_changed_callback
         self._node_uid_counter: int = 0
 
     @property
@@ -125,10 +129,12 @@ class _ManagerToolGraph:
 
     def _structure_changed(self) -> None:
         self._structure_generation += 1
-        self._presentation_generation += 1
+        self.presentation_changed()
 
     def presentation_changed(self) -> None:
         self._presentation_generation += 1
+        if self._presentation_changed_callback is not None:
+            self._presentation_changed_callback()
 
     def register_root(self, wrapper: _ImageToolWrapper) -> None:
         self._require_available_uid(wrapper.uid)
@@ -200,8 +206,8 @@ class _ManagerToolGraph:
         childtools: dict[str, QtWidgets.QWidget],
     ) -> None:
         node = self.nodes[uid]
-        node._childtool_indices = child_uids
-        node._childtools = childtools
+        node._childtool_indices = list(child_uids)
+        node._childtools = dict(childtools)
         self._structure_changed()
 
     def add_child_reference(
@@ -230,7 +236,7 @@ class _ManagerToolGraph:
             self._structure_changed()
 
     def replace_child_order(self, parent_uid: str, child_uids: list[str]) -> None:
-        self.nodes[parent_uid]._childtool_indices = child_uids
+        self.nodes[parent_uid]._childtool_indices = list(child_uids)
         self._structure_changed()
 
     def unregister_node(

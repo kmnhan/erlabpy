@@ -350,6 +350,7 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
         is sibling_row
     )
     assert derivation_list.count() == 3
+    assert derivation_list.conceptual_count() == 3
     assert derivation_list.item(0) is parent_item
     assert derivation_list.item(1) is child_item
     assert derivation_list.item(2) is sibling_item
@@ -417,7 +418,8 @@ def test_manager_metadata_derivation_tree_populates_only_expanded_branches(
 
     root_item = derivation_list.topLevelItem(0)
     assert root_item is not None
-    assert derivation_list.count() == 101
+    assert derivation_list.count() == 1
+    assert derivation_list.conceptual_count() == 101
     assert root_item.childCount() == 0
     assert editability_checks == [row]
 

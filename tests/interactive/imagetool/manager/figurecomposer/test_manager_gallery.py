@@ -67,6 +67,48 @@ def _figure_pane(manager):
     return pane
 
 
+def test_selected_figure_details_track_root_reindexing(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    with manager_context() as manager:
+        manager.show()
+        first = itool(data, manager=False, execute=False)
+        second = itool(data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(first, erlab.interactive.imagetool.ImageTool)
+        assert isinstance(second, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(first, show=False, index=0)
+        manager.add_imagetool(second, show=False, index=2)
+
+        figure_uid = manager.create_figure_from_targets((2,), show=False)
+        assert figure_uid is not None
+        manager._figure_collection.select_uid(figure_uid)
+
+        def _derivation_labels() -> list[str]:
+            return [
+                item.text()
+                for row in range(manager.metadata_derivation_list.topLevelItemCount())
+                if (item := manager.metadata_derivation_list.topLevelItem(row))
+                is not None
+            ]
+
+        assert any("ImageTool 2" in label for label in _derivation_labels())
+
+        manager.reindex()
+        manager._flush_idle_work(force=True)
+
+        assert any("ImageTool 1" in label for label in _derivation_labels())
+        assert not any("ImageTool 2" in label for label in _derivation_labels())
+
+
 def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(
     qtbot,
     manager_context: Callable[
@@ -1135,7 +1177,8 @@ def test_manager_copy_full_code_for_file_backed_figure_composer_sources(
         select_child_tool(manager, figure_uid)
         manager._update_info(uid=figure_uid)
         assert manager.metadata_derivation_list.topLevelItemCount() == 4
-        assert manager.metadata_derivation_list.count() == 6
+        assert manager.metadata_derivation_list.count() == 4
+        assert manager.metadata_derivation_list.conceptual_count() == 6
         child_counts: list[int] = []
         for row in range(manager.metadata_derivation_list.topLevelItemCount()):
             item = manager.metadata_derivation_list.topLevelItem(row)
@@ -1268,7 +1311,7 @@ def test_manager_copy_full_code_for_memory_figure_reports_unavailable(
         manager.tree_view.clearSelection()
         select_child_tool(manager, figure_uid)
         manager._update_info(uid=figure_uid)
-        assert manager.metadata_derivation_list.count() == 3
+        assert manager.metadata_derivation_list.conceptual_count() == 3
 
         copied: list[str] = []
         monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)

@@ -113,7 +113,6 @@ from __future__ import annotations
 import ast
 import base64
 import contextlib
-import copy
 import importlib
 import inspect
 import keyword
@@ -214,6 +213,45 @@ class _ProvenanceDisplayRow:
             cached = self._children_factory()
             object.__setattr__(self, "_materialized_children_cache", cached)
         return cached
+
+
+class _ImmutableProvenanceDict(dict[str, typing.Any]):
+    """Deeply immutable JSON mapping used by cached script inputs."""
+
+    def __init__(self, value: Mapping[str, typing.Any]) -> None:
+        dict.__init__(
+            self,
+            ((key, self._immutable_value(item)) for key, item in value.items()),
+        )
+
+    @classmethod
+    def _immutable_value(cls, value: typing.Any) -> typing.Any:
+        if isinstance(value, Mapping):
+            return cls(value)
+        if isinstance(value, list | tuple):
+            return tuple(cls._immutable_value(item) for item in value)
+        return value
+
+    @staticmethod
+    def _raise_immutable(*_args: typing.Any, **_kwargs: typing.Any) -> typing.NoReturn:
+        raise TypeError(
+            "Script input provenance is immutable; create an updated ScriptInput"
+        )
+
+    __setitem__ = _raise_immutable
+    __delitem__ = _raise_immutable
+    clear = _raise_immutable
+    pop = _raise_immutable
+    popitem = _raise_immutable
+    setdefault = _raise_immutable
+    update = _raise_immutable
+    __ior__ = _raise_immutable
+
+    def __copy__(self) -> _ImmutableProvenanceDict:
+        return self
+
+    def __deepcopy__(self, _memo: dict[int, typing.Any]) -> _ImmutableProvenanceDict:
+        return self
 
 
 @dataclass(frozen=True)
@@ -2382,12 +2420,26 @@ class ScriptInput(pydantic.BaseModel):
             "script input provenance must be a ToolProvenanceSpec or mapping"
         )
 
+    @pydantic.field_validator("provenance_spec", mode="after")
+    @classmethod
+    def _freeze_provenance_spec(
+        cls, value: dict[str, typing.Any] | None
+    ) -> dict[str, typing.Any] | None:
+        if value is None or isinstance(value, _ImmutableProvenanceDict):
+            return value
+        return _ImmutableProvenanceDict(value)
+
     def parsed_provenance_spec(self) -> ToolProvenanceSpec | None:
+        payload = self.provenance_spec
+        if payload is not None and not isinstance(payload, _ImmutableProvenanceDict):
+            # model_copy(update=...) intentionally skips validation.
+            payload = _ImmutableProvenanceDict(payload)
+            object.__setattr__(self, "provenance_spec", payload)
         cache = self.__dict__.get("_parsed_provenance_cache")
-        if cache is None or cache[0] != self.provenance_spec:
+        if cache is None or cache[0] is not payload:
             cache = (
-                copy.deepcopy(self.provenance_spec),
-                parse_tool_provenance_spec(self.provenance_spec),
+                payload,
+                parse_tool_provenance_spec(payload),
             )
             self.__dict__["_parsed_provenance_cache"] = cache
         return cache[1]

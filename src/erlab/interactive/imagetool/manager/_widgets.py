@@ -232,6 +232,11 @@ class _MetadataDerivationListWidget(QtWidgets.QTreeWidget):
         self.setUniformRowHeights(enabled)
 
     def count(self) -> int:
+        """Return the number of materialized tree items."""
+        return len(self._flattened_items())
+
+    def conceptual_count(self) -> int:
+        """Return the total row count, materializing lazy provenance as needed."""
         count = 0
         for row in range(self.topLevelItemCount()):
             item = self.topLevelItem(row)

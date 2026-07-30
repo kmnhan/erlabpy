@@ -243,10 +243,13 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self._manager_record = reserve_manager_record(host=_manager_server.HOST_IP)
         self.manager_index = self._manager_record.index
-        self._tool_graph = _ManagerToolGraph()
+        self._tool_graph = _ManagerToolGraph(
+            self._handle_tool_graph_presentation_changed
+        )
         self._workspace_link_color_indices: dict[str, int] = {}
         self._workspace_link_color_cache_dirty = True
         self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
+        self._details_presentation_generation = self._tool_graph.presentation_generation
         self._dependency_index_refresh_uids: set[str] = set()
         self._trusted_script_replay_keys: set[str] = set()
         self._lineage_controller = _LineageController(self)
@@ -1796,6 +1799,15 @@ class ImageToolManager(_ImageToolManagerBase):
         pointer = changed_selected[0].internalPointer()
         uid = pointer if isinstance(pointer, str) else pointer.uid
         self._schedule_details_refresh(uid)
+
+    def _handle_tool_graph_presentation_changed(self) -> None:
+        generation = self._tool_graph.presentation_generation
+        if generation == self._details_presentation_generation:
+            return
+        self._details_presentation_generation = generation
+        uid = getattr(self, "_metadata_node_uid", None)
+        if uid is not None:
+            self._schedule_details_refresh(uid)
 
     def _schedule_details_refresh(self, uid: str) -> None:
         if self._metadata_node_uid != uid:

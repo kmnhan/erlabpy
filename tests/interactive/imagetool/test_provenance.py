@@ -6146,7 +6146,23 @@ def test_script_input_label_is_preserved_and_defaults_to_name() -> None:
         ScriptInput(name="data_0", label="\n  \t")
 
 
-def test_script_input_caches_parsed_provenance_until_payload_changes() -> None:
+def test_script_input_caches_parsed_provenance_until_payload_changes(
+    monkeypatch,
+) -> None:
+    nested_input = ScriptInput(
+        name="nested",
+        provenance_spec=script(
+            ScriptCodeOperation(label="Copy", code="derived = data"),
+            start_label="Nested",
+            active_name="derived",
+        ),
+    )
+    assert nested_input.provenance_spec is not None
+    nested_steps = nested_input.provenance_spec["steps"]
+    assert isinstance(nested_steps, tuple)
+    with pytest.raises(TypeError, match="provenance is immutable"):
+        nested_steps[0]["operation"].clear()
+
     script_input = ScriptInput(
         name="data_0",
         provenance_spec=full_data(),
@@ -6155,6 +6171,12 @@ def test_script_input_caches_parsed_provenance_until_payload_changes() -> None:
     parsed = script_input.parsed_provenance_spec()
 
     assert parsed is not None
+    payload_type = type(script_input.provenance_spec)
+    monkeypatch.setattr(
+        payload_type,
+        "__eq__",
+        lambda *_args: pytest.fail("cache hits must not compare provenance payloads"),
+    )
     assert script_input.parsed_provenance_spec() is parsed
     assert script_input.model_copy().parsed_provenance_spec() is parsed
 
@@ -6168,19 +6190,8 @@ def test_script_input_caches_parsed_provenance_until_payload_changes() -> None:
     assert updated.kind == "public_data"
 
     assert script_input.provenance_spec is not None
-    script_input.provenance_spec.clear()
-    script_input.provenance_spec.update(
-        script(
-            start_label="Updated nested script",
-            seed_code="derived = data",
-            active_name="derived",
-        ).model_dump(mode="json")
-    )
-    mutated = script_input.parsed_provenance_spec()
-
-    assert mutated is not None
-    assert mutated is not parsed
-    assert mutated.kind == "script"
+    with pytest.raises(TypeError, match="provenance is immutable"):
+        script_input.provenance_spec.clear()
 
 
 def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> None:
