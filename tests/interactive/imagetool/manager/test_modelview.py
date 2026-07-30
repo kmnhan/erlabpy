@@ -1833,6 +1833,51 @@ def test_manager_idle_queue_stops_when_activity_resumes(
         assert manager._interaction_gate.pending_keys == ()
 
 
+@pytest.mark.parametrize("forced", [False, True], ids=["idle", "forced"])
+def test_manager_work_batch_defers_replaced_work(
+    forced: bool,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        calls: list[str] = []
+        gate = manager._interaction_gate
+
+        def replace_second_callback() -> None:
+            calls.append("first")
+            manager._queue_idle_work(
+                ("test", "second"),
+                lambda: calls.append("new"),
+            )
+
+        def flush_batch() -> None:
+            if forced:
+                manager._flush_idle_work(force=True)
+            else:
+                gate._work_timer.stop()
+                gate._run_pending_work()
+
+        if forced:
+            gate.set_quiet_interval(60_000)
+            manager._note_interaction_activity()
+        manager._queue_idle_work(("test", "first"), replace_second_callback)
+        manager._queue_idle_work(
+            ("test", "second"),
+            lambda: calls.append("old"),
+        )
+
+        flush_batch()
+
+        assert calls == ["first"]
+        assert gate.pending_keys == (("test", "second"),)
+
+        flush_batch()
+
+        assert calls == ["first", "new"]
+        assert gate.pending_keys == ()
+
+
 def test_manager_idle_queue_perf_timing_logs(
     monkeypatch,
     caplog,
@@ -1936,7 +1981,10 @@ def test_childtool_update_burst_rebuilds_selected_details_once(
             timeout=5000,
         )
         select_child_tool(manager, uid)
-        manager._flush_idle_work(force=True)
+        qtbot.wait_until(
+            lambda: not manager._interaction_gate.pending_keys,
+            timeout=5000,
+        )
 
         metadata_updates: list[str] = []
         original_set_metadata_node = manager._set_metadata_node
@@ -1951,6 +1999,8 @@ def test_childtool_update_burst_rebuilds_selected_details_once(
             "_propagate_source_change_from_uid",
             lambda _uid: None,
         )
+        manager._interaction_gate.set_quiet_interval(60_000)
+        manager._note_interaction_activity()
 
         child_node = manager._child_node(uid)
         child_node._handle_tool_info_changed()
@@ -1958,6 +2008,7 @@ def test_childtool_update_burst_rebuilds_selected_details_once(
         child_node._handle_tool_data_changed()
         child_node._handle_tool_data_changed()
 
+        assert metadata_updates == []
         manager._flush_idle_work(force=True)
         assert metadata_updates == []
         assert (

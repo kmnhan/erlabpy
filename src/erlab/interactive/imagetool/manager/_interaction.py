@@ -135,14 +135,16 @@ class _ManagerInteractionGate(QtCore.QObject):
             return
         start_time = time.perf_counter() if _manager_perf_timing_enabled() else 0.0
         flushed = 0
-        keys = list(self._pending_work)
-        for key in keys:
+        pending_items = list(self._pending_work.items())
+        for key, callback in pending_items:
             if key_prefix is not None and not self._key_matches_prefix(key, key_prefix):
                 continue
-            callback = self._pending_work.pop(key, None)
-            if callback is not None:
-                flushed += 1
-                self._run_callback(callback)
+            # An earlier callback can replace later work in this batch.
+            if self._pending_work.get(key) is not callback:
+                continue
+            self._pending_work.pop(key)
+            flushed += 1
+            self._run_callback(callback)
         self._log_flush_stats("forced", flushed, start_time)
 
     def eventFilter(
@@ -243,8 +245,14 @@ class _ManagerInteractionGate(QtCore.QObject):
         start_time = time.perf_counter() if _manager_perf_timing_enabled() else 0.0
         flushed = 0
         deadline = time.monotonic() + self._batch_budget_ms / 1000.0
-        while self._pending_work and not self.is_active:
-            _key, callback = self._pending_work.popitem(last=False)
+        pending_items = list(self._pending_work.items())
+        for key, callback in pending_items:
+            if self.is_active:
+                break
+            # Keep callbacks queued during this batch for the next event-loop turn.
+            if self._pending_work.get(key) is not callback:
+                continue
+            self._pending_work.pop(key)
             flushed += 1
             self._run_callback(callback)
             if time.monotonic() >= deadline:

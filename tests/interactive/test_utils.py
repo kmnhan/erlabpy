@@ -4203,6 +4203,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
             self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph()
+            self._metadata_node_uid: str | None = None
             self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
 
         def _update_info(self, *, uid: str) -> None:
@@ -4434,6 +4435,7 @@ def test_managed_tool_window_node_detached_update_branches(
             self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph()
+            self._metadata_node_uid: str | None = None
             self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
             self.parent_node = types.SimpleNamespace(
                 tool_window=parent_tool,
@@ -4671,6 +4673,7 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
             super().__init__()
             self.tree_view = _FakeTreeView()
             self._tool_graph = _ManagerToolGraph()
+            self._metadata_node_uid: str | None = None
             self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
             self.updated: list[str] = []
             self.removed: list[str] = []
