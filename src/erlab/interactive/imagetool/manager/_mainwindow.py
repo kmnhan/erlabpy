@@ -341,6 +341,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._workspace_ui_refresh_defer_depth = 0
         self._deferred_workspace_figures_refresh = False
         self._deferred_workspace_figure_select_uid: str | None = None
+        self._deferred_workspace_figure_rebuild_items = False
         self._deferred_workspace_info_uids: set[str | None] = set()
         self._deferred_workspace_dependency_uids: set[str] = set()
         self._deferred_workspace_source_controls_refresh = False
@@ -1327,8 +1328,11 @@ class ImageToolManager(_ImageToolManagerBase):
     def _figure_ui_refresh_is_deferred(self) -> bool:
         return self._workspace_ui_refresh_defer_depth > 0
 
-    def _defer_figure_ui_refresh(self, select_uid: str | None) -> None:
+    def _defer_figure_ui_refresh(
+        self, select_uid: str | None, *, rebuild_items: bool = False
+    ) -> None:
         self._deferred_workspace_figures_refresh = True
+        self._deferred_workspace_figure_rebuild_items |= rebuild_items
         if select_uid is not None:
             self._deferred_workspace_figure_select_uid = select_uid
 
@@ -2192,6 +2196,7 @@ class ImageToolManager(_ImageToolManagerBase):
     def _flush_deferred_workspace_ui_refreshes(self) -> None:
         figure_refresh = self._deferred_workspace_figures_refresh
         figure_select_uid = self._deferred_workspace_figure_select_uid
+        figure_rebuild_items = self._deferred_workspace_figure_rebuild_items
         info_uids = set(self._deferred_workspace_info_uids)
         dependency_uids = sorted(self._deferred_workspace_dependency_uids)
         source_controls = self._deferred_workspace_source_controls_refresh
@@ -2200,6 +2205,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self._deferred_workspace_figures_refresh = False
         self._deferred_workspace_figure_select_uid = None
+        self._deferred_workspace_figure_rebuild_items = False
         self._deferred_workspace_info_uids.clear()
         self._deferred_workspace_dependency_uids.clear()
         self._deferred_workspace_source_controls_refresh = False
@@ -2207,7 +2213,10 @@ class ImageToolManager(_ImageToolManagerBase):
         self._deferred_workspace_actions_refresh = False
 
         if figure_refresh:
-            self._figure_collection.sync(select_uid=figure_select_uid)
+            self._figure_collection.sync(
+                select_uid=figure_select_uid,
+                rebuild_items=figure_rebuild_items,
+            )
         for uid in dependency_uids:
             self._refresh_dependency_dependents(uid)
         if source_controls:

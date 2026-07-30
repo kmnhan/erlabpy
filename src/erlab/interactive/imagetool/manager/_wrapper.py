@@ -399,6 +399,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
         self._imagetool: ImageTool | None = None
         self._tool_window: erlab.interactive.utils.ToolWindow | None = None
+        self._tool_window_destroyed_callback: Callable[..., None] | None = None
         if window_kind is None:
             if window is None:
                 raise TypeError("window_kind is required when window is None")
@@ -542,6 +543,25 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @window.setter
     def window(self, value: QtWidgets.QWidget | None) -> None:
+        if value is not None:
+            value_is_imagetool = isinstance(value, ImageTool)
+            if value_is_imagetool != self.is_imagetool:
+                raise TypeError(
+                    f"Managed node {self.uid!r} cannot change its window type"
+                )
+            manager = self._manager()
+            if manager is not None and manager._tool_graph.nodes.get(self.uid) is self:
+                value_is_figure = (
+                    not value_is_imagetool
+                    and typing.cast(
+                        "erlab.interactive.utils.ToolWindow", value
+                    ).manager_collection
+                    == "figures"
+                )
+                if value_is_figure != manager._tool_graph.is_figure_uid(self.uid):
+                    raise TypeError(
+                        f"Managed node {self.uid!r} cannot change its collection"
+                    )
         self._invalidate_tool_provenance_spec_cache()
         self._invalidate_info_text_cache()
         self._invalidate_preview_image_cache()
@@ -562,6 +582,15 @@ class _ManagedWindowNode(QtCore.QObject):
                 old.sigStateChanged.disconnect(self._handle_tool_state_changed)
             with contextlib.suppress(TypeError, RuntimeError):
                 old.sigDataChanged.disconnect(self._handle_tool_data_changed)
+            with contextlib.suppress(TypeError, RuntimeError):
+                old.sigProvenanceChanged.disconnect(
+                    self._handle_tool_provenance_changed
+                )
+            destroyed_callback = self._tool_window_destroyed_callback
+            if destroyed_callback is not None:
+                with contextlib.suppress(TypeError, RuntimeError):
+                    old.destroyed.disconnect(destroyed_callback)
+            self._tool_window_destroyed_callback = None
             old.removeEventFilter(self)
             old._set_managed_source_update_dialog(None)
             old._set_managed_source_reload(None)
@@ -575,6 +604,7 @@ class _ManagedWindowNode(QtCore.QObject):
             self._close_workspace_reference_datasets()
 
         if value is None:
+            self._sync_manager_window_reference()
             return
 
         if isinstance(value, ImageTool):
@@ -608,6 +638,7 @@ class _ManagedWindowNode(QtCore.QObject):
             value._set_managed_reveal_callback(self.reveal_in_manager)
             for plot in value.slicer_area._materialized_axes():
                 plot.ensure_manager_figure_actions()
+            self._sync_manager_window_reference()
             return
 
         tool = typing.cast("erlab.interactive.utils.ToolWindow", value)
@@ -620,7 +651,12 @@ class _ManagedWindowNode(QtCore.QObject):
         tool.sigInfoChanged.connect(self._handle_tool_info_changed)
         tool.sigStateChanged.connect(self._handle_tool_state_changed)
         tool.sigDataChanged.connect(self._handle_tool_data_changed)
-        tool.destroyed.connect(self._handle_tool_window_destroyed)
+        tool.sigProvenanceChanged.connect(self._handle_tool_provenance_changed)
+        self._tool_window_destroyed_callback = functools.partial(
+            self._handle_tool_window_destroyed,
+            tool,
+        )
+        tool.destroyed.connect(self._tool_window_destroyed_callback)
         tool._set_managed_source_update_dialog(self.show_source_update_dialog)
         tool._set_managed_source_reload(
             self.reload_source_data,
@@ -633,6 +669,13 @@ class _ManagedWindowNode(QtCore.QObject):
         tool._set_managed_reveal_callback(self.reveal_in_manager)
         for secondary_window, _title in tool._managed_secondary_windows():
             self._configure_tool_secondary_window(secondary_window)
+        self._sync_manager_window_reference()
+
+    def _sync_manager_window_reference(self) -> None:
+        manager = self._manager()
+        if manager is None or manager._tool_graph.nodes.get(self.uid) is not self:
+            return
+        manager._tool_graph.update_node_window_reference(self)
 
     def _workspace_reference_dataset(
         self,
@@ -711,7 +754,13 @@ class _ManagedWindowNode(QtCore.QObject):
             return False
         return manager.reveal_nodes((self.uid,))
 
-    def _handle_tool_window_destroyed(self, _obj: QtCore.QObject | None = None) -> None:
+    def _handle_tool_window_destroyed(
+        self,
+        expected: erlab.interactive.utils.ToolWindow,
+        _obj: QtCore.QObject | None = None,
+    ) -> None:
+        if self._tool_window is not expected:
+            return
         manager = self._manager()
         if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
             return
@@ -1413,10 +1462,11 @@ class _ManagedWindowNode(QtCore.QObject):
         self,
         *,
         flush_deferred_restore: bool,
+        refresh: bool = False,
     ) -> ToolProvenanceSpec | None:
         if self.tool_window is None:
             return None
-        if flush_deferred_restore not in self._tool_provenance_spec_cache:
+        if refresh or flush_deferred_restore not in self._tool_provenance_spec_cache:
             had_passive_spec = False in self._tool_provenance_spec_cache
             passive_spec = self._tool_provenance_spec_cache.get(False)
             provenance_spec = self.tool_window.current_provenance_spec(
@@ -1839,7 +1889,13 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @property
     def derivation_code(self) -> str | None:
-        provenance_spec = self.displayed_provenance_spec
+        if self.tool_window is not None:
+            provenance_spec = self._tool_provenance_spec(
+                flush_deferred_restore=True,
+                refresh=True,
+            )
+        else:
+            provenance_spec = self.displayed_provenance_spec
         if provenance_spec is None:
             return None
         return provenance_spec.display_code()
@@ -2364,6 +2420,10 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         self._invalidate_tool_provenance_spec_cache()
         manager._mark_node_state_dirty(self.uid)
+
+    @QtCore.Slot()
+    def _handle_tool_provenance_changed(self) -> None:
+        self._invalidate_tool_provenance_spec_cache()
 
     @QtCore.Slot()
     def _handle_imagetool_state_changed(self) -> None:

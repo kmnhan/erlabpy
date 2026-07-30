@@ -3288,6 +3288,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
       ``sigInfoChanged`` without any arguments whenever the content of these properties
       changes. This will ensure that the ImageTool manager updates its display.
 
+    - Call ``_write_state`` whenever a user action changes the tool state. The base
+      implementation records undo history and emits ``sigProvenanceChanged`` so the
+      manager can discard cached provenance without generating replacement code.
+      Subclasses that override ``_write_state`` must call
+      ``_notify_provenance_changed``.
+
     - Emit ``sigStateChanged`` whenever tool settings changed and the manager should
       mark the workspace state dirty, but preview/info/output refreshes can wait.
 
@@ -3310,6 +3316,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     sigInfoChanged = QtCore.Signal()  #: :meta private:
     sigStateChanged = QtCore.Signal()  #: :meta private:
     sigDataChanged = QtCore.Signal()  #: :meta private:
+    sigProvenanceChanged = QtCore.Signal()  #: :meta private:
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -3510,12 +3517,17 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def _write_state(self, *_args: typing.Any) -> None:
         if not self._write_history or self._restoring_from_dataset:
             return
+        self._notify_provenance_changed()
         if not self._prev_states:
             self._prev_states.append(self.tool_status)
             self._update_history_actions()
             return
         self._history_write_pending = True
         self._history_write_timer.start()
+
+    def _notify_provenance_changed(self) -> None:
+        """Tell the manager to discard provenance derived from the tool state."""
+        self.sigProvenanceChanged.emit()
 
     @QtCore.Slot()
     def _flush_pending_history_write(self) -> bool:
@@ -3552,6 +3564,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def _replace_last_state(self, *_args: typing.Any) -> None:
         if not self._write_history:
             return
+        self._notify_provenance_changed()
         self._flush_pending_history_write()
         curr_state = self.tool_status
         if self._prev_states:
@@ -3717,6 +3730,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         with self._history_suppressed():
             self._next_states.append(self._prev_states.pop())
             self.tool_status = self._prev_states[-1]
+        self._notify_provenance_changed()
         self._update_history_actions()
 
     @QtCore.Slot()
@@ -3729,6 +3743,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             next_state = self._next_states.pop()
             self._prev_states.append(next_state)
             self.tool_status = next_state
+        self._notify_provenance_changed()
         self._update_history_actions()
 
     def centralWidget(self) -> QtWidgets.QWidget | None:

@@ -6167,6 +6167,21 @@ def test_script_input_caches_parsed_provenance_until_payload_changes() -> None:
     assert updated is not parsed
     assert updated.kind == "public_data"
 
+    assert script_input.provenance_spec is not None
+    script_input.provenance_spec.clear()
+    script_input.provenance_spec.update(
+        script(
+            start_label="Updated nested script",
+            seed_code="derived = data",
+            active_name="derived",
+        ).model_dump(mode="json")
+    )
+    mutated = script_input.parsed_provenance_spec()
+
+    assert mutated is not None
+    assert mutated is not parsed
+    assert mutated.kind == "script"
+
 
 def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> None:
     left = xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0, 1]})

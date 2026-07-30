@@ -426,6 +426,40 @@ def test_manager_figures_gallery_view_preserves_selection_and_persists(
         assert not item.icon().isNull()
 
 
+def test_manager_figures_deferred_view_change_rebuilds_items(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    with manager_context() as manager:
+        figure_uid = manager.add_figuretool(FigureComposerTool(data), show=False)
+        original_item = manager._figure_collection.item_for_uid(figure_uid)
+        assert original_item is not None
+        requested_mode = (
+            "list" if manager._figure_collection._view_mode != "list" else "gallery"
+        )
+
+        with manager._workspace_ui_refresh_context():
+            manager._figure_collection._set_view_mode(requested_mode)
+            assert manager._figure_collection.item_for_uid(figure_uid) is original_item
+
+        rebuilt_item = manager._figure_collection.item_for_uid(figure_uid)
+        assert rebuilt_item is not None
+        assert rebuilt_item is not original_item
+        expected_view_mode = (
+            QtWidgets.QListView.ViewMode.ListMode
+            if requested_mode == "list"
+            else QtWidgets.QListView.ViewMode.IconMode
+        )
+        assert _figure_pane(manager).list_widget.viewMode() == expected_view_mode
+
+
 def test_manager_figures_gallery_reuses_cached_preview_for_size_changes(
     monkeypatch,
     manager_context: Callable[

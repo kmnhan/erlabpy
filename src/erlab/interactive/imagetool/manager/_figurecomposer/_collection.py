@@ -275,7 +275,7 @@ class _FigureCollectionController(QtCore.QObject):
         self, *, select_uid: str | None = None, rebuild_items: bool = False
     ) -> None:
         if self._host._figure_ui_refresh_is_deferred():
-            self._host._defer_figure_ui_refresh(select_uid)
+            self._host._defer_figure_ui_refresh(select_uid, rebuild_items=rebuild_items)
             return
         figure_uids = self._host._figure_uids()
         selected_uids = (

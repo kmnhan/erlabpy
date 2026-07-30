@@ -286,10 +286,53 @@ def test_tool_graph_structural_mutation_helpers_update_caches() -> None:
     graph.remove_child_rows("parent", 0, 1)
     assert parent._childtool_indices == ["second"]
 
-    figure = types.SimpleNamespace(uid="figure", is_imagetool=True)
+    figure = types.SimpleNamespace(
+        uid="figure",
+        is_imagetool=False,
+        tool_window=types.SimpleNamespace(manager_collection="figures"),
+    )
     graph.register_figure(typing.cast("typing.Any", figure))
     assert graph.is_figure_uid("figure")
+    assert graph.nimagetools == 0
+
+    child_window = object()
+    child = types.SimpleNamespace(
+        uid="child",
+        parent_uid="parent",
+        is_imagetool=True,
+        window=child_window,
+        tool_window=None,
+    )
+    graph.register_child(typing.cast("typing.Any", child))
+    generation = graph.structure_generation
     assert graph.nimagetools == 1
+    assert parent._childtools["child"] is child_window
+
+    replacement_window = object()
+    child.window = replacement_window
+    graph.update_node_window_reference(typing.cast("typing.Any", child))
+    assert parent._childtools["child"] is replacement_window
+    assert graph.nimagetools == 1
+    assert graph.structure_generation == generation
+
+    child.window = None
+    graph.update_node_window_reference(typing.cast("typing.Any", child))
+    assert "child" not in parent._childtools
+
+    invalid_child = types.SimpleNamespace(
+        uid="invalid-child",
+        tool_window=types.SimpleNamespace(manager_collection="figures"),
+    )
+    with pytest.raises(ValueError, match="register_figure"):
+        graph.register_child(typing.cast("typing.Any", invalid_child))
+
+    invalid_figure = types.SimpleNamespace(
+        uid="invalid-figure",
+        is_imagetool=False,
+        tool_window=types.SimpleNamespace(manager_collection="tools"),
+    )
+    with pytest.raises(ValueError, match="figure tools"):
+        graph.register_figure(typing.cast("typing.Any", invalid_figure))
 
 
 class _InfoRefreshToolState(pydantic.BaseModel):
@@ -1424,6 +1467,48 @@ def test_derivation_display_rows_track_materialized_imagetool_state(
         assert child.derivation_display_rows == pending_rows
 
 
+def test_managed_node_window_replacement_preserves_classification(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        parent = itool(test_data, manager=False, execute=False)
+        assert isinstance(parent, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(parent, show=False)
+        original_tool = _InfoRefreshTool(test_data)
+        uid = manager.add_childtool(original_tool, 0, show=False)
+        node = manager._child_node(uid)
+        replacement_tool = _InfoRefreshTool(test_data)
+        node.window = replacement_tool
+
+        assert node.tool_window is replacement_tool
+        assert manager._parent_node(node)._childtools[uid] is replacement_tool
+        node._handle_tool_window_destroyed(original_tool)
+        assert manager._child_node(uid) is node
+
+        replacement = itool(test_data, manager=False, execute=False)
+        assert isinstance(replacement, erlab.interactive.imagetool.ImageTool)
+        qtbot.addWidget(replacement)
+
+        with pytest.raises(TypeError, match="cannot change its window type"):
+            node.window = replacement
+
+        class _FigureInfoRefreshTool(_InfoRefreshTool):
+            manager_collection = "figures"
+
+        figure_tool = _FigureInfoRefreshTool(test_data)
+        qtbot.addWidget(figure_tool)
+        with pytest.raises(TypeError, match="cannot change its collection"):
+            node.window = figure_tool
+
+        assert node.tool_window is replacement_tool
+        assert manager._parent_node(node)._childtools[uid] is replacement_tool
+        assert erlab.interactive.utils.qt_is_valid(replacement_tool)
+
+
 def test_tool_provenance_spec_is_cached_between_tool_signals(
     qtbot,
     monkeypatch,
@@ -1461,6 +1546,9 @@ def test_tool_provenance_spec_is_cached_between_tool_signals(
         assert child_node.displayed_provenance_spec is provenance
         assert child_node.displayed_provenance_spec is provenance
         assert calls == [False, True]
+        _ = child_node.derivation_code
+        _ = child_node.derivation_code
+        assert calls == [False, True, True, True]
         initial_rows = child_node.derivation_display_rows
 
         provenance = script(
@@ -1468,18 +1556,19 @@ def test_tool_provenance_spec_is_cached_between_tool_signals(
             seed_code="derived = data",
             active_name="derived",
         )
-        tool.sigStateChanged.emit()
+        tool._write_state()
+        assert child_node.passive_displayed_provenance_spec is provenance
         assert child_node.displayed_provenance_spec is provenance
         assert child_node.derivation_display_rows != initial_rows
-        assert calls == [False, True, True]
+        assert calls == [False, True, True, True, False, True]
 
         tool.sigInfoChanged.emit()
-        assert child_node.displayed_provenance_spec is provenance
-        assert calls == [False, True, True]
+        assert child_node.passive_displayed_provenance_spec is provenance
+        assert calls == [False, True, True, True, False, True]
 
         child_node._handle_tool_data_changed()
         assert child_node.displayed_provenance_spec is provenance
-        assert calls == [False, True, True, True]
+        assert calls == [False, True, True, True, False, True, True]
 
 
 def test_manager_signals_do_not_restart_interaction_delay(

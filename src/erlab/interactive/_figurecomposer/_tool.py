@@ -3344,6 +3344,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _queue_figure_resize_history_write(self) -> None:
         if not self._write_history:
             return
+        self._notify_provenance_changed()
         self._figure_resize_history_pending = True
         self._figure_resize_history_state = self.tool_status
         self._figure_resize_history_source_data = self._source_data_history_state()
@@ -3368,6 +3369,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _write_state(self, *_args: typing.Any) -> None:
         if not self._write_history:
             return
+        self._notify_provenance_changed()
         self._flush_pending_figure_resize_history_write()
         if self._append_history_state():
             self.sigStateChanged.emit()
@@ -3376,6 +3378,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _replace_last_state(self, *_args: typing.Any) -> None:
         if not self._write_history:
             return
+        self._notify_provenance_changed()
         self._flush_pending_figure_resize_history_write()
         curr_state = self.tool_status
         source_data = self._source_data_history_state()
@@ -3398,6 +3401,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._next_source_data_states.append(self._prev_source_data_states.pop())
             self._restore_source_data_history_state(self._prev_source_data_states[-1])
             self.tool_status = self._prev_states[-1]
+        self._notify_provenance_changed()
         self._update_history_actions()
 
     @QtCore.Slot()
@@ -3413,6 +3417,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._prev_source_data_states.append(next_source_data)
             self._restore_source_data_history_state(next_source_data)
             self.tool_status = next_state
+        self._notify_provenance_changed()
         self._update_history_actions()
 
     @QtCore.Slot(str, bool)

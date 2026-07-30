@@ -342,10 +342,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         return node.is_imagetool
 
     def _is_figure_node(self, node: _ImageToolWrapper | _ManagedWindowNode) -> bool:
-        return self._tool_graph.is_figure_uid(node.uid) or (
-            node.tool_window is not None
-            and node.tool_window.manager_collection == "figures"
-        )
+        return self._tool_graph.is_figure_uid(node.uid)
 
     def _is_figure_uid(self, uid: str) -> bool:
         try:

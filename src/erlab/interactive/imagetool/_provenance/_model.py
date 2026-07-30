@@ -113,6 +113,7 @@ from __future__ import annotations
 import ast
 import base64
 import contextlib
+import copy
 import importlib
 import inspect
 import keyword
@@ -2383,9 +2384,9 @@ class ScriptInput(pydantic.BaseModel):
 
     def parsed_provenance_spec(self) -> ToolProvenanceSpec | None:
         cache = self.__dict__.get("_parsed_provenance_cache")
-        if cache is None or cache[0] is not self.provenance_spec:
+        if cache is None or cache[0] != self.provenance_spec:
             cache = (
-                self.provenance_spec,
+                copy.deepcopy(self.provenance_spec),
                 parse_tool_provenance_spec(self.provenance_spec),
             )
             self.__dict__["_parsed_provenance_cache"] = cache

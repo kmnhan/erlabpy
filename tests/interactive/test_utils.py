@@ -20,6 +20,7 @@ from qtpy import PYQT6, QtCore, QtGui, QtTest, QtWidgets
 import erlab.interactive._plot_state
 import erlab.interactive.colors
 import erlab.interactive.utils
+from erlab.interactive.imagetool import ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     full_data,
@@ -348,6 +349,29 @@ def test_tool_window_history_actions_undo_redo(qtbot) -> None:
     assert win.tool_status == _PersistentToolState(value=1)
     assert win.undoable
     assert not win.redoable
+
+
+def test_tool_window_history_changes_emit_provenance_signal(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+    provenance_changes: list[None] = []
+    win.sigProvenanceChanged.connect(lambda: provenance_changes.append(None))
+
+    win.tool_status = _PersistentToolState(value=1)
+    win._write_state()
+    assert len(provenance_changes) == 1
+
+    win.undo()
+    assert len(provenance_changes) == 2
+
+    win.redo()
+    assert len(provenance_changes) == 3
+
+    win.tool_status = _PersistentToolState(value=2)
+    win._replace_last_state()
+    assert len(provenance_changes) == 4
 
 
 def test_tool_window_history_guard_edges(qtbot, monkeypatch) -> None:
@@ -4746,7 +4770,7 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
 
     manager = _FakeManager()
     qtbot.addWidget(manager)
-    parent_tool = _PersistentTool(data)
+    parent_tool = ImageTool(data)
     child_tool = _PersistentTool(data + 1)
     orphan_tool = _PersistentTool(data + 2)
     qtbot.addWidget(parent_tool)

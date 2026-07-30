@@ -137,6 +137,11 @@ class _ManagerToolGraph:
         self._structure_changed()
 
     def register_child(self, node: _ManagedWindowNode) -> None:
+        if (
+            node.tool_window is not None
+            and node.tool_window.manager_collection == "figures"
+        ):
+            raise ValueError("Figure nodes must use register_figure()")
         self.nodes[node.uid] = node
         if node.is_imagetool:
             self._imagetool_count += 1
@@ -145,6 +150,11 @@ class _ManagerToolGraph:
         self._structure_changed()
 
     def register_figure(self, node: _ManagedWindowNode) -> None:
+        if node.is_imagetool or (
+            node.tool_window is not None
+            and node.tool_window.manager_collection != "figures"
+        ):
+            raise ValueError("Only figure tools can be registered as figure nodes")
         self.nodes[node.uid] = node
         if node.uid not in self._figure_uid_set:
             self.figure_uids.append(node.uid)
@@ -152,6 +162,18 @@ class _ManagerToolGraph:
         if node.is_imagetool:
             self._imagetool_count += 1
         self._structure_changed()
+
+    def update_node_window_reference(self, node: _ManagedWindowNode) -> None:
+        """Synchronize the parent cache after a node replaces its window."""
+        if self.nodes.get(node.uid) is not node or node.parent_uid is None:
+            return
+        parent = self.nodes.get(node.parent_uid)
+        if parent is None:
+            return
+        if node.window is None:
+            parent._childtools.pop(node.uid, None)
+        else:
+            parent._childtools[node.uid] = node.window
 
     def replace_child_references(
         self,
