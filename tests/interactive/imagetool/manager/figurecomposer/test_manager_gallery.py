@@ -30,6 +30,7 @@ from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
     activate_widget_shortcut,
     adopt_workspace_path,
+    copy_full_code_for_uid,
     select_child_tool,
     select_tools,
     trigger_menu_action,
@@ -1130,6 +1131,66 @@ def test_manager_copy_full_code_for_file_backed_figure_composer_sources(
         assert copied
         namespace = _exec_generated_code(copied[-1], {})
         assert isinstance(namespace["fig"], Figure)
+
+
+def test_manager_figure_recipe_change_invalidates_cached_full_code(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    file_path = tmp_path / "line.h5"
+    data.to_netcdf(file_path, engine="h5netcdf")
+    with manager_context() as manager:
+        itool(
+            data,
+            manager=True,
+            file_path=file_path,
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        node = manager._child_node(figure_uid)
+        tool = typing.cast("FigureComposerTool", node.tool_window)
+
+        initial_code = copy_full_code_for_uid(
+            monkeypatch,
+            manager,
+            figure_uid,
+        )
+        initial_namespace = _exec_generated_code(initial_code, {})
+        initial_figure = typing.cast("Figure", initial_namespace["fig"])
+        initial_line_count = sum(len(axis.lines) for axis in initial_figure.axes)
+
+        source_name = tool.tool_status.sources[0].name
+        tool.add_operation(
+            FigureOperationState.line(label="second line", source=source_name)
+        )
+
+        updated_code = copy_full_code_for_uid(
+            monkeypatch,
+            manager,
+            figure_uid,
+        )
+        updated_namespace = _exec_generated_code(updated_code, {})
+        updated_figure = typing.cast("Figure", updated_namespace["fig"])
+
+        assert sum(len(axis.lines) for axis in updated_figure.axes) == (
+            initial_line_count + 1
+        )
 
 
 def test_manager_copy_full_code_for_memory_figure_reports_unavailable(

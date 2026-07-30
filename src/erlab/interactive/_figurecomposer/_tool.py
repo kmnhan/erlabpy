@@ -3347,6 +3347,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._figure_resize_history_pending = True
         self._figure_resize_history_state = self.tool_status
         self._figure_resize_history_source_data = self._source_data_history_state()
+        self.sigStateChanged.emit()
         self._figure_resize_history_timer.start()
 
     @QtCore.Slot()
@@ -3368,7 +3369,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if not self._write_history:
             return
         self._flush_pending_figure_resize_history_write()
-        self._append_history_state()
+        if self._append_history_state():
+            self.sigStateChanged.emit()
 
     @QtCore.Slot()
     def _replace_last_state(self, *_args: typing.Any) -> None:
@@ -4212,6 +4214,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @tool_status.setter
     def tool_status(self, status: FigureRecipeState) -> None:
+        previous_recipe = self._document.recipe
         operations = tuple(
             _registry.spec_for(operation.kind).loaded_operation(operation)
             for operation in status.operations
@@ -4226,8 +4229,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._sync_figure_window_to_recipe_setup()
         if self._dataset_restore_in_progress:
             self._mark_preview_pixmap_stale()
-            return
-        _render_preview(self)
+        else:
+            _render_preview(self)
+        if self._document.recipe != previous_recipe:
+            self.sigStateChanged.emit()
+            self.sigInfoChanged.emit()
 
     def set_source_data(self, source_data: Mapping[str, xr.DataArray]) -> None:
         self._document.replace_source_payloads(source_data, {})
@@ -4274,6 +4280,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._document.replace_recipe(
             self._document.recipe.model_copy(update={"sources": tuple(sources)})
         )
+        self.sigStateChanged.emit()
         self.sigInfoChanged.emit()
 
     def _ensure_primary_source_data(self) -> None:
