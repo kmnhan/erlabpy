@@ -49,6 +49,8 @@ class _ManagerDependencyTracker:
         self._status_cache.pop(uid, None)
         if uid in self._graph.nodes:
             self._unindexed_uids[uid] = None
+        else:
+            self._unindexed_uids.pop(uid, None)
 
     def refs_for_uid(self, uid: str) -> tuple[ScriptInputDependencyRef, ...]:
         node = self._graph.nodes.get(uid)

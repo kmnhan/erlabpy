@@ -181,6 +181,18 @@ def test_dependency_tracker_indexes_dependents_and_caches_status() -> None:
     tracker._remove_reverse_refs("orphan-dependent")
 
 
+def test_dependency_tracker_drops_missing_uid_from_pending_index() -> None:
+    node = types.SimpleNamespace(tool_window=None, provenance_spec=None)
+    graph = types.SimpleNamespace(nodes={"removed-uid": node})
+    tracker = _ManagerDependencyTracker(typing.cast("_ManagerToolGraph", graph))
+    tracker.note_uid("removed-uid")
+
+    graph.nodes.pop("removed-uid")
+
+    assert tracker.refs_for_uid("removed-uid") == ()
+    assert not tracker._unindexed_uids
+
+
 def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
     class _NoIterationDict(dict[str, object]):
         def __iter__(self):
@@ -2487,6 +2499,7 @@ def test_remove_imagetool_removes_childtools() -> None:
     removed_uids: list[str] = []
     removed_rows: list[int] = []
     refresh_calls: list[None] = []
+    cleared_dependency_uids: list[str] = []
 
     class _DummyWrapper:
         def __init__(self):
@@ -2516,6 +2529,9 @@ def test_remove_imagetool_removes_childtools() -> None:
         _figure_workflows=types.SimpleNamespace(
             _refresh_figure_source_controls=lambda: refresh_calls.append(None)
         ),
+        _dependency_tracker=types.SimpleNamespace(
+            clear_uid=cleared_dependency_uids.append
+        ),
         _workspace_state=types.SimpleNamespace(closing_document=False),
         tree_view=types.SimpleNamespace(
             imagetool_removed=lambda index: removed_rows.append(index)
@@ -2526,6 +2542,7 @@ def test_remove_imagetool_removes_childtools() -> None:
     assert removed_uids == [uid]
     assert removed_rows == [0]
     assert refresh_calls == [None]
+    assert cleared_dependency_uids == [wrapper.uid]
     assert wrapper.disposed
     assert wrapper.deleted
     assert manager._tool_graph.root_wrappers == {}

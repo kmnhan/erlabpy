@@ -1456,6 +1456,7 @@ class ImageToolManager(_ImageToolManagerBase):
             self._remove_uid_target(uid)
 
         self._tool_graph.unregister_root(index)
+        self._dependency_tracker.clear_uid(wrapper.uid)
         if wrapper.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
         if not self._workspace_state.closing_document:
