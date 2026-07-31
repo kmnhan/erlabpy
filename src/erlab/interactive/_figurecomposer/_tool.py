@@ -405,7 +405,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._source_drop_callback: Callable[[QtCore.QMimeData], bool] | None = None
         self._source_inspector_target: str | None = None
         self._projected_axis_name_sources: frozenset[str] | None = None
-        initial_recipe = recipe or self._default_recipe(data)
+        initial_recipe = (
+            recipe.model_copy(deep=True)
+            if recipe is not None
+            else self._default_recipe(data)
+        )
         initial_source_data = dict(source_data or {})
         if source_data is None:
             if initial_recipe.primary_source in {
@@ -4200,28 +4204,30 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @property
     def tool_status(self) -> FigureRecipeState:
-        return self._document.recipe
+        return self._document.recipe_snapshot()
 
     @tool_status.setter
     def tool_status(self, status: FigureRecipeState) -> None:
         previous_recipe = self._document.recipe
         previous_source_revision = self._document.source_revision
-        operations = tuple(
-            _registry.spec_for(operation.kind).loaded_operation(operation)
-            for operation in status.operations
-        )
-        sources = FigureDocument.normalized_source_states(status.sources)
-        self._document.replace_recipe(
-            status.model_copy(update={"sources": sources, "operations": operations})
-        )
-        self._ensure_primary_source_data()
-        self._normalize_operation_source_selections()
-        self._apply_recipe_to_controls()
-        self._sync_figure_window_to_recipe_setup()
-        if self._dataset_restore_in_progress:
-            self._mark_preview_pixmap_stale()
-        else:
-            _render_preview(self)
+        status = status.model_copy(deep=True)
+        with self._document.mutation_transaction():
+            operations = tuple(
+                _registry.spec_for(operation.kind).loaded_operation(operation)
+                for operation in status.operations
+            )
+            sources = FigureDocument.normalized_source_states(status.sources)
+            self._document.replace_recipe(
+                status.model_copy(update={"sources": sources, "operations": operations})
+            )
+            self._ensure_primary_source_data()
+            self._normalize_operation_source_selections()
+            self._apply_recipe_to_controls()
+            self._sync_figure_window_to_recipe_setup()
+            if self._dataset_restore_in_progress:
+                self._mark_preview_pixmap_stale()
+            else:
+                _render_preview(self)
         recipe_changed = self._document.recipe != previous_recipe
         source_data_changed = self._document.source_revision != previous_source_revision
         if recipe_changed or source_data_changed:
@@ -4888,7 +4894,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return QtGui.QPixmap(thumbnail)
 
     def source_states(self) -> tuple[FigureSourceState, ...]:
-        return self._document.recipe.sources
+        """Return detached snapshots of the current source metadata."""
+        return tuple(
+            source.model_copy(deep=True) for source in self._document.recipe.sources
+        )
 
     def source_data(self) -> dict[str, xr.DataArray]:
         """Return live sources; call ``touch_source_data`` after in-place edits."""

@@ -5212,6 +5212,69 @@ def test_tool_status_source_normalization_advances_provenance_revision(qtbot) ->
     assert provenance_changes == [tool.provenance_revision]
 
 
+def test_tool_status_is_detached_from_document_state(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    input_recipe = FigureRecipeState(sources=(FigureSourceState(name="data"),))
+    tool = FigureComposerTool(data, recipe=input_recipe)
+    qtbot.addWidget(tool)
+    original_status = tool.tool_status
+    original_revision = tool.provenance_revision
+    input_recipe.setup.figsize = (8.0, 6.0)
+    input_recipe.sources[0].qsel["x"] = 2.0
+    status = tool.tool_status
+    source_status = tool.source_states()[0]
+
+    status.setup.figsize = (7.0, 5.0)
+    source_status.qsel["x"] = 0.0
+
+    assert tool.tool_status == original_status
+    assert tool.source_states()[0].qsel == {}
+    assert tool.provenance_revision == original_revision
+
+    tool.tool_status = status
+    applied_status = tool.tool_status
+    status.setup.figsize = (9.0, 6.0)
+    status.sources[0].qsel["x"] = 1.0
+
+    assert tool.tool_status == applied_status
+
+
+def test_tool_status_publishes_only_coherent_document_signals(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    status = tool.tool_status
+    renamed_source = status.sources[0].model_copy(
+        update={"name": "renamed", "label": "renamed"}
+    )
+    updated_status = status.model_copy(
+        update={"sources": (renamed_source,), "primary_source": "renamed"}
+    )
+    observations: list[tuple[str, str, tuple[str, ...]]] = []
+
+    def record_signal(kind: str) -> None:
+        observations.append(
+            (kind, tool.tool_status.primary_source, tuple(tool.source_data()))
+        )
+
+    tool.sigStateChanged.connect(lambda: record_signal("state"))
+    tool.sigDataChanged.connect(lambda: record_signal("data"))
+    tool.sigProvenanceChanged.connect(lambda: record_signal("provenance"))
+
+    tool.tool_status = updated_status
+
+    assert len(observations) == 3
+    assert {kind for kind, _primary, _sources in observations} == {
+        "state",
+        "data",
+        "provenance",
+    }
+    assert all(
+        primary == "renamed" and sources == ("renamed",)
+        for _kind, primary, sources in observations
+    )
+
+
 def test_document_change_advances_revision_before_ui_failure(
     qtbot, monkeypatch
 ) -> None:

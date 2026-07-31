@@ -2987,6 +2987,42 @@ def test_manager_interaction_gate_releases_hold_with_registered_window(
         assert not manager._interaction_active
 
 
+def test_manager_interaction_gate_releases_hold_when_window_is_deleted(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._interaction_gate.set_quiet_interval(1)
+        held_root = QtWidgets.QWidget()
+        held_spin = QtWidgets.QSpinBox(held_root)
+        qtbot.addWidget(held_root)
+        held_root.show()
+        manager._register_interaction_window(held_root)
+        calls: list[str] = []
+
+        _send_mouse_event(
+            held_spin,
+            QtCore.QEvent.Type.MouseButtonPress,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.LeftButton,
+        )
+        manager._queue_idle_work(
+            ("test", "deleted-window-mouse-hold"),
+            lambda: calls.append("done"),
+        )
+        held_root.deleteLater()
+        QtWidgets.QApplication.sendPostedEvents(
+            held_root, QtCore.QEvent.Type.DeferredDelete
+        )
+
+        assert not erlab.interactive.utils.qt_is_valid(held_root)
+        qtbot.wait_until(lambda: calls == ["done"], timeout=1000)
+        assert not manager._interaction_active
+        manager._unregister_interaction_window(held_root)
+
+
 def test_manager_interaction_gate_tracks_each_pressed_mouse_button(
     qtbot,
     manager_context: Callable[

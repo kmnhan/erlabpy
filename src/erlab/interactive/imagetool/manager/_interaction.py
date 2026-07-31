@@ -13,6 +13,8 @@ import weakref
 
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab.interactive.utils
+
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Hashable
 
@@ -106,7 +108,7 @@ class _ManagerInteractionGate(QtCore.QObject):
         self._batch_budget_ms = max(1, int(msec))
 
     def register_window(self, widget: QtWidgets.QWidget | None) -> None:
-        if widget is not None:
+        if widget is not None and erlab.interactive.utils.qt_is_valid(widget):
             self._roots.add(widget)
 
     def unregister_window(self, widget: QtWidgets.QWidget | None) -> None:
@@ -244,13 +246,18 @@ class _ManagerInteractionGate(QtCore.QObject):
     ) -> QtWidgets.QWidget | None:
         if not isinstance(obj, QtWidgets.QWidget):
             return None
+        if not erlab.interactive.utils.qt_is_valid(obj):
+            return None
         try:
             window = obj.window()
-            if window in self._roots:
+            if erlab.interactive.utils.qt_is_valid(window) and window in self._roots:
                 return window
         except RuntimeError:
             return None
         for root in tuple(self._roots):
+            if not erlab.interactive.utils.qt_is_valid(root):
+                self._roots.discard(root)
+                continue
             try:
                 if obj is root or root.isAncestorOf(obj):
                     return root
@@ -263,8 +270,11 @@ class _ManagerInteractionGate(QtCore.QObject):
 
     def _discard_dead_mouse_holds(self) -> None:
         for button, root_ref in tuple(self._pressed_mouse_button_roots.items()):
-            if root_ref() is None:
+            root = root_ref()
+            if root is None or not erlab.interactive.utils.qt_is_valid(root):
                 self._pressed_mouse_button_roots.pop(button, None)
+                if root is not None:
+                    self._roots.discard(root)
 
     def _interaction_settled(self) -> None:
         self._active = False

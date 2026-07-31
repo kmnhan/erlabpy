@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import contextlib
 import typing
 import uuid
 import weakref
@@ -38,7 +39,7 @@ from erlab.interactive._figurecomposer._model._state import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
     import xarray as xr
 
@@ -129,6 +130,9 @@ class FigureDocument:
     ) -> None:
         self._changed_callback: Callable[[bool, bool], None] | None = None
         self._changed_bound_method: weakref.WeakMethod | None = None
+        self._change_depth = 0
+        self._recipe_change_pending = False
+        self._source_payloads_change_pending = False
         self._source_revision = 0
         self._recipe = recipe.model_copy(
             update={"sources": self.normalized_source_states(recipe.sources)}
@@ -145,6 +149,10 @@ class FigureDocument:
     def recipe(self) -> FigureRecipeState:
         """Current validated figure recipe."""
         return self._recipe
+
+    def recipe_snapshot(self) -> FigureRecipeState:
+        """Return a detached recipe snapshot for external state consumers."""
+        return self._recipe.model_copy(deep=True)
 
     @property
     def source_data(self) -> Mapping[str, xr.DataArray]:
@@ -177,11 +185,42 @@ class FigureDocument:
     def _notify_changed(
         self, *, recipe_changed: bool, source_payloads_changed: bool
     ) -> None:
+        if self._change_depth:
+            self._recipe_change_pending |= recipe_changed
+            self._source_payloads_change_pending |= source_payloads_changed
+            return
+        self._deliver_changed(
+            recipe_changed=recipe_changed,
+            source_payloads_changed=source_payloads_changed,
+        )
+
+    def _deliver_changed(
+        self, *, recipe_changed: bool, source_payloads_changed: bool
+    ) -> None:
         callback = self._changed_callback
         if self._changed_bound_method is not None:
             callback = self._changed_bound_method()
         if callback is not None:
             callback(recipe_changed, source_payloads_changed)
+
+    @contextlib.contextmanager
+    def mutation_transaction(self) -> Iterator[None]:
+        """Publish nested document mutations as one coherent change."""
+        self._change_depth += 1
+        try:
+            yield
+        finally:
+            self._change_depth -= 1
+            if self._change_depth == 0:
+                recipe_changed = self._recipe_change_pending
+                source_payloads_changed = self._source_payloads_change_pending
+                self._recipe_change_pending = False
+                self._source_payloads_change_pending = False
+                if recipe_changed or source_payloads_changed:
+                    self._deliver_changed(
+                        recipe_changed=recipe_changed,
+                        source_payloads_changed=source_payloads_changed,
+                    )
 
     def _commit(
         self,
