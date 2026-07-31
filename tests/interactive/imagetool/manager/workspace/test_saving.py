@@ -37,6 +37,7 @@ from erlab.interactive.imagetool.manager import ImageToolManager
 from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
 )
+from erlab.interactive.kspace import KspaceTool
 from tests.interactive.imagetool.manager.helpers import (
     action_map_by_object_name,
     adopt_workspace_path,
@@ -112,6 +113,84 @@ def test_manager_workspace_saves_added_time_for_all_node_kinds(
         assert h5_file[f"0/childtools/{tool_uid}/tool"].attrs[
             "manager_node_added_at"
         ] == tool_added.isoformat(timespec="seconds")
+
+
+def test_manager_workspace_restores_hidden_ktool_angle_scales(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    options_model = AppOptions(ktool={"show_angle_scale_controls": False})
+    data = xr.DataArray(
+        np.arange(25.0).reshape((5, 5)),
+        dims=("alpha", "eV"),
+        coords={
+            "alpha": np.linspace(-2.0, 2.0, 5),
+            "eV": np.linspace(-1.0, -0.1, 5),
+            "beta": 0.0,
+            "xi": 0.0,
+            "hv": 21.2,
+        },
+        attrs={"configuration": int(erlab.constants.AxesConfiguration.Type1)},
+    )
+    data.kspace.work_function = 4.5
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        kspace_tool = KspaceTool(data, data_name="scan", options_model=options_model)
+        kspace_tool._angle_scale_spins["alpha"].setValue(1.25)
+        kspace_tool._angle_scale_spins["beta"].setValue(0.75)
+        expected = kspace_tool._converted_output()
+        tool_uid = manager.add_childtool(kspace_tool, 0, show=False)
+
+        workspace_path = tmp_path / "hidden-ktool-scales.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        restored = manager.get_childtool(tool_uid)
+        assert isinstance(restored, KspaceTool)
+        layout = restored.offsets_group.layout()
+        assert all(
+            not layout.isRowVisible(spin)
+            for spin in restored._angle_scale_spins.values()
+        )
+        assert layout.isRowVisible(restored._angle_scale_summary)
+        assert restored.data.kspace.alpha_scale == pytest.approx(1.25)
+        assert restored.data.kspace.beta_scale == pytest.approx(0.75)
+        xr.testing.assert_allclose(restored._converted_output(), expected)
+        code = restored.copy_code()
+        assert "alpha_scale=1.25" in code
+        assert "beta_scale=0.75" in code
+
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_path, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        restored_again = manager.get_childtool(tool_uid)
+        assert isinstance(restored_again, KspaceTool)
+        assert restored_again.data.kspace.alpha_scale == pytest.approx(1.25)
+        assert restored_again.data.kspace.beta_scale == pytest.approx(0.75)
 
 
 def test_manager_workspace_layout_only_save_updates_root_manifest_only(

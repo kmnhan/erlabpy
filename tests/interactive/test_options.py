@@ -983,6 +983,7 @@ def test_workspace_override_helpers_filter_to_curated_subset() -> None:
     assert "io/workspace/compression" in paths
     assert "io/workspace/compress" not in paths
     assert "figure/dpi" in paths
+    assert "ktool/show_angle_scale_controls" not in paths
     assert normalize_workspace_option_overrides(
         {
             "colors/cmap/name": "bwr",

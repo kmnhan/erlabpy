@@ -27,11 +27,6 @@ Use the sidebar to switch between setting groups:
 - {guilabel}`Figure Composer` controls default Matplotlib stylesheets and optional
   default DPI for newly created figures.
 
-```{versionadded} 3.25.0
-The I/O settings include a default folder for ImageTool Manager file dialogs and
-new Data Explorer windows.
-```
-
 Rows in the {guilabel}`User` scope include a reset action that restores the application
 default for that setting. Broadly resetting all user settings still asks for
 confirmation.

@@ -10,6 +10,7 @@ import xarray as xr
 import erlab
 from erlab.accessors.kspace import IncompleteDataError, MomentumAccessor
 from erlab.constants import AxesConfiguration
+from erlab.interactive._options.schema import AppOptions
 from erlab.interactive.imagetool import _kspace_conversion
 from erlab.interactive.imagetool import dialogs as imagetool_dialogs
 from erlab.interactive.imagetool._provenance._model import (
@@ -111,6 +112,13 @@ def _add_hidden_tool(qtbot, widget):
     qtbot.addWidget(widget)
     widget.hide()
     return widget
+
+
+def _restore_ktool_offsets(win: KspaceTool, offsets: dict[str, float]) -> None:
+    status = win.tool_status
+    win.tool_status = status.model_copy(
+        update={"offsets": {**status.offsets, **offsets}}
+    )
 
 
 def _memory_budget(
@@ -578,9 +586,9 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
 
     for k, v in offset_dict.items():
         if assignment == "before":
-            assert np.isclose(win._offset_spins[k].value(), v)
-        else:
-            win._offset_spins[k].setValue(v)
+            assert np.isclose(win.offset_dict[k], v)
+    if assignment == "after":
+        _restore_ktool_offsets(win, offset_dict)
 
     if wf != "wf_auto":
         if assignment == "before":
@@ -1113,7 +1121,15 @@ def test_ktool_normal_emission_updates_offsets(
     win._normal_emission_spins["beta"].setValue(beta_normal)
 
     for key, expected in reference_offsets.items():
-        assert np.isclose(win._offset_spins[key].value(), expected)
+        assert np.isclose(win.offset_dict[key], expected)
+
+    for key in set(reference_offsets) - {"delta"}:
+        label = win._normal_emission_offset_labels[key]
+        assert isinstance(label, imagetool_dialogs.QtWidgets.QLabel)
+        assert label.objectName() == f"ktool{key.title()}OffsetValue"
+        assert label.textInteractionFlags() & (
+            imagetool_dialogs.QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
 
 
 @pytest.mark.parametrize(
@@ -1135,7 +1151,7 @@ def test_ktool_normal_emission_updates_offsets(
         ),
     ],
 )
-def test_ktool_normal_emission_spins_follow_offsets(
+def test_ktool_normal_emission_spins_follow_restored_offsets(
     qtbot,
     anglemap,
     configuration: AxesConfiguration,
@@ -1151,8 +1167,7 @@ def test_ktool_normal_emission_spins_follow_offsets(
     win = ktool(data, execute=False)
     _add_hidden_tool(qtbot, win)
 
-    for key, value in reference_offsets.items():
-        win._offset_spins[key].setValue(value)
+    _restore_ktool_offsets(win, reference_offsets)
 
     assert win._normal_emission_spins["alpha"].value() == pytest.approx(
         alpha_normal, abs=1e-3
@@ -1226,9 +1241,7 @@ def test_ktool_initial_normal_emission_seed(
         beta_normal, abs=1e-3
     )
     for key in expected.kspace._valid_offset_keys:
-        assert win._offset_spins[key].value() == pytest.approx(
-            expected.kspace.offsets[key]
-        )
+        assert win.offset_dict[key] == pytest.approx(expected.kspace.offsets[key])
 
 
 def test_ktool_initial_delta_overrides_delta(qtbot, anglemap) -> None:
@@ -1252,9 +1265,7 @@ def test_ktool_initial_delta_overrides_delta(qtbot, anglemap) -> None:
 
     assert win._offset_spins["delta"].value() == pytest.approx(14.5)
     for key in expected.kspace._valid_offset_keys:
-        assert win._offset_spins[key].value() == pytest.approx(
-            expected.kspace.offsets[key]
-        )
+        assert win.offset_dict[key] == pytest.approx(expected.kspace.offsets[key])
 
 
 @pytest.mark.parametrize("kind", ["cut", "map", "hv"])
@@ -1717,8 +1728,7 @@ def test_ktool_copy_code_uses_set_normal(
     win = ktool(data, execute=False)
     _add_hidden_tool(qtbot, win)
 
-    for key, value in reference_offsets.items():
-        win._offset_spins[key].setValue(value)
+    _restore_ktool_offsets(win, reference_offsets)
 
     code = win.copy_code()
     assert ".kspace.set_normal(" in code
@@ -1780,7 +1790,11 @@ def test_ktool_configuration_combo_rebuilds_controls_and_code(
     win.configuration_combo.setCurrentIndex(index)
 
     assert win.data.kspace.configuration == target_configuration
-    assert set(win._offset_spins) == expected_offsets
+    assert set(win.tool_status.offsets) == expected_offsets
+    assert set(win._offset_spins) == expected_offsets & {"delta", "V0", "wf"}
+    assert set(win._normal_emission_offset_values) == expected_offsets - set(
+        win._offset_spins
+    )
     assert set(win._resolution_spins) == expected_axes
     assert win.tool_status.configuration == int(target_configuration)
 
@@ -1948,6 +1962,58 @@ def test_ktool_angle_scales_are_set_normal_provenance_kwargs(qtbot, anglemap) ->
         assert restored.data.kspace.beta_scale == pytest.approx(0.75)
         assert restored.tool_status.angle_scales["alpha"] == pytest.approx(1.25)
         assert restored.tool_status.angle_scales["beta"] == pytest.approx(0.75)
+
+
+@pytest.mark.parametrize("show_controls", [False, True])
+def test_ktool_angle_scale_control_visibility(
+    qtbot, anglemap, show_controls: bool
+) -> None:
+    options_model = AppOptions(ktool={"show_angle_scale_controls": show_controls})
+    win = ktool(anglemap, options_model=options_model, execute=False)
+    _add_hidden_tool(qtbot, win)
+    layout = win.offsets_group.layout()
+
+    for spin in win._angle_scale_spins.values():
+        assert layout.isRowVisible(spin) is show_controls
+    assert not layout.isRowVisible(win._angle_scale_summary)
+
+
+def test_ktool_hidden_angle_scales_restore_and_remain_active(qtbot, anglemap) -> None:
+    options_model = AppOptions(ktool={"show_angle_scale_controls": False})
+    win = ktool(
+        anglemap,
+        data_name="scan",
+        options_model=options_model,
+        execute=False,
+    )
+    _add_hidden_tool(qtbot, win)
+    win._angle_scale_spins["alpha"].setValue(1.25)
+    win._angle_scale_spins["beta"].setValue(0.75)
+    saved = win.to_dataset()
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        saved, options_model=options_model
+    )
+    _add_hidden_tool(qtbot, restored)
+    assert isinstance(restored, KspaceTool)
+    layout = restored.offsets_group.layout()
+
+    assert all(
+        not layout.isRowVisible(spin) for spin in restored._angle_scale_spins.values()
+    )
+    assert layout.isRowVisible(restored._angle_scale_summary)
+    assert restored.data.kspace.alpha_scale == pytest.approx(1.25)
+    assert restored.data.kspace.beta_scale == pytest.approx(0.75)
+    assert restored.tool_status.angle_scales == pytest.approx(
+        {"alpha": 1.25, "beta": 0.75}
+    )
+
+    code = restored.copy_code()
+    assert "alpha_scale=1.25" in code
+    assert "beta_scale=0.75" in code
+    namespace = {"scan": anglemap.copy(deep=True)}
+    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_allclose(namespace["scan_kconv"], restored._converted_output())
 
 
 def test_ktool_copy_code_aliases_expression_input_names(qtbot) -> None:
@@ -2630,8 +2696,9 @@ def test_ktool_update_data_preserves_state(qtbot, anglemap) -> None:
     win._offset_spins["wf"].setValue(4.6)
     win._angle_scale_spins["alpha"].setValue(1.1)
     win._angle_scale_spins["beta"].setValue(0.9)
-    if "beta" in win._offset_spins:
-        win._offset_spins["beta"].setValue(-1.5)
+    win._normal_emission_spins["beta"].setValue(
+        win._normal_emission_spins["beta"].value() - 1.5
+    )
     win.add_circle_btn.click()
     win._roi_list[0].set_position((0.1, 0.2), 0.25)
 
