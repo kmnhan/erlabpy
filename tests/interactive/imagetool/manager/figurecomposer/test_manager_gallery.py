@@ -1308,6 +1308,63 @@ def test_manager_figure_recipe_change_invalidates_cached_full_code(
         )
 
 
+def test_manager_figure_source_data_revision_recovers_from_missed_signal(
+    qtbot,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    file_path = tmp_path / "line.h5"
+    data.to_netcdf(file_path, engine="h5netcdf")
+    with manager_context() as manager:
+        itool(
+            data,
+            manager=True,
+            file_path=file_path,
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        node = manager._child_node(figure_uid)
+        tool = typing.cast("FigureComposerTool", node.tool_window)
+        initial_spec = node.displayed_provenance_spec
+        initial_node_revision = node.provenance_revision
+        initial_tool_revision = tool.provenance_revision
+        source_data = tool.source_data()
+        source_name = next(iter(source_data))
+
+        tool.blockSignals(True)
+        try:
+            tool.set_source_data(
+                {source_name: source_data[source_name].rename("renamed_line")}
+            )
+        finally:
+            tool.blockSignals(False)
+
+        assert tool.provenance_revision == initial_tool_revision + 1
+        assert node.provenance_revision == initial_node_revision
+        assert node.displayed_provenance_spec != initial_spec
+        assert node.provenance_revision == initial_node_revision + 1
+
+        current_node_revision = node.provenance_revision
+        tool.set_source_data(
+            {source_name: source_data[source_name].rename("renamed_again")}
+        )
+        assert node.provenance_revision == current_node_revision + 1
+
+
 def test_manager_copy_full_code_for_memory_figure_reports_unavailable(
     qtbot,
     monkeypatch,

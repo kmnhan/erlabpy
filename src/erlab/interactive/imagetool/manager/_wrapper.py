@@ -64,6 +64,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.slicer import ArraySlicer
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
     from erlab.interactive.imagetool.viewer_state import ImageSlicerState
+    from erlab.interactive.utils import ToolWindow
 
 
 logger = logging.getLogger(__name__)
@@ -439,9 +440,12 @@ class _ManagedWindowNode(QtCore.QObject):
         ) = None
         self._provenance_revision = 0
         self._derivation_display_rows_generation = 0
+        self._tool_provenance_revision_key: (
+            tuple[ToolWindow[typing.Any], int] | None
+        ) = None
         self._tool_provenance_spec_cache: dict[
             bool,
-            ToolProvenanceSpec | None,
+            tuple[ToolWindow[typing.Any], int, ToolProvenanceSpec | None],
         ] = {}
         self._info_text_cache: str | None = None
         self._preview_image_cache: tuple[str, tuple[float, QtGui.QPixmap]] | None = None
@@ -599,6 +603,7 @@ class _ManagedWindowNode(QtCore.QObject):
             old.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             old.close()
             self._tool_window = None
+            self._tool_provenance_revision_key = None
             self._close_workspace_reference_datasets()
 
         if value is None:
@@ -647,6 +652,7 @@ class _ManagedWindowNode(QtCore.QObject):
         tool = typing.cast("erlab.interactive.utils.ToolWindow", value)
         self._window_kind = "tool"
         self._tool_window = tool
+        self._tool_provenance_revision_key = (tool, tool.provenance_revision)
         self._imagetool = None
         self.manager._install_workspace_save_shortcut(tool)
         self.manager._register_interaction_window(tool)
@@ -781,6 +787,8 @@ class _ManagedWindowNode(QtCore.QObject):
         if self._tool_window is not expected:
             return
         self._tool_window = None
+        self._tool_provenance_revision_key = None
+        self._tool_provenance_spec_cache.clear()
         self._tool_window_destroyed_callback = None
         self._close_workspace_reference_datasets()
         manager = self._manager()
@@ -856,6 +864,8 @@ class _ManagedWindowNode(QtCore.QObject):
             self._tool_window
         ):
             self._tool_window = None
+            self._tool_provenance_revision_key = None
+            self._tool_provenance_spec_cache.clear()
         return self._tool_window
 
     @property
@@ -1501,20 +1511,48 @@ class _ManagedWindowNode(QtCore.QObject):
         flush_deferred_restore: bool,
         refresh: bool = False,
     ) -> ToolProvenanceSpec | None:
-        if self.tool_window is None:
+        tool = self.tool_window
+        if tool is None:
             return None
-        if refresh or flush_deferred_restore not in self._tool_provenance_spec_cache:
-            had_passive_spec = False in self._tool_provenance_spec_cache
-            passive_spec = self._tool_provenance_spec_cache.get(False)
-            provenance_spec = self.tool_window.current_provenance_spec(
-                flush_deferred_restore=flush_deferred_restore
+        self._sync_tool_provenance_revision()
+        cache_key = (tool, tool.provenance_revision)
+        cached = self._tool_provenance_spec_cache.get(flush_deferred_restore)
+        if (
+            not refresh
+            and cached is not None
+            and cached[0] is cache_key[0]
+            and cached[1] == cache_key[1]
+        ):
+            return cached[2]
+
+        passive_entry = self._tool_provenance_spec_cache.get(False)
+        if (
+            passive_entry is not None
+            and passive_entry[0] is cache_key[0]
+            and passive_entry[1] == cache_key[1]
+        ):
+            had_passive_spec = True
+            passive_spec = passive_entry[2]
+        else:
+            had_passive_spec = False
+            passive_spec = None
+        provenance_spec = tool.current_provenance_spec(
+            flush_deferred_restore=flush_deferred_restore
+        )
+        if self.tool_window is not tool:
+            return self._tool_provenance_spec(
+                flush_deferred_restore=flush_deferred_restore,
+                refresh=refresh,
             )
-            self._tool_provenance_spec_cache[flush_deferred_restore] = provenance_spec
-            if flush_deferred_restore:
-                self._tool_provenance_spec_cache[False] = provenance_spec
-                if had_passive_spec and passive_spec != provenance_spec:
-                    self._handle_tool_provenance_spec_promotion()
-        return self._tool_provenance_spec_cache[flush_deferred_restore]
+        self._sync_tool_provenance_revision()
+        cache_key = (tool, tool.provenance_revision)
+        cache_entry = (*cache_key, provenance_spec)
+        self._tool_provenance_spec_cache[flush_deferred_restore] = cache_entry
+        if flush_deferred_restore:
+            self._tool_provenance_spec_cache[False] = cache_entry
+            if had_passive_spec and passive_spec != provenance_spec:
+                self._handle_tool_provenance_spec_promotion()
+        return provenance_spec
 
     def _handle_tool_provenance_spec_promotion(self) -> None:
         self._invalidate_provenance_derived_state(
@@ -1525,11 +1563,36 @@ class _ManagedWindowNode(QtCore.QObject):
     def _invalidate_tool_provenance_spec_cache(
         self, *, refresh_dependency: bool = False
     ) -> None:
+        tool = self.tool_window
+        self._tool_provenance_revision_key = (
+            None if tool is None else (tool, tool.provenance_revision)
+        )
         self._tool_provenance_spec_cache.clear()
         self._invalidate_provenance_derived_state(
             refresh_display=refresh_dependency,
             invalidate_derivation=self.parent_uid is None or self.source_spec is None,
         )
+
+    def _sync_tool_provenance_revision(
+        self, *, refresh_dependency: bool = False
+    ) -> bool:
+        """Invalidate derived state when the tool revision changed."""
+        tool = self.tool_window
+        observed = self._tool_provenance_revision_key
+        if tool is None:
+            revision_matches = observed is None
+        else:
+            revision_matches = (
+                observed is not None
+                and observed[0] is tool
+                and observed[1] == tool.provenance_revision
+            )
+        if revision_matches:
+            return False
+        self._invalidate_tool_provenance_spec_cache(
+            refresh_dependency=refresh_dependency
+        )
+        return True
 
     def _invalidate_provenance_derived_state(
         self,
@@ -2200,7 +2263,7 @@ class _ManagedWindowNode(QtCore.QObject):
         )
 
     def _handle_tool_data_changed(self) -> None:
-        self._invalidate_tool_provenance_spec_cache()
+        self._sync_tool_provenance_revision()
         self.manager._mark_node_data_dirty(self.uid)
         self._advance_snapshot_token(defer_refresh=True)
         if self._suspend_descendant_signal_propagation:
@@ -2405,12 +2468,12 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         if manager._tool_graph.nodes.get(self.uid) is not self:
             return
-        self._invalidate_tool_provenance_spec_cache()
+        self._sync_tool_provenance_revision()
         manager._mark_node_state_dirty(self.uid)
 
     @QtCore.Slot()
     def _handle_tool_provenance_changed(self) -> None:
-        self._invalidate_tool_provenance_spec_cache(refresh_dependency=True)
+        self._sync_tool_provenance_revision(refresh_dependency=True)
 
     @QtCore.Slot()
     def _handle_imagetool_state_changed(self) -> None:

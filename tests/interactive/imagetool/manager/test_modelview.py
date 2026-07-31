@@ -1856,6 +1856,8 @@ def test_destroyed_managed_tool_releases_node_resources(
             }
         )
         node._set_workspace_tool_data_references({"source": {"kind": "manager_node"}})
+        node._tool_provenance_spec(flush_deferred_restore=False)
+        assert node._tool_provenance_spec_cache
 
         original_qt_is_valid = erlab.interactive.utils.qt_is_valid
         monkeypatch.setattr(
@@ -1871,6 +1873,8 @@ def test_destroyed_managed_tool_releases_node_resources(
 
         assert uid not in manager._tool_graph.nodes
         assert node._tool_window is None
+        assert node._tool_provenance_revision_key is None
+        assert not node._tool_provenance_spec_cache
         assert node._tool_window_destroyed_callback is None
         assert not node._workspace_reference_datasets
         assert not node._workspace_tool_data_references
@@ -1934,9 +1938,58 @@ def test_tool_provenance_spec_is_cached_between_tool_signals(
         assert child_node.passive_displayed_provenance_spec is provenance
         assert calls == [False, True, True, True, False, True]
 
-        child_node._handle_tool_data_changed()
+        tool.sigDataChanged.emit()
         assert child_node.displayed_provenance_spec is provenance
         assert calls == [False, True, True, True, False, True, True]
+
+
+def test_tool_provenance_revision_recovers_from_missed_signal(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = _InfoRefreshTool(test_data)
+        uid = manager.add_childtool(tool, 0, show=False)
+        child_node = manager._child_node(uid)
+        provenance = full_data()
+        calls: list[bool] = []
+
+        def _current_provenance_spec(*, flush_deferred_restore: bool = True):
+            calls.append(flush_deferred_restore)
+            return provenance
+
+        monkeypatch.setattr(
+            tool,
+            "current_provenance_spec",
+            _current_provenance_spec,
+        )
+        child_node._invalidate_tool_provenance_spec_cache()
+        assert child_node.passive_displayed_provenance_spec is provenance
+        initial_node_revision = child_node.provenance_revision
+
+        provenance = script(
+            start_label="Updated tool provenance",
+            seed_code="derived = data",
+            active_name="derived",
+        )
+        tool.blockSignals(True)
+        try:
+            tool.set_input_provenance_spec(provenance)
+        finally:
+            tool.blockSignals(False)
+
+        assert child_node.provenance_revision == initial_node_revision
+        assert child_node.passive_displayed_provenance_spec is provenance
+        assert child_node.provenance_revision == initial_node_revision + 1
+        assert calls == [False, False]
 
 
 def test_tool_provenance_change_reindexes_and_refreshes_dependency_metadata(

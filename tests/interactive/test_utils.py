@@ -375,6 +375,67 @@ def test_tool_window_history_changes_emit_provenance_signal(qtbot) -> None:
     assert len(provenance_changes) == 4
 
 
+def test_tool_window_provenance_revision_tracks_mutation_signals(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    provenance_changes: list[int] = []
+    win.sigProvenanceChanged.connect(
+        lambda: provenance_changes.append(win.provenance_revision)
+    )
+
+    initial_revision = win.provenance_revision
+    win.sigInfoChanged.emit()
+    assert win.provenance_revision == initial_revision
+
+    win.sigStateChanged.emit()
+    win.sigDataChanged.emit()
+    assert win.provenance_revision == initial_revision + 2
+    assert provenance_changes == []
+
+    with win._coalesce_provenance_changes():
+        win.sigStateChanged.emit()
+        win.sigDataChanged.emit()
+        win._notify_provenance_changed()
+
+    assert win.provenance_revision == initial_revision + 3
+    assert provenance_changes == [initial_revision + 3]
+
+
+def test_tool_window_provenance_setters_advance_revision_once(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    provenance_changes: list[int] = []
+    win.sigProvenanceChanged.connect(
+        lambda: provenance_changes.append(win.provenance_revision)
+    )
+    provenance = full_data(IselOperation(kwargs={"x": slice(0, 2)}))
+
+    win.set_input_provenance_spec(provenance)
+    first_revision = win.provenance_revision
+    win.set_input_provenance_spec(provenance)
+    second_revision = win.provenance_revision
+
+    assert first_revision == 1
+    assert second_revision == first_revision + 1
+    assert provenance_changes == [first_revision, second_revision]
+
+    win.set_source_binding(provenance, state="fresh")
+    third_revision = win.provenance_revision
+    win.set_source_binding(provenance, state="fresh")
+    fourth_revision = win.provenance_revision
+
+    assert third_revision == second_revision + 1
+    assert fourth_revision == third_revision + 1
+    assert provenance_changes == [
+        first_revision,
+        second_revision,
+        third_revision,
+        fourth_revision,
+    ]
+
+
 def test_tool_window_custom_history_cannot_skip_provenance_signal(
     qtbot, monkeypatch
 ) -> None:
