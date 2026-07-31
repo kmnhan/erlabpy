@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import html
 import re
+import unicodedata
 from dataclasses import dataclass
 
 import numpy as np
@@ -385,10 +386,16 @@ def _format_energy(value: float) -> str:
     return np.format_float_positional(float(value), precision=4, trim="-")
 
 
-def _parse_positive_float(text: str) -> float | None:
+def _parse_float(text: str) -> float | None:
     try:
-        value = float(text)
+        return float(unicodedata.normalize("NFKC", text))
     except ValueError:
+        return None
+
+
+def _parse_positive_float(text: str) -> float | None:
+    value = _parse_float(text)
+    if value is None:
         return None
     return value if value > 0.0 else None
 
