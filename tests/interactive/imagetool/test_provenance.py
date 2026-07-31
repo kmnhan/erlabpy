@@ -1,5 +1,6 @@
 import ast
 import collections.abc
+import copy
 import itertools
 import json
 import pathlib
@@ -6213,6 +6214,50 @@ def test_script_input_immutable_provenance_is_pickleable() -> None:
     assert restored.provenance_spec is not None
     with pytest.raises(TypeError, match="provenance is immutable"):
         restored.provenance_spec.clear()
+
+
+def test_operation_nested_provenance_is_deeply_immutable() -> None:
+    operation = KspaceConvertOperation(
+        bounds={"kx": (-1.0, 1.0)},
+        resolution={"kx": 0.1},
+    )
+    spec = full_data(operation)
+    original_rows = spec.display_rows()
+    original_payload = spec.model_dump(mode="json")
+
+    assert operation.bounds is not None
+    with pytest.raises(TypeError, match="provenance is immutable"):
+        operation.bounds["kx"] = (-2.0, 2.0)
+
+    updated = operation.model_copy(
+        update={
+            "bounds": {"kx": (-2.0, 2.0)},
+            "resolution": {"kx": 0.2},
+        }
+    )
+
+    assert updated.bounds == {"kx": (-2.0, 2.0)}
+    assert updated.resolution == {"kx": 0.2}
+    assert spec.display_rows() == original_rows
+    assert spec.model_dump(mode="json") == original_payload
+    with pytest.raises(TypeError, match="provenance is immutable"):
+        typing.cast("dict[str, float]", updated.resolution)["kx"] = 0.3
+
+    restored = pickle.loads(pickle.dumps(operation))
+    assert restored == operation
+    assert copy.copy(operation.bounds) is operation.bounds
+    assert copy.deepcopy(operation.bounds) is operation.bounds
+
+    list_operation = AssignCoordsOperation(
+        coord_name="x",
+        values=np.arange(3.0),
+    )
+    assert isinstance(list_operation.values, list)
+    with pytest.raises(TypeError, match="provenance is immutable"):
+        list_operation.values.append(3.0)
+    assert copy.copy(list_operation.values) is list_operation.values
+    assert copy.deepcopy(list_operation.values) is list_operation.values
+    assert pickle.loads(pickle.dumps(list_operation)) == list_operation
 
 
 def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> None:

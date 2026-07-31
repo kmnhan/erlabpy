@@ -1345,6 +1345,7 @@ def test_manager_provenance_lightweight_helper_edges() -> None:
             _tool_graph=types.SimpleNamespace(
                 nodes={"parent": parent},
                 root_wrappers={},
+                node_path=lambda _node: None,
             )
         )
     )

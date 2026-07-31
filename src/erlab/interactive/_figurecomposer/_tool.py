@@ -3365,11 +3365,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return False
         return self._append_history_state(state, source_data)
 
-    @QtCore.Slot()
-    def _write_state(self, *_args: typing.Any) -> None:
-        if not self._write_history:
-            return
-        self._notify_provenance_changed()
+    def _record_state_change(self) -> None:
+        """Record one Figure Composer state change."""
         self._flush_pending_figure_resize_history_write()
         if self._append_history_state():
             self.sigStateChanged.emit()

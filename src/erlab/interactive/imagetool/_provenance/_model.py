@@ -259,6 +259,135 @@ class _ImmutableProvenanceDict(dict[str, typing.Any]):
         return type(self), (dict(self),)
 
 
+class _ImmutableProvenanceList(list[typing.Any]):
+    """List-compatible immutable storage for provenance model fields."""
+
+    def __init__(self, value: Sequence[typing.Any]) -> None:
+        list.__init__(self, (_freeze_provenance_model_value(item) for item in value))
+
+    @staticmethod
+    def _raise_immutable(*_args: typing.Any, **_kwargs: typing.Any) -> typing.NoReturn:
+        raise TypeError(
+            "Nested provenance is immutable; create an updated provenance model"
+        )
+
+    __setitem__ = _raise_immutable
+    __delitem__ = _raise_immutable
+    __iadd__ = _raise_immutable
+    __imul__ = _raise_immutable
+    append = _raise_immutable
+    clear = _raise_immutable
+    extend = _raise_immutable
+    insert = _raise_immutable
+    pop = _raise_immutable
+    remove = _raise_immutable
+    reverse = _raise_immutable
+    sort = _raise_immutable
+
+    def __copy__(self) -> _ImmutableProvenanceList:
+        return self
+
+    def __deepcopy__(self, _memo: dict[int, typing.Any]) -> _ImmutableProvenanceList:
+        return self
+
+    def __reduce__(
+        self,
+    ) -> tuple[type[_ImmutableProvenanceList], tuple[list[typing.Any]]]:
+        return type(self), (list(self),)
+
+
+class _ImmutableProvenanceModelDict(dict[Hashable, typing.Any]):
+    """Dict-compatible immutable storage for provenance model fields."""
+
+    def __init__(self, value: Mapping[Hashable, typing.Any]) -> None:
+        dict.__init__(
+            self,
+            (
+                (key, _freeze_provenance_model_value(item))
+                for key, item in value.items()
+            ),
+        )
+
+    @staticmethod
+    def _raise_immutable(*_args: typing.Any, **_kwargs: typing.Any) -> typing.NoReturn:
+        raise TypeError(
+            "Nested provenance is immutable; create an updated provenance model"
+        )
+
+    __setitem__ = _raise_immutable
+    __delitem__ = _raise_immutable
+    clear = _raise_immutable
+    pop = _raise_immutable
+    popitem = _raise_immutable
+    setdefault = _raise_immutable
+    update = _raise_immutable
+    __ior__ = _raise_immutable
+
+    def __copy__(self) -> _ImmutableProvenanceModelDict:
+        return self
+
+    def __deepcopy__(
+        self, _memo: dict[int, typing.Any]
+    ) -> _ImmutableProvenanceModelDict:
+        return self
+
+    def __reduce__(
+        self,
+    ) -> tuple[
+        type[_ImmutableProvenanceModelDict],
+        tuple[dict[Hashable, typing.Any]],
+    ]:
+        return type(self), (dict(self),)
+
+
+def _freeze_provenance_model_value(value: typing.Any) -> typing.Any:
+    if isinstance(
+        value,
+        (
+            _ImmutableProvenanceDict,
+            _ImmutableProvenanceList,
+            _ImmutableProvenanceModelDict,
+        ),
+    ):
+        return value
+    if isinstance(value, Mapping):
+        return _ImmutableProvenanceModelDict(value)
+    if isinstance(value, list):
+        return _ImmutableProvenanceList(value)
+    if isinstance(value, tuple):
+        return tuple(_freeze_provenance_model_value(item) for item in value)
+    if isinstance(value, set):
+        return frozenset(_freeze_provenance_model_value(item) for item in value)
+    return value
+
+
+class _DeeplyImmutableProvenanceModel(pydantic.BaseModel):
+    """Pydantic base that freezes nested containers after validation and copy."""
+
+    model_config = pydantic.ConfigDict(frozen=True)
+
+    @pydantic.model_validator(mode="after")
+    def _freeze_nested_provenance(self) -> typing.Self:
+        return self._freeze_nested_provenance_values()
+
+    def _freeze_nested_provenance_values(self) -> typing.Self:
+        for field_name in type(self).model_fields:
+            value = getattr(self, field_name)
+            frozen = _freeze_provenance_model_value(value)
+            if frozen is not value:
+                object.__setattr__(self, field_name, frozen)
+        return self
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, typing.Any] | None = None,
+        deep: bool = False,
+    ) -> typing.Self:
+        copied = super().model_copy(update=update, deep=deep)
+        return copied._freeze_nested_provenance_values()
+
+
 @dataclass(frozen=True)
 class _ProvenanceReorderBlockRef:
     """Original operation range represented by one reorder-dialog row."""
@@ -445,7 +574,7 @@ class ScriptInputDependencyRef:
     data_role: ScriptInputDataRole = "displayed"
 
 
-class OperationGroupMarker(pydantic.BaseModel):
+class OperationGroupMarker(_DeeplyImmutableProvenanceModel):
     """Optional edit/copy metadata shared by a contiguous operation group."""
 
     kind: str
@@ -1099,7 +1228,7 @@ def _assignment_code(
     )
 
 
-class ToolProvenanceOperation(pydantic.BaseModel):
+class ToolProvenanceOperation(_DeeplyImmutableProvenanceModel):
     """Base class for typed operations stored in :class:`ToolProvenanceSpec`.
 
     New operations should keep runtime fields in their decoded Python form, prefer the
@@ -1929,7 +2058,7 @@ def _normalize_script_code_operations(
     return spec.model_copy(update={"source_operations": operations})
 
 
-class FileDataSelection(pydantic.BaseModel):
+class FileDataSelection(_DeeplyImmutableProvenanceModel):
     """Serializable selection of one displayable array from a loaded file object.
 
     New provenance stores stable Dataset variable names and DataTree node/variable
@@ -2013,7 +2142,7 @@ class FileDataSelection(pydantic.BaseModel):
         return value
 
 
-class FileReplayCall(pydantic.BaseModel):
+class FileReplayCall(_DeeplyImmutableProvenanceModel):
     """Serializable call information used to reload file-backed provenance."""
 
     kind: typing.Literal["erlab_loader", "callable"]
@@ -2051,7 +2180,7 @@ class FileReplayCall(pydantic.BaseModel):
         return self
 
 
-class ReplayStage(pydantic.BaseModel):
+class ReplayStage(_DeeplyImmutableProvenanceModel):
     """Legacy schema-v2 transformation stage.
 
     New provenance must use :class:`ReplayStep`.  This model remains public only so
@@ -2146,7 +2275,7 @@ class _SourceViewOperation(ToolProvenanceOperation):
         )
 
 
-class _LegacyReplayContext(pydantic.BaseModel):
+class _LegacyReplayContext(_DeeplyImmutableProvenanceModel):
     """Schema-v2 parent context retained only for exact legacy operation replay.
 
     Schema-v2 stage operations shared one ``parent_data`` value, while top-level
@@ -2161,7 +2290,7 @@ class _LegacyReplayContext(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 
 
-class ReplayStep(pydantic.BaseModel):
+class ReplayStep(_DeeplyImmutableProvenanceModel):
     """One operation in the canonical ordered durable replay pipeline."""
 
     operation: pydantic.SerializeAsAny[ToolProvenanceOperation]
@@ -2310,7 +2439,7 @@ def _steps_for_legacy_operations_update(
     )
 
 
-class FileLoadSource(pydantic.BaseModel):
+class FileLoadSource(_DeeplyImmutableProvenanceModel):
     """Serializable file origin used by saved file-backed provenance."""
 
     path: str
@@ -2339,7 +2468,7 @@ class FileLoadSource(pydantic.BaseModel):
         return value
 
 
-class ScriptInput(pydantic.BaseModel):
+class ScriptInput(_DeeplyImmutableProvenanceModel):
     """Named input captured by script or multi-tool provenance.
 
     ``name`` is the immutable replay variable, ``label`` is the historical display
@@ -2456,7 +2585,7 @@ def _script_input_reference_text(script_input: ScriptInput) -> str:
     return f"{script_input.name} from {script_input.label}"
 
 
-class _ScriptContextBinding(pydantic.BaseModel):
+class _ScriptContextBinding(_DeeplyImmutableProvenanceModel):
     """Hidden binding from the current script output to names used by later code."""
 
     operation_index: int
@@ -2494,7 +2623,7 @@ class _ScriptContextBinding(pydantic.BaseModel):
         return tuple(names)
 
 
-class ToolProvenanceSpec(pydantic.BaseModel):
+class ToolProvenanceSpec(_DeeplyImmutableProvenanceModel):
     """Saved provenance recipe for ImageTool data.
 
     Live child-tool refresh uses single-parent specs from :func:`full_data`,

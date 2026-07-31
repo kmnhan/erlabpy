@@ -1599,6 +1599,11 @@ def test_derivation_display_rows_are_cached_until_provenance_changes(
         assert second_rows is first_rows
         assert display_row_calls == 1
 
+        wrapper._advance_snapshot_token()
+
+        assert wrapper.derivation_display_rows is first_rows
+        assert display_row_calls == 1
+
         wrapper.set_displayed_provenance(
             script(
                 start_label="Updated provenance",
@@ -2025,6 +2030,11 @@ def test_repeated_details_refresh_reuses_metadata_widgets_and_rows(
             manager._metadata_detail_labels[key] is value
             for key, value in labels.items()
         )
+        assert manager.metadata_derivation_list.topLevelItem(0) is first_item
+
+        wrapper._advance_snapshot_token()
+        manager._set_metadata_node(wrapper)
+
         assert manager.metadata_derivation_list.topLevelItem(0) is first_item
 
         invalid_item = QtWidgets.QTreeWidgetItem()

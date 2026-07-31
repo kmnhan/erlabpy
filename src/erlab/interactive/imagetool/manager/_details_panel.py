@@ -30,6 +30,7 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
     parse_tool_provenance_operation,
+    script_input_dependency_refs,
     strip_partial_operation_groups,
 )
 from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
@@ -305,7 +306,7 @@ class _DetailsPanelController:
         derivation_key = (
             node.uid,
             node.derivation_display_rows_cache_key,
-            self._manager._tool_graph.structure_generation,
+            self._script_input_labels_cache_key(displayed_spec),
         )
         derivation_changed = derivation_key != self._metadata_derivation_key
         if derivation_changed:
@@ -352,24 +353,10 @@ class _DetailsPanelController:
         self,
         node: _ImageToolWrapper | _ManagedWindowNode,
     ) -> str:
-        graph = getattr(self._manager, "_tool_graph", None)
-        path: list[int] = []
-        current = node
-        while current.parent_uid is not None:
-            parent = graph.nodes.get(current.parent_uid) if graph is not None else None
-            if parent is None or current.uid not in parent._childtool_indices:
-                path = []
-                break
-            path.append(parent._childtool_indices.index(current.uid))
-            current = parent
-        else:
-            if graph is not None:
-                for root_index, wrapper in graph.root_wrappers.items():
-                    if wrapper.uid == current.uid:
-                        path = [root_index, *reversed(path)]
-                        break
-
-        display_index = ".".join(str(index) for index in path) if path else node.uid
+        path = self._manager._tool_graph.node_path(node)
+        display_index = (
+            ".".join(str(index) for index in path) if path is not None else node.uid
+        )
         label = (
             f"ImageTool {display_index}"
             if node.is_imagetool
@@ -379,15 +366,37 @@ class _DetailsPanelController:
             label += f": {node.name}"
         return label
 
+    def _script_input_labels_cache_key(
+        self,
+        spec: ToolProvenanceSpec | None,
+    ) -> tuple[tuple[str, str | None], ...]:
+        graph = self._manager._tool_graph
+        keys: list[tuple[str, str | None]] = []
+        seen: set[str] = set()
+        for ref in script_input_dependency_refs(spec):
+            if ref.node_uid in seen:
+                continue
+            seen.add(ref.node_uid)
+            node = graph.nodes.get(ref.node_uid)
+            keys.append(
+                (
+                    ref.node_uid,
+                    None
+                    if node is None
+                    else self._script_input_current_node_label(node),
+                )
+            )
+        return tuple(keys)
+
     def _script_input_row_label(
         self,
         script_input: ScriptInput,
         *,
         include_history: bool,
     ) -> str:
-        graph = getattr(self._manager, "_tool_graph", None)
         node_uid = script_input.node_uid
-        if graph is not None and node_uid is not None:
+        if node_uid is not None:
+            graph = self._manager._tool_graph
             node = graph.nodes.get(node_uid)
             if node is not None:
                 return (

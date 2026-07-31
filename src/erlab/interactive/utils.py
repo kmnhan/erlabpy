@@ -3288,11 +3288,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
       ``sigInfoChanged`` without any arguments whenever the content of these properties
       changes. This will ensure that the ImageTool manager updates its display.
 
-    - Call ``_write_state`` whenever a user action changes the tool state. The base
-      implementation records undo history and emits ``sigProvenanceChanged`` so the
+    - Call ``_write_state`` whenever a user action changes the tool state. This final
+      method emits ``sigProvenanceChanged`` before it records undo history, so the
       manager can discard cached provenance without generating replacement code.
-      Subclasses that override ``_write_state`` must call
-      ``_notify_provenance_changed``.
+      A tool that needs custom history behavior can override
+      ``_record_state_change``. The provenance notification remains owned by the base
+      class.
 
     - Emit ``sigStateChanged`` whenever tool settings changed and the manager should
       mark the workspace state dirty, but preview/info/output refreshes can wait.
@@ -3513,11 +3514,16 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._prev_states.append(self.tool_status)
         self._update_history_actions()
 
+    @typing.final
     @QtCore.Slot()
     def _write_state(self, *_args: typing.Any) -> None:
         if not self._write_history or self._restoring_from_dataset:
             return
         self._notify_provenance_changed()
+        self._record_state_change()
+
+    def _record_state_change(self) -> None:
+        """Record one state change after base provenance invalidation."""
         if not self._prev_states:
             self._prev_states.append(self.tool_status)
             self._update_history_actions()

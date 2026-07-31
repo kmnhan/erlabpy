@@ -667,14 +667,16 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
         type_badge_text=None,
         _childtool_indices=[],
     )
+    current_path = [(4,)]
+    graph = types.SimpleNamespace(
+        nodes={"n16": source_node},
+        structure_generation=0,
+        node_path=lambda _node: current_path[0],
+    )
     manager = types.SimpleNamespace(
         metadata_derivation_list=derivation_list,
         _metadata_node_uid=None,
-        _tool_graph=types.SimpleNamespace(
-            nodes={"n16": source_node},
-            root_wrappers={4: source_node},
-            structure_generation=0,
-        ),
+        _tool_graph=graph,
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda _row: (False, "")
         ),
@@ -700,6 +702,17 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
     assert input_item is not None
     assert input_item.text() == "Use data_10 from ImageTool 4: 3 V"
     assert "ImageTool 10" not in input_item.text()
+
+    graph.structure_generation += 1
+    controller._set_metadata_node(node)
+    assert derivation_list.topLevelItem(1) is input_item
+
+    current_path[0] = (7, 1)
+    controller._set_metadata_node(node)
+    updated_input_item = derivation_list.topLevelItem(1)
+    assert updated_input_item is not None
+    assert updated_input_item is not input_item
+    assert updated_input_item.text() == "Use data_10 from ImageTool 7.1: 3 V"
 
 
 def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None:

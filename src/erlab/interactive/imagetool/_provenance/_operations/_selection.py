@@ -27,12 +27,13 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceOperation,
     ToolProvenanceSpec,
     _console_values_equal,
+    _DeeplyImmutableProvenanceModel,
     _format_derivation_value,
     decode_provenance_value,
 )
 
 
-class ImageToolSelectionSourceBinding(pydantic.BaseModel):
+class ImageToolSelectionSourceBinding(_DeeplyImmutableProvenanceModel):
     """Legacy ImageTool selection state used to build a source spec.
 
     Stores the parent dimension indices selected in an ImageTool plot. Current refresh

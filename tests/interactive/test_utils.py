@@ -375,6 +375,29 @@ def test_tool_window_history_changes_emit_provenance_signal(qtbot) -> None:
     assert len(provenance_changes) == 4
 
 
+def test_tool_window_custom_history_cannot_skip_provenance_signal(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+    provenance_changes: list[None] = []
+    recorded_changes: list[None] = []
+    win.sigProvenanceChanged.connect(lambda: provenance_changes.append(None))
+    monkeypatch.setattr(
+        win,
+        "_record_state_change",
+        lambda: recorded_changes.append(None),
+    )
+
+    win.tool_status = _PersistentToolState(value=1)
+    win._write_state()
+
+    assert provenance_changes == [None]
+    assert recorded_changes == [None]
+
+
 def test_tool_window_history_guard_edges(qtbot, monkeypatch) -> None:
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
     win = _PersistentTool(data)

@@ -432,12 +432,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._output_id: str | None = None
         self._derivation_display_rows_cache: (
             tuple[
-                tuple[
-                    str,
-                    str | None,
-                    tuple[int, int | None] | None,
-                    tuple[int, ...],
-                ],
+                tuple[int, ...],
                 tuple[_ProvenanceDisplayRow, ...],
             ]
             | None
@@ -636,6 +631,9 @@ class _ManagedWindowNode(QtCore.QObject):
             value.slicer_area.sigSourceDataReplaced.connect(
                 self._handle_source_data_replaced
             )
+            value.slicer_area.sigDisplayedProvenanceChanged.connect(
+                self._handle_imagetool_provenance_changed
+            )
             value.slicer_area._in_manager = True
             value.remove_act.setVisible(True)
             value._set_managed_reveal_callback(self.reveal_in_manager)
@@ -826,6 +824,10 @@ class _ManagedWindowNode(QtCore.QObject):
         with contextlib.suppress(TypeError, RuntimeError):
             old.slicer_area.sigSourceDataReplaced.disconnect(
                 self._handle_source_data_replaced
+            )
+        with contextlib.suppress(TypeError, RuntimeError):
+            old.slicer_area.sigDisplayedProvenanceChanged.disconnect(
+                self._handle_imagetool_provenance_changed
             )
         old._set_managed_reveal_callback(None)
         if close:
@@ -1864,39 +1866,17 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def derivation_display_rows_cache_key(
         self,
-    ) -> tuple[
-        str,
-        str | None,
-        tuple[int, int | None] | None,
-        tuple[int, ...],
-    ]:
-        parent_snapshot_token: str | None = None
-        source_spec = self.source_spec
-        source_spec_key: tuple[int, int | None] | None = None
-        snapshot_token = self.snapshot_token
-        if self.parent_uid is not None and source_spec is not None:
-            parent = self.manager._parent_node(self)
-            parent_snapshot_token = parent.snapshot_token
-            filter_operation_id: int | None = None
-            if self.imagetool is not None:
-                filter_operation = (
-                    self.slicer_area._accepted_filter_provenance_operation
-                )
-                if filter_operation is not None:
-                    filter_operation_id = id(filter_operation)
-            source_spec_key = (id(source_spec), filter_operation_id)
-            if self.tool_window is not None:
-                snapshot_token = ""
-        return (
-            snapshot_token,
-            parent_snapshot_token,
-            source_spec_key,
-            self._derivation_display_rows_lineage_generation,
-        )
+    ) -> tuple[int, ...]:
+        return self._derivation_display_rows_lineage_generation
 
     @property
     def _derivation_display_rows_lineage_generation(self) -> tuple[int, ...]:
-        generation = (self._derivation_display_rows_generation,)
+        filter_revision = (
+            self.slicer_area.accepted_filter_revision
+            if self.imagetool is not None
+            else 0
+        )
+        generation = (self._derivation_display_rows_generation, filter_revision)
         if self.parent_uid is None or self.source_spec is None:
             return generation
         parent = self.manager._parent_node(self)
@@ -2435,6 +2415,10 @@ class _ManagedWindowNode(QtCore.QObject):
     @QtCore.Slot()
     def _handle_imagetool_displayed_layout_changed(self) -> None:
         self._advance_displayed_snapshot_token(defer_refresh=True)
+
+    @QtCore.Slot()
+    def _handle_imagetool_provenance_changed(self) -> None:
+        self._invalidate_provenance_derived_state(refresh_display=True)
 
     @QtCore.Slot()
     def _handle_imagetool_data_edited(self) -> None:
