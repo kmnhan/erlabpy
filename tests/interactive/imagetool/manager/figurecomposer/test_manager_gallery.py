@@ -945,15 +945,11 @@ def test_manager_workspace_restores_figure_preview_and_live_details(
         pending_fields = tuple(loaded_node.metadata_fields)
         assert manager._details_panel._metadata_fields_cache == pending_fields
         pending_type_badge = loaded_node.type_badge_text
-        presentation_generation = manager._tool_graph.presentation_generation
 
         assert loaded_node.materialize_pending_workspace_payload()
         loaded_tool = loaded_node.tool_window
         assert isinstance(loaded_tool, FigureComposerTool)
         assert loaded_node.type_badge_text != pending_type_badge
-        assert (
-            manager._tool_graph.presentation_generation == presentation_generation + 1
-        )
         manager._flush_idle_work(force=True)
         live_fields = tuple(loaded_node.metadata_fields)
         assert live_fields != pending_fields

@@ -59,6 +59,7 @@ from erlab.interactive.imagetool.manager._provenance_edit._reorder import (
 )
 from erlab.interactive.imagetool.manager._widgets import _TrustedScriptReplayCancelled
 from tests.interactive.imagetool.manager.helpers import (
+    select_metadata_items,
     select_metadata_rows,
     select_tools,
 )
@@ -456,10 +457,7 @@ def test_manager_provenance_rows_dim_when_not_activatable(
                 QtGui.QPalette.ColorRole.Text,
             )
         )
-        select_metadata_rows(
-            manager,
-            [manager.metadata_derivation_list.row(script_operation_item)],
-        )
+        select_metadata_items(manager, [script_operation_item])
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
         assert menu.defaultAction() is None
@@ -575,7 +573,7 @@ def test_manager_provenance_row_activation_ignores_noneditable_row(
                 item = candidate
                 break
         assert item is not None
-        select_metadata_rows(manager, [manager.metadata_derivation_list.row(item)])
+        select_metadata_items(manager, [item])
         manager.metadata_derivation_list.itemActivated.emit(item, 0)
 
 
@@ -2035,10 +2033,7 @@ def test_manager_provenance_script_structured_row_can_revert(
                 aggregate_item = item
                 break
         assert aggregate_item is not None
-        select_metadata_rows(
-            manager,
-            [manager.metadata_derivation_list.row(aggregate_item)],
-        )
+        select_metadata_items(manager, [aggregate_item])
         row = manager._selected_derivation_row()
         assert row is not None
 

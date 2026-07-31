@@ -40,6 +40,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _TOOL_TYPE_ROLE,
     _ImageToolWrapperItemModel,
 )
+from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
@@ -4226,9 +4227,19 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
             self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.interaction_activity_count = 0
-            self._tool_graph = _ManagerToolGraph()
+            self._tool_graph = _ManagerToolGraph(self._handle_node_change)
             self._metadata_node_uid: str | None = None
             self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
+
+        def _handle_node_change(
+            self,
+            uid: str | None,
+            change: _ManagedNodeChange,
+        ) -> None:
+            if uid is not None and change & (
+                _ManagedNodeChange.PRESENTATION | _ManagedNodeChange.ROW
+            ):
+                self.tree_view.refresh(uid)
 
         def _update_info(self, *, uid: str) -> None:
             self.updated.append(uid)

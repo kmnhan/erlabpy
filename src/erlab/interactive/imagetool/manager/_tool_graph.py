@@ -6,6 +6,7 @@ __all__ = ["_ManagerToolGraph"]
 
 import typing
 
+from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
@@ -22,7 +23,8 @@ class _ManagerToolGraph:
 
     def __init__(
         self,
-        presentation_changed_callback: Callable[[], None] | None = None,
+        node_changed_callback: Callable[[str | None, _ManagedNodeChange], None]
+        | None = None,
     ) -> None:
         self.root_wrappers: dict[int, _ImageToolWrapper] = {}
         self.nodes: dict[str, _ImageToolWrapper | _ManagedWindowNode] = {}
@@ -31,8 +33,7 @@ class _ManagerToolGraph:
         self._figure_uid_set: set[str] = set()
         self._imagetool_count: int = 0
         self._structure_generation: int = 0
-        self._presentation_generation: int = 0
-        self._presentation_changed_callback = presentation_changed_callback
+        self._node_changed_callback = node_changed_callback
         self._node_uid_counter: int = 0
 
     @property
@@ -46,10 +47,6 @@ class _ManagerToolGraph:
     @property
     def structure_generation(self) -> int:
         return self._structure_generation
-
-    @property
-    def presentation_generation(self) -> int:
-        return self._presentation_generation
 
     @property
     def next_index(self) -> int:
@@ -129,12 +126,20 @@ class _ManagerToolGraph:
 
     def _structure_changed(self) -> None:
         self._structure_generation += 1
-        self.presentation_changed()
+        self.notify_node_change(None, _ManagedNodeChange.PRESENTATION)
 
-    def presentation_changed(self) -> None:
-        self._presentation_generation += 1
-        if self._presentation_changed_callback is not None:
-            self._presentation_changed_callback()
+    def notify_node_change(
+        self,
+        uid: str | None,
+        change: _ManagedNodeChange,
+    ) -> None:
+        """Publish derived-state changes through the graph's owner callback."""
+        if change == _ManagedNodeChange.NONE:
+            return
+        if uid is not None and uid not in self.nodes:
+            return
+        if self._node_changed_callback is not None:
+            self._node_changed_callback(uid, change)
 
     def register_root(self, wrapper: _ImageToolWrapper) -> None:
         self._require_available_uid(wrapper.uid)

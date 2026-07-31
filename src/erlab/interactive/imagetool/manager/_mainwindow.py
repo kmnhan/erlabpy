@@ -41,6 +41,7 @@ from erlab.interactive.imagetool.manager._metadata_editor import (
     _MetadataEditorController,
 )
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
+from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from erlab.interactive.imagetool.manager._provenance_edit import (
     _ProvenanceEditController,
 )
@@ -121,6 +122,7 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _NOTE_COMMIT_DELAY_MS = 400
+_DEFERRED_NODE_CHANGES = _ManagedNodeChange.PROVENANCE | _ManagedNodeChange.INFO
 
 
 class _NotesPlainTextEdit(QtWidgets.QPlainTextEdit):
@@ -243,14 +245,12 @@ class ImageToolManager(_ImageToolManagerBase):
 
         self._manager_record = reserve_manager_record(host=_manager_server.HOST_IP)
         self.manager_index = self._manager_record.index
-        self._tool_graph = _ManagerToolGraph(
-            self._handle_tool_graph_presentation_changed
-        )
+        self._tool_graph = _ManagerToolGraph(self._handle_tool_graph_node_changed)
         self._workspace_link_color_indices: dict[str, int] = {}
         self._workspace_link_color_cache_dirty = True
         self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
-        self._details_presentation_generation = self._tool_graph.presentation_generation
-        self._dependency_index_refresh_uids: set[str] = set()
+        # This map is the single coalescing boundary for expensive node-derived work.
+        self._pending_node_changes: dict[str, _ManagedNodeChange] = {}
         self._trusted_script_replay_keys: set[str] = set()
         self._lineage_controller = _LineageController(self)
         self._provenance_edit_controller = _ProvenanceEditController(self)
@@ -1234,14 +1234,20 @@ class ImageToolManager(_ImageToolManagerBase):
     def _register_root_wrapper(self, wrapper: _ImageToolWrapper) -> None:
         self._tool_graph.register_root(wrapper)
         self._dependency_tracker.note_uid(wrapper.uid)
-        self._schedule_dependency_index(wrapper.uid, refresh=False)
+        self._queue_managed_node_change(
+            wrapper.uid,
+            _ManagedNodeChange.DEPENDENCY_INDEX,
+        )
         if wrapper.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
 
     def _register_child_node(self, node: _ManagedWindowNode) -> None:
         self._tool_graph.register_child(node)
         self._dependency_tracker.note_uid(node.uid)
-        self._schedule_dependency_index(node.uid, refresh=False)
+        self._queue_managed_node_change(
+            node.uid,
+            _ManagedNodeChange.DEPENDENCY_INDEX,
+        )
         if node.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
         if node.tool_window is not None:
@@ -1250,7 +1256,10 @@ class ImageToolManager(_ImageToolManagerBase):
     def _register_figure_node(self, node: _ManagedWindowNode) -> None:
         self._tool_graph.register_figure(node)
         self._dependency_tracker.note_uid(node.uid)
-        self._schedule_dependency_index(node.uid, refresh=False)
+        self._queue_managed_node_change(
+            node.uid,
+            _ManagedNodeChange.DEPENDENCY_INDEX,
+        )
         if node.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
         if node.tool_window is not None:
@@ -1262,7 +1271,7 @@ class ImageToolManager(_ImageToolManagerBase):
             return
         if node.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
-        self._cancel_dependency_index(uid)
+        self._cancel_managed_node_change(uid)
         self._dependency_tracker.clear_uid(uid)
         if not self._workspace_state.closing_document:
             self._refresh_dependency_dependents(uid)
@@ -1469,7 +1478,7 @@ class ImageToolManager(_ImageToolManagerBase):
             self._remove_uid_target(uid)
 
         self._tool_graph.unregister_root(index)
-        self._cancel_dependency_index(wrapper.uid)
+        self._cancel_managed_node_change(wrapper.uid)
         self._dependency_tracker.clear_uid(wrapper.uid)
         if wrapper.workspace_link_key is not None:
             self._invalidate_workspace_link_color_cache()
@@ -1797,20 +1806,64 @@ class ImageToolManager(_ImageToolManagerBase):
         uid = pointer if isinstance(pointer, str) else pointer.uid
         self._schedule_details_refresh(uid)
 
-    def _handle_tool_graph_presentation_changed(self) -> None:
-        generation = self._tool_graph.presentation_generation
-        if generation == self._details_presentation_generation:
-            return
-        self._details_presentation_generation = generation
-        uid = getattr(self, "_metadata_node_uid", None)
-        if uid is not None:
+    def _handle_tool_graph_node_changed(
+        self,
+        uid: str | None,
+        change: _ManagedNodeChange,
+    ) -> None:
+        if uid is not None and change & _ManagedNodeChange.DEPENDENCY_INDEX:
+            self._dependency_tracker.invalidate_uid(uid)
+        deferred_change = change & _DEFERRED_NODE_CHANGES
+        if uid is not None and deferred_change:
+            self._queue_managed_node_change(uid, deferred_change)
+        if uid is not None and change & _ManagedNodeChange.PROVENANCE_DISPLAY:
             self._schedule_details_refresh(uid)
+        if uid is not None and change & _ManagedNodeChange.DERIVATION:
+            self._schedule_derivation_details_refresh(uid)
+        presentation_changed = bool(change & _ManagedNodeChange.PRESENTATION)
+        if uid is None:
+            metadata_uid = self._metadata_node_uid
+            if presentation_changed and metadata_uid is not None:
+                self._schedule_details_refresh(metadata_uid)
+            return
+        is_figure = self._is_figure_uid(uid)
+        if presentation_changed and is_figure:
+            self._figure_collection.sync()
+        elif not is_figure and change & (
+            _ManagedNodeChange.PRESENTATION | _ManagedNodeChange.ROW
+        ):
+            self.tree_view.refresh(uid)
+        if presentation_changed:
+            self._schedule_details_refresh(uid)
+        if change & _ManagedNodeChange.DEPENDENTS:
+            self._refresh_dependency_dependents(uid)
 
-    def _schedule_details_refresh(self, uid: str) -> None:
+    def _schedule_derivation_details_refresh(self, changed_uid: str) -> None:
+        selected_uid = self._metadata_node_uid
+        if selected_uid is None:
+            return
+        selected = self._tool_graph.nodes.get(selected_uid)
+        while selected is not None:
+            if selected.uid == changed_uid:
+                self._schedule_details_refresh(selected_uid)
+                return
+            if selected.parent_uid is None:
+                return
+            selected = self._tool_graph.nodes.get(selected.parent_uid)
+
+    def _schedule_details_refresh(
+        self,
+        uid: str,
+        *,
+        after_current_batch: bool = False,
+    ) -> None:
         if self._metadata_node_uid != uid:
             return
+        key = ("details-refresh", uid)
+        if not after_current_batch and self._interaction_gate.has_work(key):
+            return
         self._queue_idle_work(
-            ("details-refresh", uid),
+            key,
             lambda: self._update_info(uid=uid),
         )
 
@@ -1842,27 +1895,35 @@ class ImageToolManager(_ImageToolManagerBase):
     ) -> None:
         self._interaction_gate.queue_work(key, callback, require_idle=require_idle)
 
-    def _schedule_dependency_index(self, uid: str, *, refresh: bool) -> None:
+    def _queue_managed_node_change(
+        self,
+        uid: str,
+        change: _ManagedNodeChange,
+    ) -> None:
         if uid not in self._tool_graph.nodes:
             return
-        if refresh:
-            self._dependency_index_refresh_uids.add(uid)
+        self._pending_node_changes[uid] = (
+            self._pending_node_changes.get(uid, _ManagedNodeChange.NONE) | change
+        )
         self._queue_idle_work(
-            ("dependency-index", uid),
-            functools.partial(self._index_dependency_uid, uid),
+            ("node-change", uid),
+            functools.partial(self._flush_managed_node_change, uid),
         )
 
-    def _cancel_dependency_index(self, uid: str) -> None:
-        self._dependency_index_refresh_uids.discard(uid)
-        self._interaction_gate.discard_work(("dependency-index", uid))
+    def _cancel_managed_node_change(self, uid: str) -> None:
+        self._pending_node_changes.pop(uid, None)
+        self._interaction_gate.discard_work(("node-change", uid))
 
-    def _index_dependency_uid(self, uid: str) -> None:
-        refresh = uid in self._dependency_index_refresh_uids
-        self._dependency_index_refresh_uids.discard(uid)
+    def _flush_managed_node_change(self, uid: str) -> None:
+        change = self._pending_node_changes.pop(uid, _ManagedNodeChange.NONE)
         if uid not in self._tool_graph.nodes:
             return
-        self._dependency_tracker.refs_for_uid(uid)
-        if not refresh:
+        if change & _ManagedNodeChange.DEPENDENCY_INDEX:
+            self._dependency_tracker.refs_for_uid(uid)
+        if change & _ManagedNodeChange.INFO:
+            self._figure_collection.update_gallery_icon(uid)
+            self._schedule_details_refresh(uid, after_current_batch=True)
+        if not change & _ManagedNodeChange.PROVENANCE_DISPLAY:
             return
         if self._is_figure_uid(uid):
             self._schedule_details_refresh(uid)

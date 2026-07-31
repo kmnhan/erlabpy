@@ -273,7 +273,7 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
         metadata_derivation_list=derivation_list,
         _metadata_node_uid=None,
         _tool_graph=types.SimpleNamespace(
-            nodes={}, root_wrappers={}, presentation_generation=0
+            nodes={}, root_wrappers={}, structure_generation=0
         ),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda row: (row is child_row, "")
@@ -400,7 +400,7 @@ def test_manager_metadata_derivation_tree_populates_only_expanded_branches(
         metadata_derivation_list=derivation_list,
         _metadata_node_uid=None,
         _tool_graph=types.SimpleNamespace(
-            nodes={}, root_wrappers={}, presentation_generation=0
+            nodes={}, root_wrappers={}, structure_generation=0
         ),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=_record_editability_check
@@ -474,7 +474,7 @@ def test_manager_metadata_derivation_state_restore_uses_indexed_lookups(
         metadata_derivation_list=derivation_list,
         _metadata_node_uid=None,
         _tool_graph=types.SimpleNamespace(
-            nodes={}, root_wrappers={}, presentation_generation=0
+            nodes={}, root_wrappers={}, structure_generation=0
         ),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda _row: (False, "")
@@ -532,7 +532,7 @@ def test_manager_metadata_derivation_refresh_uses_stable_cache_key(qtbot) -> Non
         metadata_derivation_list=derivation_list,
         _metadata_node_uid=None,
         _tool_graph=types.SimpleNamespace(
-            nodes={}, root_wrappers={}, presentation_generation=0
+            nodes={}, root_wrappers={}, structure_generation=0
         ),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda _row: (False, "")
@@ -594,7 +594,7 @@ def test_manager_metadata_row_mapping_keeps_collapsed_rows_consistent(
         metadata_derivation_list=derivation_list,
         _metadata_node_uid=None,
         _tool_graph=types.SimpleNamespace(
-            nodes={}, root_wrappers={}, presentation_generation=0
+            nodes={}, root_wrappers={}, structure_generation=0
         ),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda _row: (False, "")
@@ -673,7 +673,7 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
         _tool_graph=types.SimpleNamespace(
             nodes={"n16": source_node},
             root_wrappers={4: source_node},
-            presentation_generation=0,
+            structure_generation=0,
         ),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda _row: (False, "")
@@ -721,7 +721,7 @@ def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None
         metadata_derivation_list=derivation_list,
         _metadata_node_uid=None,
         _tool_graph=types.SimpleNamespace(
-            nodes={}, root_wrappers={}, presentation_generation=0
+            nodes={}, root_wrappers={}, structure_generation=0
         ),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda _row: (False, "")

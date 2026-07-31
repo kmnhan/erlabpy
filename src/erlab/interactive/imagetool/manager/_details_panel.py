@@ -243,7 +243,6 @@ class _DetailsPanelController:
         node.note = note
         self._note_editor_dirty = False
         self._manager._mark_node_state_dirty(node.uid)
-        self._manager.tree_view.refresh(node.uid)
         self._update_note_actions()
 
     def _edit_selected_note(self) -> None:
@@ -306,7 +305,7 @@ class _DetailsPanelController:
         derivation_key = (
             node.uid,
             node.derivation_display_rows_cache_key,
-            self._manager._tool_graph.presentation_generation,
+            self._manager._tool_graph.structure_generation,
         )
         derivation_changed = derivation_key != self._metadata_derivation_key
         if derivation_changed:

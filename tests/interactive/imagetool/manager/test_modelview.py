@@ -44,6 +44,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _ImageToolWrapperItemModel,
     _RowBadge,
 )
+from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
@@ -271,8 +272,8 @@ def test_tool_graph_structural_mutation_helpers_update_caches() -> None:
             self._childtool_indices.remove(uid)
             self._childtools.pop(uid, None)
 
-    presentation_changes: list[None] = []
-    graph = _ManagerToolGraph(lambda: presentation_changes.append(None))
+    node_changes: list[tuple[str | None, _ManagedNodeChange]] = []
+    graph = _ManagerToolGraph(lambda uid, change: node_changes.append((uid, change)))
     parent = _ParentNode()
     graph.nodes["parent"] = typing.cast("_ImageToolWrapper", parent)
 
@@ -348,7 +349,26 @@ def test_tool_graph_structural_mutation_helpers_update_caches() -> None:
     )
     with pytest.raises(ValueError, match="figure tools"):
         graph.register_figure(typing.cast("typing.Any", invalid_figure))
-    assert len(presentation_changes) == graph.presentation_generation
+
+    change_count = len(node_changes)
+    presentation_change_count = sum(
+        bool(change & _ManagedNodeChange.PRESENTATION) for _uid, change in node_changes
+    )
+    graph.notify_node_change("missing", _ManagedNodeChange.PRESENTATION)
+    assert len(node_changes) == change_count
+
+    graph.notify_node_change("child", _ManagedNodeChange.DEPENDENCY_INDEX)
+    assert node_changes[-1] == ("child", _ManagedNodeChange.DEPENDENCY_INDEX)
+
+    graph.notify_node_change("child", _ManagedNodeChange.PRESENTATION)
+    assert node_changes[-1] == ("child", _ManagedNodeChange.PRESENTATION)
+    assert (
+        sum(
+            bool(change & _ManagedNodeChange.PRESENTATION)
+            for _uid, change in node_changes
+        )
+        == presentation_change_count + 1
+    )
 
 
 def test_tool_graph_registration_failures_do_not_mutate_cached_state() -> None:
@@ -1070,14 +1090,13 @@ def test_figure_source_mime_filters_duplicates_and_malformed_rows(
 
     manager = _FakeManager()
     qtbot.addWidget(manager)
-    manager._tool_graph = types.SimpleNamespace(nodes={})
+    manager._tool_graph = _ManagerToolGraph()
     wrapper = _ImageToolWrapper(
         typing.cast("ImageToolManager", manager),
         index=0,
         uid="root-source",
         tool=None,
     )
-    manager._tool_graph = _ManagerToolGraph()
     manager._tool_graph.displayed_indices = [0]
     manager._tool_graph.root_wrappers[0] = wrapper
     manager._tool_graph.nodes["root-source"] = wrapper
@@ -1247,10 +1266,7 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
 
         assert "updated child info" not in manager.text_box.toPlainText()
         assert metadata_updates == []
-        assert (
-            manager._interaction_gate.pending_keys.count(("tool-info-refresh", uid))
-            == 1
-        )
+        assert manager._interaction_gate.pending_keys.count(("node-change", uid)) == 1
         manager._flush_idle_work(force=True)
         assert metadata_updates == []
         assert ("details-refresh", uid) in manager._interaction_gate.pending_keys
@@ -1345,6 +1361,63 @@ def test_tree_data_changed_refreshes_details_only_for_selected_rows(
         manager._flush_idle_work(force=True)
 
         assert metadata_updates == [child_uid]
+
+
+def test_presentation_changes_refresh_only_dependent_details(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        (test_data + 1).qshow(manager=True)
+        (test_data + 2).qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        source = manager._tool_graph.root_wrappers[0]
+        dependent = manager._tool_graph.root_wrappers[1]
+        unrelated = manager._tool_graph.root_wrappers[2]
+        dependent.set_displayed_provenance(
+            script(
+                start_label="Use source",
+                seed_code="derived = source",
+                active_name="derived",
+                script_inputs=(
+                    ScriptInput(
+                        name="source",
+                        label="Source",
+                        node_uid=source.uid,
+                        node_snapshot_token=source.snapshot_token,
+                        provenance_spec=full_data(),
+                    ),
+                ),
+            ),
+            advance_snapshot=False,
+        )
+        select_tools(manager, [1])
+        manager._flush_idle_work(force=True)
+        manager._flush_idle_work(force=True)
+
+        metadata_updates: list[str] = []
+        original_set_metadata_node = manager._set_metadata_node
+
+        def _record_metadata_rebuild(node) -> None:
+            metadata_updates.append(node.uid)
+            original_set_metadata_node(node)
+
+        monkeypatch.setattr(manager, "_set_metadata_node", _record_metadata_rebuild)
+
+        unrelated._set_name("unrelated", manual=False)
+        manager._flush_idle_work(force=True)
+        assert metadata_updates == []
+
+        source._set_name("source", manual=False)
+        manager._flush_idle_work(force=True)
+        assert metadata_updates == [dependent.uid]
 
 
 def test_dependency_refresh_batches_contiguous_rows_by_parent(
@@ -1775,9 +1848,7 @@ def test_tool_provenance_change_reindexes_and_refreshes_dependency_metadata(
         )
         tool._write_state()
 
-        assert ("dependency-index", uid) in manager._interaction_gate.pending_keys
-        manager._flush_idle_work(force=True)
-        assert ("details-refresh", uid) in manager._interaction_gate.pending_keys
+        assert ("node-change", uid) in manager._interaction_gate.pending_keys
         manager._flush_idle_work(force=True)
 
         assert manager.dependency_status_for_uid(uid) == "current"
@@ -1785,12 +1856,18 @@ def test_tool_provenance_change_reindexes_and_refreshes_dependency_metadata(
         assert "Inputs" in manager._metadata_detail_labels
 
 
-def test_manager_dependency_index_job_handles_removed_and_figure_nodes() -> None:
+def test_manager_node_change_job_handles_removed_and_figure_nodes() -> None:
     uid = "figure-uid"
     indexed_uids: list[str] = []
     refreshed_uids: list[str] = []
     manager = types.SimpleNamespace(
-        _dependency_index_refresh_uids={uid, "removed-uid"},
+        _pending_node_changes={
+            uid: (
+                _ManagedNodeChange.DEPENDENCY_INDEX
+                | _ManagedNodeChange.PROVENANCE_DISPLAY
+            ),
+            "removed-uid": _ManagedNodeChange.DEPENDENCY_INDEX,
+        },
         _tool_graph=types.SimpleNamespace(nodes={uid: object()}),
         _dependency_tracker=types.SimpleNamespace(
             refs_for_uid=indexed_uids.append,
@@ -1799,21 +1876,16 @@ def test_manager_dependency_index_job_handles_removed_and_figure_nodes() -> None
         _schedule_details_refresh=refreshed_uids.append,
     )
 
-    ImageToolManager._schedule_dependency_index(
-        typing.cast("ImageToolManager", manager),
-        "missing-uid",
-        refresh=True,
-    )
-    ImageToolManager._index_dependency_uid(
+    ImageToolManager._flush_managed_node_change(
         typing.cast("ImageToolManager", manager),
         "removed-uid",
     )
-    ImageToolManager._index_dependency_uid(
+    ImageToolManager._flush_managed_node_change(
         typing.cast("ImageToolManager", manager),
         uid,
     )
 
-    assert manager._dependency_index_refresh_uids == set()
+    assert manager._pending_node_changes == {}
     assert indexed_uids == [uid]
     assert refreshed_uids == [uid]
 
@@ -2118,7 +2190,10 @@ def test_childtool_state_changed_marks_dirty_without_details_refresh(
 
         assert uid in manager._workspace_state.dirty_state
         assert metadata_updates == []
-        assert ("tool-info-refresh", uid) not in manager._interaction_gate.pending_keys
+        assert not (
+            manager._pending_node_changes.get(uid, _ManagedNodeChange.NONE)
+            & _ManagedNodeChange.INFO
+        )
 
         child_node = manager._child_node(uid)
         manager._workspace_controller._mark_workspace_clean()
@@ -2960,7 +3035,7 @@ def test_remove_imagetool_removes_childtools() -> None:
     removed_rows: list[int] = []
     refresh_calls: list[None] = []
     cleared_dependency_uids: list[str] = []
-    canceled_dependency_uids: list[str] = []
+    canceled_node_change_uids: list[str] = []
 
     class _DummyWrapper:
         def __init__(self):
@@ -2982,7 +3057,7 @@ def test_remove_imagetool_removes_childtools() -> None:
     tool_graph.nodes[wrapper.uid] = wrapper
     manager = types.SimpleNamespace(
         _tool_graph=tool_graph,
-        _cancel_dependency_index=canceled_dependency_uids.append,
+        _cancel_managed_node_change=canceled_node_change_uids.append,
         _workspace_link_keys_for_subtree=lambda _uid: set(),
         _mark_removed_subtree_dirty=lambda _uid: None,
         _mark_singleton_workspace_link_groups_dirty=lambda _link_keys: None,
@@ -3005,7 +3080,7 @@ def test_remove_imagetool_removes_childtools() -> None:
     assert removed_rows == [0]
     assert refresh_calls == [None]
     assert cleared_dependency_uids == [wrapper.uid]
-    assert canceled_dependency_uids == [wrapper.uid]
+    assert canceled_node_change_uids == [wrapper.uid]
     assert wrapper.disposed
     assert wrapper.deleted
     assert manager._tool_graph.root_wrappers == {}

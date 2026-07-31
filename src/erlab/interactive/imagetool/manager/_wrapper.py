@@ -53,6 +53,7 @@ from erlab.interactive.imagetool._load_source import (
     _parse_serialized_file_data_selection,
 )
 from erlab.interactive.imagetool._mainwindow import ImageTool
+from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from erlab.interactive.imagetool.manager._widgets import _curve_preview_data
 
 if typing.TYPE_CHECKING:
@@ -681,13 +682,18 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         manager._tool_graph.update_node_window_reference(self)
 
+    def _notify_change(self, change: _ManagedNodeChange) -> None:
+        manager = self._manager()
+        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
+            return
+        manager._tool_graph.notify_node_change(self.uid, change)
+
     def _notify_type_badge_change(self, previous_type_badge: str | None) -> None:
         if self.type_badge_text == previous_type_badge:
             return
-        manager = self._manager()
-        if manager is None or manager._tool_graph.nodes.get(self.uid) is not self:
-            return
-        manager._tool_graph.presentation_changed()
+        self._notify_change(
+            _ManagedNodeChange.PRESENTATION | _ManagedNodeChange.DEPENDENTS
+        )
 
     def _workspace_reference_dataset(
         self,
@@ -1058,14 +1064,13 @@ class _ManagedWindowNode(QtCore.QObject):
         self._set_name(name, manual=True)
 
     def _set_name(self, name: str, *, manual: bool) -> None:
-        if name != self.name:
-            self.manager._tool_graph.presentation_changed()
+        name_changed = name != self.name
         if self.tool_window is not None:
             self.tool_window._tool_display_name = name
-            if self.manager._is_figure_node(self):
-                self.manager._figure_collection.sync(select_uid=self.uid)
-            else:
-                self.manager.tree_view.refresh(self.uid)
+            if name_changed:
+                self._notify_change(
+                    _ManagedNodeChange.PRESENTATION | _ManagedNodeChange.DEPENDENTS
+                )
             self.manager._mark_node_state_dirty(self.uid)
             return
         if self.imagetool is not None:
@@ -1076,7 +1081,10 @@ class _ManagedWindowNode(QtCore.QObject):
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
         self._pending_workspace_curve_cache = None
-        self.manager.tree_view.refresh(self.uid)
+        if name_changed:
+            self._notify_change(
+                _ManagedNodeChange.PRESENTATION | _ManagedNodeChange.DEPENDENTS
+            )
         self.manager._mark_node_state_dirty(self.uid)
 
     def _rename_imagetool_data(self, name: str, *, record_provenance: bool) -> None:
@@ -1085,7 +1093,6 @@ class _ManagedWindowNode(QtCore.QObject):
         if name == self.name:
             self.imagetool.setWindowTitle(self.label_text)
             return
-        self.manager._tool_graph.presentation_changed()
         slicer_area = self.slicer_area
         slicer_area._data = slicer_area._data.rename(name)
         slicer_area.array_slicer._obj = slicer_area.array_slicer._obj.rename(name)
@@ -1097,8 +1104,9 @@ class _ManagedWindowNode(QtCore.QObject):
             self._record_data_rename_provenance(name)
         self._invalidate_info_text_cache()
         self.imagetool.setWindowTitle(self.label_text)
-        self.manager.tree_view.refresh(self.uid)
-        self.manager._refresh_dependency_dependents(self.uid)
+        self._notify_change(
+            _ManagedNodeChange.PRESENTATION | _ManagedNodeChange.DEPENDENTS
+        )
         self.manager._mark_node_state_dirty(self.uid)
 
     def _record_data_rename_provenance(self, name: str) -> None:
@@ -1111,8 +1119,7 @@ class _ManagedWindowNode(QtCore.QObject):
             self._source_spec = require_live_source_spec(
                 self._source_spec.append_final_rename(name)
             )
-        self._invalidate_derivation_display_rows_cache()
-        self._invalidate_dependency_cache()
+        self._invalidate_provenance_derived_state()
 
     def _file_label_paths(self) -> tuple[pathlib.Path, ...]:
         paths: list[pathlib.Path] = []
@@ -1215,7 +1222,10 @@ class _ManagedWindowNode(QtCore.QObject):
     def note(self, value: str) -> None:
         if not isinstance(value, str):
             raise TypeError("note must be a string")
+        if value == self._note:
+            return
         self._note = value
+        self._notify_change(_ManagedNodeChange.ROW)
 
     @property
     def has_note(self) -> bool:
@@ -1502,34 +1512,36 @@ class _ManagedWindowNode(QtCore.QObject):
         return self._tool_provenance_spec_cache[flush_deferred_restore]
 
     def _handle_tool_provenance_spec_promotion(self) -> None:
-        if self.parent_uid is None or self.source_spec is None:
-            self._invalidate_derivation_display_rows_cache()
-        self._invalidate_dependency_cache()
-        manager = self._manager()
-        if (
-            manager is None
-            or not erlab.interactive.utils.qt_is_valid(manager)
-            or manager._tool_graph.nodes.get(self.uid) is not self
-        ):
-            return
-        manager.tree_view.refresh(self.uid)
-        manager._schedule_details_refresh(self.uid)
+        self._invalidate_provenance_derived_state(
+            refresh_display=True,
+            invalidate_derivation=self.parent_uid is None or self.source_spec is None,
+        )
 
     def _invalidate_tool_provenance_spec_cache(
         self, *, refresh_dependency: bool = False
     ) -> None:
         self._tool_provenance_spec_cache.clear()
-        if self.parent_uid is None or self.source_spec is None:
-            self._invalidate_derivation_display_rows_cache()
-        self._invalidate_dependency_cache(refresh=refresh_dependency)
+        self._invalidate_provenance_derived_state(
+            refresh_display=refresh_dependency,
+            invalidate_derivation=self.parent_uid is None or self.source_spec is None,
+        )
 
-    def _invalidate_dependency_cache(self, *, refresh: bool = False) -> None:
-        manager = self._manager()
-        if manager is None:
-            return
-        if manager._tool_graph.nodes.get(self.uid) is self:
-            manager._dependency_tracker.invalidate_uid(self.uid)
-            manager._schedule_dependency_index(self.uid, refresh=refresh)
+    def _invalidate_provenance_derived_state(
+        self,
+        *,
+        refresh_display: bool = False,
+        invalidate_derivation: bool = True,
+    ) -> None:
+        change = (
+            _ManagedNodeChange.PROVENANCE
+            if refresh_display
+            else _ManagedNodeChange.DEPENDENCY_INDEX
+        )
+        if invalidate_derivation:
+            self._derivation_display_rows_cache = None
+            self._derivation_display_rows_generation += 1
+            change |= _ManagedNodeChange.DERIVATION
+        self._notify_change(change)
 
     @property
     def displayed_provenance_spec(
@@ -1758,8 +1770,7 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         if manager._tool_graph.nodes.get(self.uid) is not self:
             return
-        manager.tree_view.refresh(self.uid)
-        manager._refresh_dependency_dependents(self.uid)
+        self._notify_change(_ManagedNodeChange.ROW | _ManagedNodeChange.DEPENDENTS)
         manager._mark_node_state_dirty(self.uid)
 
     @property
@@ -1795,8 +1806,7 @@ class _ManagedWindowNode(QtCore.QObject):
         advance_snapshot: bool = True,
     ) -> None:
         self._provenance_spec = parse_tool_provenance_spec(provenance_spec)
-        self._invalidate_derivation_display_rows_cache()
-        self._invalidate_dependency_cache()
+        self._invalidate_provenance_derived_state()
         if self.imagetool is not None:
             self.imagetool.set_provenance_spec(self.provenance_spec)
         if advance_snapshot:
@@ -1886,28 +1896,6 @@ class _ManagedWindowNode(QtCore.QObject):
         parent = self.manager._parent_node(self)
         return (*parent._derivation_display_rows_lineage_generation, *generation)
 
-    def _invalidate_derivation_display_rows_cache(self) -> None:
-        self._derivation_display_rows_cache = None
-        self._derivation_display_rows_generation += 1
-        manager = self._manager()
-        if (
-            manager is None
-            or not erlab.interactive.utils.qt_is_valid(manager)
-            or manager._tool_graph.nodes.get(self.uid) is not self
-        ):
-            return
-        selected_uid = manager._metadata_node_uid
-        if selected_uid is None:
-            return
-        selected = manager._tool_graph.nodes.get(selected_uid)
-        while selected is not None:
-            if selected is self:
-                manager._schedule_details_refresh(selected_uid)
-                return
-            if selected.parent_uid is None:
-                return
-            selected = manager._tool_graph.nodes.get(selected.parent_uid)
-
     @property
     def derivation_lines(self) -> list[str]:
         return [entry.label for entry in self.derivation_entries]
@@ -1983,8 +1971,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._replay_source_data = None
         self._replay_source_pending = False
         self._source_spec = require_live_source_spec(source_spec)
-        self._invalidate_derivation_display_rows_cache()
-        self._invalidate_dependency_cache()
+        self._invalidate_provenance_derived_state()
         self._source_binding = None if self._source_spec is not None else source_binding
         if provenance_spec is not None and not isinstance(
             provenance_spec,
@@ -2034,8 +2021,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._replay_source_data = None
         self._replay_source_pending = False
         self._source_spec = require_live_source_spec(source_spec)
-        self._invalidate_derivation_display_rows_cache()
-        self._invalidate_dependency_cache()
+        self._invalidate_provenance_derived_state()
         self._source_binding = None if self._source_spec is not None else source_binding
         self._source_auto_update = bool(auto_update)
         self._source_state = state if self.has_source_binding else "fresh"
@@ -2063,8 +2049,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 "parse_tool_provenance_spec() when deserializing saved payloads."
             )
         self._source_spec = None
-        self._invalidate_derivation_display_rows_cache()
-        self._invalidate_dependency_cache()
+        self._invalidate_provenance_derived_state()
         self._source_binding = None
         self._replay_source_data = None
         self._replay_source_pending = False
@@ -2090,8 +2075,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 "parse_tool_provenance_spec() when deserializing saved payloads."
             )
         self._source_spec = None
-        self._invalidate_derivation_display_rows_cache()
-        self._invalidate_dependency_cache()
+        self._invalidate_provenance_derived_state()
         self._source_binding = None
         self._source_auto_update = False
         self._output_id = None
@@ -2111,8 +2095,7 @@ class _ManagedWindowNode(QtCore.QObject):
             return self._source_spec
         if self._source_binding is not None:
             self._source_spec = self._source_binding.materialize(parent_data)
-            self._invalidate_derivation_display_rows_cache()
-            self._invalidate_dependency_cache()
+            self._invalidate_provenance_derived_state()
             self._source_binding = None
             return self._source_spec
         raise RuntimeError("Node is not bound to an ImageTool source.")
@@ -2254,14 +2237,14 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def _set_source_auto_update(self, value: bool) -> None:
         self._source_auto_update = bool(value)
-        self.manager.tree_view.refresh(self.uid)
+        self._notify_change(_ManagedNodeChange.ROW)
         self.manager._mark_node_state_dirty(self.uid)
 
     def _set_source_state(self, state: _source_state_type) -> None:
         if self._source_state == state:
             return
         self._source_state = state
-        self.manager.tree_view.refresh(self.uid)
+        self._notify_change(_ManagedNodeChange.ROW)
         self.manager._mark_node_state_dirty(self.uid)
 
     def current_source_data(self) -> xr.DataArray:
@@ -2342,7 +2325,7 @@ class _ManagedWindowNode(QtCore.QObject):
         del title
         if self.imagetool is not None:
             self.imagetool.setWindowTitle(self.label_text)
-            self.manager.tree_view.refresh(self.uid)
+            self._notify_change(_ManagedNodeChange.ROW)
 
     @QtCore.Slot()
     def visibility_changed(self, *, mark_dirty: bool = True) -> None:
@@ -2409,7 +2392,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def _refresh_node_info(self) -> None:
-        self.manager.tree_view.refresh(self.uid)
+        self._notify_change(_ManagedNodeChange.ROW)
 
     @QtCore.Slot()
     def _handle_tool_info_changed(self) -> None:
@@ -2420,21 +2403,7 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         self._invalidate_info_text_cache()
         manager._mark_tool_info_dirty(self.uid)
-        manager._queue_idle_work(
-            ("tool-info-refresh", self.uid),
-            functools.partial(self._flush_tool_info_changed, self.uid),
-        )
-
-    def _flush_tool_info_changed(self, uid: str) -> None:
-        if uid != self.uid:
-            return
-        manager = self._manager()
-        if manager is None or not erlab.interactive.utils.qt_is_valid(manager):
-            return
-        if manager._tool_graph.nodes.get(self.uid) is not self:
-            return
-        manager._figure_collection.update_gallery_icon(self.uid)
-        manager._schedule_details_refresh(self.uid)
+        self._notify_change(_ManagedNodeChange.INFO)
 
     @QtCore.Slot()
     def _handle_tool_state_changed(self) -> None:
@@ -2486,7 +2455,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 self.manager._mark_descendants_source_state(
                     self.uid, self.tool_window.source_state
                 )
-            self.manager.tree_view.refresh(self.uid)
+            self._notify_change(_ManagedNodeChange.ROW)
             return updated
 
         try:
@@ -2724,8 +2693,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         self._watched_source_uid = source_uid
         self._watched_connected = connected
         if provenance_changed:
-            self._invalidate_derivation_display_rows_cache()
-            self._invalidate_dependency_cache()
+            self._invalidate_provenance_derived_state()
 
     def watched_metadata(self) -> dict[str, typing.Any]:
         """Return JSON-serializable watched binding metadata."""
@@ -2752,8 +2720,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
             return
         self._source_input_dtype = dtype
         if self.watched:
-            self._invalidate_derivation_display_rows_cache()
-            self._invalidate_dependency_cache()
+            self._invalidate_provenance_derived_state()
         self.manager._mark_node_state_dirty(self.uid)
 
     @property
@@ -2838,9 +2805,10 @@ class _ImageToolWrapper(_ManagedWindowNode):
             self._watched_source_label = None
             self._watched_source_uid = None
             self._watched_connected = False
-            self._invalidate_derivation_display_rows_cache()
-            self._invalidate_dependency_cache()
-            self.manager.tree_view.refresh(self.index)
+            self._invalidate_provenance_derived_state()
+            self._notify_change(
+                _ManagedNodeChange.PRESENTATION | _ManagedNodeChange.DEPENDENTS
+            )
             self.manager._mark_node_state_dirty(self.uid)
 
     @QtCore.Slot()

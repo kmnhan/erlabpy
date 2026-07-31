@@ -96,6 +96,9 @@ class _ManagerInteractionGate(QtCore.QObject):
     def pending_keys(self) -> tuple[Hashable, ...]:
         return tuple(self._pending_work)
 
+    def has_work(self, key: Hashable) -> bool:
+        return key in self._pending_work
+
     def set_quiet_interval(self, msec: int) -> None:
         self._quiet_timer.setInterval(msec)
 
