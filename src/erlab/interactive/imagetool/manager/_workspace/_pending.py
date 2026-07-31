@@ -1127,6 +1127,7 @@ class _PendingWorkspacePayloads:
             return False
         else:
             self._manager.tree_view.refresh(node.uid)
+            self._manager._schedule_details_refresh(node.uid)
             return True
 
     def _has_pending_workspace_linked_slicers(

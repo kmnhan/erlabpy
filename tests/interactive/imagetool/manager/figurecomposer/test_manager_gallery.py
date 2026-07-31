@@ -902,7 +902,7 @@ def test_figure_composer_skips_preview_cache_when_unrendered(
     assert tool.preview_pixmap is None
 
 
-def test_manager_workspace_restores_figure_gallery_preview_cache(
+def test_manager_workspace_restores_figure_preview_and_live_details(
     qtbot,
     tmp_path: Path,
     manager_context: Callable[
@@ -940,9 +940,19 @@ def test_manager_workspace_restores_figure_gallery_preview_cache(
         pending_preview = loaded_node.pending_workspace_tool_preview_image()
         assert pending_preview is not None
         assert not pending_preview[1].isNull()
-        loaded_node.show()
+        manager._figure_collection.select_uid(figure_uid)
+        manager._flush_idle_work(force=True)
+        pending_fields = tuple(loaded_node.metadata_fields)
+        assert manager._details_panel._metadata_fields_cache == pending_fields
+
+        assert loaded_node.materialize_pending_workspace_payload()
         loaded_tool = loaded_node.tool_window
         assert isinstance(loaded_tool, FigureComposerTool)
+        manager._flush_idle_work(force=True)
+        live_fields = tuple(loaded_node.metadata_fields)
+        assert live_fields != pending_fields
+        assert manager._details_panel._metadata_fields_cache == live_fields
+        loaded_node.show()
         assert loaded_tool.preview_pixmap is not None
         assert not loaded_tool.preview_pixmap_stale
 
