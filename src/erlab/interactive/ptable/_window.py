@@ -19,6 +19,7 @@ from erlab.interactive.ptable._shared import (
     _has_keyboard_modifier,
     _is_toggle_selection_modifier,
     _navigation_atomic_numbers,
+    _parse_float,
     _parse_positive_float,
     _parse_symbol_selection_query,
     _rectangular_selection_range,
@@ -680,9 +681,8 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         text = self.workfunction_edit.text().strip()
         if text == "":
             return 0.0
-        try:
-            value = float(text)
-        except ValueError:
+        value = _parse_float(text)
+        if value is None:
             return 0.0
         return max(value, 0.0)
 
@@ -1114,10 +1114,8 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         if workfunction_text == "":
             work_invalid = False
         else:
-            try:
-                work_invalid = float(workfunction_text) < 0.0
-            except ValueError:
-                work_invalid = True
+            workfunction = _parse_float(workfunction_text)
+            work_invalid = workfunction is None or workfunction < 0.0
         self._set_line_edit_invalid_state(self.workfunction_edit, work_invalid)
         harmonics_enabled = (
             photon_text != "" and _parse_positive_float(photon_text) is not None

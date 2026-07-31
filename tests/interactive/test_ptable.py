@@ -2151,6 +2151,40 @@ def test_ptable_harmonic_rows_expand_from_spinbox(
     win.close()
 
 
+def test_ptable_full_width_energy_inputs(
+    qtbot,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        erlab.analysis.xps,
+        "get_edge",
+        lambda _symbol: {"1s": 12.0},
+    )
+    monkeypatch.setattr(erlab.analysis.xps, "get_cross_section", _fake_cross_sections)
+
+    win = PeriodicTableWindow()
+    _show_window(qtbot, win)
+    win._handle_card_selected(1, QtCore.Qt.KeyboardModifier.NoModifier)
+
+    photon_text = "\uff18\uff10\uff0e\uff10"
+    workfunction_text = "\uff14\uff0e\uff15"
+    win.hv_edit.setText(photon_text)
+    win.workfunction_edit.setText(workfunction_text)
+
+    assert win.hv_edit.text() == photon_text
+    assert win.workfunction_edit.text() == workfunction_text
+    assert win.hv == pytest.approx(80.0)
+    assert win.workfunction == pytest.approx(4.5)
+    assert win.hv_edit.property("invalid") is False
+    assert win.workfunction_edit.property("invalid") is False
+    assert win.harmonic_frame.isEnabled() is True
+    assert win.max_harmonic_spin.isEnabled() is True
+    assert win.inspector.levels_table.item(1, 0).text() == "63.5"
+    assert win.inspector.cross_section_plot.photon_line_energy == pytest.approx(80.0)
+
+    win.close()
+
+
 def test_ptable_copy_actions_and_invalid_inputs(
     qtbot,
     monkeypatch,
