@@ -1949,8 +1949,30 @@ class _ManagedWindowNode(QtCore.QObject):
         generation = (self._derivation_display_rows_generation, filter_revision)
         if self.parent_uid is None or self.source_spec is None:
             return generation
-        parent = self.manager._parent_node(self)
-        return (*parent._derivation_display_rows_lineage_generation, *generation)
+
+        generations = [generation]
+        seen_uids = {self.uid}
+        node = self.manager._parent_node(self)
+        while True:
+            if node.uid in seen_uids:
+                raise RuntimeError(
+                    f"Managed derivation lineage for {self.uid!r} contains a cycle"
+                )
+            seen_uids.add(node.uid)
+            node_filter_revision = (
+                node.slicer_area.accepted_filter_revision
+                if node.imagetool is not None
+                else 0
+            )
+            generations.append(
+                (node._derivation_display_rows_generation, node_filter_revision)
+            )
+            if node.parent_uid is None or node.source_spec is None:
+                break
+            node = node.manager._parent_node(node)
+        return tuple(
+            value for generation in reversed(generations) for value in generation
+        )
 
     @property
     def derivation_lines(self) -> list[str]:

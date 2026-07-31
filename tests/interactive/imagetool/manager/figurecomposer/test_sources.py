@@ -5174,6 +5174,44 @@ def test_figure_composer_restore_persisted_selection_failure_paths(qtbot) -> Non
     assert "orphan" not in pending_tool.source_data()
 
 
+def test_tool_status_source_normalization_advances_provenance_revision(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="original")
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(
+            FigureSourceState(
+                name="data",
+                provenance_spec=public_data().model_dump(mode="json"),
+            ),
+        ),
+        operations=(FigureOperationState.line(label="line", source="data"),),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    status = tool.tool_status
+    primary_source = status.primary_source
+    tool.set_source_data({"replacement": data.rename("replacement")})
+    before_spec = tool.current_provenance_spec(flush_deferred_restore=False)
+    before_revision = tool.provenance_revision
+    data_changes: list[None] = []
+    state_changes: list[None] = []
+    provenance_changes: list[int] = []
+    tool.sigDataChanged.connect(lambda: data_changes.append(None))
+    tool.sigStateChanged.connect(lambda: state_changes.append(None))
+    tool.sigProvenanceChanged.connect(
+        lambda: provenance_changes.append(tool.provenance_revision)
+    )
+
+    tool.tool_status = status
+
+    assert tuple(tool.source_data()) == (primary_source,)
+    assert tool.current_provenance_spec(flush_deferred_restore=False) != before_spec
+    assert tool.provenance_revision == before_revision + 1
+    assert data_changes == [None]
+    assert state_changes == []
+    assert provenance_changes == [tool.provenance_revision]
+
+
 def test_figure_composer_selected_source_codegen_fallback_uses_base_input(
     qtbot,
 ) -> None:

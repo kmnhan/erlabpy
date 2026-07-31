@@ -4200,6 +4200,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     @tool_status.setter
     def tool_status(self, status: FigureRecipeState) -> None:
         previous_recipe = self._document.recipe
+        previous_source_revision = self._document.source_revision
         operations = tuple(
             _registry.spec_for(operation.kind).loaded_operation(operation)
             for operation in status.operations
@@ -4216,10 +4217,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._mark_preview_pixmap_stale()
         else:
             _render_preview(self)
-        if self._document.recipe != previous_recipe:
+        recipe_changed = self._document.recipe != previous_recipe
+        source_data_changed = self._document.source_revision != previous_source_revision
+        if recipe_changed or source_data_changed:
             with self._coalesce_provenance_changes():
                 self._notify_provenance_changed()
-                self.sigStateChanged.emit()
+                if recipe_changed:
+                    self.sigStateChanged.emit()
+                if source_data_changed:
+                    self.sigDataChanged.emit()
                 self.sigInfoChanged.emit()
 
     def set_source_data(self, source_data: Mapping[str, xr.DataArray]) -> None:
