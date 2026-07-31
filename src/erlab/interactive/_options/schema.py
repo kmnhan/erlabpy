@@ -179,6 +179,15 @@ class KToolBZOptions(BaseModel):
 class KToolOptions(BaseModel):
     """Momentum conversion tool related options."""
 
+    show_angle_scale_controls: bool = Field(
+        default=False,
+        title="Show angle scale controls",
+        description=(
+            "Show the alpha and beta scale controls in ktool. Use these controls "
+            "only with an established correction for angle-coordinate scaling errors."
+        ),
+    )
+
     bz: KToolBZOptions = Field(
         default_factory=KToolBZOptions,
         title="Brillouin zone",

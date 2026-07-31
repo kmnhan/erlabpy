@@ -80,9 +80,17 @@ parameters. The image is updated in real time as you change the parameters. For
 angle-energy cuts, the preview keeps the full energy axis and displays the converted
 `k`/`eV` cut.
 
-Use the `alpha scale` and `beta scale` controls only to compensate known extrinsic
-warping in the angle coordinates. The scales multiply the `alpha` and `beta` coordinates
-before momentum conversion. In most cases, these should be left at 1.0.
+Use the {guilabel}`Normal Emission` controls to set the `alpha` and `beta` angles
+that correspond to sample normal emission. The linked angle offsets in
+{guilabel}`Offsets` are shown as values. The azimuthal offset, work function, and
+inner potential remain controls.
+
+The `alpha scale` and `beta scale` controls are hidden by default. To show them,
+enable {guilabel}`Show angle scale controls` in the `ktool` Preferences. Use these
+controls only to compensate a known scaling error in the angle coordinates. The
+scales multiply the `alpha` and `beta` coordinates before momentum conversion. If
+a saved KTool uses non-unit scales while the controls are hidden, its
+{guilabel}`Angle scales` row shows the active values.
 
 Clicking {guilabel}`Copy to clipboard` will copy the code for conversion to the
 clipboard, including any selected configuration change and momentum-conversion

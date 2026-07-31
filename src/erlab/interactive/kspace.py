@@ -34,6 +34,8 @@ from erlab.constants import AxesConfiguration
 from erlab.interactive.imagetool import _kspace_conversion
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Mapping
+
     import matplotlib
     import varname
     import xarray as xr
@@ -147,6 +149,7 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
     _PREVIEW_SYMMETRY_ABS_TOL = 0.05
     _PREVIEW_SYMMETRY_REL_TOL = 0.02
     _PREVIEW_SYMMETRY_ANGLE_TOL = 5.0
+    _show_angle_scale_controls: bool
 
     def __init__(
         self,
@@ -178,6 +181,7 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
             plot.showGrid(x=True, y=True, alpha=0.5)
 
         opts = options_model or erlab.interactive.options.model
+        self._show_angle_scale_controls = opts.ktool.show_angle_scale_controls
 
         if cmap is None:
             cmap = opts.colors.cmap.name
@@ -401,7 +405,10 @@ class KspaceTool(KspaceToolGUI):
     data: xr.DataArray
     _source_configuration: int
     _offset_spins: dict[str, QtWidgets.QDoubleSpinBox]
+    _normal_emission_offset_values: dict[str, float]
+    _normal_emission_offset_labels: dict[str, QtWidgets.QLabel]
     _angle_scale_spins: dict[str, QtWidgets.QDoubleSpinBox]
+    _angle_scale_summary: QtWidgets.QLabel
     _normal_emission_spins: dict[str, QtWidgets.QDoubleSpinBox]
     _bound_spins: dict[str, QtWidgets.QDoubleSpinBox]
     _resolution_spins: dict[str, QtWidgets.QDoubleSpinBox]
@@ -562,8 +569,12 @@ class KspaceTool(KspaceToolGUI):
             center=self.center_spin.value(),
             width=self.width_spin.value(),
             offsets={
-                k: round(spin.value(), spin.decimals())
-                for k, spin in self._offset_spins.items()
+                **self.offset_dict,
+                **{
+                    k: round(spin.value(), spin.decimals())
+                    for k, spin in self._offset_spins.items()
+                    if k not in self.data.kspace._valid_offset_keys
+                },
             },
             angle_scales={
                 k: round(spin.value(), spin.decimals())
@@ -613,12 +624,14 @@ class KspaceTool(KspaceToolGUI):
         self.width_spin.setValue(status.width)
         self.width_spin.blockSignals(False)
 
-        for k, v in status.offsets.items():
-            if k not in self._offset_spins:
-                continue
-            self._offset_spins[k].blockSignals(True)
-            self._offset_spins[k].setValue(v)
-            self._offset_spins[k].blockSignals(False)
+        normal_emission_offsets: dict[str, float] = {}
+        for key, value in status.offsets.items():
+            if key in self._offset_spins:
+                with QtCore.QSignalBlocker(self._offset_spins[key]):
+                    self._offset_spins[key].setValue(value)
+            elif key in self._normal_emission_offset_values:
+                normal_emission_offsets[key] = value
+        self._set_normal_emission_offsets(normal_emission_offsets)
 
         for k, v in status.angle_scales.items():
             if k not in self._angle_scale_spins:
@@ -864,24 +877,45 @@ class KspaceTool(KspaceToolGUI):
         self._clear_layout(self.resolution_group.layout())
 
         self._offset_spins = {}
+        self._normal_emission_offset_values = {}
+        self._normal_emission_offset_labels = {}
         for k in self.data.kspace._valid_offset_keys:
-            self._offset_spins[k] = QtWidgets.QDoubleSpinBox()
-            self._offset_spins[k].setRange(-360, 360)
-            self._offset_spins[k].setSingleStep(0.05 if k == "delta" else 0.01)
-            self._offset_spins[k].setDecimals(3)
-            self._offset_spins[k].setValue(self.data.kspace.offsets[k])
+            value = self.data.kspace.offsets[k]
             if (
                 k != "delta"
                 and k in self.data.coords
                 and f"{k}_offset" not in self.data.attrs
             ):
-                self._offset_spins[k].setValue(float(self.data[k].mean()))
+                value = float(self.data[k].mean())
 
-            self._offset_spins[k].valueChanged.connect(self.queue_update)
-            self._offset_spins[k].setSuffix(self._OFFSET_UNITS[k])
-            self.offsets_group.layout().addRow(
-                self._OFFSET_LABELS[k], self._offset_spins[k]
-            )
+            if k == "delta":
+                spin = QtWidgets.QDoubleSpinBox()
+                spin.setObjectName("ktoolDeltaOffset")
+                spin.setRange(-360, 360)
+                spin.setSingleStep(0.05)
+                spin.setDecimals(3)
+                spin.setValue(value)
+                spin.valueChanged.connect(self.queue_update)
+                spin.setSuffix(self._OFFSET_UNITS[k])
+                self._offset_spins[k] = spin
+                self.offsets_group.layout().addRow(self._OFFSET_LABELS[k], spin)
+            else:
+                value_label = QtWidgets.QLabel()
+                value_label.setObjectName(f"ktool{k.title()}OffsetValue")
+                value_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+                value_label.setTextInteractionFlags(
+                    QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+                )
+                value_label.setAlignment(
+                    QtCore.Qt.AlignmentFlag.AlignRight
+                    | QtCore.Qt.AlignmentFlag.AlignVCenter
+                )
+                value_label.setToolTip("Changes with Normal Emission.")
+                value_label.setAccessibleDescription("Changes with Normal Emission.")
+                self._normal_emission_offset_values[k] = 0.0
+                self._normal_emission_offset_labels[k] = value_label
+                self.offsets_group.layout().addRow(self._OFFSET_LABELS[k], value_label)
+                self._set_normal_emission_offsets({k: value})
 
         if self.data.kspace._has_hv:
             self._offset_spins["V0"] = QtWidgets.QDoubleSpinBox()
@@ -933,6 +967,21 @@ class KspaceTool(KspaceToolGUI):
             axis_label = self._NORMAL_EMISSION_LABELS.get(axis, axis)
             self.offsets_group.layout().addRow(f"{axis_label} scale", spin)
 
+        self._angle_scale_summary = QtWidgets.QLabel()
+        self._angle_scale_summary.setObjectName("ktoolAngleScaleSummary")
+        self._angle_scale_summary.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self._angle_scale_summary.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._angle_scale_summary.setToolTip(
+            "Enable angle scale controls in Preferences to change these values."
+        )
+        self._angle_scale_summary.setAccessibleDescription(
+            self._angle_scale_summary.toolTip()
+        )
+        self.offsets_group.layout().addRow("Angle scales", self._angle_scale_summary)
+        self._sync_angle_scale_visibility()
+
         self._normal_emission_spins = {}
         for axis, label in self._NORMAL_EMISSION_LABELS.items():
             spin = QtWidgets.QDoubleSpinBox()
@@ -946,9 +995,6 @@ class KspaceTool(KspaceToolGUI):
             self._normal_emission_spins[axis] = spin
             self.normal_emission_group.layout().addRow(label, spin)
 
-        for k in self.data.kspace._valid_offset_keys:
-            self._offset_spins[k].valueChanged.connect(self._sync_normal_emission_spins)
-
         self._sync_normal_emission_spins()
         if initial_normal_emission is not None:
             self.data.kspace.set_normal(
@@ -956,9 +1002,9 @@ class KspaceTool(KspaceToolGUI):
                 initial_normal_emission[1],
                 delta=initial_delta,
             )
-            for key in self.data.kspace._valid_offset_keys:
-                with QtCore.QSignalBlocker(self._offset_spins[key]):
-                    self._offset_spins[key].setValue(self.data.kspace.offsets[key])
+            with QtCore.QSignalBlocker(self._offset_spins["delta"]):
+                self._offset_spins["delta"].setValue(self.data.kspace.offsets["delta"])
+            self._set_normal_emission_offsets(self.data.kspace.offsets)
             self._sync_normal_emission_spins()
 
         self._bound_spins = {}
@@ -1519,10 +1565,9 @@ class KspaceTool(KspaceToolGUI):
 
     @property
     def offset_dict(self) -> dict[str, float]:
-        return {
-            k: float(np.round(self._offset_spins[k].value(), 5))
-            for k in self.data.kspace._valid_offset_keys
-        }
+        offsets = dict(self._normal_emission_offset_values)
+        offsets["delta"] = float(np.round(self._offset_spins["delta"].value(), 5))
+        return {k: offsets[k] for k in self.data.kspace._valid_offset_keys}
 
     @property
     def angle_scale_dict(self) -> dict[str, float]:
@@ -1544,6 +1589,37 @@ class KspaceTool(KspaceToolGUI):
                 self.data.attrs.pop(attr_key, None)
             else:
                 self.data.kspace.angle_scales[axis] = scale
+        self._sync_angle_scale_visibility()
+
+    def _sync_angle_scale_visibility(self) -> None:
+        layout = typing.cast("QtWidgets.QFormLayout", self.offsets_group.layout())
+        for spin in self._angle_scale_spins.values():
+            layout.setRowVisible(spin, self._show_angle_scale_controls)
+
+        scales = self.angle_scale_dict
+        self._angle_scale_summary.setText(
+            ", ".join(
+                f"{self._NORMAL_EMISSION_LABELS[axis]} {scale:.3f}"
+                for axis, scale in scales.items()
+            )
+        )
+        layout.setRowVisible(
+            self._angle_scale_summary,
+            not self._show_angle_scale_controls
+            and any(scale != 1.0 for scale in scales.values()),
+        )
+
+    def _set_normal_emission_offsets(self, offsets: Mapping[str, float]) -> None:
+        for key, value in offsets.items():
+            if key not in self._normal_emission_offset_values:
+                continue
+            rounded = float(np.round(value, 3))
+            if rounded == 0.0:
+                rounded = 0.0
+            self._normal_emission_offset_values[key] = rounded
+            self._normal_emission_offset_labels[key].setText(
+                f"{rounded:.3f}{self._OFFSET_UNITS[key]}"
+            )
 
     @QtCore.Slot(float)
     def _handle_angle_scale_changed(self, _value: float) -> None:
@@ -1570,11 +1646,7 @@ class KspaceTool(KspaceToolGUI):
             self._normal_emission_spins["beta"].value(),
         )
 
-        for key in data.kspace._valid_offset_keys:
-            spin = self._offset_spins[key]
-            spin.blockSignals(True)
-            spin.setValue(data.kspace.offsets[key])
-            spin.blockSignals(False)
+        self._set_normal_emission_offsets(data.kspace.offsets)
 
         self._sync_normal_emission_spins()
         self.queue_update()

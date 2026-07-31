@@ -27,6 +27,11 @@ Use the sidebar to switch between setting groups:
 - {guilabel}`Figure Composer` controls default Matplotlib stylesheets and optional
   default DPI for newly created figures.
 
+The {guilabel}`Show angle scale controls` setting is off by default. Turn it on
+only when you must apply an established correction for angle-coordinate scaling
+errors. This setting changes which controls are visible. It does not remove angle
+scale values from a saved KTool.
+
 ```{versionadded} 3.25.0
 The I/O settings include a default folder for ImageTool Manager file dialogs and
 new Data Explorer windows.
