@@ -412,8 +412,6 @@ class KspaceTool(KspaceToolGUI):
     _output_memory_estimate_key_value: tuple[typing.Any, ...] | None
     _output_memory_estimate: _kspace_conversion.KspaceConversionEstimate | None
     _pending_output_memory_preview_unavailable: bool
-    _angle_data_cache_key_value: tuple[typing.Any, ...] | None
-    _angle_data_cache: xr.DataArray | None
 
     @property
     def preview_imageitem(self) -> pg.ImageItem:
@@ -766,8 +764,6 @@ class KspaceTool(KspaceToolGUI):
         self._output_memory_estimate_key_value = None
         self._output_memory_estimate = None
         self._pending_output_memory_preview_unavailable = False
-        self._angle_data_cache_key_value = None
-        self._angle_data_cache = None
 
         self._argnames["data"] = erlab.interactive.utils._tool_window_argname(
             data_name, "data", func=KspaceTool.__init__, fallback="data"
@@ -1586,55 +1582,30 @@ class KspaceTool(KspaceToolGUI):
     def _shows_full_energy_cut(self) -> bool:
         return self.data.ndim == 2 and set(self.data.dims) == {"alpha", "eV"}
 
-    def _angle_data_cache_key(self) -> tuple[typing.Any, ...]:
-        return (
-            id(self.data),
-            id(self.data.data),
-            self._preview_slice_token(),
-            self._work_function,
-        )
-
-    def _current_angle_data_view(self, data: xr.DataArray) -> xr.DataArray:
-        current = data.copy(deep=False)
-        current.attrs = self.data.attrs.copy()
-        return current
-
     def _angle_data(self) -> xr.DataArray:
-        cache_key = self._angle_data_cache_key()
-        if (
-            cache_key == self._angle_data_cache_key_value
-            and self._angle_data_cache is not None
-        ):
-            return self._current_angle_data_view(self._angle_data_cache)
-
         if self.data.kspace._has_eV:
             binding_energy = self._binding_energy()
             data_binding = self.data.copy(deep=False).assign_coords(eV=binding_energy)
             if self._shows_full_energy_cut():
-                angle_data = data_binding
-            else:
-                center, width = self.center_spin.value(), self.width_spin.value()
-                arr = binding_energy
-                idx = int(np.argmin(np.abs(arr - center)))
-                if width == 1:
-                    angle_data = data_binding.isel(eV=idx)
-                else:
-                    start = max(0, idx - width // 2)
-                    stop = min(arr.size, idx + (width - 1) // 2 + 1)
-                    if start >= stop:
-                        start = int(np.clip(idx, 0, arr.size - 1))
-                        stop = int(np.clip(idx + 1, 1, arr.size))
-                    angle_data = (
-                        data_binding.isel(eV=slice(start, stop))
-                        .mean("eV", skipna=True, keep_attrs=True)
-                        .assign_coords(eV=center)
-                    )
-        else:
-            angle_data = self.data.copy(deep=False)
+                return data_binding
 
-        self._angle_data_cache_key_value = cache_key
-        self._angle_data_cache = angle_data
-        return self._current_angle_data_view(angle_data)
+            center, width = self.center_spin.value(), self.width_spin.value()
+            arr = binding_energy
+            idx = int(np.argmin(np.abs(arr - center)))
+            if width == 1:
+                return data_binding.isel(eV=idx)
+
+            start = max(0, idx - width // 2)
+            stop = min(arr.size, idx + (width - 1) // 2 + 1)
+            if start >= stop:
+                start = int(np.clip(idx, 0, arr.size - 1))
+                stop = int(np.clip(idx + 1, 1, arr.size))
+            return (
+                data_binding.isel(eV=slice(start, stop))
+                .mean("eV", skipna=True, keep_attrs=True)
+                .assign_coords(eV=center)
+            )
+        return self.data.copy(deep=False)
 
     def _assign_params(self, data: xr.DataArray) -> xr.DataArray:
         return _kspace_conversion.apply_kspace_parameters(
@@ -1689,7 +1660,7 @@ class KspaceTool(KspaceToolGUI):
 
     def _preview_angle_data(self) -> xr.DataArray:
         # Set angle offsets
-        data_ang = self._assign_params(self._angle_data().copy(deep=False))
+        data_ang = self._assign_params(self._angle_data())
         self._validate_kinetic_energy(data_ang, context="updating ktool preview")
         return data_ang
 

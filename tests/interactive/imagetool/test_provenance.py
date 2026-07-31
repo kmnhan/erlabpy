@@ -3,6 +3,7 @@ import collections.abc
 import itertools
 import json
 import pathlib
+import pickle
 import subprocess
 import sys
 import types
@@ -6192,6 +6193,26 @@ def test_script_input_caches_parsed_provenance_until_payload_changes(
     assert script_input.provenance_spec is not None
     with pytest.raises(TypeError, match="provenance is immutable"):
         script_input.provenance_spec.clear()
+
+
+def test_script_input_immutable_provenance_is_pickleable() -> None:
+    script_input = ScriptInput(
+        name="data_0",
+        provenance_spec=script(
+            ScriptCodeOperation(label="Copy", code="derived = data"),
+            start_label="Input",
+            active_name="derived",
+        ),
+    )
+    parsed = script_input.parsed_provenance_spec()
+
+    restored = pickle.loads(pickle.dumps(script_input))
+
+    assert restored == script_input
+    assert restored.parsed_provenance_spec() == parsed
+    assert restored.provenance_spec is not None
+    with pytest.raises(TypeError, match="provenance is immutable"):
+        restored.provenance_spec.clear()
 
 
 def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> None:

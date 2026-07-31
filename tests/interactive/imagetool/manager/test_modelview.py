@@ -1376,6 +1376,10 @@ def test_tree_refresh_does_not_invalidate_details_without_node_change(
         manager._flush_idle_work(force=True)
         assert metadata_updates == []
 
+        manager.tree_view.refresh()
+        manager._flush_idle_work(force=True)
+        assert metadata_updates == []
+
         manager._tool_graph.notify_node_change(
             selected_uid,
             _ManagedNodeChange.INFO,

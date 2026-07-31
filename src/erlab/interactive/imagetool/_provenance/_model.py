@@ -253,6 +253,11 @@ class _ImmutableProvenanceDict(dict[str, typing.Any]):
     def __deepcopy__(self, _memo: dict[int, typing.Any]) -> _ImmutableProvenanceDict:
         return self
 
+    def __reduce__(
+        self,
+    ) -> tuple[type[_ImmutableProvenanceDict], tuple[dict[str, typing.Any]]]:
+        return type(self), (dict(self),)
+
 
 @dataclass(frozen=True)
 class _ProvenanceReorderBlockRef:
