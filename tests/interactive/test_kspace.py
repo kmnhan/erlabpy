@@ -11,7 +11,7 @@ import erlab
 from erlab.accessors.kspace import IncompleteDataError, MomentumAccessor
 from erlab.constants import AxesConfiguration
 from erlab.interactive._options.schema import AppOptions
-from erlab.interactive.imagetool import _kspace_conversion
+from erlab.interactive.imagetool import _dialog_widgets, _kspace_conversion
 from erlab.interactive.imagetool import dialogs as imagetool_dialogs
 from erlab.interactive.imagetool._provenance._model import (
     full_data,
@@ -22,6 +22,7 @@ from erlab.interactive.imagetool._provenance._model import (
     strip_operation_groups,
 )
 from erlab.interactive.imagetool._provenance._operations import (
+    AssignScalarCoordOperation,
     AverageOperation,
     IselOperation,
     KspaceConfigurationOperation,
@@ -31,6 +32,9 @@ from erlab.interactive.imagetool._provenance._operations import (
     KspaceWorkFunctionOperation,
 )
 from erlab.interactive.imagetool.dialogs import KspaceConversionDialog
+from erlab.interactive.imagetool.manager._provenance_edit import (
+    _controller as provenance_edit_controller,
+)
 from erlab.interactive.kspace import KspaceTool, ktool
 from erlab.io.exampledata import generate_hvdep_cuts
 
@@ -112,6 +116,17 @@ def _add_hidden_tool(qtbot, widget):
     qtbot.addWidget(widget)
     widget.hide()
     return widget
+
+
+def _set_input_coordinates(dialog, values: dict[str, float]) -> None:
+    prefix = dialog.objectName().removesuffix("Dialog")
+    for name, value in values.items():
+        edit = dialog.findChild(
+            imagetool_dialogs.QtWidgets.QLineEdit,
+            f"{prefix}{name.title()}Coordinate",
+        )
+        assert edit is not None
+        edit.setText(str(value))
 
 
 def _restore_ktool_offsets(win: KspaceTool, offsets: dict[str, float]) -> None:
@@ -206,23 +221,417 @@ def test_ktool_compatible(anglemap) -> None:
     )
     cut_without_configuration = cut.copy(deep=True)
     del cut_without_configuration.attrs["configuration"]
+    cut_without_alpha_coord = cut.drop_vars("alpha")
     data_4d = anglemap.expand_dims("x", 2)
     data_3d_without_alpha = data_4d.qsel(alpha=-8.3)
+    cut_without_hv = cut.drop_vars("hv")
+    const_energy_without_ev = const_energy.drop_vars("eV")
+    map_without_ev_dimension_coord = anglemap.drop_vars("eV")
 
     assert cut.kspace._interactive_compatible
     assert const_energy.kspace._interactive_compatible
+    assert cut_without_beta.kspace._interactive_compatible
+    assert cut_without_hv.kspace._interactive_compatible
+    assert const_energy_without_ev.kspace._interactive_compatible
 
     for data in (
-        cut_without_beta,
         cut_with_beta_coord,
         cut_without_configuration,
+        cut_without_alpha_coord,
         data_4d,
         data_3d_without_alpha,
+        map_without_ev_dimension_coord,
     ):
         with pytest.raises(
             ValueError, match=r"Data is not compatible with the interactive tool."
         ):
             data.kspace.interactive()
+
+
+def test_ktool_assigns_missing_scalar_angle_coordinates(
+    qtbot,
+    anglemap,
+    accept_dialog,
+) -> None:
+    data = (
+        anglemap.isel(alpha=slice(0, 4), eV=slice(0, 5))
+        .qsel(beta=-8.3)
+        .drop_vars(("beta", "xi", "hv"))
+        .copy(deep=True)
+    )
+
+    holder: dict[str, KspaceTool | None] = {}
+
+    def _open_ktool() -> None:
+        holder["win"] = ktool(data, data_name="cut", execute=False)
+
+    def _complete_preflight(dialog) -> None:
+        assert dialog.values == {"hv": None, "beta": None, "xi": None}
+        ok_button = dialog.button_box.button(
+            imagetool_dialogs.QtWidgets.QDialogButtonBox.StandardButton.Ok
+        )
+        assert ok_button is not None
+        assert not ok_button.isEnabled()
+        _set_input_coordinates(dialog, {"hv": 51.0, "beta": 0.0, "xi": 0.0})
+        assert ok_button.isEnabled()
+
+    accept_dialog(_open_ktool, pre_call=_complete_preflight)
+    win = holder["win"]
+    assert isinstance(win, KspaceTool)
+    _add_hidden_tool(qtbot, win)
+
+    assert not win._input_coordinates_widget.missing_names
+    assert (
+        win.configuration_combo.geometry().bottom()
+        < win._input_coordinates_widget.geometry().top()
+    )
+    assert win.input_coordinates == pytest.approx({"hv": 51.0, "beta": 0.0, "xi": 0.0})
+    assert "hv" not in data.coords
+    assert "beta" not in data.coords
+    assert "xi" not in data.coords
+
+    def _edit_coordinates(dialog) -> None:
+        _set_input_coordinates(
+            dialog,
+            {"beta": -3.25, "xi": 4.5, "hv": 52.0},
+        )
+
+    accept_dialog(
+        win._input_coordinates_widget.edit_coordinates,
+        pre_call=_edit_coordinates,
+    )
+
+    expected = win._converted_output()
+    code = win.copy_code()
+    namespace = {"cut": data.copy(deep=True)}
+    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+
+    xr.testing.assert_allclose(namespace["cut_kconv"], expected)
+    assert float(win.data.beta) == pytest.approx(-3.25)
+    assert float(win.data.xi) == pytest.approx(4.5)
+    assert float(win.data.hv) == pytest.approx(52.0)
+    assert "beta" not in data.coords
+    assert "xi" not in data.coords
+    assert "hv" not in data.coords
+
+    accepted_values = win.input_coordinates
+    accept_dialog(
+        win._input_coordinates_widget.edit_coordinates,
+        pre_call=lambda dialog: _set_input_coordinates(dialog, {"hv": 53.0}),
+        accept_call=lambda dialog: dialog.reject(),
+    )
+    assert win.input_coordinates == accepted_values
+
+    cancelled: dict[str, KspaceTool | None] = {}
+    accept_dialog(
+        lambda: cancelled.update(win=ktool(data, execute=False)),
+        pre_call=lambda dialog: _set_input_coordinates(
+            dialog,
+            {"hv": 51.0, "beta": 0.0, "xi": 0.0},
+        ),
+        accept_call=lambda dialog: dialog.reject(),
+    )
+    assert cancelled["win"] is None
+    accept_dialog(win._input_coordinates_widget.edit_coordinates)
+    assert win.input_coordinates == accepted_values
+
+    with pytest.raises(
+        ValueError, match=r"Open the tool with erlab\.interactive\.ktool"
+    ):
+        KspaceTool(data)
+
+
+def test_ktool_missing_coordinate_persistence_preserves_copy_operations(
+    qtbot,
+    anglemap,
+    accept_dialog,
+) -> None:
+    data = (
+        anglemap.isel(alpha=slice(0, 4), eV=slice(0, 5))
+        .qsel(beta=-8.3)
+        .drop_vars("hv")
+        .copy(deep=True)
+    )
+    holder: dict[str, KspaceTool | None] = {}
+    accept_dialog(
+        lambda: holder.update(win=ktool(data, data_name="scan", execute=False)),
+        pre_call=lambda dialog: _set_input_coordinates(dialog, {"hv": 52.0}),
+    )
+    win = holder["win"]
+    assert isinstance(win, KspaceTool)
+    _add_hidden_tool(qtbot, win)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    assert isinstance(restored, KspaceTool)
+    _add_hidden_tool(qtbot, restored)
+
+    assert "hv" not in restored._source_input_data.coords
+    assert restored._input_coordinates_widget.edited_names == {"hv"}
+    assert any(
+        isinstance(operation, AssignScalarCoordOperation)
+        and operation.coord_name == "hv"
+        and float(operation.decoded_value) == pytest.approx(52.0)
+        for operation in restored._copy_operations()
+    )
+
+    namespace = {"scan": data.copy(deep=True)}
+    exec(restored.copy_code(), {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_allclose(namespace["scan_kconv"], restored._converted_output())
+
+
+def test_kspace_conversion_dialog_assigns_missing_scalar_angle_coordinates(
+    qtbot,
+    anglemap,
+    accept_dialog,
+) -> None:
+    data = (
+        anglemap.isel(alpha=slice(0, 4), eV=slice(0, 5))
+        .qsel(beta=-8.3)
+        .drop_vars(("beta", "xi"))
+        .copy(deep=True)
+    )
+    win = erlab.interactive.itool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    holder: dict[str, KspaceConversionDialog] = {}
+
+    def _open_dialog() -> None:
+        holder["dialog"] = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
+
+    def _complete_preflight(coordinate_dialog) -> None:
+        assert coordinate_dialog.values["beta"] is None
+        assert coordinate_dialog.values["xi"] is None
+        _set_input_coordinates(
+            coordinate_dialog,
+            {"beta": 0.0, "xi": 0.0},
+        )
+
+    accept_dialog(_open_dialog, pre_call=_complete_preflight)
+    dialog = holder["dialog"]
+
+    assert dialog._compatible
+    assert not dialog._input_coordinates_widget.missing_names
+
+    source_hv = float(data.hv)
+    dialog.focus_operation_group_control("input_coordinates")
+
+    def _edit_coordinates(coordinate_dialog) -> None:
+        _set_input_coordinates(
+            coordinate_dialog,
+            {"beta": -2.0, "xi": 5.0, "hv": source_hv + 2.0},
+        )
+
+    accept_dialog(
+        dialog._input_coordinates_widget.edit_coordinates,
+        pre_call=_edit_coordinates,
+    )
+
+    operations = dialog.source_operations()
+    coordinate_operations = [
+        operation
+        for operation in operations
+        if isinstance(operation, AssignScalarCoordOperation)
+    ]
+    assert {
+        str(operation.coord_name): float(operation.decoded_value)
+        for operation in coordinate_operations
+    } == pytest.approx({"hv": source_hv + 2.0, "beta": -2.0, "xi": 5.0})
+    for index in range(len(operations)):
+        assert KspaceConversionDialog.operation_group_for_edit(
+            operations,
+            index,
+        ) == (0, len(operations))
+
+    restored_holder: dict[str, KspaceConversionDialog] = {}
+    accept_dialog(
+        lambda: restored_holder.update(
+            dialog=_add_kspace_conversion_dialog(qtbot, win.slicer_area)
+        ),
+        pre_call=_complete_preflight,
+    )
+    restored = restored_holder["dialog"]
+    restored.restore_transform_operations(operations)
+    assert restored._input_coordinates_widget.values == pytest.approx(
+        {"hv": source_hv + 2.0, "beta": -2.0, "xi": 5.0}
+    )
+
+    expected = dialog.process_data(data.copy(deep=True))
+    code = dialog.make_code()
+    namespace = {"data": data.copy(deep=True)}
+    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+
+    xr.testing.assert_allclose(namespace["data_kconv"], expected)
+    assert "beta" not in data.coords
+    assert "xi" not in data.coords
+    assert float(data.hv) == pytest.approx(source_hv)
+
+    other_configuration = (
+        AxesConfiguration.Type2
+        if data.kspace.configuration == AxesConfiguration.Type1
+        else AxesConfiguration.Type1
+    )
+    dialog._set_configuration_combo(int(other_configuration))
+    assert dialog._input_coordinates_for_data(data) == pytest.approx(
+        {"hv": source_hv + 2.0, "beta": -2.0, "xi": 5.0}
+    )
+
+
+def test_kspace_conversion_dialog_missing_hv_preflight_accept_and_cancel(
+    qtbot,
+    anglemap,
+    accept_dialog,
+) -> None:
+    data = anglemap.qsel(beta=-8.3).drop_vars("hv").copy(deep=True)
+    win = erlab.interactive.itool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    holder: dict[str, KspaceConversionDialog] = {}
+
+    def _open_dialog() -> None:
+        holder["dialog"] = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
+
+    def _complete_preflight(coordinate_dialog) -> None:
+        assert coordinate_dialog.values["hv"] is None
+        assert (
+            coordinate_dialog.findChild(
+                imagetool_dialogs.QtWidgets.QLabel,
+                "kspaceConversionInputHvStatus",
+            )
+            is None
+        )
+        _set_input_coordinates(coordinate_dialog, {"hv": 52.0})
+
+    accept_dialog(_open_dialog, pre_call=_complete_preflight)
+    dialog = holder["dialog"]
+    assert float(dialog._control_data.hv) == pytest.approx(52.0)
+    assert {
+        str(operation.coord_name): float(operation.decoded_value)
+        for operation in dialog.source_operations()
+        if isinstance(operation, AssignScalarCoordOperation)
+    }["hv"] == pytest.approx(52.0)
+
+    cancelled: dict[str, KspaceConversionDialog] = {}
+    accept_dialog(
+        lambda: cancelled.update(
+            dialog=_add_kspace_conversion_dialog(qtbot, win.slicer_area)
+        ),
+        accept_call=lambda coordinate_dialog: coordinate_dialog.reject(),
+    )
+    cancelled_dialog = cancelled["dialog"]
+    assert cancelled_dialog._coordinate_preflight_cancelled
+    with pytest.raises(ValueError, match="input coordinates are required"):
+        _ = cancelled_dialog._input_coordinates_widget.resolved_values
+    assert (
+        cancelled_dialog._validate()
+        == imagetool_dialogs.QtWidgets.QDialog.DialogCode.Rejected
+    )
+
+
+def test_kspace_conversion_provenance_edit_restores_before_coordinate_prompt(
+    qtbot,
+    anglemap,
+    monkeypatch,
+) -> None:
+    data = anglemap.qsel(beta=-8.3).drop_vars("hv").copy(deep=True)
+    win = erlab.interactive.itool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+
+    monkeypatch.setattr(
+        _dialog_widgets.KspaceInputCoordinatesControl,
+        "edit_coordinates",
+        lambda _self: pytest.fail(
+            "provenance coordinates must restore before prompting"
+        ),
+    )
+    dialog = KspaceConversionDialog(
+        win.slicer_area,
+        provenance_edit_mode=True,
+    )
+    qtbot.addWidget(dialog)
+    operations = stamp_operation_group(
+        (
+            AssignScalarCoordOperation(coord_name="hv", value=52.0),
+            KspaceSetNormalOperation(alpha=0.0, beta=0.0, delta=0.0),
+            KspaceConvertOperation(bounds=None, resolution=None),
+        ),
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    )
+
+    provenance_edit_controller._ProvenanceEditController._restore_native_edit_dialog(
+        dialog,
+        operations,
+        "input_coordinates",
+    )
+    assert dialog._input_coordinates_widget.resolved_values["hv"] == pytest.approx(52.0)
+    assert dialog.parameters_group.layout().count() > 0
+
+    dialog.reject()
+    assert dialog.result() == int(
+        imagetool_dialogs.QtWidgets.QDialog.DialogCode.Rejected
+    )
+
+
+def test_ktool_assigns_missing_deflector_angle_coordinates(
+    qtbot,
+    anglemap,
+    accept_dialog,
+) -> None:
+    data = _make_da_ktool_data(anglemap).drop_vars(("xi", "chi"))
+
+    holder: dict[str, KspaceTool | None] = {}
+    accept_dialog(
+        lambda: holder.update(win=ktool(data, execute=False)),
+        pre_call=lambda dialog: _set_input_coordinates(
+            dialog,
+            {"xi": 0.0, "chi": 0.0},
+        ),
+    )
+    win = holder["win"]
+    assert isinstance(win, KspaceTool)
+    _add_hidden_tool(qtbot, win)
+
+    assert not win._input_coordinates_widget.missing_names
+    assert win.input_coordinates == pytest.approx(
+        {"hv": float(data.hv), "xi": 0.0, "chi": 0.0}
+    )
+    coordinate_operations = [
+        operation
+        for operation in win._copy_operations()
+        if isinstance(operation, AssignScalarCoordOperation)
+    ]
+    assert {str(operation.coord_name) for operation in coordinate_operations} == {
+        "xi",
+        "chi",
+    }
+
+
+def test_ktool_assigns_missing_scalar_energy_coordinate(
+    qtbot,
+    anglemap,
+    accept_dialog,
+) -> None:
+    data = (
+        anglemap.isel(alpha=slice(0, 4), beta=slice(0, 5))
+        .qsel(eV=-0.1)
+        .drop_vars("eV")
+        .copy(deep=True)
+    )
+    holder: dict[str, KspaceTool | None] = {}
+
+    accept_dialog(
+        lambda: holder.update(win=ktool(data, data_name="surface", execute=False)),
+        pre_call=lambda dialog: _set_input_coordinates(dialog, {"eV": -0.1}),
+    )
+    win = holder["win"]
+    assert isinstance(win, KspaceTool)
+    _add_hidden_tool(qtbot, win)
+
+    assert win.input_coordinates["eV"] == pytest.approx(-0.1)
+    assert "eV" not in data.coords
+    assert any(
+        isinstance(operation, AssignScalarCoordOperation)
+        and operation.coord_name == "eV"
+        for operation in win._copy_operations()
+    )
+    assert win._converted_output().size > 0
 
 
 def test_kspace_conversion_dialog_requires_configuration(
@@ -321,6 +730,164 @@ def test_kspace_conversion_operations_default_source_configuration(anglemap) -> 
     assert operations[0].group.focus == "normal_emission"
     assert operations[1].group is not None
     assert operations[1].group.focus == "bounds_resolution"
+
+
+def test_kspace_input_coordinate_validation(anglemap) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type1, {"xi": 0.0})
+    data.kspace.work_function = 4.5
+    constant_energy = data.qsel(eV=float(data.eV[0]))
+    energy_values = _kspace_conversion.kspace_input_coordinate_values(constant_energy)
+
+    assert energy_values["hv"] == pytest.approx(float(data.hv))
+    assert energy_values["eV"] == pytest.approx(float(constant_energy.eV))
+    assert float(
+        _kspace_conversion.assign_kspace_input_coordinates(
+            constant_energy,
+            {"eV": -0.25},
+        ).eV
+    ) == pytest.approx(-0.25)
+
+    with pytest.raises(ValueError, match="must be scalar"):
+        _kspace_conversion.kspace_input_coordinate_values(
+            data.assign_coords(xi=("alpha", np.zeros(data.sizes["alpha"])))
+        )
+    assert (
+        _kspace_conversion.kspace_input_coordinate_values(
+            data.assign_coords(xi=np.nan)
+        )["xi"]
+        is None
+    )
+    data_without_hv = data.drop_vars("hv")
+    assert (
+        _kspace_conversion.kspace_input_coordinate_values(data_without_hv)["hv"] is None
+    )
+    with pytest.raises(ValueError, match="must be assigned: hv"):
+        _kspace_conversion.assign_kspace_input_coordinates(data_without_hv)
+    with pytest.raises(ValueError, match="not editable"):
+        _kspace_conversion.assign_kspace_input_coordinates(data, {"chi": 0.0})
+    with pytest.raises(ValueError, match="must be assigned: xi"):
+        _kspace_conversion.assign_kspace_input_coordinates(data, {"xi": np.nan})
+
+    operation_kwargs = {
+        "target_configuration": AxesConfiguration.Type1,
+        "source_configuration": None,
+        "work_function": 4.5,
+        "inner_potential": None,
+        "normal_emission": (1.0, 2.0),
+        "delta": None,
+        "bounds": None,
+        "resolution": None,
+        "force_scalars": False,
+    }
+    with pytest.raises(ValueError, match="not editable"):
+        _kspace_conversion.kspace_conversion_operations(
+            data,
+            input_coordinates={"chi": 0.0},
+            **operation_kwargs,
+        )
+    with pytest.raises(ValueError, match="must be finite"):
+        _kspace_conversion.kspace_conversion_operations(
+            data,
+            input_coordinates={"xi": np.nan},
+            **operation_kwargs,
+        )
+
+
+def test_kspace_input_coordinate_help(qtbot, anglemap, monkeypatch) -> None:
+    urls: list[str] = []
+    monkeypatch.setattr(
+        _dialog_widgets.QtGui.QDesktopServices,
+        "openUrl",
+        lambda url: urls.append(url.toString()),
+    )
+    data = anglemap.qsel(beta=-8.3).drop_vars("hv")
+    dialog = _dialog_widgets.KspaceInputCoordinatesDialog(
+        data,
+        values=_kspace_conversion.kspace_input_coordinate_values(data),
+        edited_names=(),
+        object_name_prefix="kspaceHelpTest",
+    )
+    qtbot.addWidget(dialog)
+
+    with pytest.raises(ValueError, match="input coordinates are required"):
+        _ = dialog.resolved_values
+    dialog.accept()
+    assert dialog.result() == imagetool_dialogs.QtWidgets.QDialog.DialogCode.Rejected
+
+    help_button = dialog.findChild(
+        imagetool_dialogs.QtWidgets.QPushButton,
+        "kspaceHelpTestHelpButton",
+    )
+    assert help_button is not None
+    help_button.click()
+
+    assert urls == [
+        "https://erlabpy.readthedocs.io/en/stable/user-guide/kconv.html#nomenclature"
+    ]
+    assert dialog.result() == imagetool_dialogs.QtWidgets.QDialog.DialogCode.Rejected
+
+
+def test_ktool_configuration_change_prompts_for_new_coordinate(
+    qtbot,
+    anglemap,
+    accept_dialog,
+) -> None:
+    data = anglemap.isel(alpha=slice(0, 4), eV=slice(0, 5)).qsel(beta=-8.3)
+    win = ktool(data, execute=False)
+    assert isinstance(win, KspaceTool)
+    _add_hidden_tool(qtbot, win)
+    original_values = win.input_coordinates
+    target_index = win.configuration_combo.findData(int(AxesConfiguration.Type1DA))
+    assert target_index >= 0
+
+    accept_dialog(
+        lambda: win.configuration_combo.setCurrentIndex(target_index),
+        pre_call=lambda dialog: _set_input_coordinates(dialog, {"beta": 1.0}),
+        accept_call=lambda dialog: dialog.reject(),
+    )
+    assert win.current_configuration == AxesConfiguration.Type1
+    assert win.input_coordinates == original_values
+
+    accept_dialog(
+        lambda: win.configuration_combo.setCurrentIndex(target_index),
+        pre_call=lambda dialog: _set_input_coordinates(dialog, {"beta": 1.0}),
+    )
+    assert win.current_configuration == AxesConfiguration.Type1DA
+    assert win.input_coordinates["beta"] == pytest.approx(1.0)
+
+
+def test_kspace_dialog_configuration_change_cancel_restores_coordinates(
+    qtbot,
+    anglemap,
+    accept_dialog,
+) -> None:
+    data = anglemap.isel(alpha=slice(0, 4), eV=slice(0, 5)).qsel(beta=-8.3)
+    win = erlab.interactive.itool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
+    original_values = dialog._input_coordinates_widget.values
+    target_index = dialog.configuration_combo.findData(int(AxesConfiguration.Type1DA))
+    assert target_index >= 0
+
+    accept_dialog(
+        lambda: dialog.configuration_combo.setCurrentIndex(target_index),
+        pre_call=lambda coordinate_dialog: _set_input_coordinates(
+            coordinate_dialog, {"beta": 1.0}
+        ),
+        accept_call=lambda coordinate_dialog: coordinate_dialog.reject(),
+    )
+
+    assert dialog.current_configuration == AxesConfiguration.Type1
+    assert dialog._input_coordinates_widget.values == original_values
+
+    accept_dialog(
+        lambda: dialog.configuration_combo.setCurrentIndex(target_index),
+        pre_call=lambda coordinate_dialog: _set_input_coordinates(
+            coordinate_dialog, {"beta": 1.0}
+        ),
+    )
+    assert dialog.current_configuration == AxesConfiguration.Type1DA
+    assert dialog._input_coordinates_widget.values["beta"] == pytest.approx(1.0)
 
 
 def test_kspace_conversion_operations_include_nondefault_angle_scales(
@@ -518,7 +1085,9 @@ def test_kspace_conversion_estimate_uses_explicit_grid_directly(
 
 def test_kspace_conversion_console_group_stamping_focuses_rows() -> None:
     operations = (
+        AssignScalarCoordOperation(coord_name="sample_temp", value=20.0),
         KspaceConfigurationOperation(configuration=AxesConfiguration.Type2),
+        AssignScalarCoordOperation(coord_name="xi", value=0.0),
         KspaceInnerPotentialOperation(inner_potential=12.0),
         KspaceWorkFunctionOperation(work_function=4.2),
         KspaceSetNormalOperation(alpha=1.0, beta=2.0, delta=3.0),
@@ -531,12 +1100,18 @@ def test_kspace_conversion_console_group_stamping_focuses_rows() -> None:
         None if operation.group is None else operation.group.focus
         for operation in stamped
     ] == [
+        None,
         "configuration",
+        "input_coordinates",
         "inner_potential",
         "work_function",
         "normal_emission",
         "bounds_resolution",
     ]
+    assert (
+        _kspace_conversion.incomplete_kspace_conversion_edit_reason(operations[0])
+        is None
+    )
     assert (
         _kspace_conversion._focus_for_operation(AverageOperation(dims=("x",))) is None
     )
@@ -550,6 +1125,18 @@ def test_kspace_conversion_console_group_stamping_focuses_rows() -> None:
             )
         )[0].group
         is None
+    )
+    duplicate_coordinate = stamp_operation_group(
+        (
+            AssignScalarCoordOperation(coord_name="xi", value=0.0),
+            AssignScalarCoordOperation(coord_name="xi", value=1.0),
+            KspaceSetNormalOperation(alpha=1.0, beta=2.0),
+            KspaceConvertOperation(bounds=None, resolution=None),
+        ),
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    )
+    assert (
+        KspaceConversionDialog.operation_group_for_edit(duplicate_coordinate, 0) is None
     )
 
 
@@ -1380,6 +1967,8 @@ def test_kspace_conversion_dialog_estimate_defensive_paths(
     estimate = dialog.conversion_estimate_for_data(data)
 
     assert estimate.is_safe
+    with pytest.raises(ValueError, match="must be assigned: hv"):
+        dialog._input_coordinates_for_data(data.drop_vars("hv"))
     dialog.preflight_data(data)
     assert not dialog._handle_process_error(RuntimeError("not a memory guard"))
 
@@ -2716,6 +3305,76 @@ def test_ktool_update_data_preserves_state(qtbot, anglemap) -> None:
     xr.testing.assert_identical(win.tool_data, expected_tool_data)
     assert win.images[0].data_array is not None
     assert win.images[1].data_array is not None
+
+
+def test_ktool_update_data_cancel_keeps_current_data(
+    qtbot,
+    anglemap,
+    accept_dialog,
+) -> None:
+    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5))
+    win = ktool(data, execute=False)
+    assert isinstance(win, KspaceTool)
+    _add_hidden_tool(qtbot, win)
+    original_data = win.data.copy(deep=True)
+
+    accept_dialog(
+        lambda: win.update_data(data.drop_vars("hv")),
+        pre_call=lambda dialog: _set_input_coordinates(dialog, {"hv": 52.0}),
+        accept_call=lambda dialog: dialog.reject(),
+    )
+
+    xr.testing.assert_identical(win.data, original_data)
+
+
+def test_ktool_update_data_rejects_unmappable_configuration(
+    qtbot,
+    anglemap,
+    monkeypatch,
+) -> None:
+    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5))
+    win = ktool(data, execute=False)
+    assert isinstance(win, KspaceTool)
+    _add_hidden_tool(qtbot, win)
+    fake_kspace = SimpleNamespace(
+        _interactive_compatible=True,
+        configuration=int(AxesConfiguration.Type2),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "parse_data",
+        lambda _: SimpleNamespace(kspace=fake_kspace),
+    )
+
+    with pytest.raises(ValueError, match="incompatible analyzer configuration"):
+        win.update_data(object())
+
+
+def test_ktool_update_data_assigns_missing_coordinate(
+    qtbot,
+    anglemap,
+    accept_dialog,
+) -> None:
+    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5))
+    win = ktool(data, data_name="scan", execute=False)
+    assert isinstance(win, KspaceTool)
+    _add_hidden_tool(qtbot, win)
+    updated = data.drop_vars("hv")
+
+    accept_dialog(
+        lambda: win.update_data(updated),
+        pre_call=lambda dialog: _set_input_coordinates(dialog, {"hv": 52.0}),
+    )
+
+    assert win.input_coordinates["hv"] == pytest.approx(52.0)
+    assert float(win.data.hv) == pytest.approx(52.0)
+    assert "hv" not in win._source_input_data.coords
+    assert any(
+        isinstance(operation, AssignScalarCoordOperation)
+        and operation.coord_name == "hv"
+        and float(operation.decoded_value) == pytest.approx(52.0)
+        for operation in win._copy_operations()
+    )
 
 
 def test_ktool_undo_redo_colormap_state(qtbot, anglemap) -> None:

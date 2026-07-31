@@ -21,6 +21,7 @@ from erlab.interactive.imagetool._provenance._model import (
     stamp_operation_group,
 )
 from erlab.interactive.imagetool._provenance._operations import (
+    AssignScalarCoordOperation,
     KspaceConfigurationOperation,
     KspaceConvertOperation,
     KspaceInnerPotentialOperation,
@@ -43,14 +44,17 @@ _MISSING_INNER_POTENTIAL_WARNING_RE = (
     r"^Inner potential not found in data attributes, assuming 10 eV$"
 )
 KSPACE_CONVERSION_GROUP_KIND = "kspace_conversion"
+_FOCUS_INPUT_COORDINATES = "input_coordinates"
 _FOCUS_CONFIGURATION = "configuration"
 _FOCUS_WORK_FUNCTION = "work_function"
 _FOCUS_INNER_POTENTIAL = "inner_potential"
 _FOCUS_NORMAL = "normal_emission"
 _FOCUS_CONVERT = "bounds_resolution"
+_KSPACE_INPUT_COORDINATE_NAMES = ("hv", "eV", "beta", "xi", "chi")
 
 _KSPACE_SETUP_TYPES = (
     KspaceConfigurationOperation,
+    AssignScalarCoordOperation,
     KspaceWorkFunctionOperation,
     KspaceInnerPotentialOperation,
     KspaceSetNormalOperation,
@@ -60,6 +64,23 @@ _KSPACE_CONVERSION_TYPES = (
     KspaceConvertOperation,
 )
 _GIB = 1024**3
+
+
+def _is_kspace_conversion_operation(
+    operation: ToolProvenanceOperation,
+) -> bool:
+    if isinstance(operation, AssignScalarCoordOperation):
+        return operation.coord_name in _KSPACE_INPUT_COORDINATE_NAMES
+    return isinstance(
+        operation,
+        (
+            KspaceConfigurationOperation,
+            KspaceWorkFunctionOperation,
+            KspaceInnerPotentialOperation,
+            KspaceSetNormalOperation,
+            KspaceConvertOperation,
+        ),
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -186,6 +207,77 @@ def kspace_inner_potential(data: xr.DataArray) -> float:
 
 def rounded_spin_value(spin: QtWidgets.QDoubleSpinBox) -> float:
     return float(np.round(spin.value(), spin.decimals()))
+
+
+def kspace_input_coordinate_names(
+    data: xr.DataArray,
+) -> tuple[str, ...]:
+    """Return scalar coordinates that can be set for conversion."""
+    names = [
+        name
+        for name in ("hv", "eV")
+        if name not in data.dims and (name not in data.coords or data[name].ndim == 0)
+    ]
+    if "beta" not in data.dims and (
+        "beta" not in data.coords or data["beta"].ndim == 0
+    ):
+        names.append("beta")
+    names.append("xi")
+    if data.kspace.configuration in (
+        AxesConfiguration.Type1DA,
+        AxesConfiguration.Type2DA,
+    ):
+        names.append("chi")
+    return tuple(names)
+
+
+def kspace_input_coordinate_values(
+    data: xr.DataArray,
+) -> dict[str, float | None]:
+    """Return editable scalar coordinates with missing values left unresolved."""
+    values: dict[str, float | None] = {}
+    for name in kspace_input_coordinate_names(data):
+        if name not in data.coords:
+            values[name] = None
+            continue
+        coord = data[name]
+        if coord.ndim != 0:
+            raise ValueError(
+                f"Coordinate {name!r} must be scalar for momentum conversion."
+            )
+        value = float(coord.values)
+        if not np.isfinite(value):
+            values[name] = None
+            continue
+        values[name] = value
+    return values
+
+
+def assign_kspace_input_coordinates(
+    data: xr.DataArray,
+    values: Mapping[str, float] | None = None,
+) -> xr.DataArray:
+    """Assign editable scalar coordinates to a shallow data copy."""
+    coordinate_values = kspace_input_coordinate_values(data)
+    if values is not None:
+        unknown = set(values) - set(coordinate_values)
+        if unknown:
+            raise ValueError(
+                "Coordinates are not editable for this momentum conversion: "
+                + ", ".join(sorted(unknown))
+            )
+        coordinate_values.update({name: float(value) for name, value in values.items()})
+    unresolved = [
+        name
+        for name, value in coordinate_values.items()
+        if value is None or not np.isfinite(value)
+    ]
+    if unresolved:
+        raise ValueError(
+            "Momentum-conversion input coordinates must be assigned: "
+            + ", ".join(unresolved)
+        )
+    return data.assign_coords(typing.cast("dict[str, float]", coordinate_values))
 
 
 def system_memory_budget() -> KspaceMemoryBudget:
@@ -511,6 +603,7 @@ def kspace_conversion_operations(
     force_scalars: bool,
     alpha_scale: float | None = None,
     beta_scale: float | None = None,
+    input_coordinates: Mapping[str, float] | None = None,
 ) -> tuple[ToolProvenanceOperation, ...]:
     operations: list[ToolProvenanceOperation] = []
     focuses: list[str] = []
@@ -525,6 +618,34 @@ def kspace_conversion_operations(
         configured_data = source_data.kspace.as_configuration(target_configuration)
     else:
         configured_data = source_data
+
+    if input_coordinates is not None:
+        editable_coordinates = set(kspace_input_coordinate_names(configured_data))
+        unknown_coordinates = set(input_coordinates) - editable_coordinates
+        if unknown_coordinates:
+            raise ValueError(
+                "Coordinates are not editable for this momentum conversion: "
+                + ", ".join(sorted(unknown_coordinates))
+            )
+        for name in _KSPACE_INPUT_COORDINATE_NAMES:
+            if name not in input_coordinates:
+                continue
+            value = float(input_coordinates[name])
+            if not np.isfinite(value):
+                raise ValueError(
+                    f"Coordinate {name!r} must be finite for momentum conversion."
+                )
+            current = configured_data.coords.get(name)
+            if (
+                current is not None
+                and current.ndim == 0
+                and np.isclose(float(current.values), value)
+            ):
+                continue
+            operation = AssignScalarCoordOperation(coord_name=name, value=value)
+            operations.append(operation)
+            focuses.append(_FOCUS_INPUT_COORDINATES)
+            configured_data = operation.apply(configured_data)
 
     if configured_data.kspace._has_hv and inner_potential is not None:
         with ignore_missing_kspace_parameter_warnings():
@@ -570,6 +691,8 @@ def kspace_conversion_operations(
 def _focus_for_operation(
     operation: ToolProvenanceOperation,
 ) -> str | None:
+    if isinstance(operation, AssignScalarCoordOperation):
+        return _FOCUS_INPUT_COORDINATES
     if isinstance(
         operation,
         KspaceConfigurationOperation,
@@ -622,12 +745,26 @@ def _complete_kspace_conversion_group(
         != 1
     ):
         return False
-    for operation_type in _KSPACE_SETUP_TYPES:
+    for operation_type in (
+        KspaceConfigurationOperation,
+        KspaceWorkFunctionOperation,
+        KspaceInnerPotentialOperation,
+        KspaceSetNormalOperation,
+    ):
         if (
             sum(isinstance(operation, operation_type) for operation in setup_operations)
             > 1
         ):
             return False
+    input_coordinates = [
+        operation.coord_name
+        for operation in setup_operations
+        if isinstance(operation, AssignScalarCoordOperation)
+    ]
+    if any(
+        name not in _KSPACE_INPUT_COORDINATE_NAMES for name in input_coordinates
+    ) or len(input_coordinates) != len(set(input_coordinates)):
+        return False
     return all(
         isinstance(operation, _KSPACE_CONVERSION_TYPES) for operation in operations
     )
@@ -658,9 +795,8 @@ def stamp_kspace_conversion_groups(
     index = 0
     while index < len(output):
         operation = output[index]
-        if operation.group is not None or not isinstance(
-            operation,
-            _KSPACE_CONVERSION_TYPES,
+        if operation.group is not None or not _is_kspace_conversion_operation(
+            operation
         ):
             index += 1
             continue
@@ -668,10 +804,7 @@ def stamp_kspace_conversion_groups(
         while (
             index < len(output)
             and output[index].group is None
-            and isinstance(
-                output[index],
-                _KSPACE_CONVERSION_TYPES,
-            )
+            and _is_kspace_conversion_operation(output[index])
         ):
             if isinstance(
                 output[index],
@@ -700,12 +833,12 @@ def incomplete_kspace_conversion_edit_reason(
     operation: ToolProvenanceOperation,
 ) -> str | None:
     """Return the edit tooltip/message for standalone primitive kspace rows."""
-    if not isinstance(operation, _KSPACE_CONVERSION_TYPES):
+    if not _is_kspace_conversion_operation(operation):
         return None
     return (
         "This kspace step is structured and replayable, but it is not part of a "
         "complete editable momentum-conversion group. To edit it in the conversion "
         "dialog, include the full operation set: `Set normal emission` and "
         "`Convert to momentum`. Configuration, work-function, and inner-potential "
-        "steps are optional setup rows."
+        "steps and scalar input-coordinate assignments are optional setup rows."
     )

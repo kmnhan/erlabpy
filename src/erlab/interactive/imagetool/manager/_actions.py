@@ -502,7 +502,10 @@ class _ActionsController:
             ...,
         ] = (),
     ) -> None:
-        declared_types = tuple(dialog.operation_types)
+        declared_types = dialog.batch_operation_types
+        if declared_types is None:
+            declared_types = dialog.operation_types
+        declared_types = tuple(declared_types)
         accepted_types = declared_types + extra_types
         for operation in operations:
             if accepted_types and not isinstance(operation, accepted_types):
@@ -517,9 +520,11 @@ class _ActionsController:
 
     def _validate_batch_target_operations(
         self,
+        dialog: typing.Any,
         operations: Iterable[ToolProvenanceOperation],
         data: xr.DataArray,
     ) -> None:
+        replacement_types = tuple(dialog.batch_coordinate_replacement_types)
         for operation in operations:
             if not isinstance(
                 operation,
@@ -528,6 +533,8 @@ class _ActionsController:
                     AssignCoord1DOperation,
                 ),
             ):
+                continue
+            if replacement_types and isinstance(operation, replacement_types):
                 continue
             if operation.coord_name in data.dims or operation.coord_name in data.coords:
                 raise ValueError(
@@ -625,6 +632,7 @@ class _ActionsController:
                         source_data
                     )
                 self._validate_batch_target_operations(
+                    dialog,
                     source_spec.operations,
                     source_data,
                 )

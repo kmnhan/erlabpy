@@ -6,14 +6,403 @@ import typing
 
 import numpy as np
 import numpy.typing as npt
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool import _kspace_conversion
 
-__all__ = ["CoordinateEditorWidget", "CoordinateGridWidget"]
+__all__ = [
+    "CoordinateEditorWidget",
+    "CoordinateGridWidget",
+    "KspaceInputCoordinatesControl",
+    "KspaceInputCoordinatesDialog",
+    "KspaceInputCoordinatesWidget",
+    "prompt_kspace_input_coordinates",
+]
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
+
+    import xarray as xr
+
+
+class KspaceInputCoordinatesWidget(QtWidgets.QWidget):
+    """Edit scalar coordinates used for momentum conversion."""
+
+    valuesChanged = QtCore.Signal()
+
+    _LABELS: typing.ClassVar[dict[str, str]] = {
+        "beta": "𝛽",
+        "xi": "𝜉",
+        "chi": "𝜒",
+        "hv": "hν",
+        "eV": "E",
+    }
+
+    def __init__(
+        self,
+        data: xr.DataArray,
+        *,
+        object_name_prefix: str,
+        values: Mapping[str, float | None] | None = None,
+        edited_names: Iterable[str] = (),
+    ) -> None:
+        super().__init__()
+        self._object_name_prefix = object_name_prefix
+        self._edits: dict[str, QtWidgets.QLineEdit] = {}
+        self._edited_names: set[str] = set()
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.description_label = QtWidgets.QLabel(self)
+        self.description_label.setObjectName(f"{object_name_prefix}Description")
+        self.description_label.setWordWrap(True)
+        self.description_label.setText(
+            "Edit scalar coordinates used by momentum conversion."
+        )
+        layout.addWidget(self.description_label)
+
+        self.form = QtWidgets.QFormLayout()
+        layout.addLayout(self.form)
+        self._populate(data, values=values, edited_names=edited_names)
+
+    @property
+    def values(self) -> dict[str, float | None]:
+        """Return the current coordinate values."""
+        return {
+            name: self._parse_value(edit.text()) for name, edit in self._edits.items()
+        }
+
+    @property
+    def is_complete(self) -> bool:
+        """Return whether every coordinate has a finite value."""
+        return all(value is not None for value in self.values.values())
+
+    @property
+    def edited_names(self) -> frozenset[str]:
+        """Return coordinate names changed explicitly by the user."""
+        return frozenset(self._edited_names)
+
+    def focus_first_control(self) -> None:
+        """Give keyboard focus to the first available coordinate control."""
+        edit = next(
+            (edit for name, edit in self._edits.items() if self.values[name] is None),
+            next(iter(self._edits.values())),
+        )
+        edit.setFocus(QtCore.Qt.FocusReason.OtherFocusReason)
+        edit.selectAll()
+
+    def _populate(
+        self,
+        data: xr.DataArray,
+        *,
+        values: Mapping[str, float | None] | None = None,
+        edited_names: Iterable[str] = (),
+    ) -> None:
+        """Build controls for ``data`` and restore applicable values."""
+        coordinate_values = _kspace_conversion.kspace_input_coordinate_values(data)
+        if values is not None:
+            coordinate_values.update(
+                {
+                    name: value
+                    for name, value in values.items()
+                    if name in coordinate_values
+                }
+            )
+
+        self._edited_names = set(edited_names) & set(coordinate_values)
+
+        for name, value in coordinate_values.items():
+            edit = QtWidgets.QLineEdit(self)
+            edit.setObjectName(f"{self._object_name_prefix}{name.title()}Coordinate")
+            validator = QtGui.QDoubleValidator(edit)
+            validator.setNotation(QtGui.QDoubleValidator.Notation.ScientificNotation)
+            edit.setValidator(validator)
+            edit.setPlaceholderText("Required")
+            edit.setClearButtonEnabled(True)
+            if value is not None:
+                edit.setText(np.format_float_positional(float(value), trim="-"))
+            edit.textChanged.connect(
+                lambda _text, *, coord_name=name: self._coordinate_changed(coord_name)
+            )
+            self._edits[name] = edit
+            self._sync_validity(name)
+
+            row = QtWidgets.QWidget(self)
+            row_layout = QtWidgets.QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.addWidget(edit)
+            row_layout.addWidget(
+                QtWidgets.QLabel("eV" if name in {"hv", "eV"} else "°", row)
+            )
+            self.form.addRow(self._LABELS[name], row)
+
+    def _coordinate_changed(self, name: str) -> None:
+        self._edited_names.add(name)
+        self._sync_validity(name)
+        self.valuesChanged.emit()
+
+    def _sync_validity(self, name: str) -> None:
+        edit = self._edits[name]
+        invalid = self._parse_value(edit.text()) is None
+        edit.setProperty("invalid", invalid)
+        edit.setToolTip("A finite value is required." if invalid else "")
+
+    @staticmethod
+    def _parse_value(text: str) -> float | None:
+        try:
+            value = float(text.strip())
+        except ValueError:
+            return None
+        return value if np.isfinite(value) else None
+
+
+class KspaceInputCoordinatesDialog(QtWidgets.QDialog):
+    """Small editor dialog for momentum-conversion input coordinates."""
+
+    _ANGLE_CONVENTION_URL = (
+        "https://erlabpy.readthedocs.io/en/stable/user-guide/kconv.html#nomenclature"
+    )
+
+    def __init__(
+        self,
+        data: xr.DataArray,
+        *,
+        values: Mapping[str, float | None],
+        edited_names: Iterable[str],
+        object_name_prefix: str,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName(f"{object_name_prefix}Dialog")
+        self.setWindowTitle("Edit Input Coordinates")
+
+        layout = QtWidgets.QVBoxLayout(self)
+        self.editor = KspaceInputCoordinatesWidget(
+            data,
+            object_name_prefix=object_name_prefix,
+            values=values,
+            edited_names=edited_names,
+        )
+        layout.addWidget(self.editor)
+
+        self.button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+            | QtWidgets.QDialogButtonBox.StandardButton.Help,
+            parent=self,
+        )
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        self.button_box.helpRequested.connect(self._open_angle_convention_help)
+        help_button = self.button_box.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Help
+        )
+        if help_button is not None:
+            help_button.setObjectName(f"{object_name_prefix}HelpButton")
+        layout.addWidget(self.button_box)
+        self.editor.valuesChanged.connect(self._sync_validity)
+        self._sync_validity()
+
+    @property
+    def values(self) -> dict[str, float | None]:
+        """Return the values in the editor."""
+        return self.editor.values
+
+    @property
+    def resolved_values(self) -> dict[str, float]:
+        """Return complete finite coordinate values."""
+        if not self.editor.is_complete:
+            raise ValueError("All momentum-conversion input coordinates are required.")
+        return typing.cast("dict[str, float]", self.editor.values)
+
+    @property
+    def edited_names(self) -> frozenset[str]:
+        """Return coordinate names changed explicitly in the editor."""
+        return self.editor.edited_names
+
+    @QtCore.Slot()
+    def _sync_validity(self) -> None:
+        button = self.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        if button is not None:
+            button.setEnabled(self.editor.is_complete)
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        if not self.editor.is_complete:
+            return
+        super().accept()
+
+    @QtCore.Slot()
+    def _open_angle_convention_help(self) -> None:
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl(self._ANGLE_CONVENTION_URL))
+
+
+class KspaceInputCoordinatesControl(QtWidgets.QWidget):
+    """Open the input-coordinate editor from a compact button."""
+
+    valuesChanged = QtCore.Signal()
+
+    def __init__(
+        self,
+        data: xr.DataArray,
+        *,
+        object_name_prefix: str,
+        button_text: str = "Edit…",
+    ) -> None:
+        super().__init__()
+        self._object_name_prefix = object_name_prefix
+        self._data = data
+        self._values: dict[str, float | None] = {}
+        self._edited_names: set[str] = set()
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.edit_button = QtWidgets.QPushButton(button_text, self)
+        self.edit_button.setObjectName(f"{object_name_prefix}EditButton")
+        self.edit_button.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self.edit_button.clicked.connect(self.edit_coordinates)
+        layout.addWidget(self.edit_button)
+
+        self.set_data(data)
+
+    @property
+    def values(self) -> dict[str, float | None]:
+        """Return current coordinate values."""
+        return dict(self._values)
+
+    @property
+    def resolved_values(self) -> dict[str, float]:
+        """Return complete finite coordinate values."""
+        if not self.is_complete:
+            raise ValueError("All momentum-conversion input coordinates are required.")
+        return typing.cast("dict[str, float]", self.values)
+
+    @property
+    def is_complete(self) -> bool:
+        """Return whether every coordinate has a finite value."""
+        return all(value is not None for value in self._values.values())
+
+    @property
+    def edited_names(self) -> frozenset[str]:
+        """Return coordinate names changed explicitly by the user."""
+        return frozenset(self._edited_names)
+
+    @property
+    def missing_names(self) -> frozenset[str]:
+        """Return coordinate names that do not have a finite value."""
+        return frozenset(name for name, value in self._values.items() if value is None)
+
+    def focus_first_control(self) -> None:
+        """Give keyboard focus to the edit button."""
+        self.edit_button.setFocus(QtCore.Qt.FocusReason.OtherFocusReason)
+
+    def set_data(
+        self,
+        data: xr.DataArray,
+        *,
+        values: Mapping[str, float | None] | None = None,
+        edited_names: Iterable[str] = (),
+    ) -> None:
+        """Update the source data and restore applicable coordinate values."""
+        coordinate_values = _kspace_conversion.kspace_input_coordinate_values(data)
+        if values is not None:
+            coordinate_values.update(
+                {
+                    name: value
+                    for name, value in values.items()
+                    if name in coordinate_values
+                }
+            )
+        self._data = data
+        self._values = coordinate_values
+        self._edited_names = set(edited_names) & set(coordinate_values)
+        self._update_tooltip()
+
+    @QtCore.Slot()
+    def edit_coordinates(self) -> bool:
+        """Open the coordinate editor and return whether the user accepted it."""
+        dialog = KspaceInputCoordinatesDialog(
+            self._data,
+            values=self._values,
+            edited_names=self._edited_names,
+            object_name_prefix=self._object_name_prefix,
+            parent=self,
+        )
+        dialog.editor.focus_first_control()
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            dialog.setParent(None)
+            dialog.deleteLater()
+            return False
+
+        values = dialog.resolved_values
+        edited_names = set(dialog.edited_names)
+        dialog.setParent(None)
+        dialog.deleteLater()
+        if values == self._values and edited_names == self._edited_names:
+            return True
+        self._values = typing.cast("dict[str, float | None]", values)
+        self._edited_names = edited_names
+        self._update_tooltip()
+        self.valuesChanged.emit()
+        return True
+
+    def _update_tooltip(self) -> None:
+        parts: list[str] = []
+        for name, value in self._values.items():
+            if value is None:
+                continue
+            suffix = " eV" if name in {"hv", "eV"} else "°"
+            parts.append(
+                f"{KspaceInputCoordinatesWidget._LABELS[name]} "
+                f"{np.format_float_positional(value, precision=4, trim='-')}"
+                f"{suffix}"
+            )
+        summary = " · ".join(parts)
+        tooltip = f"Current values: {summary}" if summary else ""
+        if self.missing_names:
+            missing = ", ".join(
+                str(KspaceInputCoordinatesWidget._LABELS[name])
+                for name in self._values
+                if name in self.missing_names
+            )
+            tooltip = f"{tooltip}\n" if tooltip else ""
+            tooltip += f"Required: {missing}"
+        self.edit_button.setProperty("invalid", not self.is_complete)
+        self.edit_button.setToolTip(tooltip)
+
+
+def prompt_kspace_input_coordinates(
+    data: xr.DataArray,
+    *,
+    object_name_prefix: str,
+    parent: QtWidgets.QWidget | None = None,
+) -> tuple[dict[str, float], frozenset[str]] | None:
+    """Prompt for unresolved scalar conversion inputs and return complete values."""
+    values = _kspace_conversion.kspace_input_coordinate_values(data)
+    if all(value is not None for value in values.values()):
+        return typing.cast("dict[str, float]", values), frozenset()
+
+    dialog = KspaceInputCoordinatesDialog(
+        data,
+        values=values,
+        edited_names=(),
+        object_name_prefix=object_name_prefix,
+        parent=parent,
+    )
+    dialog.editor.focus_first_control()
+    if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+        dialog.setParent(None)
+        dialog.deleteLater()
+        return None
+    resolved = dialog.resolved_values
+    edited_names = dialog.edited_names
+    dialog.setParent(None)
+    dialog.deleteLater()
+    return resolved, edited_names
 
 
 class CoordinateGridWidget(QtWidgets.QWidget):

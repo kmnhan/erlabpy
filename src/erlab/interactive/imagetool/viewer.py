@@ -3814,6 +3814,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             options_model=self._options_model,
             execute=False,
         )
+        if tool is None:
+            return
         if isinstance(tool, erlab.interactive.utils.ToolWindow):
             tool.set_source_binding(full_data())
         self.add_tool_window(tool)
