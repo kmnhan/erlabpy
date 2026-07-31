@@ -16,7 +16,6 @@ from erlab.interactive.imagetool._provenance._model import (
     ProvenanceHashable,
     ProvenanceMapping,
     ToolProvenanceOperation,
-    _DeeplyImmutableProvenanceModel,
 )
 
 if typing.TYPE_CHECKING:
@@ -51,7 +50,7 @@ _MODEL_FIT_MODEL_NAMES = (
 )
 
 
-class _ModelFitParameterSpec(_DeeplyImmutableProvenanceModel):
+class _ModelFitParameterSpec(pydantic.BaseModel):
     """Serializable scalar or one-dimensional parameter initialization."""
 
     value: float | tuple[float, ...] | None = None

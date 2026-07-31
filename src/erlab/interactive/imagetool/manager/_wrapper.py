@@ -437,6 +437,7 @@ class _ManagedWindowNode(QtCore.QObject):
             ]
             | None
         ) = None
+        self._provenance_revision = 0
         self._derivation_display_rows_generation = 0
         self._tool_provenance_spec_cache: dict[
             bool,
@@ -1536,6 +1537,7 @@ class _ManagedWindowNode(QtCore.QObject):
         refresh_display: bool = False,
         invalidate_derivation: bool = True,
     ) -> None:
+        self._provenance_revision += 1
         change = (
             _ManagedNodeChange.PROVENANCE
             if refresh_display
@@ -1868,6 +1870,11 @@ class _ManagedWindowNode(QtCore.QObject):
         self,
     ) -> tuple[int, ...]:
         return self._derivation_display_rows_lineage_generation
+
+    @property
+    def provenance_revision(self) -> int:
+        """Return the revision for caches derived from this node's provenance."""
+        return self._provenance_revision
 
     @property
     def _derivation_display_rows_lineage_generation(self) -> tuple[int, ...]:

@@ -18,6 +18,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive._options.core
 import erlab.interactive.imagetool.manager._base as manager_base
+import erlab.interactive.imagetool.manager._dependency as manager_dependency
 import erlab.interactive.imagetool.manager._io as manager_io
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
@@ -125,6 +126,8 @@ def test_dependency_tracker_uses_passive_tool_provenance() -> None:
             return dependent
 
     class _PassiveNode:
+        provenance_revision = 0
+
         @property
         def tool_window(self):
             return _PassiveTool()
@@ -179,11 +182,13 @@ def test_dependency_tracker_indexes_dependents_and_caches_status() -> None:
     source_node = types.SimpleNamespace(
         tool_window=None,
         provenance_spec=None,
+        provenance_revision=0,
         snapshot_token_for_role=_snapshot_token_for_role,
     )
     dependent_node = types.SimpleNamespace(
         tool_window=None,
         provenance_spec=dependent_spec,
+        provenance_revision=0,
     )
     graph = types.SimpleNamespace(
         nodes={
@@ -223,7 +228,11 @@ def test_dependency_tracker_indexes_dependents_and_caches_status() -> None:
 
 
 def test_dependency_tracker_drops_missing_uid_from_pending_index() -> None:
-    node = types.SimpleNamespace(tool_window=None, provenance_spec=None)
+    node = types.SimpleNamespace(
+        tool_window=None,
+        provenance_spec=None,
+        provenance_revision=0,
+    )
     graph = types.SimpleNamespace(nodes={"removed-uid": node})
     tracker = _ManagerDependencyTracker(typing.cast("_ManagerToolGraph", graph))
     tracker.note_uid("removed-uid")
@@ -232,6 +241,63 @@ def test_dependency_tracker_drops_missing_uid_from_pending_index() -> None:
 
     assert tracker.refs_for_uid("removed-uid") == ()
     assert not tracker._unindexed_uids
+
+
+def test_dependency_tracker_cache_follows_node_identity_and_revision(
+    monkeypatch,
+) -> None:
+    def _dependent_spec(source_uid: str) -> ToolProvenanceSpec:
+        return script(
+            start_label="Dependent",
+            seed_code="derived = source",
+            active_name="derived",
+            script_inputs=(
+                ScriptInput(
+                    name="source",
+                    label="Source",
+                    node_uid=source_uid,
+                ),
+            ),
+        )
+
+    node = types.SimpleNamespace(
+        tool_window=None,
+        provenance_spec=_dependent_spec("source-a"),
+        provenance_revision=0,
+    )
+    graph = types.SimpleNamespace(nodes={"dependent": node})
+    tracker = _ManagerDependencyTracker(typing.cast("_ManagerToolGraph", graph))
+    ref_scans = 0
+    original_refs = manager_dependency.script_input_dependency_refs
+
+    def _record_refs(spec):
+        nonlocal ref_scans
+        ref_scans += 1
+        return original_refs(spec)
+
+    monkeypatch.setattr(
+        manager_dependency,
+        "script_input_dependency_refs",
+        _record_refs,
+    )
+
+    assert tracker.refs_for_uid("dependent")[0].node_uid == "source-a"
+    assert tracker.refs_for_uid("dependent")[0].node_uid == "source-a"
+    assert ref_scans == 1
+
+    node.provenance_spec = _dependent_spec("source-b")
+    node.provenance_revision += 1
+    assert tracker.refs_for_uid("dependent")[0].node_uid == "source-b"
+    assert ref_scans == 2
+
+    replacement = types.SimpleNamespace(
+        tool_window=None,
+        provenance_spec=_dependent_spec("source-c"),
+        provenance_revision=node.provenance_revision,
+    )
+    graph.nodes["dependent"] = replacement
+    assert tracker.refs_for_uid("dependent")[0].node_uid == "source-c"
+    assert ref_scans == 3
 
 
 def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
@@ -262,18 +328,22 @@ def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
             "source-uid": types.SimpleNamespace(
                 tool_window=None,
                 provenance_spec=source_spec,
+                provenance_revision=0,
             ),
             "dependent-b": types.SimpleNamespace(
                 tool_window=None,
                 provenance_spec=dependent_spec,
+                provenance_revision=0,
             ),
             "unrelated": types.SimpleNamespace(
                 tool_window=None,
                 provenance_spec=None,
+                provenance_revision=0,
             ),
             "dependent-a": types.SimpleNamespace(
                 tool_window=None,
                 provenance_spec=dependent_spec,
+                provenance_revision=0,
             ),
         }
     )
@@ -1598,11 +1668,13 @@ def test_derivation_display_rows_are_cached_until_provenance_changes(
 
         assert second_rows is first_rows
         assert display_row_calls == 1
+        provenance_revision = wrapper.provenance_revision
 
         wrapper._advance_snapshot_token()
 
         assert wrapper.derivation_display_rows is first_rows
         assert display_row_calls == 1
+        assert wrapper.provenance_revision == provenance_revision
 
         wrapper.set_displayed_provenance(
             script(
@@ -1615,6 +1687,7 @@ def test_derivation_display_rows_are_cached_until_provenance_changes(
 
         assert wrapper.derivation_display_rows != first_rows
         assert display_row_calls == 2
+        assert wrapper.provenance_revision == provenance_revision + 1
 
 
 def test_derivation_display_rows_track_watched_binding_changes(

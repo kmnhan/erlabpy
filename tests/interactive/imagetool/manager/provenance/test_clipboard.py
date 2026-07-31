@@ -29,6 +29,7 @@ from erlab.interactive.imagetool._provenance._model import (
     full_data,
     operation_group_range,
     script,
+    script_input_dependency_refs,
     stamp_operation_group,
     strip_operation_groups,
 )
@@ -280,6 +281,7 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
+        _dependency_refs_for_uid=lambda _uid: (),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
@@ -407,6 +409,7 @@ def test_manager_metadata_derivation_tree_populates_only_expanded_branches(
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
+        _dependency_refs_for_uid=lambda _uid: (),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
@@ -481,6 +484,7 @@ def test_manager_metadata_derivation_state_restore_uses_indexed_lookups(
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
+        _dependency_refs_for_uid=lambda _uid: (),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
@@ -539,6 +543,7 @@ def test_manager_metadata_derivation_refresh_uses_stable_cache_key(qtbot) -> Non
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
+        _dependency_refs_for_uid=lambda _uid: (),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
@@ -601,6 +606,7 @@ def test_manager_metadata_row_mapping_keeps_collapsed_rows_consistent(
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
+        _dependency_refs_for_uid=lambda _uid: (),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
@@ -682,6 +688,7 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
+        _dependency_refs_for_uid=lambda _uid: script_input_dependency_refs(spec),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
@@ -741,6 +748,7 @@ def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
+        _dependency_refs_for_uid=lambda _uid: script_input_dependency_refs(spec),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)

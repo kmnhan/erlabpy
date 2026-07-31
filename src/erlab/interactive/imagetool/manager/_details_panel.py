@@ -30,7 +30,6 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
     parse_tool_provenance_operation,
-    script_input_dependency_refs,
     strip_partial_operation_groups,
 )
 from erlab.interactive.imagetool._provenance._operations import ScriptCodeOperation
@@ -306,7 +305,7 @@ class _DetailsPanelController:
         derivation_key = (
             node.uid,
             node.derivation_display_rows_cache_key,
-            self._script_input_labels_cache_key(displayed_spec),
+            self._script_input_labels_cache_key(node),
         )
         derivation_changed = derivation_key != self._metadata_derivation_key
         if derivation_changed:
@@ -368,12 +367,12 @@ class _DetailsPanelController:
 
     def _script_input_labels_cache_key(
         self,
-        spec: ToolProvenanceSpec | None,
+        node: _ImageToolWrapper | _ManagedWindowNode,
     ) -> tuple[tuple[str, str | None], ...]:
         graph = self._manager._tool_graph
         keys: list[tuple[str, str | None]] = []
         seen: set[str] = set()
-        for ref in script_input_dependency_refs(spec):
+        for ref in self._manager._dependency_refs_for_uid(node.uid):
             if ref.node_uid in seen:
                 continue
             seen.add(ref.node_uid)

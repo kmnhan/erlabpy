@@ -649,7 +649,7 @@ def test_replay_graph_manual_error_and_cache_paths() -> None:
         execute_replay_graph(empty_graph)
 
 
-def test_script_input_parse_cache_does_not_affect_model_equality() -> None:
+def test_script_input_parsing_does_not_affect_model_equality() -> None:
     script_input = ScriptInput(
         name="data",
         label="Input data",
@@ -660,7 +660,7 @@ def test_script_input_parse_cache_does_not_affect_model_equality() -> None:
     assert script_input == equivalent
     parsed = script_input.parsed_provenance_spec()
     assert parsed == full_data()
-    assert script_input.parsed_provenance_spec() is parsed
+    assert script_input.parsed_provenance_spec() == parsed
     assert script_input == equivalent
 
     without_provenance = script_input.model_copy(update={"provenance_spec": None})

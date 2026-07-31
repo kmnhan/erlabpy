@@ -13,6 +13,7 @@ import typing
 
 if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
+    from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 
 _DependencyStatus = typing.Literal["current", "changed", "missing"]
 
@@ -25,6 +26,7 @@ class _ManagerDependencyTracker:
         self._ref_cache: dict[
             str,
             tuple[
+                _ManagedWindowNode,
                 int,
                 tuple[
                     ScriptInputDependencyRef,
@@ -68,18 +70,21 @@ class _ManagerDependencyTracker:
             self._unindexed_uids.pop(uid, None)
             self._status_cache[uid] = None
             return ()
-        spec_id = id(spec)
         cached = self._ref_cache.get(uid)
-        if cached is not None and cached[0] == spec_id:
+        if (
+            cached is not None
+            and cached[0] is node
+            and cached[1] == node.provenance_revision
+        ):
             self._unindexed_uids.pop(uid, None)
-            return cached[1]
+            return cached[2]
         refs = script_input_dependency_refs(spec)
         self._remove_reverse_refs(uid)
         source_uids = {ref.node_uid for ref in refs}
         self._source_uids_by_dependent[uid] = source_uids
         for source_uid in source_uids:
             self._dependents_by_source_uid.setdefault(source_uid, {})[uid] = None
-        self._ref_cache[uid] = (spec_id, refs)
+        self._ref_cache[uid] = (node, node.provenance_revision, refs)
         self._unindexed_uids.pop(uid, None)
         self._status_cache.pop(uid, None)
         return refs

@@ -6148,9 +6148,7 @@ def test_script_input_label_is_preserved_and_defaults_to_name() -> None:
         ScriptInput(name="data_0", label="\n  \t")
 
 
-def test_script_input_caches_parsed_provenance_until_payload_changes(
-    monkeypatch,
-) -> None:
+def test_script_input_parses_current_ordinary_mapping() -> None:
     nested_input = ScriptInput(
         name="nested",
         provenance_spec=script(
@@ -6161,9 +6159,10 @@ def test_script_input_caches_parsed_provenance_until_payload_changes(
     )
     assert nested_input.provenance_spec is not None
     nested_steps = nested_input.provenance_spec["steps"]
-    assert isinstance(nested_steps, tuple)
-    with pytest.raises(TypeError, match="provenance is immutable"):
-        nested_steps[0]["operation"].clear()
+    assert type(nested_input.provenance_spec) is dict
+    assert type(nested_steps) is list
+    assert type(nested_steps[0]) is dict
+    assert type(nested_steps[0]["operation"]) is dict
 
     script_input = ScriptInput(
         name="data_0",
@@ -6173,14 +6172,7 @@ def test_script_input_caches_parsed_provenance_until_payload_changes(
     parsed = script_input.parsed_provenance_spec()
 
     assert parsed is not None
-    payload_type = type(script_input.provenance_spec)
-    monkeypatch.setattr(
-        payload_type,
-        "__eq__",
-        lambda *_args: pytest.fail("cache hits must not compare provenance payloads"),
-    )
-    assert script_input.parsed_provenance_spec() is parsed
-    assert script_input.model_copy().parsed_provenance_spec() is parsed
+    assert parsed.kind == "full_data"
 
     updated_input = script_input.model_copy(
         update={"provenance_spec": public_data().model_dump(mode="json")}
@@ -6192,11 +6184,17 @@ def test_script_input_caches_parsed_provenance_until_payload_changes(
     assert updated.kind == "public_data"
 
     assert script_input.provenance_spec is not None
-    with pytest.raises(TypeError, match="provenance is immutable"):
-        script_input.provenance_spec.clear()
+    script_input.provenance_spec["kind"] = "selection"
+    reparsed = script_input.parsed_provenance_spec()
+    assert reparsed is not None
+    assert reparsed.kind == "selection"
+
+    deep_copy = script_input.model_copy(deep=True)
+    assert deep_copy.provenance_spec is not script_input.provenance_spec
+    assert deep_copy.parsed_provenance_spec() == reparsed
 
 
-def test_script_input_immutable_provenance_is_pickleable() -> None:
+def test_script_input_provenance_mapping_is_pickleable() -> None:
     script_input = ScriptInput(
         name="data_0",
         provenance_spec=script(
@@ -6212,11 +6210,11 @@ def test_script_input_immutable_provenance_is_pickleable() -> None:
     assert restored == script_input
     assert restored.parsed_provenance_spec() == parsed
     assert restored.provenance_spec is not None
-    with pytest.raises(TypeError, match="provenance is immutable"):
-        restored.provenance_spec.clear()
+    assert type(restored.provenance_spec) is dict
+    assert type(restored.provenance_spec["steps"]) is list
 
 
-def test_operation_nested_provenance_is_deeply_immutable() -> None:
+def test_operation_nested_provenance_keeps_public_types_and_deep_copy() -> None:
     operation = KspaceConvertOperation(
         bounds={"kx": (-1.0, 1.0)},
         resolution={"kx": 0.1},
@@ -6226,8 +6224,8 @@ def test_operation_nested_provenance_is_deeply_immutable() -> None:
     original_payload = spec.model_dump(mode="json")
 
     assert operation.bounds is not None
-    with pytest.raises(TypeError, match="provenance is immutable"):
-        operation.bounds["kx"] = (-2.0, 2.0)
+    assert type(operation.bounds) is dict
+    assert type(operation.resolution) is dict
 
     updated = operation.model_copy(
         update={
@@ -6240,24 +6238,35 @@ def test_operation_nested_provenance_is_deeply_immutable() -> None:
     assert updated.resolution == {"kx": 0.2}
     assert spec.display_rows() == original_rows
     assert spec.model_dump(mode="json") == original_payload
-    with pytest.raises(TypeError, match="provenance is immutable"):
-        typing.cast("dict[str, float]", updated.resolution)["kx"] = 0.3
+    typing.cast("dict[str, float]", updated.resolution)["kx"] = 0.3
+    assert operation.resolution == {"kx": 0.1}
 
     restored = pickle.loads(pickle.dumps(operation))
     assert restored == operation
-    assert copy.copy(operation.bounds) is operation.bounds
-    assert copy.deepcopy(operation.bounds) is operation.bounds
+    assert copy.copy(operation.bounds) is not operation.bounds
+    assert copy.deepcopy(operation.bounds) is not operation.bounds
 
     list_operation = AssignCoordsOperation(
         coord_name="x",
         values=np.arange(3.0),
     )
-    assert isinstance(list_operation.values, list)
-    with pytest.raises(TypeError, match="provenance is immutable"):
-        list_operation.values.append(3.0)
-    assert copy.copy(list_operation.values) is list_operation.values
-    assert copy.deepcopy(list_operation.values) is list_operation.values
+    assert type(list_operation.values) is list
+    copied_list_operation = list_operation.model_copy(deep=True)
+    copied_list_operation.values.append(3.0)
+    assert list_operation.values == [0.0, 1.0, 2.0]
     assert pickle.loads(pickle.dumps(list_operation)) == list_operation
+
+    array_operation = AssignAttrsOperation(
+        attrs={"weights": np.arange(3.0)},
+    )
+    copied_array_operation = array_operation.model_copy(deep=True)
+    copied_weights = copied_array_operation.attrs["weights"]
+    original_weights = array_operation.attrs["weights"]
+    assert isinstance(copied_weights, np.ndarray)
+    assert isinstance(original_weights, np.ndarray)
+    assert copied_weights is not original_weights
+    copied_weights[0] = -1.0
+    np.testing.assert_array_equal(original_weights, np.arange(3.0))
 
 
 def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> None:
