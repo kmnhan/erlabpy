@@ -396,14 +396,15 @@ class _CloseShortcutEventFilter(QtCore.QObject):
         watched: QtCore.QObject | None,
         event: QtCore.QEvent | None,
     ) -> bool:
-        widget = self._widget_ref()
         if (
             event is None
-            or widget is None
-            or not qt_is_valid(widget)
             or event.type() != QtCore.QEvent.Type.KeyPress
             or not isinstance(event, QtGui.QKeyEvent)
         ):
+            return False
+
+        widget = self._widget_ref()
+        if widget is None or not qt_is_valid(widget):
             return False
 
         focused = watched if isinstance(watched, QtWidgets.QWidget) else None

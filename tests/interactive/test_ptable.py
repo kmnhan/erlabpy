@@ -3764,6 +3764,33 @@ def test_ptable_search_popup_hides_for_external_focus_and_clicks(
     win.close()
 
 
+def test_ptable_event_filter_skips_irrelevant_events_before_validity_check(
+    qtbot,
+    monkeypatch,
+) -> None:
+    win = PeriodicTableWindow()
+    _show_window(qtbot, win)
+
+    validity_calls: list[tuple[object, ...]] = []
+
+    def _record_validity_call(*objects: object) -> bool:
+        validity_calls.append(objects)
+        return True
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "qt_is_valid",
+        _record_validity_call,
+    )
+
+    event = QtCore.QEvent(QtCore.QEvent.Type.UpdateRequest)
+
+    assert win.eventFilter(win.table_view, event) is False
+    assert validity_calls == []
+
+    win.close()
+
+
 def test_ptable_find_shortcut_uses_search_controller(
     qtbot,
     monkeypatch,
@@ -3881,6 +3908,59 @@ def test_ptable_keyboard_navigation_and_background_clear(
     assert win.selected_atomic_numbers == ()
     assert win.selected_atomic_number is None
 
+    win.close()
+
+
+def test_ptable_card_selection_refreshes_once_after_hover_preview(
+    qtbot,
+    monkeypatch,
+) -> None:
+    win = PeriodicTableWindow()
+    _show_window(qtbot, win)
+    win._hover_atomic_number = 1
+    win.table_view._hovered_atomic_number = 1
+
+    refresh_calls: list[bool] = []
+    monkeypatch.setattr(
+        win,
+        "_refresh_window_state",
+        lambda *, ensure_visible: refresh_calls.append(ensure_visible),
+    )
+
+    win._handle_card_selected(2, QtCore.Qt.KeyboardModifier.NoModifier)
+
+    assert refresh_calls == [False]
+    assert win._hover_atomic_number is None
+    assert win.table_view._hovered_atomic_number is None
+
+    win.close()
+
+
+def test_ptable_refresh_batches_inspector_updates(qtbot, monkeypatch) -> None:
+    win = PeriodicTableWindow()
+    _show_window(qtbot, win)
+
+    update_states: list[bool] = []
+    set_elements = win.inspector.set_elements
+
+    def _record_update_state(*args, **kwargs) -> None:
+        update_states.append(win.inspector.updatesEnabled())
+        set_elements(*args, **kwargs)
+
+    monkeypatch.setattr(win.inspector, "set_elements", _record_update_state)
+
+    win._refresh_window_state(ensure_visible=False)
+
+    assert update_states == [False]
+    assert win.inspector.updatesEnabled() is True
+
+    win.inspector.setUpdatesEnabled(False)
+    win._refresh_window_state(ensure_visible=False)
+
+    assert update_states == [False, False]
+    assert win.inspector.updatesEnabled() is False
+
+    win.inspector.setUpdatesEnabled(True)
     win.close()
 
 
