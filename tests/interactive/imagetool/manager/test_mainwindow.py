@@ -94,6 +94,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _TOOL_TYPE_ROLE,
     _ImageToolWrapperItemDelegate,
 )
+from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from erlab.interactive.imagetool.manager._widgets import (
     _LoadSourceDetailsDialog,
     _WorkspacePropertiesDialog,
@@ -127,6 +128,7 @@ logger = logging.getLogger(__name__)
 def test_register_linked_nodes_invalidates_workspace_link_color_cache() -> None:
     registered: list[tuple[str, object]] = []
     noted_uids: list[str] = []
+    queued_changes: list[tuple[str, _ManagedNodeChange]] = []
     graph = types.SimpleNamespace(
         register_root=lambda node: registered.append(("root", node)),
         register_child=lambda node: registered.append(("child", node)),
@@ -135,6 +137,9 @@ def test_register_linked_nodes_invalidates_workspace_link_color_cache() -> None:
     manager = types.SimpleNamespace(
         _tool_graph=graph,
         _dependency_tracker=types.SimpleNamespace(note_uid=noted_uids.append),
+        _queue_managed_node_change=lambda uid, change: queued_changes.append(
+            (uid, change)
+        ),
         _workspace_link_color_cache_dirty=False,
     )
     manager._invalidate_workspace_link_color_cache = types.MethodType(
@@ -162,6 +167,9 @@ def test_register_linked_nodes_invalidates_workspace_link_color_cache() -> None:
 
     assert registered == [(kind, nodes[kind]) for kind in nodes]
     assert noted_uids == list(nodes)
+    assert queued_changes == [
+        (uid, _ManagedNodeChange.DEPENDENCY_INDEX) for uid in nodes
+    ]
 
 
 def test_color_for_linker_falls_back_without_structural_link_key() -> None:
@@ -8283,6 +8291,7 @@ def test_manager_ktool_output_itool_marks_stale_without_recomputing(
         qtbot.wait(child._MANAGER_NOTIFY_DELAY_MS + 50)
         manager._flush_idle_work(force=True)
         manager._flush_idle_work(force=True)
+        manager._details_refresh_queue.flush()
         metadata_updates: list[str] = []
         original_set_metadata_node = manager._set_metadata_node
 
@@ -8336,7 +8345,13 @@ def test_manager_ktool_output_itool_marks_stale_without_recomputing(
 
         assert call_count == 0
         xr.testing.assert_identical(fetch(output_uid), before)
+        qtbot.wait_until(
+            lambda: metadata_updates == [child_uid],
+            timeout=2000,
+        )
         assert metadata_updates == [child_uid]
+        assert not manager._details_refresh_queue.pending_uids
+        assert not manager._details_refresh_queue.is_active()
 
         state_changes: list[str] = []
         monkeypatch.setattr(

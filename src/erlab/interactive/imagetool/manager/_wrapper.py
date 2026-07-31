@@ -607,7 +607,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
         if value is None:
             self._sync_manager_window_reference()
-            self._notify_type_badge_change(previous_type_badge)
+            self._notify_info_and_type_badge_change(previous_type_badge)
             return
 
         if isinstance(value, ImageTool):
@@ -642,7 +642,7 @@ class _ManagedWindowNode(QtCore.QObject):
             for plot in value.slicer_area._materialized_axes():
                 plot.ensure_manager_figure_actions()
             self._sync_manager_window_reference()
-            self._notify_type_badge_change(previous_type_badge)
+            self._notify_info_and_type_badge_change(previous_type_badge)
             return
 
         tool = typing.cast("erlab.interactive.utils.ToolWindow", value)
@@ -674,7 +674,7 @@ class _ManagedWindowNode(QtCore.QObject):
         for secondary_window, _title in tool._managed_secondary_windows():
             self._configure_tool_secondary_window(secondary_window)
         self._sync_manager_window_reference()
-        self._notify_type_badge_change(previous_type_badge)
+        self._notify_info_and_type_badge_change(previous_type_badge)
 
     def _sync_manager_window_reference(self) -> None:
         manager = self._manager()
@@ -688,12 +688,14 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         manager._tool_graph.notify_node_change(self.uid, change)
 
-    def _notify_type_badge_change(self, previous_type_badge: str | None) -> None:
-        if self.type_badge_text == previous_type_badge:
-            return
-        self._notify_change(
-            _ManagedNodeChange.PRESENTATION | _ManagedNodeChange.DEPENDENTS
-        )
+    def _notify_info_and_type_badge_change(
+        self,
+        previous_type_badge: str | None,
+    ) -> None:
+        change = _ManagedNodeChange.INFO
+        if self.type_badge_text != previous_type_badge:
+            change |= _ManagedNodeChange.PRESENTATION | _ManagedNodeChange.DEPENDENTS
+        self._notify_change(change)
 
     def _workspace_reference_dataset(
         self,
@@ -898,7 +900,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
         self._pending_workspace_curve_cache = None
-        self._notify_type_badge_change(previous_type_badge)
+        self._notify_info_and_type_badge_change(previous_type_badge)
 
     def set_pending_workspace_payload(
         self,
@@ -922,7 +924,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
         self._pending_workspace_curve_cache = None
-        self._notify_type_badge_change(previous_type_badge)
+        self._notify_info_and_type_badge_change(previous_type_badge)
 
     def set_pending_workspace_memory_payload(
         self,
@@ -954,7 +956,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
         self._pending_workspace_curve_cache = None
-        self._notify_type_badge_change(previous_type_badge)
+        self._notify_info_and_type_badge_change(previous_type_badge)
 
     def materialize_pending_workspace_payload(self) -> bool:
         if self._pending_workspace_payload is None:
@@ -1770,7 +1772,11 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         if manager._tool_graph.nodes.get(self.uid) is not self:
             return
-        self._notify_change(_ManagedNodeChange.ROW | _ManagedNodeChange.DEPENDENTS)
+        self._notify_change(
+            _ManagedNodeChange.ROW
+            | _ManagedNodeChange.INFO
+            | _ManagedNodeChange.DEPENDENTS
+        )
         manager._mark_node_state_dirty(self.uid)
 
     @property
@@ -2435,6 +2441,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._invalidate_info_text_cache()
         self._invalidate_preview_image_cache()
         self.manager._mark_node_data_dirty(self.uid)
+        self._notify_change(_ManagedNodeChange.INFO)
 
     @QtCore.Slot()
     def _handle_imagetool_source_data_changed(self) -> None:

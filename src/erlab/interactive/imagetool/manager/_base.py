@@ -51,7 +51,9 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._io import _MultiFileHandler
     from erlab.interactive.imagetool.manager._lineage import _LineageController
     from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
-    from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
+    from erlab.interactive.imagetool.manager._metadata import (
+        _ManagerDetailsRefreshQueue,
+    )
     from erlab.interactive.imagetool.manager._metadata_editor import (
         _MetadataEditorController,
     )
@@ -239,7 +241,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _standalone_app_specs: dict[str, _StandaloneAppSpec]
     _standalone_app_windows: dict[str, QtWidgets.QWidget]
     _tool_graph: _ManagerToolGraph
-    _tool_metadata_queue: _ManagerToolMetadataQueue
+    _details_refresh_queue: _ManagerDetailsRefreshQueue
     _warning_handler: _WarningNotificationHandler
     _workspace_controller: _WorkspaceController
     _workspace_state: _ManagerWorkspaceState

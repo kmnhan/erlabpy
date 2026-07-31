@@ -36,7 +36,7 @@ from erlab.interactive.imagetool.manager._io import (
 )
 from erlab.interactive.imagetool.manager._lineage import _LineageController
 from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
-from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
+from erlab.interactive.imagetool.manager._metadata import _ManagerDetailsRefreshQueue
 from erlab.interactive.imagetool.manager._metadata_editor import (
     _MetadataEditorController,
 )
@@ -298,9 +298,9 @@ class ImageToolManager(_ImageToolManagerBase):
         self._workspace_controller = _WorkspaceController(self)
         self._acquisition_context = _AcquisitionContextController(self)
         self._metadata_editor = _MetadataEditorController(self)
-        self._tool_metadata_queue = _ManagerToolMetadataQueue(
+        self._details_refresh_queue = _ManagerDetailsRefreshQueue(
             self,
-            self._flush_pending_tool_metadata_updates,
+            self._flush_debounced_details_refreshes,
             idle_scheduler=self._queue_idle_work,
         )
         self._update_workspace_window_title()
@@ -784,7 +784,6 @@ class ImageToolManager(_ImageToolManagerBase):
         self._install_selection_shortcuts(self.tree_view)
         self.tree_view._selection_model.selectionChanged.connect(self._update_actions)
         self.tree_view._selection_model.selectionChanged.connect(self._update_info)
-        self.tree_view._model.dataChanged.connect(self._handle_tree_data_changed)
 
         self.left_tabs = QtWidgets.QTabWidget(left_container)
         self.left_tabs.setObjectName("manager_left_tabs")
@@ -1775,26 +1774,23 @@ class ImageToolManager(_ImageToolManagerBase):
             return
         self._details_panel._update_info(uid=uid)
 
-    def _handle_tree_data_changed(
+    def _schedule_selected_details_refresh(
         self,
-        top_left: QtCore.QModelIndex,
-        bottom_right: QtCore.QModelIndex,
-        _roles: object = None,
+        *,
+        changed_uid: str | None = None,
     ) -> None:
         selected = self.tree_view.selectedIndexes()
-        changed_selected = [
-            index
-            for index in selected
-            if index.parent() == top_left.parent()
-            and top_left.row() <= index.row() <= bottom_right.row()
-        ]
-        if not changed_selected:
-            return
-        self._schedule_selected_details_refresh()
-
-    def _schedule_selected_details_refresh(self) -> None:
-        selected = self.tree_view.selectedIndexes()
         if not selected:
+            return
+        if changed_uid is not None and all(
+            (
+                pointer
+                if isinstance(pointer := index.internalPointer(), str)
+                else pointer.uid
+            )
+            != changed_uid
+            for index in selected
+        ):
             return
         if len(selected) != 1:
             self._queue_idle_work(
@@ -1816,15 +1812,16 @@ class ImageToolManager(_ImageToolManagerBase):
         deferred_change = change & _DEFERRED_NODE_CHANGES
         if uid is not None and deferred_change:
             self._queue_managed_node_change(uid, deferred_change)
-        if uid is not None and change & _ManagedNodeChange.PROVENANCE_DISPLAY:
-            self._schedule_details_refresh(uid)
         if uid is not None and change & _ManagedNodeChange.DERIVATION:
             self._schedule_derivation_details_refresh(uid)
         presentation_changed = bool(change & _ManagedNodeChange.PRESENTATION)
         if uid is None:
-            metadata_uid = self._metadata_node_uid
-            if presentation_changed and metadata_uid is not None:
-                self._schedule_details_refresh(metadata_uid)
+            if presentation_changed:
+                metadata_uid = self._metadata_node_uid
+                if metadata_uid is None:
+                    self._schedule_selected_details_refresh()
+                else:
+                    self._schedule_details_refresh(metadata_uid)
             return
         is_figure = self._is_figure_uid(uid)
         if presentation_changed and is_figure:
@@ -1835,6 +1832,8 @@ class ImageToolManager(_ImageToolManagerBase):
             self.tree_view.refresh(uid)
         if presentation_changed:
             self._schedule_details_refresh(uid)
+            if self._metadata_node_uid is None:
+                self._schedule_selected_details_refresh(changed_uid=uid)
         if change & _ManagedNodeChange.DEPENDENTS:
             self._refresh_dependency_dependents(uid)
 
@@ -1845,7 +1844,11 @@ class ImageToolManager(_ImageToolManagerBase):
         selected = self._tool_graph.nodes.get(selected_uid)
         while selected is not None:
             if selected.uid == changed_uid:
-                self._schedule_details_refresh(selected_uid)
+                changed = self._tool_graph.nodes.get(changed_uid)
+                if changed is not None and changed.tool_window is not None:
+                    self._schedule_debounced_details_refresh(selected_uid)
+                else:
+                    self._schedule_details_refresh(selected_uid)
                 return
             if selected.parent_uid is None:
                 return
@@ -1867,11 +1870,11 @@ class ImageToolManager(_ImageToolManagerBase):
             lambda: self._update_info(uid=uid),
         )
 
-    def _schedule_tool_metadata_update(self, uid: str) -> None:
-        self._details_panel._schedule_tool_metadata_update(uid)
+    def _schedule_debounced_details_refresh(self, uid: str) -> None:
+        self._details_panel._schedule_debounced_details_refresh(uid)
 
-    def _flush_pending_tool_metadata_updates(self, pending: set[str]) -> None:
-        self._details_panel._flush_pending_tool_metadata_updates(pending)
+    def _flush_debounced_details_refreshes(self, pending: set[str]) -> None:
+        self._details_panel._flush_debounced_details_refreshes(pending)
 
     def _register_interaction_window(self, window: QtWidgets.QWidget | None) -> None:
         self._interaction_gate.register_window(window)
@@ -1922,13 +1925,16 @@ class ImageToolManager(_ImageToolManagerBase):
             self._dependency_tracker.refs_for_uid(uid)
         if change & _ManagedNodeChange.INFO:
             self._figure_collection.update_gallery_icon(uid)
-            self._schedule_details_refresh(uid, after_current_batch=True)
-        if not change & _ManagedNodeChange.PROVENANCE_DISPLAY:
-            return
-        if self._is_figure_uid(uid):
-            self._schedule_details_refresh(uid)
-        else:
+        if change & _ManagedNodeChange.PROVENANCE_DISPLAY and not self._is_figure_uid(
+            uid
+        ):
             self.tree_view.refresh(uid)
+        if change & (_ManagedNodeChange.INFO | _ManagedNodeChange.PROVENANCE_DISPLAY):
+            node = self._tool_graph.nodes[uid]
+            if node.tool_window is not None:
+                self._schedule_debounced_details_refresh(uid)
+            else:
+                self._schedule_details_refresh(uid, after_current_batch=True)
 
     def _flush_idle_work(
         self,

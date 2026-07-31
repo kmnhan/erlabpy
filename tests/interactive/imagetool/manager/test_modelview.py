@@ -36,6 +36,7 @@ from erlab.interactive.imagetool._provenance._operations import (
 from erlab.interactive.imagetool.manager import ImageToolManager, load_in_manager
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
+from erlab.interactive.imagetool.manager._metadata import _ManagerDetailsRefreshQueue
 from erlab.interactive.imagetool.manager._modelview import (
     _FIGURE_SOURCE_MIME,
     _MAX_TEXT_WIDTH_CACHE_SIZE,
@@ -57,6 +58,43 @@ from .helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def test_details_refresh_queue_ignores_superseded_idle_request(qtbot) -> None:
+    idle_callbacks: list[Callable[[], None]] = []
+    flushed: list[set[str]] = []
+    parent = QtCore.QObject()
+    queue = _ManagerDetailsRefreshQueue(
+        parent,
+        lambda pending: flushed.append(set(pending)),
+        idle_scheduler=lambda _key, callback: idle_callbacks.append(callback),
+    )
+    queue.set_interval(1)
+
+    queue.schedule("node")
+    qtbot.wait_until(lambda: len(idle_callbacks) == 1)
+    stale_callback = idle_callbacks.pop()
+
+    queue.schedule("node")
+    stale_callback()
+    assert flushed == []
+    assert queue.pending_uids == {"node"}
+
+    qtbot.wait_until(lambda: len(idle_callbacks) == 1)
+    idle_callbacks.pop()()
+
+    assert flushed == [{"node"}]
+    assert not queue.pending_uids
+
+    direct_flushed: list[set[str]] = []
+    direct_parent = QtCore.QObject()
+    direct_queue = _ManagerDetailsRefreshQueue(
+        direct_parent,
+        lambda pending: direct_flushed.append(set(pending)),
+    )
+    direct_queue.set_interval(1)
+    direct_queue.schedule("direct-node")
+    qtbot.wait_until(lambda: direct_flushed == [{"direct-node"}])
 
 
 def test_dependency_tracker_uses_passive_tool_provenance() -> None:
@@ -1256,6 +1294,7 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
             original_set_metadata_node(node)
 
         monkeypatch.setattr(manager, "_set_metadata_node", _record_metadata_rebuild)
+        manager._details_refresh_queue.set_interval(1)
         child_node = manager._child_node(uid)
         tool._info_text = "updated child info"
         child_node._handle_tool_info_changed()
@@ -1269,8 +1308,8 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
         assert manager._interaction_gate.pending_keys.count(("node-change", uid)) == 1
         manager._flush_idle_work(force=True)
         assert metadata_updates == []
-        assert ("details-refresh", uid) in manager._interaction_gate.pending_keys
-        manager._flush_idle_work(force=True)
+        assert manager._details_refresh_queue.pending_uids == {uid}
+        qtbot.wait_until(lambda: metadata_updates == [uid], timeout=1000)
         assert metadata_updates == [uid]
         assert "updated child info final" in manager.text_box.toPlainText()
 
@@ -1303,7 +1342,7 @@ def test_childtool_info_text_is_cached_until_info_changes(
         assert tool.info_text_requests == 2
 
 
-def test_tree_data_changed_refreshes_details_only_for_selected_rows(
+def test_tree_refresh_does_not_invalidate_details_without_node_change(
     qtbot,
     monkeypatch,
     test_data,
@@ -1334,33 +1373,59 @@ def test_tree_data_changed_refreshes_details_only_for_selected_rows(
 
         selected_uid = manager._tool_graph.root_wrappers[0].uid
         manager.tree_view.refresh(0)
-        assert metadata_updates == []
-        assert ("details-refresh", selected_uid) in (
-            manager._interaction_gate.pending_keys
-        )
-
         manager._flush_idle_work(force=True)
+        assert metadata_updates == []
+
+        manager._tool_graph.notify_node_change(
+            selected_uid,
+            _ManagedNodeChange.INFO,
+        )
+        manager._flush_idle_work(force=True)
+        manager._flush_idle_work(force=True)
+
         assert metadata_updates == [selected_uid]
 
-        tool = _InfoRefreshTool(test_data)
-        child_uid = manager.add_childtool(tool, 0, show=False)
-        manager.tree_view.clearSelection()
-        select_child_tool(manager, child_uid)
-        manager._flush_idle_work(force=True)
-        metadata_updates.clear()
 
-        manager.remove_imagetool(1)
-        assert manager.ntools == 1
+def test_presentation_change_refreshes_only_relevant_multi_selection(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        (test_data + 1).qshow(manager=True)
+        (test_data + 2).qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+        select_tools(manager, [0, 1])
         manager._flush_idle_work(force=True)
-        metadata_updates.clear()
-        manager.tree_view.refresh(0)
-        manager._flush_idle_work(force=True)
-        assert metadata_updates == []
 
-        manager.tree_view.refresh()
-        manager._flush_idle_work(force=True)
+        updates: list[str | None] = []
+        original_update_info = manager._update_info
 
-        assert metadata_updates == [child_uid]
+        def _record_update(*, uid: str | None = None) -> None:
+            updates.append(uid)
+            original_update_info(uid=uid)
+
+        monkeypatch.setattr(manager, "_update_info", _record_update)
+
+        manager._tool_graph.root_wrappers[2]._set_name("unselected", manual=False)
+        manager._flush_idle_work(force=True)
+        assert updates == []
+
+        manager._tool_graph.root_wrappers[0]._set_name("selected", manual=False)
+        manager._flush_idle_work(force=True)
+        assert updates == [None]
+
+        manager._tool_graph.notify_node_change(
+            None,
+            _ManagedNodeChange.PRESENTATION,
+        )
+        manager._flush_idle_work(force=True)
+        assert updates == [None, None]
 
 
 def test_presentation_changes_refresh_only_dependent_details(
@@ -1850,6 +1915,7 @@ def test_tool_provenance_change_reindexes_and_refreshes_dependency_metadata(
 
         assert ("node-change", uid) in manager._interaction_gate.pending_keys
         manager._flush_idle_work(force=True)
+        manager._details_refresh_queue.flush()
 
         assert manager.dependency_status_for_uid(uid) == "current"
         assert uid in manager._dependency_dependent_uids(source_node.uid)
@@ -1868,12 +1934,16 @@ def test_manager_node_change_job_handles_removed_and_figure_nodes() -> None:
             ),
             "removed-uid": _ManagedNodeChange.DEPENDENCY_INDEX,
         },
-        _tool_graph=types.SimpleNamespace(nodes={uid: object()}),
+        _tool_graph=types.SimpleNamespace(
+            nodes={uid: types.SimpleNamespace(tool_window=None)}
+        ),
         _dependency_tracker=types.SimpleNamespace(
             refs_for_uid=indexed_uids.append,
         ),
         _is_figure_uid=lambda candidate_uid: candidate_uid == uid,
-        _schedule_details_refresh=refreshed_uids.append,
+        _schedule_details_refresh=lambda target_uid, **_kwargs: refreshed_uids.append(
+            target_uid
+        ),
     )
 
     ImageToolManager._flush_managed_node_change(
@@ -1957,7 +2027,7 @@ def test_repeated_details_refresh_reuses_metadata_widgets_and_rows(
         manager._details_panel._populate_metadata_derivation_item_children(invalid_item)
         assert invalid_item.childCount() == 0
 
-        manager._details_panel._flush_pending_tool_metadata_updates({wrapper.uid})
+        manager._details_panel._flush_debounced_details_refreshes({wrapper.uid})
         assert manager._metadata_node_uid == wrapper.uid
 
 
@@ -2110,6 +2180,7 @@ def test_full_tool_provenance_promotion_refreshes_cached_derivation(
 
         assert child_node.derivation_code
         manager._flush_idle_work(force=True)
+        manager._details_refresh_queue.flush()
 
         assert calls == [False, True]
         assert child_node.derivation_display_rows
@@ -2517,12 +2588,11 @@ def test_childtool_update_burst_rebuilds_selected_details_once(
 
         assert metadata_updates == []
         manager._flush_idle_work(force=True)
-        assert metadata_updates == []
-        assert (
-            manager._interaction_gate.pending_keys.count(("details-refresh", uid)) == 1
-        )
-
         manager._flush_idle_work(force=True)
+        assert metadata_updates == []
+        assert manager._details_refresh_queue.pending_uids == {uid}
+
+        manager._details_refresh_queue.flush()
         assert metadata_updates == [uid]
 
 
@@ -2940,12 +3010,12 @@ def test_childtool_info_changed_for_unselected_node_keeps_visible_details(
         select_tools(manager, [0])
         manager._update_info()
         visible_html = manager.text_box.toHtml()
-        manager._tool_metadata_queue.set_interval(1)
+        manager._details_refresh_queue.set_interval(1)
 
         tool.emit_info_text("updated child info")
 
-        assert manager._tool_metadata_queue.pending_uids == frozenset()
-        assert not manager._tool_metadata_queue.is_active()
+        assert manager._details_refresh_queue.pending_uids == frozenset()
+        assert not manager._details_refresh_queue.is_active()
         assert manager.text_box.toHtml() == visible_html
         assert "updated child info" not in manager.text_box.toPlainText()
 

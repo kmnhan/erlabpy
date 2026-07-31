@@ -4296,9 +4296,6 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
         def _mark_tool_info_dirty(self, uid: str) -> None:
             self._mark_node_state_dirty(uid)
 
-        def _schedule_tool_metadata_update(self, uid: str) -> None:
-            self._update_info(uid=uid)
-
         def _schedule_details_refresh(self, uid: str) -> None:
             self._update_info(uid=uid)
 
@@ -4537,9 +4534,6 @@ def test_managed_tool_window_node_detached_update_branches(
         def _mark_tool_info_dirty(self, uid: str) -> None:
             self._mark_node_state_dirty(uid)
 
-        def _schedule_tool_metadata_update(self, uid: str) -> None:
-            self._update_info(uid=uid)
-
         def _schedule_details_refresh(self, uid: str) -> None:
             self._update_info(uid=uid)
 
@@ -4772,9 +4766,6 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
 
         def _mark_tool_info_dirty(self, uid: str) -> None:
             self._mark_node_state_dirty(uid)
-
-        def _schedule_tool_metadata_update(self, uid: str) -> None:
-            self._update_info(uid=uid)
 
         def _schedule_details_refresh(self, uid: str) -> None:
             self._update_info(uid=uid)

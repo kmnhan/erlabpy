@@ -321,9 +321,9 @@ class _LineageController:
         refresh_figures = False
         tree_uids: list[str] = []
         for dependent_uid in self._manager._dependency_dependent_uids(uid):
+            self._manager._schedule_details_refresh(dependent_uid)
             if self._manager._is_figure_uid(dependent_uid):
                 refresh_figures = True
-                self._manager._update_info(uid=dependent_uid)
             else:
                 tree_uids.append(dependent_uid)
         self._manager.tree_view.refresh_many(tree_uids)

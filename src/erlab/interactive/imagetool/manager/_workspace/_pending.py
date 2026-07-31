@@ -34,6 +34,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool._provenance._operations import (
     ImageToolSelectionSourceBinding,
 )
+from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from erlab.interactive.imagetool.manager._widgets import _curve_preview_data
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
@@ -1019,7 +1020,7 @@ class _PendingWorkspacePayloads:
                     node.clear_pending_workspace_payload()
                     node.update_title()
                     self._loader._sync_materialized_workspace_link_group(node)
-                self._manager.tree_view.refresh(node.uid)
+                node._notify_change(_ManagedNodeChange.ROW | _ManagedNodeChange.INFO)
                 return True
         except Exception:
             logger.exception(
@@ -1126,8 +1127,7 @@ class _PendingWorkspacePayloads:
             )
             return False
         else:
-            self._manager.tree_view.refresh(node.uid)
-            self._manager._schedule_details_refresh(node.uid)
+            node._notify_change(_ManagedNodeChange.ROW | _ManagedNodeChange.INFO)
             return True
 
     def _has_pending_workspace_linked_slicers(

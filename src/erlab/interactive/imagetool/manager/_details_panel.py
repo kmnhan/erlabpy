@@ -1420,13 +1420,13 @@ class _DetailsPanelController:
                 self._manager._clear_metadata()
                 self._manager.preview_widget.setVisible(False)
 
-    def _schedule_tool_metadata_update(self, uid: str) -> None:
-        """Refresh expensive selected-tool metadata after bursty info updates settle."""
-        if not self._tool_metadata_update_relevant(uid):
+    def _schedule_debounced_details_refresh(self, uid: str) -> None:
+        """Refresh selected details after bursty node changes settle."""
+        if not self._details_refresh_relevant(uid):
             return
-        self._manager._tool_metadata_queue.schedule(uid)
+        self._manager._details_refresh_queue.schedule(uid)
 
-    def _tool_metadata_update_relevant(self, uid: str) -> bool:
+    def _details_refresh_relevant(self, uid: str) -> bool:
         selected_imagetools = self._manager._selected_imagetool_targets()
         selected_childtools = self._manager._selected_tool_uids()
         if len(selected_imagetools) + len(selected_childtools) != 1:
@@ -1473,7 +1473,7 @@ class _DetailsPanelController:
 
         return isinstance(tool_window, FigureComposerTool)
 
-    def _flush_pending_tool_metadata_updates(self, pending: set[str]) -> None:
+    def _flush_debounced_details_refreshes(self, pending: set[str]) -> None:
         uid = self._manager._metadata_node_uid
         if uid is not None and uid in pending:
             self._manager._update_info(uid=uid)

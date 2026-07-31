@@ -17,7 +17,7 @@ class _ManagedNodeChange(enum.Flag):
     PROVENANCE_DISPLAY = enum.auto()
     # Refresh labels and collection placement derived from the node.
     PRESENTATION = enum.auto()
-    # Refresh only the node's manager-tree row.
+    # Refresh only the node's manager-tree row. Do not rebuild selected details.
     ROW = enum.auto()
     # Refresh expensive tool information and previews when the manager is idle.
     INFO = enum.auto()
