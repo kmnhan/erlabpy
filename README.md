@@ -7,7 +7,9 @@
     </picture>
   </a>
 
-# ERLabPy
+# ERLab
+
+**E**xtensible and **R**eproducible **L**ibrary for the **A**nalysis of **B**and structures
 
 [![DOI](https://zenodo.org/badge/453256660.svg)](https://zenodo.org/badge/latestdoi/453256660)
 [![Supported Python Versions](https://img.shields.io/pypi/pyversions/erlab?logo=python&logoColor=white)](https://pypi.org/project/erlab/)
@@ -23,9 +25,14 @@
 
 </div>
 
-`erlab` provides tools to handle, manipulate, and visualize data from angle-resolved photoemission spectroscopy (ARPES) experiments.
+`erlab` provides tools to handle, manipulate, and visualize multidimensional array-like
+data, with a focus on angle-resolved photoemission spectroscopy (ARPES) experiments.
 
-Key elements are seamlessly integrated with popular scientific Python workflows. A fast native graphical user interface is provided for data exploration and manipulation, allowing users to get started quickly without needing to write code. The library is designed to be flexible and extensible, making it suitable for a wide range of data analysis tasks.
+Key elements are seamlessly integrated with popular scientific Python workflows. A fast
+native graphical user interface is provided for data exploration and manipulation,
+allowing users to get started quickly without needing to write code. The library is
+designed to be flexible and extensible, making it suitable for a wide range of data
+analysis tasks.
 
 ## Features
 
