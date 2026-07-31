@@ -5212,6 +5212,60 @@ def test_tool_status_source_normalization_advances_provenance_revision(qtbot) ->
     assert provenance_changes == [tool.provenance_revision]
 
 
+def test_document_change_advances_revision_before_ui_failure(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    replacement = data.rename("replacement")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    initial_revision = tool.provenance_revision
+    data_changes: list[None] = []
+    provenance_changes: list[int] = []
+    tool.sigDataChanged.connect(lambda: data_changes.append(None))
+    tool.sigProvenanceChanged.connect(
+        lambda: provenance_changes.append(tool.provenance_revision)
+    )
+
+    def fail_source_ui() -> None:
+        raise RuntimeError("source UI failed")
+
+    monkeypatch.setattr(tool, "_refresh_source_list", fail_source_ui)
+
+    with pytest.raises(RuntimeError, match="source UI failed"):
+        tool.set_source_data({"replacement": replacement})
+
+    xr.testing.assert_identical(tool.source_data()["replacement"], replacement)
+    assert tool.provenance_revision == initial_revision + 1
+    assert data_changes == [None]
+    assert provenance_changes == [tool.provenance_revision]
+
+
+def test_tool_status_advances_revision_when_render_fails(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    updated_setup = tool.tool_status.setup.model_copy(update={"figsize": (7.0, 5.0)})
+    updated_status = tool.tool_status.model_copy(update={"setup": updated_setup})
+    initial_revision = tool.provenance_revision
+    provenance_changes: list[int] = []
+    tool.sigProvenanceChanged.connect(
+        lambda: provenance_changes.append(tool.provenance_revision)
+    )
+
+    def fail_render(_tool: FigureComposerTool) -> None:
+        raise RuntimeError("preview render failed")
+
+    monkeypatch.setattr(figurecomposer_tool_module, "_render_preview", fail_render)
+
+    with pytest.raises(RuntimeError, match="preview render failed"):
+        tool.tool_status = updated_status
+
+    assert tool.tool_status.setup.figsize == (7.0, 5.0)
+    assert tool.provenance_revision == initial_revision + 1
+    assert provenance_changes == [tool.provenance_revision]
+
+
 def test_figure_composer_selected_source_codegen_fallback_uses_base_input(
     qtbot,
 ) -> None:

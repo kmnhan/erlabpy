@@ -1433,16 +1433,25 @@ def test_fit1d_multi_fit_history_and_sync_edges(qtbot, monkeypatch) -> None:
     assert not win._fit_multi_live_refresh_due()
 
     replaced: list[bool] = []
-    monkeypatch.setattr(
-        win, "_replace_last_state", lambda *_args: replaced.append(True)
-    )
+    original_replace_last_state = win._replace_last_state
+
+    def record_replace_last_state(*_args) -> None:
+        replaced.append(True)
+        original_replace_last_state()
+
+    monkeypatch.setattr(win, "_replace_last_state", record_replace_last_state)
+    initial_revision = win.provenance_revision
     win._write_history = True
     win._begin_fit_multi_history()
     assert win._fit_multi_sequence_write_history is True
     assert win._write_history is False
+    win._write_state()
+    win._write_state()
+    assert win.provenance_revision == initial_revision
     win._finish_fit_multi_history()
     assert win._write_history is True
     assert replaced == [True]
+    assert win.provenance_revision == initial_revision + 1
 
     result_ds = _fit_result_dataset(win._params, nfev=4)
     returned_params = win._store_multi_fit_result(result_ds, fit1d.time.perf_counter())

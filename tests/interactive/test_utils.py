@@ -190,6 +190,17 @@ class _PersistentTool(erlab.interactive.utils.ToolWindow[_PersistentToolState]):
         self._data = new_data
 
 
+class _FailingPersistentTool(_PersistentTool):
+    @property
+    def tool_status(self) -> _PersistentToolState:
+        return self._status
+
+    @tool_status.setter
+    def tool_status(self, status: _PersistentToolState) -> None:
+        self._status = status
+        raise RuntimeError("status update failed")
+
+
 class _PlotPersistentTool(_PersistentTool):
     tool_name = "plot-persistent-dummy"
 
@@ -360,7 +371,7 @@ def test_tool_window_history_changes_emit_provenance_signal(qtbot) -> None:
     provenance_changes: list[None] = []
     win.sigProvenanceChanged.connect(lambda: provenance_changes.append(None))
 
-    win.tool_status = _PersistentToolState(value=1)
+    win._status = _PersistentToolState(value=1)
     win._write_state()
     assert len(provenance_changes) == 1
 
@@ -370,9 +381,43 @@ def test_tool_window_history_changes_emit_provenance_signal(qtbot) -> None:
     win.redo()
     assert len(provenance_changes) == 3
 
-    win.tool_status = _PersistentToolState(value=2)
+    win._status = _PersistentToolState(value=2)
     win._replace_last_state()
     assert len(provenance_changes) == 4
+
+
+def test_tool_window_status_setter_commits_revision_after_failure(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _FailingPersistentTool(data)
+    qtbot.addWidget(win)
+    initial_revision = win.provenance_revision
+    provenance_changes: list[int] = []
+    win.sigProvenanceChanged.connect(
+        lambda: provenance_changes.append(win.provenance_revision)
+    )
+
+    with pytest.raises(RuntimeError, match="status update failed"):
+        win.tool_status = _PersistentToolState(value=1)
+
+    assert win.tool_status.value == 1
+    assert win.provenance_revision == initial_revision + 1
+    assert provenance_changes == [win.provenance_revision]
+
+
+def test_tool_window_history_suppression_does_not_suppress_revision(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+    initial_history = tuple(win._prev_states)
+    initial_revision = win.provenance_revision
+
+    with win._history_suppressed():
+        win._status = _PersistentToolState(value=1)
+        win._write_state()
+
+    assert tuple(win._prev_states) == initial_history
+    assert win.provenance_revision == initial_revision + 1
 
 
 def test_tool_window_provenance_revision_tracks_mutation_signals(qtbot) -> None:
@@ -452,11 +497,53 @@ def test_tool_window_custom_history_cannot_skip_provenance_signal(
         lambda: recorded_changes.append(None),
     )
 
-    win.tool_status = _PersistentToolState(value=1)
+    win._status = _PersistentToolState(value=1)
     win._write_state()
 
     assert provenance_changes == [None]
     assert recorded_changes == [None]
+
+
+@pytest.mark.parametrize(
+    ("setter_name", "attribute_name"),
+    [
+        (
+            "set_input_provenance_parent_fetcher",
+            "_input_provenance_parent_fetcher",
+        ),
+        ("set_source_parent_fetcher", "_source_parent_fetcher"),
+    ],
+)
+def test_tool_window_fetcher_replacement_commits_revision_after_sync_failure(
+    qtbot,
+    monkeypatch,
+    setter_name: str,
+    attribute_name: str,
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._source_spec = full_data()
+
+    def callback() -> xr.DataArray:
+        return data
+
+    def fail_sync() -> None:
+        raise RuntimeError("snapshot sync failed")
+
+    monkeypatch.setattr(win, "_sync_input_provenance_snapshot", fail_sync)
+    initial_revision = win.provenance_revision
+    provenance_changes: list[int] = []
+    win.sigProvenanceChanged.connect(
+        lambda: provenance_changes.append(win.provenance_revision)
+    )
+
+    with pytest.raises(RuntimeError, match="snapshot sync failed"):
+        getattr(win, setter_name)(callback)
+
+    assert getattr(win, attribute_name) is callback
+    assert win.provenance_revision == initial_revision + 1
+    assert provenance_changes == [win.provenance_revision]
 
 
 def test_tool_window_history_guard_edges(qtbot, monkeypatch) -> None:
