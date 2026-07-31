@@ -2208,6 +2208,32 @@ def test_close_shortcut_filter_weakly_refs_bound_callback(qtbot) -> None:
     assert calls == ["close", "close"]
 
 
+def test_close_shortcut_filter_skips_non_key_events_before_validity_check(
+    qtbot,
+    monkeypatch,
+) -> None:
+    window = QtWidgets.QMainWindow()
+    qtbot.addWidget(window)
+    erlab.interactive.utils._install_close_shortcut(window, lambda: None)
+    shortcut_filter = window._erlab_close_shortcut_refs[1]
+    validity_calls: list[tuple[object, ...]] = []
+
+    def _record_validity_call(*objects: object) -> bool:
+        validity_calls.append(objects)
+        return True
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "qt_is_valid",
+        _record_validity_call,
+    )
+
+    event = QtCore.QEvent(QtCore.QEvent.Type.UpdateRequest)
+
+    assert not shortcut_filter.eventFilter(window, event)
+    assert validity_calls == []
+
+
 def test_close_shortcut_default_callback_closes_live_widget(qtbot) -> None:
     window = QtWidgets.QMainWindow()
     qtbot.addWidget(window)

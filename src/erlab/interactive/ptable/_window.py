@@ -901,12 +901,18 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         watched: QtCore.QObject | None,
         event: QtCore.QEvent | None,
     ) -> bool:
+        if event is None or event.type() not in {
+            QtCore.QEvent.Type.WindowDeactivate,
+            QtCore.QEvent.Type.MouseButtonPress,
+        }:
+            return super().eventFilter(watched, event)
+
         search_popup = getattr(self, "search_popup", None)
         if search_popup is None or not erlab.interactive.utils.qt_is_valid(
             search_popup
         ):
             return super().eventFilter(watched, event)
-        if search_popup.isVisible() and event is not None:
+        if search_popup.isVisible():
             if event.type() == QtCore.QEvent.Type.WindowDeactivate:
                 self._hide_search_popup(reset_navigation=True)
             elif event.type() == QtCore.QEvent.Type.MouseButtonPress:
@@ -1190,16 +1196,24 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
             if plot_atomic_number is None
             else _element_records()[plot_atomic_number]
         )
-        self.inspector.set_elements(
-            selected_records,
-            active_record=current_record,
-            plot_record=plot_record,
-            notation=self.current_notation,
-            hv=self.hv,
-            workfunction=self.workfunction,
-            max_harmonic=self.max_harmonic,
-            preview=preview,
-        )
+        inspector_updates_enabled = self.inspector.updatesEnabled()
+        if inspector_updates_enabled:
+            self.inspector.setUpdatesEnabled(False)
+        try:
+            self.inspector.set_elements(
+                selected_records,
+                active_record=current_record,
+                plot_record=plot_record,
+                notation=self.current_notation,
+                hv=self.hv,
+                workfunction=self.workfunction,
+                max_harmonic=self.max_harmonic,
+                preview=preview,
+            )
+        finally:
+            if inspector_updates_enabled:
+                self.inspector.setUpdatesEnabled(True)
+                self.inspector.update()
         self._sync_vertical_minimum_height()
         if ensure_visible:
             self.table_view.ensure_atomic_number_visible(self._current_atomic_number)
@@ -1332,7 +1346,7 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
 
     def _clear_hover_preview(self) -> None:
         self.table_view.clear_hover_tracking()
-        self._set_hover_atomic_number(None)
+        self._hover_atomic_number = None
 
     def _handle_card_selected(self, atomic_number: int, modifiers: object) -> None:
         if _has_keyboard_modifier(modifiers, QtCore.Qt.KeyboardModifier.ShiftModifier):
