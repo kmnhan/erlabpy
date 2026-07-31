@@ -1773,22 +1773,19 @@ class ImageToolManager(_ImageToolManagerBase):
         _roles: object = None,
     ) -> None:
         selected = self.tree_view.selectedIndexes()
-        root_wide_change = (
-            not top_left.parent().isValid()
-            and not bottom_right.parent().isValid()
-            and top_left.row() == 0
-            and bottom_right.row() == self.tree_view._model.rowCount() - 1
-        )
         changed_selected = [
             index
             for index in selected
-            if root_wide_change
-            or (
-                index.parent() == top_left.parent()
-                and top_left.row() <= index.row() <= bottom_right.row()
-            )
+            if index.parent() == top_left.parent()
+            and top_left.row() <= index.row() <= bottom_right.row()
         ]
         if not changed_selected:
+            return
+        self._schedule_selected_details_refresh()
+
+    def _schedule_selected_details_refresh(self) -> None:
+        selected = self.tree_view.selectedIndexes()
+        if not selected:
             return
         if len(selected) != 1:
             self._queue_idle_work(
@@ -1796,7 +1793,7 @@ class ImageToolManager(_ImageToolManagerBase):
                 self._update_info,
             )
             return
-        pointer = changed_selected[0].internalPointer()
+        pointer = selected[0].internalPointer()
         uid = pointer if isinstance(pointer, str) else pointer.uid
         self._schedule_details_refresh(uid)
 

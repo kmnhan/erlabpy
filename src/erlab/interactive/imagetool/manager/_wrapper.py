@@ -543,6 +543,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @window.setter
     def window(self, value: QtWidgets.QWidget | None) -> None:
+        previous_type_badge = self.type_badge_text
         if value is not None:
             value_is_imagetool = isinstance(value, ImageTool)
             if value_is_imagetool != self.is_imagetool:
@@ -605,6 +606,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
         if value is None:
             self._sync_manager_window_reference()
+            self._notify_type_badge_change(previous_type_badge)
             return
 
         if isinstance(value, ImageTool):
@@ -639,6 +641,7 @@ class _ManagedWindowNode(QtCore.QObject):
             for plot in value.slicer_area._materialized_axes():
                 plot.ensure_manager_figure_actions()
             self._sync_manager_window_reference()
+            self._notify_type_badge_change(previous_type_badge)
             return
 
         tool = typing.cast("erlab.interactive.utils.ToolWindow", value)
@@ -670,12 +673,21 @@ class _ManagedWindowNode(QtCore.QObject):
         for secondary_window, _title in tool._managed_secondary_windows():
             self._configure_tool_secondary_window(secondary_window)
         self._sync_manager_window_reference()
+        self._notify_type_badge_change(previous_type_badge)
 
     def _sync_manager_window_reference(self) -> None:
         manager = self._manager()
         if manager is None or manager._tool_graph.nodes.get(self.uid) is not self:
             return
         manager._tool_graph.update_node_window_reference(self)
+
+    def _notify_type_badge_change(self, previous_type_badge: str | None) -> None:
+        if self.type_badge_text == previous_type_badge:
+            return
+        manager = self._manager()
+        if manager is None or manager._tool_graph.nodes.get(self.uid) is not self:
+            return
+        manager._tool_graph.presentation_changed()
 
     def _workspace_reference_dataset(
         self,
@@ -874,11 +886,13 @@ class _ManagedWindowNode(QtCore.QObject):
     ) -> None:
         if self._pending_workspace_payload is None:
             return
+        previous_type_badge = self.type_badge_text
         self._pending_workspace_payload_attrs = dict(attrs)
         self._invalidate_info_text_cache()
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
         self._pending_workspace_curve_cache = None
+        self._notify_type_badge_change(previous_type_badge)
 
     def set_pending_workspace_payload(
         self,
@@ -887,6 +901,7 @@ class _ManagedWindowNode(QtCore.QObject):
         payload_path: str,
         payload_attrs: Mapping[str, typing.Any] | None = None,
     ) -> None:
+        previous_type_badge = self.type_badge_text
         self._clear_pending_workspace_link_slicer_cache()
         self._invalidate_info_text_cache()
         self._invalidate_preview_image_cache()
@@ -901,6 +916,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
         self._pending_workspace_curve_cache = None
+        self._notify_type_badge_change(previous_type_badge)
 
     def set_pending_workspace_memory_payload(
         self,
@@ -922,6 +938,7 @@ class _ManagedWindowNode(QtCore.QObject):
             cache[2].deleteLater()
 
     def clear_pending_workspace_payload(self) -> None:
+        previous_type_badge = self.type_badge_text
         self._clear_pending_workspace_link_slicer_cache()
         self._invalidate_info_text_cache()
         self._invalidate_preview_image_cache()
@@ -931,6 +948,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._pending_workspace_metadata_cache = None
         self._pending_workspace_preview_cache = None
         self._pending_workspace_curve_cache = None
+        self._notify_type_badge_change(previous_type_badge)
 
     def materialize_pending_workspace_payload(self) -> bool:
         if self._pending_workspace_payload is None:

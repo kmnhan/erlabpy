@@ -109,6 +109,11 @@ class _ManagerDependencyTracker:
         return status
 
     def dependent_uids(self, uid: str) -> list[str]:
+        # Registration and provenance signals defer index work so that repeated
+        # changes can coalesce. Complete that bounded pending work before a
+        # reverse lookup so a source update cannot miss a newly added edge.
+        for pending_uid in tuple(self._unindexed_uids):
+            self.refs_for_uid(pending_uid)
         dependents = self._dependents_by_source_uid.get(uid, {})
         for dependent_uid in dependents:
             self._status_cache.pop(dependent_uid, None)

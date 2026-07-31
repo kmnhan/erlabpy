@@ -1978,6 +1978,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
             bottom = self._model.index(self._model.rowCount() - 1, 0)
             if top.isValid() and bottom.isValid():  # pragma: no branch
                 self._model.dataChanged.emit(top, bottom)
+            self._model.manager._schedule_selected_details_refresh()
         else:
             row_idx = self._model._row_index(idx)
             if row_idx.isValid():  # pragma: no branch

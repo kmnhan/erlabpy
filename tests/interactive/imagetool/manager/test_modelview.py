@@ -228,7 +228,10 @@ def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
                 tool_window=None,
                 provenance_spec=dependent_spec,
             ),
-            "unrelated": object(),
+            "unrelated": types.SimpleNamespace(
+                tool_window=None,
+                provenance_spec=None,
+            ),
             "dependent-a": types.SimpleNamespace(
                 tool_window=None,
                 provenance_spec=dependent_spec,
@@ -239,8 +242,6 @@ def test_dependency_tracker_does_not_scan_all_nodes_for_dependents() -> None:
     tracker = _ManagerDependencyTracker(typing.cast("_ManagerToolGraph", graph))
     for uid in ("source-uid", "dependent-b", "unrelated", "dependent-a"):
         tracker.note_uid(uid)
-    tracker.refs_for_uid("dependent-b")
-    tracker.refs_for_uid("dependent-a")
 
     assert tracker.dependent_uids("source-uid") == [
         "dependent-b",
@@ -1331,6 +1332,14 @@ def test_tree_data_changed_refreshes_details_only_for_selected_rows(
         select_child_tool(manager, child_uid)
         manager._flush_idle_work(force=True)
         metadata_updates.clear()
+
+        manager.remove_imagetool(1)
+        assert manager.ntools == 1
+        manager._flush_idle_work(force=True)
+        metadata_updates.clear()
+        manager.tree_view.refresh(0)
+        manager._flush_idle_work(force=True)
+        assert metadata_updates == []
 
         manager.tree_view.refresh()
         manager._flush_idle_work(force=True)
