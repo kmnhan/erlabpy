@@ -7918,6 +7918,66 @@ def test_figure_composer_toolbar_axes_plain_text_handles_missing_document(
     assert _method_operations(tool, FigureMethodFamily.AXES, "set_title") == ()
 
 
+def test_figure_composer_toolbar_axes_dialog_scrolls_on_small_screens(qtbot) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    tab_widget = dialog.findChild(
+        QtWidgets.QTabWidget, "figureComposerToolbarCustomizeTabs"
+    )
+    button_box = dialog.findChild(QtWidgets.QDialogButtonBox)
+    assert tab_widget is not None
+    assert button_box is not None
+    assert dialog.height() <= int(
+        dialog.screen().availableGeometry().height()
+        * figurecomposer_toolbar_dialogs._DIALOG_AVAILABLE_HEIGHT_FRACTION
+    )
+
+    scroll_areas = tuple(
+        typing.cast("QtWidgets.QScrollArea", tab_widget.widget(index))
+        for index in range(tab_widget.count())
+    )
+    assert all(isinstance(area, QtWidgets.QScrollArea) for area in scroll_areas)
+    for scroll_area in scroll_areas:
+        assert scroll_area.widgetResizable()
+        assert (
+            scroll_area.horizontalScrollBarPolicy()
+            == QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        assert (
+            scroll_area.verticalScrollBarPolicy()
+            == QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        assert not scroll_area.isAncestorOf(button_box)
+
+    axes_scroll_area = scroll_areas[0]
+    axes_page = axes_scroll_area.widget()
+    tick_editor = axes_page.findChild(
+        figurecomposer_tick_params.TickParamsEditorWidget,
+        "figureComposerToolbarAxesTickParamsEditor",
+    )
+    assert tick_editor is not None
+
+    dialog.resize(dialog.width(), 360)
+    QtWidgets.QApplication.processEvents()
+    vertical_scrollbar = axes_scroll_area.verticalScrollBar()
+    assert vertical_scrollbar.maximum() > 0
+    assert axes_scroll_area.horizontalScrollBar().maximum() == 0
+    assert button_box.isVisible()
+
+    dialog.resize(100, dialog.height())
+    QtWidgets.QApplication.processEvents()
+    assert axes_scroll_area.horizontalScrollBar().maximum() == 0
+
+    axes_scroll_area.ensureWidgetVisible(tick_editor.advanced_disclosure)
+    QtWidgets.QApplication.processEvents()
+    assert vertical_scrollbar.value() > 0
+
+
 def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     data = _figure_composer_image_source("data")
     tool = FigureComposerTool(

@@ -204,6 +204,7 @@ _PERSISTED_PREVIEW_CACHE_SIZE = (512, 384)
 _PERSISTED_PREVIEW_CACHE_MAX_BYTES = 384_000
 _RESTORE_OPERATION_EDITOR_KEY = "figure_composer_operation_editor"
 _RESTORE_REDRAW_KEY = "figure_composer_restored_redraw"
+_INITIAL_SIZE_HINT_EXTRA_HEIGHT = 80
 _STEPS_CLIPBOARD_MIME = "application/x-erlab-figure-composer-steps+json"
 _STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.figure_composer.steps"
 _STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
@@ -349,6 +350,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     _PROVENANCE_IS_MODEL_OWNED = True
 
     StateModel = FigureRecipeState
+
+    def sizeHint(self) -> QtCore.QSize:
+        hint = super().sizeHint()
+        return QtCore.QSize(
+            hint.width(), hint.height() + _INITIAL_SIZE_HINT_EXTRA_HEIGHT
+        )
 
     def __init__(
         self,

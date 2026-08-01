@@ -126,6 +126,7 @@ _STYLE_TARGET_PLOT_SLICES = "plot_slices"
 _STYLE_TARGET_LINE = "line"
 _STYLE_TARGET_IMAGE = "image"
 _STYLE_TARGET_COMBO_MINIMUM_CONTENTS = 28
+_DIALOG_AVAILABLE_HEIGHT_FRACTION = 0.9
 
 
 class _StyleTarget(typing.NamedTuple):
@@ -159,6 +160,46 @@ class _ElidingComboBox(QtWidgets.QComboBox):
         view = self.view()
         if view is not None:  # pragma: no branch - Qt creates the popup view.
             view.setTextElideMode(QtCore.Qt.TextElideMode.ElideMiddle)
+
+
+class _VerticalScrollArea(QtWidgets.QScrollArea):
+    """Scroll vertically without allowing content to clip horizontally."""
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        hint = super().minimumSizeHint()
+        content = self.widget()
+        if content is None:
+            return hint
+        width = content.minimumSizeHint().width() + 2 * self.frameWidth()
+        if (
+            self.verticalScrollBarPolicy()
+            != QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        ):
+            scrollbar = typing.cast("QtWidgets.QScrollBar", self.verticalScrollBar())
+            width += scrollbar.sizeHint().width()
+        return QtCore.QSize(max(hint.width(), width), hint.height())
+
+
+def _scrollable_tab_page(
+    parent: QtWidgets.QWidget,
+    *,
+    object_name: str,
+) -> tuple[QtWidgets.QScrollArea, QtWidgets.QWidget]:
+    scroll_area = _VerticalScrollArea(parent)
+    scroll_area.setObjectName(object_name)
+    scroll_area.setWidgetResizable(True)
+    scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+    scroll_area.setHorizontalScrollBarPolicy(
+        QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    )
+    scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    page = QtWidgets.QWidget(scroll_area)
+    page.setSizePolicy(
+        QtWidgets.QSizePolicy.Policy.Expanding,
+        QtWidgets.QSizePolicy.Policy.Preferred,
+    )
+    scroll_area.setWidget(page)
+    return scroll_area, page
 
 
 def _add_axis_form_row(
@@ -361,23 +402,28 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     tab_widget.setObjectName("figureComposerToolbarCustomizeTabs")
     root_layout.addWidget(tab_widget, 1)
 
-    axes_page = QtWidgets.QWidget(tab_widget)
+    axes_tab, axes_page = _scrollable_tab_page(
+        tab_widget,
+        object_name="figureComposerToolbarAxesScrollArea",
+    )
     form_layout = QtWidgets.QFormLayout(axes_page)
     form_layout.setFieldGrowthPolicy(
         QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
     )
-    tab_widget.addTab(axes_page, "Axes")
+    tab_widget.addTab(axes_tab, "Axes")
 
-    curves_page, curves_combo, curves_layout = _style_tab_page(
+    curves_tab, curves_page, curves_combo, curves_layout = _style_tab_page(
         tab_widget,
+        scroll_object_name="figureComposerToolbarCurvesScrollArea",
         combo_object_name="figureComposerToolbarCurveTargetCombo",
     )
-    images_page, images_combo, images_layout = _style_tab_page(
+    images_tab, images_page, images_combo, images_layout = _style_tab_page(
         tab_widget,
+        scroll_object_name="figureComposerToolbarImagesScrollArea",
         combo_object_name="figureComposerToolbarImageTargetCombo",
     )
-    curves_tab_index = tab_widget.addTab(curves_page, "Curves")
-    images_tab_index = tab_widget.addTab(images_page, "Images")
+    curves_tab_index = tab_widget.addTab(curves_tab, "Curves")
+    images_tab_index = tab_widget.addTab(images_tab, "Images")
 
     title_edit = _axis_plain_text_edit(axes_page, "figureComposerToolbarAxesTitleEdit")
     xlabel_edit = _axis_plain_text_edit(
@@ -868,6 +914,17 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     button_box.rejected.connect(dialog.close)
     root_layout.addWidget(button_box)
 
+    screen = dialog.screen()
+    if screen is not None:  # pragma: no branch - QApplication assigns a screen.
+        size_hint = dialog.sizeHint()
+        available_height = screen.availableGeometry().height()
+        dialog.resize(
+            size_hint.width(),
+            min(
+                size_hint.height(),
+                int(available_height * _DIALOG_AVAILABLE_HEIGHT_FRACTION),
+            ),
+        )
     _show_toolbar_dialog(tool, "_axes_customize_dialog", dialog)
 
 
@@ -1625,9 +1682,18 @@ class _ImageOperationStyleWidget(QtWidgets.QWidget):
 def _style_tab_page(
     parent: QtWidgets.QWidget,
     *,
+    scroll_object_name: str,
     combo_object_name: str,
-) -> tuple[QtWidgets.QWidget, QtWidgets.QComboBox, QtWidgets.QVBoxLayout]:
-    page = QtWidgets.QWidget(parent)
+) -> tuple[
+    QtWidgets.QScrollArea,
+    QtWidgets.QWidget,
+    QtWidgets.QComboBox,
+    QtWidgets.QVBoxLayout,
+]:
+    scroll_area, page = _scrollable_tab_page(
+        parent,
+        object_name=scroll_object_name,
+    )
     layout = QtWidgets.QVBoxLayout(page)
     combo = _ElidingComboBox(page)
     combo.setObjectName(combo_object_name)
@@ -1640,7 +1706,7 @@ def _style_tab_page(
     editor_layout.setContentsMargins(0, 0, 0, 0)
     layout.addLayout(editor_layout)
     layout.addStretch(1)
-    return page, combo, editor_layout
+    return scroll_area, page, combo, editor_layout
 
 
 def _connect_panel_editor_signal(

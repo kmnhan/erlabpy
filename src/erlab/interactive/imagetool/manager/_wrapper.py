@@ -2423,14 +2423,15 @@ class _ManagedWindowNode(QtCore.QObject):
         if not window.isVisible() and self._recent_geometry is not None:
             window.setGeometry(self._recent_geometry)
 
-        if sys.platform == "win32":  # pragma: no cover
+        if sys.platform == "win32":
+            window_flags = window.windowFlags()
+            window_geometry = window.geometry()
             window.setWindowFlags(
-                window.windowFlags() | QtCore.Qt.WindowType.WindowStaysOnTopHint
+                window_flags | QtCore.Qt.WindowType.WindowStaysOnTopHint
             )
             window.show()
-            window.setWindowFlags(
-                window.windowFlags() & ~QtCore.Qt.WindowType.WindowStaysOnTopHint
-            )
+            window.setWindowFlags(window_flags)
+            window.setGeometry(window_geometry)
 
         window.show()
         window.activateWindow()
