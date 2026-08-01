@@ -7,6 +7,7 @@ from pathlib import Path
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
+import matplotlib.figure
 import matplotlib.text
 import numpy as np
 import pytest
@@ -1225,6 +1226,94 @@ def test_figure_composer_unattributed_preview_draw_error_uses_inline_banner(
     assert banner is not None
     assert not banner.isHidden()
     assert tool.findChild(QtWidgets.QStatusBar) is None
+
+
+def test_figure_composer_artist_tracking_preserves_replaced_callback() -> None:
+    figure = matplotlib.figure.Figure()
+    axes = figure.subplots()
+
+    def replacement_callback(_artist, _stale: bool) -> None:
+        pass
+
+    with figurecomposer_rendering._track_operation_artists(figure, "operation"):
+        axes.stale_callback = replacement_callback
+
+    assert axes.stale_callback is replacement_callback
+
+
+def test_figure_composer_preview_draw_error_ignores_untagged_artist(qtbot) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    operation = FigureOperationState.line(label="line", source="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tagged_artist = matplotlib.text.Text()
+    setattr(
+        tagged_artist,
+        figurecomposer_rendering._OPERATION_ID_ATTR,
+        operation.operation_id,
+    )
+    untagged_artist = matplotlib.text.Text()
+
+    def raise_draw_error(
+        failing_artist: matplotlib.text.Text,
+        unrelated_artist: matplotlib.text.Text,
+    ) -> None:
+        if failing_artist is unrelated_artist:
+            raise AssertionError("Artists must be different")
+        raise RuntimeError("draw failure")
+
+    try:
+        raise_draw_error(tagged_artist, untagged_artist)
+    except RuntimeError as exc:
+        figurecomposer_rendering._set_preview_draw_error(tool, exc)
+
+    assert tool._operation_render_errors == {
+        operation.operation_id: "RuntimeError: draw failure"
+    }
+    assert tool._preview_render_error is None
+
+
+def test_figure_composer_stale_operation_draw_error_uses_inline_banner(qtbot) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    current_operation = FigureOperationState.line(label="current", source="data")
+    removed_operation = FigureOperationState.line(label="removed", source="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(current_operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    stale_artist = matplotlib.text.Text()
+    setattr(
+        stale_artist,
+        figurecomposer_rendering._OPERATION_ID_ATTR,
+        removed_operation.operation_id,
+    )
+
+    def raise_draw_error(artist: matplotlib.text.Text) -> None:
+        if artist is not stale_artist:
+            raise AssertionError("Unexpected artist")
+        raise RuntimeError("stale draw failure")
+
+    try:
+        raise_draw_error(stale_artist)
+    except RuntimeError as exc:
+        figurecomposer_rendering._set_preview_draw_error(tool, exc)
+
+    assert tool._operation_render_errors == {}
+    assert tool._preview_render_error == "RuntimeError: stale draw failure"
 
 
 def test_figure_composer_ambiguous_preview_draw_error_is_not_assigned(qtbot) -> None:
