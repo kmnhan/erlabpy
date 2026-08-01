@@ -174,6 +174,36 @@ def test_figure_document_atomic_commit_notifies_once() -> None:
     assert changes == [(True, True), (False, True)]
 
 
+def test_figure_document_atomic_commit_ignores_unchanged_source_payloads() -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    changes: list[tuple[bool, bool]] = []
+    document = FigureDocument(
+        FigureRecipeState(),
+        source_data={"data": data},
+        changed_callback=lambda recipe, sources: changes.append((recipe, sources)),
+    )
+    source_revision = document.source_revision
+    updated_recipe = document.recipe.model_copy(
+        update={"setup": document.recipe.setup.model_copy(update={"nrows": 2})}
+    )
+
+    document.replace_recipe_and_source_payloads(
+        updated_recipe,
+        dict(document.source_data),
+        dict(document.source_selection_base_data),
+    )
+
+    assert changes == [(True, False)]
+    assert document.source_revision == source_revision
+
+    document.replace_recipe_and_source_payloads(
+        updated_recipe,
+        dict(document.source_data),
+        dict(document.source_selection_base_data),
+    )
+    assert changes == [(True, False)]
+
+
 def test_figure_document_transaction_combines_nested_changes() -> None:
     data = xr.DataArray(np.arange(3.0), dims="x", name="data")
     changes: list[tuple[bool, bool]] = []

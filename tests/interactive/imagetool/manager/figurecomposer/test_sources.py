@@ -4345,10 +4345,15 @@ def test_figure_composer_cut_paste_steps_preserves_same_composer_sources(
     _select_operation_rows(tool, (0,))
     original_id = tool.tool_status.operations[0].operation_id
     tool.operation_panel.cut_button.click()
+    source_revision = tool._document.source_revision
+    data_changed: list[None] = []
+    tool.sigDataChanged.connect(lambda: data_changed.append(None))
     tool.operation_panel.paste_button.click()
 
     assert [source.name for source in tool.tool_status.sources] == ["data"]
     assert set(tool.source_data()) == {"data"}
+    assert tool._document.source_revision == source_revision
+    assert data_changed == []
     pasted_operation = tool.tool_status.operations[0]
     assert pasted_operation.sources == ("data",)
     assert pasted_operation.map_selections == ()

@@ -279,10 +279,35 @@ class FigureDocument:
         source_data: Mapping[str, xr.DataArray],
         selection_base_data: Mapping[str, xr.DataArray],
     ) -> None:
-        """Replace the recipe and source payloads in one atomic commit."""
+        """Replace changed recipe and source payloads in one atomic commit.
+
+        Source mappings that contain the current payload objects do not advance the
+        source revision. Call :meth:`touch_source_payloads` after changing one of
+        those payload objects in place.
+        """
+        source_payloads = None
+        if not (
+            self._mapping_values_are_identical(self._source_data, source_data)
+            and self._mapping_values_are_identical(
+                self._source_selection_base_data,
+                selection_base_data,
+            )
+        ):
+            source_payloads = (source_data, selection_base_data)
         self._commit(
             recipe=recipe,
-            source_payloads=(source_data, selection_base_data),
+            source_payloads=source_payloads,
+        )
+
+    @staticmethod
+    def _mapping_values_are_identical(
+        current: Mapping[str, xr.DataArray],
+        candidate: Mapping[str, xr.DataArray],
+    ) -> bool:
+        """Return whether two mappings contain the same payload objects."""
+        return len(current) == len(candidate) and all(
+            name in candidate and candidate[name] is data
+            for name, data in current.items()
         )
 
     def touch_source_payloads(self) -> None:
