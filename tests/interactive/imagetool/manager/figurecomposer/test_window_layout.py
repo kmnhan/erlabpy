@@ -2134,6 +2134,188 @@ def test_figure_composer_axes_selection_guards_recipe_updates(
     assert tool.tool_status.operations[1].axes.expression == ""
 
 
+def test_figure_composer_axes_selection_updates_selected_steps(qtbot) -> None:
+    data = _figure_composer_profile_source("data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.line(
+                    label="left",
+                    source="data",
+                    axes=FigureAxesSelectionState(
+                        axes=((0, 0),), expression="axs[0, 0]"
+                    ),
+                ),
+                FigureOperationState.line(
+                    label="right",
+                    source="data",
+                    axes=FigureAxesSelectionState(axes=((0, 1), (1, 0))),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.show()
+    operation_list = tool.operation_panel.operation_list
+    viewport = typing.cast("QtWidgets.QWidget", operation_list.viewport())
+
+    def click_operation_row(
+        row: int,
+        modifiers: QtCore.Qt.KeyboardModifier = (QtCore.Qt.KeyboardModifier.NoModifier),
+    ) -> None:
+        item = operation_list.topLevelItem(row)
+        assert item is not None
+        rect = operation_list.visualItemRect(item)
+        assert not rect.isNull()
+        qtbot.mouseClick(
+            viewport,
+            QtCore.Qt.MouseButton.LeftButton,
+            modifiers,
+            pos=rect.center(),
+        )
+
+    click_operation_row(0)
+    click_operation_row(1, QtCore.Qt.KeyboardModifier.ControlModifier)
+    click_operation_row(1, QtCore.Qt.KeyboardModifier.ControlModifier)
+    qtbot.waitUntil(lambda: tool._current_operation_index() == 0)
+
+    assert _selected_operation_rows(tool) == (0,)
+    assert tool.axes_expression_edit.text() == "axs[0, 0]"
+
+    tool.axes_expression_edit.editingFinished.emit()
+
+    assert tuple(
+        operation.axes.expression for operation in tool.tool_status.operations
+    ) == ("axs[0, 0]", "")
+
+    _select_operation_rows(tool, (0, 1))
+    assert tool.axes_expression_edit.text() == ""
+    assert tool.axes_expression_edit.property("batch_mixed")
+
+    tool.axes_expression_edit.editingFinished.emit()
+
+    assert tuple(
+        operation.axes.expression for operation in tool.tool_status.operations
+    ) == ("axs[0, 0]", "")
+    assert tool.keep_valid_axes_button.isEnabled()
+    tool.keep_valid_axes_button.click()
+
+    assert tuple(operation.axes.axes for operation in tool.tool_status.operations) == (
+        ((0, 0),),
+        ((0, 1),),
+    )
+    assert tuple(
+        operation.axes.expression for operation in tool.tool_status.operations
+    ) == ("axs[0, 0]", "")
+    assert not tool.keep_valid_axes_button.isEnabled()
+
+    tool.axes_selector.set_selected_axes(((0, 1),), emit=True)
+
+    assert tuple(operation.axes.axes for operation in tool.tool_status.operations) == (
+        ((0, 1),),
+        ((0, 1),),
+    )
+    assert _selected_operation_rows(tool) == (0, 1)
+
+    tool.axes_expression_edit.setText("axs[:, 0]")
+    tool.axes_expression_edit.setModified(True)
+    tool.axes_expression_edit.editingFinished.emit()
+
+    assert tuple(
+        operation.axes.expression for operation in tool.tool_status.operations
+    ) == ("axs[:, 0]", "axs[:, 0]")
+
+    tool.use_all_axes_button.click()
+
+    assert tuple(operation.axes.axes for operation in tool.tool_status.operations) == (
+        ((0, 0), (0, 1)),
+        ((0, 0), (0, 1)),
+    )
+    assert tuple(
+        operation.axes.expression for operation in tool.tool_status.operations
+    ) == ("", "")
+
+
+def test_figure_composer_gridspec_axes_selection_updates_selected_steps(
+    qtbot,
+) -> None:
+    data = _figure_composer_profile_source("data")
+    root = FigureGridSpecGridState(
+        nrows=1,
+        ncols=2,
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="left",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+            FigureGridSpecAxesState(
+                axes_id="right",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=1,
+                    col_stop=2,
+                ),
+            ),
+        ),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(root=root),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.line(
+                    label="first",
+                    source="data",
+                    axes=FigureAxesSelectionState(axes_ids=("left",)),
+                ),
+                FigureOperationState.line(
+                    label="second",
+                    source="data",
+                    axes=FigureAxesSelectionState(axes_ids=("right", "missing-second")),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    _select_operation_rows(tool, (0, 1))
+    assert tool.keep_valid_axes_button.isEnabled()
+    tool.keep_valid_axes_button.click()
+
+    assert tuple(
+        operation.axes.axes_ids for operation in tool.tool_status.operations
+    ) == (("left",), ("right",))
+
+    tool.gridspec_axes_selector.set_selected_axes_ids(("right",), emit=True)
+
+    assert tuple(
+        operation.axes.axes_ids for operation in tool.tool_status.operations
+    ) == (("right",), ("right",))
+    assert _selected_operation_rows(tool) == (0, 1)
+
+    tool.use_all_axes_button.click()
+
+    assert tuple(
+        operation.axes.axes_ids for operation in tool.tool_status.operations
+    ) == (("left", "right"), ("left", "right"))
+
+
 def test_figure_composer_gridspec_axes_selection_guards_recipe_updates(
     qtbot,
     monkeypatch,
