@@ -1324,15 +1324,26 @@ def test_fit2d_sequence_state_and_history_edges(qtbot, monkeypatch) -> None:
     assert not win._fit_2d_live_refresh_due()
 
     replaced: list[bool] = []
-    monkeypatch.setattr(win, "_replace_last_state", lambda: replaced.append(True))
+    original_replace_last_state = win._replace_last_state
+
+    def record_replace_last_state() -> None:
+        replaced.append(True)
+        original_replace_last_state()
+
+    monkeypatch.setattr(win, "_replace_last_state", record_replace_last_state)
+    initial_revision = win.provenance_revision
     win._write_history = True
     win._begin_fit_2d_sequence_history()
     assert win._fit_2d_sequence_write_history is True
     assert win._write_history is False
     win._begin_fit_2d_sequence_history()
+    win._write_state()
+    win._write_state()
+    assert win.provenance_revision == initial_revision
     win._finish_fit_2d_sequence_history()
     assert win._write_history is True
     assert replaced == [True]
+    assert win.provenance_revision == initial_revision + 1
 
     events: list[str] = []
     monkeypatch.setattr(

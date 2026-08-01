@@ -1503,11 +1503,16 @@ def test_figure_composer_canvas_resize_debounces_history(qtbot) -> None:
     tool._reset_history_stack()
 
     initial_history_len = len(tool._prev_states)
+    state_changes: list[tuple[float, float]] = []
+    tool.sigStateChanged.connect(
+        lambda: state_changes.append(tool.tool_status.setup.figsize)
+    )
     tool._figure_window_canvas_size_changed(4.0, 2.5)
     tool._figure_window_canvas_size_changed(4.5, 3.0)
     tool._figure_window_canvas_size_changed(5.0, 3.5)
 
     assert tool.tool_status.setup.figsize == (5.0, 3.5)
+    assert state_changes == [(4.0, 2.5), (4.5, 3.0), (5.0, 3.5)]
     assert tool._figure_resize_history_pending
     assert len(tool._prev_states) == initial_history_len
 

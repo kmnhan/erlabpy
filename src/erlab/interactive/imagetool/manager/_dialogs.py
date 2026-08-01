@@ -545,8 +545,6 @@ class _ConcatDialog(QtWidgets.QDialog):
                         replay_source_data=None,
                     )
                     manager.tree_view.refresh(replacement_node.uid)
-                    if manager._metadata_node_uid == replacement_node.uid:
-                        manager._set_metadata_node(replacement_node)
                     manager._sigDataReplaced.emit()
                     created_index = replacement_target
             except Exception:

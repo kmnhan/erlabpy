@@ -346,6 +346,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     tool_name = "fig"
     manager_collection = "figures"
+    _PROVENANCE_IS_MODEL_OWNED = True
 
     StateModel = FigureRecipeState
 
@@ -404,7 +405,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._source_drop_callback: Callable[[QtCore.QMimeData], bool] | None = None
         self._source_inspector_target: str | None = None
         self._projected_axis_name_sources: frozenset[str] | None = None
-        initial_recipe = recipe or self._default_recipe(data)
+        initial_recipe = (
+            recipe.model_copy(deep=True)
+            if recipe is not None
+            else self._default_recipe(data)
+        )
         initial_source_data = dict(source_data or {})
         if source_data is None:
             if initial_recipe.primary_source in {
@@ -416,7 +421,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             initial_source_data[source_name] = data
         if initial_recipe.primary_source not in initial_source_data:
             initial_source_data[initial_recipe.primary_source] = data
-        self._document = FigureDocument(initial_recipe, source_data=initial_source_data)
+        self._document = FigureDocument(
+            initial_recipe,
+            source_data=initial_source_data,
+            changed_callback=self._document_changed,
+        )
         self._figure_window: _FigureComposerDisplayWindow | None = None
         self._subplot_adjust_dialog: QtWidgets.QDialog | None = None
         self._axes_customize_dialog: QtWidgets.QDialog | None = None
@@ -434,6 +443,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.setAcceptDrops(True)
         self._apply_recipe_to_controls()
         self._write_state()
+
+    def _document_changed(
+        self, recipe_changed: bool, source_payloads_changed: bool
+    ) -> None:
+        """Publish each committed document mutation through the manager boundary."""
+        if not erlab.interactive.utils.qt_is_valid(self):
+            return
+        self._notify_provenance_changed()
+        if recipe_changed:
+            self.sigStateChanged.emit()
+        if source_payloads_changed:
+            self.sigDataChanged.emit()
 
     def set_options_getter(self, getter: Callable[[], AppOptions] | None) -> None:
         self._options_getter = getter
@@ -1764,7 +1785,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._update_source_section()
         self._maybe_redraw_plot()
         self._set_source_panel_status(None)
-        self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -2045,7 +2065,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._update_source_section()
         self._maybe_redraw_plot()
         self._set_source_validation_text(status_text)
-        self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -2089,12 +2108,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         if not changed and not data_changed:
             return False
-        self._document.replace_recipe(
+        self._document.replace_recipe_and_source_payloads(
             self._document.recipe.model_copy(
                 update={"sources": tuple(source_list), "operations": tuple(operations)}
-            )
+            ),
+            source_data,
+            selection_base_data,
         )
-        self._document.replace_source_payloads(source_data, selection_base_data)
         return data_changed
 
     def _operation_with_legacy_source_selections(
@@ -3314,11 +3334,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._prev_source_data_states.append(self._source_data_history_state())
         self._update_history_actions()
 
-    @contextlib.contextmanager
-    def _history_suppressed(self):
+    def _flush_pending_history_changes(self) -> None:
+        """Flush recipe and figure-size history before stack navigation."""
         self._flush_pending_figure_resize_history_write()
-        with super()._history_suppressed():
-            yield
+        super()._flush_pending_history_changes()
 
     def _append_history_state(
         self,
@@ -3363,17 +3382,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return False
         return self._append_history_state(state, source_data)
 
-    @QtCore.Slot()
-    def _write_state(self, *_args: typing.Any) -> None:
-        if not self._write_history:
-            return
+    def _record_state_change(self) -> None:
+        """Record one Figure Composer state change."""
         self._flush_pending_figure_resize_history_write()
         self._append_history_state()
 
-    @QtCore.Slot()
-    def _replace_last_state(self, *_args: typing.Any) -> None:
-        if not self._write_history:
-            return
+    def _replace_recorded_state(self) -> None:
+        """Replace the last recipe and source-data history state."""
         self._flush_pending_figure_resize_history_write()
         curr_state = self.tool_status
         source_data = self._source_data_history_state()
@@ -3385,33 +3400,21 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._prev_source_data_states.append(source_data)
         self._update_history_actions()
 
-    @QtCore.Slot()
-    def undo(self) -> None:
-        """Undo the most recent recorded Figure Composer recipe change."""
-        self._flush_pending_figure_resize_history_write()
-        if not self.undoable:
-            return
-        with self._history_suppressed():
-            self._next_states.append(self._prev_states.pop())
-            self._next_source_data_states.append(self._prev_source_data_states.pop())
-            self._restore_source_data_history_state(self._prev_source_data_states[-1])
-            self.tool_status = self._prev_states[-1]
-        self._update_history_actions()
+    def _undo_recorded_state(self) -> None:
+        """Move recipe and source-data history to the previous state."""
+        self._next_states.append(self._prev_states.pop())
+        self._next_source_data_states.append(self._prev_source_data_states.pop())
+        self._restore_source_data_history_state(self._prev_source_data_states[-1])
+        self.tool_status = self._prev_states[-1]
 
-    @QtCore.Slot()
-    def redo(self) -> None:
-        """Redo the most recently undone Figure Composer recipe change."""
-        self._flush_pending_figure_resize_history_write()
-        if not self.redoable:
-            return
-        with self._history_suppressed():
-            next_state = self._next_states.pop()
-            next_source_data = self._next_source_data_states.pop()
-            self._prev_states.append(next_state)
-            self._prev_source_data_states.append(next_source_data)
-            self._restore_source_data_history_state(next_source_data)
-            self.tool_status = next_state
-        self._update_history_actions()
+    def _redo_recorded_state(self) -> None:
+        """Move recipe and source-data history to the next state."""
+        next_state = self._next_states.pop()
+        next_source_data = self._next_source_data_states.pop()
+        self._prev_states.append(next_state)
+        self._prev_source_data_states.append(next_source_data)
+        self._restore_source_data_history_state(next_source_data)
+        self.tool_status = next_state
 
     @QtCore.Slot(str, bool)
     def _operation_enabled_requested(self, operation_id: str, enabled: bool) -> None:
@@ -3730,10 +3733,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 == self._step_clipboard_tool_id
             ),
         )
-        normalization_data_changed = self._normalize_operation_source_selections()
+        self._normalize_operation_source_selections()
         self._refresh_source_list()
-        if result.source_data_changed or normalization_data_changed:
-            self.sigDataChanged.emit()
         self._finish_operation_structure_change(
             set(result.operation_ids),
             result.operation_ids[0],
@@ -3870,12 +3871,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def add_operation(self, operation: FigureOperationState) -> None:
         """Append an operation to the recipe."""
         index = self._document.append_operation(operation)
-        data_changed = self._normalize_operation_source_selections()
+        self._normalize_operation_source_selections()
         self._apply_recipe_to_controls()
         self.operation_panel.select_row(index)
         self._maybe_redraw_plot()
-        if data_changed:
-            self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
 
@@ -3904,7 +3903,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_source_list()
         self._update_source_section()
         self._maybe_redraw_plot()
-        self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
         self._set_source_panel_status(
@@ -3938,7 +3936,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_source_list()
         self._update_source_section()
         self._maybe_redraw_plot()
-        self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
         self._set_source_panel_status(None)
@@ -3953,7 +3950,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_source_list()
         self._update_source_section()
         self._maybe_redraw_plot()
-        self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
         self._write_state()
         return True
@@ -4208,31 +4204,40 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @property
     def tool_status(self) -> FigureRecipeState:
-        return self._document.recipe
+        return self._document.recipe_snapshot()
 
     @tool_status.setter
     def tool_status(self, status: FigureRecipeState) -> None:
-        operations = tuple(
-            _registry.spec_for(operation.kind).loaded_operation(operation)
-            for operation in status.operations
-        )
-        sources = FigureDocument.normalized_source_states(status.sources)
-        self._document.replace_recipe(
-            status.model_copy(update={"sources": sources, "operations": operations})
-        )
-        self._ensure_primary_source_data()
-        self._normalize_operation_source_selections()
-        self._apply_recipe_to_controls()
-        self._sync_figure_window_to_recipe_setup()
-        if self._dataset_restore_in_progress:
-            self._mark_preview_pixmap_stale()
-            return
-        _render_preview(self)
+        previous_recipe = self._document.recipe
+        previous_source_revision = self._document.source_revision
+        status = status.model_copy(deep=True)
+        with self._document.mutation_transaction():
+            operations = tuple(
+                _registry.spec_for(operation.kind).loaded_operation(operation)
+                for operation in status.operations
+            )
+            sources = FigureDocument.normalized_source_states(status.sources)
+            self._document.replace_recipe(
+                status.model_copy(update={"sources": sources, "operations": operations})
+            )
+            self._ensure_primary_source_data()
+            self._normalize_operation_source_selections()
+            self._apply_recipe_to_controls()
+            self._sync_figure_window_to_recipe_setup()
+            if self._dataset_restore_in_progress:
+                self._mark_preview_pixmap_stale()
+            else:
+                _render_preview(self)
+        recipe_changed = self._document.recipe != previous_recipe
+        source_data_changed = self._document.source_revision != previous_source_revision
+        if recipe_changed or source_data_changed:
+            self.sigInfoChanged.emit()
 
     def set_source_data(self, source_data: Mapping[str, xr.DataArray]) -> None:
         self._document.replace_source_payloads(source_data, {})
         self._refresh_source_list()
         self._mark_preview_pixmap_stale()
+        self.sigInfoChanged.emit()
 
     def touch_source_data(self) -> None:
         """Invalidate prepared selections after editing source arrays in place.
@@ -4241,7 +4246,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         """
         self._document.touch_source_payloads()
         self._maybe_redraw_plot()
-        self.sigDataChanged.emit()
         self.sigInfoChanged.emit()
 
     def rebase_source_node_uids(self, uid_map: Mapping[str, str]) -> None:
@@ -4890,7 +4894,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return QtGui.QPixmap(thumbnail)
 
     def source_states(self) -> tuple[FigureSourceState, ...]:
-        return self._document.recipe.sources
+        """Return detached snapshots of the current source metadata."""
+        return tuple(
+            source.model_copy(deep=True) for source in self._document.recipe.sources
+        )
 
     def source_data(self) -> dict[str, xr.DataArray]:
         """Return live sources; call ``touch_source_data`` after in-place edits."""
@@ -5169,6 +5176,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_source_list()
         self._update_source_section()
         self._maybe_redraw_plot()
+        self.sigInfoChanged.emit()
 
     def refresh_from_sources(self, source_data: Mapping[str, xr.DataArray]) -> None:
         result = self._document.refresh_sources(source_data)
@@ -5185,3 +5193,4 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_source_list()
         self._update_source_section()
         self._maybe_redraw_plot()
+        self.sigInfoChanged.emit()

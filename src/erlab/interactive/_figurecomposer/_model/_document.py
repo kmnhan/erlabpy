@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import collections
+import contextlib
 import typing
 import uuid
+import weakref
 
 from erlab.interactive._figurecomposer._exceptions import FigureComposerInputError
 from erlab.interactive._figurecomposer._model._gridspec import (
@@ -37,7 +39,7 @@ from erlab.interactive._figurecomposer._model._state import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
     import xarray as xr
 
@@ -124,7 +126,13 @@ class FigureDocument:
         *,
         source_data: Mapping[str, xr.DataArray] | None = None,
         source_selection_base_data: Mapping[str, xr.DataArray] | None = None,
+        changed_callback: Callable[[bool, bool], None] | None = None,
     ) -> None:
+        self._changed_callback: Callable[[bool, bool], None] | None = None
+        self._changed_bound_method: weakref.WeakMethod | None = None
+        self._change_depth = 0
+        self._recipe_change_pending = False
+        self._source_payloads_change_pending = False
         self._source_revision = 0
         self._recipe = recipe.model_copy(
             update={"sources": self.normalized_source_states(recipe.sources)}
@@ -135,11 +143,16 @@ class FigureDocument:
         self.replace_source_payloads(
             source_data or {}, source_selection_base_data or {}
         )
+        self.set_changed_callback(changed_callback)
 
     @property
     def recipe(self) -> FigureRecipeState:
         """Current validated figure recipe."""
         return self._recipe
+
+    def recipe_snapshot(self) -> FigureRecipeState:
+        """Return a detached recipe snapshot for external state consumers."""
+        return self._recipe.model_copy(deep=True)
 
     @property
     def source_data(self) -> Mapping[str, xr.DataArray]:
@@ -156,13 +169,101 @@ class FigureDocument:
         """Monotonic generation for source-payload changes."""
         return self._source_revision
 
+    def set_changed_callback(
+        self, callback: Callable[[bool, bool], None] | None
+    ) -> None:
+        """Set the observer for committed recipe and source-payload changes."""
+        self._changed_callback = None
+        self._changed_bound_method = None
+        if callback is None:
+            return
+        try:
+            self._changed_bound_method = weakref.WeakMethod(callback)
+        except TypeError:
+            self._changed_callback = callback
+
+    def _notify_changed(
+        self, *, recipe_changed: bool, source_payloads_changed: bool
+    ) -> None:
+        if self._change_depth:
+            self._recipe_change_pending |= recipe_changed
+            self._source_payloads_change_pending |= source_payloads_changed
+            return
+        self._deliver_changed(
+            recipe_changed=recipe_changed,
+            source_payloads_changed=source_payloads_changed,
+        )
+
+    def _deliver_changed(
+        self, *, recipe_changed: bool, source_payloads_changed: bool
+    ) -> None:
+        callback = self._changed_callback
+        if self._changed_bound_method is not None:
+            callback = self._changed_bound_method()
+        if callback is not None:
+            callback(recipe_changed, source_payloads_changed)
+
+    @contextlib.contextmanager
+    def mutation_transaction(self) -> Iterator[None]:
+        """Publish nested document mutations as one coherent change."""
+        self._change_depth += 1
+        try:
+            yield
+        finally:
+            self._change_depth -= 1
+            if self._change_depth == 0:
+                recipe_changed = self._recipe_change_pending
+                source_payloads_changed = self._source_payloads_change_pending
+                self._recipe_change_pending = False
+                self._source_payloads_change_pending = False
+                if recipe_changed or source_payloads_changed:
+                    self._deliver_changed(
+                        recipe_changed=recipe_changed,
+                        source_payloads_changed=source_payloads_changed,
+                    )
+
+    def _commit(
+        self,
+        *,
+        recipe: FigureRecipeState | None = None,
+        source_payloads: (
+            tuple[Mapping[str, xr.DataArray], Mapping[str, xr.DataArray]] | None
+        ) = None,
+    ) -> tuple[bool, bool]:
+        """Commit validated document state and send one change notification."""
+        updated_recipe = (
+            recipe if recipe is not None and recipe != self._recipe else None
+        )
+        if updated_recipe is not None:
+            self._validate_operation_id_sequence(updated_recipe.operations)
+        recipe_changed = updated_recipe is not None
+        source_payloads_changed = source_payloads is not None
+        if not recipe_changed and not source_payloads_changed:
+            return False, False
+
+        updated_source_data: dict[str, xr.DataArray] | None = None
+        updated_selection_base_data: dict[str, xr.DataArray] | None = None
+        if source_payloads is not None:
+            source_data, selection_base_data = source_payloads
+            updated_source_data = dict(source_data)
+            updated_selection_base_data = dict(selection_base_data)
+
+        if updated_recipe is not None:
+            self._recipe = updated_recipe
+        if updated_source_data is not None and updated_selection_base_data is not None:
+            self._source_data = updated_source_data
+            self._source_selection_base_data = updated_selection_base_data
+            self._source_revision += 1
+        self._notify_changed(
+            recipe_changed=recipe_changed,
+            source_payloads_changed=source_payloads_changed,
+        )
+        return recipe_changed, source_payloads_changed
+
     def replace_recipe(self, recipe: FigureRecipeState) -> bool:
         """Replace the complete recipe after validating document invariants."""
-        if recipe == self._recipe:
-            return False
-        self._validate_operation_id_sequence(recipe.operations)
-        self._recipe = recipe
-        return True
+        recipe_changed, _source_payloads_changed = self._commit(recipe=recipe)
+        return recipe_changed
 
     def replace_source_payloads(
         self,
@@ -170,15 +271,49 @@ class FigureDocument:
         selection_base_data: Mapping[str, xr.DataArray],
     ) -> None:
         """Replace effective and selection-base source payloads together."""
-        updated_source_data = dict(source_data)
-        updated_selection_base_data = dict(selection_base_data)
-        self._source_data = updated_source_data
-        self._source_selection_base_data = updated_selection_base_data
-        self.touch_source_payloads()
+        self._commit(source_payloads=(source_data, selection_base_data))
+
+    def replace_recipe_and_source_payloads(
+        self,
+        recipe: FigureRecipeState,
+        source_data: Mapping[str, xr.DataArray],
+        selection_base_data: Mapping[str, xr.DataArray],
+    ) -> None:
+        """Replace changed recipe and source payloads in one atomic commit.
+
+        Source mappings that contain the current payload objects do not advance the
+        source revision. Call :meth:`touch_source_payloads` after changing one of
+        those payload objects in place.
+        """
+        source_payloads = None
+        if not (
+            self._mapping_values_are_identical(self._source_data, source_data)
+            and self._mapping_values_are_identical(
+                self._source_selection_base_data,
+                selection_base_data,
+            )
+        ):
+            source_payloads = (source_data, selection_base_data)
+        self._commit(
+            recipe=recipe,
+            source_payloads=source_payloads,
+        )
+
+    @staticmethod
+    def _mapping_values_are_identical(
+        current: Mapping[str, xr.DataArray],
+        candidate: Mapping[str, xr.DataArray],
+    ) -> bool:
+        """Return whether two mappings contain the same payload objects."""
+        return len(current) == len(candidate) and all(
+            name in candidate and candidate[name] is data
+            for name, data in current.items()
+        )
 
     def touch_source_payloads(self) -> None:
         """Advance the source generation after an in-place payload edit."""
         self._source_revision += 1
+        self._notify_changed(recipe_changed=False, source_payloads_changed=True)
 
     def replace_setup(self, setup: FigureSubplotsState) -> bool:
         """Replace the complete validated figure layout setup."""
@@ -632,8 +767,11 @@ class FigureDocument:
             }
         )
 
-        self.replace_recipe(updated_recipe)
-        self.replace_source_payloads(updated_source_data, updated_selection_base_data)
+        self.replace_recipe_and_source_payloads(
+            updated_recipe,
+            updated_source_data,
+            updated_selection_base_data,
+        )
         return FigureOperationPasteResult(
             tuple(operation.operation_id for operation in copied_operations),
             bool(renamed_source_data or renamed_selection_base_data),
@@ -884,8 +1022,11 @@ class FigureDocument:
         if self.recipe.primary_source == old_name:
             updates["primary_source"] = new_name
 
-        self.replace_recipe(self.recipe.model_copy(update=updates))
-        self.replace_source_payloads(source_data, selection_base_data)
+        self.replace_recipe_and_source_payloads(
+            self.recipe.model_copy(update=updates),
+            source_data,
+            selection_base_data,
+        )
         return True
 
     def duplicate_sources(self, names: Sequence[str]) -> tuple[str, ...]:
@@ -917,8 +1058,11 @@ class FigureDocument:
         insert_index = max(indices) + 1
         sources[insert_index:insert_index] = duplicates
 
-        self.replace_recipe(self.recipe.model_copy(update={"sources": tuple(sources)}))
-        self.replace_source_payloads(source_data, selection_base_data)
+        self.replace_recipe_and_source_payloads(
+            self.recipe.model_copy(update={"sources": tuple(sources)}),
+            source_data,
+            selection_base_data,
+        )
         return tuple(source.name for source in duplicates)
 
     def _source_copy_alias(self, source_name: str, reserved: set[str]) -> str:
@@ -1040,8 +1184,11 @@ class FigureDocument:
         for name in removed:
             source_data.pop(name, None)
             selection_base_data.pop(name, None)
-        self.replace_recipe(self.recipe.model_copy(update=updates))
-        self.replace_source_payloads(source_data, selection_base_data)
+        self.replace_recipe_and_source_payloads(
+            self.recipe.model_copy(update=updates),
+            source_data,
+            selection_base_data,
+        )
         return tuple(removed)
 
     @staticmethod
@@ -1142,16 +1289,17 @@ class FigureDocument:
         )
         if not result:
             return result
-        self.replace_recipe(
+        self.replace_recipe_and_source_payloads(
             self.recipe.model_copy(
                 update={
                     "sources": tuple(
                         candidate_sources[source.name] for source in self.recipe.sources
                     )
                 }
-            )
+            ),
+            candidate_data,
+            candidate_bases,
         )
-        self.replace_source_payloads(candidate_data, candidate_bases)
         return result
 
     def recompute_source_dependents(
@@ -1345,10 +1493,11 @@ class FigureDocument:
         )
         if not result:
             return result
-        self.replace_recipe(
-            self.recipe.model_copy(update={"sources": tuple(existing.values())})
+        self.replace_recipe_and_source_payloads(
+            self.recipe.model_copy(update={"sources": tuple(existing.values())}),
+            candidate_data,
+            candidate_bases,
         )
-        self.replace_source_payloads(candidate_data, candidate_bases)
         return result
 
     def replace_source(
@@ -1429,10 +1578,11 @@ class FigureDocument:
         except ValueError as exc:
             return FigureSourceUpdateResult(skipped=((alias, str(exc)),))
 
-        self.replace_recipe(
-            self.recipe.model_copy(update={"sources": tuple(source_list)})
+        self.replace_recipe_and_source_payloads(
+            self.recipe.model_copy(update={"sources": tuple(source_list)}),
+            candidate_data,
+            candidate_bases,
         )
-        self.replace_source_payloads(candidate_data, candidate_bases)
         return FigureSourceUpdateResult(updated=(replacement_name,))
 
     def refresh_sources(

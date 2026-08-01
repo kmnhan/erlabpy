@@ -13,6 +13,7 @@ import typing
 
 if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
+    from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 
 _DependencyStatus = typing.Literal["current", "changed", "missing"]
 
@@ -25,6 +26,7 @@ class _ManagerDependencyTracker:
         self._ref_cache: dict[
             str,
             tuple[
+                _ManagedWindowNode,
                 int,
                 tuple[
                     ScriptInputDependencyRef,
@@ -32,39 +34,74 @@ class _ManagerDependencyTracker:
                 ],
             ],
         ] = {}
+        self._source_uids_by_dependent: dict[str, set[str]] = {}
+        self._dependents_by_source_uid: dict[str, dict[str, None]] = {}
+        self._unindexed_uids: dict[str, None] = {}
+        self._status_cache: dict[str, _DependencyStatus | None] = {}
         self._pending_source_refresh_targets: dict[str, set[str]] = {}
+
+    def note_uid(self, uid: str) -> None:
+        self._unindexed_uids[uid] = None
+        for dependent_uid in self._dependents_by_source_uid.get(uid, ()):
+            self._status_cache.pop(dependent_uid, None)
+
+    def invalidate_uid(self, uid: str) -> None:
+        self._remove_reverse_refs(uid)
+        self._ref_cache.pop(uid, None)
+        self._status_cache.pop(uid, None)
+        if uid in self._graph.nodes:
+            self._unindexed_uids[uid] = None
+        else:
+            self._unindexed_uids.pop(uid, None)
 
     def refs_for_uid(self, uid: str) -> tuple[ScriptInputDependencyRef, ...]:
         node = self._graph.nodes.get(uid)
         if node is None:
-            self._ref_cache.pop(uid, None)
+            self.invalidate_uid(uid)
             return ()
-        tool_window = node.tool_window
         spec = (
-            tool_window.current_provenance_spec(flush_deferred_restore=False)
-            if tool_window is not None
+            node.passive_displayed_provenance_spec
+            if node.tool_window is not None
             else node.provenance_spec
         )
         if spec is None:
+            self._remove_reverse_refs(uid)
             self._ref_cache.pop(uid, None)
+            self._unindexed_uids.pop(uid, None)
+            self._status_cache[uid] = None
             return ()
-        spec_id = id(spec)
         cached = self._ref_cache.get(uid)
-        if cached is not None and cached[0] == spec_id:
-            return cached[1]
+        if (
+            cached is not None
+            and cached[0] is node
+            and cached[1] == node.provenance_revision
+        ):
+            self._unindexed_uids.pop(uid, None)
+            return cached[2]
         refs = script_input_dependency_refs(spec)
-        self._ref_cache[uid] = (spec_id, refs)
+        self._remove_reverse_refs(uid)
+        source_uids = {ref.node_uid for ref in refs}
+        self._source_uids_by_dependent[uid] = source_uids
+        for source_uid in source_uids:
+            self._dependents_by_source_uid.setdefault(source_uid, {})[uid] = None
+        self._ref_cache[uid] = (node, node.provenance_revision, refs)
+        self._unindexed_uids.pop(uid, None)
+        self._status_cache.pop(uid, None)
         return refs
 
     def status_for_uid(self, uid: str) -> _DependencyStatus | None:
+        if uid in self._status_cache:
+            return self._status_cache[uid]
         refs = self.refs_for_uid(uid)
         if not refs:
+            self._status_cache[uid] = None
             return None
 
         changed = False
         for ref in refs:
             parent = self._graph.nodes.get(ref.node_uid)
             if parent is None:
+                self._status_cache[uid] = "missing"
                 return "missing"
             if (
                 ref.node_snapshot_token is not None
@@ -72,18 +109,24 @@ class _ManagerDependencyTracker:
                 != ref.node_snapshot_token
             ):
                 changed = True
-        return "changed" if changed else "current"
+        status: _DependencyStatus = "changed" if changed else "current"
+        self._status_cache[uid] = status
+        return status
 
     def dependent_uids(self, uid: str) -> list[str]:
-        return [
-            node_uid
-            for node_uid in self._graph.nodes
-            if node_uid != uid
-            and any(ref.node_uid == uid for ref in self.refs_for_uid(node_uid))
-        ]
+        # Registration and provenance signals defer index work so that repeated
+        # changes can coalesce. Complete that bounded pending work before a
+        # reverse lookup so a source update cannot miss a newly added edge.
+        for pending_uid in tuple(self._unindexed_uids):
+            self.refs_for_uid(pending_uid)
+        dependents = self._dependents_by_source_uid.get(uid, {})
+        for dependent_uid in dependents:
+            self._status_cache.pop(dependent_uid, None)
+        return list(dependents)
 
     def clear_uid(self, uid: str) -> None:
-        self._ref_cache.pop(uid, None)
+        self.invalidate_uid(uid)
+        self._unindexed_uids.pop(uid, None)
         self._pending_source_refresh_targets.pop(uid, None)
         for blocker_uid, target_uids in list(
             self._pending_source_refresh_targets.items()
@@ -91,6 +134,16 @@ class _ManagerDependencyTracker:
             target_uids.discard(uid)
             if not target_uids:
                 self._pending_source_refresh_targets.pop(blocker_uid, None)
+
+    def _remove_reverse_refs(self, dependent_uid: str) -> None:
+        source_uids = self._source_uids_by_dependent.pop(dependent_uid, set())
+        for source_uid in source_uids:
+            dependents = self._dependents_by_source_uid.get(source_uid)
+            if dependents is None:
+                continue
+            dependents.pop(dependent_uid, None)
+            if not dependents:
+                self._dependents_by_source_uid.pop(source_uid, None)
 
     def queue_source_refresh(self, blocker_uid: str, target_uid: str) -> None:
         self._pending_source_refresh_targets.setdefault(blocker_uid, set()).add(

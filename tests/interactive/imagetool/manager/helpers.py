@@ -424,8 +424,8 @@ def manager_preview_pixmap(manager: ImageToolManager) -> QtGui.QPixmap:
 
 def metadata_derivation_texts(manager: ImageToolManager) -> list[str]:
     return [
-        manager.metadata_derivation_list.item(row).text()
-        for row in range(manager.metadata_derivation_list.count())
+        manager.metadata_derivation_list.conceptual_item(row).text()
+        for row in range(manager.metadata_derivation_list.conceptual_count())
     ]
 
 
@@ -449,13 +449,23 @@ def metadata_detail_labels(manager: ImageToolManager) -> list[str]:
 def select_metadata_rows(
     manager: ImageToolManager, rows: list[int], clear: bool = True
 ) -> None:
+    items = [
+        item
+        for row in rows
+        if (item := manager.metadata_derivation_list.conceptual_item(row)) is not None
+    ]
+    select_metadata_items(manager, items, clear=clear)
+
+
+def select_metadata_items(
+    manager: ImageToolManager,
+    items: list[QtWidgets.QTreeWidgetItem],
+    clear: bool = True,
+) -> None:
     if clear:
         manager.metadata_derivation_list.clearSelection()
     current_item = None
-    for row in rows:
-        item = manager.metadata_derivation_list.item(row)
-        if item is None:
-            continue
+    for item in items:
         item.setSelected(True)
         current_item = item
     if current_item is None:

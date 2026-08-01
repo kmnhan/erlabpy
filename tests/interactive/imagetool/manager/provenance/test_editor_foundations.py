@@ -1,8 +1,10 @@
 import enum
+import gc
 import pathlib
 import types
 import typing
 import warnings
+import weakref
 from collections.abc import Sequence
 
 import numpy as np
@@ -80,6 +82,31 @@ from ._common import (
     _manager_provenance_file_spec,
     _manager_replay_file_spec,
 )
+
+
+class _LineageKeyNode:
+    imagetool = None
+    source_spec = object()
+
+    def __init__(
+        self,
+        manager: typing.Any,
+        uid: str,
+        parent_uid: str | None,
+        generation: int,
+    ) -> None:
+        self.manager = manager
+        self.uid = uid
+        self.parent_uid = parent_uid
+        self._derivation_display_rows_generation = generation
+
+    @property
+    def _derivation_display_rows_lineage_generation(self) -> tuple[int, ...]:
+        node_type = manager_wrapper._ManagedWindowNode
+        getter = node_type._derivation_display_rows_lineage_generation.fget
+        if getter is None:
+            raise RuntimeError("lineage generation property has no getter")
+        return getter(self)
 
 
 def test_file_load_edit_dialog_uses_loader_options_widget(qtbot) -> None:
@@ -742,6 +769,54 @@ def test_manager_provenance_operation_editor_contract_is_valid() -> None:
     provenance_editors._validate_operation_editor_contract()
 
 
+def test_manager_provenance_editor_contract_cache_tracks_derived_state() -> None:
+    class _MutableScriptDialog(imagetool_dialogs.DataTransformDialog):
+        __module__ = imagetool_dialogs.__name__
+        operation_types = (ScriptCodeOperation,)
+
+        def restore_transform_operation(
+            self,
+            operation: ToolProvenanceOperation,
+        ) -> None:
+            del operation
+
+    try:
+        initial_errors = provenance_editors._operation_editor_contract_errors()
+        _MutableScriptDialog.grouped_operation_only = True
+        grouped_errors = provenance_editors._operation_editor_contract_errors()
+    finally:
+        _MutableScriptDialog.operation_types = ()
+
+    assert not any("_MutableScriptDialog declares" in error for error in initial_errors)
+    assert any(
+        "_MutableScriptDialog declares ScriptCodeOperation as a grouped editor" in error
+        for error in grouped_errors
+    )
+
+
+def test_manager_provenance_editor_contract_cache_does_not_retain_dialogs() -> None:
+    def validate_transient_dialog() -> weakref.ReferenceType[type[object]]:
+        class _TransientScriptDialog(imagetool_dialogs.DataTransformDialog):
+            __module__ = imagetool_dialogs.__name__
+            operation_types = (ScriptCodeOperation,)
+
+            def restore_transform_operation(
+                self,
+                operation: ToolProvenanceOperation,
+            ) -> None:
+                del operation
+
+        dialog_ref = weakref.ref(_TransientScriptDialog)
+        provenance_editors._operation_editor_contract_errors()
+        _TransientScriptDialog.operation_types = ()
+        return dialog_ref
+
+    dialog_ref = validate_transient_dialog()
+    gc.collect()
+
+    assert dialog_ref() is None
+
+
 def test_manager_provenance_editor_contract_rejects_group_without_matcher() -> None:
     class _MissingGroupMatcherDialog(imagetool_dialogs.DataTransformDialog):
         __module__ = imagetool_dialogs.__name__
@@ -1132,6 +1207,9 @@ def test_manager_source_bound_derivation_rows_are_metadata_only(
         source_display_spec=source_spec,
     )
     child.manager = types.SimpleNamespace(_parent_node=lambda _node: parent)
+    child.derivation_display_rows_cache_key = (
+        manager_wrapper._ManagedWindowNode.derivation_display_rows_cache_key.fget(child)
+    )
 
     rows = manager_wrapper._ManagedWindowNode.derivation_display_rows.fget(child)
 
@@ -1139,6 +1217,46 @@ def test_manager_source_bound_derivation_rows_are_metadata_only(
     assert rows is not None
     assert any(row.entry.label.startswith("Rotational Symmetrize") for row in rows)
     assert any(row.entry.label.startswith("Convert to momentum") for row in rows)
+
+
+def test_manager_derivation_cache_key_supports_deep_lineages() -> None:
+    nodes: dict[str, _LineageKeyNode] = {}
+
+    def parent_node(node: _LineageKeyNode) -> _LineageKeyNode:
+        if node.parent_uid is None:
+            raise RuntimeError("root node has no parent")
+        return nodes[node.parent_uid]
+
+    manager = types.SimpleNamespace(_parent_node=parent_node)
+    parent_uid: str | None = None
+    for generation in range(1_200):
+        uid = str(generation)
+        nodes[uid] = _LineageKeyNode(manager, uid, parent_uid, generation)
+        parent_uid = uid
+
+    if parent_uid is None:
+        raise RuntimeError("deep lineage was not constructed")
+    cache_key = nodes[parent_uid]._derivation_display_rows_lineage_generation
+
+    assert len(cache_key) == 2_400
+    assert cache_key[:4] == (0, 0, 1, 0)
+    assert cache_key[-4:] == (1_198, 0, 1_199, 0)
+
+
+def test_manager_derivation_cache_key_rejects_lineage_cycles() -> None:
+    nodes: dict[str, _LineageKeyNode] = {}
+
+    def parent_node(node: _LineageKeyNode) -> _LineageKeyNode:
+        if node.parent_uid is None:
+            raise RuntimeError("root node has no parent")
+        return nodes[node.parent_uid]
+
+    manager = types.SimpleNamespace(_parent_node=parent_node)
+    nodes["first"] = _LineageKeyNode(manager, "first", "second", 0)
+    nodes["second"] = _LineageKeyNode(manager, "second", "first", 0)
+
+    with pytest.raises(RuntimeError, match="cycle"):
+        _ = nodes["first"]._derivation_display_rows_lineage_generation
 
 
 def test_manager_trusted_script_replay_prompt_is_session_scoped(
@@ -1292,6 +1410,7 @@ def test_manager_provenance_lightweight_helper_edges() -> None:
             _tool_graph=types.SimpleNamespace(
                 nodes={"parent": parent},
                 root_wrappers={},
+                node_path=lambda _node: None,
             )
         )
     )

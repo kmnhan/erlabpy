@@ -13,6 +13,8 @@ import weakref
 
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab.interactive.utils
+
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Hashable
 
@@ -58,9 +60,15 @@ class _ManagerInteractionGate(QtCore.QObject):
     def __init__(self, parent: QtCore.QObject) -> None:
         super().__init__(parent)
         self._roots: weakref.WeakSet[QtWidgets.QWidget] = weakref.WeakSet()
-        self._pending_work: collections.OrderedDict[Hashable, Callable[[], None]] = (
-            collections.OrderedDict()
-        )
+        self._pending_work: collections.OrderedDict[
+            Hashable,
+            tuple[int, Callable[[], None]],
+        ] = collections.OrderedDict()
+        self._queue_generation = 0
+        self._pressed_mouse_button_roots: dict[
+            QtCore.Qt.MouseButton,
+            weakref.ReferenceType[QtWidgets.QWidget],
+        ] = {}
         self._active: bool = False
         self._quiet_timer = QtCore.QTimer(self)
         self._quiet_timer.setSingleShot(True)
@@ -79,11 +87,19 @@ class _ManagerInteractionGate(QtCore.QObject):
 
     @property
     def is_active(self) -> bool:
-        return self._active or self._quiet_timer.isActive()
+        self._discard_dead_mouse_holds()
+        return (
+            bool(self._pressed_mouse_button_roots)
+            or self._active
+            or self._quiet_timer.isActive()
+        )
 
     @property
     def pending_keys(self) -> tuple[Hashable, ...]:
         return tuple(self._pending_work)
+
+    def has_work(self, key: Hashable) -> bool:
+        return key in self._pending_work
 
     def set_quiet_interval(self, msec: int) -> None:
         self._quiet_timer.setInterval(msec)
@@ -92,12 +108,21 @@ class _ManagerInteractionGate(QtCore.QObject):
         self._batch_budget_ms = max(1, int(msec))
 
     def register_window(self, widget: QtWidgets.QWidget | None) -> None:
-        if widget is not None:
+        if widget is not None and erlab.interactive.utils.qt_is_valid(widget):
             self._roots.add(widget)
 
     def unregister_window(self, widget: QtWidgets.QWidget | None) -> None:
-        if widget is not None:
-            self._roots.discard(widget)
+        if widget is None:
+            return
+        self._roots.discard(widget)
+        released = False
+        for button, root_ref in tuple(self._pressed_mouse_button_roots.items()):
+            root = root_ref()
+            if root is None or root is widget:
+                self._pressed_mouse_button_roots.pop(button, None)
+                released = True
+        if released:
+            self.note_activity()
 
     def note_activity(self) -> None:
         self._active = True
@@ -115,10 +140,14 @@ class _ManagerInteractionGate(QtCore.QObject):
             self._queued_since_flush += 1
             if key in self._pending_work:
                 self._replaced_since_flush += 1
-        self._pending_work[key] = callback
+        self._queue_generation += 1
+        self._pending_work[key] = (self._queue_generation, callback)
         if require_idle and self.is_active:
             return
         self._schedule_pending_work()
+
+    def discard_work(self, key: Hashable) -> None:
+        self._pending_work.pop(key, None)
 
     def flush(
         self,
@@ -130,14 +159,17 @@ class _ManagerInteractionGate(QtCore.QObject):
             return
         start_time = time.perf_counter() if _manager_perf_timing_enabled() else 0.0
         flushed = 0
-        keys = list(self._pending_work)
-        for key in keys:
+        pending_items = list(self._pending_work.items())
+        for key, pending in pending_items:
             if key_prefix is not None and not self._key_matches_prefix(key, key_prefix):
                 continue
-            callback = self._pending_work.pop(key, None)
-            if callback is not None:
-                flushed += 1
-                self._run_callback(callback)
+            # An earlier callback can replace later work in this batch.
+            current = self._pending_work.get(key)
+            if current is None or current[0] != pending[0]:
+                continue
+            self._pending_work.pop(key)
+            flushed += 1
+            self._run_callback(pending[1])
         self._log_flush_stats("forced", flushed, start_time)
 
     def eventFilter(
@@ -148,34 +180,101 @@ class _ManagerInteractionGate(QtCore.QObject):
                 marks_activity = self._event_marks_activity(obj, event)
             except RuntimeError:
                 marks_activity = False
-            if marks_activity:
+            mouse_hold_changed = self._update_mouse_hold(obj, event, marks_activity)
+            if marks_activity or mouse_hold_changed:
                 self.note_activity()
         return super().eventFilter(obj, event)
+
+    def _update_mouse_hold(
+        self,
+        obj: QtCore.QObject | None,
+        event: QtCore.QEvent,
+        marks_activity: bool,
+    ) -> bool:
+        event_type = event.type()
+        if (
+            event_type
+            in {
+                QtCore.QEvent.Type.MouseButtonPress,
+                QtCore.QEvent.Type.MouseButtonDblClick,
+            }
+            and marks_activity
+            and isinstance(event, QtGui.QMouseEvent)
+        ):
+            button = event.button()
+            if button != QtCore.Qt.MouseButton.NoButton:
+                root = self._managed_root_for_object(obj)
+                if root is not None:
+                    self._pressed_mouse_button_roots[button] = weakref.ref(root)
+            return False
+        if event_type == QtCore.QEvent.Type.MouseButtonRelease and isinstance(
+            event, QtGui.QMouseEvent
+        ):
+            button = event.button()
+            if button in self._pressed_mouse_button_roots:
+                self._pressed_mouse_button_roots.pop(button)
+                return True
+            return False
+        if (
+            event_type
+            in {
+                QtCore.QEvent.Type.ApplicationDeactivate,
+                QtCore.QEvent.Type.UngrabMouse,
+            }
+            and self._pressed_mouse_button_roots
+        ):
+            self._pressed_mouse_button_roots.clear()
+            return True
+        return False
 
     def _event_marks_activity(
         self, obj: QtCore.QObject | None, event: QtCore.QEvent
     ) -> bool:
-        if not self._is_managed_object(obj):
-            return False
         event_type = event.type()
         if event_type == QtCore.QEvent.Type.MouseMove:
-            return isinstance(event, QtGui.QMouseEvent) and bool(event.buttons())
-        if event_type in self._ACTIVE_EVENT_TYPES:
-            return True
-        return event_type in self._EDITOR_FOCUS_TYPES and isinstance(
-            obj, self._EDITOR_WIDGET_TYPES
-        )
+            relevant = isinstance(event, QtGui.QMouseEvent) and bool(event.buttons())
+        elif event_type in self._ACTIVE_EVENT_TYPES:
+            relevant = True
+        else:
+            relevant = event_type in self._EDITOR_FOCUS_TYPES and isinstance(
+                obj, self._EDITOR_WIDGET_TYPES
+            )
+        return relevant and self._is_managed_object(obj)
 
-    def _is_managed_object(self, obj: QtCore.QObject | None) -> bool:
+    def _managed_root_for_object(
+        self, obj: QtCore.QObject | None
+    ) -> QtWidgets.QWidget | None:
         if not isinstance(obj, QtWidgets.QWidget):
-            return False
+            return None
+        if not erlab.interactive.utils.qt_is_valid(obj):
+            return None
+        try:
+            window = obj.window()
+            if erlab.interactive.utils.qt_is_valid(window) and window in self._roots:
+                return window
+        except RuntimeError:
+            return None
         for root in tuple(self._roots):
+            if not erlab.interactive.utils.qt_is_valid(root):
+                self._roots.discard(root)
+                continue
             try:
                 if obj is root or root.isAncestorOf(obj):
-                    return True
+                    return root
             except RuntimeError:
                 self._roots.discard(root)
-        return False
+        return None
+
+    def _is_managed_object(self, obj: QtCore.QObject | None) -> bool:
+        return self._managed_root_for_object(obj) is not None
+
+    def _discard_dead_mouse_holds(self) -> None:
+        for button, root_ref in tuple(self._pressed_mouse_button_roots.items()):
+            root = root_ref()
+            if root is None or not erlab.interactive.utils.qt_is_valid(root):
+                self._pressed_mouse_button_roots.pop(button, None)
+                if root is not None:
+                    self._roots.discard(root)
 
     def _interaction_settled(self) -> None:
         self._active = False
@@ -192,8 +291,19 @@ class _ManagerInteractionGate(QtCore.QObject):
         start_time = time.perf_counter() if _manager_perf_timing_enabled() else 0.0
         flushed = 0
         deadline = time.monotonic() + self._batch_budget_ms / 1000.0
-        while self._pending_work and not self.is_active:
-            _key, callback = self._pending_work.popitem(last=False)
+        batch_generation = self._queue_generation
+        batch_size = len(self._pending_work)
+        for _index in range(batch_size):
+            if self.is_active:
+                break
+            if not self._pending_work:
+                break
+            key, pending = self._pending_work.popitem(last=False)
+            generation, callback = pending
+            if generation > batch_generation:
+                # Keep callbacks queued during this batch for the next event-loop turn.
+                self._pending_work[key] = pending
+                continue
             flushed += 1
             self._run_callback(callback)
             if time.monotonic() >= deadline:

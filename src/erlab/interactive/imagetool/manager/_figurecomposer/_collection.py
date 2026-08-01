@@ -206,6 +206,10 @@ class _FigureCollectionController(QtCore.QObject):
         self._parent_widget = parent
         self._pane: _FigureCollectionPane | None = None
         self._menu: QtWidgets.QMenu | None = None
+        self._items_by_uid: dict[str, QtWidgets.QListWidgetItem] = {}
+        self._placeholder_pixmap_cache: (
+            tuple[tuple[int, int, int, int], QtGui.QPixmap] | None
+        ) = None
         self._refreshing = False
         self._view_mode = self._read_view_mode_setting()
         self._gallery_size_name = self._read_gallery_size_setting()
@@ -235,15 +239,12 @@ class _FigureCollectionController(QtCore.QObject):
         pane = self._pane
         if pane is None:
             return []
-        output: list[str] = []
-        for row in range(pane.list_widget.count()):
-            item = pane.list_widget.item(row)
-            if item is None or not item.isSelected():
-                continue
+        output: list[tuple[int, str]] = []
+        for item in pane.list_widget.selectedItems():
             uid = self.uid_from_item(item)
             if uid is not None and self._host._is_figure_uid(uid):
-                output.append(uid)
-        return output
+                output.append((pane.list_widget.row(item), uid))
+        return [uid for _row, uid in sorted(output)]
 
     def next_display_name(self) -> str:
         highest = 0
@@ -270,9 +271,11 @@ class _FigureCollectionController(QtCore.QObject):
             suffix += 1
         return f"{base_name} {suffix}"
 
-    def sync(self, *, select_uid: str | None = None) -> None:
+    def sync(
+        self, *, select_uid: str | None = None, rebuild_items: bool = False
+    ) -> None:
         if self._host._figure_ui_refresh_is_deferred():
-            self._host._defer_figure_ui_refresh(select_uid)
+            self._host._defer_figure_ui_refresh(select_uid, rebuild_items=rebuild_items)
             return
         figure_uids = self._host._figure_uids()
         selected_uids = (
@@ -286,10 +289,22 @@ class _FigureCollectionController(QtCore.QObject):
         self._refreshing = True
         pane.list_widget.blockSignals(True)
         try:
-            pane.list_widget.clear()
-            for uid in figure_uids:
-                item = self._list_item(uid)
-                pane.list_widget.addItem(item)
+            if rebuild_items or tuple(self._items_by_uid) != tuple(figure_uids):
+                self._items_by_uid.clear()
+                pane.list_widget.clear()
+                for uid in figure_uids:
+                    item = self._list_item(uid)
+                    pane.list_widget.addItem(item)
+                    self._items_by_uid[uid] = item
+            else:
+                for uid, item in self._items_by_uid.items():
+                    display_text = self._host._child_node(uid).display_text
+                    if item.text() != display_text:
+                        item.setText(display_text)
+                    if self._view_mode == _VIEW_MODE_GALLERY:
+                        item.setIcon(self._gallery_icon(uid))
+            pane.list_widget.clearSelection()
+            for uid, item in self._items_by_uid.items():
                 if uid in selected_uids:
                     item.setSelected(True)
                     pane.list_widget.setCurrentItem(item)
@@ -300,7 +315,24 @@ class _FigureCollectionController(QtCore.QObject):
             self._host.left_tabs.setCurrentWidget(pane)
 
     def select_uid(self, uid: str) -> None:
-        self.sync(select_uid=uid)
+        pane = self._pane
+        item = self.item_for_uid(uid)
+        if pane is None or item is None:
+            self.sync(select_uid=uid)
+        else:
+            self._refreshing = True
+            pane.list_widget.blockSignals(True)
+            try:
+                display_text = self._host._child_node(uid).display_text
+                if item.text() != display_text:
+                    item.setText(display_text)
+                pane.list_widget.clearSelection()
+                item.setSelected(True)
+                pane.list_widget.setCurrentItem(item)
+            finally:
+                pane.list_widget.blockSignals(False)
+                self._refreshing = False
+            self._host.left_tabs.setCurrentWidget(pane)
         self._host._deselect_tree()
         self._host._update_actions()
         self._host._update_info()
@@ -323,14 +355,7 @@ class _FigureCollectionController(QtCore.QObject):
         self._host._update_info()
 
     def item_for_uid(self, uid: str) -> QtWidgets.QListWidgetItem | None:
-        pane = self._pane
-        if pane is None:
-            return None
-        for row in range(pane.list_widget.count()):
-            item = pane.list_widget.item(row)
-            if item is not None and self.uid_from_item(item) == uid:
-                return item
-        return None
+        return self._items_by_uid.get(uid)
 
     @staticmethod
     def uid_from_item(item: QtWidgets.QListWidgetItem | None) -> str | None:
@@ -418,6 +443,7 @@ class _FigureCollectionController(QtCore.QObject):
                 self._host.left_tabs.setCurrentIndex(0)
             self._host.left_tabs.removeTab(tab_index)
         self._pane = None
+        self._items_by_uid.clear()
         pane.hide()
         pane.deleteLater()
         self._refreshing = False
@@ -428,7 +454,7 @@ class _FigureCollectionController(QtCore.QObject):
             return
         self._view_mode = mode
         _manager_settings().setValue(_VIEW_MODE_SETTINGS_KEY, mode)
-        self.sync()
+        self.sync(rebuild_items=True)
 
     @QtCore.Slot(str)
     def _set_gallery_size(self, size_name: str) -> None:
@@ -439,7 +465,7 @@ class _FigureCollectionController(QtCore.QObject):
             return
         self._gallery_size_name = size_name
         _manager_settings().setValue(_GALLERY_SIZE_SETTINGS_KEY, size_name)
-        self.sync()
+        self.sync(rebuild_items=True)
 
     @QtCore.Slot()
     def _selection_changed(self) -> None:
@@ -544,18 +570,29 @@ class _FigureCollectionController(QtCore.QObject):
 
     def _placeholder_pixmap(self) -> QtGui.QPixmap:
         size = _FigureCollectionPane.thumbnail_size(self._gallery_size_name)
+        palette = self._parent_widget.palette()
+        color = palette.color(QtGui.QPalette.ColorRole.Base)
+        border_color = palette.color(QtGui.QPalette.ColorRole.Mid)
+        cache_key = (
+            size.width(),
+            size.height(),
+            color.rgba(),
+            border_color.rgba(),
+        )
+        cached = self._placeholder_pixmap_cache
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
         pixmap = QtGui.QPixmap(size)
-        pixmap.fill(self._parent_widget.palette().color(QtGui.QPalette.ColorRole.Base))
+        pixmap.fill(color)
         painter = QtGui.QPainter(pixmap)
         try:
             painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
             rect = QtCore.QRectF(pixmap.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-            painter.setPen(
-                self._parent_widget.palette().color(QtGui.QPalette.ColorRole.Mid)
-            )
+            painter.setPen(border_color)
             painter.drawRoundedRect(rect, 3.0, 3.0)
         finally:
             painter.end()
+        self._placeholder_pixmap_cache = (cache_key, pixmap)
         return pixmap
 
     def _thumbnail_pixmap(self, source_pixmap: QtGui.QPixmap) -> QtGui.QPixmap:

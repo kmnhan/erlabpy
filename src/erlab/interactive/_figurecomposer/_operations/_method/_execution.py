@@ -348,10 +348,11 @@ def _tool_subplots_adjust_defaults(
     if figure_window is not None and erlab.interactive.utils.qt_is_valid(figure_window):
         subplotpars = figure_window.figure.subplotpars
     else:
+        setup = tool._document.recipe.setup
         figure = Figure(
-            figsize=tool.tool_status.setup.figsize,
-            dpi=tool.tool_status.setup.dpi,
-            layout=typing.cast("typing.Any", tool.tool_status.setup.layout),
+            figsize=setup.figsize,
+            dpi=setup.dpi,
+            layout=typing.cast("typing.Any", setup.layout),
         )
         subplotpars = figure.subplotpars
     return {

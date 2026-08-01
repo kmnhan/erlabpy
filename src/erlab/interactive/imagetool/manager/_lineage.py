@@ -318,16 +318,17 @@ class _LineageController:
         return self._manager._dependency_tracker.dependent_uids(uid)
 
     def _refresh_dependency_dependents(self, uid: str) -> None:
+        refresh_figures = False
+        tree_uids: list[str] = []
         for dependent_uid in self._manager._dependency_dependent_uids(uid):
+            self._manager._schedule_details_refresh(dependent_uid)
             if self._manager._is_figure_uid(dependent_uid):
-                self._manager._figure_collection.sync()
-                self._manager._update_info(uid=dependent_uid)
+                refresh_figures = True
             else:
-                self._manager.tree_view.refresh(dependent_uid)
-            if self._manager._metadata_node_uid == dependent_uid:
-                self._manager._set_metadata_node(
-                    self._manager._tool_graph.nodes[dependent_uid]
-                )
+                tree_uids.append(dependent_uid)
+        self._manager.tree_view.refresh_many(tree_uids)
+        if refresh_figures:
+            self._manager._figure_collection.sync()
 
     def _script_input_name_for_node(
         self, node: _ImageToolWrapper | _ManagedWindowNode
@@ -960,7 +961,8 @@ class _LineageController:
         for child_uid in self._manager._iter_descendant_uids(uid):
             node = self._manager._child_node(child_uid)
             if node.tool_window is not None and node.tool_window.has_source_binding:
-                node.tool_window._set_source_state(state)
+                if node.tool_window.source_state != state:
+                    node.tool_window._set_source_state(state)
             elif node.has_source_binding:
                 node._set_source_state(state)
 
@@ -981,8 +983,10 @@ class _LineageController:
                 child = self._manager._child_node(child_uid)
             except KeyError:
                 continue
+            previous_state = child.source_state
             updated = child.handle_parent_source_replaced(parent_data)
-            self._manager.tree_view.refresh(child_uid)
+            if updated or child.source_state != previous_state:
+                self._manager.tree_view.refresh(child_uid)
             if updated:
                 self._manager._propagate_source_change_from_uid(child_uid)
             elif child.source_state != "fresh":
@@ -1124,8 +1128,6 @@ class _LineageController:
             replay_source_data=node.replay_source_data,
         )
         self._manager.tree_view.refresh(node.uid)
-        if self._manager._metadata_node_uid == node.uid:
-            self._manager._set_metadata_node(node)
 
     def _reload_script_derived_target(self, target: int | str) -> bool:
         """Reload a script-derived ImageTool from its recorded inputs."""

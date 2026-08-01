@@ -59,6 +59,7 @@ from erlab.interactive.imagetool.manager._provenance_edit._reorder import (
 )
 from erlab.interactive.imagetool.manager._widgets import _TrustedScriptReplayCancelled
 from tests.interactive.imagetool.manager.helpers import (
+    select_metadata_items,
     select_metadata_rows,
     select_tools,
 )
@@ -456,10 +457,7 @@ def test_manager_provenance_rows_dim_when_not_activatable(
                 QtGui.QPalette.ColorRole.Text,
             )
         )
-        select_metadata_rows(
-            manager,
-            [manager.metadata_derivation_list.row(script_operation_item)],
-        )
+        select_metadata_items(manager, [script_operation_item])
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
         assert menu.defaultAction() is None
@@ -575,7 +573,7 @@ def test_manager_provenance_row_activation_ignores_noneditable_row(
                 item = candidate
                 break
         assert item is not None
-        select_metadata_rows(manager, [manager.metadata_derivation_list.row(item)])
+        select_metadata_items(manager, [item])
         manager.metadata_derivation_list.itemActivated.emit(item, 0)
 
 
@@ -1180,6 +1178,19 @@ def test_manager_filtered_root_retains_source_when_provenance_becomes_durable(
         assert root.provenance_spec is None
         assert root.displayed_provenance_spec is not None
 
+        select_tools(manager, [0])
+        manager._update_info(uid=root.uid)
+        original_item = manager.metadata_derivation_list.topLevelItem(0)
+        assert original_item is not None
+        first_displayed_spec = root.passive_displayed_provenance_spec
+        second_displayed_spec = root.passive_displayed_provenance_spec
+        assert first_displayed_spec == second_displayed_spec
+        assert first_displayed_spec is not second_displayed_spec
+
+        manager._update_info(uid=root.uid)
+
+        assert manager.metadata_derivation_list.topLevelItem(0) is original_item
+
         replay_source = root.resolved_replay_source_data()
         assert replay_source is not None
         xr.testing.assert_identical(replay_source, source)
@@ -1201,7 +1212,6 @@ def test_manager_filtered_root_retains_source_when_provenance_becomes_durable(
             tool.slicer_area._data,
         )
 
-        select_tools(manager, [0])
         manager._update_info(uid=root.uid)
         assert manager._provenance_edit_controller.can_reorder_steps() == (True, "")
 
@@ -2023,10 +2033,7 @@ def test_manager_provenance_script_structured_row_can_revert(
                 aggregate_item = item
                 break
         assert aggregate_item is not None
-        select_metadata_rows(
-            manager,
-            [manager.metadata_derivation_list.row(aggregate_item)],
-        )
+        select_metadata_items(manager, [aggregate_item])
         row = manager._selected_derivation_row()
         assert row is not None
 

@@ -13,6 +13,7 @@ import contextlib
 import contextvars
 import enum
 import fnmatch
+import functools
 import importlib
 import inspect
 import io
@@ -3238,6 +3239,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     - The property `tool_status` must be implemented so that its getter returns an
       instance of `StateModel` by gathering the current state of child widgets, and its
       setter applies a given instance of `StateModel` to set the state of child widgets.
+      The base class wraps each subclass setter in one provenance mutation transaction.
+      Thus, a partial state change still invalidates manager caches if later setter work
+      fails.
 
     - The property `tool_data` must be implemented to return the main
       :class:`xarray.DataArray` being analyzed, which will be passed to the constructor
@@ -3289,12 +3293,22 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
       ``sigInfoChanged`` without any arguments whenever the content of these properties
       changes. This will ensure that the ImageTool manager updates its display.
 
+    - Call ``_write_state`` whenever a user action changes the tool state. This final
+      method advances ``provenance_revision`` before it records undo history, so the
+      manager can discard cached provenance without generating replacement code.
+      A tool that needs custom history behavior can override
+      ``_record_state_change``, ``_replace_recorded_state``,
+      ``_undo_recorded_state``, or ``_redo_recorded_state``. The revision remains owned
+      by the base class.
+
     - Emit ``sigStateChanged`` whenever tool settings changed and the manager should
-      mark the workspace state dirty, but preview/info/output refreshes can wait.
+      mark the workspace state dirty, but preview/info/output refreshes can wait. This
+      signal also advances ``provenance_revision``.
 
     - Emit ``sigDataChanged`` whenever the displayed tool data or any manager-visible
       ImageTool outputs have changed. Managed descendants use this to become stale or
-      auto-refresh from the current tool state.
+      auto-refresh from the current tool state. This signal also advances
+      ``provenance_revision``.
     """
 
     tool_name: str = "tool"
@@ -3304,6 +3318,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     IMAGE_TOOL_OUTPUTS: typing.ClassVar[
         Mapping[str | enum.Enum, ToolImageOutputDefinition]
     ] = {}
+    # Set this only when one central state owner calls ``_notify_provenance_changed``
+    # for every mutation. It prevents later history and semantic signals from counting
+    # the same mutation again.
+    _PROVENANCE_IS_MODEL_OWNED: typing.ClassVar[bool] = False
     __tool_display_name: str = ""
 
     StateModel: type[M]
@@ -3311,6 +3329,29 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     sigInfoChanged = QtCore.Signal()  #: :meta private:
     sigStateChanged = QtCore.Signal()  #: :meta private:
     sigDataChanged = QtCore.Signal()  #: :meta private:
+    sigProvenanceChanged = QtCore.Signal()  #: :meta private:
+
+    def __init_subclass__(cls, **kwargs: typing.Any) -> None:
+        """Put each concrete status setter inside the mutation boundary."""
+        super().__init_subclass__(**kwargs)
+        status_property = cls.__dict__.get("tool_status")
+        if not isinstance(status_property, property) or status_property.fset is None:
+            return
+        setter = status_property.fset
+
+        @functools.wraps(setter)
+        def tracked_setter(self: ToolWindow, status: typing.Any) -> None:
+            if not hasattr(self, "_provenance_change_depth"):
+                setter(self, status)
+                return
+            with self._provenance_mutation():
+                setter(self, status)
+
+        type(cls).__setattr__(
+            cls,
+            "tool_status",
+            status_property.setter(tracked_setter),
+        )
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -3343,6 +3384,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._source_binding: ImageToolSelectionSourceBinding | None = None
         self._input_provenance_spec: ToolProvenanceSpec | None = None
         self._input_provenance_snapshot_from_parent = False
+        self._provenance_revision = 0
+        self._provenance_change_depth = 0
+        self._provenance_change_pending = False
+        if not self._PROVENANCE_IS_MODEL_OWNED:
+            self.sigStateChanged.connect(self._advance_provenance_revision)
+            self.sigDataChanged.connect(self._advance_provenance_revision)
         self._input_provenance_parent_fetcher: (
             Callable[
                 [],
@@ -3491,13 +3538,18 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     @contextlib.contextmanager
     def _history_suppressed(self):
-        self._flush_pending_history_write()
+        self._flush_pending_history_changes()
         original = bool(self._write_history)
         self._write_history = False
-        try:
-            yield
-        finally:
-            self._write_history = original
+        with self._coalesce_provenance_changes():
+            try:
+                yield
+            finally:
+                self._write_history = original
+
+    def _flush_pending_history_changes(self) -> None:
+        """Flush all pending history state owned by this tool."""
+        self._flush_pending_history_write()
 
     def _reset_history_stack(self) -> None:
         self._history_write_timer.stop()
@@ -3507,16 +3559,76 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._prev_states.append(self.tool_status)
         self._update_history_actions()
 
+    @typing.final
     @QtCore.Slot()
     def _write_state(self, *_args: typing.Any) -> None:
-        if not self._write_history or self._restoring_from_dataset:
+        if self._restoring_from_dataset or (
+            not self._write_history and not self._provenance_change_depth
+        ):
             return
+        with self._coalesce_provenance_changes():
+            if not self._PROVENANCE_IS_MODEL_OWNED:
+                self._notify_provenance_changed()
+            if self._write_history:
+                self._record_state_change()
+
+    def _record_state_change(self) -> None:
+        """Record one state change after base provenance invalidation."""
         if not self._prev_states:
             self._prev_states.append(self.tool_status)
             self._update_history_actions()
             return
         self._history_write_pending = True
         self._history_write_timer.start()
+
+    @property
+    def provenance_revision(self) -> int:
+        """Return the revision of inputs used by ``current_provenance_spec``."""
+        return self._provenance_revision
+
+    @typing.final
+    @contextlib.contextmanager
+    def _coalesce_provenance_changes(self):
+        """Advance provenance once for a nested group of related mutations."""
+        self._provenance_change_depth += 1
+        try:
+            yield
+        finally:
+            self._provenance_change_depth -= 1
+            if self._provenance_change_depth == 0 and self._provenance_change_pending:
+                self._provenance_change_pending = False
+                self._provenance_revision += 1
+                self.sigProvenanceChanged.emit()
+
+    @typing.final
+    @contextlib.contextmanager
+    def _provenance_mutation(self, *, changed: bool = True):
+        """Invalidate provenance after one exception-safe mutation transaction.
+
+        Set ``changed`` to ``False`` when nested operations determine whether a
+        mutation occurred. Any nested provenance notification still commits the
+        transaction.
+        """
+        with self._coalesce_provenance_changes():
+            if changed:
+                self._notify_provenance_changed()
+            yield
+
+    @typing.final
+    @QtCore.Slot()
+    def _advance_provenance_revision(self) -> None:
+        """Record a provenance input mutation without scheduling another signal."""
+        if self._provenance_change_depth:
+            self._provenance_change_pending = True
+            return
+        self._provenance_revision += 1
+
+    @typing.final
+    def _notify_provenance_changed(self) -> None:
+        """Advance provenance and schedule manager cache invalidation."""
+        self._advance_provenance_revision()
+        if not self._provenance_change_depth:
+            self.sigProvenanceChanged.emit()
 
     @QtCore.Slot()
     def _flush_pending_history_write(self) -> bool:
@@ -3549,11 +3661,19 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             )
         return False
 
+    @typing.final
     @QtCore.Slot()
     def _replace_last_state(self, *_args: typing.Any) -> None:
         if not self._write_history:
             return
-        self._flush_pending_history_write()
+        with self._coalesce_provenance_changes():
+            if not self._PROVENANCE_IS_MODEL_OWNED:
+                self._notify_provenance_changed()
+            self._replace_recorded_state()
+
+    def _replace_recorded_state(self) -> None:
+        """Replace the last saved state after base provenance invalidation."""
+        self._flush_pending_history_changes()
         curr_state = self.tool_status
         if self._prev_states:
             self._prev_states[-1] = curr_state
@@ -3709,28 +3829,42 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             flushed = True
         return flushed
 
+    @typing.final
     @QtCore.Slot()
     def undo(self) -> None:
         """Undo the most recent recorded tool state change."""
-        self._flush_pending_history_write()
+        self._flush_pending_history_changes()
         if not self.undoable:
             return
-        with self._history_suppressed():
-            self._next_states.append(self._prev_states.pop())
-            self.tool_status = self._prev_states[-1]
+        with self._coalesce_provenance_changes():
+            self._notify_provenance_changed()
+            with self._history_suppressed():
+                self._undo_recorded_state()
         self._update_history_actions()
 
+    def _undo_recorded_state(self) -> None:
+        """Move the base history stacks to the previous state."""
+        self._next_states.append(self._prev_states.pop())
+        self.tool_status = self._prev_states[-1]
+
+    @typing.final
     @QtCore.Slot()
     def redo(self) -> None:
         """Redo the most recently undone tool state change."""
-        self._flush_pending_history_write()
+        self._flush_pending_history_changes()
         if not self.redoable:
             return
-        with self._history_suppressed():
-            next_state = self._next_states.pop()
-            self._prev_states.append(next_state)
-            self.tool_status = next_state
+        with self._coalesce_provenance_changes():
+            self._notify_provenance_changed()
+            with self._history_suppressed():
+                self._redo_recorded_state()
         self._update_history_actions()
+
+    def _redo_recorded_state(self) -> None:
+        """Move the base history stacks to the next state."""
+        next_state = self._next_states.pop()
+        self._prev_states.append(next_state)
+        self.tool_status = next_state
 
     def centralWidget(self) -> QtWidgets.QWidget | None:
         """Return the content widget shown below the source-status banner."""
@@ -3949,8 +4083,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             to_replay_provenance_spec,
         )
 
-        self._input_provenance_spec = to_replay_provenance_spec(provenance_spec)
-        self._input_provenance_snapshot_from_parent = False
+        self._set_input_provenance_snapshot(
+            to_replay_provenance_spec(provenance_spec),
+            from_parent=False,
+        )
 
     def set_input_provenance_parent_fetcher(
         self,
@@ -3961,13 +4097,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         | None,
     ) -> None:
         """Set the callback used to resolve provenance for future source refreshes."""
-        self._input_provenance_parent_fetcher = fetcher
-        if (
-            fetcher is not None
-            and self.has_source_binding
-            and self._source_state == "fresh"
-        ):
-            self._sync_input_provenance_snapshot()
+        fetcher_changed = fetcher is not self._input_provenance_parent_fetcher
+        with self._provenance_mutation(changed=fetcher_changed):
+            self._input_provenance_parent_fetcher = fetcher
+            if (
+                fetcher is not None
+                and self.has_source_binding
+                and self._source_state == "fresh"
+            ):
+                self._sync_input_provenance_snapshot()
 
     def _parent_input_provenance(
         self,
@@ -4012,10 +4150,29 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
         return parent_data, self._source_spec
 
+    @typing.final
+    def _set_input_provenance_snapshot(
+        self,
+        provenance_spec: ToolProvenanceSpec | None,
+        *,
+        from_parent: bool,
+    ) -> None:
+        """Set the stored input snapshot through the provenance revision boundary."""
+        if (
+            provenance_spec is self._input_provenance_spec
+            and from_parent == self._input_provenance_snapshot_from_parent
+        ):
+            return
+        self._input_provenance_spec = provenance_spec
+        self._input_provenance_snapshot_from_parent = from_parent
+        self._notify_provenance_changed()
+
     def _sync_input_provenance_snapshot(self) -> None:
         """Refresh the stored input provenance snapshot for the displayed tool data."""
-        self._input_provenance_spec = self._snapshot_input_provenance()
-        self._input_provenance_snapshot_from_parent = True
+        self._set_input_provenance_snapshot(
+            self._snapshot_input_provenance(),
+            from_parent=True,
+        )
 
     def _effective_input_provenance_spec(
         self,
@@ -4647,27 +4804,38 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     source_spec = source_binding.materialize(
                         self._source_parent_fetcher()
                     )
-        self._source_spec = require_live_source_spec(source_spec)
-        self._source_binding = None if self._source_spec is not None else source_binding
-        self._source_auto_update = bool(auto_update)
-        if self.has_source_binding and state == "fresh":
-            self._sync_input_provenance_snapshot()
+        live_source_spec = require_live_source_spec(source_spec)
+        live_source_binding = None if live_source_spec is not None else source_binding
+        source_changed = (
+            live_source_spec is not self._source_spec
+            or live_source_binding is not self._source_binding
+        )
+        with self._coalesce_provenance_changes():
+            self._source_spec = live_source_spec
+            self._source_binding = live_source_binding
+            self._source_auto_update = bool(auto_update)
+            if source_changed:
+                self._notify_provenance_changed()
+            if self.has_source_binding and state == "fresh":
+                self._sync_input_provenance_snapshot()
         self._set_source_state(state if self.has_source_binding else "fresh")
 
     def set_source_parent_fetcher(
         self, fetcher: Callable[[], xr.DataArray] | None
     ) -> None:
         """Set the callback used to fetch the latest parent ImageTool data."""
-        self._source_parent_fetcher = fetcher
-        if fetcher is not None and self._source_binding is not None:
-            with contextlib.suppress(Exception):
-                self._materialized_source_spec(fetcher())
-        if (
-            fetcher is not None
-            and self.has_source_binding
-            and self._source_state == "fresh"
-        ):
-            self._sync_input_provenance_snapshot()
+        fetcher_changed = fetcher is not self._source_parent_fetcher
+        with self._provenance_mutation(changed=fetcher_changed):
+            self._source_parent_fetcher = fetcher
+            if fetcher is not None and self._source_binding is not None:
+                with contextlib.suppress(Exception):
+                    self._materialized_source_spec(fetcher())
+            if (
+                fetcher is not None
+                and self.has_source_binding
+                and self._source_state == "fresh"
+            ):
+                self._sync_input_provenance_snapshot()
 
     def _set_managed_source_update_dialog(
         self, callback: Callable[..., int] | None
@@ -4778,10 +4946,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     def finalize_source_refresh(self) -> None:
         """Record that the current source refresh has been applied to the tool."""
-        self._source_refresh_deferred = False
-        self._sync_input_provenance_snapshot()
-        self._set_source_state("fresh")
-        self.sigDataChanged.emit()
+        with self._coalesce_provenance_changes():
+            self._source_refresh_deferred = False
+            self._sync_input_provenance_snapshot()
+            self._set_source_state("fresh")
+            self.sigDataChanged.emit()
 
     def _set_source_auto_update(self, value: bool) -> None:
         """Update the auto-refresh flag and notify manager-facing UI state."""
@@ -4864,8 +5033,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         if self._source_spec is not None:
             return self._source_spec
         if self._source_binding is not None:
-            self._source_spec = self._source_binding.materialize(parent_data)
-            self._source_binding = None
+            with self._coalesce_provenance_changes():
+                self._source_spec = self._source_binding.materialize(parent_data)
+                self._source_binding = None
+                self._notify_provenance_changed()
             return self._source_spec
         raise RuntimeError("Tool is not bound to an ImageTool source.")
 
@@ -5002,11 +5173,13 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             finally:
                 self._source_refreshing = False
             if update_complete is False:
-                self._set_source_state("stale")
+                if self._source_state != "stale":
+                    self._set_source_state("stale")
                 return
             self.finalize_source_refresh()
         else:
-            self._set_source_state("stale")
+            if self._source_state != "stale":
+                self._set_source_state("stale")
 
     def show_source_update_dialog(
         self, *, parent: QtWidgets.QWidget | None = None

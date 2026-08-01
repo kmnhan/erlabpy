@@ -4345,10 +4345,15 @@ def test_figure_composer_cut_paste_steps_preserves_same_composer_sources(
     _select_operation_rows(tool, (0,))
     original_id = tool.tool_status.operations[0].operation_id
     tool.operation_panel.cut_button.click()
+    source_revision = tool._document.source_revision
+    data_changed: list[None] = []
+    tool.sigDataChanged.connect(lambda: data_changed.append(None))
     tool.operation_panel.paste_button.click()
 
     assert [source.name for source in tool.tool_status.sources] == ["data"]
     assert set(tool.source_data()) == {"data"}
+    assert tool._document.source_revision == source_revision
+    assert data_changed == []
     pasted_operation = tool.tool_status.operations[0]
     assert pasted_operation.sources == ("data",)
     assert pasted_operation.map_selections == ()
@@ -5172,6 +5177,161 @@ def test_figure_composer_restore_persisted_selection_failure_paths(qtbot) -> Non
     pending_tool._restore_persistence_data_items({"orphan": data}, xr.Dataset())
     assert "stable" in pending_tool.source_data()
     assert "orphan" not in pending_tool.source_data()
+
+
+def test_tool_status_source_normalization_advances_provenance_revision(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="original")
+    tool = FigureComposerTool.from_sources(
+        {"data": data},
+        sources=(
+            FigureSourceState(
+                name="data",
+                provenance_spec=public_data().model_dump(mode="json"),
+            ),
+        ),
+        operations=(FigureOperationState.line(label="line", source="data"),),
+        primary_source="data",
+    )
+    qtbot.addWidget(tool)
+    status = tool.tool_status
+    primary_source = status.primary_source
+    tool.set_source_data({"replacement": data.rename("replacement")})
+    before_spec = tool.current_provenance_spec(flush_deferred_restore=False)
+    before_revision = tool.provenance_revision
+    data_changes: list[None] = []
+    state_changes: list[None] = []
+    provenance_changes: list[int] = []
+    tool.sigDataChanged.connect(lambda: data_changes.append(None))
+    tool.sigStateChanged.connect(lambda: state_changes.append(None))
+    tool.sigProvenanceChanged.connect(
+        lambda: provenance_changes.append(tool.provenance_revision)
+    )
+
+    tool.tool_status = status
+
+    assert tuple(tool.source_data()) == (primary_source,)
+    assert tool.current_provenance_spec(flush_deferred_restore=False) != before_spec
+    assert tool.provenance_revision == before_revision + 1
+    assert data_changes == [None]
+    assert state_changes == []
+    assert provenance_changes == [tool.provenance_revision]
+
+
+def test_tool_status_is_detached_from_document_state(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    input_recipe = FigureRecipeState(sources=(FigureSourceState(name="data"),))
+    tool = FigureComposerTool(data, recipe=input_recipe)
+    qtbot.addWidget(tool)
+    original_status = tool.tool_status
+    original_revision = tool.provenance_revision
+    input_recipe.setup.figsize = (8.0, 6.0)
+    input_recipe.sources[0].qsel["x"] = 2.0
+    status = tool.tool_status
+    source_status = tool.source_states()[0]
+
+    status.setup.figsize = (7.0, 5.0)
+    source_status.qsel["x"] = 0.0
+
+    assert tool.tool_status == original_status
+    assert tool.source_states()[0].qsel == {}
+    assert tool.provenance_revision == original_revision
+
+    tool.tool_status = status
+    applied_status = tool.tool_status
+    status.setup.figsize = (9.0, 6.0)
+    status.sources[0].qsel["x"] = 1.0
+
+    assert tool.tool_status == applied_status
+
+
+def test_tool_status_publishes_only_coherent_document_signals(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    status = tool.tool_status
+    renamed_source = status.sources[0].model_copy(
+        update={"name": "renamed", "label": "renamed"}
+    )
+    updated_status = status.model_copy(
+        update={"sources": (renamed_source,), "primary_source": "renamed"}
+    )
+    observations: list[tuple[str, str, tuple[str, ...]]] = []
+
+    def record_signal(kind: str) -> None:
+        observations.append(
+            (kind, tool.tool_status.primary_source, tuple(tool.source_data()))
+        )
+
+    tool.sigStateChanged.connect(lambda: record_signal("state"))
+    tool.sigDataChanged.connect(lambda: record_signal("data"))
+    tool.sigProvenanceChanged.connect(lambda: record_signal("provenance"))
+
+    tool.tool_status = updated_status
+
+    assert len(observations) == 3
+    assert {kind for kind, _primary, _sources in observations} == {
+        "state",
+        "data",
+        "provenance",
+    }
+    assert all(
+        primary == "renamed" and sources == ("renamed",)
+        for _kind, primary, sources in observations
+    )
+
+
+def test_document_change_advances_revision_before_ui_failure(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    replacement = data.rename("replacement")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    initial_revision = tool.provenance_revision
+    data_changes: list[None] = []
+    provenance_changes: list[int] = []
+    tool.sigDataChanged.connect(lambda: data_changes.append(None))
+    tool.sigProvenanceChanged.connect(
+        lambda: provenance_changes.append(tool.provenance_revision)
+    )
+
+    def fail_source_ui() -> None:
+        raise RuntimeError("source UI failed")
+
+    monkeypatch.setattr(tool, "_refresh_source_list", fail_source_ui)
+
+    with pytest.raises(RuntimeError, match="source UI failed"):
+        tool.set_source_data({"replacement": replacement})
+
+    xr.testing.assert_identical(tool.source_data()["replacement"], replacement)
+    assert tool.provenance_revision == initial_revision + 1
+    assert data_changes == [None]
+    assert provenance_changes == [tool.provenance_revision]
+
+
+def test_tool_status_advances_revision_when_render_fails(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    updated_setup = tool.tool_status.setup.model_copy(update={"figsize": (7.0, 5.0)})
+    updated_status = tool.tool_status.model_copy(update={"setup": updated_setup})
+    initial_revision = tool.provenance_revision
+    provenance_changes: list[int] = []
+    tool.sigProvenanceChanged.connect(
+        lambda: provenance_changes.append(tool.provenance_revision)
+    )
+
+    def fail_render(_tool: FigureComposerTool) -> None:
+        raise RuntimeError("preview render failed")
+
+    monkeypatch.setattr(figurecomposer_tool_module, "_render_preview", fail_render)
+
+    with pytest.raises(RuntimeError, match="preview render failed"):
+        tool.tool_status = updated_status
+
+    assert tool.tool_status.setup.figsize == (7.0, 5.0)
+    assert tool.provenance_revision == initial_revision + 1
+    assert provenance_changes == [tool.provenance_revision]
 
 
 def test_figure_composer_selected_source_codegen_fallback_uses_base_input(

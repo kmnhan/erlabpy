@@ -649,6 +649,24 @@ def test_replay_graph_manual_error_and_cache_paths() -> None:
         execute_replay_graph(empty_graph)
 
 
+def test_script_input_parsing_does_not_affect_model_equality() -> None:
+    script_input = ScriptInput(
+        name="data",
+        label="Input data",
+        provenance_spec=full_data(),
+    )
+    equivalent = ScriptInput.model_validate(script_input.model_dump())
+
+    assert script_input == equivalent
+    parsed = script_input.parsed_provenance_spec()
+    assert parsed == full_data()
+    assert script_input.parsed_provenance_spec() == parsed
+    assert script_input == equivalent
+
+    without_provenance = script_input.model_copy(update={"provenance_spec": None})
+    assert without_provenance.parsed_provenance_spec() is None
+
+
 def test_replay_graph_file_script_input_and_rebuild_edges(
     tmp_path: pathlib.Path,
 ) -> None:

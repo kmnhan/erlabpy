@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 import scipy.optimize
 import xarray as xr
+from qtpy import QtCore
 
 import erlab
 from erlab.accessors.kspace import IncompleteDataError, MomentumAccessor
@@ -987,6 +988,19 @@ def test_ktool_clear_memory_refusal_preview_without_angle_data(qtbot, anglemap) 
     assert win.images[1].data_array is None
     assert not win.preview_symmetry_group.isEnabled()
     assert not win.bz_group.isEnabled()
+
+
+def test_ktool_angle_slice_reflects_in_place_data_changes(qtbot, anglemap) -> None:
+    win = ktool(anglemap, execute=False)
+    _add_hidden_tool(qtbot, win)
+    with QtCore.QSignalBlocker(win.width_spin):
+        win.width_spin.setValue(3)
+
+    first = win._angle_data().copy(deep=True)
+    win.tool_data.values[...] += 1.0
+    second = win._angle_data()
+
+    xr.testing.assert_allclose(second, first + 1.0)
 
 
 def test_ktool_preview_memory_estimate_recomputed_for_slice_change(

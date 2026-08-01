@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import typing
+import weakref
 
 from qtpy import QtCore, QtWidgets
 
@@ -35,6 +36,16 @@ class _OperationDialogMatch:
     start: int
     stop: int
     focus: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class _OperationEditorContractState:
+    dialog_cls: type[dialogs._DataManipulationDialog]
+    operation_types: tuple[type[ToolProvenanceOperation], ...]
+    kind: typing.Literal["transform", "filter"]
+    supports_restore: bool
+    grouped: bool
+    overrides_group_matcher: bool
 
 
 _NATIVE_TERMINAL_CURRENT_DATA_EDITORS: tuple[
@@ -244,33 +255,115 @@ def _standalone_editor_dialog_class_for_operation_type(
     return matches[0] if matches else None
 
 
+def _operation_editor_contract_states() -> tuple[_OperationEditorContractState, ...]:
+    states: list[_OperationEditorContractState] = []
+    for dialog_base_cls in _iter_imagetool_dialog_classes(dialogs.DataTransformDialog):
+        dialog_cls = typing.cast("type[dialogs.DataTransformDialog]", dialog_base_cls)
+        states.append(
+            _OperationEditorContractState(
+                dialog_cls=dialog_cls,
+                operation_types=tuple(dialog_cls.operation_types),
+                kind="transform",
+                supports_restore=_dialog_supports_transform_restore(dialog_cls),
+                grouped=_dialog_is_group_editor(dialog_cls),
+                overrides_group_matcher=(
+                    _dialog_overrides_operation_group_for_edit(dialog_cls)
+                ),
+            )
+        )
+    for dialog_base_cls in _iter_imagetool_dialog_classes(dialogs.DataFilterDialog):
+        dialog_cls = typing.cast("type[dialogs.DataFilterDialog]", dialog_base_cls)
+        states.append(
+            _OperationEditorContractState(
+                dialog_cls=dialog_cls,
+                operation_types=tuple(dialog_cls.operation_types),
+                kind="filter",
+                supports_restore=_dialog_supports_filter_restore(dialog_cls),
+                grouped=False,
+                overrides_group_matcher=False,
+            )
+        )
+    return tuple(states)
+
+
+def _operation_editor_contract_fingerprint(
+    states: tuple[_OperationEditorContractState, ...],
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (
+            weakref.ref(state.dialog_cls),
+            state.dialog_cls.__module__,
+            state.dialog_cls.__name__,
+            state.dialog_cls.__qualname__,
+            tuple(
+                (
+                    weakref.ref(operation_type),
+                    operation_type.__module__,
+                    operation_type.__name__,
+                    operation_type.__qualname__,
+                )
+                for operation_type in state.operation_types
+            ),
+            state.kind,
+            state.supports_restore,
+            state.grouped,
+            state.overrides_group_matcher,
+        )
+        for state in states
+    )
+
+
+# Keep only weak class identities so runtime dialog classes remain collectible.
+_operation_editor_contract_cache: (
+    tuple[tuple[tuple[object, ...], ...], tuple[str, ...]] | None
+) = None
+
+
 def _operation_editor_contract_errors() -> list[str]:
-    operation_types: set[type[ToolProvenanceOperation]] = set()
-    for base_cls in (dialogs.DataTransformDialog, dialogs.DataFilterDialog):
-        for dialog_cls in _iter_imagetool_dialog_classes(base_cls):
-            operation_types.update(dialog_cls.operation_types)
+    global _operation_editor_contract_cache
+
+    states = _operation_editor_contract_states()
+    fingerprint = _operation_editor_contract_fingerprint(states)
+    cached = _operation_editor_contract_cache
+    if cached is None or cached[0] != fingerprint:
+        errors = tuple(_compute_operation_editor_contract_errors(states))
+        _operation_editor_contract_cache = (fingerprint, errors)
+    else:
+        errors = cached[1]
+    return list(errors)
+
+
+def _compute_operation_editor_contract_errors(
+    states: tuple[_OperationEditorContractState, ...],
+) -> list[str]:
+    operation_types = {
+        operation_type for state in states for operation_type in state.operation_types
+    }
 
     errors: list[str] = []
     for operation_type in sorted(operation_types, key=lambda cls: cls.__name__):
-        standalone = _standalone_editor_dialog_classes_for_operation_type(
-            operation_type
-        )
-        grouped = _grouped_editor_dialog_classes_for_operation_type(operation_type)
-        broken_grouped: list[type[dialogs.DataTransformDialog]] = []
-        for dialog_base_cls in _iter_imagetool_dialog_classes(
-            dialogs.DataTransformDialog
-        ):
-            dialog_cls = typing.cast(
-                "type[dialogs.DataTransformDialog]", dialog_base_cls
+        matching = [
+            state
+            for state in states
+            if any(
+                issubclass(operation_type, declared_type)
+                for declared_type in state.operation_types
             )
-            if not _dialog_declares_operation_type(dialog_cls, operation_type):
-                continue
-            if not _dialog_supports_transform_restore(dialog_cls):
-                continue
-            if _dialog_is_group_editor(
-                dialog_cls
-            ) and not _dialog_overrides_operation_group_for_edit(dialog_cls):
-                broken_grouped.append(dialog_cls)
+            and state.supports_restore
+        ]
+        standalone = tuple(state.dialog_cls for state in matching if not state.grouped)
+        grouped = tuple(
+            state.dialog_cls
+            for state in matching
+            if state.grouped and state.overrides_group_matcher
+        )
+        broken_grouped = tuple(
+            state.dialog_cls
+            for state in matching
+            if state.kind == "transform"
+            and state.grouped
+            and not state.overrides_group_matcher
+        )
         if len(standalone) > 1:
             names = ", ".join(dialog_cls.__name__ for dialog_cls in standalone)
             errors.append(

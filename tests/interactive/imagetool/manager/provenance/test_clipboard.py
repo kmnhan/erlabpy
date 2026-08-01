@@ -29,6 +29,7 @@ from erlab.interactive.imagetool._provenance._model import (
     full_data,
     operation_group_range,
     script,
+    script_input_dependency_refs,
     stamp_operation_group,
     strip_operation_groups,
 )
@@ -271,20 +272,28 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
     qtbot.addWidget(derivation_list)
     manager = types.SimpleNamespace(
         metadata_derivation_list=derivation_list,
+        _metadata_node_uid=None,
+        _tool_graph=types.SimpleNamespace(
+            nodes={}, root_wrappers={}, structure_generation=0
+        ),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda row: (row is child_row, "")
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
+        _dependency_refs_for_uid=lambda _uid: (),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
     )
     node = types.SimpleNamespace(
         uid="node",
+        tool_window=None,
         displayed_provenance_spec=full_data(),
+        passive_displayed_provenance_spec=full_data(),
         metadata_fields=[],
         derivation_display_rows=[parent_row, sibling_row],
+        derivation_display_rows_cache_key=("node", None, None),
     )
 
     controller._set_metadata_node(node)
@@ -323,6 +332,11 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
     with pytest.raises(TypeError):
         parent_tree_item.setForeground()
 
+    assert parent_item.childCount() == 0
+    assert parent_item.childIndicatorPolicy() == (
+        QtWidgets.QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
+    )
+    derivation_list.expandItem(parent_item)
     assert parent_item.childCount() == 1
     child_item = parent_item.child(0)
     assert child_item is not None
@@ -338,13 +352,21 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
         is sibling_row
     )
     assert derivation_list.count() == 3
+    assert derivation_list.conceptual_count() == 3
     assert derivation_list.item(0) is parent_item
     assert derivation_list.item(1) is child_item
     assert derivation_list.item(2) is sibling_item
     assert derivation_list.item(3) is None
+    assert derivation_list.conceptual_item(0) is parent_item
+    assert derivation_list.conceptual_item(1) is child_item
+    assert derivation_list.conceptual_item(2) is sibling_item
+    assert derivation_list.conceptual_item(3) is None
     assert derivation_list.row(parent_item) == 0
     assert derivation_list.row(child_item) == 1
     assert derivation_list.row(sibling_item) == 2
+    assert derivation_list.conceptual_row(parent_item) == 0
+    assert derivation_list.conceptual_row(child_item) == 1
+    assert derivation_list.conceptual_row(sibling_item) == 2
     assert derivation_list.display_order(child_item) == 1
     assert (
         derivation_list.display_order(
@@ -354,6 +376,272 @@ def test_manager_metadata_derivation_rows_render_as_tree(qtbot) -> None:
     )
     derivation_list.setUniformItemSizes(True)
     assert derivation_list.uniformRowHeights()
+
+
+def test_manager_metadata_derivation_tree_populates_only_expanded_branches(
+    qtbot,
+) -> None:
+    row = _ProvenanceDisplayRow(DerivationEntry("Leaf", None, False))
+    for depth in range(100):
+        row = _ProvenanceDisplayRow(
+            DerivationEntry(f"Level {depth}", None, False),
+            children=(row,),
+        )
+
+    derivation_list = manager_widgets._MetadataDerivationListWidget()
+    qtbot.addWidget(derivation_list)
+    editability_checks: list[_ProvenanceDisplayRow] = []
+
+    def _record_editability_check(
+        checked_row: _ProvenanceDisplayRow,
+    ) -> tuple[bool, str]:
+        editability_checks.append(checked_row)
+        return False, ""
+
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=derivation_list,
+        _metadata_node_uid=None,
+        _tool_graph=types.SimpleNamespace(
+            nodes={}, root_wrappers={}, structure_generation=0
+        ),
+        _provenance_edit_controller=types.SimpleNamespace(
+            can_edit_row=_record_editability_check
+        ),
+        _set_metadata_fields=lambda _fields: None,
+        _update_metadata_pane=lambda: None,
+        _dependency_refs_for_uid=lambda _uid: (),
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+    node = types.SimpleNamespace(
+        uid="node",
+        tool_window=None,
+        displayed_provenance_spec=full_data(),
+        passive_displayed_provenance_spec=full_data(),
+        metadata_fields=[],
+        derivation_display_rows=[row],
+        derivation_display_rows_cache_key=("node", None, None),
+    )
+
+    controller._set_metadata_node(node)
+
+    root_item = derivation_list.topLevelItem(0)
+    assert root_item is not None
+    assert derivation_list.count() == 1
+    assert derivation_list.conceptual_count() == 101
+    assert root_item.childCount() == 0
+    assert editability_checks == [row]
+
+    derivation_list.expandItem(root_item)
+
+    child_item = root_item.child(0)
+    assert child_item is not None
+    assert child_item.childCount() == 0
+    assert editability_checks == [row, row.children[0]]
+
+    child_item.setSelected(True)
+    selected_rows, expanded_rows = controller._metadata_derivation_view_state()
+    assert selected_rows == frozenset({row.children[0]})
+    assert expanded_rows == frozenset({row})
+
+    controller._set_metadata_node(node)
+
+    restored_root = derivation_list.topLevelItem(0)
+    assert restored_root is not None
+    assert restored_root.isExpanded()
+    restored_child = restored_root.child(0)
+    assert restored_child is not None
+    assert restored_child.isSelected()
+
+
+def test_manager_metadata_derivation_state_restore_uses_indexed_lookups(
+    qtbot,
+    monkeypatch,
+) -> None:
+    rows = tuple(
+        _ProvenanceDisplayRow(
+            DerivationEntry(f"Parent {index}", None, False),
+            replay_ref=_ProvenanceStepRef("operation", operation_index=index),
+            children=(
+                _ProvenanceDisplayRow(
+                    DerivationEntry(f"Child {index}", None, False),
+                ),
+            ),
+        )
+        for index in range(96)
+    )
+    derivation_list = manager_widgets._MetadataDerivationListWidget()
+    qtbot.addWidget(derivation_list)
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=derivation_list,
+        _metadata_node_uid=None,
+        _tool_graph=types.SimpleNamespace(
+            nodes={}, root_wrappers={}, structure_generation=0
+        ),
+        _provenance_edit_controller=types.SimpleNamespace(
+            can_edit_row=lambda _row: (False, "")
+        ),
+        _set_metadata_fields=lambda _fields: None,
+        _update_metadata_pane=lambda: None,
+        _dependency_refs_for_uid=lambda _uid: (),
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+    spec = full_data()
+    node = types.SimpleNamespace(
+        uid="node",
+        tool_window=None,
+        displayed_provenance_spec=spec,
+        passive_displayed_provenance_spec=spec,
+        metadata_fields=[],
+        derivation_display_rows=rows,
+        derivation_display_rows_cache_key=("node", None, None),
+    )
+
+    controller._set_metadata_node(node)
+    for index in range(derivation_list.topLevelItemCount()):
+        item = derivation_list.topLevelItem(index)
+        assert item is not None
+        derivation_list.expandItem(item)
+
+    comparison_count = 0
+    original_eq = _ProvenanceDisplayRow.__eq__
+
+    def _count_row_comparisons(
+        left: _ProvenanceDisplayRow,
+        right: object,
+    ) -> bool:
+        nonlocal comparison_count
+        comparison_count += 1
+        return original_eq(left, right)
+
+    monkeypatch.setattr(_ProvenanceDisplayRow, "__eq__", _count_row_comparisons)
+
+    controller._set_metadata_node(node)
+
+    assert comparison_count < len(rows) * 2
+    for index in range(derivation_list.topLevelItemCount()):
+        item = derivation_list.topLevelItem(index)
+        assert item is not None
+        assert item.isExpanded()
+
+
+def test_manager_metadata_derivation_refresh_uses_stable_cache_key(qtbot) -> None:
+    row = _ProvenanceDisplayRow(DerivationEntry("Source", None, False))
+    derivation_list = manager_widgets._MetadataDerivationListWidget()
+    qtbot.addWidget(derivation_list)
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=derivation_list,
+        _metadata_node_uid=None,
+        _tool_graph=types.SimpleNamespace(
+            nodes={}, root_wrappers={}, structure_generation=0
+        ),
+        _provenance_edit_controller=types.SimpleNamespace(
+            can_edit_row=lambda _row: (False, "")
+        ),
+        _set_metadata_fields=lambda _fields: None,
+        _update_metadata_pane=lambda: None,
+        _dependency_refs_for_uid=lambda _uid: (),
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+    spec = full_data()
+    node = types.SimpleNamespace(
+        uid="node",
+        tool_window=None,
+        displayed_provenance_spec=spec,
+        passive_displayed_provenance_spec=spec,
+        metadata_fields=[],
+        derivation_display_rows=(row,),
+        derivation_display_rows_cache_key=("snapshot", None, None),
+    )
+
+    controller._set_metadata_node(node)
+    original_item = derivation_list.topLevelItem(0)
+    assert original_item is not None
+
+    equivalent_spec = full_data()
+    assert equivalent_spec == spec
+    assert equivalent_spec is not spec
+    node.passive_displayed_provenance_spec = equivalent_spec
+    controller._set_metadata_node(node)
+
+    assert derivation_list.topLevelItem(0) is original_item
+    assert controller._metadata_derivation_spec is equivalent_spec
+
+    node.derivation_display_rows_cache_key = ("next-snapshot", None, None)
+    controller._set_metadata_node(node)
+
+    assert derivation_list.topLevelItem(0) is not original_item
+
+
+def test_manager_metadata_row_mapping_keeps_collapsed_rows_consistent(
+    qtbot,
+) -> None:
+    materialization_calls = 0
+
+    def _load_children() -> tuple[_ProvenanceDisplayRow, ...]:
+        nonlocal materialization_calls
+        materialization_calls += 1
+        return (_ProvenanceDisplayRow(DerivationEntry("Hidden child", None, False)),)
+
+    parent_row = _ProvenanceDisplayRow(
+        DerivationEntry("Parent", None, False),
+        _children_factory=_load_children,
+    )
+    sibling_row = _ProvenanceDisplayRow(DerivationEntry("Sibling", None, False))
+    derivation_list = manager_widgets._MetadataDerivationListWidget()
+    qtbot.addWidget(derivation_list)
+    manager = types.SimpleNamespace(
+        metadata_derivation_list=derivation_list,
+        _metadata_node_uid=None,
+        _tool_graph=types.SimpleNamespace(
+            nodes={}, root_wrappers={}, structure_generation=0
+        ),
+        _provenance_edit_controller=types.SimpleNamespace(
+            can_edit_row=lambda _row: (False, "")
+        ),
+        _set_metadata_fields=lambda _fields: None,
+        _update_metadata_pane=lambda: None,
+        _dependency_refs_for_uid=lambda _uid: (),
+    )
+    controller = manager_details_panel._DetailsPanelController(
+        typing.cast("typing.Any", manager)
+    )
+    spec = full_data()
+    node = types.SimpleNamespace(
+        uid="node",
+        tool_window=None,
+        displayed_provenance_spec=spec,
+        passive_displayed_provenance_spec=spec,
+        metadata_fields=[],
+        derivation_display_rows=[parent_row, sibling_row],
+        derivation_display_rows_cache_key=("node", None, None),
+    )
+
+    controller._set_metadata_node(node)
+
+    sibling_item = derivation_list.topLevelItem(1)
+    assert sibling_item is not None
+    assert derivation_list.display_order(sibling_item) == 1
+    assert materialization_calls == 0
+    sibling_row_index = derivation_list.row(sibling_item)
+    assert sibling_row_index == 1
+    assert derivation_list.item(sibling_row_index) is sibling_item
+    assert materialization_calls == 0
+
+    sibling_conceptual_row = derivation_list.conceptual_row(sibling_item)
+    assert sibling_conceptual_row == 2
+    assert materialization_calls == 1
+    assert parent_row._materialized_children_cache is not None
+    parent_item = derivation_list.topLevelItem(0)
+    assert parent_item is not None
+    assert parent_item.childCount() == 0
+    assert derivation_list.conceptual_item(sibling_conceptual_row) is sibling_item
+    assert materialization_calls == 1
 
 
 def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
@@ -385,26 +673,34 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
         type_badge_text=None,
         _childtool_indices=[],
     )
+    current_path = [(4,)]
+    graph = types.SimpleNamespace(
+        nodes={"n16": source_node},
+        structure_generation=0,
+        node_path=lambda _node: current_path[0],
+    )
     manager = types.SimpleNamespace(
         metadata_derivation_list=derivation_list,
-        _tool_graph=types.SimpleNamespace(
-            nodes={"n16": source_node},
-            root_wrappers={4: source_node},
-        ),
+        _metadata_node_uid=None,
+        _tool_graph=graph,
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda _row: (False, "")
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
+        _dependency_refs_for_uid=lambda _uid: script_input_dependency_refs(spec),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
     )
     node = types.SimpleNamespace(
         uid="node",
+        tool_window=None,
         displayed_provenance_spec=spec,
+        passive_displayed_provenance_spec=spec,
         metadata_fields=[],
         derivation_display_rows=spec.display_rows(),
+        derivation_display_rows_cache_key=("node", None, None),
     )
 
     controller._set_metadata_node(node)
@@ -413,6 +709,17 @@ def test_manager_metadata_script_input_labels_use_current_nodes(qtbot) -> None:
     assert input_item is not None
     assert input_item.text() == "Use data_10 from ImageTool 4: 3 V"
     assert "ImageTool 10" not in input_item.text()
+
+    graph.structure_generation += 1
+    controller._set_metadata_node(node)
+    assert derivation_list.topLevelItem(1) is input_item
+
+    current_path[0] = (7, 1)
+    controller._set_metadata_node(node)
+    updated_input_item = derivation_list.topLevelItem(1)
+    assert updated_input_item is not None
+    assert updated_input_item is not input_item
+    assert updated_input_item.text() == "Use data_10 from ImageTool 7.1: 3 V"
 
 
 def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None:
@@ -432,21 +739,28 @@ def test_manager_metadata_missing_script_input_uses_neutral_label(qtbot) -> None
     qtbot.addWidget(derivation_list)
     manager = types.SimpleNamespace(
         metadata_derivation_list=derivation_list,
-        _tool_graph=types.SimpleNamespace(nodes={}, root_wrappers={}),
+        _metadata_node_uid=None,
+        _tool_graph=types.SimpleNamespace(
+            nodes={}, root_wrappers={}, structure_generation=0
+        ),
         _provenance_edit_controller=types.SimpleNamespace(
             can_edit_row=lambda _row: (False, "")
         ),
         _set_metadata_fields=lambda _fields: None,
         _update_metadata_pane=lambda: None,
+        _dependency_refs_for_uid=lambda _uid: script_input_dependency_refs(spec),
     )
     controller = manager_details_panel._DetailsPanelController(
         typing.cast("typing.Any", manager)
     )
     node = types.SimpleNamespace(
         uid="node",
+        tool_window=None,
         displayed_provenance_spec=spec,
+        passive_displayed_provenance_spec=spec,
         metadata_fields=[],
         derivation_display_rows=spec.display_rows(),
+        derivation_display_rows_cache_key=("node", None, None),
     )
 
     controller._set_metadata_node(node)
@@ -516,6 +830,7 @@ def test_manager_unavailable_replay_details_skip_replayable_script_inputs() -> N
     )
     node = types.SimpleNamespace(
         displayed_provenance_spec=spec,
+        passive_displayed_provenance_spec=spec,
         derivation_entries=spec.derivation_entries(),
         derivation_display_rows=spec.display_rows(),
     )

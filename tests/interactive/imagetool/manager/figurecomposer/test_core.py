@@ -136,6 +136,105 @@ def test_figure_document_replaces_source_payloads_together() -> None:
     assert document.source_selection_base_data == {}
 
 
+def test_figure_document_detaches_recipe_snapshots() -> None:
+    recipe = FigureRecipeState()
+    document = FigureDocument(recipe)
+    snapshot = document.recipe_snapshot()
+
+    snapshot.setup.ncols = 2
+
+    assert document.recipe.setup.ncols == 1
+
+
+def test_figure_document_atomic_commit_notifies_once() -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    changes: list[tuple[bool, bool]] = []
+    document = FigureDocument(
+        FigureRecipeState(),
+        changed_callback=lambda recipe, sources: changes.append((recipe, sources)),
+    )
+    updated_recipe = document.recipe.model_copy(
+        update={"setup": document.recipe.setup.model_copy(update={"nrows": 2})}
+    )
+
+    document.replace_recipe_and_source_payloads(
+        updated_recipe,
+        {"data": data},
+        {},
+    )
+
+    assert changes == [(True, True)]
+    assert document.recipe is updated_recipe
+    assert document.source_data["data"] is data
+
+    assert not document.replace_recipe(updated_recipe)
+    assert changes == [(True, True)]
+
+    document.touch_source_payloads()
+    assert changes == [(True, True), (False, True)]
+
+
+def test_figure_document_atomic_commit_ignores_unchanged_source_payloads() -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    changes: list[tuple[bool, bool]] = []
+    document = FigureDocument(
+        FigureRecipeState(),
+        source_data={"data": data},
+        changed_callback=lambda recipe, sources: changes.append((recipe, sources)),
+    )
+    source_revision = document.source_revision
+    updated_recipe = document.recipe.model_copy(
+        update={"setup": document.recipe.setup.model_copy(update={"nrows": 2})}
+    )
+
+    document.replace_recipe_and_source_payloads(
+        updated_recipe,
+        dict(document.source_data),
+        dict(document.source_selection_base_data),
+    )
+
+    assert changes == [(True, False)]
+    assert document.source_revision == source_revision
+
+    document.replace_recipe_and_source_payloads(
+        updated_recipe,
+        dict(document.source_data),
+        dict(document.source_selection_base_data),
+    )
+    assert changes == [(True, False)]
+
+
+def test_figure_document_transaction_combines_nested_changes() -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    changes: list[tuple[bool, bool]] = []
+    document = FigureDocument(
+        FigureRecipeState(),
+        changed_callback=lambda recipe, sources: changes.append((recipe, sources)),
+    )
+    updated_recipe = document.recipe.model_copy(
+        update={"setup": document.recipe.setup.model_copy(update={"nrows": 2})}
+    )
+
+    with document.mutation_transaction():
+        document.replace_recipe(updated_recipe)
+        with document.mutation_transaction():
+            document.replace_source_payloads({"data": data}, {})
+
+    assert changes == [(True, True)]
+    assert document.recipe is updated_recipe
+    assert document.source_data["data"] is data
+
+    def fail_after_source_change() -> None:
+        with document.mutation_transaction():
+            document.touch_source_payloads()
+            raise RuntimeError("later work failed")
+
+    with pytest.raises(RuntimeError, match="later work failed"):
+        fail_after_source_change()
+
+    assert changes == [(True, True), (False, True)]
+
+
 def test_figure_document_replaces_only_valid_layout_setup() -> None:
     document = FigureDocument(FigureRecipeState())
     invalid = document.recipe.setup.model_copy(update={"nrows": 0})

@@ -94,6 +94,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _TOOL_TYPE_ROLE,
     _ImageToolWrapperItemDelegate,
 )
+from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from erlab.interactive.imagetool.manager._widgets import (
     _LoadSourceDetailsDialog,
     _WorkspacePropertiesDialog,
@@ -126,6 +127,8 @@ logger = logging.getLogger(__name__)
 
 def test_register_linked_nodes_invalidates_workspace_link_color_cache() -> None:
     registered: list[tuple[str, object]] = []
+    noted_uids: list[str] = []
+    queued_changes: list[tuple[str, _ManagedNodeChange]] = []
     graph = types.SimpleNamespace(
         register_root=lambda node: registered.append(("root", node)),
         register_child=lambda node: registered.append(("child", node)),
@@ -133,6 +136,10 @@ def test_register_linked_nodes_invalidates_workspace_link_color_cache() -> None:
     )
     manager = types.SimpleNamespace(
         _tool_graph=graph,
+        _dependency_tracker=types.SimpleNamespace(note_uid=noted_uids.append),
+        _queue_managed_node_change=lambda uid, change: queued_changes.append(
+            (uid, change)
+        ),
         _workspace_link_color_cache_dirty=False,
     )
     manager._invalidate_workspace_link_color_cache = types.MethodType(
@@ -140,12 +147,12 @@ def test_register_linked_nodes_invalidates_workspace_link_color_cache() -> None:
         manager,
     )
     nodes = {
-        "root": types.SimpleNamespace(workspace_link_key="root-link"),
+        "root": types.SimpleNamespace(uid="root", workspace_link_key="root-link"),
         "child": types.SimpleNamespace(
-            workspace_link_key="child-link", tool_window=None
+            uid="child", workspace_link_key="child-link", tool_window=None
         ),
         "figure": types.SimpleNamespace(
-            workspace_link_key="figure-link", tool_window=None
+            uid="figure", workspace_link_key="figure-link", tool_window=None
         ),
     }
 
@@ -159,6 +166,10 @@ def test_register_linked_nodes_invalidates_workspace_link_color_cache() -> None:
         assert manager._workspace_link_color_cache_dirty
 
     assert registered == [(kind, nodes[kind]) for kind in nodes]
+    assert noted_uids == list(nodes)
+    assert queued_changes == [
+        (uid, _ManagedNodeChange.DEPENDENCY_INDEX) for uid in nodes
+    ]
 
 
 def test_color_for_linker_falls_back_without_structural_link_key() -> None:
@@ -3217,8 +3228,13 @@ def test_manager_summary_sorts_coordinate_order_at_presentation_boundary(
         )
 
         assert "summary" in node.info_text
+        assert "summary" in node.info_text
+        assert formatted_coord_orders == [("x", "y", "aux")]
 
-    assert formatted_coord_orders == [("x", "y", "aux")]
+        node._handle_imagetool_data_edited()
+        assert "summary" in node.info_text
+
+    assert formatted_coord_orders == [("x", "y", "aux"), ("x", "y", "aux")]
 
 
 def test_details_panel_update_info_hides_missing_child_preview_pixmap(
@@ -5192,6 +5208,8 @@ def test_manager_notes_editor_actions(
         assert manager.notes_title_label.minimumSizeHint().width() == 0
         assert manager.notes_title_label.full_text == wrapper.display_text
         manager.notes_editor.setPlainText("root intent\nsecond line")
+        manager._set_metadata_node(wrapper)
+        assert manager.notes_editor.toPlainText() == "root intent\nsecond line"
 
         qtbot.wait_until(
             lambda: wrapper.note == "root intent\nsecond line",
@@ -8272,6 +8290,8 @@ def test_manager_ktool_output_itool_marks_stale_without_recomputing(
         select_child_tool(manager, child_uid)
         qtbot.wait(child._MANAGER_NOTIFY_DELAY_MS + 50)
         manager._flush_idle_work(force=True)
+        manager._flush_idle_work(force=True)
+        manager._details_refresh_queue.flush()
         metadata_updates: list[str] = []
         original_set_metadata_node = manager._set_metadata_node
 
@@ -8325,6 +8345,22 @@ def test_manager_ktool_output_itool_marks_stale_without_recomputing(
 
         assert call_count == 0
         xr.testing.assert_identical(fetch(output_uid), before)
+        qtbot.wait_until(
+            lambda: metadata_updates == [child_uid],
+            timeout=2000,
+        )
+        assert metadata_updates == [child_uid]
+        assert not manager._details_refresh_queue.pending_uids
+        assert not manager._details_refresh_queue.is_active()
+
+        state_changes: list[str] = []
+        monkeypatch.setattr(
+            output_node,
+            "_set_source_state",
+            lambda state: state_changes.append(state),
+        )
+        assert not output_node.handle_parent_source_replaced(anglemap)
+        assert state_changes == []
 
 
 def test_manager_reused_output_child_keeps_stale_state(

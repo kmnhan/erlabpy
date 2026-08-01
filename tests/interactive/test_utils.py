@@ -20,6 +20,7 @@ from qtpy import PYQT6, QtCore, QtGui, QtTest, QtWidgets
 import erlab.interactive._plot_state
 import erlab.interactive.colors
 import erlab.interactive.utils
+from erlab.interactive.imagetool import ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     full_data,
@@ -31,6 +32,7 @@ from erlab.interactive.imagetool._provenance._operations import (
     IselOperation,
     ScriptCodeOperation,
 )
+from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._modelview import (
     _FIGURE_SOURCE_MIME,
     _MIME,
@@ -38,6 +40,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _TOOL_TYPE_ROLE,
     _ImageToolWrapperItemModel,
 )
+from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
@@ -185,6 +188,17 @@ class _PersistentTool(erlab.interactive.utils.ToolWindow[_PersistentToolState]):
 
     def update_data(self, new_data: xr.DataArray) -> None:
         self._data = new_data
+
+
+class _FailingPersistentTool(_PersistentTool):
+    @property
+    def tool_status(self) -> _PersistentToolState:
+        return self._status
+
+    @tool_status.setter
+    def tool_status(self, status: _PersistentToolState) -> None:
+        self._status = status
+        raise RuntimeError("status update failed")
 
 
 class _PlotPersistentTool(_PersistentTool):
@@ -347,6 +361,189 @@ def test_tool_window_history_actions_undo_redo(qtbot) -> None:
     assert win.tool_status == _PersistentToolState(value=1)
     assert win.undoable
     assert not win.redoable
+
+
+def test_tool_window_history_changes_emit_provenance_signal(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+    provenance_changes: list[None] = []
+    win.sigProvenanceChanged.connect(lambda: provenance_changes.append(None))
+
+    win._status = _PersistentToolState(value=1)
+    win._write_state()
+    assert len(provenance_changes) == 1
+
+    win.undo()
+    assert len(provenance_changes) == 2
+
+    win.redo()
+    assert len(provenance_changes) == 3
+
+    win._status = _PersistentToolState(value=2)
+    win._replace_last_state()
+    assert len(provenance_changes) == 4
+
+
+def test_tool_window_status_setter_commits_revision_after_failure(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _FailingPersistentTool(data)
+    qtbot.addWidget(win)
+    initial_revision = win.provenance_revision
+    provenance_changes: list[int] = []
+    win.sigProvenanceChanged.connect(
+        lambda: provenance_changes.append(win.provenance_revision)
+    )
+
+    with pytest.raises(RuntimeError, match="status update failed"):
+        win.tool_status = _PersistentToolState(value=1)
+
+    assert win.tool_status.value == 1
+    assert win.provenance_revision == initial_revision + 1
+    assert provenance_changes == [win.provenance_revision]
+
+
+def test_tool_window_history_suppression_does_not_suppress_revision(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+    initial_history = tuple(win._prev_states)
+    initial_revision = win.provenance_revision
+
+    with win._history_suppressed():
+        win._status = _PersistentToolState(value=1)
+        win._write_state()
+
+    assert tuple(win._prev_states) == initial_history
+    assert win.provenance_revision == initial_revision + 1
+
+
+def test_tool_window_provenance_revision_tracks_mutation_signals(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    provenance_changes: list[int] = []
+    win.sigProvenanceChanged.connect(
+        lambda: provenance_changes.append(win.provenance_revision)
+    )
+
+    initial_revision = win.provenance_revision
+    win.sigInfoChanged.emit()
+    assert win.provenance_revision == initial_revision
+
+    win.sigStateChanged.emit()
+    win.sigDataChanged.emit()
+    assert win.provenance_revision == initial_revision + 2
+    assert provenance_changes == []
+
+    with win._coalesce_provenance_changes():
+        win.sigStateChanged.emit()
+        win.sigDataChanged.emit()
+        win._notify_provenance_changed()
+
+    assert win.provenance_revision == initial_revision + 3
+    assert provenance_changes == [initial_revision + 3]
+
+
+def test_tool_window_provenance_setters_advance_revision_once(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    provenance_changes: list[int] = []
+    win.sigProvenanceChanged.connect(
+        lambda: provenance_changes.append(win.provenance_revision)
+    )
+    provenance = full_data(IselOperation(kwargs={"x": slice(0, 2)}))
+
+    win.set_input_provenance_spec(provenance)
+    first_revision = win.provenance_revision
+    win.set_input_provenance_spec(provenance)
+    second_revision = win.provenance_revision
+
+    assert first_revision == 1
+    assert second_revision == first_revision + 1
+    assert provenance_changes == [first_revision, second_revision]
+
+    win.set_source_binding(provenance, state="fresh")
+    third_revision = win.provenance_revision
+    win.set_source_binding(provenance, state="fresh")
+    fourth_revision = win.provenance_revision
+
+    assert third_revision == second_revision + 1
+    assert fourth_revision == third_revision + 1
+    assert provenance_changes == [
+        first_revision,
+        second_revision,
+        third_revision,
+        fourth_revision,
+    ]
+
+
+def test_tool_window_custom_history_cannot_skip_provenance_signal(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._reset_history_stack()
+    provenance_changes: list[None] = []
+    recorded_changes: list[None] = []
+    win.sigProvenanceChanged.connect(lambda: provenance_changes.append(None))
+    monkeypatch.setattr(
+        win,
+        "_record_state_change",
+        lambda: recorded_changes.append(None),
+    )
+
+    win._status = _PersistentToolState(value=1)
+    win._write_state()
+
+    assert provenance_changes == [None]
+    assert recorded_changes == [None]
+
+
+@pytest.mark.parametrize(
+    ("setter_name", "attribute_name"),
+    [
+        (
+            "set_input_provenance_parent_fetcher",
+            "_input_provenance_parent_fetcher",
+        ),
+        ("set_source_parent_fetcher", "_source_parent_fetcher"),
+    ],
+)
+def test_tool_window_fetcher_replacement_commits_revision_after_sync_failure(
+    qtbot,
+    monkeypatch,
+    setter_name: str,
+    attribute_name: str,
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    win = _PersistentTool(data)
+    qtbot.addWidget(win)
+    win._source_spec = full_data()
+
+    def callback() -> xr.DataArray:
+        return data
+
+    def fail_sync() -> None:
+        raise RuntimeError("snapshot sync failed")
+
+    monkeypatch.setattr(win, "_sync_input_provenance_snapshot", fail_sync)
+    initial_revision = win.provenance_revision
+    provenance_changes: list[int] = []
+    win.sigProvenanceChanged.connect(
+        lambda: provenance_changes.append(win.provenance_revision)
+    )
+
+    with pytest.raises(RuntimeError, match="snapshot sync failed"):
+        getattr(win, setter_name)(callback)
+
+    assert getattr(win, attribute_name) is callback
+    assert win.provenance_revision == initial_revision + 1
+    assert provenance_changes == [win.provenance_revision]
 
 
 def test_tool_window_history_guard_edges(qtbot, monkeypatch) -> None:
@@ -4227,7 +4424,19 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
             self.registered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.interaction_activity_count = 0
-            self._tool_graph = _ManagerToolGraph()
+            self._tool_graph = _ManagerToolGraph(self._handle_node_change)
+            self._metadata_node_uid: str | None = None
+            self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
+
+        def _handle_node_change(
+            self,
+            uid: str | None,
+            change: _ManagedNodeChange,
+        ) -> None:
+            if uid is not None and change & (
+                _ManagedNodeChange.PRESENTATION | _ManagedNodeChange.ROW
+            ):
+                self.tree_view.refresh(uid)
 
         def _update_info(self, *, uid: str) -> None:
             self.updated.append(uid)
@@ -4284,7 +4493,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
         def _mark_tool_info_dirty(self, uid: str) -> None:
             self._mark_node_state_dirty(uid)
 
-        def _schedule_tool_metadata_update(self, uid: str) -> None:
+        def _schedule_details_refresh(self, uid: str) -> None:
             self._update_info(uid=uid)
 
         def _mark_node_data_dirty(self, _uid: str) -> None:
@@ -4333,7 +4542,6 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
     assert node._source_auto_update is True
     assert node._output_id == "out"
     assert manager.tree_view.refreshed[-1] == "child"
-    assert manager.updated[-1] == "child"
 
     source_binding = ImageToolSelectionSourceBinding()
     source_spec = full_data()
@@ -4456,6 +4664,8 @@ def test_managed_tool_window_node_detached_update_branches(
             self.unregistered_interaction_windows: list[QtWidgets.QWidget | None] = []
             self.interaction_activity_count = 0
             self._tool_graph = _ManagerToolGraph()
+            self._metadata_node_uid: str | None = None
+            self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
             self.parent_node = types.SimpleNamespace(
                 tool_window=parent_tool,
                 provenance_spec=None,
@@ -4521,7 +4731,7 @@ def test_managed_tool_window_node_detached_update_branches(
         def _mark_tool_info_dirty(self, uid: str) -> None:
             self._mark_node_state_dirty(uid)
 
-        def _schedule_tool_metadata_update(self, uid: str) -> None:
+        def _schedule_details_refresh(self, uid: str) -> None:
             self._update_info(uid=uid)
 
         def _mark_node_data_dirty(self, _uid: str) -> None:
@@ -4689,6 +4899,8 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
             super().__init__()
             self.tree_view = _FakeTreeView()
             self._tool_graph = _ManagerToolGraph()
+            self._metadata_node_uid: str | None = None
+            self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
             self.updated: list[str] = []
             self.removed: list[str] = []
             self.renamed: list[tuple[int, object]] = []
@@ -4752,12 +4964,12 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
         def _mark_tool_info_dirty(self, uid: str) -> None:
             self._mark_node_state_dirty(uid)
 
-        def _schedule_tool_metadata_update(self, uid: str) -> None:
+        def _schedule_details_refresh(self, uid: str) -> None:
             self._update_info(uid=uid)
 
     manager = _FakeManager()
     qtbot.addWidget(manager)
-    parent_tool = _PersistentTool(data)
+    parent_tool = ImageTool(data)
     child_tool = _PersistentTool(data + 1)
     orphan_tool = _PersistentTool(data + 2)
     qtbot.addWidget(parent_tool)

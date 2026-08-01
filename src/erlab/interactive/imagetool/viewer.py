@@ -213,6 +213,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigDataBackingChanged = QtCore.Signal()  #: :meta private:
     sigSourceDataChanged = QtCore.Signal()  #: :meta private:
     sigSourceDataReplaced = QtCore.Signal(object)  #: :meta private:
+    sigDisplayedProvenanceChanged = QtCore.Signal()  #: :meta private:
     sigPointValueChanged = QtCore.Signal(float)  #: :meta private:
 
     @property
@@ -323,6 +324,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             None
         )
         self._accepted_filter_data: xr.DataArray | None = None
+        self._accepted_filter_revision = 0
         # `_data` is the public/source array, while `ArraySlicer._obj` is the internal
         # validated view used for slicing. The two share values by default and detach
         # only when a write needs isolation.
@@ -1254,6 +1256,23 @@ class ImageSlicerArea(QtWidgets.QWidget):
             or self._accepted_filter_provenance_operation is not None
         )
 
+    @property
+    def accepted_filter_revision(self) -> int:
+        """Return the revision of accepted filter provenance."""
+        return self._accepted_filter_revision
+
+    def _set_accepted_filter(
+        self,
+        operation: ToolProvenanceOperation | None,
+        data: xr.DataArray | None,
+    ) -> None:
+        provenance_changed = operation != self._accepted_filter_provenance_operation
+        self._accepted_filter_provenance_operation = operation
+        self._accepted_filter_data = data
+        if provenance_changed:
+            self._accepted_filter_revision += 1
+            self.sigDisplayedProvenanceChanged.emit()
+
     def persistence_data_and_state(self) -> tuple[xr.DataArray, ImageSlicerState]:
         """Return public source data in the saved slicer layout and its state."""
         source = self._data_aligned_to_dims(self._data, tuple(self.data.dims))
@@ -1445,8 +1464,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
         self._applied_func = None
         self._applied_provenance_operation = None
-        self._accepted_filter_provenance_operation = None
-        self._accepted_filter_data = None
+        self._set_accepted_filter(None, None)
         restored_obj = False
 
         if self._data_shares_external_values:
@@ -2464,8 +2482,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._obj_shares_data_values = True
         self._applied_func = None
         self._applied_provenance_operation = None
-        self._accepted_filter_provenance_operation = None
-        self._accepted_filter_data = None
+        self._set_accepted_filter(None, None)
 
         # Save color limits so we may restore them later
         cached_levels: tuple[float, float] | None = None
@@ -3033,8 +3050,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._applied_provenance_operation = None
             self._restore_obj_from_source(update=update)
             if accept:
-                self._accepted_filter_provenance_operation = None
-                self._accepted_filter_data = None
+                self._set_accepted_filter(None, None)
             if emit_edited:
                 self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
                 self.sigDataEdited.emit()
@@ -3065,8 +3081,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._applied_func = func
             self._applied_provenance_operation = operation
             if accept:
-                self._accepted_filter_provenance_operation = operation
-                self._accepted_filter_data = filtered.copy(deep=True)
+                self._set_accepted_filter(operation, filtered.copy(deep=True))
             if emit_edited:
                 self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
                 self.sigDataEdited.emit()
@@ -3086,8 +3101,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._applied_func = func
         self._applied_provenance_operation = operation
         if accept:
-            self._accepted_filter_provenance_operation = operation
-            self._accepted_filter_data = filtered.copy(deep=True)
+            self._set_accepted_filter(operation, filtered.copy(deep=True))
         if emit_edited:
             self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
             self.sigDataEdited.emit()

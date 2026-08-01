@@ -30,6 +30,7 @@ from tests.interactive.imagetool.manager.helpers import (
     _exec_generated_code,
     activate_widget_shortcut,
     adopt_workspace_path,
+    copy_full_code_for_uid,
     select_child_tool,
     select_tools,
     trigger_menu_action,
@@ -64,6 +65,74 @@ def _figure_pane(manager):
     pane = manager._figure_collection.pane
     assert pane is not None
     return pane
+
+
+def test_figure_placeholder_cache_tracks_fill_and_border_palette(qtbot) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    controller = _collection._FigureCollectionController(
+        typing.cast("typing.Any", None), parent
+    )
+    palette = QtGui.QPalette(parent.palette())
+    palette.setColor(QtGui.QPalette.ColorRole.Base, QtGui.QColor("#101010"))
+    palette.setColor(QtGui.QPalette.ColorRole.Mid, QtGui.QColor("#202020"))
+    parent.setPalette(palette)
+
+    first = controller._placeholder_pixmap()
+    first_key = controller._placeholder_pixmap_cache
+    assert first_key is not None
+
+    palette.setColor(QtGui.QPalette.ColorRole.Mid, QtGui.QColor("#f0f0f0"))
+    parent.setPalette(palette)
+    second = controller._placeholder_pixmap()
+    second_key = controller._placeholder_pixmap_cache
+    assert second_key is not None
+
+    assert first.cacheKey() != second.cacheKey()
+    assert first_key[0][2] == second_key[0][2]
+    assert first_key[0][3] != second_key[0][3]
+
+
+def test_selected_figure_details_track_root_reindexing(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    with manager_context() as manager:
+        manager.show()
+        first = itool(data, manager=False, execute=False)
+        second = itool(data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(first, erlab.interactive.imagetool.ImageTool)
+        assert isinstance(second, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(first, show=False, index=0)
+        manager.add_imagetool(second, show=False, index=2)
+
+        figure_uid = manager.create_figure_from_targets((2,), show=False)
+        assert figure_uid is not None
+        manager._figure_collection.select_uid(figure_uid)
+
+        def _derivation_labels() -> list[str]:
+            return [
+                item.text()
+                for row in range(manager.metadata_derivation_list.topLevelItemCount())
+                if (item := manager.metadata_derivation_list.topLevelItem(row))
+                is not None
+            ]
+
+        assert any("ImageTool 2" in label for label in _derivation_labels())
+
+        manager.reindex()
+        manager._flush_idle_work(force=True)
+
+        assert any("ImageTool 1" in label for label in _derivation_labels())
+        assert not any("ImageTool 2" in label for label in _derivation_labels())
 
 
 def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(
@@ -326,7 +395,20 @@ def test_manager_figures_gallery_view_preserves_selection_and_persists(
     with manager_context() as manager:
         first_uid = manager.add_figuretool(FigureComposerTool(data), show=False)
         second_uid = manager.add_figuretool(FigureComposerTool(data), show=False)
+        first_item = manager._figure_collection.item_for_uid(first_uid)
+        second_item = manager._figure_collection.item_for_uid(second_uid)
+        assert first_item is not None
+        assert second_item is not None
+        manager._figure_collection.select_uid("missing-figure")
+        assert manager._figure_collection.item_for_uid("missing-figure") is None
+
+        first_item.setText("stale display name")
         manager._figure_collection.select_uid(first_uid)
+        assert first_item.text() == manager._child_node(first_uid).display_text
+        manager._figure_collection.sync()
+
+        assert manager._figure_collection.item_for_uid(first_uid) is first_item
+        assert manager._figure_collection.item_for_uid(second_uid) is second_item
 
         assert (
             _figure_pane(manager).list_widget.viewMode()
@@ -410,6 +492,40 @@ def test_manager_figures_gallery_view_preserves_selection_and_persists(
         assert item is not None
         assert item.data(QtCore.Qt.ItemDataRole.UserRole) == restored_uid
         assert not item.icon().isNull()
+
+
+def test_manager_figures_deferred_view_change_rebuilds_items(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    with manager_context() as manager:
+        figure_uid = manager.add_figuretool(FigureComposerTool(data), show=False)
+        original_item = manager._figure_collection.item_for_uid(figure_uid)
+        assert original_item is not None
+        requested_mode = (
+            "list" if manager._figure_collection._view_mode != "list" else "gallery"
+        )
+
+        with manager._workspace_ui_refresh_context():
+            manager._figure_collection._set_view_mode(requested_mode)
+            assert manager._figure_collection.item_for_uid(figure_uid) is original_item
+
+        rebuilt_item = manager._figure_collection.item_for_uid(figure_uid)
+        assert rebuilt_item is not None
+        assert rebuilt_item is not original_item
+        expected_view_mode = (
+            QtWidgets.QListView.ViewMode.ListMode
+            if requested_mode == "list"
+            else QtWidgets.QListView.ViewMode.IconMode
+        )
+        assert _figure_pane(manager).list_widget.viewMode() == expected_view_mode
 
 
 def test_manager_figures_gallery_reuses_cached_preview_for_size_changes(
@@ -786,7 +902,7 @@ def test_figure_composer_skips_preview_cache_when_unrendered(
     assert tool.preview_pixmap is None
 
 
-def test_manager_workspace_restores_figure_gallery_preview_cache(
+def test_manager_workspace_restores_figure_preview_and_live_details(
     qtbot,
     tmp_path: Path,
     manager_context: Callable[
@@ -824,9 +940,21 @@ def test_manager_workspace_restores_figure_gallery_preview_cache(
         pending_preview = loaded_node.pending_workspace_tool_preview_image()
         assert pending_preview is not None
         assert not pending_preview[1].isNull()
-        loaded_node.show()
+        manager._figure_collection.select_uid(figure_uid)
+        manager._flush_idle_work(force=True)
+        pending_fields = tuple(loaded_node.metadata_fields)
+        assert manager._details_panel._metadata_fields_cache == pending_fields
+        pending_type_badge = loaded_node.type_badge_text
+
+        assert loaded_node.materialize_pending_workspace_payload()
         loaded_tool = loaded_node.tool_window
         assert isinstance(loaded_tool, FigureComposerTool)
+        assert loaded_node.type_badge_text != pending_type_badge
+        manager._flush_idle_work(force=True)
+        live_fields = tuple(loaded_node.metadata_fields)
+        assert live_fields != pending_fields
+        assert manager._details_panel._metadata_fields_cache == live_fields
+        loaded_node.show()
         assert loaded_tool.preview_pixmap is not None
         assert not loaded_tool.preview_pixmap_stale
 
@@ -1087,13 +1215,19 @@ def test_manager_copy_full_code_for_file_backed_figure_composer_sources(
         select_child_tool(manager, figure_uid)
         manager._update_info(uid=figure_uid)
         assert manager.metadata_derivation_list.topLevelItemCount() == 4
-        assert manager.metadata_derivation_list.count() == 6
+        assert manager.metadata_derivation_list.count() == 4
+        assert manager.metadata_derivation_list.conceptual_count() == 6
         child_counts: list[int] = []
         for row in range(manager.metadata_derivation_list.topLevelItemCount()):
             item = manager.metadata_derivation_list.topLevelItem(row)
             assert item is not None
             child_counts.append(item.childCount())
-        assert child_counts == [0, 1, 1, 0]
+        assert child_counts == [0, 0, 0, 0]
+        for row in (1, 2):
+            item = manager.metadata_derivation_list.topLevelItem(row)
+            assert item is not None
+            item.setExpanded(True)
+            assert item.childCount() == 1
 
         copied: list[str] = []
         monkeypatch.setattr(
@@ -1112,6 +1246,123 @@ def test_manager_copy_full_code_for_file_backed_figure_composer_sources(
         assert copied
         namespace = _exec_generated_code(copied[-1], {})
         assert isinstance(namespace["fig"], Figure)
+
+
+def test_manager_figure_recipe_change_invalidates_cached_full_code(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    file_path = tmp_path / "line.h5"
+    data.to_netcdf(file_path, engine="h5netcdf")
+    with manager_context() as manager:
+        itool(
+            data,
+            manager=True,
+            file_path=file_path,
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        node = manager._child_node(figure_uid)
+        tool = typing.cast("FigureComposerTool", node.tool_window)
+
+        initial_code = copy_full_code_for_uid(
+            monkeypatch,
+            manager,
+            figure_uid,
+        )
+        initial_namespace = _exec_generated_code(initial_code, {})
+        initial_figure = typing.cast("Figure", initial_namespace["fig"])
+        initial_line_count = sum(len(axis.lines) for axis in initial_figure.axes)
+
+        source_name = tool.tool_status.sources[0].name
+        tool.add_operation(
+            FigureOperationState.line(label="second line", source=source_name)
+        )
+
+        updated_code = copy_full_code_for_uid(
+            monkeypatch,
+            manager,
+            figure_uid,
+        )
+        updated_namespace = _exec_generated_code(updated_code, {})
+        updated_figure = typing.cast("Figure", updated_namespace["fig"])
+
+        assert sum(len(axis.lines) for axis in updated_figure.axes) == (
+            initial_line_count + 1
+        )
+
+
+def test_manager_figure_source_data_revision_recovers_from_missed_signal(
+    qtbot,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+    file_path = tmp_path / "line.h5"
+    data.to_netcdf(file_path, engine="h5netcdf")
+    with manager_context() as manager:
+        itool(
+            data,
+            manager=True,
+            file_path=file_path,
+            load_func=(
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+                FileDataSelection(kind="dataarray"),
+            ),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        node = manager._child_node(figure_uid)
+        tool = typing.cast("FigureComposerTool", node.tool_window)
+        initial_spec = node.displayed_provenance_spec
+        initial_node_revision = node.provenance_revision
+        initial_tool_revision = tool.provenance_revision
+        source_data = tool.source_data()
+        source_name = next(iter(source_data))
+
+        tool.blockSignals(True)
+        try:
+            tool.set_source_data(
+                {source_name: source_data[source_name].rename("renamed_line")}
+            )
+        finally:
+            tool.blockSignals(False)
+
+        assert tool.provenance_revision == initial_tool_revision + 1
+        assert node.provenance_revision == initial_node_revision
+        assert node.displayed_provenance_spec != initial_spec
+        assert node.provenance_revision == initial_node_revision + 1
+
+        current_node_revision = node.provenance_revision
+        tool.set_source_data(
+            {source_name: source_data[source_name].rename("renamed_again")}
+        )
+        assert node.provenance_revision == current_node_revision + 1
 
 
 def test_manager_copy_full_code_for_memory_figure_reports_unavailable(
@@ -1155,7 +1406,7 @@ def test_manager_copy_full_code_for_memory_figure_reports_unavailable(
         manager.tree_view.clearSelection()
         select_child_tool(manager, figure_uid)
         manager._update_info(uid=figure_uid)
-        assert manager.metadata_derivation_list.count() == 3
+        assert manager.metadata_derivation_list.conceptual_count() == 3
 
         copied: list[str] = []
         monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)

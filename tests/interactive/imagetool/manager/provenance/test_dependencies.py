@@ -187,11 +187,14 @@ def test_manager_metadata_derivation_list_has_visible_splitter(
                     has_note=False,
                     is_imagetool=True,
                     type_badge_text="",
+                    tool_window=None,
                     displayed_provenance_spec=full_data(),
+                    passive_displayed_provenance_spec=full_data(),
                     metadata_fields=[
                         manager_wrapper._MetadataField("Kind", "ImageTool")
                     ],
                     derivation_display_rows=rows,
+                    derivation_display_rows_cache_key=("node", None, None),
                 ),
             )
         )

@@ -34,6 +34,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool._provenance._operations import (
     ImageToolSelectionSourceBinding,
 )
+from erlab.interactive.imagetool.manager._node_change import _ManagedNodeChange
 from erlab.interactive.imagetool.manager._widgets import _curve_preview_data
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
@@ -1005,8 +1006,8 @@ class _PendingWorkspacePayloads:
                         )
                         node.window = tool
                         if node.parent_uid is not None:
-                            self._manager._parent_node(node).add_child_reference(
-                                node.uid, tool
+                            self._manager._tool_graph.add_child_reference(
+                                node.parent_uid, node.uid, tool
                             )
                     else:
                         state = copy.deepcopy(node.slicer_area.state)
@@ -1019,8 +1020,7 @@ class _PendingWorkspacePayloads:
                     node.clear_pending_workspace_payload()
                     node.update_title()
                     self._loader._sync_materialized_workspace_link_group(node)
-                self._manager.tree_view.refresh(node.uid)
-                self._manager._update_info(uid=node.uid)
+                node._notify_change(_ManagedNodeChange.ROW | _ManagedNodeChange.INFO)
                 return True
         except Exception:
             logger.exception(
@@ -1103,7 +1103,9 @@ class _PendingWorkspacePayloads:
                     tool.set_input_provenance_parent_fetcher(
                         _input_provenance_parent_fetcher
                     )
-                    parent.add_child_reference(node.uid, tool)
+                    self._manager._tool_graph.add_child_reference(
+                        parent.uid, node.uid, tool
+                    )
                 node._set_workspace_tool_data_references(
                     type(tool)._saved_tool_data_references(ds)
                 )
@@ -1125,8 +1127,7 @@ class _PendingWorkspacePayloads:
             )
             return False
         else:
-            self._manager.tree_view.refresh(node.uid)
-            self._manager._update_info(uid=node.uid)
+            node._notify_change(_ManagedNodeChange.ROW | _ManagedNodeChange.INFO)
             return True
 
     def _has_pending_workspace_linked_slicers(

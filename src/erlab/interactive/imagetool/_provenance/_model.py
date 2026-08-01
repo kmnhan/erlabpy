@@ -26,12 +26,14 @@ set of source forms:
      identity and role-specific ``node_snapshot_token``, whether it represents source
      or displayed data, and an optional nested provenance snapshot.
 
-Each transformation is represented by an immutable
-:class:`ToolProvenanceOperation` subclass whose serialized fields are safe to persist
-in JSON. Persisted specs are the source of truth for workspace save/load. Runtime
-reload, copied code, and shared-input deduplication compile those specs on demand
-through :mod:`erlab.interactive.imagetool._provenance._graph`; the graph itself is not
-saved.
+Each transformation is represented by a frozen
+:class:`ToolProvenanceOperation` model whose serialized fields are safe to persist in
+JSON. Nested fields keep their normal decoded Python types. Replace an operation or
+spec instead of changing one in place. Manager owners advance explicit revisions when
+they replace provenance. Persisted specs are the source of truth for workspace
+save/load. Runtime reload, copied code, and shared-input deduplication compile those
+specs on demand through :mod:`erlab.interactive.imagetool._provenance._graph`; the
+graph itself is not saved.
 
 Operations are intentionally primitive: a user action that needs several public API
 calls should normally remain several structured operations rather than falling back to
@@ -119,7 +121,7 @@ import keyword
 import typing
 import uuid
 from collections.abc import Callable, Collection, Hashable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
 
 import numpy as np
 import pydantic
@@ -189,6 +191,30 @@ class _ProvenanceDisplayRow:
     scope: typing.Literal["display", "source"] = "display"
     children: tuple[_ProvenanceDisplayRow, ...] = ()
     script_input_path: tuple[int, ...] = ()
+    _children_factory: Callable[[], tuple[_ProvenanceDisplayRow, ...]] | None = field(
+        default=None, compare=False, repr=False
+    )
+    _materialized_children_cache: tuple[_ProvenanceDisplayRow, ...] | None = field(
+        default=None,
+        init=False,
+        compare=False,
+        repr=False,
+    )
+
+    @property
+    def has_children(self) -> bool:
+        return bool(self.children) or self._children_factory is not None
+
+    def materialized_children(self) -> tuple[_ProvenanceDisplayRow, ...]:
+        if self.children:
+            return self.children
+        if self._children_factory is None:
+            return ()
+        cached = self._materialized_children_cache
+        if cached is None:
+            cached = self._children_factory()
+            object.__setattr__(self, "_materialized_children_cache", cached)
+        return cached
 
 
 @dataclass(frozen=True)
@@ -929,11 +955,11 @@ class ConsoleOperationPattern:
         if len(call.args) > len(self.fields):
             return None
         values: dict[str, typing.Any] = dict(zip(self.fields, call.args, strict=False))
-        for field in self.fields[len(call.args) :]:
-            if field in kwargs:
-                values[field] = kwargs.pop(field)
-            elif field in self.defaults:
-                values[field] = self.defaults[field]
+        for field_name in self.fields[len(call.args) :]:
+            if field_name in kwargs:
+                values[field_name] = kwargs.pop(field_name)
+            elif field_name in self.defaults:
+                values[field_name] = self.defaults[field_name]
             else:
                 return None
         for key, value in kwargs.items():
@@ -1040,6 +1066,10 @@ class ToolProvenanceOperation(pydantic.BaseModel):
     :meth:`expression_code` to emit the public Python expression for the same
     transformation, and implement :meth:`derivation_label` to describe the step in
     manager UI.
+
+    Treat an operation as a value snapshot. Use :meth:`model_copy` to replace nested
+    arguments. Nested lists, dictionaries, arrays, and other decoded values keep their
+    public Python types.
 
     Operation instances store the exact arguments used by live refresh, replay graph
     execution, copied code, and derivation display. If a public console call maps
@@ -2358,6 +2388,12 @@ class ScriptInput(pydantic.BaseModel):
         )
 
     def parsed_provenance_spec(self) -> ToolProvenanceSpec | None:
+        """Parse the current serialized snapshot.
+
+        Manager-level caches retain the parsed result at their explicit ownership
+        boundaries. Parsing here keeps direct updates to the ordinary Python mapping
+        observable and avoids a second cache with separate invalidation rules.
+        """
         return parse_tool_provenance_spec(self.provenance_spec)
 
 
@@ -2422,6 +2458,9 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     code, and derivation display. Manager children opened from ImageTool cursor or bin
     selections refresh by replaying those explicit arguments; legacy selection
     bindings are converted to source specs once for compatibility.
+
+    Treat a spec as a value snapshot. Manager caches use the owning node's provenance
+    revision. They do not inspect or wrap nested operation values.
     """
 
     schema_version: typing.Literal[3] = 3
@@ -3458,42 +3497,14 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         *,
         parent_data: xr.DataArray | None = None,
         scope: typing.Literal["display", "source"] = "display",
+        _lazy_script_inputs: bool = False,
+        _script_input_path: tuple[int, ...] = (),
     ) -> list[_ProvenanceDisplayRow]:
         """Return streamlined derivation rows for UI, editing, and copy-code output.
 
         The display path hides internal ImageTool normalization steps while keeping the
         recorded replay steps available through :meth:`derivation_entries`.
         """
-
-        def with_scope(
-            row: _ProvenanceDisplayRow,
-        ) -> _ProvenanceDisplayRow:
-            return replace(
-                row,
-                scope=scope,
-                children=tuple(with_scope(child) for child in row.children),
-            )
-
-        def scoped_rows(
-            rows: list[_ProvenanceDisplayRow],
-        ) -> list[_ProvenanceDisplayRow]:
-            if scope == "display":
-                return rows
-            return [with_scope(row) for row in rows]
-
-        def input_history_rows(
-            rows: Sequence[_ProvenanceDisplayRow],
-            path: tuple[int, ...],
-        ) -> tuple[_ProvenanceDisplayRow, ...]:
-            return tuple(
-                replace(
-                    row,
-                    script_input_path=path + row.script_input_path,
-                    children=input_history_rows(row.children, path),
-                )
-                for row in rows
-            )
-
         start_ref = _ProvenanceStepRef(
             "file_load"
             if self.kind == "file"
@@ -3505,11 +3516,44 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 self._start_entry(),
                 edit_ref=start_ref if start_ref.kind == "file_load" else None,
                 replay_ref=start_ref,
+                scope=scope,
+                script_input_path=_script_input_path,
             )
         ]
 
         if self.kind == "script":
             for index, script_input in enumerate(self.script_inputs):
+                child_path = (*_script_input_path, index)
+                children: tuple[_ProvenanceDisplayRow, ...] = ()
+                children_factory = None
+                if _lazy_script_inputs:
+                    if script_input.provenance_spec is not None:
+
+                        def load_children(
+                            nested_input: ScriptInput = script_input,
+                            path: tuple[int, ...] = child_path,
+                        ) -> tuple[_ProvenanceDisplayRow, ...]:
+                            nested = nested_input.parsed_provenance_spec()
+                            if nested is None:
+                                return ()
+                            return tuple(
+                                nested.display_rows(
+                                    scope=scope,
+                                    _lazy_script_inputs=True,
+                                    _script_input_path=path,
+                                )
+                            )
+
+                        children_factory = load_children
+                else:
+                    input_spec = script_input.parsed_provenance_spec()
+                    if input_spec is not None:
+                        children = tuple(
+                            input_spec.display_rows(
+                                scope=scope,
+                                _script_input_path=child_path,
+                            )
+                        )
                 rows.append(
                     _ProvenanceDisplayRow(
                         DerivationEntry(
@@ -3520,15 +3564,10 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                         replay_ref=_ProvenanceStepRef(
                             "script_input", script_input_index=index
                         ),
-                        children=(
-                            ()
-                            if (input_spec := script_input.parsed_provenance_spec())
-                            is None
-                            else input_history_rows(
-                                input_spec.display_rows(),
-                                (index,),
-                            )
-                        ),
+                        scope=scope,
+                        children=children,
+                        script_input_path=_script_input_path,
+                        _children_factory=children_factory,
                     )
                 )
             rows.extend(
@@ -3550,13 +3589,15 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     replay_ref=_ProvenanceStepRef(
                         "operation", operation_index=operation_index
                     ),
+                    scope=scope,
+                    script_input_path=_script_input_path,
                 )
                 for operation_index, operation in self._streamlined_operation_refs(
                     "full_data",
                     self.operations,
                 )
             )
-            return scoped_rows(rows)
+            return rows
         if self.kind == "file":
             rows.extend(
                 _ProvenanceDisplayRow(
@@ -3567,6 +3608,8 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     replay_ref=_ProvenanceStepRef(
                         "operation", operation_index=operation_index
                     ),
+                    scope=scope,
+                    script_input_path=_script_input_path,
                 )
                 for operation_index, operation in self._streamlined_operation_refs(
                     "full_data",
@@ -3574,7 +3617,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     parent_data=parent_data,
                 )
             )
-            return scoped_rows(rows)
+            return rows
 
         rows.extend(
             _ProvenanceDisplayRow(
@@ -3585,6 +3628,8 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 replay_ref=_ProvenanceStepRef(
                     "operation", operation_index=operation_index
                 ),
+                scope=scope,
+                script_input_path=_script_input_path,
             )
             for operation_index, operation in self._streamlined_operation_refs(
                 self.kind,
@@ -3592,7 +3637,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 parent_data=parent_data,
             )
         )
-        return scoped_rows(rows)
+        return rows
 
     def display_entries(
         self, *, parent_data: xr.DataArray | None = None

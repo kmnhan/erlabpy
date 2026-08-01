@@ -1,8 +1,10 @@
 import ast
 import collections.abc
+import copy
 import itertools
 import json
 import pathlib
+import pickle
 import subprocess
 import sys
 import types
@@ -5808,6 +5810,39 @@ def test_script_input_code_keeps_distinct_structured_replay_nodes() -> None:
     assert code.count("xarray.load_dataarray") == 2
 
 
+def test_lazy_script_input_rows_materialize_children_once(monkeypatch) -> None:
+    nested = script(
+        start_label="Nested input",
+        seed_code="nested = data",
+        active_name="nested",
+    )
+    spec = script(
+        start_label="Outer script",
+        seed_code="derived = nested",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(name="nested", label="Nested", provenance_spec=nested),
+        ),
+    )
+    parse_calls = 0
+    original_parse = ScriptInput.parsed_provenance_spec
+
+    def _record_parse(script_input):
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_parse(script_input)
+
+    monkeypatch.setattr(ScriptInput, "parsed_provenance_spec", _record_parse)
+
+    input_row = spec.display_rows(_lazy_script_inputs=True)[1]
+    assert parse_calls == 0
+
+    children = input_row.materialized_children()
+    assert children
+    assert input_row.materialized_children() is children
+    assert parse_calls == 1
+
+
 def test_script_input_dependency_refs_recurse_and_rebase() -> None:
     left_snapshot_id = "left-snapshot"
     right_snapshot_id = "right-snapshot"
@@ -6111,6 +6146,127 @@ def test_script_input_label_is_preserved_and_defaults_to_name() -> None:
         ScriptInput(name="data_0", label=1)
     with pytest.raises(ValidationError):
         ScriptInput(name="data_0", label="\n  \t")
+
+
+def test_script_input_parses_current_ordinary_mapping() -> None:
+    nested_input = ScriptInput(
+        name="nested",
+        provenance_spec=script(
+            ScriptCodeOperation(label="Copy", code="derived = data"),
+            start_label="Nested",
+            active_name="derived",
+        ),
+    )
+    assert nested_input.provenance_spec is not None
+    nested_steps = nested_input.provenance_spec["steps"]
+    assert type(nested_input.provenance_spec) is dict
+    assert type(nested_steps) is list
+    assert type(nested_steps[0]) is dict
+    assert type(nested_steps[0]["operation"]) is dict
+
+    script_input = ScriptInput(
+        name="data_0",
+        provenance_spec=full_data(),
+    )
+
+    parsed = script_input.parsed_provenance_spec()
+
+    assert parsed is not None
+    assert parsed.kind == "full_data"
+
+    updated_input = script_input.model_copy(
+        update={"provenance_spec": public_data().model_dump(mode="json")}
+    )
+    updated = updated_input.parsed_provenance_spec()
+
+    assert updated is not None
+    assert updated is not parsed
+    assert updated.kind == "public_data"
+
+    assert script_input.provenance_spec is not None
+    script_input.provenance_spec["kind"] = "selection"
+    reparsed = script_input.parsed_provenance_spec()
+    assert reparsed is not None
+    assert reparsed.kind == "selection"
+
+    deep_copy = script_input.model_copy(deep=True)
+    assert deep_copy.provenance_spec is not script_input.provenance_spec
+    assert deep_copy.parsed_provenance_spec() == reparsed
+
+
+def test_script_input_provenance_mapping_is_pickleable() -> None:
+    script_input = ScriptInput(
+        name="data_0",
+        provenance_spec=script(
+            ScriptCodeOperation(label="Copy", code="derived = data"),
+            start_label="Input",
+            active_name="derived",
+        ),
+    )
+    parsed = script_input.parsed_provenance_spec()
+
+    restored = pickle.loads(pickle.dumps(script_input))
+
+    assert restored == script_input
+    assert restored.parsed_provenance_spec() == parsed
+    assert restored.provenance_spec is not None
+    assert type(restored.provenance_spec) is dict
+    assert type(restored.provenance_spec["steps"]) is list
+
+
+def test_operation_nested_provenance_keeps_public_types_and_deep_copy() -> None:
+    operation = KspaceConvertOperation(
+        bounds={"kx": (-1.0, 1.0)},
+        resolution={"kx": 0.1},
+    )
+    spec = full_data(operation)
+    original_rows = spec.display_rows()
+    original_payload = spec.model_dump(mode="json")
+
+    assert operation.bounds is not None
+    assert type(operation.bounds) is dict
+    assert type(operation.resolution) is dict
+
+    updated = operation.model_copy(
+        update={
+            "bounds": {"kx": (-2.0, 2.0)},
+            "resolution": {"kx": 0.2},
+        }
+    )
+
+    assert updated.bounds == {"kx": (-2.0, 2.0)}
+    assert updated.resolution == {"kx": 0.2}
+    assert spec.display_rows() == original_rows
+    assert spec.model_dump(mode="json") == original_payload
+    typing.cast("dict[str, float]", updated.resolution)["kx"] = 0.3
+    assert operation.resolution == {"kx": 0.1}
+
+    restored = pickle.loads(pickle.dumps(operation))
+    assert restored == operation
+    assert copy.copy(operation.bounds) is not operation.bounds
+    assert copy.deepcopy(operation.bounds) is not operation.bounds
+
+    list_operation = AssignCoordsOperation(
+        coord_name="x",
+        values=np.arange(3.0),
+    )
+    assert type(list_operation.values) is list
+    copied_list_operation = list_operation.model_copy(deep=True)
+    copied_list_operation.values.append(3.0)
+    assert list_operation.values == [0.0, 1.0, 2.0]
+    assert pickle.loads(pickle.dumps(list_operation)) == list_operation
+
+    array_operation = AssignAttrsOperation(
+        attrs={"weights": np.arange(3.0)},
+    )
+    copied_array_operation = array_operation.model_copy(deep=True)
+    copied_weights = copied_array_operation.attrs["weights"]
+    original_weights = array_operation.attrs["weights"]
+    assert isinstance(copied_weights, np.ndarray)
+    assert isinstance(original_weights, np.ndarray)
+    assert copied_weights is not original_weights
+    copied_weights[0] = -1.0
+    np.testing.assert_array_equal(original_weights, np.arange(3.0))
 
 
 def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> None:
