@@ -327,6 +327,15 @@ def _preserve_workspace_file_generation(
     )
 
 
+def _validate_workspace_publication_state(
+    path: str | os.PathLike[str],
+    expected_state: tuple[tuple[str, int, int, int], bool],
+    message: str,
+) -> None:
+    if workspace_arrays._workspace_file_state(path) != expected_state:
+        raise _WorkspacePublicationConflictError(path, message)
+
+
 def _replace_workspace_file(
     source: str | os.PathLike[str],
     destination: str | os.PathLike[str],
@@ -360,6 +369,11 @@ def _replace_workspace_file(
 
             retry_delays: tuple[float, ...] | None = None
             while True:
+                _validate_workspace_publication_state(
+                    destination,
+                    current_state,
+                    "Workspace changed while replacement was waiting for access",
+                )
                 try:
                     os.replace(source, destination)
                 except PermissionError as exc:
@@ -374,8 +388,21 @@ def _replace_workspace_file(
                     break
         except BaseException:
             if preserved is not None:
-                with contextlib.suppress(Exception):
-                    preserved.cleanup()
+                if (
+                    generation is not None
+                    and workspace_arrays._workspace_file_state(destination)
+                    != current_state
+                ):
+                    workspace_arrays._retire_workspace_file_generation(
+                        destination,
+                        generation,
+                        preserved.path,
+                        preserved.file_identity,
+                        preserved.cleanup,
+                    )
+                else:
+                    with contextlib.suppress(Exception):
+                        preserved.cleanup()
             raise
 
         if generation is not None:
@@ -691,6 +718,41 @@ def _write_workspace_constructor_groups_to_path(
         )
 
 
+def _materialize_workspace_constructor_sources(
+    fname: str | os.PathLike[str],
+    rewrite_map: Mapping[str, tuple[str, dict[str, xr.Dataset]]],
+) -> None:
+    """Load constructor data that reads from the file about to be mutated."""
+    normalized_path = workspace_arrays._normalized_file_path(fname)
+    materialized: dict[int, xr.Dataset] = {}
+    for _group_path, constructor in rewrite_map.values():
+        for constructor_group_path, ds in tuple(constructor.items()):
+            loaded_ds = materialized.get(id(ds))
+            if loaded_ds is not None:
+                constructor[constructor_group_path] = loaded_ds
+                continue
+            if normalized_path is not None and any(
+                normalized_path in workspace_arrays.dataarray_source_paths(data_array)
+                for data_array in (*ds.data_vars.values(), *ds.coords.values())
+            ):
+                variable_chunks: dict[typing.Hashable, tuple[int, ...]] = {}
+                for name, data_array in ds.data_vars.items():
+                    chunksizes = workspace_arrays._workspace_chunksizes_for_dataarray(
+                        data_array
+                    )
+                    if chunksizes is not None:
+                        variable_chunks[name] = chunksizes
+                loaded_ds = ds.compute()
+                for name, chunksizes in variable_chunks.items():
+                    loaded_ds[name].encoding[
+                        workspace_arrays._WORKSPACE_MATERIALIZED_CHUNKSIZES
+                    ] = chunksizes
+                for variable in loaded_ds.variables.values():
+                    variable.encoding.pop("source", None)
+                materialized[id(ds)] = loaded_ds
+                constructor[constructor_group_path] = loaded_ds
+
+
 def _path_is_at_or_under(path: str, root_path: str) -> bool:
     path = path.strip("/")
     root_path = root_path.strip("/")
@@ -932,9 +994,18 @@ def _write_workspace_transaction_file(
             missing_fallback_groups = _workspace_missing_attr_fallback_groups(
                 fname, rewrite_map, attr_updates_tuple
             )
+            missing_fallback_group_set = set(missing_fallback_groups)
+            for _payload_path, _attrs, fallback in attr_updates_tuple:
+                fallback_path = fallback[0].strip("/")
+                if fallback_path in missing_fallback_group_set:
+                    rewrite_map[fallback_path] = fallback
             workspace_arrays._detach_workspace_file_generation_readers(
                 fname, missing_fallback_groups
             )
+            _materialize_workspace_constructor_sources(fname, rewrite_map)
+            generation = workspace_arrays._current_workspace_file_generation(fname)
+            if generation is not None:
+                generation.close(needs_lock=False)
             group_operations, attr_updates_to_write = _prepare_workspace_transaction(
                 fname,
                 txn_path,

@@ -931,6 +931,55 @@ def test_replace_workspace_file_retries_windows_sharing_violation(
     assert destination.read_bytes() == b"new"
 
 
+def test_replace_workspace_file_rejects_change_during_retry(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "new.itws"
+    destination = tmp_path / "current.itws"
+    external = tmp_path / "external.itws"
+    xr.Dataset({"data": 2}).to_netcdf(source, engine="h5netcdf")
+    xr.Dataset({"data": 1}).to_netcdf(destination, engine="h5netcdf")
+    xr.Dataset({"data": 3}).to_netcdf(external, engine="h5netcdf")
+    reader = workspace_arrays.WorkspaceFileManager(destination)
+    assert np.asarray(reader.acquire().variables["data"]).item() == 1
+    expected_state = workspace_arrays._workspace_file_state(destination)
+    original_replace = workspace_storage.os.replace
+    attempts = 0
+
+    def _fail_first_replace(src, dst):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError(errno.EACCES, "sharing violation")
+        original_replace(src, dst)
+
+    def _replace_during_retry(_delay: float) -> None:
+        original_replace(external, destination)
+
+    monkeypatch.setattr(
+        workspace_storage, "_workspace_replace_retry_delays", lambda _exc: (0.0,)
+    )
+    monkeypatch.setattr(workspace_storage.os, "replace", _fail_first_replace)
+    monkeypatch.setattr(workspace_storage.time, "sleep", _replace_during_retry)
+
+    try:
+        with pytest.raises(RuntimeError, match="changed while replacement was waiting"):
+            workspace_storage._replace_workspace_file(
+                source,
+                destination,
+                expected_state=expected_state,
+            )
+
+        assert attempts == 1
+        with h5py.File(destination, "r") as h5_file:
+            assert np.asarray(h5_file["data"]).item() == 3
+        with h5py.File(source, "r") as h5_file:
+            assert np.asarray(h5_file["data"]).item() == 2
+        assert np.asarray(reader.acquire().variables["data"]).item() == 1
+    finally:
+        reader.close()
+
+
 def test_workspace_replace_retry_delays_only_allow_windows_sharing_errors(
     monkeypatch,
 ) -> None:
@@ -1111,9 +1160,11 @@ def test_cleanup_stale_workspace_reader_files_keeps_live_owners(
     directory = workspace_arrays._ensure_workspace_reader_directory(workspace_path)
     current = directory / f"reader-{workspace_arrays.os.getpid()}-{'1' * 32}.itws"
     stale = directory / f"export-424242-{'2' * 32}.itws"
+    stale_handoff = directory / f"handoff-424242-{'3' * 32}.itws"
     unrelated = directory / "notes.txt"
     current.write_bytes(b"current")
     stale.write_bytes(b"stale")
+    stale_handoff.write_bytes(b"stale handoff")
     unrelated.write_bytes(b"keep")
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: pid != 424242)
 
@@ -1121,6 +1172,7 @@ def test_cleanup_stale_workspace_reader_files_keeps_live_owners(
 
     assert current.exists()
     assert not stale.exists()
+    assert not stale_handoff.exists()
     assert unrelated.exists()
 
 
@@ -1733,6 +1785,54 @@ def test_workspace_transaction_does_not_copy_or_replace_full_file(
     )
 
     assert _read_transaction_test_value(fname) == 4.0
+
+
+def test_workspace_transaction_materializes_lazy_source_before_mutation(
+    tmp_path,
+) -> None:
+    fname = tmp_path / "lazy-constructor-source.itws"
+    _write_transaction_test_workspace(fname, value=1.0)
+    opened = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks={})
+    snapshot = opened[["data"]].copy(deep=False)
+
+    try:
+        workspace_storage._write_workspace_transaction_file(
+            fname,
+            (("1", {"1/figure": snapshot}),),
+            (),
+            _transaction_test_root_attrs(delta_save_count=1),
+        )
+        assert snapshot["data"].compute().item() == 1.0
+        with h5py.File(fname, "r") as h5_file:
+            assert np.asarray(h5_file["1/figure/data"]).item() == 1.0
+    finally:
+        opened.close()
+
+
+def test_workspace_constructor_materialization_reuses_data_and_chunks(tmp_path) -> None:
+    fname = tmp_path / "shared-lazy-source.itws"
+    xr.Dataset({"data": ("x", np.arange(6))}).to_netcdf(fname, engine="h5netcdf")
+    opened = workspace_arrays.open_workspace_dataset(fname, "/", chunks={"x": 2})
+    snapshot = opened[["data"]].copy(deep=False)
+    first_constructor = {"first": snapshot}
+    second_constructor = {"second": snapshot}
+    rewrite_map = {
+        "first": ("first", first_constructor),
+        "second": ("second", second_constructor),
+    }
+
+    try:
+        workspace_storage._materialize_workspace_constructor_sources(fname, rewrite_map)
+        first = first_constructor["first"]
+        second = second_constructor["second"]
+        assert first is second
+        assert first["data"].chunks is None
+        assert "source" not in first["data"].encoding
+        assert workspace_arrays.workspace_dataset_encoding(first)["data"][
+            "chunksizes"
+        ] == (2,)
+    finally:
+        opened.close()
 
 
 def test_workspace_attr_transaction_does_not_copy_unchanged_payload(

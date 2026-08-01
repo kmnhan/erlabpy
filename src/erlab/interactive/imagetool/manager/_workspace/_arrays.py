@@ -62,6 +62,7 @@ _WORKSPACE_FILE_CLEANUP_WORKER: threading.Thread | None = None
 _WORKSPACE_FILE_CLEANUP_WORKER_LOCK = threading.Lock()
 _WORKSPACE_READER_DIRECTORY_SUFFIX = ".readers"
 _WORKSPACE_COMPRESSION_MIN_BYTES = 1 << 20  # 1 MiB
+_WORKSPACE_MATERIALIZED_CHUNKSIZES = "_erlab_workspace_materialized_chunksizes"
 _TOOL_DATA_BLOB_NAME_ATTR = _serialization.TOOL_DATA_BLOB_NAME_ATTR
 _SAVED_TOOL_DATA_REFERENCE_DIM = _serialization.SAVED_TOOL_DATA_REFERENCE_DIM
 _SAVED_TOOL_DATA_BLOB_DIM_PREFIX = _serialization.SAVED_TOOL_DATA_BLOB_DIM_PREFIX
@@ -78,10 +79,19 @@ class _WorkspaceReaderFile:
     cleanup: Callable[[], None]
 
 
-_WorkspaceExportKey: typing.TypeAlias = tuple[str, int, int, int, str]
-_WORKSPACE_SESSION_EXPORTS: dict[_WorkspaceExportKey, _WorkspaceReaderFile] = {}
-_WORKSPACE_SESSION_EXPORTS_LOCK = threading.Lock()
-_WORKSPACE_SESSION_EXPORTS_OWNER_PID = os.getpid()
+@dataclass(frozen=True)
+class _WorkspaceReaderHandoff:
+    """One serialized-reader lease for a logical workspace generation."""
+
+    reader_file: _WorkspaceReaderFile
+    generation_key: tuple[str, str]
+
+
+_WORKSPACE_READER_HANDOFFS: dict[str, _WorkspaceReaderHandoff] = {}
+_WORKSPACE_READER_HANDOFFS_LOCK = threading.Lock()
+_WORKSPACE_READER_HANDOFFS_OWNER_PID = os.getpid()
+_WORKSPACE_MAX_PENDING_READER_GENERATIONS = 8
+_WORKSPACE_MAX_PENDING_READER_HANDOFFS = 64
 
 
 def _normalized_workspace_group(group: str) -> str:
@@ -156,7 +166,7 @@ def _create_workspace_reader_file(
     source_path: str | os.PathLike[str],
     workspace_path: str | os.PathLike[str],
     *,
-    kind: typing.Literal["reader", "export"] = "reader",
+    kind: typing.Literal["reader", "export", "handoff"] = "reader",
     copy_only: bool = False,
 ) -> _WorkspaceReaderFile:
     """Create a private hard link or copy for one reader generation."""
@@ -222,7 +232,7 @@ def _create_workspace_group_reader_file(
 
 
 def _workspace_reader_file_owner_pid(path: pathlib.Path) -> int | None:
-    for kind in ("reader", "export"):
+    for kind in ("reader", "export", "handoff"):
         prefix = f"{kind}-"
         if not path.name.startswith(prefix) or not path.name.endswith(".itws"):
             continue
@@ -268,33 +278,91 @@ def _cleanup_stale_workspace_reader_files(
         directory.rmdir()
 
 
-def _cleanup_workspace_session_exports() -> None:
-    """Remove cross-process exports owned by this Python process."""
-    if os.getpid() != _WORKSPACE_SESSION_EXPORTS_OWNER_PID:
+def _create_workspace_reader_handoff(
+    export_file: _WorkspaceReaderFile,
+    workspace_path: str | os.PathLike[str],
+    revision: str,
+) -> _WorkspaceReaderFile:
+    """Create one independently owned handoff for a serialized reader."""
+    with _WORKSPACE_READER_HANDOFFS_LOCK:
+        for path in tuple(_WORKSPACE_READER_HANDOFFS):
+            if not pathlib.Path(path).exists():
+                _WORKSPACE_READER_HANDOFFS.pop(path, None)
+        generation_key = (os.fsdecode(workspace_path), revision)
+        pending_generations = {
+            handoff.generation_key for handoff in _WORKSPACE_READER_HANDOFFS.values()
+        }
+        if len(
+            _WORKSPACE_READER_HANDOFFS
+        ) >= _WORKSPACE_MAX_PENDING_READER_HANDOFFS or (
+            generation_key not in pending_generations
+            and len(pending_generations) >= _WORKSPACE_MAX_PENDING_READER_GENERATIONS
+        ):
+            raise RuntimeError(
+                "Too many workspace readers are waiting for another process. Wait "
+                "for background work to finish, then try again. If no work is "
+                "running, restart the ImageTool Manager."
+            )
+        handoff = _create_workspace_reader_file(
+            export_file.path,
+            workspace_path,
+            kind="handoff",
+        )
+        _WORKSPACE_READER_HANDOFFS[handoff.path] = _WorkspaceReaderHandoff(
+            handoff,
+            generation_key,
+        )
+    return handoff
+
+
+def _consume_workspace_reader_handoff(
+    path: str | os.PathLike[str],
+    workspace_path: str | os.PathLike[str],
+) -> None:
+    """Remove a handoff after its receiver owns a private reader file."""
+    handoff_path = pathlib.Path(path)
+    try:
+        expected_parent = _workspace_reader_directory(workspace_path).resolve()
+        is_internal = handoff_path.resolve().parent == expected_parent
+    except OSError:
+        is_internal = False
+    if not is_internal or not handoff_path.name.startswith("handoff-"):
         return
-    with _WORKSPACE_SESSION_EXPORTS_LOCK:
-        reader_files = tuple(_WORKSPACE_SESSION_EXPORTS.values())
-        _WORKSPACE_SESSION_EXPORTS.clear()
-    for reader_file in reader_files:
+    with _WORKSPACE_READER_HANDOFFS_LOCK:
+        handoff = _WORKSPACE_READER_HANDOFFS.pop(str(handoff_path), None)
+    if handoff is not None:
+        handoff.reader_file.cleanup()
+    else:
+        _cleanup_workspace_reader_path(handoff_path)
+
+
+def _cleanup_workspace_reader_handoffs() -> None:
+    """Remove unconsumed reader handoffs owned by this Python process."""
+    if os.getpid() != _WORKSPACE_READER_HANDOFFS_OWNER_PID:
+        return
+    with _WORKSPACE_READER_HANDOFFS_LOCK:
+        handoffs = tuple(_WORKSPACE_READER_HANDOFFS.values())
+        _WORKSPACE_READER_HANDOFFS.clear()
+    for handoff in handoffs:
         with contextlib.suppress(Exception):
-            reader_file.cleanup()
+            handoff.reader_file.cleanup()
 
 
-def _reset_workspace_session_exports_after_fork() -> None:
-    """Forget parent-owned exports without deleting them in a forked child."""
-    global _WORKSPACE_SESSION_EXPORTS_LOCK
-    global _WORKSPACE_SESSION_EXPORTS_OWNER_PID
+def _reset_workspace_reader_handoffs_after_fork() -> None:
+    """Forget parent-owned handoffs without deleting them in a forked child."""
+    global _WORKSPACE_READER_HANDOFFS_LOCK
+    global _WORKSPACE_READER_HANDOFFS_OWNER_PID
 
-    _WORKSPACE_SESSION_EXPORTS.clear()
-    _WORKSPACE_SESSION_EXPORTS_LOCK = threading.Lock()
-    _WORKSPACE_SESSION_EXPORTS_OWNER_PID = os.getpid()
+    _WORKSPACE_READER_HANDOFFS.clear()
+    _WORKSPACE_READER_HANDOFFS_LOCK = threading.Lock()
+    _WORKSPACE_READER_HANDOFFS_OWNER_PID = os.getpid()
 
 
 if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=_reset_workspace_session_exports_after_fork)
+    os.register_at_fork(after_in_child=_reset_workspace_reader_handoffs_after_fork)
 
 
-atexit.register(_cleanup_workspace_session_exports)
+atexit.register(_cleanup_workspace_reader_handoffs)
 
 
 class _WorkspaceFileGenerationResources:
@@ -313,6 +381,7 @@ class _WorkspaceFileGenerationResources:
             self._new_file_manager(path)
         )
         self.cleanup: Callable[[], None] | None = None
+        self.exports: dict[tuple[str, str], _WorkspaceReaderFile] = {}
 
     def _new_file_manager(self, path: str) -> CachingFileManager[typing.Any]:
         return CachingFileManager(
@@ -385,21 +454,78 @@ class _WorkspaceFileGenerationResources:
 
     def activate(self, path: str, file_identity: tuple[str, int, int, int]) -> None:
         self.close(needs_lock=False)
+        self.clear_exports()
         self.path = path
         self.file_identity = file_identity
         self.file_manager = self._new_file_manager(path)
+
+    def export(
+        self,
+        workspace_path: str,
+        revision: str,
+        group: str,
+    ) -> _WorkspaceReaderFile:
+        """Create or reuse the immutable export for one logical generation."""
+        workspace_group = _normalized_workspace_group(group)
+        key = (revision, workspace_group)
+        export_file = self.exports.get(key)
+        if export_file is not None:
+            _export_identity, export_exists = _workspace_file_state(export_file.path)
+            if export_exists:
+                return export_file
+            self.exports.pop(key, None)
+
+        self.close(needs_lock=False)
+        source_identity = _workspace_file_identity(self.path)
+        if source_identity[1:] != self.file_identity[1:]:
+            raise RuntimeError(
+                "Workspace reader generation changed before it could be exported: "
+                f"{self.path}"
+            )
+        export_file = _create_workspace_group_reader_file(
+            self.path,
+            workspace_path,
+            workspace_group,
+            kind="export",
+        )
+        try:
+            source_identity_after = _workspace_file_identity(self.path)
+        except BaseException:
+            export_file.cleanup()
+            raise
+        if source_identity_after[1:] != source_identity[1:]:
+            export_file.cleanup()
+            raise RuntimeError(
+                "Workspace reader generation changed while it was being exported: "
+                f"{self.path}"
+            )
+        self.exports[key] = export_file
+        return export_file
+
+    def clear_exports(self) -> None:
+        """Release exports after their handoffs have independent file links."""
+        exports = tuple(self.exports.values())
+        self.exports.clear()
+        for export_file in exports:
+            with contextlib.suppress(Exception):
+                export_file.cleanup()
 
     def release(self) -> None:
         file_manager = self.file_manager
         self.file_manager = None
         cleanup = self.cleanup
         self.cleanup = None
+        exports = tuple(self.exports.values())
+        self.exports.clear()
         with contextlib.suppress(Exception):
             if file_manager is not None:
                 file_manager.close(needs_lock=False)
         if cleanup is not None:
             with contextlib.suppress(Exception):
                 cleanup()
+        for export_file in exports:
+            with contextlib.suppress(Exception):
+                export_file.cleanup()
 
 
 class _WorkspaceFileGeneration:
@@ -433,6 +559,7 @@ class _WorkspaceFileGeneration:
         self._state_lock = threading.Lock()
         self._retired = reader_file is not None
         self._created_without_file = created_without_file
+        self._revision = uuid.uuid4().hex
         self._invalid_reason: str | None = None
         self._cleanup_scheduled = False
         self._disposed = False
@@ -451,6 +578,12 @@ class _WorkspaceFileGeneration:
     def created_without_file(self) -> bool:
         with self._state_lock:
             return self._created_without_file
+
+    @property
+    def revision(self) -> str:
+        """Return the logical identity of the current generation contents."""
+        with self._state_lock:
+            return self._revision
 
     def add_manager(self, manager: WorkspaceFileManager | None = None) -> None:
         with self._state_lock:
@@ -517,12 +650,15 @@ class _WorkspaceFileGeneration:
         self.file_identity = identity
         with self._state_lock:
             self._created_without_file = False
+            self._revision = uuid.uuid4().hex
 
     def refresh_in_place(self, file_identity: tuple[str, int, int, int]) -> None:
         """Reopen this generation after a managed in-place transaction."""
         self._raise_if_unavailable()
         self._resources.activate(self.workspace_path, file_identity)
         self.file_identity = file_identity
+        with self._state_lock:
+            self._revision = uuid.uuid4().hex
 
     def invalidate(self, reason: str) -> None:
         self._resources.close(needs_lock=False)
@@ -533,11 +669,20 @@ class _WorkspaceFileGeneration:
     def export_reader_state(
         self, group: str
     ) -> tuple[str, str, tuple[int, int, int], str]:
-        """Create or reuse a session-owned file for cross-process readers."""
+        """Create an owned handoff for one cross-process reader."""
         self._raise_if_unavailable()
-        reader_file = _workspace_session_export(self, group)
-        identity = _workspace_file_identity(reader_file.path)[1:]
-        return self.workspace_path, reader_file.path, identity, group
+        export_file = self._resources.export(
+            self.workspace_path,
+            self.revision,
+            group,
+        )
+        handoff = _create_workspace_reader_handoff(
+            export_file,
+            self.workspace_path,
+            self.revision,
+        )
+        identity = _workspace_file_identity(handoff.path)[1:]
+        return self.workspace_path, handoff.path, identity, group
 
     def _raise_if_unavailable(self) -> None:
         with self._state_lock:
@@ -563,56 +708,6 @@ class _WorkspaceFileGeneration:
             self._disposed = True
             self._cleanup_scheduled = False
         self._finalizer()
-
-
-def _workspace_session_export(
-    generation: _WorkspaceFileGeneration,
-    group: str,
-) -> _WorkspaceReaderFile:
-    """Return one immutable group export owned by this Python process."""
-    resources = generation._resources
-    workspace_group = _normalized_workspace_group(group)
-    resources.close(needs_lock=False)
-    source_identity = _workspace_file_identity(resources.path)
-    if source_identity[1:] != resources.file_identity[1:]:
-        raise RuntimeError(
-            "Workspace reader generation changed before it could be exported: "
-            f"{resources.path}"
-        )
-    key: _WorkspaceExportKey = (
-        generation.workspace_path,
-        source_identity[1],
-        source_identity[2],
-        source_identity[3],
-        workspace_group,
-    )
-    with _WORKSPACE_SESSION_EXPORTS_LOCK:
-        reader_file = _WORKSPACE_SESSION_EXPORTS.get(key)
-        if reader_file is not None:
-            _reader_identity, reader_exists = _workspace_file_state(reader_file.path)
-            if reader_exists:
-                return reader_file
-            _WORKSPACE_SESSION_EXPORTS.pop(key, None)
-
-        reader_file = _create_workspace_group_reader_file(
-            resources.path,
-            generation.workspace_path,
-            workspace_group,
-            kind="export",
-        )
-        try:
-            source_identity_after = _workspace_file_identity(resources.path)
-        except BaseException:
-            reader_file.cleanup()
-            raise
-        if source_identity_after[1:] != source_identity[1:]:
-            reader_file.cleanup()
-            raise RuntimeError(
-                "Workspace reader generation changed while it was being exported: "
-                f"{resources.path}"
-            )
-        _WORKSPACE_SESSION_EXPORTS[key] = reader_file
-        return reader_file
 
 
 def _replace_h5_attrs(target_attrs, attrs: Mapping[typing.Any, typing.Any]) -> None:
@@ -761,9 +856,19 @@ def _should_compress_workspace_variable(
 def _workspace_chunksizes_for_dataarray(
     data_array: xr.DataArray,
 ) -> tuple[int, ...] | None:
-    """Return a valid fixed HDF5 chunk shape for dask-backed workspace data."""
+    """Return a valid fixed HDF5 chunk shape for workspace data."""
     chunks = data_array.chunks
-    if chunks is None or data_array.ndim == 0:
+    if chunks is None:
+        materialized_chunks = data_array.encoding.get(
+            _WORKSPACE_MATERIALIZED_CHUNKSIZES
+        )
+        if (
+            not isinstance(materialized_chunks, tuple)
+            or len(materialized_chunks) != data_array.ndim
+        ):
+            return None
+        chunks = tuple((chunk,) for chunk in materialized_chunks)
+    if data_array.ndim == 0:
         return None
 
     chunksizes: list[int] = []
@@ -807,8 +912,9 @@ def workspace_dataset_encoding(
 
 def _workspace_file_generation(
     path: str,
+    manager: WorkspaceFileManager | None = None,
 ) -> _WorkspaceFileGeneration:
-    """Return the current shared generation for a normalized workspace path."""
+    """Return a current generation and optionally register its reader lease."""
     _ensure_workspace_file_cleanup_worker()
     with _workspace_file_lock(path):
         identity, file_exists = _workspace_file_state(path)
@@ -829,6 +935,8 @@ def _workspace_file_generation(
             )
             with _WORKSPACE_FILE_GENERATIONS_LOCK:
                 _WORKSPACE_FILE_GENERATIONS[path] = generation
+        if manager is not None:
+            generation.add_manager(manager)
         return generation
 
 
@@ -841,6 +949,7 @@ def _workspace_file_generation_from_reader(
     _ensure_workspace_file_cleanup_worker()
     with _workspace_file_lock(workspace_path):
         if _workspace_file_identity(reader_path)[1:] != expected_identity:
+            _consume_workspace_reader_handoff(reader_path, workspace_path)
             raise RuntimeError(
                 "Serialized workspace reader generation is no longer available: "
                 f"{reader_path}"
@@ -853,6 +962,7 @@ def _workspace_file_generation_from_reader(
             raise
         if reader_identity_after != expected_identity:
             reader_file.cleanup()
+            _consume_workspace_reader_handoff(reader_path, workspace_path)
             raise RuntimeError(
                 "Serialized workspace reader generation changed while it was "
                 f"being opened: {reader_path}"
@@ -866,6 +976,7 @@ def _workspace_file_generation_from_reader(
         except BaseException:
             reader_file.cleanup()
             raise
+        _consume_workspace_reader_handoff(reader_path, workspace_path)
         return generation
 
 
@@ -1061,8 +1172,7 @@ class WorkspaceFileManager(FileManager[typing.Any]):
             target = os.fsdecode(path)
         self.workspace_path = target
         self.workspace_group = _normalized_workspace_group(group)
-        self._generation = _workspace_file_generation(target)
-        self._generation.add_manager(self)
+        self._generation = _workspace_file_generation(target, self)
         self._finalizer = weakref.finalize(
             self, _release_workspace_file_generation, self._generation
         )
@@ -1087,6 +1197,15 @@ class WorkspaceFileManager(FileManager[typing.Any]):
         """Serialize an immutable reference to this workspace generation."""
         return _workspace_file_manager_pickle_state(self)
 
+    def __dask_tokenize__(self) -> tuple[str, str, str, str]:
+        """Return a stable token without creating a cross-process handoff."""
+        return (
+            type(self).__name__,
+            self.workspace_path,
+            self.workspace_group,
+            self._generation.revision,
+        )
+
     def __setstate__(self, state: tuple[str, str, tuple[int, int, int], str]) -> None:
         workspace_path, reader_path, expected_identity, group = state
         ensure_workspace_hdf5_filters_registered()
@@ -1095,12 +1214,18 @@ class WorkspaceFileManager(FileManager[typing.Any]):
             target = os.fsdecode(workspace_path)
         self.workspace_path = target
         self.workspace_group = _normalized_workspace_group(group)
-        self._generation = _workspace_file_generation_from_reader(
-            target,
-            reader_path,
-            expected_identity,
-        )
-        self._generation.add_manager(self)
+        with _workspace_file_lock(target):
+            generation = _workspace_file_generation_from_reader(
+                target,
+                reader_path,
+                expected_identity,
+            )
+            try:
+                generation.add_manager(self)
+            except BaseException:
+                generation.dispose()
+                raise
+            self._generation = generation
         self._finalizer = weakref.finalize(
             self, _release_workspace_file_generation, self._generation
         )
@@ -1139,6 +1264,20 @@ class WorkspaceFileManager(FileManager[typing.Any]):
         self._finalizer()
 
 
+class _WorkspaceH5NetCDFStore(H5NetCDFStore):
+    """HDF5 store with side-effect-free Dask generation identity."""
+
+    def __dask_tokenize__(self) -> tuple[object, ...]:
+        """Identify lazy arrays without serializing their file manager."""
+        manager = typing.cast("WorkspaceFileManager", self._manager)
+        return (
+            type(self).__name__,
+            manager.__dask_tokenize__(),
+            self._group,
+            self._mode,
+        )
+
+
 def _iter_h5netcdf_group_paths(group: object, path: str = "/") -> Iterator[str]:
     yield path
     groups = getattr(group, "groups", {})
@@ -1153,7 +1292,7 @@ def _open_workspace_dataset_from_manager(
     *,
     chunks: typing.Any,
 ) -> xr.Dataset:
-    store = H5NetCDFStore(
+    store = _WorkspaceH5NetCDFStore(
         file_manager,
         group=group,
         mode="r",
@@ -2212,6 +2351,7 @@ def _write_workspace_dataset_group_to_file(
         "preferred_chunks",
         "shuffle",
         "source",
+        _WORKSPACE_MATERIALIZED_CHUNKSIZES,
     }
     for variable in ds.variables.values():
         for key in stale_encoding_keys:
