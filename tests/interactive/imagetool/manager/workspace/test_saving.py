@@ -1459,7 +1459,9 @@ def _compact_workspace_before_shutdown_and_wait(
     return requested
 
 
-def test_workspace_save_worker_reports_missing_backing_source(tmp_path) -> None:
+def test_workspace_save_worker_reports_specific_storage_errors(
+    monkeypatch, tmp_path
+) -> None:
     missing_source = tmp_path / "deleted-source.itws"
     target = tmp_path / "target.itws"
     snapshot = workspace_saving._WorkspaceSaveSnapshot(
@@ -1492,6 +1494,38 @@ def test_workspace_save_worker_reports_missing_backing_source(tmp_path) -> None:
     assert error.missing_source_path == str(missing_source)
     assert error.traceback_text
 
+    def _run_worker_with_error(exc: Exception) -> workspace_saving._WorkspaceSaveError:
+        snapshot = workspace_saving._WorkspaceSaveSnapshot(
+            generation=0,
+            root_attrs=_transaction_test_root_attrs(),
+            delta_save_count=0,
+        )
+        worker = workspace_saving._WorkspaceSaveWorker(target, snapshot)
+        errors: list[workspace_saving._WorkspaceSaveError | None] = []
+        receiver = workspace_saving._WorkspaceSaveResultReceiver(
+            callback=lambda _elapsed, save_error: errors.append(save_error),
+            parent=worker.signals,
+        )
+        worker.signals.finished.connect(receiver.finish)
+        monkeypatch.setattr(
+            workspace_storage,
+            "_write_workspace_transaction_file",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(exc),
+        )
+        worker.run()
+        assert isinstance(errors[0], workspace_saving._WorkspaceSaveError)
+        return errors[0]
+
+    access_error = _run_worker_with_error(PermissionError("access denied"))
+    assert access_error.access_denied_path == str(target)
+
+    conflict_error = _run_worker_with_error(
+        workspace_storage._WorkspacePublicationConflictError(
+            target, "Workspace changed while its successor was prepared"
+        )
+    )
+    assert conflict_error.publication_conflict_path == str(target)
+
 
 def test_manager_async_save_request_error_paths(
     qtbot,
@@ -1522,6 +1556,20 @@ def test_manager_async_save_request_error_paths(
         )
         manager._show_workspace_save_worker_error(missing_error)
         assert len(critical_calls) == 2
+
+        manager._show_workspace_save_worker_error(
+            workspace_saving._WorkspaceSaveError(
+                traceback_text="Access traceback",
+                access_denied_path=str(tmp_path / "denied.itws"),
+            )
+        )
+        manager._show_workspace_save_worker_error(
+            workspace_saving._WorkspaceSaveError(
+                traceback_text="Conflict traceback",
+                publication_conflict_path=str(tmp_path / "changed.itws"),
+            )
+        )
+        assert len(critical_calls) == 4
 
         manager._workspace_state.path = tmp_path / "workspace.itws"
         manager._workspace_state.save_in_progress = True
@@ -5509,7 +5557,7 @@ def test_manager_workspace_load_keeps_visible_saved_data_in_memory(
         np.testing.assert_array_equal(loaded._data.values, data.values)
 
 
-def test_manager_workspace_lazy_data_delta_save_uses_pending_group_before_replacing(
+def test_manager_workspace_lazy_data_delta_save_publishes_successor(
     qtbot,
     tmp_path,
     manager_context: Callable[
@@ -5538,7 +5586,7 @@ def test_manager_workspace_lazy_data_delta_save_uses_pending_group_before_replac
             replacement, auto_compute=False
         )
         assert _request_workspace_save_and_wait(qtbot, manager)
-        assert list(tmp_path.glob("lazy-data.itws.delta-*")) == []
+        assert list(tmp_path.glob(".lazy-data.itws.next-*.itws")) == []
 
         import h5py
 
@@ -5670,14 +5718,14 @@ def test_manager_background_full_save_preserves_post_snapshot_dask_edit(
         original_replace = workspace_storage._replace_workspace_file
         pause_replacement = True
 
-        def _pause_first_replacement(source, destination) -> None:
+        def _pause_first_replacement(source, destination, **kwargs) -> None:
             nonlocal pause_replacement
             if pause_replacement and pathlib.Path(destination) == fname:
                 pause_replacement = False
                 replacement_started.set()
                 if not allow_replacement.wait(5):
                     raise TimeoutError("Background replacement did not resume")
-            original_replace(source, destination)
+            original_replace(source, destination, **kwargs)
 
         monkeypatch.setattr(
             workspace_storage, "_replace_workspace_file", _pause_first_replacement
@@ -5714,7 +5762,7 @@ def test_manager_background_full_save_preserves_post_snapshot_dask_edit(
             )
 
 
-def test_manager_workspace_lazy_data_delta_pending_failure_preserves_old_group(
+def test_manager_workspace_lazy_data_successor_failure_preserves_old_group(
     qtbot,
     monkeypatch,
     tmp_path,
@@ -5741,20 +5789,21 @@ def test_manager_workspace_lazy_data_delta_pending_failure_preserves_old_group(
         replacement.data = np.asarray(replacement.data) + 10
         root.slicer_area.replace_source_data(replacement, auto_compute=False)
 
-        def _write_partial_pending_then_raise(
+        def _write_partial_successor_then_raise(
             fname: str | os.PathLike[str],
             _constructor: Mapping[str, xr.Dataset],
             _group_path: str,
-            pending_path: str,
+            destination_path: str,
+            **_kwargs,
         ) -> None:
             with workspace_storage._open_workspace_h5_file_for_update(fname) as h5_file:
-                h5_file.create_group(pending_path)
-            raise RuntimeError("pending write failed")
+                h5_file.create_group(destination_path)
+            raise RuntimeError("successor write failed")
 
         monkeypatch.setattr(
             workspace_storage,
-            "_write_workspace_constructor_groups_to_pending",
-            _write_partial_pending_then_raise,
+            "_write_workspace_constructor_groups_to_path",
+            _write_partial_successor_then_raise,
         )
         monkeypatch.setattr(
             manager, "_show_workspace_save_worker_error", lambda *args: None

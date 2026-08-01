@@ -808,7 +808,7 @@ class _WorkspaceController:
                 node.slicer_area.state = state
                 node._set_name(name, manual=False)
 
-    def _refresh_workspace_payload_bindings_after_full_save(
+    def _refresh_workspace_payload_bindings_after_save(
         self,
         workspace_path: str | os.PathLike[str],
         *,
@@ -1402,6 +1402,7 @@ class _WorkspaceController:
     def _offload_targets_to_current_workspace(
         self, offload_targets: Iterable[int | str]
     ) -> bool:
+        offload_targets = tuple(offload_targets)
         workspace_path = self._manager._workspace_state.path
         if workspace_path is None:
             return False
@@ -1421,6 +1422,12 @@ class _WorkspaceController:
                     self.saving._workspace_root_attrs_payload(
                         delta_save_count=self._manager._workspace_state.delta_save_count
                     ),
+                )
+                # The metadata update publishes a new immutable generation.
+                self.loading._rebind_workspace_backed_imagetools(
+                    workspace_path,
+                    targets=offload_targets,
+                    chunks={},
                 )
             self._manager._status_bar.showMessage("Data offloaded to workspace", 5000)
         except Exception:
@@ -1605,20 +1612,20 @@ class _WorkspaceController:
             for event in post_save_events
             if event.uid is not None and (event.data or event.added)
         )
+        try:
+            self._refresh_workspace_payload_bindings_after_save(
+                workspace_path,
+                backing_snapshot=backing_snapshot,
+                old_workspace_path=old_workspace_path,
+                skip_live_data_rebind_uids=post_save_data_uids,
+            )
+        except _WorkspacePostSaveBindingError:
+            self._mark_workspace_post_save_binding_refresh_failed()
+            self._show_workspace_post_save_binding_error(workspace_path)
+            if restore_focus:
+                self._restore_focus_after_workspace_save(origin)
+            return False
         if snapshot.full_tree is not None:
-            try:
-                self._refresh_workspace_payload_bindings_after_full_save(
-                    workspace_path,
-                    backing_snapshot=backing_snapshot,
-                    old_workspace_path=old_workspace_path,
-                    skip_live_data_rebind_uids=post_save_data_uids,
-                )
-            except _WorkspacePostSaveBindingError:
-                self._mark_workspace_post_save_binding_refresh_failed()
-                self._show_workspace_post_save_binding_error(workspace_path)
-                if restore_focus:
-                    self._restore_focus_after_workspace_save(origin)
-                return False
             self._manager._workspace_state.schema_version = (
                 workspace_format._current_workspace_schema_version()
             )
@@ -1904,7 +1911,7 @@ class _WorkspaceController:
 
             if snapshot.full_tree is not None:
                 try:
-                    self._refresh_workspace_payload_bindings_after_full_save(
+                    self._refresh_workspace_payload_bindings_after_save(
                         access.path,
                         backing_snapshot=backing_snapshot,
                         old_workspace_path=old_workspace_path,
@@ -2025,7 +2032,7 @@ class _WorkspaceController:
                 workspace_path = self._manager._workspace_state.path
                 if workspace_path is not None:
                     try:
-                        self._refresh_workspace_payload_bindings_after_full_save(
+                        self._refresh_workspace_payload_bindings_after_save(
                             workspace_path
                         )
                     except _WorkspacePostSaveBindingError:
@@ -2093,7 +2100,7 @@ class _WorkspaceController:
                     require_matching_compression=True,
                     mark_clean=False,
                 )
-                self._refresh_workspace_payload_bindings_after_full_save(
+                self._refresh_workspace_payload_bindings_after_save(
                     workspace_path,
                     backing_snapshot=backing_snapshot,
                     old_workspace_path=old_workspace_path,

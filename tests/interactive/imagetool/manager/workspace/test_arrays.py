@@ -5,7 +5,10 @@ import logging
 import os
 import pathlib
 import pickle
+import subprocess
+import sys
 import threading
+import time
 import types
 import typing
 import warnings
@@ -28,6 +31,8 @@ from tests.interactive.imagetool.manager.workspace._support import (
     _hdf5_blosc2_level_codec,
     _hdf5_filter_ids,
     _rich_workspace_attr_value,
+    _transaction_test_root_attrs,
+    _write_transaction_test_workspace,
 )
 
 
@@ -107,6 +112,60 @@ def test_workspace_file_generation_registration_uses_short_registry_lock(
         manager.close()
 
 
+def test_workspace_file_generation_binds_one_observed_file_state(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "single-state.itws"
+    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(fname, engine="h5netcdf")
+    original_file_state = workspace_arrays._workspace_file_state
+    observed_state = original_file_state(fname)
+    state_calls = 0
+
+    def _file_state(path):
+        nonlocal state_calls
+        state_calls += 1
+        assert pathlib.Path(path).resolve() == fname.resolve()
+        return observed_state
+
+    monkeypatch.setattr(workspace_arrays, "_workspace_file_state", _file_state)
+
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    try:
+        assert state_calls == 1
+        assert manager._generation.file_identity == observed_state[0]
+        assert manager._generation._resources.file_identity == observed_state[0]
+    finally:
+        manager.close()
+
+
+def test_workspace_reader_helpers_reject_unsafe_directory_and_names(tmp_path) -> None:
+    workspace_path = tmp_path / "workspace.itws"
+    reader_directory = workspace_arrays._workspace_reader_directory(workspace_path)
+    reader_directory.write_text("not a directory")
+
+    workspace_arrays._cleanup_stale_workspace_reader_files(workspace_path)
+    with pytest.raises(OSError, match="not a private directory"):
+        workspace_arrays._ensure_workspace_reader_directory(workspace_path)
+
+    valid_token = "1" * 32
+    assert (
+        workspace_arrays._workspace_reader_file_owner_pid(
+            pathlib.Path(f"reader-123-{valid_token}.itws")
+        )
+        == 123
+    )
+    for name in (
+        "reader.itws",
+        "reader-bad-token.itws",
+        f"export-0-{valid_token}.itws",
+        "notes.txt",
+    ):
+        assert (
+            workspace_arrays._workspace_reader_file_owner_pid(pathlib.Path(name))
+            is None
+        )
+
+
 def test_workspace_file_manager_finalizer_defers_cleanup(tmp_path) -> None:
     fname = tmp_path / "deferred-cleanup.itws"
     xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(fname, engine="h5netcdf")
@@ -141,6 +200,251 @@ def test_workspace_file_manager_is_pickleable(tmp_path) -> None:
         restored.close()
 
 
+def test_workspace_file_manager_opens_published_generation_read_only(tmp_path) -> None:
+    fname = tmp_path / "read-only.itws"
+    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(fname, engine="h5netcdf")
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+
+    try:
+        h5_file = manager.acquire()
+        assert h5_file.mode == "r"
+        with pytest.raises(OSError, match="no write intent"):
+            h5_file.attrs["unexpected_write"] = 1
+    finally:
+        manager.close()
+
+
+def test_workspace_file_manager_copies_windows_process_export(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "windows-export.itws"
+    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(fname, engine="h5netcdf")
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    copy_only_values: list[bool] = []
+    original_create = workspace_arrays._create_workspace_reader_file
+
+    def _create_reader_file(*args, copy_only=False, **kwargs):
+        copy_only_values.append(copy_only)
+        return original_create(*args, copy_only=copy_only, **kwargs)
+
+    monkeypatch.setattr(workspace_arrays, "_WORKSPACE_EXPORT_REQUIRES_COPY", True)
+    monkeypatch.setattr(
+        workspace_arrays, "_create_workspace_reader_file", _create_reader_file
+    )
+    try:
+        _workspace_path, export_path, _identity = manager.__getstate__()
+        assert copy_only_values == [True]
+        assert not pathlib.Path(export_path).samefile(fname)
+    finally:
+        manager.close()
+
+
+def test_workspace_file_manager_export_is_owned_by_sender_generation(tmp_path) -> None:
+    fname = tmp_path / "owned-export.itws"
+    xr.Dataset({"data": ("x", np.arange(6))}).to_netcdf(fname, engine="h5netcdf")
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    generation = manager._generation
+    state = manager.__getstate__()
+    export_path = pathlib.Path(state[1])
+    restored = workspace_arrays.WorkspaceFileManager.__new__(
+        workspace_arrays.WorkspaceFileManager
+    )
+    restored.__setstate__(state)
+
+    manager._finalizer()
+    with workspace_arrays._workspace_file_lock(fname):
+        workspace_arrays._cleanup_workspace_file_generation_locked(generation)
+
+    try:
+        assert not export_path.exists()
+        np.testing.assert_array_equal(
+            restored.acquire().variables["data"][:], np.arange(6)
+        )
+    finally:
+        restored.close()
+
+
+def test_workspace_file_manager_rejects_missing_serialized_export(tmp_path) -> None:
+    fname = tmp_path / "missing-export.itws"
+    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(fname, engine="h5netcdf")
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    state = manager.__getstate__()
+    pathlib.Path(state[1]).unlink()
+    restored = workspace_arrays.WorkspaceFileManager.__new__(
+        workspace_arrays.WorkspaceFileManager
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="no longer available"):
+            restored.__setstate__(state)
+    finally:
+        manager.close()
+
+
+def test_workspace_file_manager_root_attr_update_publishes_new_generation(
+    tmp_path,
+) -> None:
+    fname = tmp_path / "updated-export.itws"
+    _write_transaction_test_workspace(fname)
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    serialized_before = pickle.dumps(manager)
+
+    workspace_storage._write_workspace_root_attrs_to_file(
+        fname,
+        {
+            **_transaction_test_root_attrs(),
+            "generation_marker": "updated",
+        },
+    )
+    current = workspace_arrays.WorkspaceFileManager(fname)
+
+    before = pickle.loads(serialized_before)
+    try:
+        assert manager._generation.retired
+        assert "generation_marker" not in manager.acquire().attrs
+        assert "generation_marker" not in before.acquire().attrs
+        assert current.acquire().attrs["generation_marker"] == "updated"
+    finally:
+        manager.close()
+        before.close()
+        current.close()
+
+
+def test_workspace_file_manager_export_rejects_source_change(
+    monkeypatch, tmp_path
+) -> None:
+    destination = tmp_path / "current.itws"
+    replacement = tmp_path / "replacement.itws"
+    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(destination, engine="h5netcdf")
+    xr.Dataset({"data": ("x", np.arange(3) + 1)}).to_netcdf(
+        replacement, engine="h5netcdf"
+    )
+    manager = workspace_arrays.WorkspaceFileManager(destination)
+    original_create = workspace_arrays._create_workspace_reader_file
+
+    def _create_then_replace(source, workspace_path, **kwargs):
+        result = original_create(source, workspace_path, **kwargs)
+        os.replace(replacement, destination)
+        return result
+
+    monkeypatch.setattr(
+        workspace_arrays, "_create_workspace_reader_file", _create_then_replace
+    )
+    try:
+        with pytest.raises(RuntimeError, match="changed while it was being exported"):
+            pickle.dumps(manager)
+        assert not list(
+            workspace_arrays._workspace_reader_directory(destination).glob(
+                "export-*.itws"
+            )
+        )
+    finally:
+        manager.close()
+
+
+def test_serialized_workspace_reader_rejects_changed_export(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "serialized.itws"
+    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(fname, engine="h5netcdf")
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    state = manager.__getstate__()
+    original_create = workspace_arrays._create_workspace_reader_file
+
+    def _create_then_touch(source, workspace_path, **kwargs):
+        result = original_create(source, workspace_path, **kwargs)
+        source_stat = pathlib.Path(source).stat()
+        os.utime(
+            source,
+            ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns + 1_000_000_000),
+        )
+        return result
+
+    monkeypatch.setattr(
+        workspace_arrays, "_create_workspace_reader_file", _create_then_touch
+    )
+    restored = workspace_arrays.WorkspaceFileManager.__new__(
+        workspace_arrays.WorkspaceFileManager
+    )
+    try:
+        with pytest.raises(RuntimeError, match="changed while it was being opened"):
+            restored.__setstate__(state)
+        assert not list(
+            workspace_arrays._workspace_reader_directory(fname).glob("reader-*.itws")
+        )
+    finally:
+        manager.close()
+
+
+def test_pickled_workspace_reader_does_not_hold_canonical_file(tmp_path) -> None:
+    destination = tmp_path / "current.itws"
+    source = tmp_path / "replacement.itws"
+    xr.Dataset({"data": ("x", np.arange(6))}).to_netcdf(destination, engine="h5netcdf")
+    xr.Dataset({"data": ("x", np.arange(6) + 10)}).to_netcdf(source, engine="h5netcdf")
+    manager = workspace_arrays.WorkspaceFileManager(destination)
+    serialized = pickle.dumps(manager)
+    serialized_path = tmp_path / "manager.pickle"
+    ready_path = tmp_path / "reader.ready"
+    release_path = tmp_path / "reader.release"
+    serialized_path.write_bytes(serialized)
+    child_code = """
+import json
+import pathlib
+import pickle
+import sys
+import time
+
+manager = pickle.loads(pathlib.Path(sys.argv[1]).read_bytes())
+try:
+    h5_file = manager.acquire()
+    pathlib.Path(sys.argv[2]).touch()
+    deadline = time.monotonic() + 10
+    while not pathlib.Path(sys.argv[3]).exists():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Workspace reader process did not receive release")
+        time.sleep(0.01)
+    print(json.dumps(h5_file.variables["data"][:].tolist()))
+finally:
+    manager.close()
+"""
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            child_code,
+            str(serialized_path),
+            str(ready_path),
+            str(release_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 10
+    try:
+        while not ready_path.exists() and process.poll() is None:
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+        assert ready_path.exists()
+        workspace_storage._replace_workspace_file(source, destination)
+    finally:
+        release_path.touch()
+        try:
+            stdout, stderr = process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate(timeout=5)
+            raise
+        finally:
+            manager.close()
+
+    assert process.returncode == 0, stderr
+    assert json.loads(stdout) == np.arange(6).tolist()
+    with xr.open_dataset(destination, engine="h5netcdf") as current:
+        np.testing.assert_array_equal(current["data"], np.arange(6) + 10)
+
+
 def test_workspace_file_manager_cache_evicts_old_handles(tmp_path) -> None:
     paths = [tmp_path / f"cache-{index}.itws" for index in range(3)]
     for path in paths:
@@ -161,7 +465,7 @@ def test_workspace_file_manager_cache_evicts_old_handles(tmp_path) -> None:
             manager.close()
 
 
-def test_workspace_file_manager_serialization_rejects_replaced_generation(
+def test_workspace_file_manager_serialization_pins_replaced_generation(
     tmp_path,
 ) -> None:
     destination = tmp_path / "current.itws"
@@ -169,21 +473,85 @@ def test_workspace_file_manager_serialization_rejects_replaced_generation(
     xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(destination, engine="h5netcdf")
     xr.Dataset({"data": ("x", np.arange(3) + 1)}).to_netcdf(source, engine="h5netcdf")
     manager = workspace_arrays.WorkspaceFileManager(destination)
+    _workspace_path, export_path, _identity = manager.__getstate__()
+    assert pathlib.Path(export_path) != destination.resolve()
     serialized = pickle.dumps(manager)
 
     workspace_storage._replace_workspace_file(source, destination)
 
+    restored = pickle.loads(serialized)
+    serialized_after_replace = pickle.dumps(manager)
+    restored_after_replace = pickle.loads(serialized_after_replace)
+    current = workspace_arrays.WorkspaceFileManager(destination)
     try:
-        with pytest.raises(TypeError, match="replaced workspace generation"):
+        for old_manager in (manager, restored, restored_after_replace):
+            np.testing.assert_array_equal(
+                old_manager.acquire().variables["data"][:], np.arange(3)
+            )
+        np.testing.assert_array_equal(
+            current.acquire().variables["data"][:], np.arange(3) + 1
+        )
+    finally:
+        for file_manager in (manager, restored, restored_after_replace, current):
+            file_manager.close()
+        del manager, restored, restored_after_replace, current
+        gc.collect()
+
+
+def test_workspace_file_manager_rejects_external_generation_replacement(
+    tmp_path,
+) -> None:
+    destination = tmp_path / "current.itws"
+    source = tmp_path / "replacement.itws"
+    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(destination, engine="h5netcdf")
+    xr.Dataset({"data": ("x", np.arange(3) + 1)}).to_netcdf(source, engine="h5netcdf")
+    manager = workspace_arrays.WorkspaceFileManager(destination)
+    manager.acquire()
+    manager.close()
+
+    os.replace(source, destination)
+
+    try:
+        with pytest.raises(RuntimeError, match="reader generation changed"):
+            manager.acquire()
+        with pytest.raises(RuntimeError, match="changed before it could be exported"):
             pickle.dumps(manager)
-        with pytest.raises(
-            RuntimeError, match="changed after its reader was serialized"
-        ):
-            pickle.loads(serialized)
+        current = workspace_arrays.WorkspaceFileManager(destination)
+        try:
+            np.testing.assert_array_equal(
+                current.acquire().variables["data"][:], np.arange(3) + 1
+            )
+        finally:
+            current.close()
     finally:
         manager.close()
-        del manager
-        gc.collect()
+
+
+def test_workspace_file_manager_rejects_external_in_place_mutation(tmp_path) -> None:
+    fname = tmp_path / "mutated.itws"
+    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(fname, engine="h5netcdf")
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    original_stat = fname.stat()
+    manager.acquire()
+    manager.close()
+
+    with h5py.File(fname, "r+") as h5_file:
+        h5_file.attrs["external_update"] = True
+    os.utime(
+        fname,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns + 1_000_000_000),
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="reader generation changed"):
+            manager.acquire()
+        current = workspace_arrays.WorkspaceFileManager(fname)
+        try:
+            assert current.acquire().attrs["external_update"]
+        finally:
+            current.close()
+    finally:
+        manager.close()
 
 
 def test_disposed_workspace_generation_rejects_reuse(tmp_path) -> None:
@@ -609,16 +977,23 @@ def test_workspace_xarray_path_helpers_cover_fallbacks(monkeypatch, tmp_path) ->
     lock = workspace_arrays._workspace_file_lock("fallback.itws")
     assert lock is workspace_arrays._workspace_file_lock("fallback.itws")
 
-    def _raise_stat_oserror(_path: str):
-        raise OSError
+    def _raise_stat_file_not_found(_path: str):
+        raise FileNotFoundError
 
-    monkeypatch.setattr(workspace_arrays.os, "stat", _raise_stat_oserror)
+    monkeypatch.setattr(workspace_arrays.os, "stat", _raise_stat_file_not_found)
     assert workspace_arrays._workspace_file_identity("missing.itws") == (
         "missing.itws",
         0,
         0,
         0,
     )
+
+    def _raise_stat_permission_error(_path: str):
+        raise PermissionError
+
+    monkeypatch.setattr(workspace_arrays.os, "stat", _raise_stat_permission_error)
+    with pytest.raises(PermissionError):
+        workspace_arrays._workspace_file_identity("denied.itws")
 
 
 def test_workspace_file_manager_uses_fsdecode_fallback(monkeypatch) -> None:

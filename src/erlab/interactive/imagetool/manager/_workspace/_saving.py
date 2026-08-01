@@ -87,6 +87,8 @@ class _WorkspaceSaveSnapshot:
 class _WorkspaceSaveError:
     traceback_text: str
     missing_source_path: str | None = None
+    access_denied_path: str | None = None
+    publication_conflict_path: str | None = None
 
 
 class _WorkspaceSaveWorkerSignals(QtCore.QObject):
@@ -160,6 +162,21 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
             error = _WorkspaceSaveError(
                 traceback_text=traceback.format_exc(),
                 missing_source_path=exc.source_path,
+            )
+        except workspace_storage._WorkspacePublicationConflictError as exc:
+            error = _WorkspaceSaveError(
+                traceback_text=traceback.format_exc(),
+                publication_conflict_path=exc.path,
+            )
+        except PermissionError as exc:
+            denied_path = (
+                getattr(exc, "filename2", None)
+                or exc.filename
+                or os.fsdecode(self._fname)
+            )
+            error = _WorkspaceSaveError(
+                traceback_text=traceback.format_exc(),
+                access_denied_path=os.fsdecode(denied_path),
             )
         except Exception:
             error = _WorkspaceSaveError(traceback_text=traceback.format_exc())

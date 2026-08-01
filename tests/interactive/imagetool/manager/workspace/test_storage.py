@@ -11,6 +11,7 @@ from collections.abc import Callable
 import h5py
 import hdf5plugin
 import numpy as np
+import psutil
 import pytest
 import xarray
 import xarray as xr
@@ -51,6 +52,76 @@ def _wait_for_workspace_cleanup(condition: Callable[[], bool]) -> bool:
             return True
         threading.Event().wait(0.01)
     return condition()
+
+
+def test_workspace_metadata_failure_leaves_published_generation_unchanged(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "partial-update.itws"
+    _write_transaction_test_workspace(fname)
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    export_before = pathlib.Path(manager.__getstate__()[1])
+    original_write = workspace_storage._write_root_attrs_to_open_workspace_file
+
+    def _write_then_fail(h5_file, attrs, *, replace=False) -> None:
+        original_write(h5_file, attrs, replace=replace)
+        raise RuntimeError("update failed")
+
+    monkeypatch.setattr(
+        workspace_storage,
+        "_write_root_attrs_to_open_workspace_file",
+        _write_then_fail,
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="update failed"):
+            workspace_storage._write_workspace_root_attrs_to_file(
+                fname, {"partial_update": True}
+            )
+
+        export_after = pathlib.Path(manager.__getstate__()[1])
+        assert export_after == export_before
+        with h5py.File(export_before, "r") as h5_file:
+            assert "partial_update" not in h5_file.attrs
+        with h5py.File(fname, "r") as h5_file:
+            assert "partial_update" not in h5_file.attrs
+    finally:
+        manager.close()
+
+
+def test_full_workspace_save_does_not_overwrite_newer_generation(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "workspace.itws"
+    external = tmp_path / "external.itws"
+    _write_transaction_test_workspace(fname, value=1.0)
+    _write_transaction_test_workspace(external, value=7.0)
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(2.0, title="save snapshot")}
+    )
+    original_validate = workspace_storage._validate_workspace_h5_file
+    replaced = False
+
+    def _validate_then_replace(path) -> None:
+        nonlocal replaced
+        original_validate(path)
+        if not replaced:
+            replaced = True
+            external.replace(fname)
+
+    monkeypatch.setattr(
+        workspace_storage, "_validate_workspace_h5_file", _validate_then_replace
+    )
+    try:
+        with pytest.raises(RuntimeError, match="changed while its successor"):
+            workspace_storage._write_full_workspace_tree_file(
+                fname, tree, _transaction_test_root_attrs()
+            )
+    finally:
+        tree.close()
+
+    assert _read_transaction_test_value(fname) == 7.0
+    assert not list(tmp_path.glob("workspace.itws.tmp-*"))
 
 
 def test_workspace_file_repack_payload_strips_delta_and_skips_internal_groups(
@@ -291,7 +362,9 @@ def test_write_full_workspace_tree_file_preserves_cached_workspace_reader(
         assert generation.retired
         assert pathlib.Path(generation.path).is_file()
         assert pathlib.Path(generation.path) != fname
-        assert pathlib.Path(generation.path).parent == fname.parent
+        assert pathlib.Path(
+            generation.path
+        ).parent == workspace_arrays._workspace_reader_directory(fname)
         preserved_file = manager.acquire()
         preserved_value = (
             preserved_file.groups["0"].groups["imagetool"].variables["data"][()]
@@ -356,16 +429,79 @@ def test_preserve_workspace_generation_hard_links_on_workspace_filesystem(
     source = tmp_path / "workspace.itws"
     source.write_bytes(b"workspace generation")
 
-    preserved = workspace_storage._preserve_workspace_file_generation(source)
+    preserved = workspace_storage._preserve_workspace_file_generation(
+        source, workspace_arrays._workspace_file_identity(source)
+    )
     preserved_path = pathlib.Path(preserved.path)
     try:
-        assert preserved_path.parent == source.parent
-        assert preserved.hide_after_publish
+        assert preserved_path.parent == workspace_arrays._workspace_reader_directory(
+            source
+        )
         assert preserved_path.samefile(source)
     finally:
         preserved.cleanup()
 
     assert not preserved_path.exists()
+
+
+def test_preserve_workspace_generation_rejects_source_replacement(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "workspace.itws"
+    replacement = tmp_path / "replacement.itws"
+    source.write_bytes(b"old generation")
+    replacement.write_bytes(b"new generation")
+    expected_identity = workspace_arrays._workspace_file_identity(source)
+    wrong_identity = (
+        expected_identity[0],
+        expected_identity[1],
+        expected_identity[2] + 1,
+        expected_identity[3],
+    )
+    with pytest.raises(RuntimeError, match="changed before it could be preserved"):
+        workspace_storage._preserve_workspace_file_generation(source, wrong_identity)
+
+    original_link = workspace_arrays.os.link
+    original_replace = workspace_arrays.os.replace
+
+    def _replace_before_link(link_source, link_destination) -> None:
+        original_replace(replacement, source)
+        original_link(link_source, link_destination)
+
+    monkeypatch.setattr(workspace_arrays.os, "link", _replace_before_link)
+
+    with pytest.raises(RuntimeError, match="changed while it was being preserved"):
+        workspace_storage._preserve_workspace_file_generation(source, expected_identity)
+
+    assert source.read_bytes() == b"new generation"
+    assert not list(
+        workspace_arrays._workspace_reader_directory(source).glob("reader-*.itws")
+    )
+
+
+def test_preserve_workspace_generation_cleans_reader_after_identity_error(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "workspace.itws"
+    source.write_bytes(b"workspace generation")
+    expected_identity = workspace_arrays._workspace_file_identity(source)
+    original_identity = workspace_arrays._workspace_file_identity
+
+    def _fail_source_identity(path):
+        if pathlib.Path(path).resolve() == source.resolve():
+            raise PermissionError("identity denied")
+        return original_identity(path)
+
+    monkeypatch.setattr(
+        workspace_arrays, "_workspace_file_identity", _fail_source_identity
+    )
+
+    with pytest.raises(PermissionError, match="identity denied"):
+        workspace_storage._preserve_workspace_file_generation(source, expected_identity)
+
+    assert not list(
+        workspace_arrays._workspace_reader_directory(source).glob("reader-*.itws")
+    )
 
 
 def test_write_full_workspace_tree_file_preserves_stale_lazy_dataarray(
@@ -877,8 +1013,11 @@ def test_replace_workspace_file_failure_keeps_old_file_reader_usable(
     preserved_paths: list[pathlib.Path] = []
     original_preserve = workspace_storage._preserve_workspace_file_generation
 
-    def _record_preserved_path(path: str | pathlib.Path):
-        preserved = original_preserve(path)
+    def _record_preserved_path(
+        path: str | pathlib.Path,
+        expected_identity: tuple[str, int, int, int],
+    ):
+        preserved = original_preserve(path, expected_identity)
         preserved_paths.append(pathlib.Path(preserved.path))
 
         def _cleanup() -> None:
@@ -887,8 +1026,8 @@ def test_replace_workspace_file_failure_keeps_old_file_reader_usable(
 
         return workspace_storage._PreservedWorkspaceFile(
             path=preserved.path,
+            file_identity=preserved.file_identity,
             cleanup=_cleanup,
-            hide_after_publish=preserved.hide_after_publish,
         )
 
     monkeypatch.setattr(workspace_storage.os, "replace", _fail_replace)
@@ -919,6 +1058,69 @@ def test_replace_workspace_file_failure_keeps_old_file_reader_usable(
         assert source.exists()
     finally:
         manager.close()
+
+
+def test_replace_workspace_file_does_not_adopt_disappeared_destination(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "new.itws"
+    destination = tmp_path / "current.itws"
+    _write_transaction_test_workspace(destination)
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(2.0, title="replacement")}
+    )
+    try:
+        workspace_storage._write_full_workspace_tree_file(
+            source, tree, _transaction_test_root_attrs()
+        )
+    finally:
+        tree.close()
+    manager = workspace_arrays.WorkspaceFileManager(destination)
+    manager.acquire()
+    original_preserve = workspace_storage._preserve_workspace_file_generation
+
+    def _remove_before_preservation(
+        path: str | pathlib.Path,
+        expected_identity: tuple[str, int, int, int],
+    ):
+        pathlib.Path(path).unlink()
+        return original_preserve(path, expected_identity)
+
+    monkeypatch.setattr(
+        workspace_storage,
+        "_preserve_workspace_file_generation",
+        _remove_before_preservation,
+    )
+    try:
+        with pytest.raises(FileNotFoundError):
+            workspace_storage._replace_workspace_file(source, destination)
+        assert source.exists()
+        assert not destination.exists()
+        with pytest.raises(RuntimeError, match="reader generation changed"):
+            manager.acquire()
+    finally:
+        manager.close()
+
+
+def test_cleanup_stale_workspace_reader_files_keeps_live_owners(
+    monkeypatch, tmp_path
+) -> None:
+    workspace_path = tmp_path / "workspace.itws"
+    workspace_path.write_bytes(b"workspace")
+    directory = workspace_arrays._ensure_workspace_reader_directory(workspace_path)
+    current = directory / f"reader-{workspace_arrays.os.getpid()}-{'1' * 32}.itws"
+    stale = directory / f"export-424242-{'2' * 32}.itws"
+    unrelated = directory / "notes.txt"
+    current.write_bytes(b"current")
+    stale.write_bytes(b"stale")
+    unrelated.write_bytes(b"keep")
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: pid != 424242)
+
+    workspace_arrays._cleanup_stale_workspace_reader_files(workspace_path)
+
+    assert current.exists()
+    assert not stale.exists()
+    assert unrelated.exists()
 
 
 def test_write_full_workspace_tree_file_local_path_uses_destination_temp(
@@ -1510,6 +1712,27 @@ def test_workspace_transaction_attr_update_encodes_non_native_values(tmp_path) -
     _assert_no_workspace_internal_groups(fname)
 
 
+def test_workspace_transaction_publishes_immutable_reader_generation(tmp_path) -> None:
+    fname = tmp_path / "immutable-delta.itws"
+    _write_transaction_test_workspace(fname, value=1.0)
+    before = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks={})
+    old_data = before["data"].copy(deep=False)
+
+    workspace_storage._write_workspace_transaction_file(
+        fname,
+        (("0", {"0/imagetool": _transaction_test_dataset(9.0, title="new")}),),
+        (),
+        _transaction_test_root_attrs(delta_save_count=1),
+    )
+    after = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks={})
+    try:
+        assert old_data.compute().item() == 1.0
+        assert after["data"].compute().item() == 9.0
+    finally:
+        before.close()
+        after.close()
+
+
 def test_workspace_recovery_cleans_orphan_internal_groups(tmp_path) -> None:
 
     fname = tmp_path / "orphan-internal.itws"
@@ -1552,7 +1775,7 @@ def test_workspace_lock_conflict_is_reported(tmp_path) -> None:
 def test_hide_workspace_internal_file_sets_macos_hidden_flag(monkeypatch) -> None:
     calls: list[tuple[str, int]] = []
     lock_path = "/workspace/.workspace.itws.lock"
-    regular_stat = types.SimpleNamespace(st_mode=0o100600)
+    regular_stat = types.SimpleNamespace(st_mode=0o100600, st_flags=0)
 
     monkeypatch.setattr(workspace_storage.sys, "platform", "darwin")
     monkeypatch.setattr(workspace_storage.os, "lstat", lambda _path: regular_stat)
@@ -1760,6 +1983,10 @@ def test_hide_workspace_internal_file_windows_paths(monkeypatch) -> None:
 
     class _Kernel32:
         @staticmethod
+        def GetFileAttributesW(_path: str) -> int:
+            return 0x20
+
+        @staticmethod
         def SetFileAttributesW(path: str, attrs: int) -> None:
             calls.append((path, attrs))
 
@@ -1773,7 +2000,7 @@ def test_hide_workspace_internal_file_windows_paths(monkeypatch) -> None:
         ctypes, "windll", types.SimpleNamespace(kernel32=_Kernel32()), raising=False
     )
     workspace_storage._hide_workspace_internal_file("hidden.itws.lock")
-    assert calls == [("hidden.itws.lock", 0x2)]
+    assert calls == [("hidden.itws.lock", 0x22)]
 
 
 def test_workspace_document_lock_info_without_lock(tmp_path) -> None:
