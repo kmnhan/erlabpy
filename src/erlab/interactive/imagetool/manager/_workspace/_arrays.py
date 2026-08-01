@@ -49,6 +49,17 @@ _WORKSPACE_H5PY_DIMENSION_SCALE_ATTRS = frozenset(
 )
 
 
+class _WorkspaceFileReplacedError(RuntimeError):
+    """A lazy reader still targets a replaced workspace generation."""
+
+    def __init__(self, path: str | os.PathLike[str]) -> None:
+        self.path = os.fsdecode(path)
+        super().__init__(
+            "Workspace data changed while this operation was reading it. "
+            f"Retry the operation to use the current saved data: {self.path}"
+        )
+
+
 def _replace_h5_attrs(target_attrs, attrs: Mapping[typing.Any, typing.Any]) -> None:
     for key in list(target_attrs):
         del target_attrs[key]
@@ -252,17 +263,34 @@ class WorkspaceFileManager(CachingFileManager):
             manager_id=("erlab-workspace", *identity, "r+"),
         )
         self.workspace_path = target
+        self._file_replaced = False
         with _WORKSPACE_FILE_MANAGERS_LOCK:
             managers = _WORKSPACE_FILE_MANAGERS.setdefault(target, weakref.WeakSet())
             managers.add(self)
 
+    def _acquire_with_cache_info(
+        self, needs_lock: bool = True
+    ) -> tuple[typing.Any, bool]:
+        if needs_lock:
+            with _workspace_file_lock(self.workspace_path):
+                return self._acquire_with_cache_info(needs_lock=False)
+        if self._file_replaced:
+            raise _WorkspaceFileReplacedError(self.workspace_path)
+        return super()._acquire_with_cache_info(needs_lock=False)
 
-def _close_workspace_file_managers(path: str | os.PathLike[str]) -> None:
+    def _mark_file_replaced(self) -> None:
+        self._file_replaced = True
+
+
+def _close_workspace_file_managers(
+    path: str | os.PathLike[str],
+) -> tuple[WorkspaceFileManager, ...]:
     """Close all cached manager-owned readers for one workspace path.
 
     The caller must hold the lock returned by :func:`_workspace_file_lock` for
     the same path. This prevents a lazy reader from reopening the file while
-    the cached handles are being closed.
+    the cached handles are being closed. The caller can retire the returned
+    managers after the replacement commits.
     """
     target = _normalized_file_path(path)
     if target is None:
@@ -273,6 +301,7 @@ def _close_workspace_file_managers(path: str | os.PathLike[str]) -> None:
             _WORKSPACE_FILE_MANAGERS.pop(target, None)
     for manager in managers:
         manager.close(needs_lock=False)
+    return managers
 
 
 def _iter_h5netcdf_group_paths(group: object, path: str = "/") -> Iterator[str]:

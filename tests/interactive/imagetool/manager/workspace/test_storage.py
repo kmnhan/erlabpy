@@ -265,7 +265,10 @@ def test_write_full_workspace_tree_file_closes_cached_workspace_reader(
             fname, tree, _transaction_test_root_attrs()
         )
         assert replacement_checked
-        reopened_file = manager.acquire()
+        with pytest.raises(workspace_arrays._WorkspaceFileReplacedError, match="Retry"):
+            manager.acquire()
+        reopened_manager = workspace_arrays.WorkspaceFileManager(fname)
+        reopened_file = reopened_manager.acquire()
         value = reopened_file.groups["0"].groups["imagetool"].variables["data"][()]
         assert np.asarray(value).item() == 2.0
     finally:
@@ -274,7 +277,7 @@ def test_write_full_workspace_tree_file_closes_cached_workspace_reader(
             workspace_arrays._close_workspace_file_managers(fname)
 
 
-def test_write_full_workspace_tree_file_keeps_lazy_dataarray_usable(tmp_path) -> None:
+def test_write_full_workspace_tree_file_retires_stale_lazy_dataarray(tmp_path) -> None:
     fname = tmp_path / "lazy-reader.itws"
     _write_transaction_test_workspace(fname)
     opened = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks={})
@@ -288,7 +291,15 @@ def test_write_full_workspace_tree_file_keeps_lazy_dataarray_usable(tmp_path) ->
         workspace_storage._write_full_workspace_tree_file(
             fname, tree, _transaction_test_root_attrs()
         )
-        assert lazy_data.compute().item() == 2.0
+        with pytest.raises(workspace_arrays._WorkspaceFileReplacedError, match="Retry"):
+            lazy_data.compute()
+        reopened = workspace_arrays.open_workspace_dataset(
+            fname, "0/imagetool", chunks={}
+        )
+        try:
+            assert reopened["data"].compute().item() == 2.0
+        finally:
+            reopened.close()
     finally:
         tree.close()
         with workspace_arrays._workspace_file_lock(fname):
@@ -345,6 +356,80 @@ def test_replace_workspace_file_blocks_new_readers_during_commit(
     assert reader_acquired.is_set()
     assert errors == []
     assert destination.read_bytes() == b"new"
+
+
+def test_replace_workspace_file_retires_in_flight_multichunk_reader(
+    monkeypatch, tmp_path
+) -> None:
+    from xarray.backends.h5netcdf_ import H5NetCDFArrayWrapper
+
+    fname = tmp_path / "multichunk-reader.itws"
+
+    def _write_values(values: np.ndarray) -> None:
+        tree = xr.DataTree.from_dict(
+            {"0/imagetool": xr.Dataset({"data": ("x", values)})}
+        )
+        try:
+            workspace_storage._write_full_workspace_tree_file(
+                fname, tree, _transaction_test_root_attrs()
+            )
+        finally:
+            tree.close()
+
+    _write_values(np.ones(8, dtype=np.float64))
+    opened = workspace_arrays.open_workspace_dataset(
+        fname, "0/imagetool", chunks={"x": 1}
+    )
+    lazy_data = opened["data"]
+    first_read = threading.Event()
+    continue_read = threading.Event()
+    original_getitem = H5NetCDFArrayWrapper._getitem
+    read_count = 0
+
+    def _pause_after_first_read(self, key):
+        nonlocal read_count
+        result = original_getitem(self, key)
+        if self.variable_name == "data":
+            read_count += 1
+            if read_count == 1:
+                first_read.set()
+                if not continue_read.wait(2):
+                    raise TimeoutError("Workspace replacement did not finish")
+        return result
+
+    monkeypatch.setattr(H5NetCDFArrayWrapper, "_getitem", _pause_after_first_read)
+    results: list[xr.DataArray] = []
+    errors: list[BaseException] = []
+
+    def _compute() -> None:
+        try:
+            results.append(lazy_data.compute(scheduler="single-threaded"))
+        except BaseException as exc:  # pragma: no cover - reported in main thread
+            errors.append(exc)
+
+    compute_thread = threading.Thread(target=_compute)
+    compute_thread.start()
+    try:
+        assert first_read.wait(2)
+        _write_values(np.full(8, 2.0, dtype=np.float64))
+    finally:
+        continue_read.set()
+        compute_thread.join(2)
+        opened.close()
+
+    assert not compute_thread.is_alive()
+    assert results == []
+    assert len(errors) == 1
+    assert isinstance(errors[0], workspace_arrays._WorkspaceFileReplacedError)
+    assert "Retry the operation" in str(errors[0])
+
+    reopened = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks={})
+    try:
+        np.testing.assert_array_equal(
+            reopened["data"].compute(), np.full(8, 2.0, dtype=np.float64)
+        )
+    finally:
+        reopened.close()
 
 
 def test_replace_workspace_file_retries_windows_sharing_violation(

@@ -241,7 +241,7 @@ def _replace_workspace_file(
 ) -> None:
     """Atomically replace a workspace after closing manager-owned readers."""
     with workspace_arrays._workspace_file_lock(destination):
-        workspace_arrays._close_workspace_file_managers(destination)
+        managers = workspace_arrays._close_workspace_file_managers(destination)
         retry_delays: tuple[float, ...] | None = None
         while True:
             try:
@@ -256,6 +256,9 @@ def _replace_workspace_file(
                 time.sleep(delay)
             else:
                 break
+        # A stale lazy graph must not reopen the new file with old metadata.
+        for manager in managers:
+            manager._mark_file_replaced()
 
 
 def _workspace_use_incremental_enabled() -> bool:
