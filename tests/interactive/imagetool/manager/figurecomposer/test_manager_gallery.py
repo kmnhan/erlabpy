@@ -16,6 +16,7 @@ import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
+import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 from erlab.interactive._figurecomposer import (
     FigureComposerTool,
     FigureOperationState,
@@ -133,6 +134,44 @@ def test_selected_figure_details_track_root_reindexing(
 
         assert any("ImageTool 1" in label for label in _derivation_labels())
         assert not any("ImageTool 2" in label for label in _derivation_labels())
+
+
+def test_manager_windows_figure_activation_preserves_resized_geometry(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _FlagResizeFigureComposer(FigureComposerTool):
+        def setWindowFlags(self, flags: QtCore.Qt.WindowType) -> None:
+            super().setWindowFlags(flags)
+            self.resize(self.width(), self.sizeHint().height())
+
+    monkeypatch.setattr(manager_wrapper.sys, "platform", "win32")
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="line",
+    )
+
+    with manager_context() as manager:
+        tool = _FlagResizeFigureComposer(data)
+        figure_uid = manager.add_figuretool(tool, show=True)
+        qtbot.waitUntil(tool.isVisible, timeout=5000)
+        qtbot.waitUntil(
+            lambda: tool.width() >= tool.minimumSizeHint().width(), timeout=5000
+        )
+        tool.setGeometry(80, 60, tool.width() + 80, tool.height() + 180)
+        QtWidgets.QApplication.processEvents()
+        resized_geometry = tool.geometry()
+
+        item = manager._figure_collection.item_for_uid(figure_uid)
+        assert item is not None
+        manager._figure_collection._show_item(item)
+
+        assert tool.geometry() == resized_geometry
 
 
 def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(
