@@ -257,7 +257,6 @@ def _preserve_workspace_file_generation(
             raise
         cleanup = temporary_directory.cleanup
     else:
-        _hide_workspace_lock_file(str(generation_path))
 
         def cleanup() -> None:
             with contextlib.suppress(OSError):
@@ -301,6 +300,10 @@ def _replace_workspace_file(
             raise
         if generation is None:
             workspace_arrays._restore_workspace_file_managers(destination, managers)
+        else:
+            # A hard link shares file attributes with the original workspace.
+            # Hide it only after the destination refers to the new file.
+            _hide_workspace_lock_file(generation.path)
 
 
 def _workspace_use_incremental_enabled() -> bool:

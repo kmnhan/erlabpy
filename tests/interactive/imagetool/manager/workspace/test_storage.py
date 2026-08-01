@@ -259,20 +259,31 @@ def test_write_full_workspace_tree_file_preserves_cached_workspace_reader(
     )
     original_replace = workspace_storage.os.replace
     replacement_checked = False
+    replacement_completed = False
+    hidden_paths: list[str] = []
 
     def _replace_after_reader_close(source, destination):
-        nonlocal replacement_checked
+        nonlocal replacement_checked, replacement_completed
         if pathlib.Path(destination) == fname:
             replacement_checked = True
             assert cached_file._closed
         original_replace(source, destination)
+        replacement_completed = True
+
+    def _hide_after_replacement(path: str) -> None:
+        assert replacement_completed
+        hidden_paths.append(path)
 
     monkeypatch.setattr(workspace_storage.os, "replace", _replace_after_reader_close)
+    monkeypatch.setattr(
+        workspace_storage, "_hide_workspace_lock_file", _hide_after_replacement
+    )
     try:
         workspace_storage._write_full_workspace_tree_file(
             fname, tree, _transaction_test_root_attrs()
         )
         assert replacement_checked
+        assert hidden_paths == [manager._preserved_generation.path]
         preserved_file = manager.acquire()
         preserved_value = (
             preserved_file.groups["0"].groups["imagetool"].variables["data"][()]
@@ -643,7 +654,11 @@ def test_replace_workspace_file_failure_keeps_old_file_reader_usable(
     def _fail_replace(_source, _destination):
         raise PermissionError(errno.EACCES, "replacement denied")
 
+    hidden_paths: list[str] = []
     monkeypatch.setattr(workspace_storage.os, "replace", _fail_replace)
+    monkeypatch.setattr(
+        workspace_storage, "_hide_workspace_lock_file", hidden_paths.append
+    )
     monkeypatch.setattr(
         workspace_storage, "_workspace_replace_retry_delays", lambda _exc: ()
     )
@@ -655,6 +670,7 @@ def test_replace_workspace_file_failure_keeps_old_file_reader_usable(
         value = reopened_file.groups["0"].groups["imagetool"].variables["data"][()]
         assert np.asarray(value).item() == 1.0
         assert manager._preserved_generation is None
+        assert hidden_paths == []
         assert list(tmp_path.glob(".*.erlab-workspace-read")) == []
     finally:
         with workspace_arrays._workspace_file_lock(destination):
