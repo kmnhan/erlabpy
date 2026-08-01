@@ -40,10 +40,13 @@ jobs:
         include:
           - os: windows-latest
             SUFFIX: windows
+            PYTHON_VERSION: "3.14"
           - os: macos-15
             SUFFIX: macos-arm
+            PYTHON_VERSION: "3.14"
           - os: macos-15-intel
             SUFFIX: macos-intel
+            PYTHON_VERSION: "3.13"
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -57,7 +60,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
-          python-version: "3.13"
+          python-version: ${{ matrix.PYTHON_VERSION }}
 
       - name: Install macOS runtime libraries
         if: runner.os == 'macOS'
