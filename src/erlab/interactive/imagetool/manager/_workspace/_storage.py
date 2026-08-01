@@ -33,7 +33,7 @@ from erlab.interactive.imagetool.manager._workspace._format import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping
+    from collections.abc import Callable, Iterable, Iterator, Mapping
 
     import h5py
     import xarray as xr
@@ -238,31 +238,22 @@ def _workspace_replace_retry_delays(exc: PermissionError) -> tuple[float, ...]:
 
 def _preserve_workspace_file_generation(
     path: str | os.PathLike[str],
-) -> workspace_arrays._WorkspaceFileGeneration:
+) -> tuple[str, Callable[[], None]]:
     """Preserve one workspace generation for existing lazy readers."""
     source = pathlib.Path(path)
-    generation_path = source.with_name(f".{uuid.uuid4().hex}.erlab-workspace-read")
-
+    # Keep old generations outside the workspace directory. This prevents
+    # visible artifacts and lets TemporaryDirectory own all cleanup paths.
+    temporary_directory = tempfile.TemporaryDirectory(prefix="erlab-workspace-read-")
+    generation_path = pathlib.Path(temporary_directory.name) / "workspace.itws"
     try:
         os.link(source, generation_path)
     except OSError:
-        temporary_directory = tempfile.TemporaryDirectory(
-            prefix="erlab-workspace-read-"
-        )
-        generation_path = pathlib.Path(temporary_directory.name) / "workspace.itws"
         try:
             shutil.copyfile(source, generation_path)
         except BaseException:
             temporary_directory.cleanup()
             raise
-        cleanup = temporary_directory.cleanup
-    else:
-
-        def cleanup() -> None:
-            with contextlib.suppress(OSError):
-                os.remove(generation_path)
-
-    return workspace_arrays._WorkspaceFileGeneration(generation_path, cleanup)
+    return str(generation_path), temporary_directory.cleanup
 
 
 def _replace_workspace_file(
@@ -270,19 +261,14 @@ def _replace_workspace_file(
 ) -> None:
     """Atomically replace a workspace and preserve active reader generations."""
     with workspace_arrays._workspace_file_lock(destination):
-        managers, cache_keys = workspace_arrays._detach_workspace_file_readers(
-            destination
-        )
-        generation: workspace_arrays._WorkspaceFileGeneration | None = None
+        generation = workspace_arrays._current_workspace_file_generation(destination)
+        generation_has_managers = generation is not None and generation.has_managers()
+        preserved: tuple[str, Callable[[], None]] | None = None
+        if generation_has_managers and pathlib.Path(destination).is_file():
+            preserved = _preserve_workspace_file_generation(destination)
         try:
-            if managers and pathlib.Path(destination).is_file():
-                generation = _preserve_workspace_file_generation(destination)
-            workspace_arrays._close_workspace_file_cache_entries(cache_keys)
-            for manager in managers:
-                if generation is None:
-                    manager.close(needs_lock=False)
-                else:
-                    manager._use_preserved_generation(generation)
+            if generation is not None:
+                generation.close(needs_lock=False)
 
             retry_delays: tuple[float, ...] | None = None
             while True:
@@ -299,18 +285,25 @@ def _replace_workspace_file(
                 else:
                     break
         except BaseException:
-            workspace_arrays._restore_workspace_file_readers(
-                destination, managers, cache_keys
-            )
+            if preserved is not None:
+                with contextlib.suppress(Exception):
+                    preserved[1]()
             raise
-        if generation is None:
-            workspace_arrays._restore_workspace_file_readers(
-                destination, managers, cache_keys
-            )
-        else:
-            # A hard link shares file attributes with the original workspace.
-            # Hide it only after the destination refers to the new file.
-            _hide_workspace_lock_file(generation.path)
+
+        if generation is not None:
+            if preserved is not None:
+                workspace_arrays._retire_workspace_file_generation(
+                    destination,
+                    generation,
+                    preserved[0],
+                    preserved[1],
+                )
+            elif generation_has_managers:
+                generation.refresh_file_identity()
+            else:
+                workspace_arrays._discard_workspace_file_generation(
+                    destination, generation
+                )
 
 
 def _workspace_use_incremental_enabled() -> bool:

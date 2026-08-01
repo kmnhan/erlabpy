@@ -246,60 +246,46 @@ def test_write_full_workspace_tree_file_preserves_cached_workspace_reader(
 ) -> None:
     fname = tmp_path / "cached-reader.itws"
     _write_transaction_test_workspace(fname)
-    target = workspace_arrays._normalized_file_path(fname)
-    monkeypatch.setattr(
-        workspace_arrays,
-        "_workspace_file_identity",
-        lambda _path: (target, 0, 0, 0),
-    )
     manager = workspace_arrays.WorkspaceFileManager(fname)
-    original_cache_key = manager._key
+    generation = manager._generation
     cached_file = manager.acquire()
     tree = xr.DataTree.from_dict(
         {"0/imagetool": _transaction_test_dataset(2.0, title="replacement")}
     )
     original_replace = workspace_storage.os.replace
     replacement_checked = False
-    replacement_completed = False
-    hidden_paths: list[str] = []
 
     def _replace_after_reader_close(source, destination):
-        nonlocal replacement_checked, replacement_completed
+        nonlocal replacement_checked
         if pathlib.Path(destination) == fname:
             replacement_checked = True
             assert cached_file._closed
         original_replace(source, destination)
-        replacement_completed = True
-
-    def _hide_after_replacement(path: str) -> None:
-        assert replacement_completed
-        hidden_paths.append(path)
 
     monkeypatch.setattr(workspace_storage.os, "replace", _replace_after_reader_close)
-    monkeypatch.setattr(
-        workspace_storage, "_hide_workspace_lock_file", _hide_after_replacement
-    )
     try:
         workspace_storage._write_full_workspace_tree_file(
             fname, tree, _transaction_test_root_attrs()
         )
         assert replacement_checked
-        assert hidden_paths == [manager._preserved_generation.path]
+        assert generation.retired
+        assert pathlib.Path(generation.path).is_file()
+        assert pathlib.Path(generation.path) != fname
         preserved_file = manager.acquire()
         preserved_value = (
             preserved_file.groups["0"].groups["imagetool"].variables["data"][()]
         )
         assert np.asarray(preserved_value).item() == 1.0
         reopened_manager = workspace_arrays.WorkspaceFileManager(fname)
-        assert manager._key != original_cache_key
-        assert reopened_manager._key == original_cache_key
+        assert reopened_manager._generation is not generation
         reopened_file = reopened_manager.acquire()
         value = reopened_file.groups["0"].groups["imagetool"].variables["data"][()]
         assert np.asarray(value).item() == 2.0
     finally:
         tree.close()
-        with workspace_arrays._workspace_file_lock(fname):
-            workspace_arrays._close_workspace_file_managers(fname)
+        manager.close()
+        if "reopened_manager" in locals():
+            reopened_manager.close()
 
 
 def test_write_full_workspace_tree_file_preserves_stale_lazy_dataarray(
@@ -328,8 +314,8 @@ def test_write_full_workspace_tree_file_preserves_stale_lazy_dataarray(
             reopened.close()
     finally:
         tree.close()
-        with workspace_arrays._workspace_file_lock(fname):
-            workspace_arrays._close_workspace_file_managers(fname)
+        del lazy_data
+        gc.collect()
 
 
 def test_replace_workspace_file_keeps_reader_generations_isolated(tmp_path) -> None:
@@ -373,8 +359,30 @@ def test_replace_workspace_file_keeps_reader_generations_isolated(tmp_path) -> N
     finally:
         first_manager.close()
         second_manager.close()
+        current_manager.close()
+
+
+def test_replace_workspace_file_activates_manager_for_new_destination(tmp_path) -> None:
+    source = tmp_path / "new.itws"
+    destination = tmp_path / "current.itws"
+    _write_transaction_test_workspace(source)
+    manager = workspace_arrays.WorkspaceFileManager(destination)
+    generation = manager._generation
+
+    try:
+        workspace_storage._replace_workspace_file(source, destination)
+
+        assert not generation.retired
+        assert generation.path == str(destination.resolve())
         with workspace_arrays._workspace_file_lock(destination):
-            workspace_arrays._close_workspace_file_managers(destination)
+            assert (
+                workspace_arrays._current_workspace_file_generation(destination)
+                is generation
+            )
+        value = manager.acquire().groups["0"].groups["imagetool"].variables["data"][()]
+        assert np.asarray(value).item() == 1.0
+    finally:
+        manager.close()
 
 
 def test_replace_workspace_file_copy_fallback_cleans_preserved_generation(
@@ -401,8 +409,8 @@ def test_replace_workspace_file_copy_fallback_cleans_preserved_generation(
     monkeypatch.setattr(workspace_storage.os, "link", _fail_link)
     workspace_storage._replace_workspace_file(source, destination)
 
-    generation = manager._preserved_generation
-    assert generation is not None
+    generation = manager._generation
+    assert generation.retired
     generation_path = pathlib.Path(generation.path)
     generation_directory = generation_path.parent
     assert generation_path.exists()
@@ -418,11 +426,9 @@ def test_replace_workspace_file_copy_fallback_cleans_preserved_generation(
     assert not generation_directory.exists()
 
 
-def test_replace_workspace_file_generation_lives_until_cached_handle_closes(
+def test_retired_workspace_generation_lives_until_last_manager_released(
     tmp_path,
 ) -> None:
-    from xarray.backends.file_manager import FILE_CACHE
-
     source = tmp_path / "new.itws"
     destination = tmp_path / "current.itws"
     _write_transaction_test_workspace(destination)
@@ -439,53 +445,26 @@ def test_replace_workspace_file_generation_lives_until_cached_handle_closes(
     manager = workspace_arrays.WorkspaceFileManager(destination)
     manager.acquire()
     workspace_storage._replace_workspace_file(source, destination)
-    manager.acquire()
-    generation = manager._preserved_generation
-    assert generation is not None
+    cached_file = manager.acquire()
+    generation = manager._generation
+    assert generation.retired
     generation_path = pathlib.Path(generation.path)
+    generation_directory = generation_path.parent
     generation_ref = weakref.ref(generation)
-    cache_key_id = id(manager._key)
-    del generation
+    assert generation_path.exists()
 
-    lock_held = threading.Event()
-    release_lock = threading.Event()
-    lock = workspace_arrays._workspace_file_lock(destination)
-
-    def _hold_workspace_lock() -> None:
-        with lock:
-            lock_held.set()
-            release_lock.wait(2)
-
-    lock_thread = threading.Thread(target=_hold_workspace_lock)
-    lock_thread.start()
-    assert lock_held.wait(2)
-    try:
-        del manager
-        gc.collect()
-        generation_alive_while_cached = generation_ref() is not None
-        generation_exists_while_cached = generation_path.exists()
-        cache_key = next(key for key in FILE_CACHE if id(key) == cache_key_id)
-    finally:
-        release_lock.set()
-        lock_thread.join(2)
-
-    assert not lock_thread.is_alive()
-    cached_file = FILE_CACHE.pop(cache_key)
-    cached_file.close()
-    del cache_key, cached_file
+    del manager, generation
     gc.collect()
 
-    assert generation_alive_while_cached
-    assert generation_exists_while_cached
     assert generation_ref() is None
+    assert cached_file._closed
     assert not generation_path.exists()
+    assert not generation_directory.exists()
 
 
-def test_replace_workspace_file_closes_cached_handle_without_live_manager(
+def test_replace_workspace_file_closes_lock_busy_orphaned_generation(
     monkeypatch, tmp_path
 ) -> None:
-    from xarray.backends.file_manager import FILE_CACHE
-
     source = tmp_path / "new.itws"
     destination = tmp_path / "current.itws"
     _write_transaction_test_workspace(destination)
@@ -499,10 +478,14 @@ def test_replace_workspace_file_closes_cached_handle_without_live_manager(
     finally:
         tree.close()
 
-    manager = workspace_arrays.WorkspaceFileManager(destination)
-    cached_file = manager.acquire()
-    cache_key = manager._key
-    manager_ref = weakref.ref(manager)
+    first_manager = workspace_arrays.WorkspaceFileManager(destination)
+    second_manager = workspace_arrays.WorkspaceFileManager(destination)
+    generation = first_manager._generation
+    cached_file = second_manager.acquire()
+    first_manager_ref = weakref.ref(first_manager)
+    second_manager_ref = weakref.ref(second_manager)
+    generation_ref = weakref.ref(generation)
+    assert second_manager._generation is generation
     lock_held = threading.Event()
     release_lock = threading.Event()
     lock = workspace_arrays._workspace_file_lock(destination)
@@ -516,10 +499,11 @@ def test_replace_workspace_file_closes_cached_handle_without_live_manager(
     lock_thread.start()
     assert lock_held.wait(2)
     try:
-        del manager
+        del first_manager, second_manager, generation
         gc.collect()
-        assert manager_ref() is None
-        assert cache_key in FILE_CACHE
+        assert first_manager_ref() is None
+        assert second_manager_ref() is None
+        assert generation_ref() is not None
         assert not cached_file._closed
     finally:
         release_lock.set()
@@ -537,16 +521,19 @@ def test_replace_workspace_file_closes_cached_handle_without_live_manager(
         original_replace(src, dst)
 
     monkeypatch.setattr(
+        workspace_storage,
+        "_preserve_workspace_file_generation",
+        lambda _path: pytest.fail("Orphaned generation was copied"),
+    )
+    monkeypatch.setattr(
         workspace_storage.os, "replace", _replace_after_orphaned_reader_close
     )
-    try:
-        workspace_storage._replace_workspace_file(source, destination)
-        assert replacement_checked
-        assert cache_key not in FILE_CACHE
-        assert _read_transaction_test_value(destination) == 2.0
-    finally:
-        with workspace_arrays._workspace_file_lock(destination):
-            workspace_arrays._close_workspace_file_managers(destination)
+    workspace_storage._replace_workspace_file(source, destination)
+    gc.collect()
+
+    assert replacement_checked
+    assert generation_ref() is None
+    assert _read_transaction_test_value(destination) == 2.0
 
 
 def test_replace_workspace_file_blocks_new_readers_during_commit(
@@ -761,8 +748,7 @@ def test_replace_workspace_file_preservation_failure_keeps_cached_reader(
         assert np.asarray(value).item() == 1.0
         assert source.exists()
     finally:
-        with workspace_arrays._workspace_file_lock(destination):
-            workspace_arrays._close_workspace_file_managers(destination)
+        manager.close()
 
 
 def test_replace_workspace_file_failure_keeps_old_file_reader_usable(
@@ -786,10 +772,24 @@ def test_replace_workspace_file_failure_keeps_old_file_reader_usable(
     def _fail_replace(_source, _destination):
         raise PermissionError(errno.EACCES, "replacement denied")
 
-    hidden_paths: list[str] = []
+    preserved_paths: list[pathlib.Path] = []
+    original_preserve = workspace_storage._preserve_workspace_file_generation
+
+    def _record_preserved_path(path: str | pathlib.Path):
+        preserved = original_preserve(path)
+        preserved_paths.append(pathlib.Path(preserved[0]))
+
+        def _cleanup() -> None:
+            preserved[1]()
+            raise RuntimeError("temporary cleanup failed")
+
+        return preserved[0], _cleanup
+
     monkeypatch.setattr(workspace_storage.os, "replace", _fail_replace)
     monkeypatch.setattr(
-        workspace_storage, "_hide_workspace_lock_file", hidden_paths.append
+        workspace_storage,
+        "_preserve_workspace_file_generation",
+        _record_preserved_path,
     )
     monkeypatch.setattr(
         workspace_storage, "_workspace_replace_retry_delays", lambda _exc: ()
@@ -801,12 +801,13 @@ def test_replace_workspace_file_failure_keeps_old_file_reader_usable(
         reopened_file = manager.acquire()
         value = reopened_file.groups["0"].groups["imagetool"].variables["data"][()]
         assert np.asarray(value).item() == 1.0
-        assert manager._preserved_generation is None
-        assert hidden_paths == []
-        assert list(tmp_path.glob(".*.erlab-workspace-read")) == []
+        assert not manager._generation.retired
+        assert pathlib.Path(manager._generation.path) == destination.resolve()
+        assert preserved_paths
+        assert all(not path.exists() for path in preserved_paths)
+        assert source.exists()
     finally:
-        with workspace_arrays._workspace_file_lock(destination):
-            workspace_arrays._close_workspace_file_managers(destination)
+        manager.close()
 
 
 def test_write_full_workspace_tree_file_local_path_uses_destination_temp(

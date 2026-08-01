@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import pathlib
+import pickle
 import types
 import typing
 import warnings
@@ -47,24 +48,11 @@ def test_workspace_h5py_helpers_reject_non_workspace_files(tmp_path) -> None:
     assert workspace_arrays._workspace_h5_object_storage_size(object()) == 0
 
 
-def test_workspace_file_manager_registry_closes_all_path_identities(
-    monkeypatch, tmp_path
-) -> None:
+def test_workspace_file_managers_share_one_generation_per_path(tmp_path) -> None:
     first = tmp_path / "first.h5"
     second = tmp_path / "second.h5"
     xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(first, engine="h5netcdf")
     xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(second, engine="h5netcdf")
-    first_target = workspace_arrays._normalized_file_path(first)
-    original_identity = workspace_arrays._workspace_file_identity
-    first_identity_generation = iter((1, 2))
-
-    def _identity(path):
-        target = workspace_arrays._normalized_file_path(path)
-        if target == first_target:
-            return target, 0, 0, next(first_identity_generation)
-        return original_identity(path)
-
-    monkeypatch.setattr(workspace_arrays, "_workspace_file_identity", _identity)
     first_manager = workspace_arrays.WorkspaceFileManager(first)
     second_first_manager = workspace_arrays.WorkspaceFileManager(first)
     other_manager = workspace_arrays.WorkspaceFileManager(second)
@@ -72,21 +60,53 @@ def test_workspace_file_manager_registry_closes_all_path_identities(
     second_first_file = second_first_manager.acquire()
     other_file = other_manager.acquire()
     try:
-        assert first_file is not second_first_file
-        monkeypatch.setattr(
-            workspace_arrays, "_normalized_file_path", lambda _path: None
-        )
-        with workspace_arrays._workspace_file_lock(first):
-            workspace_arrays._close_workspace_file_managers(first)
-
+        assert first_manager._generation is second_first_manager._generation
+        assert first_manager._generation is not other_manager._generation
+        assert first_file is second_first_file
+        first_manager.close()
         assert first_file._closed
-        assert second_first_file._closed
         assert not other_file._closed
+        assert second_first_manager.acquire() is not first_file
     finally:
-        with workspace_arrays._workspace_file_lock(first):
-            workspace_arrays._close_workspace_file_managers(first)
-        with workspace_arrays._workspace_file_lock(second):
-            workspace_arrays._close_workspace_file_managers(second)
+        first_manager.close()
+        other_manager.close()
+
+
+def test_workspace_file_manager_is_pickleable(tmp_path) -> None:
+    fname = tmp_path / "pickleable.itws"
+    xr.Dataset({"data": ("x", np.arange(6))}).to_netcdf(fname, engine="h5netcdf")
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    manager.acquire()
+    serialized = pickle.dumps(manager)
+    manager.close()
+
+    restored = pickle.loads(serialized)
+    try:
+        data = restored.acquire().variables["data"][:]
+        np.testing.assert_array_equal(data, np.arange(6))
+    finally:
+        restored.close()
+
+
+@pytest.mark.parametrize("already_open", [False, True])
+def test_workspace_file_manager_acquire_context_error_closes_only_new_handle(
+    tmp_path, *, already_open: bool
+) -> None:
+    fname = tmp_path / "acquire-context.itws"
+    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(fname, engine="h5netcdf")
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    if already_open:
+        manager.acquire()
+
+    try:
+        with (
+            pytest.raises(RuntimeError, match="read failed"),
+            manager.acquire_context() as acquired,
+        ):
+            raise RuntimeError("read failed")
+        assert acquired._closed is not already_open
+    finally:
+        manager.close()
 
 
 def test_workspace_h5py_filter_matching_edge_cases(tmp_path) -> None:
@@ -484,21 +504,6 @@ def test_workspace_xarray_path_helpers_cover_fallbacks(monkeypatch, tmp_path) ->
 
 
 def test_workspace_file_manager_uses_fsdecode_fallback(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    class _FakeCacheKey:
-        pass
-
-    def _fake_init(self, opener, *args, **kwargs):
-        captured["opener"] = opener
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        self._args = args
-        self._manager_id = kwargs["manager_id"]
-        self._key = _FakeCacheKey()
-        self._ref_counter = types.SimpleNamespace(decrement=lambda _key: None)
-        self._cache = {}
-
     monkeypatch.setattr(
         workspace_arrays, "ensure_workspace_hdf5_filters_registered", lambda: None
     )
@@ -506,13 +511,11 @@ def test_workspace_file_manager_uses_fsdecode_fallback(monkeypatch) -> None:
     monkeypatch.setattr(
         workspace_arrays, "_workspace_file_identity", lambda path: (path, 0, 0, 0)
     )
-    monkeypatch.setattr(workspace_arrays.CachingFileManager, "__init__", _fake_init)
 
     file_manager = workspace_arrays.WorkspaceFileManager("fallback.itws")
 
     assert file_manager.workspace_path == "fallback.itws"
-    assert captured["args"][0] == "fallback.itws"
-    assert captured["kwargs"]["mode"] == "r+"
+    assert file_manager._generation.path == "fallback.itws"
 
 
 def test_open_workspace_dataset_uses_fsdecode_fallback(monkeypatch) -> None:
