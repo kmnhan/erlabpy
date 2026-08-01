@@ -486,13 +486,16 @@ def test_workspace_xarray_path_helpers_cover_fallbacks(monkeypatch, tmp_path) ->
 def test_workspace_file_manager_uses_fsdecode_fallback(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
+    class _FakeCacheKey:
+        pass
+
     def _fake_init(self, opener, *args, **kwargs):
         captured["opener"] = opener
         captured["args"] = args
         captured["kwargs"] = kwargs
         self._args = args
         self._manager_id = kwargs["manager_id"]
-        self._key = "fake-key"
+        self._key = _FakeCacheKey()
         self._ref_counter = types.SimpleNamespace(decrement=lambda _key: None)
         self._cache = {}
 

@@ -270,11 +270,14 @@ def _replace_workspace_file(
 ) -> None:
     """Atomically replace a workspace and preserve active reader generations."""
     with workspace_arrays._workspace_file_lock(destination):
-        managers = workspace_arrays._detach_workspace_file_managers(destination)
+        managers, cache_keys = workspace_arrays._detach_workspace_file_readers(
+            destination
+        )
         generation: workspace_arrays._WorkspaceFileGeneration | None = None
         try:
             if managers and pathlib.Path(destination).is_file():
                 generation = _preserve_workspace_file_generation(destination)
+            workspace_arrays._close_workspace_file_cache_entries(cache_keys)
             for manager in managers:
                 if generation is None:
                     manager.close(needs_lock=False)
@@ -296,10 +299,14 @@ def _replace_workspace_file(
                 else:
                     break
         except BaseException:
-            workspace_arrays._restore_workspace_file_managers(destination, managers)
+            workspace_arrays._restore_workspace_file_readers(
+                destination, managers, cache_keys
+            )
             raise
         if generation is None:
-            workspace_arrays._restore_workspace_file_managers(destination, managers)
+            workspace_arrays._restore_workspace_file_readers(
+                destination, managers, cache_keys
+            )
         else:
             # A hard link shares file attributes with the original workspace.
             # Hide it only after the destination refers to the new file.

@@ -14,6 +14,7 @@ import hdf5plugin
 import numpy as np
 import xarray as xr
 from xarray.backends import CachingFileManager, H5NetCDFStore
+from xarray.backends.file_manager import FILE_CACHE
 
 import erlab
 from erlab.interactive.imagetool import _serialization
@@ -39,6 +40,7 @@ from erlab.interactive.imagetool.manager._workspace._format import (
 
 _WORKSPACE_FILE_LOCKS: dict[str, threading.RLock] = {}
 _WORKSPACE_FILE_MANAGERS: dict[str, weakref.WeakSet[WorkspaceFileManager]] = {}
+_WORKSPACE_FILE_CACHE_KEYS: dict[str, weakref.WeakSet[Hashable]] = {}
 _WORKSPACE_FILE_MANAGERS_LOCK = threading.Lock()
 _WORKSPACE_COMPRESSION_MIN_BYTES = 1 << 20  # 1 MiB
 _TOOL_DATA_BLOB_NAME_ATTR = _serialization.TOOL_DATA_BLOB_NAME_ATTR
@@ -269,6 +271,26 @@ class WorkspaceFileManager(CachingFileManager):
         with _WORKSPACE_FILE_MANAGERS_LOCK:
             managers = _WORKSPACE_FILE_MANAGERS.setdefault(target, weakref.WeakSet())
             managers.add(self)
+            cache_keys = _WORKSPACE_FILE_CACHE_KEYS.setdefault(
+                target, weakref.WeakSet()
+            )
+            cache_keys.add(self._key)
+
+    def _acquire_with_cache_info(
+        self, needs_lock: bool = True
+    ) -> tuple[typing.Any, bool]:
+        if needs_lock:
+            with self._optional_lock(needs_lock=True):
+                return self._acquire_with_cache_info(needs_lock=False)
+        if self._preserved_generation is None:
+            # An equal key object can replace an evicted cache key. Register on
+            # each acquire so replacement still finds the reopened handle.
+            with _WORKSPACE_FILE_MANAGERS_LOCK:
+                cache_keys = _WORKSPACE_FILE_CACHE_KEYS.setdefault(
+                    self.workspace_path, weakref.WeakSet()
+                )
+                cache_keys.add(self._key)
+        return super()._acquire_with_cache_info(needs_lock=False)
 
     def _retarget(
         self,
@@ -302,31 +324,51 @@ class WorkspaceFileManager(CachingFileManager):
         self._preserved_generation = None
 
 
-def _detach_workspace_file_managers(
+def _detach_workspace_file_readers(
     path: str | os.PathLike[str],
-) -> tuple[WorkspaceFileManager, ...]:
-    """Remove and return active readers for one workspace path."""
+) -> tuple[tuple[WorkspaceFileManager, ...], tuple[Hashable, ...]]:
+    """Remove and return managers and cache keys for one workspace path."""
     target = _normalized_file_path(path)
     if target is None:
         target = os.fsdecode(path)
     with _WORKSPACE_FILE_MANAGERS_LOCK:
-        return tuple(_WORKSPACE_FILE_MANAGERS.pop(target, ()))
+        managers = tuple(_WORKSPACE_FILE_MANAGERS.pop(target, ()))
+        cache_keys = tuple(_WORKSPACE_FILE_CACHE_KEYS.pop(target, ()))
+    return managers, cache_keys
 
 
-def _restore_workspace_file_managers(
+def _restore_workspace_file_readers(
     path: str | os.PathLike[str],
     managers: Iterable[WorkspaceFileManager],
+    cache_keys: Iterable[Hashable],
 ) -> None:
     """Restore detached readers after a workspace replacement fails."""
     target = _normalized_file_path(path)
     if target is None:
         target = os.fsdecode(path)
     managers = tuple(managers)
+    cache_keys = tuple(cache_keys)
     for manager in managers:
         manager._restore_workspace_path()
     with _WORKSPACE_FILE_MANAGERS_LOCK:
         registered = _WORKSPACE_FILE_MANAGERS.setdefault(target, weakref.WeakSet())
         registered.update(managers)
+        registered_cache_keys = _WORKSPACE_FILE_CACHE_KEYS.setdefault(
+            target, weakref.WeakSet()
+        )
+        # Add the current manager keys first. A restored manager has a new key
+        # object that can compare equal to its detached key object.
+        registered_cache_keys.update(manager._key for manager in managers)
+        registered_cache_keys.update(cache_keys)
+
+
+def _close_workspace_file_cache_entries(cache_keys: Iterable[Hashable]) -> None:
+    """Close detached xarray cache entries, including entries without managers."""
+    with contextlib.ExitStack() as stack:
+        for cache_key in cache_keys:
+            cached_file = FILE_CACHE.pop(cache_key, None)
+            if cached_file is not None:
+                stack.callback(cached_file.close)
 
 
 def _close_workspace_file_managers(
@@ -341,7 +383,8 @@ def _close_workspace_file_managers(
     target = _normalized_file_path(path)
     if target is None:
         target = os.fsdecode(path)
-    managers = _detach_workspace_file_managers(target)
+    managers, cache_keys = _detach_workspace_file_readers(target)
+    _close_workspace_file_cache_entries(cache_keys)
     for manager in managers:
         manager.close(needs_lock=False)
     return managers

@@ -481,6 +481,74 @@ def test_replace_workspace_file_generation_lives_until_cached_handle_closes(
     assert not generation_path.exists()
 
 
+def test_replace_workspace_file_closes_cached_handle_without_live_manager(
+    monkeypatch, tmp_path
+) -> None:
+    from xarray.backends.file_manager import FILE_CACHE
+
+    source = tmp_path / "new.itws"
+    destination = tmp_path / "current.itws"
+    _write_transaction_test_workspace(destination)
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(2.0, title="replacement")}
+    )
+    try:
+        workspace_storage._write_full_workspace_tree_file(
+            source, tree, _transaction_test_root_attrs()
+        )
+    finally:
+        tree.close()
+
+    manager = workspace_arrays.WorkspaceFileManager(destination)
+    cached_file = manager.acquire()
+    cache_key = manager._key
+    manager_ref = weakref.ref(manager)
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+    lock = workspace_arrays._workspace_file_lock(destination)
+
+    def _hold_workspace_lock() -> None:
+        with lock:
+            lock_held.set()
+            release_lock.wait(2)
+
+    lock_thread = threading.Thread(target=_hold_workspace_lock)
+    lock_thread.start()
+    assert lock_held.wait(2)
+    try:
+        del manager
+        gc.collect()
+        assert manager_ref() is None
+        assert cache_key in FILE_CACHE
+        assert not cached_file._closed
+    finally:
+        release_lock.set()
+        lock_thread.join(2)
+    assert not lock_thread.is_alive()
+
+    original_replace = workspace_storage.os.replace
+    replacement_checked = False
+
+    def _replace_after_orphaned_reader_close(src, dst) -> None:
+        nonlocal replacement_checked
+        if pathlib.Path(dst) == destination:
+            replacement_checked = True
+            assert cached_file._closed
+        original_replace(src, dst)
+
+    monkeypatch.setattr(
+        workspace_storage.os, "replace", _replace_after_orphaned_reader_close
+    )
+    try:
+        workspace_storage._replace_workspace_file(source, destination)
+        assert replacement_checked
+        assert cache_key not in FILE_CACHE
+        assert _read_transaction_test_value(destination) == 2.0
+    finally:
+        with workspace_arrays._workspace_file_lock(destination):
+            workspace_arrays._close_workspace_file_managers(destination)
+
+
 def test_replace_workspace_file_blocks_new_readers_during_commit(
     monkeypatch, tmp_path
 ) -> None:
