@@ -138,6 +138,7 @@ from erlab.interactive._figurecomposer._rendering import (
     _render_into_figure,
     _render_preview,
     _rendered_output_figure,
+    _set_preview_draw_error,
 )
 from erlab.interactive._figurecomposer._text import _format_axes_tuple
 from erlab.interactive._figurecomposer._ui._axes_widgets import (
@@ -1275,6 +1276,21 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         output_action_layout.addWidget(self.redraw_plot_button)
         action_layout.addLayout(output_action_layout)
         root_layout.addLayout(action_layout)
+        self.preview_render_error_label = QtWidgets.QLabel(root)
+        self.preview_render_error_label.setObjectName(
+            "figureComposerPreviewRenderError"
+        )
+        self.preview_render_error_label.setWordWrap(True)
+        self.preview_render_error_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        preview_error_palette = self.preview_render_error_label.palette()
+        preview_error_palette.setColor(
+            QtGui.QPalette.ColorRole.WindowText, QtGui.QColor("darkRed")
+        )
+        self.preview_render_error_label.setPalette(preview_error_palette)
+        self.preview_render_error_label.hide()
+        root_layout.addWidget(self.preview_render_error_label)
         root_layout.addWidget(self.editor_tabs, 1)
 
         self.source_panel = FigureSourcePanel(self.editor_tabs)
@@ -2704,14 +2720,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if error == self._preview_render_error:
             return
         self._preview_render_error = error
-        status_bar = typing.cast("QtWidgets.QStatusBar", self.statusBar())
-        status_bar.setObjectName("figureComposerPreviewRenderStatus")
-        if error is None:
-            status_bar.clearMessage()
-            status_bar.hide()
-        else:
-            status_bar.showMessage(f"Preview render error: {error}")
-            status_bar.show()
+        self.preview_render_error_label.setText(
+            "" if error is None else f"Figure render error: {error}"
+        )
+        self.preview_render_error_label.setVisible(error is not None)
 
     @QtCore.Slot()
     def _operation_editor_validation_changed(self) -> None:
@@ -4801,8 +4813,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if not erlab.interactive.utils.qt_is_valid(canvas):
                 return False
             if redraw:
-                with self._figure_options_context(), _figure_style_context():
-                    canvas.draw()
+                try:
+                    with self._figure_options_context(), _figure_style_context():
+                        canvas.draw()
+                except Exception as exc:
+                    _set_preview_draw_error(self, exc)
+                    return False
             width, height = canvas.get_width_height(physical=True)
             if width <= 0 or height <= 0:
                 return False
@@ -4840,8 +4856,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 canvas = FigureCanvasAgg(figure)
                 try:
                     _render_into_figure(self, figure, sync_visible=False)
-                    with _figure_draw_context():
-                        canvas.draw()
+                    try:
+                        with _figure_draw_context():
+                            canvas.draw()
+                    except Exception as exc:
+                        _set_preview_draw_error(self, exc)
+                        return None
                     width, height = canvas.get_width_height()
                 except Exception as exc:
                     self._set_preview_render_error(_render_error_text(exc))

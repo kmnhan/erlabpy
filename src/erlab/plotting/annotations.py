@@ -256,6 +256,18 @@ def parse_special_point(name: str) -> str:
 
 
 def parse_point_labels(name: str, roman: bool = True, bar: bool = False) -> str:
+    stripped_name = name.strip()
+    if (
+        len(stripped_name) >= 2
+        and stripped_name.startswith("$")
+        and stripped_name.endswith("$")
+    ):
+        raise ValueError(
+            f"Point label {name!r} already has MathText delimiters. "
+            "When literal=False, MathText delimiters are added automatically. "
+            f"Use {stripped_name[1:-1]!r} instead, or set literal=True."
+        )
+
     name = parse_special_point(name)
 
     if name.endswith("*"):
@@ -671,7 +683,8 @@ def mark_points(
     pad
         Offset of the text in points.
     literal
-        If `True`, take the input string literally.
+        If `True`, take the input string literally. If `False`, labels are formatted
+        as MathText and must not include surrounding ``$`` delimiters.
     roman
         If `False`, itallic fonts are used.
     bar
@@ -714,7 +727,13 @@ def mark_points(
 
         default_color = kwargs.pop("c", kwargs.pop("color", None))
 
-        for xi, yi, label in zip(points, y, labels, strict=True):
+        parsed_labels = (
+            labels
+            if literal
+            else tuple(parse_point_labels(label, roman, bar) for label in labels)
+        )
+
+        for xi, yi, label in zip(points, y, parsed_labels, strict=True):
             if default_color is None:
                 color = "k" if ax.get_ylim()[1] < yi else axes_textcolor(ax)
             else:
@@ -722,7 +741,7 @@ def mark_points(
             ax.text(
                 xi,
                 yi,
-                label if literal else parse_point_labels(label, roman, bar),
+                label,
                 transform=ax.transData
                 + mtransforms.ScaledTranslation(
                     pad[0] / 72, pad[1] / 72, fig.dpi_scale_trans
@@ -758,7 +777,8 @@ def mark_points_outside(
         If ``'x'``, marks points along the horizontal axis. If ``'y'``, marks points
         along the vertical axis.
     literal
-        If `True`, take the input string literally.
+        If `True`, take the input string literally. If `False`, labels are formatted
+        as MathText and must not include surrounding ``$`` delimiters.
     roman
         If ``False``, itallic fonts are used.
     bar
@@ -783,15 +803,17 @@ def mark_points_outside(
                 ax=ax_i,
             )
     else:
+        parsed_labels = (
+            labels
+            if literal
+            else tuple(parse_point_labels(label, roman, bar) for label in labels)
+        )
         if axis == "x":
             label_ax = ax.twiny()
             label_ax.set_xlim(ax.get_xlim())
             label_ax.set_xticks(
                 points,
-                labels=[
-                    lab if literal else parse_point_labels(lab, roman, bar)
-                    for lab in labels
-                ],
+                labels=parsed_labels,
                 **kwargs,
             )
         else:
@@ -799,10 +821,7 @@ def mark_points_outside(
             label_ax.set_ylim(ax.get_ylim())
             label_ax.set_yticks(
                 points,
-                labels=[
-                    lab if literal else parse_point_labels(lab, roman, bar)
-                    for lab in labels
-                ],
+                labels=parsed_labels,
                 **kwargs,
             )
         label_ax.set_frame_on(False)

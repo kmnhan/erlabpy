@@ -49,6 +49,41 @@ def test_mark_points() -> None:
     plt.close()
 
 
+def test_mark_points_rejects_mathtext_delimiters_before_adding_text() -> None:
+    fig, ax = plt.subplots()
+
+    with pytest.raises(ValueError, match="already has MathText delimiters") as exc_info:
+        mark_points([0.0, 1.0], ["K", r"$\Gamma$"], ax=ax)
+
+    assert str(exc_info.value) == (
+        "Point label '$\\\\Gamma$' already has MathText delimiters. "
+        "When literal=False, MathText delimiters are added automatically. "
+        "Use '\\\\Gamma' instead, or set literal=True."
+    )
+    assert len(ax.texts) == 0
+    plt.close(fig)
+
+
+def test_mark_points_accepts_delimited_literal_label() -> None:
+    fig, ax = plt.subplots()
+
+    mark_points([0.0], [r"$\Gamma$"], literal=True, ax=ax)
+    fig.canvas.draw()
+
+    assert [text.get_text() for text in ax.texts] == [r"$\Gamma$"]
+    plt.close(fig)
+
+
+def test_mark_points_outside_rejects_delimiters_before_adding_axes() -> None:
+    fig, ax = plt.subplots()
+
+    with pytest.raises(ValueError, match="already has MathText delimiters"):
+        mark_points_outside([0.0], [r"$\Gamma$"], ax=ax)
+
+    assert fig.axes == [ax]
+    plt.close(fig)
+
+
 @pytest.mark.parametrize("outline", [True, False])
 def test_copy_mathtext(outline) -> None:
     assert copy_mathtext("$c_1$", outline=outline).startswith(
