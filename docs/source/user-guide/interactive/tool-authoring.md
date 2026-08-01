@@ -731,6 +731,16 @@ which ImageTool data and selection opened it:
   should not remain group-editable. When full groups are pasted, refresh their group
   identities before appending them to the destination provenance so adjacent copies
   remain separate editable groups.
+- Each provenance operation type must have one editor registration. Do not list the
+  same operation type in `operation_types` for both a standalone dialog and a grouped
+  dialog. A grouped dialog can include primitive operations owned by another editor
+  without declaring those types in `operation_types`; the group remains editable from
+  its other registered operation rows. List these additional emitted operations in
+  `batch_operation_types` when the grouped dialog supports batch use. If a batch group
+  intentionally replaces existing coordinates, list those assignment types in
+  `batch_coordinate_replacement_types`. Run
+  `test_manager_provenance_operation_editor_contract_is_valid` after you change an
+  editor registration.
 - To make a transform or filter dialog reusable for manager step edits, keep the widget
   state restoration separate from the normal apply path. Transform dialogs should
   implement `restore_transform_operation(...)` or `restore_transform_operations(...)`

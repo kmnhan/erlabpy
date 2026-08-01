@@ -73,8 +73,11 @@ _BATCH_OPERATION_CATEGORIES: tuple[tuple[str, tuple[_BatchDialogType, ...]], ...
 
 
 def _dialog_batch_available(dialog_cls: _BatchDialogType) -> bool:
-    return bool(dialog_cls.operation_types) and all(
-        operation_type.batch_available for operation_type in dialog_cls.operation_types
+    operation_types = dialog_cls.batch_operation_types
+    if operation_types is None:
+        operation_types = dialog_cls.operation_types
+    return bool(operation_types) and all(
+        operation_type.batch_available for operation_type in operation_types
     )
 
 

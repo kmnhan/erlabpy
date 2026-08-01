@@ -21,6 +21,8 @@ from erlab.interactive.imagetool import _kspace_conversion
 from erlab.interactive.imagetool._dialog_widgets import (
     CoordinateEditorWidget,
     CoordinateGridWidget,
+    KspaceInputCoordinatesControl,
+    prompt_kspace_input_coordinates,
 )
 from erlab.interactive.imagetool._provenance._code import _provenance_value_code
 from erlab.interactive.imagetool._provenance._model import (
@@ -102,7 +104,7 @@ __all__ = [
 ]
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Hashable, Sequence
+    from collections.abc import Hashable, Iterable, Sequence
 
     import xarray as xr
 
@@ -365,7 +367,24 @@ class _DataManipulationDialog(QtWidgets.QDialog):
             ...,
         ]
     ] = ()
-    """Operation classes this dialog can emit directly."""
+    """Operation classes this dialog owns for provenance editor registration."""
+
+    batch_operation_types: typing.ClassVar[
+        tuple[
+            type[ToolProvenanceOperation],
+            ...,
+        ]
+        | None
+    ] = None
+    """Operation classes accepted from this dialog during batch processing."""
+
+    batch_coordinate_replacement_types: typing.ClassVar[
+        tuple[
+            type[ToolProvenanceOperation],
+            ...,
+        ]
+    ] = ()
+    """Coordinate assignments that can replace existing batch target coordinates."""
 
     _sigCodeCopied = QtCore.Signal(str)
 
@@ -1288,6 +1307,12 @@ class KspaceConversionDialog(DataTransformDialog):
         KspaceSetNormalOperation,
         KspaceConvertOperation,
     )
+    batch_operation_types = (
+        *operation_types,
+        AssignAttrsOperation,
+        AssignScalarCoordOperation,
+    )
+    batch_coordinate_replacement_types = (AssignScalarCoordOperation,)
 
     _OFFSET_LABELS: typing.ClassVar[dict[str, str]] = {"V0": "V₀", "wf": "𝜙"}
     _OFFSET_UNITS: typing.ClassVar[dict[str, str]] = {"V0": " eV", "wf": " eV"}
@@ -1313,8 +1338,13 @@ class KspaceConversionDialog(DataTransformDialog):
             self.slicer_area.data
         )
         self._compatible = bool(self._source_data.kspace._interactive_compatible)
+        self._coordinate_preflight_cancelled = False
+        self._input_coordinates_signal_connected = False
         self._control_data = self._source_data
         self._normal_delta: float | None = None
+        self._source_configuration_missing = (
+            _kspace_conversion.kspace_configuration(self._source_data) is None
+        )
 
         if not self._compatible:
             self.layout_.addRow(
@@ -1322,7 +1352,20 @@ class KspaceConversionDialog(DataTransformDialog):
             )
             return
 
-        self._source_configuration = int(self._source_data.kspace.configuration)
+        source_configuration = _kspace_conversion.kspace_configuration(
+            self._source_data
+        )
+        if source_configuration is None:
+            source_configuration = erlab.constants.AxesConfiguration.Type1
+        self._source_configuration = int(source_configuration)
+        self._source_configured_data = (
+            _kspace_conversion.assign_kspace_configuration(
+                self._source_data,
+                source_configuration,
+            )
+            if self._source_configuration_missing
+            else self._source_data
+        )
         self.configuration_combo = QtWidgets.QComboBox()
         for configuration in erlab.constants.AxesConfiguration:
             self.configuration_combo.addItem(
@@ -1332,7 +1375,14 @@ class KspaceConversionDialog(DataTransformDialog):
         self.configuration_combo.currentIndexChanged.connect(
             self._handle_configuration_changed
         )
-        self.layout_.addRow("Configuration", self.configuration_combo)
+        self.layout_.addRow(self.configuration_combo)
+
+        self._input_coordinates_widget = KspaceInputCoordinatesControl(
+            self._source_configured_data,
+            object_name_prefix="kspaceConversionInput",
+            button_text="Edit coordinates…",
+        )
+        self.layout_.addRow(self._input_coordinates_widget)
 
         self.parameters_group = QtWidgets.QGroupBox("Parameters")
         self.parameters_group.setLayout(QtWidgets.QFormLayout())
@@ -1358,7 +1408,43 @@ class KspaceConversionDialog(DataTransformDialog):
         self.resolution_group = self.resolution_supergroup
         self.layout_.addRow(self.resolution_supergroup)
 
-        self._set_configuration_combo(self._source_configuration)
+        if self.is_provenance_edit_mode and (
+            self._source_configuration_missing
+            or not self._input_coordinates_widget.is_complete
+        ):
+            return
+        preflight = prompt_kspace_input_coordinates(
+            self._source_data,
+            object_name_prefix="kspaceConversionInput",
+            parent=self,
+        )
+        if preflight is None:
+            self._coordinate_preflight_cancelled = True
+            return
+        source_configuration, input_values, edited_names = preflight
+        self._source_configuration = int(source_configuration)
+        if self._source_configuration_missing:
+            self._source_configured_data = (
+                _kspace_conversion.assign_kspace_configuration(
+                    self._source_data,
+                    source_configuration,
+                )
+            )
+        self._input_coordinates_widget.set_data(
+            self._source_configured_data,
+            values=input_values,
+            edited_names=edited_names,
+        )
+        self._input_coordinates_widget.valuesChanged.connect(
+            self._input_coordinates_changed
+        )
+        self._input_coordinates_signal_connected = True
+
+        self._set_control_configuration(
+            self._source_configuration,
+            input_values=input_values,
+            edited_names=edited_names,
+        )
         self._rebuild_kspace_controls()
         if not self._seed_from_newest_ktool():
             self._seed_from_current_view()
@@ -1387,9 +1473,51 @@ class KspaceConversionDialog(DataTransformDialog):
             return self._control_data.kspace.configuration
         return erlab.constants.AxesConfiguration(int(value))
 
-    def _set_control_configuration(self, configuration: int) -> None:
-        self._control_data = self._source_data.kspace.as_configuration(configuration)
+    def _source_data_for_configuration(
+        self,
+        configuration: erlab.constants.AxesConfiguration | int,
+    ) -> xr.DataArray:
+        if int(configuration) == self._source_configuration:
+            return self._source_configured_data
+        return self._source_configured_data.kspace.as_configuration(configuration)
+
+    def _set_control_configuration(
+        self,
+        configuration: int,
+        *,
+        input_values: Mapping[str, float | None] | None = None,
+        edited_names: Iterable[str] = (),
+    ) -> bool:
+        previous_data = getattr(
+            self,
+            "_control_base_data",
+            self._source_configured_data,
+        )
+        previous_values = self._input_coordinates_widget.values
+        previous_edited_names = self._input_coordinates_widget.edited_names
+        control_base_data = self._source_data_for_configuration(configuration)
+        self._input_coordinates_widget.set_data(
+            control_base_data,
+            values=input_values,
+            edited_names=edited_names,
+        )
+        if not self._input_coordinates_widget.is_complete:
+            with QtCore.QSignalBlocker(self._input_coordinates_widget):
+                accepted = self._input_coordinates_widget.edit_coordinates()
+            if not accepted:
+                self._input_coordinates_widget.set_data(
+                    previous_data,
+                    values=previous_values,
+                    edited_names=previous_edited_names,
+                )
+                return False
+        self._control_base_data = control_base_data
+        self._control_data = _kspace_conversion.assign_kspace_input_coordinates(
+            self._control_base_data,
+            self._input_coordinates_widget.resolved_values,
+        )
         self._set_configuration_combo(configuration)
+        return True
 
     @QtCore.Slot(int)
     def _handle_configuration_changed(self, _index: int = -1) -> None:
@@ -1399,13 +1527,46 @@ class KspaceConversionDialog(DataTransformDialog):
             self.normal_emission if hasattr(self, "_normal_emission_spins") else None
         )
         delta = self._normal_delta
-        self._control_data = self._source_data.kspace.as_configuration(
+        mapped_control_data = self._control_data.kspace.as_configuration(
             self.current_configuration
         )
+        mapped_input_values = _kspace_conversion.kspace_input_coordinate_values(
+            mapped_control_data
+        )
+        target_base_values = _kspace_conversion.kspace_input_coordinate_values(
+            self._source_data_for_configuration(self.current_configuration)
+        )
+        edited_names = {
+            name
+            for name, value in mapped_input_values.items()
+            if name in self._input_coordinates_widget.edited_names
+            or (
+                value is not None
+                and (
+                    (base_value := target_base_values[name]) is None
+                    or not np.isclose(value, base_value)
+                )
+            )
+        }
+        if not self._set_control_configuration(
+            int(self.current_configuration),
+            input_values=mapped_input_values,
+            edited_names=edited_names,
+        ):
+            self._set_configuration_combo(int(self._control_data.kspace.configuration))
+            return
         self._rebuild_kspace_controls(
             initial_normal_emission=normal,
             initial_delta=delta,
         )
+
+    @QtCore.Slot()
+    def _input_coordinates_changed(self) -> None:
+        self._control_data = _kspace_conversion.assign_kspace_input_coordinates(
+            self._control_base_data,
+            self._input_coordinates_widget.resolved_values,
+        )
+        self._update_memory_estimate()
 
     def _rebuild_kspace_controls(
         self,
@@ -1561,7 +1722,11 @@ class KspaceConversionDialog(DataTransformDialog):
         if ktool is None:
             return False
         configuration = int(ktool.current_configuration)
-        self._set_control_configuration(configuration)
+        self._set_control_configuration(
+            configuration,
+            input_values=ktool.input_coordinates,
+            edited_names=ktool._input_coordinates_widget.edited_names,
+        )
         self._control_data.kspace.angle_scales = ktool.data.kspace.angle_scales
         self._rebuild_kspace_controls(
             initial_normal_emission=ktool._current_normal_emission_angles(),
@@ -1667,14 +1832,50 @@ class KspaceConversionDialog(DataTransformDialog):
 
     def _conversion_input_for_data(self, data: xr.DataArray) -> xr.DataArray:
         source_data = erlab.utils.array._restore_nonuniform_dims(data)
+        if _kspace_conversion.kspace_configuration(source_data) is None:
+            source_data = _kspace_conversion.assign_kspace_configuration(
+                source_data,
+                self._source_configuration,
+            )
         if int(source_data.kspace.configuration) != int(self.current_configuration):
             source_data = source_data.kspace.as_configuration(
                 self.current_configuration
             )
+        source_data = _kspace_conversion.assign_kspace_input_coordinates(
+            source_data,
+            self._input_coordinates_for_data(source_data),
+        )
         return self._parameterized_data(
             source_data.copy(deep=False),
             source_data=source_data,
         )
+
+    def _input_coordinates_for_data(
+        self,
+        data: xr.DataArray,
+    ) -> dict[str, float]:
+        source_data = erlab.utils.array._restore_nonuniform_dims(data)
+        if _kspace_conversion.kspace_configuration(source_data) is None:
+            source_data = _kspace_conversion.assign_kspace_configuration(
+                source_data,
+                self._source_configuration,
+            )
+        if int(source_data.kspace.configuration) != int(self.current_configuration):
+            source_data = source_data.kspace.as_configuration(
+                self.current_configuration
+            )
+        values = _kspace_conversion.kspace_input_coordinate_values(source_data)
+        edited_values = self._input_coordinates_widget.resolved_values
+        for name in self._input_coordinates_widget.edited_names:
+            if name in values:
+                values[name] = edited_values[name]
+        unresolved = [name for name, value in values.items() if value is None]
+        if unresolved:
+            raise ValueError(
+                "Momentum-conversion input coordinates must be assigned: "
+                + ", ".join(unresolved)
+            )
+        return typing.cast("dict[str, float]", values)
 
     def conversion_estimate_for_data(
         self,
@@ -1779,10 +1980,15 @@ class KspaceConversionDialog(DataTransformDialog):
         data: xr.DataArray,
     ) -> tuple[ToolProvenanceOperation, ...]:
         source_data = erlab.utils.array._restore_nonuniform_dims(data)
+        source_configuration = _kspace_conversion.kspace_configuration(source_data)
+        if source_configuration is None:
+            source_configuration = erlab.constants.AxesConfiguration(
+                self._source_configuration
+            )
         return _kspace_conversion.kspace_conversion_operations(
             source_data,
             target_configuration=self.current_configuration,
-            source_configuration=source_data.kspace.configuration,
+            source_configuration=source_configuration,
             work_function=self._work_function,
             inner_potential=self._inner_potential,
             normal_emission=self.normal_emission,
@@ -1792,6 +1998,7 @@ class KspaceConversionDialog(DataTransformDialog):
             bounds=self.bounds,
             resolution=self.resolution,
             force_scalars=True,
+            input_coordinates=self._input_coordinates_for_data(source_data),
         )
 
     def source_operations(
@@ -1812,6 +2019,8 @@ class KspaceConversionDialog(DataTransformDialog):
 
     def focus_operation_group_control(self, focus: str | None) -> None:
         match focus:
+            case "input_coordinates":
+                self._input_coordinates_widget.focus_first_control()
             case "configuration":
                 self.configuration_combo.setFocus(
                     QtCore.Qt.FocusReason.OtherFocusReason
@@ -1847,14 +2056,48 @@ class KspaceConversionDialog(DataTransformDialog):
         bounds: dict[str, tuple[float, float]] | None = None
         resolution: dict[str, float] | None = None
         restored_angle_scales = False
+        source_configuration = self._source_configuration
+        configuration = int(self.current_configuration)
+        input_coordinates: dict[str, float] = {}
         for operation in operations:
-            if isinstance(
+            if isinstance(operation, AssignAttrsOperation):
+                assigned_configuration = operation.attrs.get("configuration")
+                if assigned_configuration is not None:
+                    source_configuration = int(assigned_configuration)
+                    configuration = source_configuration
+            elif isinstance(
                 operation,
                 KspaceConfigurationOperation,
             ):
-                self._set_control_configuration(operation.configuration)
-                self._rebuild_kspace_controls()
-                break
+                configuration = operation.configuration
+            elif isinstance(operation, AssignScalarCoordOperation):
+                input_coordinates[str(operation.coord_name)] = float(
+                    operation.decoded_value
+                )
+        if source_configuration != self._source_configuration:
+            self._source_configuration = source_configuration
+            self._source_configured_data = (
+                _kspace_conversion.assign_kspace_configuration(
+                    self._source_data,
+                    source_configuration,
+                )
+            )
+        if (
+            configuration != int(self.current_configuration)
+            or input_coordinates
+            or self._source_configuration_missing
+        ):
+            self._set_control_configuration(
+                configuration,
+                input_values=input_coordinates,
+                edited_names=input_coordinates,
+            )
+            self._rebuild_kspace_controls()
+        if not self._input_coordinates_signal_connected:
+            self._input_coordinates_widget.valuesChanged.connect(
+                self._input_coordinates_changed
+            )
+            self._input_coordinates_signal_connected = True
         for operation in operations:
             if isinstance(
                 operation,
@@ -1912,6 +2155,8 @@ class KspaceConversionDialog(DataTransformDialog):
         self.restore_transform_operations((operation,))
 
     def _validate(self) -> QtWidgets.QDialog.DialogCode:
+        if self._coordinate_preflight_cancelled:
+            return QtWidgets.QDialog.DialogCode.Rejected
         if self._compatible:
             return QtWidgets.QDialog.DialogCode.Accepted
         QtWidgets.QMessageBox.warning(

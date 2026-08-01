@@ -8252,6 +8252,22 @@ def test_itool_open_in_ktool_sets_full_data_source_binding(qtbot, monkeypatch) -
     win.close()
 
 
+def test_itool_open_in_ktool_cancel_does_not_add_tool(qtbot, monkeypatch) -> None:
+    win = itool(_TEST_DATA["3D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    monkeypatch.setattr(erlab.interactive, "ktool", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        win.slicer_area,
+        "add_tool_window",
+        lambda *args, **kwargs: pytest.fail("cancelled ktool was added"),
+    )
+
+    win.slicer_area.open_in_ktool()
+
+    win.close()
+
+
 def test_itool_open_in_ktool_uses_guideline_seed_on_alpha_beta_plane(
     qtbot, monkeypatch
 ) -> None:

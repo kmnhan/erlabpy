@@ -744,6 +744,8 @@ def _select_batch_operation(
 
 class _BatchTransformStub:
     operation_types = (AssignAttrsOperation,)
+    batch_operation_types = None
+    batch_coordinate_replacement_types: tuple[type[ToolProvenanceOperation], ...] = ()
 
     def __init__(
         self,
@@ -802,6 +804,7 @@ class _BatchTransformStub:
 
 class _BatchFilterStub:
     operation_types = (NormalizeOperation,)
+    batch_operation_types = None
 
     def __init__(
         self,
@@ -3053,17 +3056,21 @@ def test_metadata_editor_preflights_every_target(
 
 def test_batch_operation_metadata_matches_launcher() -> None:
     dialog_classes = _batch_operation_dialog_classes()
+    batch_operation_types = [
+        dialog_cls.operation_types
+        if dialog_cls.batch_operation_types is None
+        else dialog_cls.batch_operation_types
+        for dialog_cls in dialog_classes
+    ]
     assert dialog_classes
     assert imagetool_dialogs.EdgeCorrectionDialog not in dialog_classes
     assert imagetool_dialogs.ROIPathDialog not in dialog_classes
     assert imagetool_dialogs.ROIMaskDialog not in dialog_classes
-    assert [
-        dialog_cls for dialog_cls in dialog_classes if not dialog_cls.operation_types
-    ] == []
+    assert all(batch_operation_types)
     assert [
         operation_type
-        for dialog_cls in dialog_classes
-        for operation_type in dialog_cls.operation_types
+        for operation_types in batch_operation_types
+        for operation_type in operation_types
         if not operation_type.batch_available
     ] == []
     assert RestoreNonuniformDimsOperation.batch_available
@@ -4077,6 +4084,49 @@ def test_batch_affine_coord_offset_uses_each_scalar_coordinate(
             xarray.testing.assert_identical(
                 manager.get_imagetool(index).slicer_area._data.rename(None),
                 operation.apply(data).rename(None),
+            )
+
+
+def test_batch_kspace_conversion_replaces_scalar_input_coordinates(
+    qtbot,
+    anglemap,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = anglemap.isel(alpha=slice(0, 4), beta=slice(0, 5), eV=slice(0, 3)).rename(
+        "scan0"
+    )
+    data1 = data0.copy(deep=True).assign_coords(hv=float(data0.hv) + 10.0)
+    data1.data = np.asarray(data1.data) + 1.0
+    data1 = data1.rename("scan1")
+
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, data0, data1)
+        select_tools(manager, [0, 1])
+
+        dialog = imagetool_dialogs.KspaceConversionDialog(
+            manager.get_imagetool(0).slicer_area,
+            batch_manager=manager,
+        )
+        values = dialog._input_coordinates_widget.resolved_values
+        values["hv"] = 52.0
+        dialog._input_coordinates_widget.set_data(
+            data0,
+            values=values,
+            edited_names={"hv"},
+        )
+        dialog._input_coordinates_changed()
+        expected = [
+            dialog.source_spec_for_data(data).apply(data) for data in (data0, data1)
+        ]
+
+        assert manager.apply_batch_transform_dialog(dialog, "replace")
+        for index, expected_data in enumerate(expected):
+            xarray.testing.assert_identical(
+                manager.get_imagetool(index).slicer_area._data.rename(None),
+                expected_data.rename(None),
             )
 
 

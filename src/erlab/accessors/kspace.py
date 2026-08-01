@@ -1088,19 +1088,25 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     @property
     def _interactive_compatible(self) -> bool:
         """Check if the data is compatible with the interactive tool."""
-        try:
-            _ = self.configuration
-        except (IncompleteDataError, ValueError):
+        if "configuration" in self._obj.attrs:
+            try:
+                _ = self.configuration
+            except ValueError:
+                return False
+
+        required_dimension_coords = {"alpha"} | {
+            name for name in ("beta", "eV", "hv") if name in self._obj.dims
+        }
+        if not required_dimension_coords.issubset(self._obj.coords):
             return False
 
         if self._obj.ndim == 2:
             # alpha-beta 2D scan or alpha-energy cut with a fixed beta coordinate
             if set(self._obj.dims) == {"alpha", "beta"}:
                 return True
-            return (
-                set(self._obj.dims) == {"alpha", "eV"}
-                and "beta" in self._obj.coords
-                and self._obj["beta"].size == 1
+            beta = self._obj.coords.get("beta")
+            return set(self._obj.dims) == {"alpha", "eV"} and (
+                beta is None or beta.size == 1
             )
 
         if self._obj.ndim == 3:
@@ -1586,8 +1592,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         - 2D data with `alpha` and `beta` dimensions (constant energy surfaces)
 
-        - 2D data with `alpha` and `eV` dimensions, and a fixed `beta` coordinate
-          (angle-energy cuts)
+        - 2D data with `alpha` and `eV` dimensions, and a fixed or assigned `beta`
+          coordinate (angle-energy cuts)
 
         - 3D data with dimensions including `alpha` and `eV` (including maps and
           hv-dependent cuts)
