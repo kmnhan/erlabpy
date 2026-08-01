@@ -410,6 +410,7 @@ class KspaceTool(KspaceToolGUI):
     _source_input_data: xr.DataArray
     _input_coordinates_widget: KspaceInputCoordinatesControl
     _source_configuration: int
+    _source_configuration_missing: bool
     _offset_spins: dict[str, QtWidgets.QDoubleSpinBox]
     _normal_emission_offset_values: dict[str, float]
     _normal_emission_offset_labels: dict[str, QtWidgets.QLabel]
@@ -438,6 +439,7 @@ class KspaceTool(KspaceToolGUI):
         input_coordinates: dict[str, float] = pydantic.Field(default_factory=dict)
         input_coordinate_edited_names: tuple[str, ...] = ()
         source_configuration: int | None = None
+        source_configuration_missing: bool = False
         source_input_coordinates: dict[str, float | None] = pydantic.Field(
             default_factory=dict
         )
@@ -626,9 +628,11 @@ class KspaceTool(KspaceToolGUI):
                 sorted(self._input_coordinates_widget.edited_names)
             ),
             source_configuration=self._source_configuration,
+            source_configuration_missing=self._source_configuration_missing,
             source_input_coordinates=(
                 _kspace_conversion.kspace_input_coordinate_values(
-                    self._source_input_data
+                    self._source_input_data,
+                    configuration=self._source_configuration,
                 )
             ),
             source_work_function=_kspace_conversion.kspace_work_function(
@@ -815,7 +819,11 @@ class KspaceTool(KspaceToolGUI):
         if status.source_inner_potential is not None:
             source_data.attrs["inner_potential"] = status.source_inner_potential
 
+        if status.source_configuration_missing:
+            source_data.attrs.pop("configuration", None)
+
         self._source_configuration = status.source_configuration
+        self._source_configuration_missing = status.source_configuration_missing
         self._source_input_data = source_data
 
     _OFFSET_LABELS: typing.ClassVar[dict[str, str]] = {
@@ -855,6 +863,7 @@ class KspaceTool(KspaceToolGUI):
         options_model: AppOptions | None = None,
         _input_coordinates: Mapping[str, float] | None = None,
         _input_coordinate_edited_names: Iterable[str] = (),
+        _configuration: AxesConfiguration | int | None = None,
     ) -> None:
         super().__init__(
             avec=avec,
@@ -880,10 +889,27 @@ class KspaceTool(KspaceToolGUI):
             data_name, "data", func=KspaceTool.__init__, fallback="data"
         )
 
-        self._source_configuration = int(data.kspace.configuration)
+        source_configuration = _kspace_conversion.kspace_configuration(data)
+        self._source_configuration_missing = source_configuration is None
+        if source_configuration is None:
+            if _configuration is None:
+                raise ValueError(
+                    "Missing momentum-conversion configuration. "
+                    "Open the tool with erlab.interactive.ktool()."
+                )
+            source_configuration = AxesConfiguration(int(_configuration))
+            configured_data = _kspace_conversion.assign_kspace_configuration(
+                data,
+                source_configuration,
+            )
+        else:
+            configured_data = data
+        self._source_configuration = int(source_configuration)
         self._source_input_data = data.copy(deep=False)
         if _input_coordinates is None:
-            input_coordinates = _kspace_conversion.kspace_input_coordinate_values(data)
+            input_coordinates = _kspace_conversion.kspace_input_coordinate_values(
+                configured_data
+            )
             if any(value is None for value in input_coordinates.values()):
                 raise ValueError(
                     "Missing scalar momentum-conversion input coordinates. "
@@ -894,16 +920,16 @@ class KspaceTool(KspaceToolGUI):
                 input_coordinates,
             )
         self.data = _kspace_conversion.assign_kspace_input_coordinates(
-            data,
+            configured_data,
             _input_coordinates,
         ).copy(deep=True)
         self._input_coordinates_widget = KspaceInputCoordinatesControl(
-            self._source_input_data,
+            configured_data,
             object_name_prefix="ktoolInput",
             button_text="Edit coordinates…",
         )
         self._input_coordinates_widget.set_data(
-            self._source_input_data,
+            configured_data,
             values=_input_coordinates,
             edited_names=_input_coordinate_edited_names,
         )
@@ -988,13 +1014,15 @@ class KspaceTool(KspaceToolGUI):
         return self._input_coordinates_widget.resolved_values
 
     def _source_data_for_current_configuration(self) -> xr.DataArray:
-        if int(self._source_input_data.kspace.configuration) == int(
-            self.data.kspace.configuration
-        ):
-            return self._source_input_data
-        return self._source_input_data.kspace.as_configuration(
-            self.data.kspace.configuration
-        )
+        source_data = self._source_input_data
+        if _kspace_conversion.kspace_configuration(source_data) is None:
+            source_data = _kspace_conversion.assign_kspace_configuration(
+                source_data,
+                self._source_configuration,
+            )
+        if int(source_data.kspace.configuration) == int(self.data.kspace.configuration):
+            return source_data
+        return source_data.kspace.as_configuration(self.data.kspace.configuration)
 
     def _rebuild_input_coordinates(
         self,
@@ -1228,12 +1256,31 @@ class KspaceTool(KspaceToolGUI):
     def update_data(self, new_data: xr.DataArray) -> None:
         status = self.tool_status
         parsed_new_data = erlab.interactive.utils.parse_data(new_data)
-        source_configuration = int(parsed_new_data.kspace.configuration)
         if not parsed_new_data.kspace._interactive_compatible:
             raise ValueError(
                 "Updated data is not compatible with the interactive tool."
             )
-        control_data = parsed_new_data
+        source_configuration = _kspace_conversion.kspace_configuration(parsed_new_data)
+        source_configuration_missing = source_configuration is None
+        source_edited_names: frozenset[str] = frozenset()
+        if source_configuration is None:
+            source_result = prompt_kspace_input_coordinates(
+                parsed_new_data,
+                object_name_prefix="ktoolInput",
+                parent=self,
+            )
+            if source_result is None:
+                return
+            source_configuration, source_values, source_edited_names = source_result
+            control_data = _kspace_conversion.assign_kspace_input_coordinates(
+                _kspace_conversion.assign_kspace_configuration(
+                    parsed_new_data,
+                    source_configuration,
+                ),
+                source_values,
+            )
+        else:
+            control_data = parsed_new_data
         if source_configuration != int(self.current_configuration):
             try:
                 control_data = control_data.kspace.as_configuration(
@@ -1241,7 +1288,7 @@ class KspaceTool(KspaceToolGUI):
                 )
             except Exception as exc:
                 raise ValueError(
-                    "Updated data has incompatible analyzer configuration."
+                    "Updated data has an incompatible configuration."
                 ) from exc
         resolved_input_coordinates = prompt_kspace_input_coordinates(
             control_data,
@@ -1250,14 +1297,21 @@ class KspaceTool(KspaceToolGUI):
         )
         if resolved_input_coordinates is None:
             return
-        input_coordinates, edited_names = resolved_input_coordinates
+        _, input_coordinates, edited_names = resolved_input_coordinates
+        edited_names = frozenset((*source_edited_names, *edited_names)) & set(
+            input_coordinates
+        )
         status = status.model_copy(
             update={
                 "input_coordinates": input_coordinates,
                 "input_coordinate_edited_names": tuple(sorted(edited_names)),
-                "source_configuration": source_configuration,
+                "source_configuration": int(source_configuration),
+                "source_configuration_missing": source_configuration_missing,
                 "source_input_coordinates": (
-                    _kspace_conversion.kspace_input_coordinate_values(parsed_new_data)
+                    _kspace_conversion.kspace_input_coordinate_values(
+                        parsed_new_data,
+                        configuration=source_configuration,
+                    )
                 ),
                 "source_work_function": _kspace_conversion.kspace_work_function(
                     parsed_new_data
@@ -1276,7 +1330,8 @@ class KspaceTool(KspaceToolGUI):
 
         self._source_input_data = parsed_new_data.copy(deep=False)
         self.data = new_data.copy(deep=True)
-        self._source_configuration = source_configuration
+        self._source_configuration = int(source_configuration)
+        self._source_configuration_missing = source_configuration_missing
         self._bz_cache_key = None
         self._bz_cache_value = None
         self._invalidate_preview_memory_estimate()
@@ -1324,7 +1379,7 @@ class KspaceTool(KspaceToolGUI):
                 data = data.kspace.as_configuration(self.current_configuration)
             except Exception as exc:
                 raise ValueError(
-                    "Updated data has incompatible analyzer configuration."
+                    "Updated data has an incompatible configuration."
                 ) from exc
         if tuple(data.kspace._valid_offset_keys) != current_offset_keys:
             raise ValueError("Updated data has incompatible offset coordinates.")
@@ -2225,11 +2280,11 @@ def ktool(
     Notes
     -----
     .. versionchanged:: 3.27.0
-        The tool opens the input-coordinate editor when a required scalar energy or
-        angle coordinate is not in the data. Enter a finite value for each blank
-        coordinate to open the tool. The editor also changes existing scalar
-        coordinates such as ``hv`` and ``eV``. The ``alpha`` coordinate and swept
-        coordinates remain required in the source data.
+        The tool opens the input-coordinate editor when the configuration or a required
+        scalar energy or angle coordinate is not in the data. Select a configuration
+        and enter a finite value for each blank coordinate to open the tool. The editor
+        also changes existing scalar coordinates such as ``hv`` and ``eV``. The
+        ``alpha`` coordinate and swept coordinates remain required in the source data.
     """
     if data_name is None:
         try:
@@ -2244,7 +2299,7 @@ def ktool(
         )
         if resolved_input_coordinates is None:
             return None
-        input_coordinates, edited_names = resolved_input_coordinates
+        configuration, input_coordinates, edited_names = resolved_input_coordinates
         win = KspaceTool(
             data,
             avec=avec,
@@ -2258,6 +2313,7 @@ def ktool(
             options_model=options_model,
             _input_coordinates=input_coordinates,
             _input_coordinate_edited_names=edited_names,
+            _configuration=configuration,
         )
         win.show()
         win.raise_()

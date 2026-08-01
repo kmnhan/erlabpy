@@ -137,6 +137,25 @@ class KspaceInputCoordinatesWidget(QtWidgets.QWidget):
             )
             self.form.addRow(self._LABELS[name], row)
 
+    def set_data(
+        self,
+        data: xr.DataArray,
+        *,
+        values: Mapping[str, float | None] | None = None,
+        edited_names: Iterable[str] = (),
+    ) -> None:
+        """Rebuild the editor and restore values that apply to the new data."""
+        while self.form.count():
+            item = self.form.takeAt(0)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._edits.clear()
+        self._populate(data, values=values, edited_names=edited_names)
+        self.valuesChanged.emit()
+
     def _coordinate_changed(self, name: str) -> None:
         self._edited_names.add(name)
         self._sync_validity(name)
@@ -176,8 +195,26 @@ class KspaceInputCoordinatesDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setObjectName(f"{object_name_prefix}Dialog")
         self.setWindowTitle("Edit Input Coordinates")
+        self._data = data
+        self._configuration = _kspace_conversion.kspace_configuration(data)
 
         layout = QtWidgets.QVBoxLayout(self)
+        self.configuration_combo: QtWidgets.QComboBox | None = None
+        if self._configuration is None:
+            self.configuration_combo = QtWidgets.QComboBox(self)
+            self.configuration_combo.setObjectName(
+                f"{object_name_prefix}ConfigurationCombo"
+            )
+            self.configuration_combo.addItem("Select configuration…", None)
+            for configuration in erlab.constants.AxesConfiguration:
+                self.configuration_combo.addItem(
+                    _kspace_conversion.configuration_text(configuration),
+                    int(configuration),
+                )
+            self.configuration_combo.currentIndexChanged.connect(
+                self._configuration_changed
+            )
+            layout.addWidget(self.configuration_combo)
         self.editor = KspaceInputCoordinatesWidget(
             data,
             object_name_prefix=object_name_prefix,
@@ -217,21 +254,66 @@ class KspaceInputCoordinatesDialog(QtWidgets.QDialog):
         return typing.cast("dict[str, float]", self.editor.values)
 
     @property
+    def configuration(self) -> erlab.constants.AxesConfiguration | None:
+        """Return the selected or existing configuration."""
+        if self.configuration_combo is None:
+            return self._configuration
+        value = self.configuration_combo.currentData(QtCore.Qt.ItemDataRole.UserRole)
+        if value is None:
+            return None
+        return erlab.constants.AxesConfiguration(int(value))
+
+    @property
+    def resolved_configuration(self) -> erlab.constants.AxesConfiguration:
+        """Return the selected or existing configuration."""
+        configuration = self.configuration
+        if configuration is None:
+            raise ValueError("A configuration is required for momentum conversion.")
+        return configuration
+
+    @property
     def edited_names(self) -> frozenset[str]:
         """Return coordinate names changed explicitly in the editor."""
         return self.editor.edited_names
+
+    def focus_first_control(self) -> None:
+        """Focus the first unresolved control."""
+        if self.configuration is None and self.configuration_combo is not None:
+            self.configuration_combo.setFocus(QtCore.Qt.FocusReason.OtherFocusReason)
+            return
+        self.editor.focus_first_control()
 
     @QtCore.Slot()
     def _sync_validity(self) -> None:
         button = self.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
         if button is not None:
-            button.setEnabled(self.editor.is_complete)
+            button.setEnabled(
+                self.configuration is not None and self.editor.is_complete
+            )
 
     @QtCore.Slot()
     def accept(self) -> None:
-        if not self.editor.is_complete:
+        if self.configuration is None or not self.editor.is_complete:
             return
         super().accept()
+
+    @QtCore.Slot(int)
+    def _configuration_changed(self, _index: int = -1) -> None:
+        values = self.editor.values
+        edited_names = self.editor.edited_names
+        configuration = self.configuration
+        data = self._data
+        if configuration is not None:
+            data = _kspace_conversion.assign_kspace_configuration(
+                data,
+                configuration,
+            )
+        self.editor.set_data(
+            data,
+            values=values,
+            edited_names=edited_names,
+        )
+        self._sync_validity()
 
     @QtCore.Slot()
     def _open_angle_convention_help(self) -> None:
@@ -380,11 +462,24 @@ def prompt_kspace_input_coordinates(
     *,
     object_name_prefix: str,
     parent: QtWidgets.QWidget | None = None,
-) -> tuple[dict[str, float], frozenset[str]] | None:
+) -> (
+    tuple[
+        erlab.constants.AxesConfiguration,
+        dict[str, float],
+        frozenset[str],
+    ]
+    | None
+):
     """Prompt for unresolved scalar conversion inputs and return complete values."""
-    values = _kspace_conversion.kspace_input_coordinate_values(data)
-    if all(value is not None for value in values.values()):
-        return typing.cast("dict[str, float]", values), frozenset()
+    configuration = _kspace_conversion.kspace_configuration(data)
+    values = _kspace_conversion.kspace_input_coordinate_values(
+        data,
+        configuration=configuration,
+    )
+    if configuration is not None and all(
+        value is not None for value in values.values()
+    ):
+        return configuration, typing.cast("dict[str, float]", values), frozenset()
 
     dialog = KspaceInputCoordinatesDialog(
         data,
@@ -393,16 +488,17 @@ def prompt_kspace_input_coordinates(
         object_name_prefix=object_name_prefix,
         parent=parent,
     )
-    dialog.editor.focus_first_control()
+    dialog.focus_first_control()
     if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
         dialog.setParent(None)
         dialog.deleteLater()
         return None
     resolved = dialog.resolved_values
+    resolved_configuration = dialog.resolved_configuration
     edited_names = dialog.edited_names
     dialog.setParent(None)
     dialog.deleteLater()
-    return resolved, edited_names
+    return resolved_configuration, resolved, edited_names
 
 
 class CoordinateGridWidget(QtWidgets.QWidget):

@@ -21,6 +21,7 @@ from erlab.interactive.imagetool._provenance._model import (
     stamp_operation_group,
 )
 from erlab.interactive.imagetool._provenance._operations import (
+    AssignAttrsOperation,
     AssignScalarCoordOperation,
     KspaceConfigurationOperation,
     KspaceConvertOperation,
@@ -53,6 +54,7 @@ _FOCUS_CONVERT = "bounds_resolution"
 _KSPACE_INPUT_COORDINATE_NAMES = ("hv", "eV", "beta", "xi", "chi")
 
 _KSPACE_SETUP_TYPES = (
+    AssignAttrsOperation,
     KspaceConfigurationOperation,
     AssignScalarCoordOperation,
     KspaceWorkFunctionOperation,
@@ -66,9 +68,25 @@ _KSPACE_CONVERSION_TYPES = (
 _GIB = 1024**3
 
 
+def _is_kspace_configuration_assignment(
+    operation: ToolProvenanceOperation,
+) -> bool:
+    if not isinstance(operation, AssignAttrsOperation) or set(operation.attrs) != {
+        "configuration"
+    }:
+        return False
+    try:
+        AxesConfiguration(int(operation.attrs["configuration"]))
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _is_kspace_conversion_operation(
     operation: ToolProvenanceOperation,
 ) -> bool:
+    if isinstance(operation, AssignAttrsOperation):
+        return _is_kspace_configuration_assignment(operation)
     if isinstance(operation, AssignScalarCoordOperation):
         return operation.coord_name in _KSPACE_INPUT_COORDINATE_NAMES
     return isinstance(
@@ -144,6 +162,22 @@ def configuration_text(configuration: AxesConfiguration | int) -> str:
     return f"Configuration {int(configuration)} ({configuration.name})"
 
 
+def kspace_configuration(data: xr.DataArray) -> AxesConfiguration | None:
+    """Return the configured axes, or ``None`` when the attribute is absent."""
+    try:
+        return data.kspace.configuration
+    except IncompleteDataError:
+        return None
+
+
+def assign_kspace_configuration(
+    data: xr.DataArray,
+    configuration: AxesConfiguration | int,
+) -> xr.DataArray:
+    """Assign a missing momentum-conversion configuration to a shallow copy."""
+    return data.assign_attrs(configuration=int(AxesConfiguration(int(configuration))))
+
+
 def initial_normal_emission_from_slicer_area(
     slicer_area: ImageSlicerArea,
 ) -> tuple[tuple[float, float] | None, float | None]:
@@ -211,8 +245,14 @@ def rounded_spin_value(spin: QtWidgets.QDoubleSpinBox) -> float:
 
 def kspace_input_coordinate_names(
     data: xr.DataArray,
+    *,
+    configuration: AxesConfiguration | int | None = None,
 ) -> tuple[str, ...]:
     """Return scalar coordinates that can be set for conversion."""
+    if configuration is None:
+        configuration = kspace_configuration(data)
+    elif not isinstance(configuration, AxesConfiguration):
+        configuration = AxesConfiguration(int(configuration))
     names = [
         name
         for name in ("hv", "eV")
@@ -223,7 +263,7 @@ def kspace_input_coordinate_names(
     ):
         names.append("beta")
     names.append("xi")
-    if data.kspace.configuration in (
+    if configuration in (
         AxesConfiguration.Type1DA,
         AxesConfiguration.Type2DA,
     ):
@@ -233,10 +273,12 @@ def kspace_input_coordinate_names(
 
 def kspace_input_coordinate_values(
     data: xr.DataArray,
+    *,
+    configuration: AxesConfiguration | int | None = None,
 ) -> dict[str, float | None]:
     """Return editable scalar coordinates with missing values left unresolved."""
     values: dict[str, float | None] = {}
-    for name in kspace_input_coordinate_names(data):
+    for name in kspace_input_coordinate_names(data, configuration=configuration):
         if name not in data.coords:
             values[name] = None
             continue
@@ -608,16 +650,31 @@ def kspace_conversion_operations(
     operations: list[ToolProvenanceOperation] = []
     focuses: list[str] = []
     target_configuration = AxesConfiguration(int(target_configuration))
+    data_configuration = kspace_configuration(source_data)
     if source_configuration is None:
-        source_configuration = source_data.kspace.configuration
+        if data_configuration is None:
+            raise ValueError(
+                "A source configuration is required for momentum conversion."
+            )
+        source_configuration = data_configuration
+    source_configuration = AxesConfiguration(int(source_configuration))
+    if data_configuration is None:
+        operations.append(
+            AssignAttrsOperation(attrs={"configuration": int(source_configuration)})
+        )
+        focuses.append(_FOCUS_CONFIGURATION)
+        configured_data = assign_kspace_configuration(
+            source_data,
+            source_configuration,
+        )
+    else:
+        configured_data = source_data
     if int(target_configuration) != int(source_configuration):
         operations.append(
             KspaceConfigurationOperation(configuration=int(target_configuration))
         )
         focuses.append(_FOCUS_CONFIGURATION)
-        configured_data = source_data.kspace.as_configuration(target_configuration)
-    else:
-        configured_data = source_data
+        configured_data = configured_data.kspace.as_configuration(target_configuration)
 
     if input_coordinates is not None:
         editable_coordinates = set(kspace_input_coordinate_names(configured_data))
@@ -691,6 +748,10 @@ def kspace_conversion_operations(
 def _focus_for_operation(
     operation: ToolProvenanceOperation,
 ) -> str | None:
+    if isinstance(operation, AssignAttrsOperation):
+        if _is_kspace_configuration_assignment(operation):
+            return _FOCUS_CONFIGURATION
+        return None
     if isinstance(operation, AssignScalarCoordOperation):
         return _FOCUS_INPUT_COORDINATES
     if isinstance(
@@ -746,6 +807,7 @@ def _complete_kspace_conversion_group(
     ):
         return False
     for operation_type in (
+        AssignAttrsOperation,
         KspaceConfigurationOperation,
         KspaceWorkFunctionOperation,
         KspaceInnerPotentialOperation,
@@ -764,6 +826,16 @@ def _complete_kspace_conversion_group(
     if any(
         name not in _KSPACE_INPUT_COORDINATE_NAMES for name in input_coordinates
     ) or len(input_coordinates) != len(set(input_coordinates)):
+        return False
+    configuration_assignments = [
+        operation
+        for operation in setup_operations
+        if isinstance(operation, AssignAttrsOperation)
+    ]
+    if configuration_assignments and (
+        setup_operations[0] is not configuration_assignments[0]
+        or not _is_kspace_configuration_assignment(configuration_assignments[0])
+    ):
         return False
     return all(
         isinstance(operation, _KSPACE_CONVERSION_TYPES) for operation in operations

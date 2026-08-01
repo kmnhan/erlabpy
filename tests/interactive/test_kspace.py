@@ -22,6 +22,7 @@ from erlab.interactive.imagetool._provenance._model import (
     strip_operation_groups,
 )
 from erlab.interactive.imagetool._provenance._operations import (
+    AssignAttrsOperation,
     AssignScalarCoordOperation,
     AverageOperation,
     IselOperation,
@@ -129,6 +130,17 @@ def _set_input_coordinates(dialog, values: dict[str, float]) -> None:
         edit.setText(str(value))
 
 
+def _select_input_configuration(
+    dialog,
+    configuration: AxesConfiguration,
+) -> None:
+    combo = dialog.configuration_combo
+    assert combo is not None
+    index = combo.findData(int(configuration))
+    assert index >= 0
+    combo.setCurrentIndex(index)
+
+
 def _restore_ktool_offsets(win: KspaceTool, offsets: dict[str, float]) -> None:
     status = win.tool_status
     win.tool_status = status.model_copy(
@@ -221,6 +233,7 @@ def test_ktool_compatible(anglemap) -> None:
     )
     cut_without_configuration = cut.copy(deep=True)
     del cut_without_configuration.attrs["configuration"]
+    cut_with_invalid_configuration = cut.assign_attrs(configuration=999)
     cut_without_alpha_coord = cut.drop_vars("alpha")
     data_4d = anglemap.expand_dims("x", 2)
     data_3d_without_alpha = data_4d.qsel(alpha=-8.3)
@@ -233,10 +246,11 @@ def test_ktool_compatible(anglemap) -> None:
     assert cut_without_beta.kspace._interactive_compatible
     assert cut_without_hv.kspace._interactive_compatible
     assert const_energy_without_ev.kspace._interactive_compatible
+    assert cut_without_configuration.kspace._interactive_compatible
 
     for data in (
         cut_with_beta_coord,
-        cut_without_configuration,
+        cut_with_invalid_configuration,
         cut_without_alpha_coord,
         data_4d,
         data_3d_without_alpha,
@@ -334,6 +348,59 @@ def test_ktool_assigns_missing_scalar_angle_coordinates(
     assert cancelled["win"] is None
     accept_dialog(win._input_coordinates_widget.edit_coordinates)
     assert win.input_coordinates == accepted_values
+
+    with pytest.raises(
+        ValueError, match=r"Open the tool with erlab\.interactive\.ktool"
+    ):
+        KspaceTool(data)
+
+
+def test_ktool_assigns_missing_configuration(
+    qtbot,
+    anglemap,
+    accept_dialog,
+) -> None:
+    data = anglemap.qsel(beta=-8.3).copy(deep=True)
+    del data.attrs["configuration"]
+    holder: dict[str, KspaceTool | None] = {}
+
+    def _select_configuration(dialog) -> None:
+        assert dialog.configuration is None
+        assert dialog.editor.is_complete
+        ok_button = dialog.button_box.button(
+            imagetool_dialogs.QtWidgets.QDialogButtonBox.StandardButton.Ok
+        )
+        assert ok_button is not None
+        assert not ok_button.isEnabled()
+        _select_input_configuration(dialog, AxesConfiguration.Type1)
+        assert ok_button.isEnabled()
+
+    accept_dialog(
+        lambda: holder.update(
+            win=ktool(data, data_name="cut", execute=False),
+        ),
+        pre_call=_select_configuration,
+    )
+    win = holder["win"]
+    assert isinstance(win, KspaceTool)
+    _add_hidden_tool(qtbot, win)
+
+    assert "configuration" not in data.attrs
+    assert "configuration" not in win._source_input_data.attrs
+    assert win.data.kspace.configuration == AxesConfiguration.Type1
+    operations = win._copy_operations()
+    assert isinstance(operations[0], AssignAttrsOperation)
+    assert operations[0].attrs == {"configuration": int(AxesConfiguration.Type1)}
+
+    namespace = {"cut": data.copy(deep=True)}
+    exec(win.copy_code(), {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_allclose(namespace["cut_kconv"], win._converted_output())
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    assert isinstance(restored, KspaceTool)
+    _add_hidden_tool(qtbot, restored)
+    assert "configuration" not in restored._source_input_data.attrs
+    assert isinstance(restored._copy_operations()[0], AssignAttrsOperation)
 
     with pytest.raises(
         ValueError, match=r"Open the tool with erlab\.interactive\.ktool"
@@ -473,6 +540,53 @@ def test_kspace_conversion_dialog_assigns_missing_scalar_angle_coordinates(
     assert dialog._input_coordinates_for_data(data) == pytest.approx(
         {"hv": source_hv + 2.0, "beta": -2.0, "xi": 5.0}
     )
+
+
+def test_kspace_conversion_dialog_assigns_missing_configuration(
+    qtbot,
+    anglemap,
+    accept_dialog,
+) -> None:
+    data = anglemap.qsel(beta=-8.3).copy(deep=True)
+    del data.attrs["configuration"]
+    win = erlab.interactive.itool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    holder: dict[str, KspaceConversionDialog] = {}
+
+    accept_dialog(
+        lambda: holder.update(
+            dialog=_add_kspace_conversion_dialog(qtbot, win.slicer_area)
+        ),
+        pre_call=lambda coordinate_dialog: _select_input_configuration(
+            coordinate_dialog,
+            AxesConfiguration.Type1,
+        ),
+    )
+    dialog = holder["dialog"]
+
+    operations = dialog.source_operations()
+    assert isinstance(operations[0], AssignAttrsOperation)
+    assert operations[0].attrs == {"configuration": int(AxesConfiguration.Type1)}
+    for index in range(len(operations)):
+        assert KspaceConversionDialog.operation_group_for_edit(
+            operations,
+            index,
+        ) == (0, len(operations))
+
+    expected = dialog.process_data(data.copy(deep=True))
+    namespace = {"data": data.copy(deep=True)}
+    exec(dialog.make_code(), {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_allclose(namespace["data_kconv"], expected)
+    assert "configuration" not in data.attrs
+
+    restored = KspaceConversionDialog(
+        win.slicer_area,
+        provenance_edit_mode=True,
+    )
+    qtbot.addWidget(restored)
+    restored.restore_transform_operations(operations)
+    assert restored.current_configuration == AxesConfiguration.Type1
+    assert restored._input_coordinates_widget.is_complete
 
 
 def test_kspace_conversion_dialog_missing_hv_preflight_accept_and_cancel(
@@ -634,28 +748,27 @@ def test_ktool_assigns_missing_scalar_energy_coordinate(
     assert win._converted_output().size > 0
 
 
-def test_kspace_conversion_dialog_requires_configuration(
+def test_kspace_conversion_dialog_missing_configuration_cancel(
     qtbot,
-    monkeypatch,
     anglemap,
+    accept_dialog,
 ) -> None:
     data = anglemap.qsel(eV=-0.1).copy(deep=True)
     del data.attrs["configuration"]
 
     win = erlab.interactive.itool(data, execute=False)
     _add_hidden_tool(qtbot, win)
-    dialog = _add_kspace_conversion_dialog(qtbot, win.slicer_area)
-
-    assert dialog._compatible is False
-    assert not hasattr(dialog, "configuration_combo")
-    dialog._handle_configuration_changed()
-    dialog._update_memory_estimate()
-    dialog._set_memory_estimate(_conversion_estimate_stub())
-    monkeypatch.setattr(
-        imagetool_dialogs.QtWidgets.QMessageBox,
-        "warning",
-        lambda *args, **kwargs: None,
+    holder: dict[str, KspaceConversionDialog] = {}
+    accept_dialog(
+        lambda: holder.update(
+            dialog=_add_kspace_conversion_dialog(qtbot, win.slicer_area)
+        ),
+        accept_call=lambda coordinate_dialog: coordinate_dialog.reject(),
     )
+    dialog = holder["dialog"]
+
+    assert dialog._compatible
+    assert dialog._coordinate_preflight_cancelled
     assert dialog._validate() == imagetool_dialogs.QtWidgets.QDialog.DialogCode.Rejected
 
 
@@ -825,6 +938,34 @@ def test_kspace_input_coordinate_help(qtbot, anglemap, monkeypatch) -> None:
         "https://erlabpy.readthedocs.io/en/stable/user-guide/kconv.html#nomenclature"
     ]
     assert dialog.result() == imagetool_dialogs.QtWidgets.QDialog.DialogCode.Rejected
+
+
+def test_kspace_input_coordinate_configuration_selection(qtbot, anglemap) -> None:
+    data = anglemap.qsel(beta=-8.3).drop_vars("chi", errors="ignore").copy(deep=True)
+    del data.attrs["configuration"]
+    dialog = _dialog_widgets.KspaceInputCoordinatesDialog(
+        data,
+        values=_kspace_conversion.kspace_input_coordinate_values(data),
+        edited_names=(),
+        object_name_prefix="kspaceConfigurationTest",
+    )
+    qtbot.addWidget(dialog)
+    ok_button = dialog.button_box.button(
+        imagetool_dialogs.QtWidgets.QDialogButtonBox.StandardButton.Ok
+    )
+    assert ok_button is not None
+
+    assert dialog.configuration is None
+    assert "chi" not in dialog.values
+    assert not ok_button.isEnabled()
+
+    _select_input_configuration(dialog, AxesConfiguration.Type1DA)
+
+    assert dialog.configuration == AxesConfiguration.Type1DA
+    assert dialog.values["chi"] is None
+    assert not ok_button.isEnabled()
+    _set_input_coordinates(dialog, {"chi": 0.0})
+    assert ok_button.isEnabled()
 
 
 def test_ktool_configuration_change_prompts_for_new_coordinate(
@@ -1137,6 +1278,17 @@ def test_kspace_conversion_console_group_stamping_focuses_rows() -> None:
     )
     assert (
         KspaceConversionDialog.operation_group_for_edit(duplicate_coordinate, 0) is None
+    )
+    unrelated_attribute = stamp_operation_group(
+        (
+            AssignAttrsOperation(attrs={"sample_temp": 20.0}),
+            KspaceSetNormalOperation(alpha=1.0, beta=2.0),
+            KspaceConvertOperation(bounds=None, resolution=None),
+        ),
+        kind=_kspace_conversion.KSPACE_CONVERSION_GROUP_KIND,
+    )
+    assert (
+        KspaceConversionDialog.operation_group_for_edit(unrelated_attribute, 0) is None
     )
 
 
@@ -3346,7 +3498,7 @@ def test_ktool_update_data_rejects_unmappable_configuration(
         lambda _: SimpleNamespace(kspace=fake_kspace),
     )
 
-    with pytest.raises(ValueError, match="incompatible analyzer configuration"):
+    with pytest.raises(ValueError, match="incompatible configuration"):
         win.update_data(object())
 
 
@@ -3470,7 +3622,7 @@ def test_ktool_update_data_rejects_noninteractive_replacement_for_cut(
             "incompatible offset coordinates",
         ),
         ("momentum_axes", ("kx",), "incompatible momentum axes"),
-        ("configuration", 999, "incompatible analyzer configuration"),
+        ("configuration", 999, "incompatible configuration"),
         ("_has_hv", True, "incompatible photon-energy dimensions"),
     ],
 )

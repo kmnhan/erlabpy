@@ -1088,10 +1088,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     @property
     def _interactive_compatible(self) -> bool:
         """Check if the data is compatible with the interactive tool."""
-        try:
-            _ = self.configuration
-        except (IncompleteDataError, ValueError):
-            return False
+        if "configuration" in self._obj.attrs:
+            try:
+                _ = self.configuration
+            except ValueError:
+                return False
 
         required_dimension_coords = {"alpha"} | {
             name for name in ("beta", "eV", "hv") if name in self._obj.dims
