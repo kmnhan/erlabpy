@@ -1207,7 +1207,7 @@ def test_figure_composer_colorbar_method_target_policy(qtbot) -> None:
     assert "eplt.nice_colorbar(ax=axs)" in tool.generated_code()
 
 
-def test_figure_composer_method_draw_time_text_error_is_non_modal(qtbot) -> None:
+def test_figure_composer_method_draw_time_text_error_marks_operation(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("kx", "ky"),
@@ -1235,15 +1235,16 @@ def test_figure_composer_method_draw_time_text_error_is_non_modal(qtbot) -> None
 
     tool._redraw_plot(show_window=True)
 
-    assert tool._operation_render_errors == {}
-    render_error = tool._preview_render_error
+    assert tool._preview_render_error is None
+    render_error = tool._operation_render_errors[title_operation.operation_id]
     assert render_error is not None
     assert "ValueError" in render_error
     assert "ParseException" in render_error
-    assert _operation_status_codes(tool, 1) == ()
-    status = tool.findChild(QtWidgets.QStatusBar, "figureComposerPreviewRenderStatus")
-    assert status is not None
-    assert not status.isHidden()
+    assert _operation_status_codes(tool, 1) == ("render_error",)
+    banner = tool.findChild(QtWidgets.QLabel, "figureComposerPreviewRenderError")
+    assert banner is not None
+    assert banner.isHidden()
+    assert tool.findChild(QtWidgets.QStatusBar) is None
 
     tool._replace_operation(
         1,
@@ -1254,4 +1255,149 @@ def test_figure_composer_method_draw_time_text_error_is_non_modal(qtbot) -> None
     assert tool._operation_render_errors == {}
     assert tool._preview_render_error is None
     assert _operation_status_codes(tool, 1) == ()
-    assert status.isHidden()
+    assert banner.isHidden()
+
+
+def test_figure_composer_mark_points_argument_error_marks_exact_operation(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    invalid_operation = FigureOperationState.method(
+        family=FigureMethodFamily.ERLAB,
+        name="mark_points",
+        args=((0.0,), (r"$\Gamma$",)),
+    )
+    valid_operation = FigureOperationState.method(
+        family=FigureMethodFamily.ERLAB,
+        name="mark_points",
+        args=((0.0,), ("K",)),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(invalid_operation, valid_operation),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool._redraw_plot(show_window=True)
+
+    assert tool._preview_render_error is None
+    assert set(tool._operation_render_errors) == {invalid_operation.operation_id}
+    assert (
+        "already has MathText delimiters"
+        in tool._operation_render_errors[invalid_operation.operation_id]
+    )
+    assert (
+        "set literal=True"
+        in tool._operation_render_errors[invalid_operation.operation_id]
+    )
+    assert _operation_status_codes(tool, 0) == ("render_error",)
+    assert _operation_status_codes(tool, 1) == ()
+
+
+def test_figure_composer_draw_error_follows_later_artist_mutation(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(3.0),
+        dims=("x",),
+        coords={"x": np.arange(3.0)},
+        name="data",
+    )
+    line_operation = FigureOperationState.line(label="line", source="data")
+    mutation_operation = FigureOperationState.custom(
+        label="invalid dashes",
+        code="axs[0, 0].lines[0].set_dashes([1, -1])",
+        trusted=True,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(line_operation, mutation_operation),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool._redraw_plot(show_window=True)
+
+    assert tool._preview_render_error is None
+    assert set(tool._operation_render_errors) == {mutation_operation.operation_id}
+    assert (
+        "dash list must be non-negative"
+        in tool._operation_render_errors[mutation_operation.operation_id]
+    )
+    assert _operation_status_codes(tool, 0) == ()
+    assert _operation_status_codes(tool, 1) == ("render_error",)
+
+
+def test_figure_composer_draw_error_marks_axes_mutation(qtbot) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    mutation_operation = FigureOperationState.custom(
+        label="invalid aspect",
+        code="axs[0, 0].set_aspect('equal', adjustable='datalim')",
+        trusted=True,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                nrows=1,
+                ncols=2,
+                sharex=True,
+                sharey=True,
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(mutation_operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool._redraw_plot(show_window=True)
+
+    assert tool._preview_render_error is None
+    assert set(tool._operation_render_errors) == {mutation_operation.operation_id}
+    assert (
+        "are not allowed when both axes are shared"
+        in (tool._operation_render_errors[mutation_operation.operation_id])
+    )
+    assert _operation_status_codes(tool, 0) == ("render_error",)
+
+
+def test_figure_composer_offscreen_draw_error_marks_operation(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    plot_operation = FigureOperationState.plot_array(label="plot", source="data")
+    title_operation = FigureOperationState.method(
+        family=FigureMethodFamily.ERLAB,
+        name="set_titles",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(update={"text_values": ("ALS, $$39.3 eV",)})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(plot_operation, title_operation),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    assert tool.refresh_preview_pixmap(allow_offscreen=True) is None
+
+    assert tool._preview_render_error is None
+    assert set(tool._operation_render_errors) == {title_operation.operation_id}
+    assert _operation_status_codes(tool, 0) == ()
+    assert _operation_status_codes(tool, 1) == ("render_error",)

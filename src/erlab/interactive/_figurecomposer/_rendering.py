@@ -6,6 +6,7 @@ import contextlib
 import typing
 
 import matplotlib as mpl
+import matplotlib.artist
 import matplotlib.axes
 import numpy as np
 import xarray as xr
@@ -41,6 +42,47 @@ if typing.TYPE_CHECKING:
         FigureGridSpecGridState,
     )
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
+
+
+_OPERATION_ID_ATTR = "_erlab_figure_composer_operation_id"
+
+
+def _tag_operation_artist(artist: matplotlib.artist.Artist, operation_id: str) -> None:
+    setattr(artist, _OPERATION_ID_ATTR, operation_id)
+
+
+@contextlib.contextmanager
+def _track_operation_artists(figure: Figure, operation_id: str) -> Iterator[None]:
+    artists_before = set(figure.findobj())
+    stale_callbacks: dict[matplotlib.artist.Artist, tuple[typing.Any, typing.Any]] = {}
+    for artist in artists_before:
+        if isinstance(artist, Figure):
+            continue
+        original_callback = artist.stale_callback
+
+        # Matplotlib setters mark an artist as stale even when it was already stale.
+        # Wrap that notification to track mutations of artists from earlier steps.
+        def operation_stale_callback(
+            changed_artist: matplotlib.artist.Artist,
+            stale: bool,
+            original: typing.Any = original_callback,
+        ) -> None:
+            _tag_operation_artist(changed_artist, operation_id)
+            if original is not None:
+                original(changed_artist, stale)
+
+        artist.stale_callback = operation_stale_callback
+        stale_callbacks[artist] = (original_callback, operation_stale_callback)
+
+    try:
+        yield
+    finally:
+        for artist, (original_callback, operation_callback) in stale_callbacks.items():
+            if artist.stale_callback is operation_callback:
+                artist.stale_callback = original_callback
+        for artist in figure.findobj():
+            if artist not in artists_before:
+                _tag_operation_artist(artist, operation_id)
 
 
 def _setup_kwargs(context: FigureRecipeContext) -> dict[str, typing.Any]:
@@ -341,7 +383,8 @@ def _render_into_figure(
             ) or tool.operation_editor.has_input_error(operation):
                 continue
             try:
-                spec.render(tool, operation, figure, axs)
+                with _track_operation_artists(figure, operation.operation_id):
+                    spec.render(tool, operation, figure, axs)
             except Exception as exc:
                 render_errors[operation.operation_id] = _render_error_text(exc)
     tool._set_operation_render_errors(render_errors)
@@ -372,7 +415,39 @@ def _render_error_text(error: Exception) -> str:
 
 
 def _set_preview_draw_error(tool: FigureComposerTool, error: Exception) -> None:
-    tool._set_preview_render_error(_render_error_text(error))
+    error_text = _render_error_text(error)
+    operation_ids: set[str] = set()
+    traceback = error.__traceback__
+    while traceback is not None:
+        frame_operation_ids: set[str] = set()
+        for value in traceback.tb_frame.f_locals.values():
+            if not isinstance(value, matplotlib.artist.Artist) or isinstance(
+                value, Figure
+            ):
+                continue
+            tagged_id = getattr(value, _OPERATION_ID_ATTR, None)
+            if isinstance(tagged_id, str):
+                frame_operation_ids.add(tagged_id)
+        if frame_operation_ids:
+            # A failing leaf artist is deeper than its Axes and other draw parents.
+            operation_ids = frame_operation_ids
+        traceback = traceback.tb_next
+
+    if len(operation_ids) != 1:
+        tool._set_preview_render_error(error_text)
+        return
+
+    operation_id = operation_ids.pop()
+    if operation_id not in {
+        operation.operation_id for operation in tool._document.recipe.operations
+    }:
+        tool._set_preview_render_error(error_text)
+        return
+
+    render_errors = dict(tool._operation_render_errors)
+    render_errors[operation_id] = error_text
+    tool._set_operation_render_errors(render_errors)
+    tool._set_preview_render_error(None)
 
 
 def _render_preview(

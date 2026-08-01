@@ -7,6 +7,7 @@ from pathlib import Path
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
+import matplotlib.text
 import numpy as np
 import pytest
 import xarray as xr
@@ -1198,7 +1199,7 @@ def test_figure_composer_redraw_and_preview_cache_edges(qtbot, monkeypatch) -> N
     )
 
 
-def test_figure_composer_preview_draw_error_is_not_assigned_to_operation(
+def test_figure_composer_unattributed_preview_draw_error_uses_inline_banner(
     qtbot,
 ) -> None:
     data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
@@ -1220,9 +1221,53 @@ def test_figure_composer_preview_draw_error_is_not_assigned_to_operation(
 
     assert tool._operation_render_errors == {}
     assert tool._preview_render_error == "RuntimeError: boom"
-    status = tool.findChild(QtWidgets.QStatusBar, "figureComposerPreviewRenderStatus")
-    assert status is not None
-    assert not status.isHidden()
+    banner = tool.findChild(QtWidgets.QLabel, "figureComposerPreviewRenderError")
+    assert banner is not None
+    assert not banner.isHidden()
+    assert tool.findChild(QtWidgets.QStatusBar) is None
+
+
+def test_figure_composer_ambiguous_preview_draw_error_is_not_assigned(qtbot) -> None:
+    data = xr.DataArray(np.arange(2.0), dims=("x",), name="data")
+    first_operation = FigureOperationState.line(label="first", source="data")
+    second_operation = FigureOperationState.line(label="second", source="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data"),),
+            operations=(first_operation, second_operation),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    first_artist = matplotlib.text.Text()
+    second_artist = matplotlib.text.Text()
+    setattr(
+        first_artist,
+        figurecomposer_rendering._OPERATION_ID_ATTR,
+        first_operation.operation_id,
+    )
+    setattr(
+        second_artist,
+        figurecomposer_rendering._OPERATION_ID_ATTR,
+        second_operation.operation_id,
+    )
+
+    def raise_draw_error(
+        first: matplotlib.text.Text, second: matplotlib.text.Text
+    ) -> None:
+        if first is second:
+            raise AssertionError("Artists must be different")
+        raise RuntimeError("ambiguous draw failure")
+
+    try:
+        raise_draw_error(first_artist, second_artist)
+    except RuntimeError as exc:
+        figurecomposer_rendering._set_preview_draw_error(tool, exc)
+
+    assert tool._operation_render_errors == {}
+    assert tool._preview_render_error == "RuntimeError: ambiguous draw failure"
 
 
 def test_figure_composer_preview_draw_failures_are_figure_level(
