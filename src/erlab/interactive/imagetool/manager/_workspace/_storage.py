@@ -236,29 +236,71 @@ def _workspace_replace_retry_delays(exc: PermissionError) -> tuple[float, ...]:
     return _WINDOWS_WORKSPACE_REPLACE_RETRY_DELAYS
 
 
+def _preserve_workspace_file_generation(
+    path: str | os.PathLike[str],
+) -> workspace_arrays._WorkspaceFileGeneration:
+    """Preserve one workspace generation for existing lazy readers."""
+    source = pathlib.Path(path)
+    generation_path = source.with_name(f".{uuid.uuid4().hex}.erlab-workspace-read")
+
+    try:
+        os.link(source, generation_path)
+    except OSError:
+        temporary_directory = tempfile.TemporaryDirectory(
+            prefix="erlab-workspace-read-"
+        )
+        generation_path = pathlib.Path(temporary_directory.name) / "workspace.itws"
+        try:
+            shutil.copyfile(source, generation_path)
+        except BaseException:
+            temporary_directory.cleanup()
+            raise
+        cleanup = temporary_directory.cleanup
+    else:
+        _hide_workspace_lock_file(str(generation_path))
+
+        def cleanup() -> None:
+            with contextlib.suppress(OSError):
+                os.remove(generation_path)
+
+    return workspace_arrays._WorkspaceFileGeneration(generation_path, cleanup)
+
+
 def _replace_workspace_file(
     source: str | os.PathLike[str], destination: str | os.PathLike[str]
 ) -> None:
-    """Atomically replace a workspace after closing manager-owned readers."""
+    """Atomically replace a workspace and preserve active reader generations."""
     with workspace_arrays._workspace_file_lock(destination):
-        managers = workspace_arrays._close_workspace_file_managers(destination)
-        retry_delays: tuple[float, ...] | None = None
-        while True:
-            try:
-                os.replace(source, destination)
-            except PermissionError as exc:
-                if retry_delays is None:
-                    retry_delays = _workspace_replace_retry_delays(exc)
-                if not retry_delays:
-                    raise
-                delay, *remaining_delays = retry_delays
-                retry_delays = tuple(remaining_delays)
-                time.sleep(delay)
-            else:
-                break
-        # A stale lazy graph must not reopen the new file with old metadata.
-        for manager in managers:
-            manager._mark_file_replaced()
+        managers = workspace_arrays._detach_workspace_file_managers(destination)
+        generation: workspace_arrays._WorkspaceFileGeneration | None = None
+        try:
+            if managers and pathlib.Path(destination).is_file():
+                generation = _preserve_workspace_file_generation(destination)
+            for manager in managers:
+                if generation is None:
+                    manager.close(needs_lock=False)
+                else:
+                    manager._use_preserved_generation(generation)
+
+            retry_delays: tuple[float, ...] | None = None
+            while True:
+                try:
+                    os.replace(source, destination)
+                except PermissionError as exc:
+                    if retry_delays is None:
+                        retry_delays = _workspace_replace_retry_delays(exc)
+                    if not retry_delays:
+                        raise
+                    delay, *remaining_delays = retry_delays
+                    retry_delays = tuple(remaining_delays)
+                    time.sleep(delay)
+                else:
+                    break
+        except BaseException:
+            workspace_arrays._restore_workspace_file_managers(destination, managers)
+            raise
+        if generation is None:
+            workspace_arrays._restore_workspace_file_managers(destination, managers)
 
 
 def _workspace_use_incremental_enabled() -> bool:

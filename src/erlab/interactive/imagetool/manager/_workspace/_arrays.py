@@ -19,7 +19,7 @@ import erlab
 from erlab.interactive.imagetool import _serialization
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Hashable, Iterable, Iterator, Mapping
+    from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping
 
     import h5py
 
@@ -49,15 +49,16 @@ _WORKSPACE_H5PY_DIMENSION_SCALE_ATTRS = frozenset(
 )
 
 
-class _WorkspaceFileReplacedError(RuntimeError):
-    """A lazy reader still targets a replaced workspace generation."""
+class _WorkspaceFileGeneration:
+    """A preserved workspace file generation shared by lazy readers."""
 
-    def __init__(self, path: str | os.PathLike[str]) -> None:
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        cleanup: Callable[[], None],
+    ) -> None:
         self.path = os.fsdecode(path)
-        super().__init__(
-            "Workspace data changed while this operation was reading it. "
-            f"Retry the operation to use the current saved data: {self.path}"
-        )
+        self._finalizer = weakref.finalize(self, cleanup)
 
 
 def _replace_h5_attrs(target_attrs, attrs: Mapping[typing.Any, typing.Any]) -> None:
@@ -263,42 +264,82 @@ class WorkspaceFileManager(CachingFileManager):
             manager_id=("erlab-workspace", *identity, "r+"),
         )
         self.workspace_path = target
-        self._file_replaced = False
+        self._workspace_manager_id = self._manager_id
+        self._preserved_generation: _WorkspaceFileGeneration | None = None
         with _WORKSPACE_FILE_MANAGERS_LOCK:
             managers = _WORKSPACE_FILE_MANAGERS.setdefault(target, weakref.WeakSet())
             managers.add(self)
 
-    def _acquire_with_cache_info(
-        self, needs_lock: bool = True
-    ) -> tuple[typing.Any, bool]:
-        if needs_lock:
-            with _workspace_file_lock(self.workspace_path):
-                return self._acquire_with_cache_info(needs_lock=False)
-        if self._file_replaced:
-            raise _WorkspaceFileReplacedError(self.workspace_path)
-        return super()._acquire_with_cache_info(needs_lock=False)
+    def _retarget(
+        self,
+        path: str,
+        manager_id: Hashable,
+    ) -> None:
+        """Move this manager to a distinct xarray cache generation."""
+        # CachingFileManager uses the key for both its cache and destructor
+        # reference count. Move both together so generations close independently.
+        self._ref_counter.decrement(self._key)
+        self._args = (path,)
+        self._manager_id = manager_id
+        self._key = self._make_key()
+        self._ref_counter.increment(self._key)
 
-    def _mark_file_replaced(self) -> None:
-        self._file_replaced = True
+    def _use_preserved_generation(self, generation: _WorkspaceFileGeneration) -> None:
+        self.close(needs_lock=False)
+        self._retarget(
+            generation.path,
+            ("erlab-workspace-generation", generation.path, "r+"),
+        )
+        self._preserved_generation = generation
+
+    def _restore_workspace_path(self) -> None:
+        if self._preserved_generation is None:
+            return
+        self.close(needs_lock=False)
+        self._retarget(self.workspace_path, self._workspace_manager_id)
+        self._preserved_generation = None
+
+
+def _detach_workspace_file_managers(
+    path: str | os.PathLike[str],
+) -> tuple[WorkspaceFileManager, ...]:
+    """Remove and return active readers for one workspace path."""
+    target = _normalized_file_path(path)
+    if target is None:
+        target = os.fsdecode(path)
+    with _WORKSPACE_FILE_MANAGERS_LOCK:
+        return tuple(_WORKSPACE_FILE_MANAGERS.pop(target, ()))
+
+
+def _restore_workspace_file_managers(
+    path: str | os.PathLike[str],
+    managers: Iterable[WorkspaceFileManager],
+) -> None:
+    """Restore detached readers after a workspace replacement fails."""
+    target = _normalized_file_path(path)
+    if target is None:
+        target = os.fsdecode(path)
+    managers = tuple(managers)
+    for manager in managers:
+        manager._restore_workspace_path()
+    with _WORKSPACE_FILE_MANAGERS_LOCK:
+        registered = _WORKSPACE_FILE_MANAGERS.setdefault(target, weakref.WeakSet())
+        registered.update(managers)
 
 
 def _close_workspace_file_managers(
     path: str | os.PathLike[str],
 ) -> tuple[WorkspaceFileManager, ...]:
-    """Close all cached manager-owned readers for one workspace path.
+    """Detach and close all manager-owned readers for one workspace path.
 
     The caller must hold the lock returned by :func:`_workspace_file_lock` for
-    the same path. This prevents a lazy reader from reopening the file while
-    the cached handles are being closed. The caller can retire the returned
-    managers after the replacement commits.
+    the same path. This prevents a lazy reader from reopening a cached handle
+    while it is being closed.
     """
     target = _normalized_file_path(path)
     if target is None:
         target = os.fsdecode(path)
-    with _WORKSPACE_FILE_MANAGERS_LOCK:
-        managers = tuple(_WORKSPACE_FILE_MANAGERS.get(target, ()))
-        if not managers:
-            _WORKSPACE_FILE_MANAGERS.pop(target, None)
+    managers = _detach_workspace_file_managers(target)
     for manager in managers:
         manager.close(needs_lock=False)
     return managers

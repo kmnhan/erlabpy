@@ -1,4 +1,5 @@
 import errno
+import gc
 import json
 import pathlib
 import threading
@@ -239,12 +240,19 @@ def test_write_full_workspace_tree_file_replaces_stale_root_attrs(tmp_path) -> N
         assert manifest == {"schema_version": 4, "root_order": [0], "nodes": []}
 
 
-def test_write_full_workspace_tree_file_closes_cached_workspace_reader(
+def test_write_full_workspace_tree_file_preserves_cached_workspace_reader(
     monkeypatch, tmp_path
 ) -> None:
     fname = tmp_path / "cached-reader.itws"
     _write_transaction_test_workspace(fname)
+    target = workspace_arrays._normalized_file_path(fname)
+    monkeypatch.setattr(
+        workspace_arrays,
+        "_workspace_file_identity",
+        lambda _path: (target, 0, 0, 0),
+    )
     manager = workspace_arrays.WorkspaceFileManager(fname)
+    original_cache_key = manager._key
     cached_file = manager.acquire()
     tree = xr.DataTree.from_dict(
         {"0/imagetool": _transaction_test_dataset(2.0, title="replacement")}
@@ -265,9 +273,14 @@ def test_write_full_workspace_tree_file_closes_cached_workspace_reader(
             fname, tree, _transaction_test_root_attrs()
         )
         assert replacement_checked
-        with pytest.raises(workspace_arrays._WorkspaceFileReplacedError, match="Retry"):
-            manager.acquire()
+        preserved_file = manager.acquire()
+        preserved_value = (
+            preserved_file.groups["0"].groups["imagetool"].variables["data"][()]
+        )
+        assert np.asarray(preserved_value).item() == 1.0
         reopened_manager = workspace_arrays.WorkspaceFileManager(fname)
+        assert manager._key != original_cache_key
+        assert reopened_manager._key == original_cache_key
         reopened_file = reopened_manager.acquire()
         value = reopened_file.groups["0"].groups["imagetool"].variables["data"][()]
         assert np.asarray(value).item() == 2.0
@@ -277,7 +290,9 @@ def test_write_full_workspace_tree_file_closes_cached_workspace_reader(
             workspace_arrays._close_workspace_file_managers(fname)
 
 
-def test_write_full_workspace_tree_file_retires_stale_lazy_dataarray(tmp_path) -> None:
+def test_write_full_workspace_tree_file_preserves_stale_lazy_dataarray(
+    tmp_path,
+) -> None:
     fname = tmp_path / "lazy-reader.itws"
     _write_transaction_test_workspace(fname)
     opened = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks={})
@@ -291,8 +306,7 @@ def test_write_full_workspace_tree_file_retires_stale_lazy_dataarray(tmp_path) -
         workspace_storage._write_full_workspace_tree_file(
             fname, tree, _transaction_test_root_attrs()
         )
-        with pytest.raises(workspace_arrays._WorkspaceFileReplacedError, match="Retry"):
-            lazy_data.compute()
+        assert lazy_data.compute().item() == 1.0
         reopened = workspace_arrays.open_workspace_dataset(
             fname, "0/imagetool", chunks={}
         )
@@ -304,6 +318,92 @@ def test_write_full_workspace_tree_file_retires_stale_lazy_dataarray(tmp_path) -
         tree.close()
         with workspace_arrays._workspace_file_lock(fname):
             workspace_arrays._close_workspace_file_managers(fname)
+
+
+def test_replace_workspace_file_keeps_reader_generations_isolated(tmp_path) -> None:
+    destination = tmp_path / "current.itws"
+
+    def _write_generation(path: pathlib.Path, value: float) -> None:
+        tree = xr.DataTree.from_dict(
+            {"0/imagetool": _transaction_test_dataset(value, title=str(value))}
+        )
+        try:
+            workspace_storage._write_full_workspace_tree_file(
+                path, tree, _transaction_test_root_attrs()
+            )
+        finally:
+            tree.close()
+
+    def _read_value(manager: workspace_arrays.WorkspaceFileManager) -> float:
+        h5_file = manager.acquire()
+        value = h5_file.groups["0"].groups["imagetool"].variables["data"][()]
+        return float(np.asarray(value).item())
+
+    _write_generation(destination, 1.0)
+    first_manager = workspace_arrays.WorkspaceFileManager(destination)
+    assert _read_value(first_manager) == 1.0
+
+    second_source = tmp_path / "second.itws"
+    _write_generation(second_source, 2.0)
+    workspace_storage._replace_workspace_file(second_source, destination)
+    second_manager = workspace_arrays.WorkspaceFileManager(destination)
+    assert _read_value(first_manager) == 1.0
+    assert _read_value(second_manager) == 2.0
+
+    third_source = tmp_path / "third.itws"
+    _write_generation(third_source, 3.0)
+    workspace_storage._replace_workspace_file(third_source, destination)
+    current_manager = workspace_arrays.WorkspaceFileManager(destination)
+    try:
+        assert _read_value(first_manager) == 1.0
+        assert _read_value(second_manager) == 2.0
+        assert _read_value(current_manager) == 3.0
+    finally:
+        first_manager.close()
+        second_manager.close()
+        with workspace_arrays._workspace_file_lock(destination):
+            workspace_arrays._close_workspace_file_managers(destination)
+
+
+def test_replace_workspace_file_copy_fallback_cleans_preserved_generation(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "new.itws"
+    destination = tmp_path / "current.itws"
+    _write_transaction_test_workspace(destination)
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(2.0, title="replacement")}
+    )
+    try:
+        workspace_storage._write_full_workspace_tree_file(
+            source, tree, _transaction_test_root_attrs()
+        )
+    finally:
+        tree.close()
+    manager = workspace_arrays.WorkspaceFileManager(destination)
+    manager.acquire()
+
+    def _fail_link(_source, _destination):
+        raise OSError(errno.EPERM, "hard links unavailable")
+
+    monkeypatch.setattr(workspace_storage.os, "link", _fail_link)
+    workspace_storage._replace_workspace_file(source, destination)
+
+    generation = manager._preserved_generation
+    assert generation is not None
+    generation_path = pathlib.Path(generation.path)
+    generation_directory = generation_path.parent
+    assert generation_path.exists()
+    assert generation_directory != tmp_path
+    preserved_file = manager.acquire()
+    value = preserved_file.groups["0"].groups["imagetool"].variables["data"][()]
+    assert np.asarray(value).item() == 1.0
+
+    manager.close()
+    del preserved_file, generation, manager
+    gc.collect()
+    assert not generation_path.exists()
+    assert not generation_directory.exists()
 
 
 def test_replace_workspace_file_blocks_new_readers_during_commit(
@@ -358,7 +458,7 @@ def test_replace_workspace_file_blocks_new_readers_during_commit(
     assert destination.read_bytes() == b"new"
 
 
-def test_replace_workspace_file_retires_in_flight_multichunk_reader(
+def test_replace_workspace_file_preserves_in_flight_multichunk_reader(
     monkeypatch, tmp_path
 ) -> None:
     from xarray.backends.h5netcdf_ import H5NetCDFArrayWrapper
@@ -418,10 +518,9 @@ def test_replace_workspace_file_retires_in_flight_multichunk_reader(
         opened.close()
 
     assert not compute_thread.is_alive()
-    assert results == []
-    assert len(errors) == 1
-    assert isinstance(errors[0], workspace_arrays._WorkspaceFileReplacedError)
-    assert "Retry the operation" in str(errors[0])
+    assert errors == []
+    assert len(results) == 1
+    np.testing.assert_array_equal(results[0], np.ones(8, dtype=np.float64))
 
     reopened = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks={})
     try:
@@ -485,6 +584,44 @@ def test_workspace_replace_retry_delays_only_allow_windows_sharing_errors(
     assert workspace_storage._workspace_replace_retry_delays(error) == ()
 
 
+def test_replace_workspace_file_preservation_failure_keeps_cached_reader(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "new.itws"
+    destination = tmp_path / "current.itws"
+    _write_transaction_test_workspace(destination)
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(2.0, title="replacement")}
+    )
+    try:
+        workspace_storage._write_full_workspace_tree_file(
+            source, tree, _transaction_test_root_attrs()
+        )
+    finally:
+        tree.close()
+    manager = workspace_arrays.WorkspaceFileManager(destination)
+    cached_file = manager.acquire()
+
+    def _fail_link(_source, _destination):
+        raise OSError(errno.EPERM, "hard links unavailable")
+
+    def _fail_copy(_source, _destination):
+        raise OSError(errno.ENOSPC, "copy failed")
+
+    monkeypatch.setattr(workspace_storage.os, "link", _fail_link)
+    monkeypatch.setattr(workspace_storage.shutil, "copyfile", _fail_copy)
+    try:
+        with pytest.raises(OSError, match="copy failed"):
+            workspace_storage._replace_workspace_file(source, destination)
+        assert manager.acquire() is cached_file
+        value = cached_file.groups["0"].groups["imagetool"].variables["data"][()]
+        assert np.asarray(value).item() == 1.0
+        assert source.exists()
+    finally:
+        with workspace_arrays._workspace_file_lock(destination):
+            workspace_arrays._close_workspace_file_managers(destination)
+
+
 def test_replace_workspace_file_failure_keeps_old_file_reader_usable(
     monkeypatch, tmp_path
 ) -> None:
@@ -517,6 +654,8 @@ def test_replace_workspace_file_failure_keeps_old_file_reader_usable(
         reopened_file = manager.acquire()
         value = reopened_file.groups["0"].groups["imagetool"].variables["data"][()]
         assert np.asarray(value).item() == 1.0
+        assert manager._preserved_generation is None
+        assert list(tmp_path.glob(".*.erlab-workspace-read")) == []
     finally:
         with workspace_arrays._workspace_file_lock(destination):
             workspace_arrays._close_workspace_file_managers(destination)

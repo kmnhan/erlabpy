@@ -5,6 +5,7 @@ import logging
 import os
 import pathlib
 import sys
+import threading
 import time
 import types
 import typing
@@ -5631,6 +5632,86 @@ def test_manager_background_full_save_rebinds_cached_lazy_workspace_data(
         rebound = manager.get_imagetool(0).slicer_area._data
         assert rebound.chunks is not None
         np.testing.assert_array_equal(rebound.compute(), data)
+
+
+def test_manager_background_full_save_preserves_post_snapshot_dask_edit(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(64 * 64, dtype=np.float64).reshape((64, 64)),
+            dims=["x", "y"],
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "background-full-dask-edit.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            fname, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        manager._workspace_controller.loading._rebind_workspace_backed_imagetools(
+            fname, targets=[0], chunks={}
+        )
+        tool = manager.get_imagetool(0)
+        assert tool.slicer_area.data_chunked
+
+        replacement_started = threading.Event()
+        allow_replacement = threading.Event()
+        original_replace = workspace_storage._replace_workspace_file
+        pause_replacement = True
+
+        def _pause_first_replacement(source, destination) -> None:
+            nonlocal pause_replacement
+            if pause_replacement and pathlib.Path(destination) == fname:
+                pause_replacement = False
+                replacement_started.set()
+                if not allow_replacement.wait(5):
+                    raise TimeoutError("Background replacement did not resume")
+            original_replace(source, destination)
+
+        monkeypatch.setattr(
+            workspace_storage, "_replace_workspace_file", _pause_first_replacement
+        )
+
+        uid = manager._tool_graph.root_wrappers[0].uid
+        manager._workspace_controller._mark_node_state_dirty(uid)
+        manager._workspace_state.needs_full_save = True
+        assert manager._workspace_controller.save()
+        try:
+            qtbot.wait_until(replacement_started.is_set, timeout=10000)
+            edited = tool.slicer_area._data + 10.0
+            tool.slicer_area.replace_source_data(
+                edited,
+                auto_compute=False,
+                emit_edited=True,
+            )
+        finally:
+            allow_replacement.set()
+
+        qtbot.wait_until(
+            lambda: not manager._workspace_state.save_in_progress, timeout=10000
+        )
+        assert manager.is_workspace_modified
+        assert uid in manager._workspace_state.dirty_data
+        np.testing.assert_array_equal(
+            tool.slicer_area._data.compute(), data.values + 10
+        )
+
+        assert _request_workspace_save_and_wait(qtbot, manager)
+        with h5py.File(fname, "r") as h5_file:
+            np.testing.assert_array_equal(
+                h5_file["0/imagetool"][_ITOOL_DATA_NAME][()], data.values + 10
+            )
 
 
 def test_manager_workspace_lazy_data_delta_pending_failure_preserves_old_group(
