@@ -92,13 +92,65 @@ class _PreservedWorkspaceFile:
 def _open_workspace_h5_file_for_update(
     fname: str | os.PathLike[str],
 ) -> Iterator[typing.Any]:
-    """Open a private workspace successor for mutation.
-
-    Published workspace files must not use this helper. High-level writers first
-    copy the published generation to a private successor and publish it atomically.
-    """
+    """Open a workspace file for mutation while its process lock is held."""
     with workspace_arrays._workspace_file_lock(fname), h5py.File(fname, "a") as h5_file:
         yield h5_file
+
+
+@contextlib.contextmanager
+def _workspace_in_place_update(
+    fname: str | os.PathLike[str],
+    *,
+    rewrite_groups: Iterable[str] = (),
+) -> Iterator[None]:
+    """Coordinate one recoverable in-place workspace update."""
+    with workspace_arrays._workspace_file_lock(fname):
+        generation = workspace_arrays._current_workspace_file_generation(fname)
+        initial_state = workspace_arrays._workspace_file_state(fname)
+        if generation is not None:
+            generation.close(needs_lock=False)
+            workspace_arrays._detach_workspace_file_generation_readers(
+                fname, rewrite_groups
+            )
+
+        body_error: BaseException | None = None
+        try:
+            yield
+        except BaseException as exc:
+            body_error = exc
+            raise
+        finally:
+            current_generation = workspace_arrays._current_workspace_file_generation(
+                fname
+            )
+            current_identity, current_exists = workspace_arrays._workspace_file_state(
+                fname
+            )
+            initial_identity, initial_exists = initial_state
+            same_file = (
+                initial_exists
+                and current_exists
+                and current_identity[1:3] == initial_identity[1:3]
+            )
+            if generation is not None and current_generation is generation:
+                if same_file:
+                    generation.refresh_in_place(current_identity)
+                else:
+                    generation.invalidate(
+                        "Workspace file changed during an in-place save: "
+                        f"{os.fsdecode(fname)}"
+                    )
+                    workspace_arrays._discard_workspace_file_generation(
+                        fname, generation
+                    )
+                    if body_error is None:
+                        raise _WorkspacePublicationConflictError(
+                            fname, "Workspace changed during its in-place save"
+                        )
+            elif not same_file and body_error is None:
+                raise _WorkspacePublicationConflictError(
+                    fname, "Workspace changed during its in-place save"
+                )
 
 
 def _iter_exception_chain(exc: BaseException) -> Iterator[BaseException]:
@@ -344,78 +396,6 @@ def _replace_workspace_file(
                 generation.dispose()
 
 
-@contextlib.contextmanager
-def _workspace_successor_file(
-    fname: str | os.PathLike[str],
-) -> Iterator[tuple[str, tuple[tuple[str, int, int, int], bool]]]:
-    """Copy one published workspace generation to a private successor."""
-    fname = os.fsdecode(fname)
-    tmp_dir: tempfile.TemporaryDirectory[str] | None = None
-    if _workspace_path_is_high_risk(fname):
-        tmp_dir = tempfile.TemporaryDirectory(prefix="erlab-itws-successor-")
-        successor = str(pathlib.Path(tmp_dir.name) / pathlib.Path(fname).name)
-    else:
-        successor = str(
-            pathlib.Path(fname).with_name(
-                f".{pathlib.Path(fname).name}.next-{uuid.uuid4().hex}.itws"
-            )
-        )
-
-    try:
-        with workspace_arrays._workspace_file_lock(fname):
-            generation = workspace_arrays._current_workspace_file_generation(fname)
-            if generation is not None:
-                generation.close(needs_lock=False)
-            expected_state = workspace_arrays._workspace_file_state(fname)
-            source_identity, source_exists = expected_state
-            if not source_exists:
-                raise FileNotFoundError(
-                    errno.ENOENT, "Workspace file is missing", fname
-                )
-            shutil.copyfile(fname, successor)
-            source_identity_after = workspace_arrays._workspace_file_identity(fname)
-            if source_identity_after[1:] != source_identity[1:]:
-                raise _WorkspacePublicationConflictError(
-                    fname, "Workspace changed while its successor was copied"
-                )
-        yield successor, expected_state
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(successor)
-        if tmp_dir is not None:
-            tmp_dir.cleanup()
-
-
-def _publish_workspace_successor(
-    successor: str | os.PathLike[str],
-    fname: str | os.PathLike[str],
-    expected_state: tuple[tuple[str, int, int, int], bool],
-) -> None:
-    """Validate, sync, and atomically publish one private successor."""
-    fname = os.fsdecode(fname)
-    successor = os.fsdecode(successor)
-    destination_tmp: str | None = None
-    _validate_workspace_h5_file(successor)
-    _fsync_file(successor)
-    try:
-        try:
-            _replace_workspace_file(successor, fname, expected_state=expected_state)
-        except OSError as err:
-            if err.errno != errno.EXDEV:
-                raise
-            destination_tmp = f"{fname}.tmp-{uuid.uuid4().hex}"
-            shutil.copyfile(successor, destination_tmp)
-            _fsync_file(destination_tmp)
-            _replace_workspace_file(
-                destination_tmp, fname, expected_state=expected_state
-            )
-        _fsync_parent_directory(fname)
-    finally:
-        if destination_tmp is not None:
-            with contextlib.suppress(FileNotFoundError):
-                os.remove(destination_tmp)
-
-
 def _workspace_use_incremental_enabled() -> bool:
     return bool(erlab.interactive.options.model.io.workspace.use_incremental)
 
@@ -588,9 +568,8 @@ def _cleanup_orphan_workspace_internal_groups(h5_file) -> None:
 def _workspace_transaction_recovery_needed(
     fname: str | os.PathLike[str],
 ) -> bool:
-    if not pathlib.Path(fname).exists():
-        return False
-    if not _workspace_path_is_itws(fname):
+    """Return True when a workspace contains unfinished transaction state."""
+    if not pathlib.Path(fname).exists() or not _workspace_path_is_itws(fname):
         return False
     with workspace_arrays._workspace_file_lock(fname):
         generation = workspace_arrays._current_workspace_file_generation(fname)
@@ -614,7 +593,7 @@ def _workspace_transaction_recovery_needed(
 def _recover_workspace_transactions_in_place(
     fname: str | os.PathLike[str],
 ) -> None:
-    """Recover transaction state in an unpublished workspace successor."""
+    """Recover transaction state while the workspace update lock is held."""
     with _open_workspace_h5_file_for_update(fname) as h5_file:
         if not _workspace_file_is_workspace(h5_file):
             return
@@ -628,9 +607,9 @@ def _recover_workspace_transactions_in_place(
 def _recover_workspace_transactions(fname: str | os.PathLike[str]) -> None:
     if not _workspace_transaction_recovery_needed(fname):
         return
-    with _workspace_successor_file(fname) as (successor, expected_state):
-        _recover_workspace_transactions_in_place(successor)
-        _publish_workspace_successor(successor, fname, expected_state)
+    with _workspace_in_place_update(fname):
+        _recover_workspace_transactions_in_place(fname)
+        _fsync_file(fname)
 
 
 def _write_root_attrs_to_open_workspace_file(
@@ -652,12 +631,7 @@ def _write_workspace_root_attrs_to_file(
     *,
     replace: bool = False,
 ) -> None:
-    _recover_workspace_transactions(fname)
-    with _workspace_successor_file(fname) as (successor, expected_state):
-        with _open_workspace_h5_file_for_update(successor) as h5_file:
-            _write_root_attrs_to_open_workspace_file(h5_file, attrs, replace=replace)
-            h5_file.flush()
-        _publish_workspace_successor(successor, fname, expected_state)
+    _write_workspace_root_attrs_transaction_file(fname, attrs, replace=replace)
 
 
 def _workspace_obsolete_estimate(
@@ -721,6 +695,33 @@ def _path_is_at_or_under(path: str, root_path: str) -> bool:
     path = path.strip("/")
     root_path = root_path.strip("/")
     return path == root_path or path.startswith(f"{root_path}/")
+
+
+def _workspace_missing_attr_fallback_groups(
+    fname: str | os.PathLike[str],
+    rewrite_paths: Iterable[str],
+    attr_updates: Iterable[
+        tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]]
+    ],
+) -> tuple[str, ...]:
+    """Return fallback groups needed for missing attribute targets."""
+    initial_paths = tuple(path.strip("/") for path in rewrite_paths)
+    required_paths = set(initial_paths)
+    with h5py.File(fname, "r") as h5_file:
+        for payload_path, _attrs, fallback in attr_updates:
+            attr_path = payload_path.strip("/")
+            if any(
+                _path_is_at_or_under(attr_path, rewrite_path)
+                for rewrite_path in required_paths
+            ):
+                continue
+            fallback_path = fallback[0].strip("/")
+            if attr_path not in h5_file and not any(
+                _path_is_at_or_under(fallback_path, rewrite_path)
+                for rewrite_path in required_paths
+            ):
+                required_paths.add(fallback_path)
+    return tuple(sorted(required_paths.difference(initial_paths)))
 
 
 def _move_h5_path(h5_file, source_path: str, destination_path: str) -> None:
@@ -837,6 +838,8 @@ def _commit_workspace_transaction(
         tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]]
     ],
     root_attrs: Mapping[str, typing.Any],
+    *,
+    replace_root_attrs: bool = False,
 ) -> None:
     with _open_workspace_h5_file_for_update(fname) as h5_file:
         _set_workspace_transaction_status(h5_file, txn_path, "committing")
@@ -857,8 +860,50 @@ def _commit_workspace_transaction(
             if target_attrs is not None:
                 workspace_arrays._replace_h5_attrs(target_attrs, attrs)
 
-        _write_root_attrs_to_open_workspace_file(h5_file, root_attrs)
+        _write_root_attrs_to_open_workspace_file(
+            h5_file, root_attrs, replace=replace_root_attrs
+        )
         _set_workspace_transaction_status(h5_file, txn_path, "committed")
+
+
+def _write_workspace_root_attrs_transaction_file(
+    fname: str | os.PathLike[str],
+    attrs: Mapping[str, typing.Any],
+    *,
+    replace: bool,
+) -> None:
+    """Write root attributes through the recoverable transaction protocol."""
+    _recover_workspace_transactions(fname)
+    txn_id = uuid.uuid4().hex
+    txn_path = f"{_WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
+    pending_root = f"{_WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
+    backup_root = f"{_WORKSPACE_BACKUP_GROUP_PREFIX}{txn_id}"
+    with _workspace_in_place_update(fname):
+        try:
+            group_operations, attr_updates = _prepare_workspace_transaction(
+                fname,
+                txn_path,
+                pending_root,
+                backup_root,
+                {},
+                (),
+                attrs,
+            )
+            _commit_workspace_transaction(
+                fname,
+                txn_path,
+                group_operations,
+                attr_updates,
+                attrs,
+                replace_root_attrs=replace,
+            )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                _recover_workspace_transactions_in_place(fname)
+                _fsync_file(fname)
+            raise
+        _recover_workspace_transactions_in_place(fname)
+        _fsync_file(fname)
 
 
 def _write_workspace_transaction_file(
@@ -871,62 +916,54 @@ def _write_workspace_transaction_file(
     *,
     compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
-    """Publish one copy-on-write workspace update.
-
-    Recovery of legacy transaction groups happens before the copy. All new changes
-    are then made only in the unpublished successor, so a failed update needs no
-    rollback and cannot expose partial groups in the canonical file.
-    """
+    """Write one recoverable incremental workspace transaction."""
     _recover_workspace_transactions(fname)
-    with _workspace_successor_file(fname) as (successor, expected_state):
-        rewrite_map = {
-            group_path.strip("/"): (group_path, constructor)
-            for group_path, constructor in rewrite_groups
-        }
-        attr_updates_to_write: list[
-            tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]]
-        ] = []
-        with _open_workspace_h5_file_for_update(successor) as h5_file:
-            for payload_path, attrs, fallback in attr_updates:
-                attr_path = payload_path.strip("/")
-                if any(
-                    _path_is_at_or_under(attr_path, rewrite_path)
-                    for rewrite_path in rewrite_map
-                ):
-                    continue
-                if attr_path in h5_file:
-                    attr_updates_to_write.append((payload_path, attrs, fallback))
-                    continue
-                fallback_path = fallback[0].strip("/")
-                if not any(
-                    _path_is_at_or_under(fallback_path, rewrite_path)
-                    for rewrite_path in rewrite_map
-                ):
-                    rewrite_map[fallback_path] = fallback
-
-            for group_path in sorted(rewrite_map):
-                workspace_arrays._delete_h5_path(h5_file, group_path)
-            h5_file.flush()
-
-        for group_path, (rewrite_group_path, constructor) in sorted(
-            rewrite_map.items()
-        ):
-            _write_workspace_constructor_groups_to_path(
-                successor,
-                constructor,
-                rewrite_group_path,
-                group_path,
+    rewrite_map = {
+        group_path.strip("/"): (group_path, constructor)
+        for group_path, constructor in rewrite_groups
+    }
+    attr_updates_tuple = tuple(attr_updates)
+    txn_id = uuid.uuid4().hex
+    txn_path = f"{_WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
+    pending_root = f"{_WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
+    backup_root = f"{_WORKSPACE_BACKUP_GROUP_PREFIX}{txn_id}"
+    with _workspace_in_place_update(fname, rewrite_groups=rewrite_map):
+        try:
+            missing_fallback_groups = _workspace_missing_attr_fallback_groups(
+                fname, rewrite_map, attr_updates_tuple
+            )
+            workspace_arrays._detach_workspace_file_generation_readers(
+                fname, missing_fallback_groups
+            )
+            group_operations, attr_updates_to_write = _prepare_workspace_transaction(
+                fname,
+                txn_path,
+                pending_root,
+                backup_root,
+                rewrite_map,
+                attr_updates_tuple,
+                root_attrs,
+            )
+            _write_workspace_transaction_pending_groups(
+                fname,
+                rewrite_map,
+                pending_root,
                 compression_mode=compression_mode,
             )
-
-        with _open_workspace_h5_file_for_update(successor) as h5_file:
-            for payload_path, attrs, _fallback in attr_updates_to_write:
-                target_attrs = _workspace_txn_attr_target(h5_file, payload_path)
-                if target_attrs is not None:
-                    workspace_arrays._replace_h5_attrs(target_attrs, attrs)
-            _write_root_attrs_to_open_workspace_file(h5_file, root_attrs)
-            h5_file.flush()
-        _publish_workspace_successor(successor, fname, expected_state)
+            _commit_workspace_transaction(
+                fname,
+                txn_path,
+                group_operations,
+                attr_updates_to_write,
+                root_attrs,
+            )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                _recover_workspace_transactions_in_place(fname)
+                _fsync_file(fname)
+            raise
+        _recover_workspace_transactions_in_place(fname)
+        _fsync_file(fname)
 
 
 def _write_full_workspace_tree_file(

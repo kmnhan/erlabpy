@@ -36,6 +36,12 @@ from tests.interactive.imagetool.manager.workspace._support import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _cleanup_workspace_session_exports() -> typing.Iterator[None]:
+    yield
+    workspace_arrays._cleanup_workspace_session_exports()
+
+
 def test_workspace_h5py_helpers_reject_non_workspace_files(tmp_path) -> None:
 
     fname = tmp_path / "not-workspace.itws"
@@ -95,11 +101,11 @@ def test_workspace_file_generation_registration_uses_short_registry_lock(
         )
         return generation_type(*args, **kwargs)
 
-    def _add_manager(generation) -> None:
+    def _add_manager(generation, manager=None) -> None:
         lease_lock_states.append(
             workspace_arrays._WORKSPACE_FILE_GENERATIONS_LOCK.locked()
         )
-        original_add_manager(generation)
+        original_add_manager(generation, manager)
 
     monkeypatch.setattr(workspace_arrays, "_WorkspaceFileGeneration", _new_generation)
     monkeypatch.setattr(generation_type, "add_manager", _add_manager)
@@ -166,6 +172,26 @@ def test_workspace_reader_helpers_reject_unsafe_directory_and_names(tmp_path) ->
         )
 
 
+def test_workspace_session_exports_do_not_delete_parent_files_after_fork(
+    tmp_path,
+) -> None:
+    export_path = tmp_path / "parent-export.itws"
+    export_path.write_bytes(b"parent")
+    reader_file = workspace_arrays._WorkspaceReaderFile(
+        str(export_path), export_path.unlink
+    )
+    key = (str(tmp_path / "workspace.itws"), 1, 2, 3, "/")
+    workspace_arrays._WORKSPACE_SESSION_EXPORTS[key] = reader_file
+    old_lock = workspace_arrays._WORKSPACE_SESSION_EXPORTS_LOCK
+
+    workspace_arrays._reset_workspace_session_exports_after_fork()
+
+    assert workspace_arrays._WORKSPACE_SESSION_EXPORTS == {}
+    assert workspace_arrays._WORKSPACE_SESSION_EXPORTS_LOCK is not old_lock
+    assert export_path.exists()
+    reader_file.cleanup()
+
+
 def test_workspace_file_manager_finalizer_defers_cleanup(tmp_path) -> None:
     fname = tmp_path / "deferred-cleanup.itws"
     xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(fname, engine="h5netcdf")
@@ -214,54 +240,78 @@ def test_workspace_file_manager_opens_published_generation_read_only(tmp_path) -
         manager.close()
 
 
-def test_workspace_file_manager_copies_windows_process_export(
-    monkeypatch, tmp_path
-) -> None:
-    fname = tmp_path / "windows-export.itws"
+def test_workspace_file_manager_copies_process_export(monkeypatch, tmp_path) -> None:
+    fname = tmp_path / "process-export.itws"
     xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(fname, engine="h5netcdf")
     manager = workspace_arrays.WorkspaceFileManager(fname)
-    copy_only_values: list[bool] = []
-    original_create = workspace_arrays._create_workspace_reader_file
+    exported_groups: list[str] = []
+    original_create = workspace_arrays._create_workspace_group_reader_file
 
-    def _create_reader_file(*args, copy_only=False, **kwargs):
-        copy_only_values.append(copy_only)
-        return original_create(*args, copy_only=copy_only, **kwargs)
+    def _create_reader_file(source, workspace, group, **kwargs):
+        exported_groups.append(group)
+        return original_create(source, workspace, group, **kwargs)
 
-    monkeypatch.setattr(workspace_arrays, "_WORKSPACE_EXPORT_REQUIRES_COPY", True)
     monkeypatch.setattr(
-        workspace_arrays, "_create_workspace_reader_file", _create_reader_file
+        workspace_arrays, "_create_workspace_group_reader_file", _create_reader_file
     )
     try:
-        _workspace_path, export_path, _identity = manager.__getstate__()
-        assert copy_only_values == [True]
+        _workspace_path, export_path, _identity, group = manager.__getstate__()
+        assert exported_groups == ["/"]
+        assert group == "/"
         assert not pathlib.Path(export_path).samefile(fname)
     finally:
         manager.close()
 
 
-def test_workspace_file_manager_export_is_owned_by_sender_generation(tmp_path) -> None:
-    fname = tmp_path / "owned-export.itws"
+def test_workspace_file_manager_exports_only_requested_group(tmp_path) -> None:
+    fname = tmp_path / "group-export.itws"
+    tree = xr.DataTree.from_dict(
+        {
+            "0/imagetool": xr.Dataset({"data": ("x", np.arange(3))}),
+            "1/imagetool": xr.Dataset({"data": ("x", np.arange(3) + 10)}),
+        }
+    )
+    try:
+        workspace_storage._write_full_workspace_tree_file(
+            fname, tree, _transaction_test_root_attrs()
+        )
+    finally:
+        tree.close()
+    manager = workspace_arrays.WorkspaceFileManager(fname, "0/imagetool")
+
+    try:
+        _workspace_path, export_path, _identity, group = manager.__getstate__()
+        assert group == "/0/imagetool"
+        with h5py.File(export_path, "r") as export_file:
+            assert set(export_file) == {"0"}
+            assert set(export_file["0"]) == {"imagetool"}
+            np.testing.assert_array_equal(export_file["0/imagetool/data"], np.arange(3))
+    finally:
+        manager.close()
+
+
+def test_workspace_file_manager_export_is_owned_by_sender_session(tmp_path) -> None:
+    fname = tmp_path / "session-export.itws"
     xr.Dataset({"data": ("x", np.arange(6))}).to_netcdf(fname, engine="h5netcdf")
     manager = workspace_arrays.WorkspaceFileManager(fname)
     generation = manager._generation
-    state = manager.__getstate__()
-    export_path = pathlib.Path(state[1])
-    restored = workspace_arrays.WorkspaceFileManager.__new__(
-        workspace_arrays.WorkspaceFileManager
-    )
-    restored.__setstate__(state)
+    serialized = pickle.dumps(manager)
+    export_path = pathlib.Path(manager.__getstate__()[1])
 
     manager._finalizer()
     with workspace_arrays._workspace_file_lock(fname):
         workspace_arrays._cleanup_workspace_file_generation_locked(generation)
 
+    restored = pickle.loads(serialized)
     try:
-        assert not export_path.exists()
+        assert export_path.exists()
         np.testing.assert_array_equal(
             restored.acquire().variables["data"][:], np.arange(6)
         )
     finally:
         restored.close()
+        workspace_arrays._cleanup_workspace_session_exports()
+    assert not export_path.exists()
 
 
 def test_workspace_file_manager_rejects_missing_serialized_export(tmp_path) -> None:
@@ -281,12 +331,13 @@ def test_workspace_file_manager_rejects_missing_serialized_export(tmp_path) -> N
         manager.close()
 
 
-def test_workspace_file_manager_root_attr_update_publishes_new_generation(
+def test_workspace_file_manager_root_attr_update_refreshes_current_generation(
     tmp_path,
 ) -> None:
     fname = tmp_path / "updated-export.itws"
     _write_transaction_test_workspace(fname)
     manager = workspace_arrays.WorkspaceFileManager(fname)
+    generation = manager._generation
     serialized_before = pickle.dumps(manager)
 
     workspace_storage._write_workspace_root_attrs_to_file(
@@ -300,8 +351,10 @@ def test_workspace_file_manager_root_attr_update_publishes_new_generation(
 
     before = pickle.loads(serialized_before)
     try:
-        assert manager._generation.retired
-        assert "generation_marker" not in manager.acquire().attrs
+        assert manager._generation is generation
+        assert current._generation is generation
+        assert not generation.retired
+        assert manager.acquire().attrs["generation_marker"] == "updated"
         assert "generation_marker" not in before.acquire().attrs
         assert current.acquire().attrs["generation_marker"] == "updated"
     finally:
@@ -320,15 +373,17 @@ def test_workspace_file_manager_export_rejects_source_change(
         replacement, engine="h5netcdf"
     )
     manager = workspace_arrays.WorkspaceFileManager(destination)
-    original_create = workspace_arrays._create_workspace_reader_file
+    original_create = workspace_arrays._create_workspace_group_reader_file
 
-    def _create_then_replace(source, workspace_path, **kwargs):
-        result = original_create(source, workspace_path, **kwargs)
+    def _create_then_replace(source, workspace_path, group, **kwargs):
+        result = original_create(source, workspace_path, group, **kwargs)
         os.replace(replacement, destination)
         return result
 
     monkeypatch.setattr(
-        workspace_arrays, "_create_workspace_reader_file", _create_then_replace
+        workspace_arrays,
+        "_create_workspace_group_reader_file",
+        _create_then_replace,
     )
     try:
         with pytest.raises(RuntimeError, match="changed while it was being exported"):
@@ -473,7 +528,7 @@ def test_workspace_file_manager_serialization_pins_replaced_generation(
     xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(destination, engine="h5netcdf")
     xr.Dataset({"data": ("x", np.arange(3) + 1)}).to_netcdf(source, engine="h5netcdf")
     manager = workspace_arrays.WorkspaceFileManager(destination)
-    _workspace_path, export_path, _identity = manager.__getstate__()
+    _workspace_path, export_path, _identity, _group = manager.__getstate__()
     assert pathlib.Path(export_path) != destination.resolve()
     serialized = pickle.dumps(manager)
 
@@ -1017,7 +1072,7 @@ def test_open_workspace_dataset_uses_fsdecode_fallback(monkeypatch) -> None:
     calls: list[tuple[object, str, str | None]] = []
 
     class _FakeFileManager:
-        def __init__(self, path: str) -> None:
+        def __init__(self, path: str, _group: str = "/") -> None:
             self.workspace_path = path
 
     def _fake_open(file_manager, group: str, *, chunks: str | None):
@@ -1054,11 +1109,14 @@ def test_open_workspace_datatree_closes_partial_groups_on_error(monkeypatch) -> 
     class _FakeFileManager:
         workspace_path = "fallback.itws"
 
-        def __init__(self, _path: str) -> None:
+        def __init__(self, _path: str, _group: str = "/") -> None:
             pass
 
         def acquire_context(self):
             return contextlib.nullcontext(object())
+
+        def _release(self) -> None:
+            pass
 
     def _fake_open(_file_manager, group_path: str, *, chunks: str | None):
         if group_path == "/broken":

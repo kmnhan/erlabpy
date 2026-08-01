@@ -80,8 +80,9 @@ def test_workspace_metadata_failure_leaves_published_generation_unchanged(
             )
 
         export_after = pathlib.Path(manager.__getstate__()[1])
-        assert export_after == export_before
         with h5py.File(export_before, "r") as h5_file:
+            assert "partial_update" not in h5_file.attrs
+        with h5py.File(export_after, "r") as h5_file:
             assert "partial_update" not in h5_file.attrs
         with h5py.File(fname, "r") as h5_file:
             assert "partial_update" not in h5_file.attrs
@@ -1712,6 +1713,62 @@ def test_workspace_transaction_attr_update_encodes_non_native_values(tmp_path) -
     _assert_no_workspace_internal_groups(fname)
 
 
+def test_workspace_transaction_does_not_copy_or_replace_full_file(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "incremental.itws"
+    _write_transaction_test_workspace(fname)
+
+    def _fail_full_file_operation(*_args, **_kwargs):
+        raise AssertionError("incremental save used a full-file operation")
+
+    monkeypatch.setattr(workspace_storage.shutil, "copyfile", _fail_full_file_operation)
+    monkeypatch.setattr(workspace_storage.os, "replace", _fail_full_file_operation)
+
+    workspace_storage._write_workspace_transaction_file(
+        fname,
+        (("0", {"0/imagetool": _transaction_test_dataset(4.0, title="new")}),),
+        (),
+        _transaction_test_root_attrs(delta_save_count=1),
+    )
+
+    assert _read_transaction_test_value(fname) == 4.0
+
+
+def test_workspace_attr_transaction_does_not_copy_unchanged_payload(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "attr-only.itws"
+    _write_transaction_test_workspace(fname)
+    manager = workspace_arrays.WorkspaceFileManager(fname, "0/imagetool")
+    fallback = (
+        "0",
+        {"0/imagetool": _transaction_test_dataset(2.0, title="fallback")},
+    )
+
+    def _fail_payload_copy(*_args, **_kwargs):
+        raise AssertionError("attribute-only save copied an unchanged payload")
+
+    monkeypatch.setattr(
+        workspace_arrays,
+        "_create_workspace_group_reader_file",
+        _fail_payload_copy,
+    )
+    try:
+        workspace_storage._write_workspace_transaction_file(
+            fname,
+            (),
+            (("0/imagetool", {"itool_title": "new"}, fallback),),
+            _transaction_test_root_attrs(delta_save_count=1),
+        )
+        assert (
+            manager.acquire().groups["0"].groups["imagetool"].attrs["itool_title"]
+            == "new"
+        )
+    finally:
+        manager.close()
+
+
 def test_workspace_transaction_publishes_immutable_reader_generation(tmp_path) -> None:
     fname = tmp_path / "immutable-delta.itws"
     _write_transaction_test_workspace(fname, value=1.0)
@@ -1731,6 +1788,74 @@ def test_workspace_transaction_publishes_immutable_reader_generation(tmp_path) -
     finally:
         before.close()
         after.close()
+
+
+def test_workspace_transaction_switches_waiting_reader_before_commit(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "waiting-reader.itws"
+    _write_transaction_test_workspace(fname, value=1.0)
+    manager = workspace_arrays.WorkspaceFileManager(fname, "0/imagetool")
+    snapshot_started = threading.Event()
+    allow_snapshot = threading.Event()
+    reader_finished = threading.Event()
+    errors: list[BaseException] = []
+    values: list[float] = []
+    original_snapshot = workspace_arrays._create_workspace_group_reader_file
+
+    def _pause_snapshot(*args, **kwargs):
+        snapshot_started.set()
+        if not allow_snapshot.wait(2):
+            raise TimeoutError("Reader snapshot test did not resume")
+        return original_snapshot(*args, **kwargs)
+
+    def _write() -> None:
+        try:
+            workspace_storage._write_workspace_transaction_file(
+                fname,
+                (
+                    (
+                        "0",
+                        {"0/imagetool": _transaction_test_dataset(2.0, title="new")},
+                    ),
+                ),
+                (),
+                _transaction_test_root_attrs(delta_save_count=1),
+            )
+        except BaseException as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+
+    def _read() -> None:
+        try:
+            h5_file = manager.acquire()
+            value = h5_file.groups["0"].groups["imagetool"].variables["data"][()]
+            values.append(float(np.asarray(value).item()))
+        except BaseException as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+        finally:
+            reader_finished.set()
+
+    monkeypatch.setattr(
+        workspace_arrays, "_create_workspace_group_reader_file", _pause_snapshot
+    )
+    writer = threading.Thread(target=_write)
+    reader = threading.Thread(target=_read)
+    writer.start()
+    assert snapshot_started.wait(2)
+    reader.start()
+    try:
+        assert not reader_finished.wait(0.05)
+    finally:
+        allow_snapshot.set()
+        writer.join(2)
+        reader.join(2)
+        manager.close()
+
+    assert not writer.is_alive()
+    assert not reader.is_alive()
+    assert errors == []
+    assert values == [1.0]
+    assert _read_transaction_test_value(fname) == 2.0
 
 
 def test_workspace_recovery_cleans_orphan_internal_groups(tmp_path) -> None:
