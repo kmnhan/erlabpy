@@ -288,7 +288,9 @@ class WorkspaceFileManager(CachingFileManager):
         self.close(needs_lock=False)
         self._retarget(
             generation.path,
-            ("erlab-workspace-generation", generation.path, "r+"),
+            # The cache key must retain the generation while its file handle is
+            # cached. Cleanup can then run only after xarray closes that handle.
+            ("erlab-workspace-generation", generation, generation.path, "r+"),
         )
         self._preserved_generation = generation
 

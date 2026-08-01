@@ -5,6 +5,7 @@ import pathlib
 import threading
 import types
 import typing
+import weakref
 
 import h5py
 import hdf5plugin
@@ -415,6 +416,69 @@ def test_replace_workspace_file_copy_fallback_cleans_preserved_generation(
     gc.collect()
     assert not generation_path.exists()
     assert not generation_directory.exists()
+
+
+def test_replace_workspace_file_generation_lives_until_cached_handle_closes(
+    tmp_path,
+) -> None:
+    from xarray.backends.file_manager import FILE_CACHE
+
+    source = tmp_path / "new.itws"
+    destination = tmp_path / "current.itws"
+    _write_transaction_test_workspace(destination)
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(2.0, title="replacement")}
+    )
+    try:
+        workspace_storage._write_full_workspace_tree_file(
+            source, tree, _transaction_test_root_attrs()
+        )
+    finally:
+        tree.close()
+
+    manager = workspace_arrays.WorkspaceFileManager(destination)
+    manager.acquire()
+    workspace_storage._replace_workspace_file(source, destination)
+    manager.acquire()
+    generation = manager._preserved_generation
+    assert generation is not None
+    generation_path = pathlib.Path(generation.path)
+    generation_ref = weakref.ref(generation)
+    cache_key_id = id(manager._key)
+    del generation
+
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+    lock = workspace_arrays._workspace_file_lock(destination)
+
+    def _hold_workspace_lock() -> None:
+        with lock:
+            lock_held.set()
+            release_lock.wait(2)
+
+    lock_thread = threading.Thread(target=_hold_workspace_lock)
+    lock_thread.start()
+    assert lock_held.wait(2)
+    try:
+        del manager
+        gc.collect()
+        generation_alive_while_cached = generation_ref() is not None
+        generation_exists_while_cached = generation_path.exists()
+        cache_key = next(key for key in FILE_CACHE if id(key) == cache_key_id)
+    finally:
+        release_lock.set()
+        lock_thread.join(2)
+
+    assert not lock_thread.is_alive()
+    cached_file = FILE_CACHE.pop(cache_key)
+    cached_file.close()
+    del cache_key, cached_file
+    gc.collect()
+
+    assert generation_alive_while_cached
+    assert generation_exists_while_cached
+    assert generation_ref() is None
+    assert not generation_path.exists()
 
 
 def test_replace_workspace_file_blocks_new_readers_during_commit(
