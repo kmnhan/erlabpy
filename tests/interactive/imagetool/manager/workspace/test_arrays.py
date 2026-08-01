@@ -1,4 +1,5 @@
 import contextlib
+import gc
 import json
 import logging
 import os
@@ -86,6 +87,72 @@ def test_workspace_file_manager_is_pickleable(tmp_path) -> None:
         np.testing.assert_array_equal(data, np.arange(6))
     finally:
         restored.close()
+
+
+def test_workspace_file_manager_cache_evicts_old_handles(tmp_path) -> None:
+    paths = [tmp_path / f"cache-{index}.itws" for index in range(3)]
+    for path in paths:
+        xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(path, engine="h5netcdf")
+
+    managers = [workspace_arrays.WorkspaceFileManager(path) for path in paths]
+    try:
+        with xr.set_options(file_cache_maxsize=1):
+            first_file = managers[0].acquire()
+            second_file = managers[1].acquire()
+            assert first_file._closed
+
+            third_file = managers[2].acquire()
+            assert second_file._closed
+            assert not third_file._closed
+    finally:
+        for manager in managers:
+            manager.close()
+
+
+def test_workspace_file_manager_serialization_rejects_replaced_generation(
+    tmp_path,
+) -> None:
+    destination = tmp_path / "current.itws"
+    source = tmp_path / "replacement.itws"
+    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(destination, engine="h5netcdf")
+    xr.Dataset({"data": ("x", np.arange(3) + 1)}).to_netcdf(source, engine="h5netcdf")
+    manager = workspace_arrays.WorkspaceFileManager(destination)
+    serialized = pickle.dumps(manager)
+
+    workspace_storage._replace_workspace_file(source, destination)
+
+    try:
+        with pytest.raises(TypeError, match="replaced workspace generation"):
+            pickle.dumps(manager)
+        with pytest.raises(
+            RuntimeError, match="changed after its reader was serialized"
+        ):
+            pickle.loads(serialized)
+    finally:
+        manager.close()
+        del manager
+        gc.collect()
+
+
+def test_disposed_workspace_generation_rejects_reuse(tmp_path) -> None:
+    fname = tmp_path / "disposed.itws"
+    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(fname, engine="h5netcdf")
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    generation = manager._generation
+    manager._finalizer.detach()
+    assert generation.remove_manager()
+
+    with workspace_arrays._workspace_file_lock(fname):
+        workspace_arrays._cleanup_workspace_file_generation_locked(generation)
+
+    with pytest.raises(RuntimeError, match="no longer available"):
+        generation.acquire(needs_lock=True)
+    with pytest.raises(RuntimeError, match="no longer available"):
+        generation.acquire_context(needs_lock=True)
+    with pytest.raises(RuntimeError, match="no longer available"):
+        generation.add_manager()
+    assert not generation.schedule_cleanup()
+    generation.dispose()
 
 
 @pytest.mark.parametrize("already_open", [False, True])
@@ -509,7 +576,9 @@ def test_workspace_file_manager_uses_fsdecode_fallback(monkeypatch) -> None:
     )
     monkeypatch.setattr(workspace_arrays, "_normalized_file_path", lambda _path: None)
     monkeypatch.setattr(
-        workspace_arrays, "_workspace_file_identity", lambda path: (path, 0, 0, 0)
+        workspace_arrays,
+        "_workspace_file_identity",
+        lambda path: (path, 0, 0, 0),
     )
 
     file_manager = workspace_arrays.WorkspaceFileManager("fallback.itws")

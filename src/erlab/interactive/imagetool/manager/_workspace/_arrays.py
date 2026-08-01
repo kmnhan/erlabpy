@@ -13,7 +13,7 @@ import h5netcdf
 import hdf5plugin
 import numpy as np
 import xarray as xr
-from xarray.backends import FileManager, H5NetCDFStore
+from xarray.backends import CachingFileManager, FileManager, H5NetCDFStore
 
 import erlab
 from erlab.interactive.imagetool import _serialization
@@ -37,10 +37,12 @@ from erlab.interactive.imagetool.manager._workspace._format import (
     _workspace_serializable_attrs,
 )
 
-_WORKSPACE_FILE_LOCKS: dict[str, threading.RLock] = {}
-# Keep current generations alive even when their last manager is released while
-# another thread owns the path lock. A later replacement must still find and
-# close the generation's file handle.
+_WORKSPACE_FILE_LOCKS: weakref.WeakValueDictionary[str, threading.RLock] = (
+    weakref.WeakValueDictionary()
+)
+_WORKSPACE_FILE_LOCKS_LOCK = threading.Lock()
+# Current generations stay alive until their final reader lease is cleaned up.
+# This lets a save find and close a handle even when final lease release races it.
 _WORKSPACE_FILE_GENERATIONS: dict[str, _WorkspaceFileGeneration] = {}
 _WORKSPACE_FILE_GENERATIONS_LOCK = threading.Lock()
 _WORKSPACE_COMPRESSION_MIN_BYTES = 1 << 20  # 1 MiB
@@ -53,7 +55,7 @@ _WORKSPACE_H5PY_DIMENSION_SCALE_ATTRS = frozenset(
 
 
 class _WorkspaceFileGenerationResources:
-    """File resources owned by one workspace generation."""
+    """Evictable handle and preserved file owned by one generation."""
 
     def __init__(
         self,
@@ -62,46 +64,57 @@ class _WorkspaceFileGenerationResources:
     ) -> None:
         self.path = path
         self.lock = lock
-        self.file: typing.Any | None = None
+        self.file_manager: CachingFileManager[typing.Any] | None = (
+            self._new_file_manager(path)
+        )
         self.cleanup: Callable[[], None] | None = None
 
-    @contextlib.contextmanager
-    def optional_lock(self, needs_lock: bool) -> Iterator[None]:
-        if needs_lock:
-            with self.lock:
-                yield
-        else:
-            yield
+    def _new_file_manager(self, path: str) -> CachingFileManager[typing.Any]:
+        return CachingFileManager(
+            h5netcdf.File,
+            path,
+            mode="r+",
+            kwargs={
+                "invalid_netcdf": None,
+                "phony_dims": "sort",
+                "decode_vlen_strings": True,
+            },
+            lock=self.lock,
+        )
 
-    def acquire(self, *, needs_lock: bool) -> tuple[typing.Any, bool]:
-        with self.optional_lock(needs_lock):
-            if self.file is None:
-                self.file = h5netcdf.File(
-                    self.path,
-                    mode="r+",
-                    invalid_netcdf=None,
-                    phony_dims="sort",
-                    decode_vlen_strings=True,
-                )
-                return self.file, True
-            return self.file, False
+    def acquire(self, *, needs_lock: bool) -> typing.Any:
+        file_manager = self.file_manager
+        if file_manager is None:
+            raise RuntimeError("Workspace file generation is no longer available")
+        return file_manager.acquire(needs_lock=needs_lock)
+
+    def acquire_context(
+        self, *, needs_lock: bool
+    ) -> contextlib.AbstractContextManager[typing.Any]:
+        file_manager = self.file_manager
+        if file_manager is None:
+            raise RuntimeError("Workspace file generation is no longer available")
+        return file_manager.acquire_context(needs_lock=needs_lock)
 
     def close(self, *, needs_lock: bool) -> None:
-        with self.optional_lock(needs_lock):
-            file = self.file
-            self.file = None
-            if file is not None:
-                file.close()
+        file_manager = self.file_manager
+        if file_manager is not None:
+            file_manager.close(needs_lock=needs_lock)
 
     def retire(self, path: str, cleanup: Callable[[], None]) -> None:
+        self.close(needs_lock=False)
         self.path = path
+        self.file_manager = self._new_file_manager(path)
         self.cleanup = cleanup
 
     def release(self) -> None:
-        with contextlib.suppress(Exception):
-            self.close(needs_lock=False)
+        file_manager = self.file_manager
+        self.file_manager = None
         cleanup = self.cleanup
         self.cleanup = None
+        with contextlib.suppress(Exception):
+            if file_manager is not None:
+                file_manager.close(needs_lock=False)
         if cleanup is not None:
             with contextlib.suppress(Exception):
                 cleanup()
@@ -123,6 +136,8 @@ class _WorkspaceFileGeneration:
         self._manager_count = 0
         self._state_lock = threading.Lock()
         self._retired = False
+        self._cleanup_scheduled = False
+        self._disposed = False
         self._finalizer = weakref.finalize(self, self._resources.release)
 
     @property
@@ -131,10 +146,13 @@ class _WorkspaceFileGeneration:
 
     @property
     def retired(self) -> bool:
-        return self._retired
+        with self._state_lock:
+            return self._retired
 
     def add_manager(self) -> None:
         with self._state_lock:
+            if self._disposed:
+                raise RuntimeError("Workspace file generation is no longer available")
             self._manager_count += 1
 
     def remove_manager(self) -> bool:
@@ -147,28 +165,48 @@ class _WorkspaceFileGeneration:
             return self._manager_count != 0
 
     def acquire(self, *, needs_lock: bool) -> typing.Any:
-        file, _ = self._resources.acquire(needs_lock=needs_lock)
-        return file
+        return self._resources.acquire(needs_lock=needs_lock)
 
-    @contextlib.contextmanager
-    def acquire_context(self, *, needs_lock: bool) -> Iterator[typing.Any]:
-        file, opened = self._resources.acquire(needs_lock=needs_lock)
-        try:
-            yield file
-        except Exception:
-            if opened:
-                self.close(needs_lock=needs_lock)
-            raise
+    def acquire_context(
+        self, *, needs_lock: bool
+    ) -> contextlib.AbstractContextManager[typing.Any]:
+        return self._resources.acquire_context(needs_lock=needs_lock)
 
     def close(self, *, needs_lock: bool) -> None:
         self._resources.close(needs_lock=needs_lock)
 
     def retire(self, path: str, cleanup: Callable[[], None]) -> None:
         self._resources.retire(path, cleanup)
-        self._retired = True
+        with self._state_lock:
+            self._retired = True
 
     def refresh_file_identity(self) -> None:
         self.file_identity = _workspace_file_identity(self.workspace_path)
+
+    def schedule_cleanup(self) -> bool:
+        """Mark cleanup as pending if no worker already owns it."""
+        with self._state_lock:
+            if self._manager_count != 0 or self._disposed or self._cleanup_scheduled:
+                return False
+            self._cleanup_scheduled = True
+            return True
+
+    def keep_if_in_use(self) -> bool:
+        """Cancel pending cleanup when this generation has a new reader."""
+        with self._state_lock:
+            if self._manager_count == 0:
+                return False
+            self._cleanup_scheduled = False
+            return True
+
+    def dispose(self) -> None:
+        """Release this generation once it has no reader leases."""
+        with self._state_lock:
+            if self._disposed:
+                return
+            self._disposed = True
+            self._cleanup_scheduled = False
+        self._finalizer()
 
 
 def _replace_h5_attrs(target_attrs, attrs: Mapping[typing.Any, typing.Any]) -> None:
@@ -198,14 +236,17 @@ def _workspace_file_lock(path: str | os.PathLike[str]) -> threading.RLock:
     target = _normalized_file_path(path)
     if target is None:
         target = os.fsdecode(path)
-    lock = _WORKSPACE_FILE_LOCKS.get(target)
-    if lock is None:
-        lock = threading.RLock()
-        _WORKSPACE_FILE_LOCKS[target] = lock
-    return lock
+    with _WORKSPACE_FILE_LOCKS_LOCK:
+        lock = _WORKSPACE_FILE_LOCKS.get(target)
+        if lock is None:
+            lock = threading.RLock()
+            _WORKSPACE_FILE_LOCKS[target] = lock
+        return lock
 
 
-def _workspace_file_identity(path: str | os.PathLike[str]) -> tuple[str, int, int, int]:
+def _workspace_file_identity(
+    path: str | os.PathLike[str],
+) -> tuple[str, int, int, int]:
     target = _normalized_file_path(path)
     if target is None:
         target = os.fsdecode(path)
@@ -348,10 +389,18 @@ def workspace_dataset_encoding(
     return encoding
 
 
-def _workspace_file_generation(path: str) -> _WorkspaceFileGeneration:
+def _workspace_file_generation(
+    path: str,
+    *,
+    expected_identity: tuple[int, int] | None = None,
+) -> _WorkspaceFileGeneration:
     """Return the current shared generation for a normalized workspace path."""
     with _workspace_file_lock(path):
         identity = _workspace_file_identity(path)
+        if expected_identity is not None and identity[1:3] != expected_identity:
+            raise RuntimeError(
+                f"Workspace changed after its reader was serialized: {path}"
+            )
         with _WORKSPACE_FILE_GENERATIONS_LOCK:
             generation = _WORKSPACE_FILE_GENERATIONS.get(path)
             # An incremental save changes the modification time in place. Only
@@ -381,8 +430,8 @@ def _retire_workspace_file_generation(
     cleanup: Callable[[], None],
 ) -> None:
     """Move a published generation to its preserved backing file."""
-    generation.retire(preserved_path, cleanup)
     _discard_workspace_file_generation(path, generation)
+    generation.retire(preserved_path, cleanup)
 
 
 def _discard_workspace_file_generation(
@@ -401,46 +450,93 @@ def _discard_workspace_file_generation(
 def _release_workspace_file_generation(
     generation: _WorkspaceFileGeneration,
 ) -> None:
-    """Release one manager and discard an unused current generation when safe."""
+    """Release one reader lease and arrange reliable generation cleanup."""
     if not generation.remove_manager():
-        return
-    if generation.retired:
-        generation.close(needs_lock=False)
         return
 
     lock = _workspace_file_lock(generation.workspace_path)
-    if not lock.acquire(blocking=False):
-        # The strong registry keeps this generation discoverable until the
-        # operation that owns the lock finishes or a later replacement starts.
+    if lock.acquire(blocking=False):
+        try:
+            _cleanup_workspace_file_generation_locked(generation)
+        finally:
+            lock.release()
         return
-    try:
-        if generation.has_managers():
-            return
-        generation.close(needs_lock=False)
+
+    if generation.schedule_cleanup():
+        threading.Thread(
+            target=_cleanup_workspace_file_generation,
+            args=(generation,),
+            name="erlab-workspace-reader-cleanup",
+            daemon=True,
+        ).start()
+
+
+def _cleanup_workspace_file_generation(
+    generation: _WorkspaceFileGeneration,
+) -> None:
+    """Wait for the path lock and finish a pending generation cleanup."""
+    with _workspace_file_lock(generation.workspace_path):
+        _cleanup_workspace_file_generation_locked(generation)
+
+
+def _cleanup_workspace_file_generation_locked(
+    generation: _WorkspaceFileGeneration,
+) -> None:
+    """Dispose an unused generation while its workspace path is locked."""
+    if generation.keep_if_in_use():
+        return
+    _discard_workspace_file_generation(generation.workspace_path, generation)
+    generation.dispose()
+
+
+def _workspace_file_manager_pickle_state(
+    generation: _WorkspaceFileGeneration,
+) -> tuple[str, tuple[int, int]]:
+    """Return a stable serialization reference for a current generation."""
+    with _workspace_file_lock(generation.workspace_path):
         with _WORKSPACE_FILE_GENERATIONS_LOCK:
-            if _WORKSPACE_FILE_GENERATIONS.get(generation.workspace_path) is generation:
-                del _WORKSPACE_FILE_GENERATIONS[generation.workspace_path]
-    finally:
-        lock.release()
+            is_current = (
+                _WORKSPACE_FILE_GENERATIONS.get(generation.workspace_path) is generation
+            )
+        if generation.retired or not is_current:
+            raise TypeError(
+                "Cannot serialize lazy data from a replaced workspace generation. "
+                "Load the data into memory before sending it to another process."
+            )
+        return generation.workspace_path, generation.file_identity[1:3]
 
 
 class WorkspaceFileManager(FileManager[typing.Any]):
     """xarray file manager backed by an explicit workspace generation."""
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
+        self._initialize(path)
+
+    def _initialize(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> None:
         ensure_workspace_hdf5_filters_registered()
         target = _normalized_file_path(path)
         if target is None:
             target = os.fsdecode(path)
         self.workspace_path = target
-        self._generation = _workspace_file_generation(target)
+        self._generation = _workspace_file_generation(
+            target, expected_identity=expected_identity
+        )
+        self._finalizer = weakref.finalize(
+            self, _release_workspace_file_generation, self._generation
+        )
 
-    def __getstate__(self) -> str:
-        """Serialize the backing path, but not locks or open file handles."""
-        return self._generation.path
+    def __getstate__(self) -> tuple[str, tuple[int, int]]:
+        """Serialize a validated reference to the current workspace generation."""
+        return _workspace_file_manager_pickle_state(self._generation)
 
-    def __setstate__(self, path: str) -> None:
-        WorkspaceFileManager.__init__(self, path)
+    def __setstate__(self, state: tuple[str, tuple[int, int]]) -> None:
+        path, expected_identity = state
+        self._initialize(path, expected_identity=expected_identity)
 
     def acquire(self, needs_lock: bool = True) -> typing.Any:
         return self._generation.acquire(needs_lock=needs_lock)
@@ -452,12 +548,6 @@ class WorkspaceFileManager(FileManager[typing.Any]):
 
     def close(self, needs_lock: bool = True) -> None:
         self._generation.close(needs_lock=needs_lock)
-
-    def __del__(self) -> None:
-        generation = getattr(self, "_generation", None)
-        if generation is not None:
-            with contextlib.suppress(Exception):
-                _release_workspace_file_generation(generation)
 
 
 def _iter_h5netcdf_group_paths(group: object, path: str = "/") -> Iterator[str]:

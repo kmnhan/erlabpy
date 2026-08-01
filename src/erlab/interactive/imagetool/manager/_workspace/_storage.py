@@ -73,6 +73,15 @@ class _WorkspaceDocumentLockInfo:
     pid: int | None
 
 
+@dataclass(frozen=True)
+class _PreservedWorkspaceFile:
+    """A private file that keeps one retired workspace generation available."""
+
+    path: str
+    cleanup: Callable[[], None]
+    hide_after_publish: bool = False
+
+
 @contextlib.contextmanager
 def _open_workspace_h5_file_for_update(
     fname: str | os.PathLike[str],
@@ -121,12 +130,12 @@ def _workspace_lock_path(fname: str | os.PathLike[str]) -> str:
     return str(workspace_path.with_name(f".{workspace_path.name}.lock"))
 
 
-def _hide_workspace_lock_file(lock_path: str) -> None:
+def _hide_workspace_internal_file(path: str) -> None:
     if sys.platform == "darwin":
         with contextlib.suppress(AttributeError, OSError):
-            if not stat.S_ISREG(os.lstat(lock_path).st_mode):
+            if not stat.S_ISREG(os.lstat(path).st_mode):
                 return
-            os.chflags(lock_path, stat.UF_HIDDEN)
+            os.chflags(path, stat.UF_HIDDEN)
         return
     if os.name != "nt":
         return
@@ -136,7 +145,7 @@ def _hide_workspace_lock_file(lock_path: str) -> None:
         if windll is None:
             return
         windll.kernel32.SetFileAttributesW(
-            str(lock_path),
+            str(path),
             0x2,  # FILE_ATTRIBUTE_HIDDEN
         )
 
@@ -179,7 +188,7 @@ def _acquire_workspace_document_lock(
             errno.EAGAIN,
             f"Workspace file is already open or locked: {fname}",
         )
-    _hide_workspace_lock_file(lock_path)
+    _hide_workspace_internal_file(lock_path)
     return lock
 
 
@@ -238,22 +247,33 @@ def _workspace_replace_retry_delays(exc: PermissionError) -> tuple[float, ...]:
 
 def _preserve_workspace_file_generation(
     path: str | os.PathLike[str],
-) -> tuple[str, Callable[[], None]]:
+) -> _PreservedWorkspaceFile:
     """Preserve one workspace generation for existing lazy readers."""
-    source = pathlib.Path(path)
-    # Keep old generations outside the workspace directory. This prevents
-    # visible artifacts and lets TemporaryDirectory own all cleanup paths.
-    temporary_directory = tempfile.TemporaryDirectory(prefix="erlab-workspace-read-")
-    generation_path = pathlib.Path(temporary_directory.name) / "workspace.itws"
+    source = pathlib.Path(path).resolve()
+    generation_path = source.with_name(f".{source.name}.read-{uuid.uuid4().hex}")
     try:
         os.link(source, generation_path)
     except OSError:
-        try:
-            shutil.copyfile(source, generation_path)
-        except BaseException:
-            temporary_directory.cleanup()
-            raise
-    return str(generation_path), temporary_directory.cleanup
+        pass
+    else:
+        return _PreservedWorkspaceFile(
+            path=str(generation_path),
+            cleanup=lambda: generation_path.unlink(missing_ok=True),
+            hide_after_publish=True,
+        )
+
+    # Some filesystems do not support hard links. Copy to private temporary
+    # storage only after the same-filesystem hard-link attempt fails.
+    temporary_directory = tempfile.TemporaryDirectory(prefix="erlab-workspace-read-")
+    generation_path = pathlib.Path(temporary_directory.name) / "workspace.itws"
+    try:
+        shutil.copyfile(source, generation_path)
+    except BaseException:
+        temporary_directory.cleanup()
+        raise
+    return _PreservedWorkspaceFile(
+        path=str(generation_path), cleanup=temporary_directory.cleanup
+    )
 
 
 def _replace_workspace_file(
@@ -263,12 +283,12 @@ def _replace_workspace_file(
     with workspace_arrays._workspace_file_lock(destination):
         generation = workspace_arrays._current_workspace_file_generation(destination)
         generation_has_managers = generation is not None and generation.has_managers()
-        preserved: tuple[str, Callable[[], None]] | None = None
-        if generation_has_managers and pathlib.Path(destination).is_file():
-            preserved = _preserve_workspace_file_generation(destination)
+        preserved: _PreservedWorkspaceFile | None = None
         try:
             if generation is not None:
                 generation.close(needs_lock=False)
+            if generation_has_managers and pathlib.Path(destination).is_file():
+                preserved = _preserve_workspace_file_generation(destination)
 
             retry_delays: tuple[float, ...] | None = None
             while True:
@@ -287,16 +307,18 @@ def _replace_workspace_file(
         except BaseException:
             if preserved is not None:
                 with contextlib.suppress(Exception):
-                    preserved[1]()
+                    preserved.cleanup()
             raise
 
         if generation is not None:
             if preserved is not None:
+                if preserved.hide_after_publish:
+                    _hide_workspace_internal_file(preserved.path)
                 workspace_arrays._retire_workspace_file_generation(
                     destination,
                     generation,
-                    preserved[0],
-                    preserved[1],
+                    preserved.path,
+                    preserved.cleanup,
                 )
             elif generation_has_managers:
                 generation.refresh_file_identity()
@@ -304,6 +326,7 @@ def _replace_workspace_file(
                 workspace_arrays._discard_workspace_file_generation(
                     destination, generation
                 )
+                generation.dispose()
 
 
 def _workspace_use_incremental_enabled() -> bool:
