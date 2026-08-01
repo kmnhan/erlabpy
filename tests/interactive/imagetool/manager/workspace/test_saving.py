@@ -5590,6 +5590,49 @@ def test_manager_workspace_same_file_lazy_data_delta_save_does_not_deadlock(
             assert saved.chunks == (128, 64)
 
 
+def test_manager_background_full_save_rebinds_cached_lazy_workspace_data(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(512 * 512, dtype=np.float64).reshape((512, 512)),
+            dims=["x", "y"],
+            coords={"x": np.arange(512), "y": np.arange(512)},
+        )
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "background-full-lazy.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            fname, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        manager._workspace_controller.loading._rebind_workspace_backed_imagetools(
+            fname, targets=[0], chunks={}
+        )
+        tool = manager.get_imagetool(0)
+        assert tool.slicer_area.data_chunked
+        np.testing.assert_array_equal(tool.slicer_area._data.compute(), data)
+
+        uid = manager._tool_graph.root_wrappers[0].uid
+        manager._workspace_controller._mark_node_state_dirty(uid)
+        manager._workspace_state.needs_full_save = True
+        assert _request_workspace_save_and_wait(qtbot, manager)
+
+        rebound = manager.get_imagetool(0).slicer_area._data
+        assert rebound.chunks is not None
+        np.testing.assert_array_equal(rebound.compute(), data)
+
+
 def test_manager_workspace_lazy_data_delta_pending_failure_preserves_old_group(
     qtbot,
     monkeypatch,

@@ -7,6 +7,7 @@ import os
 import pathlib
 import threading
 import typing
+import weakref
 
 import h5netcdf
 import hdf5plugin
@@ -37,6 +38,8 @@ from erlab.interactive.imagetool.manager._workspace._format import (
 )
 
 _WORKSPACE_FILE_LOCKS: dict[str, threading.RLock] = {}
+_WORKSPACE_FILE_MANAGERS: dict[str, weakref.WeakSet[WorkspaceFileManager]] = {}
+_WORKSPACE_FILE_MANAGERS_LOCK = threading.Lock()
 _WORKSPACE_COMPRESSION_MIN_BYTES = 1 << 20  # 1 MiB
 _TOOL_DATA_BLOB_NAME_ATTR = _serialization.TOOL_DATA_BLOB_NAME_ATTR
 _SAVED_TOOL_DATA_REFERENCE_DIM = _serialization.SAVED_TOOL_DATA_REFERENCE_DIM
@@ -249,6 +252,27 @@ class WorkspaceFileManager(CachingFileManager):
             manager_id=("erlab-workspace", *identity, "r+"),
         )
         self.workspace_path = target
+        with _WORKSPACE_FILE_MANAGERS_LOCK:
+            managers = _WORKSPACE_FILE_MANAGERS.setdefault(target, weakref.WeakSet())
+            managers.add(self)
+
+
+def _close_workspace_file_managers(path: str | os.PathLike[str]) -> None:
+    """Close all cached manager-owned readers for one workspace path.
+
+    The caller must hold the lock returned by :func:`_workspace_file_lock` for
+    the same path. This prevents a lazy reader from reopening the file while
+    the cached handles are being closed.
+    """
+    target = _normalized_file_path(path)
+    if target is None:
+        target = os.fsdecode(path)
+    with _WORKSPACE_FILE_MANAGERS_LOCK:
+        managers = tuple(_WORKSPACE_FILE_MANAGERS.get(target, ()))
+        if not managers:
+            _WORKSPACE_FILE_MANAGERS.pop(target, None)
+    for manager in managers:
+        manager.close(needs_lock=False)
 
 
 def _iter_h5netcdf_group_paths(group: object, path: str = "/") -> Iterator[str]:

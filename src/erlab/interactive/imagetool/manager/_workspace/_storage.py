@@ -12,6 +12,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import time
 import typing
 import uuid
 from dataclasses import dataclass
@@ -48,6 +49,7 @@ _WorkspaceCopyGroup: typing.TypeAlias = tuple[str, str, dict[str, typing.Any] | 
 _WorkspaceCopyGroupWithSource: typing.TypeAlias = tuple[
     str, str, str, dict[str, typing.Any] | None
 ]
+_WINDOWS_WORKSPACE_REPLACE_RETRY_DELAYS = (0.02, 0.05, 0.1)
 
 
 class _WorkspaceBackingFileNotFoundError(FileNotFoundError):
@@ -222,6 +224,38 @@ def _workspace_path_is_high_risk(path: str | os.PathLike[str]) -> bool:
     return _workspace_path_is_likely_network_path(
         path
     ) or _workspace_path_is_likely_cloud_path(path)
+
+
+def _workspace_replace_retry_delays(exc: PermissionError) -> tuple[float, ...]:
+    if os.name != "nt":
+        return ()
+    if getattr(exc, "winerror", None) not in (None, 5, 32):
+        return ()
+    if exc.errno not in (None, errno.EACCES, errno.EPERM):
+        return ()
+    return _WINDOWS_WORKSPACE_REPLACE_RETRY_DELAYS
+
+
+def _replace_workspace_file(
+    source: str | os.PathLike[str], destination: str | os.PathLike[str]
+) -> None:
+    """Atomically replace a workspace after closing manager-owned readers."""
+    with workspace_arrays._workspace_file_lock(destination):
+        workspace_arrays._close_workspace_file_managers(destination)
+        retry_delays: tuple[float, ...] | None = None
+        while True:
+            try:
+                os.replace(source, destination)
+            except PermissionError as exc:
+                if retry_delays is None:
+                    retry_delays = _workspace_replace_retry_delays(exc)
+                if not retry_delays:
+                    raise
+                delay, *remaining_delays = retry_delays
+                retry_delays = tuple(remaining_delays)
+                time.sleep(delay)
+            else:
+                break
 
 
 def _workspace_use_incremental_enabled() -> bool:
@@ -777,17 +811,17 @@ def _write_full_workspace_tree_file(
         _fsync_file(tmp_fname)
         if use_scratch:
             try:
-                os.replace(tmp_fname, fname)
+                _replace_workspace_file(tmp_fname, fname)
             except OSError as err:
                 if err.errno != errno.EXDEV:
                     raise
                 destination_tmp = f"{fname}.tmp-{uuid.uuid4().hex}"
                 shutil.copyfile(tmp_fname, destination_tmp)
                 _fsync_file(destination_tmp)
-                os.replace(destination_tmp, fname)
+                _replace_workspace_file(destination_tmp, fname)
             _fsync_parent_directory(fname)
         else:
-            os.replace(tmp_fname, fname)
+            _replace_workspace_file(tmp_fname, fname)
             _fsync_parent_directory(fname)
     finally:
         with contextlib.suppress(FileNotFoundError):

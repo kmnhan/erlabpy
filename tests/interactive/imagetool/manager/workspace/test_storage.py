@@ -1,6 +1,7 @@
 import errno
 import json
 import pathlib
+import threading
 import types
 import typing
 
@@ -236,6 +237,204 @@ def test_write_full_workspace_tree_file_replaces_stale_root_attrs(tmp_path) -> N
         assert "stale_workspace_attr" not in h5_file.attrs
         manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert manifest == {"schema_version": 4, "root_order": [0], "nodes": []}
+
+
+def test_write_full_workspace_tree_file_closes_cached_workspace_reader(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "cached-reader.itws"
+    _write_transaction_test_workspace(fname)
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    cached_file = manager.acquire()
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(2.0, title="replacement")}
+    )
+    original_replace = workspace_storage.os.replace
+    replacement_checked = False
+
+    def _replace_after_reader_close(source, destination):
+        nonlocal replacement_checked
+        if pathlib.Path(destination) == fname:
+            replacement_checked = True
+            assert cached_file._closed
+        original_replace(source, destination)
+
+    monkeypatch.setattr(workspace_storage.os, "replace", _replace_after_reader_close)
+    try:
+        workspace_storage._write_full_workspace_tree_file(
+            fname, tree, _transaction_test_root_attrs()
+        )
+        assert replacement_checked
+        reopened_file = manager.acquire()
+        value = reopened_file.groups["0"].groups["imagetool"].variables["data"][()]
+        assert np.asarray(value).item() == 2.0
+    finally:
+        tree.close()
+        with workspace_arrays._workspace_file_lock(fname):
+            workspace_arrays._close_workspace_file_managers(fname)
+
+
+def test_write_full_workspace_tree_file_keeps_lazy_dataarray_usable(tmp_path) -> None:
+    fname = tmp_path / "lazy-reader.itws"
+    _write_transaction_test_workspace(fname)
+    opened = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks={})
+    lazy_data = opened["data"].copy(deep=False)
+    opened.close()
+    assert lazy_data.compute().item() == 1.0
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(2.0, title="replacement")}
+    )
+    try:
+        workspace_storage._write_full_workspace_tree_file(
+            fname, tree, _transaction_test_root_attrs()
+        )
+        assert lazy_data.compute().item() == 2.0
+    finally:
+        tree.close()
+        with workspace_arrays._workspace_file_lock(fname):
+            workspace_arrays._close_workspace_file_managers(fname)
+
+
+def test_replace_workspace_file_blocks_new_readers_during_commit(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "new.itws"
+    destination = tmp_path / "current.itws"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+    replace_started = threading.Event()
+    allow_replace = threading.Event()
+    reader_acquired = threading.Event()
+    errors: list[BaseException] = []
+    original_replace = workspace_storage.os.replace
+
+    def _paused_replace(src, dst):
+        replace_started.set()
+        if not allow_replace.wait(2):
+            raise TimeoutError("Replacement test did not resume")
+        original_replace(src, dst)
+
+    def _replace() -> None:
+        try:
+            workspace_storage._replace_workspace_file(source, destination)
+        except BaseException as exc:  # pragma: no cover - reported in main thread
+            errors.append(exc)
+
+    def _read() -> None:
+        try:
+            with workspace_arrays._workspace_file_lock(destination):
+                reader_acquired.set()
+        except BaseException as exc:  # pragma: no cover - reported in main thread
+            errors.append(exc)
+
+    monkeypatch.setattr(workspace_storage.os, "replace", _paused_replace)
+    replace_thread = threading.Thread(target=_replace)
+    reader_thread = threading.Thread(target=_read)
+    replace_thread.start()
+    assert replace_started.wait(2)
+    reader_thread.start()
+    try:
+        assert not reader_acquired.wait(0.05)
+    finally:
+        allow_replace.set()
+        replace_thread.join(2)
+        reader_thread.join(2)
+
+    assert not replace_thread.is_alive()
+    assert not reader_thread.is_alive()
+    assert reader_acquired.is_set()
+    assert errors == []
+    assert destination.read_bytes() == b"new"
+
+
+def test_replace_workspace_file_retries_windows_sharing_violation(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "new.itws"
+    destination = tmp_path / "current.itws"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+    attempts = 0
+    delays: list[float] = []
+    original_replace = workspace_storage.os.replace
+
+    def _replace_after_transient_failures(src, dst):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError(errno.EACCES, "sharing violation")
+        original_replace(src, dst)
+
+    monkeypatch.setattr(
+        workspace_storage, "_workspace_replace_retry_delays", lambda _exc: (0.0, 0.0)
+    )
+    monkeypatch.setattr(
+        workspace_storage.os, "replace", _replace_after_transient_failures
+    )
+    monkeypatch.setattr(workspace_storage.time, "sleep", delays.append)
+
+    workspace_storage._replace_workspace_file(source, destination)
+
+    assert attempts == 3
+    assert delays == [0.0, 0.0]
+    assert destination.read_bytes() == b"new"
+
+
+def test_workspace_replace_retry_delays_only_allow_windows_sharing_errors(
+    monkeypatch,
+) -> None:
+    error = PermissionError(errno.EACCES, "sharing violation")
+    error.winerror = 5
+
+    assert workspace_storage._workspace_replace_retry_delays(error) == ()
+
+    monkeypatch.setattr(workspace_storage.os, "name", "nt")
+    assert workspace_storage._workspace_replace_retry_delays(error) == (
+        workspace_storage._WINDOWS_WORKSPACE_REPLACE_RETRY_DELAYS
+    )
+
+    error.winerror = 123
+    assert workspace_storage._workspace_replace_retry_delays(error) == ()
+    error.winerror = 32
+    error.errno = errno.ENOENT
+    assert workspace_storage._workspace_replace_retry_delays(error) == ()
+
+
+def test_replace_workspace_file_failure_keeps_old_file_reader_usable(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "new.itws"
+    destination = tmp_path / "current.itws"
+    _write_transaction_test_workspace(destination)
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(2.0, title="replacement")}
+    )
+    try:
+        workspace_storage._write_full_workspace_tree_file(
+            source, tree, _transaction_test_root_attrs()
+        )
+    finally:
+        tree.close()
+    manager = workspace_arrays.WorkspaceFileManager(destination)
+    cached_file = manager.acquire()
+
+    def _fail_replace(_source, _destination):
+        raise PermissionError(errno.EACCES, "replacement denied")
+
+    monkeypatch.setattr(workspace_storage.os, "replace", _fail_replace)
+    monkeypatch.setattr(
+        workspace_storage, "_workspace_replace_retry_delays", lambda _exc: ()
+    )
+    try:
+        with pytest.raises(PermissionError, match="replacement denied"):
+            workspace_storage._replace_workspace_file(source, destination)
+        assert cached_file._closed
+        reopened_file = manager.acquire()
+        value = reopened_file.groups["0"].groups["imagetool"].variables["data"][()]
+        assert np.asarray(value).item() == 1.0
+    finally:
+        with workspace_arrays._workspace_file_lock(destination):
+            workspace_arrays._close_workspace_file_managers(destination)
 
 
 def test_write_full_workspace_tree_file_local_path_uses_destination_temp(

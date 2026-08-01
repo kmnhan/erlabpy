@@ -47,6 +47,48 @@ def test_workspace_h5py_helpers_reject_non_workspace_files(tmp_path) -> None:
     assert workspace_arrays._workspace_h5_object_storage_size(object()) == 0
 
 
+def test_workspace_file_manager_registry_closes_all_path_identities(
+    monkeypatch, tmp_path
+) -> None:
+    first = tmp_path / "first.h5"
+    second = tmp_path / "second.h5"
+    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(first, engine="h5netcdf")
+    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(second, engine="h5netcdf")
+    first_target = workspace_arrays._normalized_file_path(first)
+    original_identity = workspace_arrays._workspace_file_identity
+    first_identity_generation = iter((1, 2))
+
+    def _identity(path):
+        target = workspace_arrays._normalized_file_path(path)
+        if target == first_target:
+            return target, 0, 0, next(first_identity_generation)
+        return original_identity(path)
+
+    monkeypatch.setattr(workspace_arrays, "_workspace_file_identity", _identity)
+    first_manager = workspace_arrays.WorkspaceFileManager(first)
+    second_first_manager = workspace_arrays.WorkspaceFileManager(first)
+    other_manager = workspace_arrays.WorkspaceFileManager(second)
+    first_file = first_manager.acquire()
+    second_first_file = second_first_manager.acquire()
+    other_file = other_manager.acquire()
+    try:
+        assert first_file is not second_first_file
+        monkeypatch.setattr(
+            workspace_arrays, "_normalized_file_path", lambda _path: None
+        )
+        with workspace_arrays._workspace_file_lock(first):
+            workspace_arrays._close_workspace_file_managers(first)
+
+        assert first_file._closed
+        assert second_first_file._closed
+        assert not other_file._closed
+    finally:
+        with workspace_arrays._workspace_file_lock(first):
+            workspace_arrays._close_workspace_file_managers(first)
+        with workspace_arrays._workspace_file_lock(second):
+            workspace_arrays._close_workspace_file_managers(second)
+
+
 def test_workspace_h5py_filter_matching_edge_cases(tmp_path) -> None:
 
     fname = tmp_path / "filters.h5"
