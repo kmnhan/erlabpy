@@ -5,6 +5,7 @@ import logging
 import os
 import pathlib
 import pickle
+import threading
 import types
 import typing
 import warnings
@@ -71,6 +72,57 @@ def test_workspace_file_managers_share_one_generation_per_path(tmp_path) -> None
     finally:
         first_manager.close()
         other_manager.close()
+
+
+def test_workspace_file_generation_registration_uses_short_registry_lock(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "registry-lock.itws"
+    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(fname, engine="h5netcdf")
+    generation_type = workspace_arrays._WorkspaceFileGeneration
+    original_add_manager = generation_type.add_manager
+    construction_lock_states: list[bool] = []
+    lease_lock_states: list[bool] = []
+
+    def _new_generation(*args, **kwargs):
+        construction_lock_states.append(
+            workspace_arrays._WORKSPACE_FILE_GENERATIONS_LOCK.locked()
+        )
+        return generation_type(*args, **kwargs)
+
+    def _add_manager(generation) -> None:
+        lease_lock_states.append(
+            workspace_arrays._WORKSPACE_FILE_GENERATIONS_LOCK.locked()
+        )
+        original_add_manager(generation)
+
+    monkeypatch.setattr(workspace_arrays, "_WorkspaceFileGeneration", _new_generation)
+    monkeypatch.setattr(generation_type, "add_manager", _add_manager)
+
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    try:
+        assert construction_lock_states == [False]
+        assert lease_lock_states == [False]
+    finally:
+        manager.close()
+
+
+def test_workspace_file_manager_finalizer_defers_cleanup(tmp_path) -> None:
+    fname = tmp_path / "deferred-cleanup.itws"
+    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(fname, engine="h5netcdf")
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    generation = manager._generation
+
+    with workspace_arrays._workspace_file_lock(fname):
+        manager._finalizer()
+        assert generation._finalizer.alive
+        assert workspace_arrays._current_workspace_file_generation(fname) is generation
+
+    for _ in range(100):
+        if not generation._finalizer.alive:
+            break
+        threading.Event().wait(0.01)
+    assert not generation._finalizer.alive
 
 
 def test_workspace_file_manager_is_pickleable(tmp_path) -> None:
@@ -140,7 +192,7 @@ def test_disposed_workspace_generation_rejects_reuse(tmp_path) -> None:
     manager = workspace_arrays.WorkspaceFileManager(fname)
     generation = manager._generation
     manager._finalizer.detach()
-    assert generation.remove_manager()
+    assert generation.release_manager()
 
     with workspace_arrays._workspace_file_lock(fname):
         workspace_arrays._cleanup_workspace_file_generation_locked(generation)
@@ -151,7 +203,6 @@ def test_disposed_workspace_generation_rejects_reuse(tmp_path) -> None:
         generation.acquire_context(needs_lock=True)
     with pytest.raises(RuntimeError, match="no longer available"):
         generation.add_manager()
-    assert not generation.schedule_cleanup()
     generation.dispose()
 
 

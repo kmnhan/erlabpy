@@ -6,6 +6,7 @@ import threading
 import types
 import typing
 import weakref
+from collections.abc import Callable
 
 import h5py
 import hdf5plugin
@@ -41,6 +42,15 @@ def _read_transaction_test_value(fname: pathlib.Path) -> float:
         return float(ds["data"].item())
     finally:
         opened.close()
+
+
+def _wait_for_workspace_cleanup(condition: Callable[[], bool]) -> bool:
+    for _ in range(100):
+        gc.collect()
+        if condition():
+            return True
+        threading.Event().wait(0.01)
+    return condition()
 
 
 def test_workspace_file_repack_payload_strips_delta_and_skips_internal_groups(
@@ -299,6 +309,47 @@ def test_write_full_workspace_tree_file_preserves_cached_workspace_reader(
             reopened_manager.close()
 
 
+def test_replace_workspace_file_defers_finalizer_cleanup_until_after_publish(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "new.itws"
+    destination = tmp_path / "current.itws"
+    _write_transaction_test_workspace(destination)
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(2.0, title="replacement")}
+    )
+    try:
+        workspace_storage._write_full_workspace_tree_file(
+            source, tree, _transaction_test_root_attrs()
+        )
+    finally:
+        tree.close()
+
+    managers = [workspace_arrays.WorkspaceFileManager(destination)]
+    generation = managers[0]._generation
+    managers[0].acquire()
+    original_link = workspace_storage.os.link
+
+    def _release_last_reader_during_preservation(link_source, link_destination):
+        managers.clear()
+        gc.collect()
+        assert not generation.has_managers()
+        assert generation._finalizer.alive
+        original_link(link_source, link_destination)
+
+    monkeypatch.setattr(
+        workspace_storage.os, "link", _release_last_reader_during_preservation
+    )
+
+    workspace_storage._replace_workspace_file(source, destination)
+
+    generation_path = pathlib.Path(generation.path)
+    assert generation.retired
+    assert _wait_for_workspace_cleanup(lambda: not generation_path.exists())
+    assert not generation._finalizer.alive
+    assert _read_transaction_test_value(destination) == 2.0
+
+
 def test_preserve_workspace_generation_hard_links_on_workspace_filesystem(
     tmp_path,
 ) -> None:
@@ -450,8 +501,7 @@ def test_replace_workspace_file_copy_fallback_cleans_preserved_generation(
 
     manager.close()
     del preserved_file, generation, manager
-    gc.collect()
-    assert not generation_path.exists()
+    assert _wait_for_workspace_cleanup(lambda: not generation_path.exists())
     assert not generation_directory.exists()
 
 
@@ -482,9 +532,7 @@ def test_retired_workspace_generation_lives_until_last_manager_released(
     assert generation_path.exists()
 
     del manager, generation
-    gc.collect()
-
-    assert generation_ref() is None
+    assert _wait_for_workspace_cleanup(lambda: generation_ref() is None)
     assert cached_file._closed
     assert not generation_path.exists()
 
@@ -527,13 +575,7 @@ def test_workspace_generation_cleanup_finishes_after_path_lock_released(
         lock_thread.join(2)
     assert not lock_thread.is_alive()
 
-    for _ in range(100):
-        gc.collect()
-        if generation_ref() is None:
-            break
-        threading.Event().wait(0.01)
-
-    assert generation_ref() is None
+    assert _wait_for_workspace_cleanup(lambda: generation_ref() is None)
     assert cached_file._closed
     assert _read_transaction_test_value(destination) == 1.0
 
@@ -544,8 +586,7 @@ def test_workspace_generation_cleanup_keeps_a_new_reader(tmp_path) -> None:
     manager = workspace_arrays.WorkspaceFileManager(destination)
     generation = manager._generation
     manager._finalizer.detach()
-    assert generation.remove_manager()
-    assert generation.schedule_cleanup()
+    assert generation.release_manager()
 
     reopened_manager = workspace_arrays.WorkspaceFileManager(destination)
     try:
@@ -584,7 +625,7 @@ def test_replace_workspace_file_discards_unused_current_generation(tmp_path) -> 
     generation = manager._generation
     cached_file = manager.acquire()
     manager._finalizer.detach()
-    assert generation.remove_manager()
+    assert generation.release_manager()
 
     workspace_storage._replace_workspace_file(source, destination)
 

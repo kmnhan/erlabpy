@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 import pathlib
+import queue
 import threading
 import typing
 import weakref
@@ -45,6 +46,13 @@ _WORKSPACE_FILE_LOCKS_LOCK = threading.Lock()
 # This lets a save find and close a handle even when final lease release races it.
 _WORKSPACE_FILE_GENERATIONS: dict[str, _WorkspaceFileGeneration] = {}
 _WORKSPACE_FILE_GENERATIONS_LOCK = threading.Lock()
+# CPython's SimpleQueue.put is reentrant, so a weakref callback can enqueue without
+# entering workspace locks or cleanup code.
+_WORKSPACE_FILE_CLEANUP_QUEUE: queue.SimpleQueue[_WorkspaceFileGeneration] = (
+    queue.SimpleQueue()
+)
+_WORKSPACE_FILE_CLEANUP_WORKER: threading.Thread | None = None
+_WORKSPACE_FILE_CLEANUP_WORKER_LOCK = threading.Lock()
 _WORKSPACE_COMPRESSION_MIN_BYTES = 1 << 20  # 1 MiB
 _TOOL_DATA_BLOB_NAME_ATTR = _serialization.TOOL_DATA_BLOB_NAME_ATTR
 _SAVED_TOOL_DATA_REFERENCE_DIM = _serialization.SAVED_TOOL_DATA_REFERENCE_DIM
@@ -155,10 +163,14 @@ class _WorkspaceFileGeneration:
                 raise RuntimeError("Workspace file generation is no longer available")
             self._manager_count += 1
 
-    def remove_manager(self) -> bool:
+    def release_manager(self) -> bool:
+        """Release one reader and claim cleanup after the final reader."""
         with self._state_lock:
             self._manager_count -= 1
-            return self._manager_count == 0
+            if self._manager_count != 0 or self._disposed or self._cleanup_scheduled:
+                return False
+            self._cleanup_scheduled = True
+            return True
 
     def has_managers(self) -> bool:
         with self._state_lock:
@@ -182,14 +194,6 @@ class _WorkspaceFileGeneration:
 
     def refresh_file_identity(self) -> None:
         self.file_identity = _workspace_file_identity(self.workspace_path)
-
-    def schedule_cleanup(self) -> bool:
-        """Mark cleanup as pending if no worker already owns it."""
-        with self._state_lock:
-            if self._manager_count != 0 or self._disposed or self._cleanup_scheduled:
-                return False
-            self._cleanup_scheduled = True
-            return True
 
     def keep_if_in_use(self) -> bool:
         """Cancel pending cleanup when this generation has a new reader."""
@@ -395,6 +399,7 @@ def _workspace_file_generation(
     expected_identity: tuple[int, int] | None = None,
 ) -> _WorkspaceFileGeneration:
     """Return the current shared generation for a normalized workspace path."""
+    _ensure_workspace_file_cleanup_worker()
     with _workspace_file_lock(path):
         identity = _workspace_file_identity(path)
         if expected_identity is not None and identity[1:3] != expected_identity:
@@ -403,13 +408,15 @@ def _workspace_file_generation(
             )
         with _WORKSPACE_FILE_GENERATIONS_LOCK:
             generation = _WORKSPACE_FILE_GENERATIONS.get(path)
-            # An incremental save changes the modification time in place. Only
-            # a new filesystem object starts a new generation here.
-            if generation is None or generation.file_identity[:3] != identity[:3]:
-                generation = _WorkspaceFileGeneration(path, identity)
+        # An incremental save changes the modification time in place. Only a
+        # new filesystem object starts a new generation here. The path lock
+        # makes construction and publication atomic for this workspace.
+        if generation is None or generation.file_identity[:3] != identity[:3]:
+            generation = _WorkspaceFileGeneration(path, identity)
+            with _WORKSPACE_FILE_GENERATIONS_LOCK:
                 _WORKSPACE_FILE_GENERATIONS[path] = generation
-            generation.add_manager()
-            return generation
+        generation.add_manager()
+        return generation
 
 
 def _current_workspace_file_generation(
@@ -450,25 +457,37 @@ def _discard_workspace_file_generation(
 def _release_workspace_file_generation(
     generation: _WorkspaceFileGeneration,
 ) -> None:
-    """Release one reader lease and arrange reliable generation cleanup."""
-    if not generation.remove_manager():
-        return
+    """Release one reader lease without doing cleanup in the finalizer."""
+    if generation.release_manager():
+        _WORKSPACE_FILE_CLEANUP_QUEUE.put(generation)
 
-    lock = _workspace_file_lock(generation.workspace_path)
-    if lock.acquire(blocking=False):
-        try:
-            _cleanup_workspace_file_generation_locked(generation)
-        finally:
-            lock.release()
-        return
 
-    if generation.schedule_cleanup():
-        threading.Thread(
-            target=_cleanup_workspace_file_generation,
-            args=(generation,),
+def _ensure_workspace_file_cleanup_worker() -> None:
+    """Start the shared workspace generation cleanup worker once."""
+    global _WORKSPACE_FILE_CLEANUP_WORKER
+
+    with _WORKSPACE_FILE_CLEANUP_WORKER_LOCK:
+        worker = _WORKSPACE_FILE_CLEANUP_WORKER
+        if worker is not None and worker.is_alive():
+            return
+        worker = threading.Thread(
+            target=_workspace_file_cleanup_worker,
             name="erlab-workspace-reader-cleanup",
             daemon=True,
-        ).start()
+        )
+        _WORKSPACE_FILE_CLEANUP_WORKER = worker
+        worker.start()
+
+
+def _workspace_file_cleanup_worker() -> None:
+    """Clean unused generations outside object finalizer call stacks."""
+    while True:
+        generation = _WORKSPACE_FILE_CLEANUP_QUEUE.get()
+        try:
+            _cleanup_workspace_file_generation(generation)
+        finally:
+            # Do not retain the last disposed generation while the queue is idle.
+            del generation
 
 
 def _cleanup_workspace_file_generation(
