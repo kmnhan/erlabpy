@@ -209,6 +209,7 @@ _INITIAL_SIZE_HINT_EXTRA_HEIGHT = 80
 _STEPS_CLIPBOARD_MIME = "application/x-erlab-figure-composer-steps+json"
 _STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.figure_composer.steps"
 _STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
+_AXES_EXPRESSION_PLACEHOLDER = "Advanced: axs[0, :] or axs[:, 0]"
 logger = logging.getLogger(__name__)
 
 _OPERATION_STATUS_LABELS = {
@@ -1342,7 +1343,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             "Use All Axes", self.target_axes_page
         )
         self.use_all_axes_button.setToolTip(
-            "Retarget the selected step to every axis in the current figure grid."
+            "Retarget the selected steps to every axis in the current figure grid."
         )
         self.use_all_axes_button.clicked.connect(
             self._target_current_operation_all_axes
@@ -1351,7 +1352,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             "Drop Removed Axes", self.target_axes_page
         )
         self.keep_valid_axes_button.setToolTip(
-            "Keep only selected axes that still exist in the current figure grid."
+            "For the selected steps, keep only axes that still exist in the current "
+            "figure grid."
         )
         self.keep_valid_axes_button.clicked.connect(
             self._target_current_operation_valid_axes
@@ -1361,7 +1363,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         target_axes_action_layout.addStretch(1)
         target_axes_layout.addLayout(target_axes_action_layout)
         self.axes_expression_edit = QtWidgets.QLineEdit(self.target_axes_page)
-        self.axes_expression_edit.setPlaceholderText("Advanced: axs[0, :] or axs[:, 0]")
+        self.axes_expression_edit.setPlaceholderText(_AXES_EXPRESSION_PLACEHOLDER)
         self.axes_expression_edit.setToolTip(
             "Optional advanced axes expression used verbatim in copied Python code."
         )
@@ -2483,6 +2485,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _sync_axes_selector(self) -> None:
         current = self._current_operation()
+        selected_axes_operations = self._selected_axes_operations()
+        expression_mixed = (
+            len({operation.axes.expression for operation in selected_axes_operations})
+            > 1
+        )
         selected_axes = set()
         selected_axes_ids: tuple[str, ...] = ()
         expression = ""
@@ -2519,12 +2526,23 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._refresh_gridspec_axes_selector()
             else:
                 self.axes_selector.set_selected_axes(tuple(sorted(selected_axes)))
-            if self.axes_expression_edit.text() != expression:
+            displayed_expression = "" if expression_mixed else expression
+            if self.axes_expression_edit.text() != displayed_expression:
                 blocker = QtCore.QSignalBlocker(self.axes_expression_edit)
-                self.axes_expression_edit.setText(expression)
+                self.axes_expression_edit.setText(displayed_expression)
                 del blocker
+            self.operation_editor.apply_mixed_line_edit(
+                self.axes_expression_edit, expression_mixed
+            )
+            if not expression_mixed:
+                self.axes_expression_edit.setPlaceholderText(
+                    _AXES_EXPRESSION_PLACEHOLDER
+                )
             self.keep_valid_axes_button.setEnabled(
-                bool(invalid_axes_ids) if grid_mode else bool(invalid_axes)
+                any(
+                    self._operation_has_removed_axes(operation)
+                    for operation in selected_axes_operations
+                )
             )
             if current is None:
                 self.target_axes_status_label.setText("Select a step to choose axes.")
@@ -2872,6 +2890,30 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return tuple(
             operation.operation_id for _index, operation in self._editable_operations()
         )
+
+    def _selected_axes_operations(self) -> tuple[FigureOperationState, ...]:
+        operations: list[FigureOperationState] = []
+        for index in self._selected_operation_indices():
+            operation = self._document.recipe.operations[index]
+            if _registry.spec_for(operation.kind).uses_axes(operation):
+                operations.append(operation)
+        return tuple(operations)
+
+    def _selected_axes_operation_ids(self) -> tuple[str, ...]:
+        return tuple(
+            operation.operation_id for operation in self._selected_axes_operations()
+        )
+
+    def _operation_has_removed_axes(self, operation: FigureOperationState) -> bool:
+        if operation.axes.expression:
+            return False
+        if self._document.recipe.setup.layout_mode == "gridspec":
+            return bool(
+                _gridspec_invalid_axes_ids(
+                    self._document.recipe.setup, operation.axes.axes_ids
+                )
+            )
+        return bool(operation.axes.invalid_axes(self._document.recipe.setup))
 
     @QtCore.Slot(object)
     def _apply_operation_edit_request(self, request_object: object) -> None:
@@ -3226,22 +3268,22 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _axes_selection_changed(self, axes_obj: object) -> None:
         if self._updating_controls:
             return
-        current = self._current_operation()
-        if current is None:
-            return
-        if not _registry.spec_for(current[1].kind).uses_axes(current[1]):
+        operation_ids = self._selected_axes_operation_ids()
+        if not operation_ids:
             return
         axes = typing.cast("tuple[tuple[int, int], ...]", axes_obj)
         if not axes:
             axes = ((0, 0),)
-        index, operation = current
-        selection = operation.axes.model_copy(update={"axes": axes, "expression": ""})
-        if selection == operation.axes:
-            erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
-            return
-        self._replace_operation(
-            index,
-            operation.model_copy(update={"axes": selection}),
+
+        self._update_operations_by_ids(
+            operation_ids,
+            lambda _index, operation: operation.model_copy(
+                update={
+                    "axes": operation.axes.model_copy(
+                        update={"axes": axes, "expression": ""}
+                    )
+                }
+            ),
             defer_render=True,
             sync_axes=False,
         )
@@ -3251,22 +3293,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _gridspec_axes_selection_changed(self) -> None:
         if self._updating_controls:
             return
-        current = self._current_operation()
-        if current is None:
-            return
-        if not _registry.spec_for(current[1].kind).uses_axes(current[1]):
+        operation_ids = self._selected_axes_operation_ids()
+        if not operation_ids:
             return
         axes_ids = self.gridspec_axes_selector.selected_axes_ids()
-        index, operation = current
-        selection = operation.axes.model_copy(
-            update={"axes_ids": axes_ids, "expression": ""}
-        )
-        if selection == operation.axes:
-            erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
-            return
-        self._replace_operation(
-            index,
-            operation.model_copy(update={"axes": selection}),
+        self._update_operations_by_ids(
+            operation_ids,
+            lambda _index, operation: operation.model_copy(
+                update={
+                    "axes": operation.axes.model_copy(
+                        update={"axes_ids": axes_ids, "expression": ""}
+                    )
+                }
+            ),
             defer_render=True,
             sync_axes=False,
         )
@@ -3276,21 +3315,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _axes_expression_changed(self) -> None:
         if self._updating_controls:
             return
-        current = self._current_operation()
-        if current is None:
+        if self.operation_editor.line_edit_batch_unchanged(self.axes_expression_edit):
             return
-        if not _registry.spec_for(current[1].kind).uses_axes(current[1]):
+        operation_ids = self._selected_axes_operation_ids()
+        if not operation_ids:
             return
-        index, operation = current
-        selection = operation.axes.model_copy(
-            update={"expression": self.axes_expression_edit.text().strip()}
-        )
-        if selection == operation.axes:
-            erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
-            return
-        self._replace_operation(
-            index,
-            operation.model_copy(update={"axes": selection}),
+        expression = self.axes_expression_edit.text().strip()
+        self._update_operations_by_ids(
+            operation_ids,
+            lambda _index, operation: operation.model_copy(
+                update={
+                    "axes": operation.axes.model_copy(update={"expression": expression})
+                }
+            ),
             defer_render=True,
             sync_axes=False,
         )
@@ -3302,7 +3339,25 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         _current_id: object,
         _selected_ids: object,
     ) -> None:
+        selected_ids = self._selected_operation_ids()
+        if selected_ids and self._current_operation_index() not in (
+            self._selected_operation_indices()
+        ):
+            erlab.interactive.utils.single_shot(
+                self, 0, self._ensure_current_operation_selected
+            )
         self._update_step_action_buttons()
+        self._sync_axes_selector()
+        self._refresh_operation_editor()
+
+    def _ensure_current_operation_selected(self) -> None:
+        selected_ids = self._selected_operation_ids()
+        if not selected_ids:
+            return
+        selected_indices = self._selected_operation_indices()
+        if self._current_operation_index() in selected_indices:
+            return
+        self._set_current_operation_row_silent(selected_indices[0])
         self._sync_axes_selector()
         self._refresh_operation_editor()
 
@@ -3457,54 +3512,60 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @QtCore.Slot()
     def _target_current_operation_all_axes(self) -> None:
-        current = self._current_operation()
-        if current is None:
-            return
-        index, operation = current
-        if not _registry.spec_for(operation.kind).uses_axes(operation):
+        operation_ids = self._selected_axes_operation_ids()
+        if not operation_ids:
             return
         if self._document.recipe.setup.layout_mode == "gridspec":
-            selection = operation.axes.model_copy(
-                update={
-                    "axes_ids": _gridspec_all_axes_ids(self._document.recipe.setup),
-                    "expression": "",
-                }
-            )
-            self._replace_operation(
-                index, operation.model_copy(update={"axes": selection})
-            )
-            return
-        selection = operation.axes.model_copy(
-            update={"axes": _all_axes(self._document.recipe.setup), "expression": ""}
+            axes_updates: dict[str, object] = {
+                "axes_ids": _gridspec_all_axes_ids(self._document.recipe.setup),
+                "expression": "",
+            }
+        else:
+            axes_updates = {
+                "axes": _all_axes(self._document.recipe.setup),
+                "expression": "",
+            }
+        self._update_operations_by_ids(
+            operation_ids,
+            lambda _index, operation: operation.model_copy(
+                update={"axes": operation.axes.model_copy(update=axes_updates)}
+            ),
         )
-        self._replace_operation(index, operation.model_copy(update={"axes": selection}))
 
     @QtCore.Slot()
     def _target_current_operation_valid_axes(self) -> None:
-        current = self._current_operation()
-        if current is None:
+        operation_ids = tuple(
+            operation.operation_id
+            for operation in self._selected_axes_operations()
+            if self._operation_has_removed_axes(operation)
+        )
+        if not operation_ids:
             return
-        index, operation = current
-        if not _registry.spec_for(operation.kind).uses_axes(operation):
-            return
-        if self._document.recipe.setup.layout_mode == "gridspec":
-            axes_ids = _gridspec_valid_axes_ids(
-                self._document.recipe.setup, operation.axes.axes_ids
+        grid_mode = self._document.recipe.setup.layout_mode == "gridspec"
+        fallback_axes_ids = _gridspec_all_axes_ids(self._document.recipe.setup)[:1]
+
+        def update_operation(
+            _index: int, operation: FigureOperationState
+        ) -> FigureOperationState:
+            if grid_mode:
+                axes_ids = _gridspec_valid_axes_ids(
+                    self._document.recipe.setup, operation.axes.axes_ids
+                )
+                axes_updates: dict[str, object] = {
+                    "axes_ids": axes_ids or fallback_axes_ids,
+                    "expression": "",
+                }
+            else:
+                axes = operation.axes.valid_axes(self._document.recipe.setup)
+                axes_updates = {
+                    "axes": axes or ((0, 0),),
+                    "expression": "",
+                }
+            return operation.model_copy(
+                update={"axes": operation.axes.model_copy(update=axes_updates)}
             )
-            if not axes_ids:
-                axes_ids = _gridspec_all_axes_ids(self._document.recipe.setup)[:1]
-            selection = operation.axes.model_copy(
-                update={"axes_ids": axes_ids, "expression": ""}
-            )
-            self._replace_operation(
-                index, operation.model_copy(update={"axes": selection})
-            )
-            return
-        axes = operation.axes.valid_axes(self._document.recipe.setup)
-        if not axes:
-            axes = ((0, 0),)
-        selection = operation.axes.model_copy(update={"axes": axes, "expression": ""})
-        self._replace_operation(index, operation.model_copy(update={"axes": selection}))
+
+        self._update_operations_by_ids(operation_ids, update_operation)
 
     def _source_display_name(self, name: str) -> str:
         sources = self._document.source_by_name()
