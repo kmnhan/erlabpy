@@ -2879,6 +2879,7 @@ def test_manager_workspace_save_as_rebinds_lazy_data_to_new_document(
             old_lazy = _open_external_lazy_hdf5_imagetool_data(old_fname)
             root.slicer_area.replace_source_data(old_lazy + 0, auto_compute=False)
             assert _compute_first_value(old_lazy) == 0
+            uid = manager._tool_graph.root_wrappers[0].uid
 
             def _load_workspace_file_should_not_run(*args, **kwargs):
                 raise AssertionError("Save As should not reload the saved workspace")
@@ -2887,6 +2888,20 @@ def test_manager_workspace_save_as_rebinds_lazy_data_to_new_document(
                 manager._workspace_controller.loading,
                 "_load_workspace_file",
                 _load_workspace_file_should_not_run,
+            )
+            rebind_calls: list[str] = []
+            rebind_data = (
+                manager._workspace_controller.loading._workspace_rebind_data_for_uid
+            )
+
+            def _record_rebind(fname, node_uid: str, *, chunks):
+                rebind_calls.append(node_uid)
+                return rebind_data(fname, node_uid, chunks=chunks)
+
+            monkeypatch.setattr(
+                manager._workspace_controller.loading,
+                "_workspace_rebind_data_for_uid",
+                _record_rebind,
             )
 
             def _go_to_file(dialog: QtWidgets.QFileDialog):
@@ -2905,10 +2920,147 @@ def test_manager_workspace_save_as_rebinds_lazy_data_to_new_document(
             assert workspace_arrays._normalized_file_path(
                 rebound.encoding.get("source")
             ) == str(new_fname.resolve())
+            assert rebind_calls == [uid]
+            old_lazy.close()
             old_fname.unlink()
             assert _compute_first_value(rebound) == 0
     finally:
         object.__setattr__(dask_options, "compute_threshold", old_threshold)
+
+
+def test_manager_workspace_save_as_retargets_private_dask_without_rebind(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        old_fname = tmp_path / "private-reader-old.itws"
+        new_fname = tmp_path / "private-reader-new.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            old_fname, force_full=True
+        )
+        adopt_workspace_path(manager, old_fname)
+        manager._workspace_controller.loading._rebind_workspace_backed_imagetools(
+            old_fname, targets=[0], chunks={}
+        )
+        manager._workspace_controller._mark_workspace_clean()
+
+        live_data = root.slicer_area._data
+        assert live_data.chunks is not None
+        assert workspace_arrays.dataarray_source_paths(live_data) == (
+            str(old_fname.resolve()),
+        )
+
+        def _fail_rebind(*_args, **_kwargs) -> None:
+            raise AssertionError("private workspace readers must not be reopened")
+
+        monkeypatch.setattr(
+            manager._workspace_controller.loading,
+            "_rebind_workspace_backed_imagetools",
+            _fail_rebind,
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: new_fname,
+        )
+
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+
+        rebound = root.slicer_area._data
+        assert rebound is live_data
+        assert workspace_arrays.dataarray_source_paths(rebound) == (
+            str(new_fname.resolve()),
+        )
+        old_fname.unlink()
+        assert _compute_first_value(rebound) == 0
+
+
+def test_workspace_full_save_external_dask_rebind_rolls_back_on_later_failure(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+        external_fname = tmp_path / "rollback-external.h5"
+        workspace_fname = tmp_path / "rollback.itws"
+        xr.DataTree.from_dict({"0/imagetool": data.to_dataset(name="data")}).to_netcdf(
+            external_fname, engine="h5netcdf", invalid_netcdf=True
+        )
+        external = _open_external_lazy_hdf5_imagetool_data(external_fname)
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        root.slicer_area.replace_source_data(external + 0, auto_compute=False)
+        original_data = root.slicer_area._data
+        original_dask_name = original_data.data.name
+        original_source_paths = workspace_arrays.dataarray_source_paths(original_data)
+        original_name = manager._tool_graph.root_wrappers[0].name
+        backing_snapshot = (
+            manager._workspace_controller.loading._workspace_data_backing_snapshot()
+        )
+        uid = manager._tool_graph.root_wrappers[0].uid
+        manager._workspace_controller.saving._save_workspace_document(
+            workspace_fname, force_full=True
+        )
+
+        rebind_calls: list[str] = []
+        rebind_data = (
+            manager._workspace_controller.loading._workspace_rebind_data_for_uid
+        )
+
+        def _record_rebind(fname, node_uid: str, *, chunks):
+            rebind_calls.append(node_uid)
+            return rebind_data(fname, node_uid, chunks=chunks)
+
+        monkeypatch.setattr(
+            manager._workspace_controller.loading,
+            "_workspace_rebind_data_for_uid",
+            _record_rebind,
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_retarget_workspace_referenced_tool_data",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                workspace_controller._WorkspacePostSaveBindingError("later failure")
+            ),
+        )
+
+        with pytest.raises(
+            workspace_controller._WorkspacePostSaveBindingError,
+            match="later failure",
+        ):
+            manager._workspace_controller._refresh_workspace_payload_bindings_after_full_save(
+                workspace_fname,
+                backing_snapshot=backing_snapshot,
+                old_workspace_path=None,
+            )
+
+        assert rebind_calls == [uid]
+        restored_data = root.slicer_area._data
+        assert restored_data.data.name == original_dask_name
+        assert (
+            workspace_arrays.dataarray_source_paths(restored_data)
+            == original_source_paths
+        )
+        assert manager._tool_graph.root_wrappers[0].name == original_name
+        assert _compute_first_value(restored_data) == 0
+        external.close()
 
 
 def test_manager_workspace_save_clears_deferred_dirty_events(

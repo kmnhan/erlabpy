@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import functools
 import logging
 import os
@@ -652,6 +653,72 @@ class _WorkspaceController:
                 payload_attrs=attrs,
             )
 
+    def _dask_rebind_uids_after_full_save(
+        self,
+        *,
+        backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]] | None,
+        old_workspace_path: str | os.PathLike[str] | None,
+        exclude_uids: Collection[str],
+    ) -> frozenset[str]:
+        """Return Dask nodes that still depend on data outside the document."""
+        if backing_snapshot is None:
+            return frozenset()
+        old_path = workspace_arrays._normalized_file_path(old_workspace_path)
+        rebind_uids: set[str] = set()
+        for uid, (kind, source_paths) in backing_snapshot.items():
+            node = self._manager._tool_graph.nodes.get(uid)
+            if (
+                kind != "dask"
+                or uid in exclude_uids
+                or node is None
+                or not node.is_imagetool
+                or node.imagetool is None
+                or node.pending_workspace_memory_payload is not None
+            ):
+                continue
+            uses_current_workspace_reader = (
+                old_path is not None
+                and bool(source_paths)
+                and all(source_path == old_path for source_path in source_paths)
+            )
+            if not uses_current_workspace_reader:
+                rebind_uids.add(uid)
+        return frozenset(rebind_uids)
+
+    def _live_imagetool_rebind_snapshot(
+        self, uids: Collection[str]
+    ) -> dict[str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]]:
+        snapshot: dict[
+            str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]
+        ] = {}
+        for uid in uids:
+            node = self._manager._tool_graph.nodes.get(uid)
+            if node is None or node.imagetool is None:
+                continue
+            snapshot[uid] = (
+                node,
+                node.slicer_area._data,
+                copy.deepcopy(node.slicer_area.state),
+                node.name,
+            )
+        return snapshot
+
+    def _restore_live_imagetool_rebind_snapshot(
+        self,
+        snapshot: Mapping[
+            str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]
+        ],
+    ) -> None:
+        if not snapshot:
+            return
+        with self._workspace_load_context():
+            for uid, (node, data, state, name) in snapshot.items():
+                if uid not in self._manager._tool_graph.nodes or node.imagetool is None:
+                    continue
+                node.slicer_area.set_data(data, auto_compute=False)
+                node.slicer_area.state = state
+                node._set_name(name, manual=False)
+
     @staticmethod
     def _workspace_tool_references_include_uids(
         references: Mapping[str, Mapping[str, typing.Any]],
@@ -787,9 +854,28 @@ class _WorkspaceController:
         skip_live_data_rebind_uids: Collection[str] = frozenset(),
     ) -> None:
         pending_snapshot = self._pending_workspace_payload_snapshot()
+        live_imagetool_snapshot: dict[
+            str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]
+        ] = {}
         source_snapshot: list[tuple[xr.Variable, bool, typing.Any]] = []
         try:
+            dask_rebind_uids = self._dask_rebind_uids_after_full_save(
+                backing_snapshot=backing_snapshot,
+                old_workspace_path=old_workspace_path,
+                exclude_uids=skip_live_data_rebind_uids,
+            )
+            live_imagetool_snapshot = self._live_imagetool_rebind_snapshot(
+                dask_rebind_uids
+            )
             self._repoint_saved_pending_workspace_payloads(workspace_path)
+            if dask_rebind_uids:
+                self.loading._rebind_workspace_backed_imagetools(
+                    workspace_path,
+                    targets=dask_rebind_uids,
+                    backing_snapshot=backing_snapshot,
+                    old_workspace_path=old_workspace_path,
+                    exclude_uids=skip_live_data_rebind_uids,
+                )
             old_path = workspace_arrays._normalized_file_path(old_workspace_path)
             for uid, node in self._manager._tool_graph.nodes.items():
                 if (
@@ -802,10 +888,13 @@ class _WorkspaceController:
                     backing = backing_snapshot.get(uid)
                     if backing is not None:
                         kind, source_paths = backing
-                        should_retarget = kind == "dask" or (
-                            kind == "file_lazy"
-                            and old_path is not None
-                            and old_path in source_paths
+                        should_retarget = uid not in dask_rebind_uids and (
+                            kind == "dask"
+                            or (
+                                kind == "file_lazy"
+                                and old_path is not None
+                                and old_path in source_paths
+                            )
                         )
                         if should_retarget:
                             source_snapshot.extend(
@@ -826,14 +915,18 @@ class _WorkspaceController:
             with contextlib.suppress(Exception):
                 self._restore_pending_workspace_payload_snapshot(pending_snapshot)
             workspace_arrays._restore_workspace_xarray_source_snapshot(source_snapshot)
+            with contextlib.suppress(Exception):
+                self._restore_live_imagetool_rebind_snapshot(live_imagetool_snapshot)
             raise
         except Exception as exc:
             with contextlib.suppress(Exception):
                 self._restore_pending_workspace_payload_snapshot(pending_snapshot)
             workspace_arrays._restore_workspace_xarray_source_snapshot(source_snapshot)
+            with contextlib.suppress(Exception):
+                self._restore_live_imagetool_rebind_snapshot(live_imagetool_snapshot)
             raise _WorkspacePostSaveBindingError(
-                "Workspace file was saved, but logical workspace references could "
-                "not be updated."
+                "Workspace file was saved, but live workspace data could not be "
+                "rebound to the saved file."
             ) from exc
 
     def _active_managed_window(self) -> QtWidgets.QWidget | None:

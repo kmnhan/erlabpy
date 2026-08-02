@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 import h5netcdf
 import hdf5plugin
 import numpy as np
+import psutil
 import xarray as xr
 from xarray.backends import CachingFileManager, H5NetCDFStore
 from xarray.backends.locks import SerializableLock
@@ -128,17 +129,11 @@ def _workspace_reader_directory() -> pathlib.Path:
 
 
 def _workspace_process_is_running(process_id: int) -> bool:
-    if process_id == os.getpid():
-        return True
     try:
-        os.kill(process_id, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
+        return psutil.pid_exists(process_id)
+    except (OSError, psutil.Error):
+        # Stale cleanup must not remove files when liveness is uncertain.
         return True
-    except OSError:
-        return True
-    return True
 
 
 def _cleanup_stale_workspace_reader_directories() -> None:

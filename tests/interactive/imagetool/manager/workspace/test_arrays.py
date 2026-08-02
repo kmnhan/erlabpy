@@ -535,29 +535,29 @@ def test_workspace_reader_cleanup_removes_only_safe_stale_directories(
     assert unsafe.exists()
 
 
-def test_workspace_process_liveness_checks_are_fail_safe(monkeypatch) -> None:
+def test_workspace_process_liveness_uses_non_destructive_probe(monkeypatch) -> None:
     process_id = os.getpid()
+    probed: list[int] = []
+
+    def _pid_exists(pid: int) -> bool:
+        probed.append(pid)
+        return pid == process_id
+
+    def _fail_kill(*_args) -> None:
+        raise AssertionError("workspace cleanup must not signal another process")
+
+    monkeypatch.setattr(workspace_arrays.psutil, "pid_exists", _pid_exists)
+    monkeypatch.setattr(workspace_arrays.os, "kill", _fail_kill)
+
     assert workspace_arrays._workspace_process_is_running(process_id)
+    assert not workspace_arrays._workspace_process_is_running(process_id + 1)
+    assert probed == [process_id, process_id + 1]
 
     monkeypatch.setattr(
-        workspace_arrays.os,
-        "kill",
-        lambda _pid, _signal: (_ for _ in ()).throw(ProcessLookupError()),
+        workspace_arrays.psutil,
+        "pid_exists",
+        lambda _pid: (_ for _ in ()).throw(OSError()),
     )
-    assert not workspace_arrays._workspace_process_is_running(process_id + 1)
-    monkeypatch.setattr(
-        workspace_arrays.os,
-        "kill",
-        lambda _pid, _signal: (_ for _ in ()).throw(PermissionError()),
-    )
-    assert workspace_arrays._workspace_process_is_running(process_id + 1)
-    monkeypatch.setattr(
-        workspace_arrays.os,
-        "kill",
-        lambda _pid, _signal: (_ for _ in ()).throw(OSError()),
-    )
-    assert workspace_arrays._workspace_process_is_running(process_id + 1)
-    monkeypatch.setattr(workspace_arrays.os, "kill", lambda _pid, _signal: None)
     assert workspace_arrays._workspace_process_is_running(process_id + 1)
 
 
