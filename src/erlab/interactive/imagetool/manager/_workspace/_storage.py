@@ -102,11 +102,16 @@ def _workspace_in_place_update(
     fname: str | os.PathLike[str],
     *,
     rewrite_groups: Iterable[str] = (),
+    expected_state: tuple[tuple[str, int, int, int], bool] | None = None,
 ) -> Iterator[None]:
     """Coordinate one recoverable in-place workspace update."""
     with workspace_arrays._workspace_file_lock(fname):
         generation = workspace_arrays._current_workspace_file_generation(fname)
         initial_state = workspace_arrays._workspace_file_state(fname)
+        if expected_state is not None and initial_state != expected_state:
+            raise _WorkspacePublicationConflictError(
+                fname, "Workspace changed while its incremental save was prepared"
+            )
         if generation is not None:
             generation.close(needs_lock=False)
             workspace_arrays._detach_workspace_file_generation_readers(
@@ -632,6 +637,14 @@ def _recover_workspace_transactions_in_place(
 
 
 def _recover_workspace_transactions(fname: str | os.PathLike[str]) -> None:
+    with workspace_arrays._workspace_save_lock(fname):
+        _recover_workspace_transactions_coordinated(fname)
+
+
+def _recover_workspace_transactions_coordinated(
+    fname: str | os.PathLike[str],
+) -> None:
+    """Recover transactions while this process owns the workspace save lock."""
     if not _workspace_transaction_recovery_needed(fname):
         return
     with _workspace_in_place_update(fname):
@@ -677,12 +690,13 @@ def _workspace_file_repack_payload(
 ) -> tuple[
     dict[str, typing.Any], tuple[tuple[str, str, dict[str, typing.Any] | None], ...]
 ]:
-    _recover_workspace_transactions(fname)
-    root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(fname)
-    return (
-        _compacted_workspace_root_attrs(root_attrs),
-        workspace_arrays._workspace_live_root_group_copy_groups(fname),
-    )
+    with workspace_arrays._workspace_save_lock(fname):
+        _recover_workspace_transactions_coordinated(fname)
+        root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(fname)
+        return (
+            _compacted_workspace_root_attrs(root_attrs),
+            workspace_arrays._workspace_live_root_group_copy_groups(fname),
+        )
 
 
 def _write_workspace_constructor_groups_to_path(
@@ -935,7 +949,20 @@ def _write_workspace_root_attrs_transaction_file(
     replace: bool,
 ) -> None:
     """Write root attributes through the recoverable transaction protocol."""
-    _recover_workspace_transactions(fname)
+    with workspace_arrays._workspace_save_lock(fname):
+        _write_workspace_root_attrs_transaction_file_coordinated(
+            fname, attrs, replace=replace
+        )
+
+
+def _write_workspace_root_attrs_transaction_file_coordinated(
+    fname: str | os.PathLike[str],
+    attrs: Mapping[str, typing.Any],
+    *,
+    replace: bool,
+) -> None:
+    """Write root attributes while this process owns the workspace save lock."""
+    _recover_workspace_transactions_coordinated(fname)
     txn_id = uuid.uuid4().hex
     txn_path = f"{_WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
     pending_root = f"{_WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
@@ -979,33 +1006,58 @@ def _write_workspace_transaction_file(
     compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
     """Write one recoverable incremental workspace transaction."""
-    _recover_workspace_transactions(fname)
+    with workspace_arrays._workspace_save_lock(fname):
+        _write_workspace_transaction_file_coordinated(
+            fname,
+            rewrite_groups,
+            attr_updates,
+            root_attrs,
+            compression_mode=compression_mode,
+        )
+
+
+def _write_workspace_transaction_file_coordinated(
+    fname: str | os.PathLike[str],
+    rewrite_groups: Iterable[tuple[str, dict[str, xr.Dataset]]],
+    attr_updates: Iterable[
+        tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]]
+    ],
+    root_attrs: Mapping[str, typing.Any],
+    *,
+    compression_mode: WorkspaceCompressionMode | None,
+) -> None:
+    """Prepare and write a delta while this process owns the save lock."""
+    _recover_workspace_transactions_coordinated(fname)
     rewrite_map = {
         group_path.strip("/"): (group_path, constructor)
         for group_path, constructor in rewrite_groups
     }
     attr_updates_tuple = tuple(attr_updates)
+    with workspace_arrays._workspace_file_lock(fname):
+        expected_state = workspace_arrays._workspace_file_state(fname)
+        missing_fallback_groups = _workspace_missing_attr_fallback_groups(
+            fname, rewrite_map, attr_updates_tuple
+        )
+        missing_fallback_group_set = set(missing_fallback_groups)
+        for _payload_path, _attrs, fallback in attr_updates_tuple:
+            fallback_path = fallback[0].strip("/")
+            if fallback_path in missing_fallback_group_set:
+                rewrite_map[fallback_path] = fallback
+
+    # Dask can schedule reads on worker threads. Materialize before the file lock so
+    # those reads can acquire their generation without waiting on the save thread.
+    _materialize_workspace_constructor_sources(fname, rewrite_map)
+
     txn_id = uuid.uuid4().hex
     txn_path = f"{_WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
     pending_root = f"{_WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
     backup_root = f"{_WORKSPACE_BACKUP_GROUP_PREFIX}{txn_id}"
-    with _workspace_in_place_update(fname, rewrite_groups=rewrite_map):
+    with _workspace_in_place_update(
+        fname,
+        rewrite_groups=rewrite_map,
+        expected_state=expected_state,
+    ):
         try:
-            missing_fallback_groups = _workspace_missing_attr_fallback_groups(
-                fname, rewrite_map, attr_updates_tuple
-            )
-            missing_fallback_group_set = set(missing_fallback_groups)
-            for _payload_path, _attrs, fallback in attr_updates_tuple:
-                fallback_path = fallback[0].strip("/")
-                if fallback_path in missing_fallback_group_set:
-                    rewrite_map[fallback_path] = fallback
-            workspace_arrays._detach_workspace_file_generation_readers(
-                fname, missing_fallback_groups
-            )
-            _materialize_workspace_constructor_sources(fname, rewrite_map)
-            generation = workspace_arrays._current_workspace_file_generation(fname)
-            if generation is not None:
-                generation.close(needs_lock=False)
             group_operations, attr_updates_to_write = _prepare_workspace_transaction(
                 fname,
                 txn_path,
@@ -1047,6 +1099,30 @@ def _write_full_workspace_tree_file(
     copy_group_sources: Iterable[_WorkspaceCopyGroupWithSource] = (),
     compression_mode: WorkspaceCompressionMode | None = None,
 ) -> None:
+    """Write and publish one complete workspace successor."""
+    with workspace_arrays._workspace_save_lock(fname):
+        _write_full_workspace_tree_file_coordinated(
+            fname,
+            tree,
+            root_attrs,
+            copy_source=copy_source,
+            copy_groups=copy_groups,
+            copy_group_sources=copy_group_sources,
+            compression_mode=compression_mode,
+        )
+
+
+def _write_full_workspace_tree_file_coordinated(
+    fname: str | os.PathLike[str],
+    tree: xr.DataTree | None,
+    root_attrs: Mapping[str, typing.Any],
+    *,
+    copy_source: str | os.PathLike[str] | None,
+    copy_groups: Iterable[_WorkspaceCopyGroup],
+    copy_group_sources: Iterable[_WorkspaceCopyGroupWithSource],
+    compression_mode: WorkspaceCompressionMode | None,
+) -> None:
+    """Build a successor while this process owns the workspace save lock."""
     fname = os.fsdecode(fname)
     with workspace_arrays._workspace_file_lock(fname):
         generation = workspace_arrays._current_workspace_file_generation(fname)

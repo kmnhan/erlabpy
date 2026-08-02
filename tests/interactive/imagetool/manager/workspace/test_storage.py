@@ -1788,12 +1788,37 @@ def test_workspace_transaction_does_not_copy_or_replace_full_file(
 
 
 def test_workspace_transaction_materializes_lazy_source_before_mutation(
-    tmp_path,
+    monkeypatch, tmp_path
 ) -> None:
     fname = tmp_path / "lazy-constructor-source.itws"
     _write_transaction_test_workspace(fname, value=1.0)
-    opened = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks={})
+    opened = workspace_arrays.open_workspace_dataset(
+        fname, "0/imagetool", chunks={"x": 1}
+    )
     snapshot = opened[["data"]].copy(deep=False)
+    original_materialize = workspace_storage._materialize_workspace_constructor_sources
+
+    def _materialize_without_reader_lock(*args, **kwargs) -> None:
+        lock_results: list[bool] = []
+
+        def _probe_reader_lock() -> None:
+            lock = workspace_arrays._workspace_file_lock(fname)
+            acquired = lock.acquire(timeout=1)
+            lock_results.append(acquired)
+            if acquired:
+                lock.release()
+
+        probe = threading.Thread(target=_probe_reader_lock)
+        probe.start()
+        probe.join(2)
+        assert lock_results == [True]
+        original_materialize(*args, **kwargs)
+
+    monkeypatch.setattr(
+        workspace_storage,
+        "_materialize_workspace_constructor_sources",
+        _materialize_without_reader_lock,
+    )
 
     try:
         workspace_storage._write_workspace_transaction_file(
@@ -1807,6 +1832,117 @@ def test_workspace_transaction_materializes_lazy_source_before_mutation(
             assert np.asarray(h5_file["1/figure/data"]).item() == 1.0
     finally:
         opened.close()
+
+
+def test_workspace_transaction_serializes_save_preparation(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "concurrent-saves.itws"
+    _write_transaction_test_workspace(fname, value=1.0)
+    original_materialize = workspace_storage._materialize_workspace_constructor_sources
+    first_entered = threading.Event()
+    second_entered = threading.Event()
+    release_first = threading.Event()
+    call_lock = threading.Lock()
+    errors: list[BaseException] = []
+    call_count = 0
+
+    def _coordinate_materialization(*args, **kwargs) -> None:
+        nonlocal call_count
+        with call_lock:
+            call_index = call_count
+            call_count += 1
+        if call_index == 0:
+            first_entered.set()
+            if not release_first.wait(5):
+                raise TimeoutError("First save was not released")
+        else:
+            second_entered.set()
+        original_materialize(*args, **kwargs)
+
+    def _save(value: float) -> None:
+        try:
+            workspace_storage._write_workspace_transaction_file(
+                fname,
+                (
+                    (
+                        "0",
+                        {
+                            "0/imagetool": _transaction_test_dataset(
+                                value, title=f"save {value}"
+                            )
+                        },
+                    ),
+                ),
+                (),
+                _transaction_test_root_attrs(delta_save_count=int(value)),
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(
+        workspace_storage,
+        "_materialize_workspace_constructor_sources",
+        _coordinate_materialization,
+    )
+    first = threading.Thread(target=_save, args=(2.0,))
+    second = threading.Thread(target=_save, args=(3.0,))
+
+    first.start()
+    assert first_entered.wait(5)
+    second.start()
+    try:
+        assert not second_entered.wait(0.1)
+    finally:
+        release_first.set()
+    first.join(5)
+    second.join(5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert second_entered.is_set()
+    assert errors == []
+    assert _read_transaction_test_value(fname) == 3.0
+    _assert_no_workspace_internal_groups(fname)
+
+
+def test_workspace_transaction_rejects_change_during_materialization(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "incremental-conflict.itws"
+    external = tmp_path / "external.itws"
+    _write_transaction_test_workspace(fname, value=1.0)
+    _write_transaction_test_workspace(external, value=7.0)
+    original_materialize = workspace_storage._materialize_workspace_constructor_sources
+
+    def _materialize_then_replace(*args, **kwargs) -> None:
+        original_materialize(*args, **kwargs)
+        external.replace(fname)
+
+    monkeypatch.setattr(
+        workspace_storage,
+        "_materialize_workspace_constructor_sources",
+        _materialize_then_replace,
+    )
+
+    with pytest.raises(
+        workspace_storage._WorkspacePublicationConflictError,
+        match="incremental save was prepared",
+    ):
+        workspace_storage._write_workspace_transaction_file(
+            fname,
+            (
+                (
+                    "0",
+                    {"0/imagetool": _transaction_test_dataset(2.0, title="stale save")},
+                ),
+            ),
+            (),
+            _transaction_test_root_attrs(delta_save_count=1),
+        )
+
+    assert _read_transaction_test_value(fname) == 7.0
+    _assert_no_workspace_internal_groups(fname)
 
 
 def test_workspace_constructor_materialization_reuses_data_and_chunks(tmp_path) -> None:

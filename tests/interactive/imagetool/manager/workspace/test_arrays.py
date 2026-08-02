@@ -231,15 +231,20 @@ def test_workspace_reader_handoffs_do_not_delete_parent_files_after_fork(
     workspace_arrays._WORKSPACE_READER_HANDOFFS[str(handoff_path)] = (
         workspace_arrays._WorkspaceReaderHandoff(
             reader_file,
-            (str(tmp_path / "workspace.itws"), "parent-revision"),
+            (str(tmp_path / "workspace.itws"), "parent-revision", "/"),
         )
     )
     old_lock = workspace_arrays._WORKSPACE_READER_HANDOFFS_LOCK
+    old_save_lock = workspace_arrays._workspace_save_lock(tmp_path / "workspace.itws")
 
     workspace_arrays._reset_workspace_reader_handoffs_after_fork()
 
     assert workspace_arrays._WORKSPACE_READER_HANDOFFS == {}
     assert workspace_arrays._WORKSPACE_READER_HANDOFFS_LOCK is not old_lock
+    assert (
+        workspace_arrays._workspace_save_lock(tmp_path / "workspace.itws")
+        is not old_save_lock
+    )
     assert handoff_path.exists()
     reader_file.cleanup()
 
@@ -392,8 +397,8 @@ def test_workspace_file_manager_handoff_outlives_sender_generation(
     handoff_paths: list[pathlib.Path] = []
     original_handoff = workspace_arrays._create_workspace_reader_handoff
 
-    def _record_handoff(export_file, workspace_path, revision):
-        handoff = original_handoff(export_file, workspace_path, revision)
+    def _record_handoff(export_file, workspace_path, revision, group):
+        handoff = original_handoff(export_file, workspace_path, revision, group)
         handoff_paths.append(pathlib.Path(handoff.path))
         return handoff
 
@@ -416,7 +421,7 @@ def test_workspace_file_manager_handoff_outlives_sender_generation(
     assert handoff_path.exists()
     restored = pickle.loads(serialized)
     try:
-        assert not handoff_path.exists()
+        assert handoff_path.exists()
         np.testing.assert_array_equal(
             restored.acquire().variables["data"][:], np.arange(6)
         )
@@ -424,17 +429,41 @@ def test_workspace_file_manager_handoff_outlives_sender_generation(
         restored.close()
 
 
-def test_workspace_file_manager_uses_independent_serialization_handoffs(
+def test_workspace_file_manager_cleans_retired_serialization_handoff(
     monkeypatch, tmp_path
 ) -> None:
-    fname = tmp_path / "independent-handoffs.itws"
+    fname = tmp_path / "retired-handoff.itws"
+    xr.Dataset({"data": ("x", np.arange(6))}).to_netcdf(fname, engine="h5netcdf")
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    generation = manager._generation
+    pickle.dumps(manager)
+    handoff_path = next(
+        workspace_arrays._workspace_reader_directory(fname).glob("handoff-*.itws")
+    )
+    monkeypatch.setattr(
+        workspace_arrays, "_WORKSPACE_READER_HANDOFF_RETENTION_SECONDS", 0.0
+    )
+
+    manager._finalizer()
+    with workspace_arrays._workspace_file_lock(fname):
+        workspace_arrays._cleanup_workspace_file_generation_locked(generation)
+    workspace_arrays._cleanup_expired_workspace_reader_handoffs()
+
+    assert not handoff_path.exists()
+    assert not workspace_arrays._WORKSPACE_READER_HANDOFFS
+
+
+def test_workspace_file_manager_reuses_serialization_handoff(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "reusable-handoff.itws"
     xr.Dataset({"data": ("x", np.arange(6))}).to_netcdf(fname, engine="h5netcdf")
     manager = workspace_arrays.WorkspaceFileManager(fname)
     handoff_paths: list[pathlib.Path] = []
     original_handoff = workspace_arrays._create_workspace_reader_handoff
 
-    def _record_handoff(export_file, workspace_path, revision):
-        handoff = original_handoff(export_file, workspace_path, revision)
+    def _record_handoff(export_file, workspace_path, revision, group):
+        handoff = original_handoff(export_file, workspace_path, revision, group)
         handoff_paths.append(pathlib.Path(handoff.path))
         return handoff
 
@@ -445,20 +474,43 @@ def test_workspace_file_manager_uses_independent_serialization_handoffs(
     second_payload = pickle.dumps(manager)
 
     assert len(handoff_paths) == 2
-    assert handoff_paths[0] != handoff_paths[1]
+    assert handoff_paths[0] == handoff_paths[1]
     assert all(path.exists() for path in handoff_paths)
     first = pickle.loads(first_payload)
+    repeated = pickle.loads(first_payload)
     second = pickle.loads(second_payload)
     try:
-        assert all(not path.exists() for path in handoff_paths)
-        for restored in (first, second):
+        assert all(path.exists() for path in handoff_paths)
+        for restored in (first, repeated, second):
             np.testing.assert_array_equal(
                 restored.acquire().variables["data"][:], np.arange(6)
             )
     finally:
         manager.close()
         first.close()
+        repeated.close()
         second.close()
+
+
+def test_workspace_file_manager_failed_pickle_reuses_handoff(tmp_path) -> None:
+    fname = tmp_path / "failed-pickle.itws"
+    xr.Dataset({"data": ("x", np.arange(6))}).to_netcdf(fname, engine="h5netcdf")
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+
+    try:
+        for _ in range(3):
+            with pytest.raises(pickle.PicklingError):
+                pickle.dumps({"manager": manager, "unpickleable": lambda: None})
+
+        handoff_paths = tuple(
+            workspace_arrays._workspace_reader_directory(fname).glob("handoff-*.itws")
+        )
+        assert len(handoff_paths) == 1
+        assert tuple(workspace_arrays._WORKSPACE_READER_HANDOFFS) == (
+            str(handoff_paths[0]),
+        )
+    finally:
+        manager.close()
 
 
 def test_workspace_file_manager_bounds_unconsumed_reader_generations(
@@ -496,31 +548,48 @@ def test_workspace_file_manager_bounds_unconsumed_reader_handoffs(
     monkeypatch, tmp_path
 ) -> None:
     fname = tmp_path / "pending-readers.itws"
-    xr.Dataset({"data": ("x", np.arange(3))}).to_netcdf(fname, engine="h5netcdf")
-    manager = workspace_arrays.WorkspaceFileManager(fname)
+    tree = xr.DataTree.from_dict(
+        {
+            "0": xr.Dataset({"data": ("x", np.arange(3))}),
+            "1": xr.Dataset({"data": ("x", np.arange(3) + 10)}),
+        }
+    )
+    try:
+        workspace_storage._write_full_workspace_tree_file(
+            fname, tree, _transaction_test_root_attrs()
+        )
+    finally:
+        tree.close()
+    first_manager = workspace_arrays.WorkspaceFileManager(fname, "0")
+    second_manager = workspace_arrays.WorkspaceFileManager(fname, "1")
     monkeypatch.setattr(workspace_arrays, "_WORKSPACE_MAX_PENDING_READER_HANDOFFS", 1)
     missing_handoff = tmp_path / "missing-handoff.itws"
     workspace_arrays._WORKSPACE_READER_HANDOFFS[str(missing_handoff)] = (
         workspace_arrays._WorkspaceReaderHandoff(
             workspace_arrays._WorkspaceReaderFile(str(missing_handoff), lambda: None),
-            (str(fname), "stale-revision"),
+            (str(fname), "stale-revision", "/"),
         )
     )
-    first_payload = pickle.dumps(manager)
+    first_payload = pickle.dumps(first_manager)
     assert str(missing_handoff) not in workspace_arrays._WORKSPACE_READER_HANDOFFS
+    repeated_payload = pickle.dumps(first_manager)
 
     try:
         with pytest.raises(RuntimeError, match="Wait for background work"):
-            pickle.dumps(manager)
-        restored = pickle.loads(first_payload)
+            pickle.dumps(second_manager)
+        first = pickle.loads(first_payload)
+        repeated = pickle.loads(repeated_payload)
         try:
-            np.testing.assert_array_equal(
-                restored.acquire().variables["data"][:], np.arange(3)
-            )
+            for restored in (first, repeated):
+                np.testing.assert_array_equal(
+                    restored.acquire().groups["0"].variables["data"][:], np.arange(3)
+                )
         finally:
-            restored.close()
+            first.close()
+            repeated.close()
     finally:
-        manager.close()
+        first_manager.close()
+        second_manager.close()
 
 
 def test_workspace_file_manager_rejects_missing_serialized_export(tmp_path) -> None:

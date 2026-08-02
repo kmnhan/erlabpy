@@ -12,6 +12,7 @@ import shutil
 import stat
 import sys
 import threading
+import time
 import typing
 import uuid
 import weakref
@@ -49,6 +50,10 @@ _WORKSPACE_FILE_LOCKS: weakref.WeakValueDictionary[str, threading.RLock] = (
     weakref.WeakValueDictionary()
 )
 _WORKSPACE_FILE_LOCKS_LOCK = threading.Lock()
+_WORKSPACE_SAVE_LOCKS: weakref.WeakValueDictionary[str, threading.RLock] = (
+    weakref.WeakValueDictionary()
+)
+_WORKSPACE_SAVE_LOCKS_LOCK = threading.Lock()
 # Current generations stay alive until their final reader lease is cleaned up.
 # This lets a save find and close a handle even when final lease release races it.
 _WORKSPACE_FILE_GENERATIONS: dict[str, _WorkspaceFileGeneration] = {}
@@ -79,12 +84,13 @@ class _WorkspaceReaderFile:
     cleanup: Callable[[], None]
 
 
-@dataclass(frozen=True)
+@dataclass
 class _WorkspaceReaderHandoff:
-    """One serialized-reader lease for a logical workspace generation."""
+    """One reusable serialized-reader export for a workspace generation."""
 
     reader_file: _WorkspaceReaderFile
-    generation_key: tuple[str, str]
+    generation_key: tuple[str, str, str]
+    retire_at: float | None = None
 
 
 _WORKSPACE_READER_HANDOFFS: dict[str, _WorkspaceReaderHandoff] = {}
@@ -92,6 +98,7 @@ _WORKSPACE_READER_HANDOFFS_LOCK = threading.Lock()
 _WORKSPACE_READER_HANDOFFS_OWNER_PID = os.getpid()
 _WORKSPACE_MAX_PENDING_READER_GENERATIONS = 8
 _WORKSPACE_MAX_PENDING_READER_HANDOFFS = 64
+_WORKSPACE_READER_HANDOFF_RETENTION_SECONDS = 60.0
 
 
 def _normalized_workspace_group(group: str) -> str:
@@ -282,20 +289,25 @@ def _create_workspace_reader_handoff(
     export_file: _WorkspaceReaderFile,
     workspace_path: str | os.PathLike[str],
     revision: str,
+    group: str,
 ) -> _WorkspaceReaderFile:
-    """Create one independently owned handoff for a serialized reader."""
+    """Return one reusable handoff for a serialized reader generation."""
+    _cleanup_expired_workspace_reader_handoffs()
+    normalized_group = _normalized_workspace_group(group)
+    generation_key = (os.fsdecode(workspace_path), revision, normalized_group)
     with _WORKSPACE_READER_HANDOFFS_LOCK:
-        for path in tuple(_WORKSPACE_READER_HANDOFFS):
-            if not pathlib.Path(path).exists():
-                _WORKSPACE_READER_HANDOFFS.pop(path, None)
-        generation_key = (os.fsdecode(workspace_path), revision)
+        for handoff in _WORKSPACE_READER_HANDOFFS.values():
+            if handoff.generation_key == generation_key:
+                handoff.retire_at = None
+                return handoff.reader_file
         pending_generations = {
-            handoff.generation_key for handoff in _WORKSPACE_READER_HANDOFFS.values()
+            handoff.generation_key[:2]
+            for handoff in _WORKSPACE_READER_HANDOFFS.values()
         }
         if len(
             _WORKSPACE_READER_HANDOFFS
         ) >= _WORKSPACE_MAX_PENDING_READER_HANDOFFS or (
-            generation_key not in pending_generations
+            generation_key[:2] not in pending_generations
             and len(pending_generations) >= _WORKSPACE_MAX_PENDING_READER_GENERATIONS
         ):
             raise RuntimeError(
@@ -315,29 +327,44 @@ def _create_workspace_reader_handoff(
     return handoff
 
 
-def _consume_workspace_reader_handoff(
-    path: str | os.PathLike[str],
-    workspace_path: str | os.PathLike[str],
-) -> None:
-    """Remove a handoff after its receiver owns a private reader file."""
-    handoff_path = pathlib.Path(path)
-    try:
-        expected_parent = _workspace_reader_directory(workspace_path).resolve()
-        is_internal = handoff_path.resolve().parent == expected_parent
-    except OSError:
-        is_internal = False
-    if not is_internal or not handoff_path.name.startswith("handoff-"):
-        return
+def _take_expired_workspace_reader_handoffs() -> tuple[_WorkspaceReaderHandoff, ...]:
+    """Remove and return expired or missing reader handoffs."""
+    now = time.monotonic()
+    expired: list[_WorkspaceReaderHandoff] = []
     with _WORKSPACE_READER_HANDOFFS_LOCK:
-        handoff = _WORKSPACE_READER_HANDOFFS.pop(str(handoff_path), None)
-    if handoff is not None:
-        handoff.reader_file.cleanup()
-    else:
-        _cleanup_workspace_reader_path(handoff_path)
+        for path, handoff in tuple(_WORKSPACE_READER_HANDOFFS.items()):
+            retire_at = handoff.retire_at
+            if not pathlib.Path(path).exists() or (
+                retire_at is not None and retire_at <= now
+            ):
+                _WORKSPACE_READER_HANDOFFS.pop(path, None)
+                expired.append(handoff)
+    return tuple(expired)
+
+
+def _cleanup_expired_workspace_reader_handoffs() -> None:
+    """Clean reusable reader exports after their retention period."""
+    for handoff in _take_expired_workspace_reader_handoffs():
+        with contextlib.suppress(Exception):
+            handoff.reader_file.cleanup()
+
+
+def _retire_workspace_reader_handoffs(
+    workspace_path: str | os.PathLike[str], revision: str
+) -> None:
+    """Schedule reusable exports for cleanup after their generation retires."""
+    generation_key = (os.fsdecode(workspace_path), revision)
+    retire_at = time.monotonic() + _WORKSPACE_READER_HANDOFF_RETENTION_SECONDS
+    with _WORKSPACE_READER_HANDOFFS_LOCK:
+        for handoff in _WORKSPACE_READER_HANDOFFS.values():
+            if handoff.generation_key[:2] != generation_key:
+                continue
+            if handoff.retire_at is None or retire_at < handoff.retire_at:
+                handoff.retire_at = retire_at
 
 
 def _cleanup_workspace_reader_handoffs() -> None:
-    """Remove unconsumed reader handoffs owned by this Python process."""
+    """Remove reusable reader exports owned by this Python process."""
     if os.getpid() != _WORKSPACE_READER_HANDOFFS_OWNER_PID:
         return
     with _WORKSPACE_READER_HANDOFFS_LOCK:
@@ -350,9 +377,13 @@ def _cleanup_workspace_reader_handoffs() -> None:
 
 def _reset_workspace_reader_handoffs_after_fork() -> None:
     """Forget parent-owned handoffs without deleting them in a forked child."""
+    global _WORKSPACE_SAVE_LOCKS
+    global _WORKSPACE_SAVE_LOCKS_LOCK
     global _WORKSPACE_READER_HANDOFFS_LOCK
     global _WORKSPACE_READER_HANDOFFS_OWNER_PID
 
+    _WORKSPACE_SAVE_LOCKS = weakref.WeakValueDictionary()
+    _WORKSPACE_SAVE_LOCKS_LOCK = threading.Lock()
     _WORKSPACE_READER_HANDOFFS.clear()
     _WORKSPACE_READER_HANDOFFS_LOCK = threading.Lock()
     _WORKSPACE_READER_HANDOFFS_OWNER_PID = os.getpid()
@@ -645,26 +676,32 @@ class _WorkspaceFileGeneration:
                 raise RuntimeError(
                     "Cannot bind an existing workspace reader generation to a new file"
                 )
+        previous_revision = self.revision
         identity = _workspace_file_identity(self.workspace_path)
         self._resources.activate(self.workspace_path, identity)
         self.file_identity = identity
         with self._state_lock:
             self._created_without_file = False
             self._revision = uuid.uuid4().hex
+        _retire_workspace_reader_handoffs(self.workspace_path, previous_revision)
 
     def refresh_in_place(self, file_identity: tuple[str, int, int, int]) -> None:
         """Reopen this generation after a managed in-place transaction."""
         self._raise_if_unavailable()
+        previous_revision = self.revision
         self._resources.activate(self.workspace_path, file_identity)
         self.file_identity = file_identity
         with self._state_lock:
             self._revision = uuid.uuid4().hex
+        _retire_workspace_reader_handoffs(self.workspace_path, previous_revision)
 
     def invalidate(self, reason: str) -> None:
         self._resources.close(needs_lock=False)
+        revision = self.revision
         with self._state_lock:
             self._retired = True
             self._invalid_reason = reason
+        _retire_workspace_reader_handoffs(self.workspace_path, revision)
 
     def export_reader_state(
         self, group: str
@@ -680,6 +717,7 @@ class _WorkspaceFileGeneration:
             export_file,
             self.workspace_path,
             self.revision,
+            group,
         )
         identity = _workspace_file_identity(handoff.path)[1:]
         return self.workspace_path, handoff.path, identity, group
@@ -707,6 +745,8 @@ class _WorkspaceFileGeneration:
                 return
             self._disposed = True
             self._cleanup_scheduled = False
+            revision = self._revision
+        _retire_workspace_reader_handoffs(self.workspace_path, revision)
         self._finalizer()
 
 
@@ -742,6 +782,19 @@ def _workspace_file_lock(path: str | os.PathLike[str]) -> threading.RLock:
         if lock is None:
             lock = threading.RLock()
             _WORKSPACE_FILE_LOCKS[target] = lock
+        return lock
+
+
+def _workspace_save_lock(path: str | os.PathLike[str]) -> threading.RLock:
+    """Return the lock that serializes save preparation for one workspace."""
+    target = _normalized_file_path(path)
+    if target is None:
+        target = os.fsdecode(path)
+    with _WORKSPACE_SAVE_LOCKS_LOCK:
+        lock = _WORKSPACE_SAVE_LOCKS.get(target)
+        if lock is None:
+            lock = threading.RLock()
+            _WORKSPACE_SAVE_LOCKS[target] = lock
         return lock
 
 
@@ -949,7 +1002,6 @@ def _workspace_file_generation_from_reader(
     _ensure_workspace_file_cleanup_worker()
     with _workspace_file_lock(workspace_path):
         if _workspace_file_identity(reader_path)[1:] != expected_identity:
-            _consume_workspace_reader_handoff(reader_path, workspace_path)
             raise RuntimeError(
                 "Serialized workspace reader generation is no longer available: "
                 f"{reader_path}"
@@ -962,7 +1014,6 @@ def _workspace_file_generation_from_reader(
             raise
         if reader_identity_after != expected_identity:
             reader_file.cleanup()
-            _consume_workspace_reader_handoff(reader_path, workspace_path)
             raise RuntimeError(
                 "Serialized workspace reader generation changed while it was "
                 f"being opened: {reader_path}"
@@ -976,7 +1027,6 @@ def _workspace_file_generation_from_reader(
         except BaseException:
             reader_file.cleanup()
             raise
-        _consume_workspace_reader_handoff(reader_path, workspace_path)
         return generation
 
 
