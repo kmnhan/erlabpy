@@ -1,6 +1,7 @@
 import errno
 import json
 import pathlib
+import threading
 import types
 import typing
 
@@ -433,6 +434,7 @@ def test_write_full_workspace_tree_file_network_scratch_skips_copy_reuse(
     finally:
         tree.close()
 
+    monkeypatch.undo()
     assert _read_transaction_test_value(fname) == 3.0
 
 
@@ -550,6 +552,7 @@ def test_write_full_workspace_tree_file_scratch_replace_failure_preserves_old(
     finally:
         tree.close()
 
+    monkeypatch.undo()
     assert _read_transaction_test_value(fname) == 1.0
     assert scratch_paths
     assert all(not scratch_path.exists() for scratch_path in scratch_paths)
@@ -597,10 +600,230 @@ def test_write_full_workspace_tree_file_scratch_copy_failure_cleans_destination_
     finally:
         tree.close()
 
+    monkeypatch.undo()
     assert _read_transaction_test_value(fname) == 1.0
     assert scratch_paths
     assert all(not scratch_path.exists() for scratch_path in scratch_paths)
     assert not list(fname.parent.glob(f"{fname.name}.tmp-*"))
+
+
+def test_replace_workspace_file_retries_transient_access_denied(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "prepared.itws"
+    destination = tmp_path / "workspace.itws"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+    expected_state = workspace_storage._workspace_publication_state(destination)
+    original_replace = workspace_storage.os.replace
+    replace_attempts = 0
+    delays: list[float] = []
+
+    def _replace_with_transient_denial(src, dst) -> None:
+        nonlocal replace_attempts
+        replace_attempts += 1
+        if replace_attempts < 3:
+            raise PermissionError(errno.EACCES, "file is in use", dst)
+        original_replace(src, dst)
+
+    monkeypatch.setattr(
+        workspace_storage,
+        "_is_retryable_windows_workspace_replace_error",
+        lambda _exc: True,
+    )
+    monkeypatch.setattr(workspace_storage.os, "replace", _replace_with_transient_denial)
+    monkeypatch.setattr(workspace_storage.time, "sleep", delays.append)
+
+    workspace_storage._replace_workspace_file(
+        source, destination, expected_state=expected_state
+    )
+
+    assert replace_attempts == 3
+    assert delays == [0.02, 0.05]
+    assert destination.read_bytes() == b"new"
+
+
+def test_replace_workspace_file_stops_if_destination_changes_during_retry(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "prepared.itws"
+    destination = tmp_path / "workspace.itws"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+    expected_state = workspace_storage._workspace_publication_state(destination)
+
+    def _replace_after_external_change(_src, dst) -> None:
+        pathlib.Path(dst).write_bytes(b"changed outside the manager")
+        raise PermissionError(errno.EACCES, "file is in use", dst)
+
+    monkeypatch.setattr(
+        workspace_storage,
+        "_is_retryable_windows_workspace_replace_error",
+        lambda _exc: True,
+    )
+    monkeypatch.setattr(workspace_storage.os, "replace", _replace_after_external_change)
+    monkeypatch.setattr(workspace_storage.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(workspace_storage._WorkspacePublicationConflictError):
+        workspace_storage._replace_workspace_file(
+            source, destination, expected_state=expected_state
+        )
+
+    assert source.read_bytes() == b"new"
+    assert destination.read_bytes() == b"changed outside the manager"
+
+
+def test_replace_workspace_file_preserves_permission_error_after_retries(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "prepared.itws"
+    destination = tmp_path / "workspace.itws"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+    expected_state = workspace_storage._workspace_publication_state(destination)
+    attempts = 0
+
+    def _deny_replace(_src, dst) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise PermissionError(errno.EACCES, "file is in use", dst)
+
+    monkeypatch.setattr(
+        workspace_storage,
+        "_WINDOWS_WORKSPACE_REPLACE_RETRY_DELAYS",
+        (0.0, 0.0),
+    )
+    monkeypatch.setattr(
+        workspace_storage,
+        "_is_retryable_windows_workspace_replace_error",
+        lambda _exc: True,
+    )
+    monkeypatch.setattr(workspace_storage.os, "replace", _deny_replace)
+    monkeypatch.setattr(workspace_storage.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(PermissionError, match="file is in use"):
+        workspace_storage._replace_workspace_file(
+            source, destination, expected_state=expected_state
+        )
+
+    assert attempts == 3
+    assert source.read_bytes() == b"new"
+    assert destination.read_bytes() == b"old"
+
+
+def test_windows_workspace_replace_retry_filter_is_specific(monkeypatch) -> None:
+    access_denied = PermissionError(errno.EACCES, "access denied")
+    wrong_error = PermissionError(errno.ENOENT, "missing")
+
+    assert not workspace_storage._is_retryable_windows_workspace_replace_error(
+        access_denied
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(workspace_storage.os, "name", "nt")
+        assert workspace_storage._is_retryable_windows_workspace_replace_error(
+            access_denied
+        )
+        assert not workspace_storage._is_retryable_windows_workspace_replace_error(
+            wrong_error
+        )
+
+
+def test_full_workspace_saves_hold_one_lock_for_each_destination(
+    monkeypatch, tmp_path
+) -> None:
+    destination = tmp_path / "serialized.itws"
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+    call_count = 0
+    errors: list[BaseException] = []
+
+    def _record_locked_save(*_args, **_kwargs) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            first_entered.set()
+            if not release_first.wait(2):
+                raise TimeoutError("first save was not released")
+        else:
+            second_entered.set()
+
+    def _save() -> None:
+        try:
+            workspace_storage._write_full_workspace_tree_file(destination, None, {})
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(
+        workspace_storage,
+        "_write_full_workspace_tree_file_locked",
+        _record_locked_save,
+    )
+    first = threading.Thread(target=_save)
+    second = threading.Thread(target=_save)
+    first.start()
+    assert first_entered.wait(2)
+    second.start()
+    assert not second_entered.wait(0.05)
+    release_first.set()
+    first.join(2)
+    second.join(2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert second_entered.is_set()
+    assert errors == []
+
+
+def test_incremental_workspace_save_does_not_copy_or_replace(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "incremental-no-copy.itws"
+    _write_transaction_test_workspace(fname)
+    rewrite = (
+        "0",
+        {"0/imagetool": _transaction_test_dataset(2.0, title="new")},
+    )
+
+    def _unexpected_file_operation(*_args, **_kwargs):
+        raise AssertionError("incremental saves must not copy or replace the file")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(workspace_storage.shutil, "copyfile", _unexpected_file_operation)
+        patch.setattr(workspace_storage.os, "replace", _unexpected_file_operation)
+        workspace_storage._write_workspace_transaction_file(
+            fname,
+            (rewrite,),
+            (),
+            _transaction_test_root_attrs(delta_save_count=1),
+        )
+
+    assert _read_transaction_test_value(fname) == 2.0
+
+
+def test_incremental_save_streams_stripped_lazy_data_from_private_reader(
+    tmp_path,
+) -> None:
+    fname = tmp_path / "lazy-private-reader.itws"
+    _write_transaction_test_workspace(fname)
+    opened = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks={})
+    try:
+        transformed = (opened["data"] + 5.0).rename("data").to_dataset()
+        for variable in transformed.variables.values():
+            variable.encoding.clear()
+        assert transformed["data"].chunks is not None
+        assert workspace_arrays.dataarray_source_paths(transformed["data"]) == ()
+
+        workspace_storage._write_workspace_transaction_file(
+            fname,
+            (("0", {"0/imagetool": transformed}),),
+            (),
+            _transaction_test_root_attrs(delta_save_count=1),
+        )
+    finally:
+        opened.close()
+
+    assert _read_transaction_test_value(fname) == 6.0
 
 
 def test_workspace_recovery_discards_pending_only_transaction(tmp_path) -> None:

@@ -87,6 +87,8 @@ class _WorkspaceSaveSnapshot:
 class _WorkspaceSaveError:
     traceback_text: str
     missing_source_path: str | None = None
+    publication_conflict_path: str | None = None
+    access_denied_path: str | None = None
 
 
 class _WorkspaceSaveWorkerSignals(QtCore.QObject):
@@ -160,6 +162,16 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
             error = _WorkspaceSaveError(
                 traceback_text=traceback.format_exc(),
                 missing_source_path=exc.source_path,
+            )
+        except workspace_storage._WorkspacePublicationConflictError as exc:
+            error = _WorkspaceSaveError(
+                traceback_text=traceback.format_exc(),
+                publication_conflict_path=exc.path,
+            )
+        except PermissionError as exc:
+            error = _WorkspaceSaveError(
+                traceback_text=traceback.format_exc(),
+                access_denied_path=os.fsdecode(exc.filename or self._fname),
             )
         except Exception:
             error = _WorkspaceSaveError(traceback_text=traceback.format_exc())
@@ -1737,10 +1749,13 @@ class _WorkspaceSaver:
             (uid, kind): payload_path for uid, kind, payload_path in manifest_entries
         }
         copy_groups: list[tuple[str, str, dict[str, typing.Any] | None]] = []
-        context = contextlib.nullcontext(None)
-        if require_matching_compression and compression_mode is not None:
-            context = h5py.File(workspace_path, "r")
-        with context as h5_file:
+        with contextlib.ExitStack() as stack:
+            h5_file = None
+            if require_matching_compression and compression_mode is not None:
+                stack.enter_context(
+                    workspace_arrays._workspace_file_lock(workspace_path)
+                )
+                h5_file = stack.enter_context(h5py.File(workspace_path, "r"))
             for uid, node in self._manager._tool_graph.nodes.items():
                 if (
                     uid in self._manager._workspace_state.dirty_data

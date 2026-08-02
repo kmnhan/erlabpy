@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import os
 import pathlib
+import shutil
+import stat
+import tempfile
 import threading
 import typing
+import uuid
+import weakref
+from dataclasses import dataclass, field
 
 import h5netcdf
 import hdf5plugin
 import numpy as np
 import xarray as xr
 from xarray.backends import CachingFileManager, H5NetCDFStore
+from xarray.backends.locks import SerializableLock
 
 import erlab
 from erlab.interactive.imagetool import _serialization
@@ -37,6 +45,13 @@ from erlab.interactive.imagetool.manager._workspace._format import (
 )
 
 _WORKSPACE_FILE_LOCKS: dict[str, threading.RLock] = {}
+_WORKSPACE_FILE_LOCKS_LOCK = threading.Lock()
+_WORKSPACE_READER_SNAPSHOTS: dict[tuple[object, ...], _WorkspaceReaderSnapshot] = {}
+_WORKSPACE_READER_SNAPSHOTS_BY_PATH: dict[str, _WorkspaceReaderSnapshot] = {}
+_WORKSPACE_READER_SNAPSHOTS_LOCK = threading.RLock()
+_WORKSPACE_READER_OWNER_PID = os.getpid()
+_WORKSPACE_READER_SESSION_ID = uuid.uuid4().hex
+_WORKSPACE_READER_STALE_CLEANUP_DONE = False
 _WORKSPACE_COMPRESSION_MIN_BYTES = 1 << 20  # 1 MiB
 _TOOL_DATA_BLOB_NAME_ATTR = _serialization.TOOL_DATA_BLOB_NAME_ATTR
 _SAVED_TOOL_DATA_REFERENCE_DIM = _serialization.SAVED_TOOL_DATA_REFERENCE_DIM
@@ -73,22 +88,367 @@ def _workspace_file_lock(path: str | os.PathLike[str]) -> threading.RLock:
     target = _normalized_file_path(path)
     if target is None:
         target = os.fsdecode(path)
-    lock = _WORKSPACE_FILE_LOCKS.get(target)
-    if lock is None:
-        lock = threading.RLock()
-        _WORKSPACE_FILE_LOCKS[target] = lock
-    return lock
+    with _WORKSPACE_FILE_LOCKS_LOCK:
+        lock = _WORKSPACE_FILE_LOCKS.get(target)
+        if lock is None:
+            lock = threading.RLock()
+            _WORKSPACE_FILE_LOCKS[target] = lock
+        return lock
 
 
-def _workspace_file_identity(path: str | os.PathLike[str]) -> tuple[str, int, int, int]:
+def _workspace_save_lock(path: str | os.PathLike[str]) -> threading.RLock:
+    """Return the single-writer lock for one published workspace document."""
+    return _workspace_file_lock(path)
+
+
+def _workspace_file_identity(
+    path: str | os.PathLike[str],
+) -> tuple[str, int, int, int, int]:
     target = _normalized_file_path(path)
     if target is None:
         target = os.fsdecode(path)
     try:
         stat_result = os.stat(target)
+    except (FileNotFoundError, NotADirectoryError):
+        return target, 0, 0, 0, 0
+    return (
+        target,
+        stat_result.st_dev,
+        stat_result.st_ino,
+        stat_result.st_size,
+        stat_result.st_mtime_ns,
+    )
+
+
+def _workspace_reader_directory() -> pathlib.Path:
+    """Return the private directory for immutable workspace reader files."""
+    return pathlib.Path(tempfile.gettempdir()) / (
+        f"erlab-itws-readers-{os.getpid()}-{_WORKSPACE_READER_SESSION_ID}"
+    )
+
+
+def _workspace_process_is_running(process_id: int) -> bool:
+    if process_id == os.getpid():
+        return True
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
     except OSError:
-        return target, 0, 0, 0
-    return target, stat_result.st_dev, stat_result.st_ino, stat_result.st_mtime_ns
+        return True
+    return True
+
+
+def _cleanup_stale_workspace_reader_directories() -> None:
+    """Remove private reader files left by terminated manager processes."""
+    global _WORKSPACE_READER_STALE_CLEANUP_DONE
+
+    with _WORKSPACE_READER_SNAPSHOTS_LOCK:
+        if _WORKSPACE_READER_STALE_CLEANUP_DONE:
+            return
+        _WORKSPACE_READER_STALE_CLEANUP_DONE = True
+    prefix = "erlab-itws-readers-"
+    try:
+        candidates = tuple(pathlib.Path(tempfile.gettempdir()).glob(f"{prefix}*"))
+    except OSError:
+        return
+    for directory in candidates:
+        try:
+            directory_stat = directory.lstat()
+            process_id_text = directory.name.removeprefix(prefix).split("-", 1)[0]
+            process_id = int(process_id_text)
+        except (OSError, ValueError):
+            continue
+        if stat.S_ISLNK(directory_stat.st_mode) or not stat.S_ISDIR(
+            directory_stat.st_mode
+        ):
+            continue
+        if hasattr(os, "getuid") and directory_stat.st_uid != os.getuid():
+            continue
+        if _workspace_process_is_running(process_id):
+            continue
+        try:
+            children = tuple(directory.iterdir())
+        except OSError:
+            continue
+        if any(
+            child.is_symlink()
+            or not child.is_file()
+            or not child.name.startswith("reader-")
+            or child.suffix != ".itws"
+            for child in children
+        ):
+            continue
+        for child in children:
+            with contextlib.suppress(OSError):
+                child.unlink()
+        with contextlib.suppress(OSError):
+            directory.rmdir()
+
+
+def _ensure_workspace_reader_directory() -> pathlib.Path:
+    _cleanup_stale_workspace_reader_directories()
+    directory = _workspace_reader_directory()
+    try:
+        directory.mkdir(mode=0o700)
+    except FileExistsError:
+        directory_stat = directory.lstat()
+        if stat.S_ISLNK(directory_stat.st_mode) or not stat.S_ISDIR(
+            directory_stat.st_mode
+        ):
+            raise OSError(
+                f"Workspace reader path is not a private directory: {directory}"
+            ) from None
+    return directory
+
+
+def _cleanup_workspace_reader_path(path: pathlib.Path) -> None:
+    with contextlib.suppress(OSError):
+        path.unlink()
+    with contextlib.suppress(OSError):
+        path.parent.rmdir()
+
+
+@dataclass
+class _WorkspaceReaderSnapshot:
+    """One immutable local copy used by live workspace readers."""
+
+    cache_key: tuple[object, ...]
+    workspace_path: str
+    path: str
+    identity: tuple[int, int, int, int]
+    owner_pid: int
+    lock: SerializableLock = field(default_factory=SerializableLock)
+    managers: weakref.WeakSet[WorkspaceFileManager] = field(
+        default_factory=weakref.WeakSet
+    )
+    manager_count: int = 0
+    exported: bool = False
+    disposed: bool = False
+
+
+def _create_workspace_reader_file(
+    source_path: str | os.PathLike[str], *, copy_only: bool
+) -> pathlib.Path:
+    """Create one immutable reader file from a stable source."""
+    source = pathlib.Path(source_path)
+    destination = _ensure_workspace_reader_directory() / (
+        f"reader-{os.getpid()}-{uuid.uuid4().hex}.itws"
+    )
+    try:
+        if copy_only:
+            shutil.copyfile(source, destination)
+        else:
+            try:
+                os.link(source, destination)
+            except OSError:
+                shutil.copyfile(source, destination)
+    except BaseException:
+        _cleanup_workspace_reader_path(destination)
+        raise
+    return destination
+
+
+def _register_workspace_reader_snapshot(
+    snapshot: _WorkspaceReaderSnapshot,
+) -> _WorkspaceReaderSnapshot:
+    _WORKSPACE_READER_SNAPSHOTS[snapshot.cache_key] = snapshot
+    normalized_path = _normalized_file_path(snapshot.path)
+    if normalized_path is None:
+        normalized_path = snapshot.path
+    _WORKSPACE_READER_SNAPSHOTS_BY_PATH[normalized_path] = snapshot
+    return snapshot
+
+
+def _workspace_reader_snapshot(
+    workspace_path: str | os.PathLike[str],
+) -> _WorkspaceReaderSnapshot:
+    """Return an immutable local copy of one published workspace generation."""
+    target = _normalized_file_path(workspace_path)
+    if target is None:
+        target = os.fsdecode(workspace_path)
+    with _workspace_save_lock(target):
+        source_identity = _workspace_file_identity(target)
+        if source_identity[1:] == (0, 0, 0, 0):
+            raise FileNotFoundError(target)
+        cache_key: tuple[object, ...] = ("workspace", *source_identity)
+        with _WORKSPACE_READER_SNAPSHOTS_LOCK:
+            snapshot = _WORKSPACE_READER_SNAPSHOTS.get(cache_key)
+            if snapshot is not None and pathlib.Path(snapshot.path).exists():
+                return snapshot
+
+        reader_path = _create_workspace_reader_file(target, copy_only=True)
+        source_identity_after = _workspace_file_identity(target)
+        if source_identity_after != source_identity:
+            _cleanup_workspace_reader_path(reader_path)
+            raise RuntimeError(
+                "Workspace changed while its immutable reader copy was created: "
+                f"{target}"
+            )
+        try:
+            reader_file_identity = _workspace_file_identity(reader_path)
+            snapshot = _WorkspaceReaderSnapshot(
+                cache_key=cache_key,
+                workspace_path=target,
+                path=reader_file_identity[0],
+                identity=reader_file_identity[1:],
+                owner_pid=os.getpid(),
+            )
+            with _WORKSPACE_READER_SNAPSHOTS_LOCK:
+                existing = _WORKSPACE_READER_SNAPSHOTS.get(cache_key)
+                if existing is not None and pathlib.Path(existing.path).exists():
+                    _cleanup_workspace_reader_path(reader_path)
+                    return existing
+                return _register_workspace_reader_snapshot(snapshot)
+        except BaseException:
+            _cleanup_workspace_reader_path(reader_path)
+            raise
+
+
+def _workspace_reader_snapshot_from_state(
+    workspace_path: str,
+    reader_path: str,
+    expected_identity: tuple[int, int, int, int],
+) -> _WorkspaceReaderSnapshot:
+    """Create or reuse a process-owned reader for serialized immutable data."""
+    normalized_reader_path = _normalized_file_path(reader_path)
+    if normalized_reader_path is None:
+        normalized_reader_path = os.fsdecode(reader_path)
+    cache_key: tuple[object, ...] = (
+        "serialized",
+        normalized_reader_path,
+        *expected_identity,
+    )
+    with _WORKSPACE_READER_SNAPSHOTS_LOCK:
+        owned = _WORKSPACE_READER_SNAPSHOTS_BY_PATH.get(normalized_reader_path)
+        if (
+            owned is not None
+            and owned.owner_pid == os.getpid()
+            and owned.identity == expected_identity
+            and pathlib.Path(owned.path).exists()
+        ):
+            return owned
+        existing = _WORKSPACE_READER_SNAPSHOTS.get(cache_key)
+        if existing is not None and pathlib.Path(existing.path).exists():
+            return existing
+
+    source_identity = _workspace_file_identity(normalized_reader_path)[1:]
+    if source_identity != expected_identity:
+        raise RuntimeError(
+            "Serialized workspace reader is no longer available: "
+            f"{normalized_reader_path}"
+        )
+    local_path = _create_workspace_reader_file(normalized_reader_path, copy_only=False)
+    if _workspace_file_identity(normalized_reader_path)[1:] != expected_identity:
+        _cleanup_workspace_reader_path(local_path)
+        raise RuntimeError(
+            "Serialized workspace reader changed while it was imported: "
+            f"{normalized_reader_path}"
+        )
+    try:
+        local_file_identity = _workspace_file_identity(local_path)
+        snapshot = _WorkspaceReaderSnapshot(
+            cache_key=cache_key,
+            workspace_path=workspace_path,
+            path=local_file_identity[0],
+            identity=local_file_identity[1:],
+            owner_pid=os.getpid(),
+        )
+        with _WORKSPACE_READER_SNAPSHOTS_LOCK:
+            existing = _WORKSPACE_READER_SNAPSHOTS.get(cache_key)
+            if existing is not None and pathlib.Path(existing.path).exists():
+                _cleanup_workspace_reader_path(local_path)
+                return existing
+            return _register_workspace_reader_snapshot(snapshot)
+    except BaseException:
+        _cleanup_workspace_reader_path(local_path)
+        raise
+
+
+def _acquire_workspace_reader_snapshot(snapshot: _WorkspaceReaderSnapshot) -> None:
+    with _WORKSPACE_READER_SNAPSHOTS_LOCK:
+        if snapshot.disposed or snapshot.owner_pid != os.getpid():
+            raise RuntimeError("Workspace reader belongs to another process")
+        snapshot.manager_count += 1
+
+
+def _dispose_workspace_reader_snapshot(snapshot: _WorkspaceReaderSnapshot) -> None:
+    if snapshot.owner_pid != os.getpid():
+        return
+    with _WORKSPACE_READER_SNAPSHOTS_LOCK:
+        if snapshot.disposed:
+            return
+        snapshot.disposed = True
+        if _WORKSPACE_READER_SNAPSHOTS.get(snapshot.cache_key) is snapshot:
+            del _WORKSPACE_READER_SNAPSHOTS[snapshot.cache_key]
+        if _WORKSPACE_READER_SNAPSHOTS_BY_PATH.get(snapshot.path) is snapshot:
+            del _WORKSPACE_READER_SNAPSHOTS_BY_PATH[snapshot.path]
+    _cleanup_workspace_reader_path(pathlib.Path(snapshot.path))
+
+
+def _release_workspace_reader_snapshot(snapshot: _WorkspaceReaderSnapshot) -> None:
+    if snapshot.owner_pid != os.getpid():
+        return
+    dispose = False
+    with _WORKSPACE_READER_SNAPSHOTS_LOCK:
+        if snapshot.disposed:
+            return
+        snapshot.manager_count -= 1
+        dispose = snapshot.manager_count == 0 and not snapshot.exported
+    if dispose:
+        _dispose_workspace_reader_snapshot(snapshot)
+
+
+def _export_workspace_reader_snapshot(snapshot: _WorkspaceReaderSnapshot) -> None:
+    if snapshot.owner_pid != os.getpid():
+        raise RuntimeError(
+            "Workspace readers cannot be inherited across fork; use spawn"
+        )
+    with _WORKSPACE_READER_SNAPSHOTS_LOCK:
+        if snapshot.disposed or not pathlib.Path(snapshot.path).exists():
+            raise RuntimeError("Workspace reader is no longer available")
+        snapshot.exported = True
+
+
+def _cleanup_workspace_reader_snapshots() -> None:
+    if os.getpid() != _WORKSPACE_READER_OWNER_PID:
+        return
+    with _WORKSPACE_READER_SNAPSHOTS_LOCK:
+        snapshots = tuple(_WORKSPACE_READER_SNAPSHOTS.values())
+    for snapshot in snapshots:
+        for manager in tuple(snapshot.managers):
+            manager.close()
+        _dispose_workspace_reader_snapshot(snapshot)
+
+
+def _reset_workspace_reader_state_after_fork() -> None:
+    """Drop inherited registries without cleaning parent-owned reader files."""
+    global _WORKSPACE_FILE_LOCKS
+    global _WORKSPACE_FILE_LOCKS_LOCK
+    global _WORKSPACE_READER_SNAPSHOTS
+    global _WORKSPACE_READER_SNAPSHOTS_BY_PATH
+    global _WORKSPACE_READER_SNAPSHOTS_LOCK
+    global _WORKSPACE_READER_OWNER_PID
+    global _WORKSPACE_READER_SESSION_ID
+    global _WORKSPACE_READER_STALE_CLEANUP_DONE
+
+    _WORKSPACE_FILE_LOCKS = {}
+    _WORKSPACE_FILE_LOCKS_LOCK = threading.Lock()
+    _WORKSPACE_READER_SNAPSHOTS = {}
+    _WORKSPACE_READER_SNAPSHOTS_BY_PATH = {}
+    _WORKSPACE_READER_SNAPSHOTS_LOCK = threading.RLock()
+    _WORKSPACE_READER_OWNER_PID = os.getpid()
+    _WORKSPACE_READER_SESSION_ID = uuid.uuid4().hex
+    _WORKSPACE_READER_STALE_CLEANUP_DONE = False
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_workspace_reader_state_after_fork)
+
+
+atexit.register(_cleanup_workspace_reader_snapshots)
 
 
 def _xarray_source_path(value: object) -> str | None:
@@ -110,6 +470,61 @@ def dataarray_source_paths(data_array: xr.DataArray) -> tuple[str, ...]:
     for coord in data_array.coords.values():
         _append_source(coord.encoding.get("source"))
     return tuple(paths)
+
+
+def _workspace_xarray_variables(
+    value: xr.DataArray | xr.Dataset,
+) -> tuple[xr.Variable, ...]:
+    if isinstance(value, xr.Dataset):
+        return tuple(value.variables.values())
+    return (value.variable, *(coord.variable for coord in value.coords.values()))
+
+
+def _workspace_xarray_source_snapshot(
+    value: xr.DataArray | xr.Dataset,
+) -> tuple[tuple[xr.Variable, bool, typing.Any], ...]:
+    """Return source encodings that can be restored after a failed retarget."""
+    return tuple(
+        (variable, "source" in variable.encoding, variable.encoding.get("source"))
+        for variable in _workspace_xarray_variables(value)
+    )
+
+
+def _restore_workspace_xarray_source_snapshot(
+    snapshot: Iterable[tuple[xr.Variable, bool, typing.Any]],
+) -> None:
+    for variable, had_source, source in reversed(tuple(snapshot)):
+        if had_source:
+            variable.encoding["source"] = source
+        else:
+            variable.encoding.pop("source", None)
+
+
+def retarget_workspace_xarray_sources(
+    value: xr.DataArray | xr.Dataset,
+    old_workspace_path: str | os.PathLike[str],
+    new_workspace_path: str | os.PathLike[str],
+) -> None:
+    """Update logical workspace provenance without changing data backing."""
+    old_path = _normalized_file_path(old_workspace_path)
+    new_path = _normalized_file_path(new_workspace_path)
+    if old_path is None or new_path is None or old_path == new_path:
+        return
+    for variable in _workspace_xarray_variables(value):
+        if _normalized_file_path(variable.encoding.get("source")) == old_path:
+            variable.encoding["source"] = new_path
+
+
+def set_workspace_xarray_sources(
+    value: xr.DataArray | xr.Dataset,
+    workspace_path: str | os.PathLike[str],
+) -> None:
+    """Mark all variables as logically stored in a saved workspace."""
+    target = _normalized_file_path(workspace_path)
+    if target is None:
+        return
+    for variable in _workspace_xarray_variables(value):
+        variable.encoding["source"] = target
 
 
 def dataarray_is_numpy_backed(data_array: xr.DataArray) -> bool:
@@ -226,29 +641,82 @@ def workspace_dataset_encoding(
 class WorkspaceFileManager(CachingFileManager):
     """xarray file manager for manager-owned workspace readers."""
 
-    def __init__(self, path: str | os.PathLike[str]) -> None:
+    _base_del = CachingFileManager.__del__
 
-        ensure_workspace_hdf5_filters_registered()
+    def __init__(self, path: str | os.PathLike[str]) -> None:
         target = _normalized_file_path(path)
         if target is None:
             target = os.fsdecode(path)
-        identity = _workspace_file_identity(target)
-        super().__init__(
-            h5netcdf.File,
-            target,
-            mode="r+",
-            kwargs={
-                "invalid_netcdf": None,
-                "phony_dims": "sort",
-                "decode_vlen_strings": True,
-            },
-            lock=_workspace_file_lock(target),
-            # xarray documents manager_id as a test/dependency-injection hook,
-            # but the manager needs repeated workspace readers for the same
-            # file identity to share one cached h5netcdf handle.
-            manager_id=("erlab-workspace", *identity, "r+"),
+        self._initialize(_workspace_reader_snapshot(target))
+
+    def _initialize(self, snapshot: _WorkspaceReaderSnapshot) -> None:
+        """Initialize this manager from a process-owned immutable reader."""
+        self._snapshot = snapshot
+        self._process_id = os.getpid()
+        self.workspace_path = snapshot.workspace_path
+        self.reader_path = snapshot.path
+        _acquire_workspace_reader_snapshot(snapshot)
+        try:
+            ensure_workspace_hdf5_filters_registered()
+            super().__init__(
+                h5netcdf.File,
+                snapshot.path,
+                mode="r",
+                kwargs={
+                    "invalid_netcdf": None,
+                    "phony_dims": "sort",
+                    "decode_vlen_strings": True,
+                },
+                lock=snapshot.lock,
+                # Readers for one immutable file can share a cached handle.
+                manager_id=("erlab-workspace-reader", *snapshot.identity, "r"),
+            )
+        except BaseException:
+            _release_workspace_reader_snapshot(snapshot)
+            raise
+        snapshot.managers.add(self)
+        self._snapshot_finalizer = weakref.finalize(
+            self, _release_workspace_reader_snapshot, snapshot
         )
-        self.workspace_path = target
+
+    def _check_process(self) -> None:
+        if self._process_id != os.getpid():
+            raise RuntimeError(
+                "Workspace readers cannot be inherited across fork; "
+                "pass the data through process serialization instead"
+            )
+
+    def acquire(self, needs_lock: bool = True) -> typing.Any:
+        self._check_process()
+        return super().acquire(needs_lock)
+
+    def acquire_context(self, needs_lock: bool = True) -> typing.Any:
+        self._check_process()
+        return super().acquire_context(needs_lock)
+
+    def close(self, needs_lock: bool = True) -> None:
+        if self._process_id == os.getpid():
+            super().close(needs_lock)
+
+    def __getstate__(self) -> tuple[str, str, tuple[int, int, int, int]]:
+        self._check_process()
+        _export_workspace_reader_snapshot(self._snapshot)
+        return self.workspace_path, self.reader_path, self._snapshot.identity
+
+    def __setstate__(self, state: tuple[str, str, tuple[int, int, int, int]]) -> None:
+        workspace_path, reader_path, identity = state
+        self._initialize(
+            _workspace_reader_snapshot_from_state(workspace_path, reader_path, identity)
+        )
+
+    def __dask_tokenize__(
+        self,
+    ) -> tuple[str, str, tuple[int, int, int, int]]:
+        return type(self).__name__, self.workspace_path, self._snapshot.identity
+
+    def __del__(self) -> None:
+        if hasattr(self, "_ref_counter"):
+            self._base_del()
 
 
 def _iter_h5netcdf_group_paths(group: object, path: str = "/") -> Iterator[str]:
@@ -268,13 +736,17 @@ def _open_workspace_dataset_from_manager(
     store = H5NetCDFStore(
         file_manager,
         group=group,
-        mode="r+",
-        lock=_workspace_file_lock(file_manager.workspace_path),
+        mode="r",
+        lock=file_manager._snapshot.lock,
         autoclose=False,
     )
     if chunks is None:
-        return xr.open_dataset(store)
-    return xr.open_dataset(store, chunks=chunks)
+        ds = xr.open_dataset(store)
+    else:
+        ds = xr.open_dataset(store, chunks=chunks)
+    for variable in ds.variables.values():
+        variable.encoding["source"] = file_manager.workspace_path
+    return ds
 
 
 def open_workspace_dataset(

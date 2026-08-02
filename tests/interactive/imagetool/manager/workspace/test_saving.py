@@ -1,5 +1,6 @@
 import contextlib
 import datetime
+import errno
 import json
 import logging
 import os
@@ -1492,6 +1493,50 @@ def test_workspace_save_worker_reports_missing_backing_source(tmp_path) -> None:
     assert error.traceback_text
 
 
+@pytest.mark.parametrize(
+    ("exception_factory", "error_field"),
+    [
+        (
+            lambda path: workspace_storage._WorkspacePublicationConflictError(path),
+            "publication_conflict_path",
+        ),
+        (
+            lambda path: PermissionError(errno.EACCES, "access denied", path),
+            "access_denied_path",
+        ),
+    ],
+)
+def test_workspace_save_worker_classifies_publication_errors(
+    monkeypatch, tmp_path, exception_factory, error_field
+) -> None:
+    target = tmp_path / "target.itws"
+    snapshot = workspace_saving._WorkspaceSaveSnapshot(
+        generation=0,
+        root_attrs=_transaction_test_root_attrs(),
+        delta_save_count=0,
+        full_tree=xr.DataTree(),
+    )
+    monkeypatch.setattr(
+        workspace_storage,
+        "_write_full_workspace_tree_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(exception_factory(target)),
+    )
+    worker = workspace_saving._WorkspaceSaveWorker(target, snapshot)
+    results: list[workspace_saving._WorkspaceSaveError | None] = []
+    receiver = workspace_saving._WorkspaceSaveResultReceiver(
+        callback=lambda _elapsed, error: results.append(error),
+        parent=worker.signals,
+    )
+    worker.signals.finished.connect(receiver.finish)
+
+    worker.run()
+
+    assert len(results) == 1
+    error = results[0]
+    assert isinstance(error, workspace_saving._WorkspaceSaveError)
+    assert getattr(error, error_field) == str(target)
+
+
 def test_manager_async_save_request_error_paths(
     qtbot,
     monkeypatch,
@@ -1521,6 +1566,20 @@ def test_manager_async_save_request_error_paths(
         )
         manager._show_workspace_save_worker_error(missing_error)
         assert len(critical_calls) == 2
+
+        manager._show_workspace_save_worker_error(
+            workspace_saving._WorkspaceSaveError(
+                traceback_text="Conflict traceback",
+                publication_conflict_path=str(tmp_path / "changed.itws"),
+            )
+        )
+        manager._show_workspace_save_worker_error(
+            workspace_saving._WorkspaceSaveError(
+                traceback_text="Access traceback",
+                access_denied_path=str(tmp_path / "denied.itws"),
+            )
+        )
+        assert len(critical_calls) == 4
 
         manager._workspace_state.path = tmp_path / "workspace.itws"
         manager._workspace_state.save_in_progress = True
@@ -3375,9 +3434,31 @@ def test_manager_workspace_shutdown_compacts_clean_delta_workspace(
             "_WORKSPACE_SHUTDOWN_REPACK_MIN_OBSOLETE_RATIO",
             0.0,
         )
+        controller = manager._workspace_controller
+        refresh = controller._refresh_workspace_payload_bindings_after_full_save
+        refresh_calls: list[tuple[pathlib.Path, pathlib.Path | None]] = []
+
+        def _record_refresh(workspace_path, **kwargs) -> None:
+            old_workspace_path = kwargs.get("old_workspace_path")
+            refresh_calls.append(
+                (
+                    pathlib.Path(workspace_path).resolve(),
+                    None
+                    if old_workspace_path is None
+                    else pathlib.Path(old_workspace_path).resolve(),
+                )
+            )
+            refresh(workspace_path, **kwargs)
+
+        monkeypatch.setattr(
+            controller,
+            "_refresh_workspace_payload_bindings_after_full_save",
+            _record_refresh,
+        )
 
         assert _compact_workspace_before_shutdown_and_wait(qtbot, manager)
 
+        assert refresh_calls == [(fname.resolve(), fname.resolve())]
         assert manager._workspace_state.delta_save_count == 0
         assert manager._workspace_state.estimated_obsolete_bytes == 0
         assert manager._workspace_state.replacement_delta_count == 0

@@ -1835,7 +1835,13 @@ def test_manager_save_as_rebind_failure_keeps_old_live_references(
         manager.add_imagetool(root, show=False)
         root.hide()
         wrapper = manager._tool_graph.root_wrappers[0]
-        figure_uid = manager.add_figuretool(
+        first_figure_uid = manager.add_figuretool(
+            _WorkspaceManagerReferenceFigureTool(
+                data.copy(deep=False), reference_uid=wrapper.uid
+            ),
+            show=False,
+        )
+        failing_figure_uid = manager.add_figuretool(
             _WorkspaceManagerReferenceFigureTool(
                 data.copy(deep=False), reference_uid=wrapper.uid
             ),
@@ -1851,19 +1857,31 @@ def test_manager_save_as_rebind_failure_keeps_old_live_references(
             source, replace=True, associate=True, mark_dirty=False, select=False
         )
         loaded_wrapper = manager._tool_graph.root_wrappers[0]
-        loaded_figure = manager.get_childtool(figure_uid)
-        assert isinstance(loaded_figure, _WorkspaceManagerReferenceFigureTool)
-        original_paths = workspace_arrays.dataarray_source_paths(
-            loaded_figure.tool_data
+        first_figure = manager.get_childtool(first_figure_uid)
+        failing_figure = manager.get_childtool(failing_figure_uid)
+        assert isinstance(first_figure, _WorkspaceManagerReferenceFigureTool)
+        assert isinstance(failing_figure, _WorkspaceManagerReferenceFigureTool)
+        original_first_paths = workspace_arrays.dataarray_source_paths(
+            first_figure.tool_data
         )
-        assert str(source.resolve()) in original_paths
+        original_failing_paths = workspace_arrays.dataarray_source_paths(
+            failing_figure.tool_data
+        )
+        assert str(source.resolve()) in original_first_paths
+        assert str(source.resolve()) in original_failing_paths
+        first_node = manager._node_for_target(first_figure_uid)
+        failing_node = manager._node_for_target(failing_figure_uid)
+        original_first_reference_keys = tuple(first_node._workspace_reference_datasets)
+        original_failing_reference_keys = tuple(
+            failing_node._workspace_reference_datasets
+        )
 
         def _fail_replace(_data_items, _ds) -> None:
             raise RuntimeError("replacement failed")
 
         errors: list[tuple[str, str]] = []
         monkeypatch.setattr(
-            loaded_figure, "_replace_persistence_data_items", _fail_replace
+            failing_figure, "_replace_persistence_data_items", _fail_replace
         )
         monkeypatch.setattr(
             manager,
@@ -1875,7 +1893,7 @@ def test_manager_save_as_rebind_failure_keeps_old_live_references(
             "_workspace_save_dialog",
             lambda **_kwargs: target,
         )
-        manager._workspace_controller._mark_node_state_dirty(figure_uid)
+        manager._workspace_controller._mark_node_state_dirty(failing_figure_uid)
 
         assert not _request_workspace_save_as_and_wait(qtbot, manager, native=False)
         assert errors[-1] == (
@@ -1890,12 +1908,25 @@ def test_manager_save_as_rebind_failure_keeps_old_live_references(
             source.resolve(),
             "0/imagetool",
         )
-        assert workspace_arrays.dataarray_source_paths(loaded_figure.tool_data) == (
-            original_paths
+        assert (
+            workspace_arrays.dataarray_source_paths(first_figure.tool_data)
+            == original_first_paths
+        )
+        assert (
+            workspace_arrays.dataarray_source_paths(failing_figure.tool_data)
+            == original_failing_paths
+        )
+        assert (
+            tuple(first_node._workspace_reference_datasets)
+            == original_first_reference_keys
+        )
+        assert (
+            tuple(failing_node._workspace_reference_datasets)
+            == original_failing_reference_keys
         )
 
 
-def test_manager_compact_rebind_failure_keeps_workspace_modified(
+def test_manager_compact_does_not_rebind_live_tool_reference_dataset(
     qtbot,
     monkeypatch,
     tmp_path,
@@ -1932,6 +1963,9 @@ def test_manager_compact_rebind_failure_keeps_workspace_modified(
         loaded_figure = manager.get_childtool(figure_uid)
         assert isinstance(loaded_figure, _WorkspaceManagerReferenceFigureTool)
         assert not manager.is_workspace_modified
+        original_paths = workspace_arrays.dataarray_source_paths(
+            loaded_figure.tool_data
+        )
 
         def _fail_replace(_data_items, _ds) -> None:
             raise RuntimeError("replacement failed")
@@ -1951,18 +1985,13 @@ def test_manager_compact_rebind_failure_keeps_workspace_modified(
             lambda *args, **kwargs: contextlib.nullcontext(),
         )
 
-        assert not manager.compact_workspace()
-        assert errors[-1] == (
-            "Workspace file saved but live references were not updated",
-            "The workspace file was saved, but live tool data could not be "
-            "updated to use the saved file. Reopen the workspace to continue "
-            "from the saved version.",
-        )
+        assert manager.compact_workspace()
+        assert errors == []
         assert manager._workspace_state.path == source.resolve()
-        assert manager.is_workspace_modified
-        assert manager._workspace_state.needs_full_save
-        assert "Live workspace data references need refresh" in (
-            manager._workspace_state.structure_reasons
+        assert not manager.is_workspace_modified
+        assert not manager._workspace_state.needs_full_save
+        assert workspace_arrays.dataarray_source_paths(loaded_figure.tool_data) == (
+            original_paths
         )
 
 

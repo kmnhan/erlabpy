@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import copy
 import functools
 import logging
 import os
@@ -23,7 +22,6 @@ import erlab.interactive.imagetool.manager._workspace._state as workspace_state
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
-from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager._widgets import (
     _RECENT_WORKSPACES_SETTINGS_KEY,
@@ -607,108 +605,6 @@ class _WorkspaceController:
                 payload_attrs=node.pending_workspace_payload_attrs,
             )
 
-    def _saved_tool_payload_dataset_for_rebind(
-        self,
-        workspace_path: str | os.PathLike[str],
-        node: _ManagedWindowNode,
-        reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset],
-    ) -> xr.Dataset:
-        payload_path = self.saving._workspace_payload_path(node.uid)
-        key = self.loading._workspace_reference_key(workspace_path, payload_path)
-        try:
-            opened = reference_datasets[key]
-        except KeyError:
-            opened = workspace_arrays.open_workspace_dataset(
-                workspace_path, payload_path, chunks={}
-            )
-            reference_datasets[key] = opened
-        ds = workspace_format._restore_workspace_dataset_attrs(opened.copy(deep=False))
-        return _serialization.restore_private_coords(
-            ds, erlab.interactive.utils._SAVED_TOOL_DATA_NAME
-        )
-
-    def _rebind_workspace_referenced_tool_data(
-        self,
-        workspace_path: str | os.PathLike[str],
-        *,
-        exclude_data_uids: Collection[str] = frozenset(),
-    ) -> None:
-        for node in self._manager._tool_graph.nodes.values():
-            tool = node.tool_window
-            if (
-                node.is_imagetool
-                or tool is None
-                or not tool.can_save_and_load()
-                or not node._workspace_reference_datasets
-                or node.uid in exclude_data_uids
-                or self._workspace_tool_references_include_uids(
-                    node._workspace_tool_data_references,
-                    exclude_data_uids,
-                    parent_uid=node.parent_uid,
-                )
-            ):
-                continue
-            reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] = {}
-            try:
-                with tool._save_tool_data_reference_context(
-                    self._manager._tool_graph.nodes,
-                    reference_validator=self._tool_data_reference_matches_current_data,
-                ):
-                    ds = tool.to_dataset()
-                references = type(tool)._saved_tool_data_references(ds)
-                if not references:
-                    ds = self._saved_tool_payload_dataset_for_rebind(
-                        workspace_path, node, reference_datasets
-                    )
-                    references = type(tool)._saved_tool_data_references(ds)
-                source_parent_data, tool_data_reference_resolver = (
-                    self.loading._workspace_tool_restore_references(
-                        ds,
-                        parent_target=node.parent_uid,
-                        owner_node=node,
-                        reference_datasets=reference_datasets,
-                        resolver_error_types=(Exception,),
-                        log_resolver_errors=True,
-                    )
-                )
-                data_items = type(tool)._tool_data_items_from_dataset(
-                    ds,
-                    source_parent_data=source_parent_data,
-                    reference_resolver=tool_data_reference_resolver,
-                )
-                with (
-                    self._workspace_load_context(),
-                    tool._history_suppressed(),
-                ):
-                    tool._replace_persistence_data_items(data_items, ds)
-                node._set_workspace_tool_data_references(references)
-                node._replace_workspace_reference_datasets(reference_datasets)
-                reference_datasets = {}
-            except Exception as exc:
-                self.loading._close_workspace_reference_datasets(reference_datasets)
-                raise _WorkspacePostSaveBindingError(
-                    "Workspace file was saved, but live ToolWindow data could not "
-                    f"be rebound for node {node.uid!r}."
-                ) from exc
-
-    @staticmethod
-    def _workspace_tool_references_include_uids(
-        references: Mapping[str, Mapping[str, typing.Any]],
-        uids: Collection[str],
-        *,
-        parent_uid: str | None,
-    ) -> bool:
-        if not uids:
-            return False
-        for reference in references.values():
-            kind = reference.get("kind")
-            if kind == "parent_source":
-                if parent_uid in uids:
-                    return True
-            elif kind == "manager_node" and reference.get("node_uid") in uids:
-                return True
-        return False
-
     def _pending_workspace_payload_snapshot(
         self,
     ) -> dict[
@@ -756,57 +652,131 @@ class _WorkspaceController:
                 payload_attrs=attrs,
             )
 
-    def _live_imagetool_rebind_snapshot(
-        self,
+    @staticmethod
+    def _workspace_tool_references_include_uids(
+        references: Mapping[str, Mapping[str, typing.Any]],
+        uids: Collection[str],
         *,
-        backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]] | None,
+        parent_uid: str | None,
+    ) -> bool:
+        if not uids:
+            return False
+        for reference in references.values():
+            kind = reference.get("kind")
+            if kind == "parent_source":
+                if parent_uid in uids:
+                    return True
+            elif kind == "manager_node" and reference.get("node_uid") in uids:
+                return True
+        return False
+
+    def _retarget_workspace_referenced_tool_data(
+        self,
         old_workspace_path: str | os.PathLike[str] | None,
-    ) -> dict[str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]]:
-        snapshot: dict[
-            str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]
-        ] = {}
+        workspace_path: str | os.PathLike[str],
+        *,
+        exclude_data_uids: Collection[str],
+        source_snapshot: list[tuple[xr.Variable, bool, typing.Any]],
+    ) -> None:
         old_path = workspace_arrays._normalized_file_path(old_workspace_path)
-        for uid, node in self._manager._tool_graph.nodes.items():
-            if (
-                not node.is_imagetool
-                or node.imagetool is None
-                or node.pending_workspace_memory_payload is not None
-            ):
-                continue
-            if backing_snapshot is not None:
-                backing = backing_snapshot.get(uid)
-                if backing is None:
-                    continue
-                kind, source_paths = backing
-                if kind == "memory":
-                    continue
-                if kind == "file_lazy" and (
-                    old_path is None or old_path not in source_paths
+        new_path = workspace_arrays._normalized_file_path(workspace_path)
+        if new_path is None or old_path == new_path:
+            return
+        restore_entries: list[
+            tuple[
+                _ManagedWindowNode,
+                typing.Any,
+                xr.Dataset,
+                dict[str, xr.DataArray],
+                dict[tuple[pathlib.Path, str], xr.Dataset],
+            ]
+        ] = []
+        try:
+            for node in self._manager._tool_graph.nodes.values():
+                tool = node.tool_window
+                if (
+                    node.is_imagetool
+                    or tool is None
+                    or not tool.can_save_and_load()
+                    or not node._workspace_reference_datasets
+                    or node.uid in exclude_data_uids
+                    or self._workspace_tool_references_include_uids(
+                        node._workspace_tool_data_references,
+                        exclude_data_uids,
+                        parent_uid=node.parent_uid,
+                    )
                 ):
                     continue
-            snapshot[uid] = (
-                node,
-                node.slicer_area._data,
-                copy.deepcopy(node.slicer_area.state),
-                node.name,
-            )
-        return snapshot
+                ds = tool.to_dataset()
+                original_data_items = {
+                    name: data.copy(deep=False)
+                    for name, data in tool._persistence_data_items().items()
+                }
+                data_items = {
+                    name: data.copy(deep=False)
+                    for name, data in original_data_items.items()
+                }
+                for data in data_items.values():
+                    workspace_arrays.set_workspace_xarray_sources(data, workspace_path)
+                original_reference_datasets = dict(node._workspace_reference_datasets)
+                restore_entries.append(
+                    (
+                        node,
+                        tool,
+                        ds,
+                        original_data_items,
+                        original_reference_datasets,
+                    )
+                )
+                with self._workspace_load_context(), tool._history_suppressed():
+                    tool._replace_persistence_data_items(data_items, ds)
 
-    def _restore_live_imagetool_rebind_snapshot(
-        self,
-        snapshot: Mapping[
-            str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]
-        ],
-    ) -> None:
-        if not snapshot:
-            return
-        with self._workspace_load_context():
-            for uid, (node, data, state, name) in snapshot.items():
-                if uid not in self._manager._tool_graph.nodes or node.imagetool is None:
-                    continue
-                node.slicer_area.set_data(data, auto_compute=False)
-                node.slicer_area.state = state
-                node._set_name(name, manual=False)
+                reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] = {}
+                for (
+                    source_path,
+                    group_path,
+                ), reference_ds in node._workspace_reference_datasets.items():
+                    source_snapshot.extend(
+                        workspace_arrays._workspace_xarray_source_snapshot(reference_ds)
+                    )
+                    if old_path is None:
+                        workspace_arrays.set_workspace_xarray_sources(
+                            reference_ds, new_path
+                        )
+                    else:
+                        workspace_arrays.retarget_workspace_xarray_sources(
+                            reference_ds, old_path, new_path
+                        )
+                    if old_path is None or (
+                        workspace_arrays._normalized_file_path(source_path) == old_path
+                    ):
+                        source_path = pathlib.Path(new_path)
+                    reference_datasets[(source_path, group_path)] = reference_ds
+                node._replace_workspace_reference_datasets(reference_datasets)
+        except Exception as exc:
+            for (
+                restore_node,
+                restore_tool,
+                restore_ds,
+                restore_data_items,
+                restore_reference_datasets,
+            ) in reversed(restore_entries):
+                with contextlib.suppress(Exception):
+                    restore_node._replace_workspace_reference_datasets(
+                        restore_reference_datasets
+                    )
+                with (
+                    contextlib.suppress(Exception),
+                    self._workspace_load_context(),
+                    restore_tool._history_suppressed(),
+                ):
+                    restore_tool._replace_persistence_data_items(
+                        restore_data_items, restore_ds
+                    )
+            raise _WorkspacePostSaveBindingError(
+                "Workspace file was saved, but live ToolWindow references could "
+                "not be updated."
+            ) from exc
 
     def _refresh_workspace_payload_bindings_after_full_save(
         self,
@@ -817,35 +787,53 @@ class _WorkspaceController:
         skip_live_data_rebind_uids: Collection[str] = frozenset(),
     ) -> None:
         pending_snapshot = self._pending_workspace_payload_snapshot()
-        live_imagetool_snapshot = self._live_imagetool_rebind_snapshot(
-            backing_snapshot=backing_snapshot,
-            old_workspace_path=old_workspace_path,
-        )
+        source_snapshot: list[tuple[xr.Variable, bool, typing.Any]] = []
         try:
             self._repoint_saved_pending_workspace_payloads(workspace_path)
-            self.loading._rebind_workspace_backed_imagetools(
+            old_path = workspace_arrays._normalized_file_path(old_workspace_path)
+            for uid, node in self._manager._tool_graph.nodes.items():
+                if (
+                    uid not in skip_live_data_rebind_uids
+                    and node.is_imagetool
+                    and node.imagetool is not None
+                    and node.pending_workspace_memory_payload is None
+                    and backing_snapshot is not None
+                ):
+                    backing = backing_snapshot.get(uid)
+                    if backing is not None:
+                        kind, source_paths = backing
+                        should_retarget = kind == "dask" or (
+                            kind == "file_lazy"
+                            and old_path is not None
+                            and old_path in source_paths
+                        )
+                        if should_retarget:
+                            source_snapshot.extend(
+                                workspace_arrays._workspace_xarray_source_snapshot(
+                                    node.slicer_area._data
+                                )
+                            )
+                            workspace_arrays.set_workspace_xarray_sources(
+                                node.slicer_area._data, workspace_path
+                            )
+            self._retarget_workspace_referenced_tool_data(
+                old_workspace_path,
                 workspace_path,
-                backing_snapshot=backing_snapshot,
-                old_workspace_path=old_workspace_path,
-                exclude_uids=skip_live_data_rebind_uids,
-            )
-            self._rebind_workspace_referenced_tool_data(
-                workspace_path, exclude_data_uids=skip_live_data_rebind_uids
+                exclude_data_uids=skip_live_data_rebind_uids,
+                source_snapshot=source_snapshot,
             )
         except _WorkspacePostSaveBindingError:
             with contextlib.suppress(Exception):
                 self._restore_pending_workspace_payload_snapshot(pending_snapshot)
-            with contextlib.suppress(Exception):
-                self._restore_live_imagetool_rebind_snapshot(live_imagetool_snapshot)
+            workspace_arrays._restore_workspace_xarray_source_snapshot(source_snapshot)
             raise
         except Exception as exc:
             with contextlib.suppress(Exception):
                 self._restore_pending_workspace_payload_snapshot(pending_snapshot)
-            with contextlib.suppress(Exception):
-                self._restore_live_imagetool_rebind_snapshot(live_imagetool_snapshot)
+            workspace_arrays._restore_workspace_xarray_source_snapshot(source_snapshot)
             raise _WorkspacePostSaveBindingError(
-                "Workspace file was saved, but live workspace data could not be "
-                "rebound to the saved file."
+                "Workspace file was saved, but logical workspace references could "
+                "not be updated."
             ) from exc
 
     def _active_managed_window(self) -> QtWidgets.QWidget | None:
@@ -2026,7 +2014,8 @@ class _WorkspaceController:
                 if workspace_path is not None:
                     try:
                         self._refresh_workspace_payload_bindings_after_full_save(
-                            workspace_path
+                            workspace_path,
+                            old_workspace_path=workspace_path,
                         )
                     except _WorkspacePostSaveBindingError:
                         logger.exception(
