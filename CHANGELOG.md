@@ -1,3 +1,49 @@
+## Unreleased
+
+### 🐞 Bug Fixes
+
+- **figurecomposer:** apply axes changes to selected steps (#529) ([b7074ee](https://github.com/kmnhan/erlabpy/commit/b7074ee6f12e82d66cc77a12705f26d9723427db))
+
+  Fixes an issue where axes selection with multiple steps selected would only update one step.
+
+- **figurecomposer:** show render errors on the responsible step (#527) ([0a885a6](https://github.com/kmnhan/erlabpy/commit/0a885a61326bd2b3b49962050e1d156e47bcb66a))
+
+- **figurecomposer:** improve window sizing (#526) ([0511e8f](https://github.com/kmnhan/erlabpy/commit/0511e8f00c29300bad96b7db6c8822ed4ceed0ef))
+
+- **ptable:** normalize full-width inputs for photon energy and work function (#520) ([3dfb048](https://github.com/kmnhan/erlabpy/commit/3dfb0480a67ac301607fdb19bf48b083f56b090a))
+
+  Normalize Unicode compatibility characters before parsing photon energy and work function values for some Japanese and Chinese IMEs.
+
+- **interactive:** defer typed spinbox updates (#519) ([80f37e6](https://github.com/kmnhan/erlabpy/commit/80f37e6a5435793645d4d1aa4a62732b44076932))
+
+  Fixes a problem where numerical inputs did not behave correctly in the settings dialog.
+
+- **dtool:** fix color cutoff application (#518) ([fb81071](https://github.com/kmnhan/erlabpy/commit/fb8107119aa6585866f32d9c47390f6ac7668f19))
+
+  Clear the saved manual result levels when the user changes a color cutoff.
+
+- **manager:** correctly parse cross-platform source file labels (#516) ([89ed162](https://github.com/kmnhan/erlabpy/commit/89ed162c49c74e561146e509f2630ebc4fccea1d))
+
+- **imagetool:** elide long provenance tooltips (#515) ([08e0b56](https://github.com/kmnhan/erlabpy/commit/08e0b56ae32024bac0ca590b4237c7bcb60fa12b))
+
+### ⚡️ Performance
+
+- **manager:** speed up manager provenance handling (#517) ([6e61ab4](https://github.com/kmnhan/erlabpy/commit/6e61ab4e110fb20346ed5b6aeb825d577189e7ad))
+
+  Adds various optimizations that improves responsiveness throughout the manager, especially for multiple nested tools.
+
+- **ptable:** slightly improve responsiveness (#522) ([a7f99d3](https://github.com/kmnhan/erlabpy/commit/a7f99d31c5f79bcd6d86c8bbbad4a49761402bb1))
+
+### ♻️ Code Refactor
+
+- **ktool:** allow editing input coordinates in ktool (#524) ([68dfcd6](https://github.com/kmnhan/erlabpy/commit/68dfcd61b85b44aec9a437f18a881c0e44466995))
+
+  Opening `ktool` no longer requires the data to contain the correct configuration attribute or scalar angle/photon energy coordinates. The only requirement is that the dimensions are correctly labeled (e.g., `alpha` for angle along analyzer slit, etc.). If additional coordinates are required, opening `ktool` will open a dialog where users can specify the correct values. Also, existing scalar coordinates can be edited in this dialog, which can also be opened from `ktool`.
+
+- **ktool:** clarify normal emission and angle scale controls (#521) ([d0f3749](https://github.com/kmnhan/erlabpy/commit/d0f3749c6cf8d39b3ea4fe968c9b3399a25fbb3e))
+
+  Changes the angle offset controls to read-only boxes. Momentum conversion angle parameters should now be set using normal emission angles, not angle offsets. Also hides the seldom used angle-scale controls by default. It can be enabled within the interactive settings dialog.
+
 ## v3.26.0 (2026-07-28)
 
 ### ✨ Features
