@@ -129,7 +129,9 @@ def adopt_workspace_path(manager: ImageToolManager, path: str | pathlib.Path) ->
     with controller._workspace_document_access_context(path) as access:
         store = workspace_store.WorkspaceStore.active(access.path)
         if store is None:
-            store = workspace_store.WorkspaceStore(access.path)
+            store = workspace_store.WorkspaceStore(
+                access.path, create=not access.path.exists()
+            )
         controller._set_workspace_path(
             access.path,
             workspace_lock=access.take_lock(),
