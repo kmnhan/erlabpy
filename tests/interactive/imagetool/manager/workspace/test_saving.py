@@ -680,6 +680,52 @@ def test_manager_compact_workspace_edge_paths(
         ]
 
 
+def test_manager_compact_workspace_detaches_store_that_cannot_reopen(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    path = tmp_path / "workspace.itws"
+    with (
+        manager_context() as manager,
+        workspace_store.WorkspaceStore(path, create=True) as store,
+    ):
+        manager._workspace_state.path = path.resolve()
+        manager._workspace_state.schema_version = (
+            workspace_format._current_workspace_schema_version()
+        )
+        manager._workspace_controller._workspace_store = store
+        operation_errors: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "wait_dialog",
+            lambda *args, **kwargs: contextlib.nullcontext(),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_show_operation_error",
+            lambda title, text: operation_errors.append((title, text)),
+        )
+
+        def _fail_after_replacement(
+            current_store: workspace_store.WorkspaceStore,
+        ) -> None:
+            current_store._close_handle()
+            raise workspace_store.WorkspaceStoreReopenError(path)
+
+        monkeypatch.setattr(
+            workspace_storage, "_compact_workspace_store", _fail_after_replacement
+        )
+
+        assert not manager.compact_workspace()
+        assert len(operation_errors) == 1
+        assert manager._workspace_controller._workspace_store is None
+        assert workspace_store.WorkspaceStore.active(path) is None
+        manager._workspace_state.path = None
+
+
 def test_manager_compact_workspace_reduces_internal_holes(
     qtbot,
     monkeypatch,
@@ -1459,6 +1505,107 @@ def test_manager_background_save_as_preserves_post_snapshot_data_edit(
         assert manager.workspace_path == str(target_path.resolve())
         np.testing.assert_array_equal(root.slicer_area._data.values, replacement.values)
         assert manager.is_workspace_modified
+
+
+def test_manager_background_save_as_repoints_post_snapshot_pending_edit(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    pool = _install_deferred_workspace_save_worker(monkeypatch)
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        imported_data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=("x", "y"),
+            name="imported",
+        )
+        imported_tool = itool(imported_data, manager=False, execute=False)
+        assert isinstance(imported_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(imported_tool, show=False)
+        imported_tool.hide()
+
+        source = tmp_path / "import-source.itws"
+        target = tmp_path / "import-target.itws"
+        manager._workspace_controller.saving._save_workspace_document(source)
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        base_data = xr.DataArray(np.arange(4.0).reshape((2, 2)), dims=("x", "y"))
+        base_tool = itool(base_data, manager=False, execute=False)
+        assert isinstance(base_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(base_tool, show=False)
+        base = tmp_path / "base.itws"
+        manager._workspace_controller.saving._save_workspace_document(base)
+        adopt_workspace_path(manager, base)
+        manager._workspace_controller._mark_workspace_clean()
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            source,
+            replace=False,
+            associate=False,
+            mark_dirty=True,
+            select=False,
+        )
+        wrapper = next(
+            node
+            for node in manager._tool_graph.root_wrappers.values()
+            if node.pending_workspace_memory_payload is not None
+        )
+        payload_path = manager._workspace_controller.saving._workspace_payload_path(
+            wrapper.uid
+        )
+        node_path = payload_path.rsplit("/", maxsplit=1)[0]
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: target,
+        )
+
+        assert manager._workspace_controller.save_as(native=False)
+        assert len(pool.workers) == 1
+        worker = pool.workers[0]
+        snapshot_generation = worker._snapshot.generation
+
+        pending_attrs = wrapper.pending_workspace_payload_attrs
+        assert pending_attrs is not None
+        pending_attrs["post_snapshot_marker"] = True
+        wrapper.update_pending_workspace_payload_attrs(pending_attrs)
+        assert manager._workspace_controller._mark_node_state_dirty(wrapper.uid)
+        assert any(
+            event.uid == wrapper.uid and event.generation > snapshot_generation
+            for event in manager._workspace_state.dirty_events
+        )
+
+        with workspace_store.WorkspaceStore(worker._fname, create=True) as target_store:
+            workspace_storage._write_workspace_generation(
+                target_store,
+                worker._snapshot.generation_plan,
+                compression_mode=worker._snapshot.compression_mode,
+            )
+        worker.finish()
+        qtbot.wait_until(lambda: not manager._workspace_state.save_in_progress)
+
+        assert wrapper.pending_workspace_memory_payload == (
+            target.resolve(),
+            _current_workspace_payload_path(target, node_path).lstrip("/"),
+        )
+        updated_attrs = wrapper.pending_workspace_payload_attrs
+        assert updated_attrs is not None
+        assert updated_attrs["post_snapshot_marker"] is True
+        assert manager.is_workspace_modified
+
+        source.unlink()
+        manager.show_imagetool(wrapper.index)
+        qtbot.wait_until(lambda: manager.get_imagetool(wrapper.index).isVisible())
+        np.testing.assert_array_equal(
+            manager.get_imagetool(wrapper.index).slicer_area._data.values,
+            imported_data.values,
+        )
 
 
 def test_manager_background_workspace_save_failure_restores_state(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import threading
 import typing
 
@@ -485,6 +486,114 @@ def test_workspace_store_reopens_after_failed_file_replacement(
         assert not store.conflicted
         assert workspace_store.WorkspaceStore.active(path) is store
         assert store.current_generation().manifest == _manifest()
+
+
+def test_workspace_store_uses_prepared_recovery_if_original_cannot_reopen(
+    monkeypatch, tmp_path: pathlib.Path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    prepared_path = tmp_path / "prepared.itws"
+    with workspace_store.WorkspaceStore(prepared_path, create=True) as prepared_store:
+        prepared_store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group(
+            "prepared"
+        )
+        prepared_store.publish(_manifest("prepared"))
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        store.publish(_manifest())
+
+        def _deny_reopen(*, create: bool) -> None:
+            if create:
+                raise AssertionError("Replacement recovery must not create a file")
+            raise PermissionError(errno.EACCES, "reopen denied", path)
+
+        monkeypatch.setattr(store, "_open", _deny_reopen)
+        monkeypatch.setattr(workspace_store, "_FILE_ACCESS_RETRY_DELAYS", (0.0, 0.0))
+        monkeypatch.setattr(workspace_store.time, "sleep", lambda _delay: None)
+
+        def _fail_replace(_source, destination) -> None:
+            raise PermissionError(f"Cannot replace {destination}")
+
+        with pytest.raises(PermissionError, match="Cannot replace"):
+            store.replace_from(prepared_path, _fail_replace)
+
+        assert store.conflicted
+        assert workspace_store.WorkspaceStore.active(path) is store
+        assert store.current_generation().manifest == _manifest("prepared")
+
+
+def test_workspace_store_retries_reopen_after_successful_replacement(
+    monkeypatch, tmp_path: pathlib.Path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    prepared_path = tmp_path / "prepared.itws"
+    with workspace_store.WorkspaceStore(prepared_path, create=True) as prepared_store:
+        prepared_store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group(
+            "prepared"
+        )
+        prepared_store.publish(_manifest("prepared"))
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        store.publish(_manifest())
+        original_open = store._open
+        reopen_attempts = 0
+        delays: list[float] = []
+
+        def _open_with_transient_denial(*, create: bool) -> None:
+            nonlocal reopen_attempts
+            reopen_attempts += 1
+            if reopen_attempts < 3:
+                raise PermissionError(errno.EACCES, "reopen denied", path)
+            original_open(create=create)
+
+        monkeypatch.setattr(store, "_open", _open_with_transient_denial)
+        monkeypatch.setattr(workspace_store, "_FILE_ACCESS_RETRY_DELAYS", (0.0, 0.0))
+        monkeypatch.setattr(workspace_store.time, "sleep", delays.append)
+
+        store.replace_from(
+            prepared_path,
+            lambda source, destination: source.replace(destination),
+        )
+
+        assert reopen_attempts == 3
+        assert delays == [0.0, 0.0]
+        assert workspace_store.WorkspaceStore.active(path) is store
+        assert store.current_generation().manifest == _manifest("prepared")
+
+
+def test_workspace_compaction_retains_prepared_recovery_file(
+    monkeypatch, tmp_path: pathlib.Path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    recovery_path: pathlib.Path | None = None
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
+        store.publish(_manifest("current"))
+
+        def _deny_reopen(*, create: bool) -> None:
+            if create:
+                raise AssertionError("Replacement recovery must not create a file")
+            raise PermissionError(errno.EACCES, "reopen denied", path)
+
+        def _fail_replace(*_args, **_kwargs) -> None:
+            raise PermissionError(errno.EACCES, "replace denied", path)
+
+        monkeypatch.setattr(store, "_open", _deny_reopen)
+        monkeypatch.setattr(workspace_storage, "_replace_workspace_file", _fail_replace)
+        monkeypatch.setattr(workspace_store, "_FILE_ACCESS_RETRY_DELAYS", (0.0,))
+        monkeypatch.setattr(workspace_store.time, "sleep", lambda _delay: None)
+
+        with pytest.raises(PermissionError, match="replace denied"):
+            workspace_storage._compact_workspace_store(store)
+
+        recovery_path = store.recovery_path
+        assert recovery_path is not None
+        assert recovery_path.exists()
+        assert store.conflicted
+        assert store.current_generation().manifest == _manifest("current")
+
+    assert recovery_path is not None
+    assert not recovery_path.exists()
 
 
 def test_workspace_compaction_does_not_overwrite_external_replacement(

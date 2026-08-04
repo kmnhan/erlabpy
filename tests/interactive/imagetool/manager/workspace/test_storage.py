@@ -13,6 +13,7 @@ import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
+import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 from tests.interactive.imagetool.manager.workspace._support import (
     _assert_no_workspace_internal_groups,
     _transaction_test_dataset,
@@ -79,13 +80,8 @@ def test_replace_workspace_file_retries_transient_access_denied(
             raise PermissionError(errno.EACCES, "file is in use", dst)
         original_replace(src, dst)
 
-    monkeypatch.setattr(
-        workspace_storage,
-        "_is_retryable_windows_workspace_replace_error",
-        lambda _exc: True,
-    )
     monkeypatch.setattr(workspace_storage.os, "replace", _replace_with_transient_denial)
-    monkeypatch.setattr(workspace_storage.time, "sleep", delays.append)
+    monkeypatch.setattr(workspace_store.time, "sleep", delays.append)
     monkeypatch.setattr(
         workspace_storage, "_fsync_parent_directory", synced_parents.append
     )
@@ -113,13 +109,8 @@ def test_replace_workspace_file_stops_if_destination_changes_during_retry(
         pathlib.Path(dst).write_bytes(b"changed outside the manager")
         raise PermissionError(errno.EACCES, "file is in use", dst)
 
-    monkeypatch.setattr(
-        workspace_storage,
-        "_is_retryable_windows_workspace_replace_error",
-        lambda _exc: True,
-    )
     monkeypatch.setattr(workspace_storage.os, "replace", _replace_after_external_change)
-    monkeypatch.setattr(workspace_storage.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(workspace_store.time, "sleep", lambda _delay: None)
 
     with pytest.raises(workspace_storage._WorkspacePublicationConflictError):
         workspace_storage._replace_workspace_file(
@@ -147,17 +138,12 @@ def test_replace_workspace_file_preserves_permission_error_after_retries(
         raise PermissionError(errno.EACCES, "file is in use", dst)
 
     monkeypatch.setattr(
-        workspace_storage,
-        "_WINDOWS_WORKSPACE_REPLACE_RETRY_DELAYS",
+        workspace_store,
+        "_FILE_ACCESS_RETRY_DELAYS",
         (0.0, 0.0),
     )
-    monkeypatch.setattr(
-        workspace_storage,
-        "_is_retryable_windows_workspace_replace_error",
-        lambda _exc: True,
-    )
     monkeypatch.setattr(workspace_storage.os, "replace", _deny_replace)
-    monkeypatch.setattr(workspace_storage.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(workspace_store.time, "sleep", lambda _delay: None)
     monkeypatch.setattr(
         workspace_storage, "_fsync_parent_directory", synced_parents.append
     )
@@ -173,21 +159,14 @@ def test_replace_workspace_file_preserves_permission_error_after_retries(
     assert destination.read_bytes() == b"old"
 
 
-def test_windows_workspace_replace_retry_filter_is_specific(monkeypatch) -> None:
+def test_workspace_file_access_retry_filter_is_specific() -> None:
     access_denied = PermissionError(errno.EACCES, "access denied")
+    busy = OSError(errno.EBUSY, "busy")
     wrong_error = PermissionError(errno.ENOENT, "missing")
 
-    assert not workspace_storage._is_retryable_windows_workspace_replace_error(
-        access_denied
-    )
-    with monkeypatch.context() as patch:
-        patch.setattr(workspace_storage.os, "name", "nt")
-        assert workspace_storage._is_retryable_windows_workspace_replace_error(
-            access_denied
-        )
-        assert not workspace_storage._is_retryable_windows_workspace_replace_error(
-            wrong_error
-        )
+    assert workspace_store._is_retryable_file_access_error(access_denied)
+    assert workspace_store._is_retryable_file_access_error(busy)
+    assert not workspace_store._is_retryable_file_access_error(wrong_error)
 
 
 def test_workspace_recovery_discards_prepared_legacy_transaction(tmp_path) -> None:

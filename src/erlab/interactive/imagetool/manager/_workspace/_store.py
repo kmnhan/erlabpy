@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import os
 import pathlib
 import threading
+import time
 import typing
 import uuid
 import weakref
@@ -31,6 +33,37 @@ _WORKSPACE_STAGING_GROUP = "__itws_staging"
 _WORKSPACE_GENERATIONS_GROUP = "__itws_generations"
 _WORKSPACE_MANIFEST_DATASET = "manifest"
 _WORKSPACE_GENERATION_WIDTH = 20
+_FILE_ACCESS_RETRY_DELAYS = (0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0)
+_RETRYABLE_FILE_ACCESS_ERRNOS = frozenset(
+    {
+        errno.EACCES,
+        errno.EAGAIN,
+        errno.EBUSY,
+        errno.EPERM,
+        getattr(errno, "ETXTBSY", errno.EBUSY),
+    }
+)
+
+
+def _is_retryable_file_access_error(exc: OSError) -> bool:
+    """Return whether a file access failure can be temporary."""
+    return exc.errno in _RETRYABLE_FILE_ACCESS_ERRNOS
+
+
+def _retry_file_access(operation: Callable[[], typing.Any]) -> typing.Any:
+    """Run one file operation with bounded retries for temporary access errors."""
+    retry_delays = iter(_FILE_ACCESS_RETRY_DELAYS)
+    while True:
+        try:
+            return operation()
+        except OSError as exc:
+            if not _is_retryable_file_access_error(exc):
+                raise
+            try:
+                delay = next(retry_delays)
+            except StopIteration:
+                raise exc from None
+            time.sleep(delay)
 
 
 @dataclass(frozen=True)
@@ -43,6 +76,10 @@ class _WorkspaceGeneration:
 
 class WorkspaceStoreConflictError(RuntimeError):
     """The path no longer identifies the file opened by the store."""
+
+
+class WorkspaceStoreReopenError(RuntimeError):
+    """A replaced workspace could not be reopened."""
 
 
 class WorkspaceStore:
@@ -134,6 +171,12 @@ class WorkspaceStore:
     def handle_generation(self) -> int:
         """Return a value that changes each time the HDF5 handle reopens."""
         return self._handle_generation
+
+    @property
+    def recovery_path(self) -> pathlib.Path | None:
+        """Return the temporary document retained for read-only recovery."""
+        with self._lock:
+            return self._recovery_path
 
     def _register(self) -> None:
         key = self._key(self._path)
@@ -282,6 +325,18 @@ class WorkspaceStore:
             self._close_handle()
             self._open(create=False)
 
+    def _reopen_after_file_operation(self) -> None:
+        """Reopen the document after a file operation released its handle."""
+
+        def _reopen() -> None:
+            try:
+                self._open(create=False)
+            except Exception:
+                self._close_handle()
+                raise
+
+        _retry_file_access(_reopen)
+
     def replace_from(
         self,
         prepared_path: str | os.PathLike[str],
@@ -327,10 +382,22 @@ class WorkspaceStore:
                 except WorkspaceStoreConflictError as conflict:
                     self._mark_conflicted()
                     raise conflict from exc
-                self._open(create=False)
+                try:
+                    self._reopen_after_file_operation()
+                except Exception:
+                    try:
+                        self._use_recovery_source(source)
+                    except Exception:
+                        self._mark_conflicted()
                 raise
             else:
-                self._open(create=False)
+                try:
+                    self._reopen_after_file_operation()
+                except Exception as exc:
+                    raise WorkspaceStoreReopenError(
+                        "Workspace was replaced but could not be reopened: "
+                        f"{self._path}"
+                    ) from exc
 
     def acquire_object(self, object_id: str) -> None:
         """Keep a payload object reachable while a lazy array uses it."""

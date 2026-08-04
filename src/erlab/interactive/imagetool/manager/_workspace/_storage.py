@@ -10,7 +10,6 @@ import os
 import pathlib
 import stat
 import sys
-import time
 import typing
 import uuid
 from dataclasses import dataclass
@@ -280,12 +279,12 @@ def _compact_workspace_store(store: workspace_store.WorkspaceStore) -> None:
                 ),
             )
     finally:
-        with contextlib.suppress(OSError):
-            prepared_path.unlink()
+        if store.recovery_path != prepared_path:
+            with contextlib.suppress(OSError):
+                prepared_path.unlink()
 
 
 _WorkspacePublicationState: typing.TypeAlias = tuple[bool, int, int, int, int, int]
-_WINDOWS_WORKSPACE_REPLACE_RETRY_DELAYS = (0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0)
 
 
 class _WorkspaceBackingFileNotFoundError(FileNotFoundError):
@@ -329,42 +328,24 @@ def _workspace_publication_state(
     )
 
 
-def _is_retryable_windows_workspace_replace_error(exc: PermissionError) -> bool:
-    if os.name != "nt":
-        return False
-    winerror = getattr(exc, "winerror", None)
-    if winerror is not None:
-        return winerror in {5, 32}
-    return exc.errno in {errno.EACCES, errno.EPERM}
-
-
 def _replace_workspace_file(
     source: str | os.PathLike[str],
     destination: str | os.PathLike[str],
     *,
     expected_state: _WorkspacePublicationState | None,
 ) -> None:
-    """Publish a prepared workspace with bounded Windows sharing retries."""
-    retry_delays = iter(_WINDOWS_WORKSPACE_REPLACE_RETRY_DELAYS)
-    while True:
+    """Publish a prepared workspace with bounded file-access retries."""
+
+    def _replace() -> None:
         if (
             expected_state is not None
             and _workspace_publication_state(destination) != expected_state
         ):
             raise _WorkspacePublicationConflictError(destination)
-        try:
-            os.replace(source, destination)
-        except PermissionError as exc:
-            if not _is_retryable_windows_workspace_replace_error(exc):
-                raise
-            try:
-                delay = next(retry_delays)
-            except StopIteration:
-                raise exc from None
-            time.sleep(delay)
-        else:
-            _fsync_parent_directory(destination)
-            return
+        os.replace(source, destination)
+
+    workspace_store._retry_file_access(_replace)
+    _fsync_parent_directory(destination)
 
 
 def _fsync_parent_directory(path: str | os.PathLike[str]) -> None:

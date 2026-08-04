@@ -622,7 +622,6 @@ class _WorkspaceController:
         workspace_path: str | os.PathLike[str],
         *,
         manifest: Mapping[str, typing.Any],
-        exclude_uids: Collection[str] = frozenset(),
     ) -> None:
         payload_paths = {
             uid: payload_path
@@ -631,8 +630,6 @@ class _WorkspaceController:
             )
         }
         for uid, node in self._manager._tool_graph.nodes.items():
-            if uid in exclude_uids:
-                continue
             pending = node.pending_workspace_payload
             kind = node.pending_workspace_payload_kind
             payload_path = payload_paths.get(uid)
@@ -651,14 +648,12 @@ class _WorkspaceController:
         snapshot: workspace_saving._WorkspaceSaveSnapshot,
         *,
         manifest: Mapping[str, typing.Any],
-        exclude_uids: Collection[str] = frozenset(),
     ) -> None:
         """Apply one committed generation to live manager references."""
         self._commit_saved_tool_data_references(snapshot)
         self._repoint_saved_pending_workspace_payloads(
             workspace_path,
             manifest=manifest,
-            exclude_uids=exclude_uids,
         )
         self._manager._workspace_state.schema_version = (
             workspace_format._current_workspace_schema_version()
@@ -1893,14 +1888,10 @@ class _WorkspaceController:
             self._manager._workspace_state.dirty_generation > snapshot.generation
             and self._manager.is_workspace_modified
         )
-        post_save_uids = frozenset(
-            event.uid for event in post_save_events if event.uid is not None
-        )
         self._adopt_committed_workspace_generation(
             workspace_path,
             snapshot,
             manifest=snapshot.generation_plan.manifest,
-            exclude_uids=post_save_uids,
         )
         if post_save_events:
             self._restore_workspace_dirty_events(post_save_events)
@@ -2242,7 +2233,6 @@ class _WorkspaceController:
                 saved_path,
                 snapshot,
                 manifest=snapshot.generation_plan.manifest,
-                exclude_uids=post_save_uids,
             )
             try:
                 self._refresh_workspace_payload_bindings_after_full_save(
@@ -2335,14 +2325,24 @@ class _WorkspaceController:
                 workspace_storage._compact_workspace_store(store)
             self._manager._status_bar.showMessage("Workspace compacted", 5000)
             self._mark_workspace_clean()
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "Could not compact workspace",
                 extra={"suppress_ui_alert": True},
             )
+            if isinstance(exc, workspace_store.WorkspaceStoreReopenError):
+                store.close()
+                if self._workspace_store is store:
+                    self._workspace_store = None
+                error_text = (
+                    "The compacted workspace was saved, but it could not be "
+                    "reopened. Close and reopen the workspace before you continue."
+                )
+            else:
+                error_text = "An error occurred while compacting the workspace file."
             self._manager._show_operation_error(
                 "Error while compacting workspace",
-                "An error occurred while compacting the workspace file.",
+                error_text,
             )
             self._restore_focus_after_workspace_save(origin)
             return False
