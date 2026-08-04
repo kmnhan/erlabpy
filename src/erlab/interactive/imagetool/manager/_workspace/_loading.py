@@ -1483,7 +1483,7 @@ class _WorkspaceLoader:
             if not isinstance(path, str) or kind not in {"imagetool", "tool"}:
                 continue
             entries_by_path[path] = entry
-        if not entries_by_path:
+        if nodes and not entries_by_path:
             raise ValueError("Workspace manifest has no loadable nodes")
 
         root_paths: list[str] = []
@@ -1501,7 +1501,7 @@ class _WorkspaceLoader:
             for path in entries_by_path
             if path.startswith("figures/") and path.count("/") == 1
         ]
-        if not root_paths and not figure_paths:
+        if entries_by_path and not root_paths and not figure_paths:
             raise ValueError("Workspace manifest has no loadable root nodes")
 
         loaded_targets_by_uid: dict[str, int | str] = {}

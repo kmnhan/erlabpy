@@ -255,6 +255,60 @@ def test_workspace_generation_removes_partial_object_after_copy_error(
         assert target_store.generations() == ()
 
 
+def test_workspace_generation_removes_all_new_objects_after_plan_error(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    plan = workspace_storage._WorkspaceGenerationPlan(
+        manifest=_manifest("written"),
+        objects=(
+            workspace_storage._WorkspaceObjectWrite(
+                "written", dataset=xr.Dataset({"data": ("x", np.arange(3))})
+            ),
+            workspace_storage._WorkspaceObjectWrite("missing-source"),
+        ),
+    )
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with pytest.raises(ValueError, match="has no source"):
+            workspace_storage._write_workspace_generation(
+                store, plan, compression_mode="none"
+            )
+
+        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == set()
+        assert store.generations() == ()
+
+
+def test_workspace_generation_keeps_objects_referenced_by_committed_generation(
+    monkeypatch, tmp_path: pathlib.Path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    plan = workspace_storage._WorkspaceGenerationPlan(
+        manifest=_manifest("committed"),
+        objects=(
+            workspace_storage._WorkspaceObjectWrite(
+                "committed", dataset=xr.Dataset({"data": ("x", np.arange(3))})
+            ),
+        ),
+    )
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        original_publish = store.publish
+
+        def _publish_then_fail(manifest) -> workspace_store._WorkspaceGeneration:
+            original_publish(manifest)
+            raise RuntimeError("post-publication failure")
+
+        monkeypatch.setattr(store, "publish", _publish_then_fail)
+        with pytest.raises(RuntimeError, match="post-publication failure"):
+            workspace_storage._write_workspace_generation(
+                store, plan, compression_mode="none"
+            )
+
+        assert store.current_generation().manifest == _manifest("committed")
+        assert "committed" in store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
+
+
 def test_workspace_store_shares_lazy_reader_and_generation_writer(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -358,6 +412,81 @@ def test_workspace_compaction_keeps_current_state_and_reopens_store(
         assert path.stat().st_size < size_before
 
 
+def test_workspace_store_active_waits_for_file_replacement(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    prepared_path = tmp_path / "prepared.itws"
+    with workspace_store.WorkspaceStore(prepared_path, create=True) as prepared_store:
+        prepared_store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group(
+            "prepared"
+        )
+        prepared_store.publish(_manifest("prepared"))
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
+        store.publish(_manifest("current"))
+        replacement_started = threading.Event()
+        allow_replacement = threading.Event()
+        lookup_finished = threading.Event()
+        lookup_result: list[workspace_store.WorkspaceStore | None] = []
+        errors: list[BaseException] = []
+
+        def _replace(source, destination) -> None:
+            replacement_started.set()
+            if not allow_replacement.wait(2):
+                raise TimeoutError("replacement was not released")
+            source.replace(destination)
+
+        def _run_replacement() -> None:
+            try:
+                store.replace_from(prepared_path, _replace)
+            except BaseException as exc:
+                errors.append(exc)
+
+        def _lookup_active_store() -> None:
+            lookup_result.append(workspace_store.WorkspaceStore.active(path))
+            lookup_finished.set()
+
+        replacement_thread = threading.Thread(target=_run_replacement)
+        lookup_thread = threading.Thread(target=_lookup_active_store)
+        replacement_thread.start()
+        assert replacement_started.wait(2)
+        lookup_thread.start()
+        try:
+            assert not lookup_finished.wait(0.05)
+        finally:
+            allow_replacement.set()
+        replacement_thread.join(2)
+        lookup_thread.join(2)
+
+        assert not replacement_thread.is_alive()
+        assert not lookup_thread.is_alive()
+        assert errors == []
+        assert lookup_result == [store]
+        assert store.current_generation().manifest == _manifest("prepared")
+
+
+def test_workspace_store_reopens_after_failed_file_replacement(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    prepared_path = tmp_path / "prepared.itws"
+    prepared_path.write_bytes(b"prepared")
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        store.publish(_manifest())
+
+        def _fail_replace(_source, destination) -> None:
+            raise PermissionError(f"Cannot replace {destination}")
+
+        with pytest.raises(PermissionError, match="Cannot replace"):
+            store.replace_from(prepared_path, _fail_replace)
+
+        assert not store.conflicted
+        assert workspace_store.WorkspaceStore.active(path) is store
+        assert store.current_generation().manifest == _manifest()
+
+
 def test_workspace_compaction_does_not_overwrite_external_replacement(
     monkeypatch, tmp_path: pathlib.Path
 ) -> None:
@@ -387,7 +516,15 @@ def test_workspace_compaction_does_not_overwrite_external_replacement(
         with pytest.raises(workspace_store.WorkspaceStoreConflictError):
             workspace_storage._compact_workspace_store(store)
 
-        assert store.current_generation().manifest == _manifest("external")
+        assert store.conflicted
+        assert workspace_store.WorkspaceStore.active(path) is store
+        with pytest.raises(workspace_store.WorkspaceStoreConflictError):
+            _ = store.h5_file
+        store.close()
+        with workspace_store.WorkspaceStore(path) as replacement_store:
+            assert replacement_store.current_generation().manifest == _manifest(
+                "external"
+            )
 
 
 def test_workspace_compaction_preserves_leased_payloads(
@@ -513,3 +650,7 @@ def test_workspace_store_rejects_replaced_document_path(
 
         with pytest.raises(workspace_store.WorkspaceStoreConflictError):
             store.publish(_manifest())
+        assert store.conflicted
+        assert workspace_store.WorkspaceStore.active(path) is store
+        with pytest.raises(workspace_store.WorkspaceStoreConflictError):
+            _ = store.h5_file

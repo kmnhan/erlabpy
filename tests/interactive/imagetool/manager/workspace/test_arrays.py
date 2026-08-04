@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import pathlib
+import threading
 import types
 import typing
 import warnings
@@ -388,6 +389,41 @@ def test_workspace_file_manager_opens_unassociated_file_read_only(tmp_path) -> N
     finally:
         manager.close()
         del manager
+        gc.collect()
+
+
+def test_workspace_file_managers_serialize_shared_cached_handle_access(
+    tmp_path,
+) -> None:
+    fname = tmp_path / "shared-reader.itws"
+    _write_transaction_test_workspace(fname)
+    first = workspace_arrays.WorkspaceFileManager(fname)
+    second = workspace_arrays.WorkspaceFileManager(fname)
+    close_started = threading.Event()
+    close_finished = threading.Event()
+
+    def _close_second() -> None:
+        close_started.set()
+        second.close()
+        close_finished.set()
+
+    close_thread = threading.Thread(target=_close_second)
+    try:
+        with first.lock:
+            first.acquire(needs_lock=False)
+            close_thread.start()
+            assert close_started.wait(2)
+            assert not close_finished.wait(0.05)
+        close_thread.join(2)
+        assert not close_thread.is_alive()
+        assert close_finished.is_set()
+        with first.lock:
+            reopened = first.acquire(needs_lock=False)
+            assert pathlib.Path(reopened.filename).resolve() == fname.resolve()
+    finally:
+        first.close()
+        second.close()
+        close_thread.join(2)
         gc.collect()
 
 

@@ -68,6 +68,12 @@ class _WorkspaceGenerationPlan:
     preserved_groups: tuple[_WorkspaceGroupCopy, ...] = ()
 
 
+def _workspace_object_copy_source(item: _WorkspaceObjectWrite) -> tuple[str, str]:
+    if item.source_file is None or item.source_path is None:
+        raise ValueError(f"Workspace object {item.object_id!r} has no source")
+    return item.source_file, item.source_path
+
+
 @contextlib.contextmanager
 def _workspace_generation_copy_source(
     path: str | os.PathLike[str],
@@ -125,25 +131,27 @@ def _write_workspace_generation(
 ) -> workspace_store._WorkspaceGeneration:
     """Write new immutable objects and publish one generation."""
     with target_store.write_lock:
-        with target_store.lock:
-            target_store.require_current_path()
-        for item in plan.preserved_groups:
+        created_object_ids: list[str] = []
+        try:
             with target_store.lock:
-                if item.target_path.strip("/") in target_store.h5_file:
-                    continue
-            _copy_workspace_group(
-                target_store,
-                source_file=item.source_file,
-                source_path=item.source_path,
-                target_path=item.target_path,
-            )
-        for item in plan.objects:
-            target_path = target_store.object_path(item.object_id)
-            with target_store.lock:
-                if target_path.strip("/") in target_store.h5_file:
-                    continue
-            if item.dataset is not None:
-                try:
+                target_store.require_current_path()
+            for item in plan.preserved_groups:
+                with target_store.lock:
+                    if item.target_path.strip("/") in target_store.h5_file:
+                        continue
+                _copy_workspace_group(
+                    target_store,
+                    source_file=item.source_file,
+                    source_path=item.source_path,
+                    target_path=item.target_path,
+                )
+            for item in plan.objects:
+                target_path = target_store.object_path(item.object_id)
+                with target_store.lock:
+                    if target_path.strip("/") in target_store.h5_file:
+                        continue
+                created_object_ids.append(item.object_id)
+                if item.dataset is not None:
                     if workspace_arrays._workspace_dataset_can_write_h5py(item.dataset):
                         with target_store.lock:
                             workspace_arrays._write_workspace_dataset_group_to_file(
@@ -159,23 +167,30 @@ def _write_workspace_generation(
                             item.dataset,
                             compression_mode=compression_mode,
                         )
-                except Exception:
-                    with target_store.lock:
+                    continue
+                source_file, source_path = _workspace_object_copy_source(item)
+                _copy_workspace_group(
+                    target_store,
+                    source_file=source_file,
+                    source_path=source_path,
+                    target_path=target_path,
+                )
+            return target_store.publish(plan.manifest)
+        except Exception:
+            with contextlib.suppress(Exception), target_store.lock:
+                referenced_object_ids: set[str] = set()
+                for generation in target_store.generations():
+                    referenced_object_ids.update(
+                        target_store.manifest_object_ids(generation.manifest)
+                    )
+                for object_id in created_object_ids:
+                    if object_id not in referenced_object_ids:
                         workspace_arrays._delete_h5_path(
-                            target_store.h5_file, target_path
+                            target_store.h5_file,
+                            target_store.object_path(object_id),
                         )
-                        target_store.h5_file.flush()
-                    raise
-                continue
-            if item.source_file is None or item.source_path is None:
-                raise ValueError(f"Workspace object {item.object_id!r} has no source")
-            _copy_workspace_group(
-                target_store,
-                source_file=item.source_file,
-                source_path=item.source_path,
-                target_path=target_path,
-            )
-        return target_store.publish(plan.manifest)
+                target_store.h5_file.flush()
+            raise
 
 
 def _compact_workspace_store(store: workspace_store.WorkspaceStore) -> None:
@@ -275,7 +290,7 @@ class _WorkspaceBackingFileNotFoundError(FileNotFoundError):
         )
 
 
-class _WorkspacePublicationConflictError(RuntimeError):
+class _WorkspacePublicationConflictError(workspace_store.WorkspaceStoreConflictError):
     """A published workspace changed while a save was in progress."""
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
@@ -338,7 +353,20 @@ def _replace_workspace_file(
                 raise exc from None
             time.sleep(delay)
         else:
+            _fsync_parent_directory(destination)
             return
+
+
+def _fsync_parent_directory(path: str | os.PathLike[str]) -> None:
+    """Ask POSIX to persist a completed directory entry replacement."""
+    if os.name != "posix":
+        return
+    with contextlib.suppress(OSError):
+        file_descriptor = os.open(pathlib.Path(path).parent, os.O_RDONLY)
+        try:
+            os.fsync(file_descriptor)
+        finally:
+            os.close(file_descriptor)
 
 
 def _require_workspace_publication_state(

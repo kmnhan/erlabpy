@@ -1975,6 +1975,44 @@ def test_manager_from_h5py_workspace_manifest_validation(
             )
 
 
+def test_manager_from_h5py_workspace_restores_empty_workspace(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+        manager.resize(640, 520)
+        expected_size = manager.size()
+        fname = tmp_path / "empty.itws"
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        manifest = _current_workspace_manifest(fname)
+        assert manifest["nodes"] == []
+
+        root = itool(
+            xr.DataArray(np.arange(9.0).reshape(3, 3), dims=("x", "y")),
+            manager=False,
+            execute=False,
+        )
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        manager.resize(480, 500)
+
+        assert manager._workspace_controller.loading._from_h5py_workspace_file(
+            fname,
+            manifest,
+            replace=True,
+            mark_dirty=False,
+        )
+        qtbot.wait_until(
+            lambda: manager.ntools == 0 and manager.size() == expected_size,
+            timeout=5000,
+        )
+
+
 def test_manager_from_h5py_workspace_falls_back_after_fast_read_error(
     qtbot,
     monkeypatch,

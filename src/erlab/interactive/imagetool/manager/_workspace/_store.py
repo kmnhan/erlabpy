@@ -63,7 +63,7 @@ class WorkspaceStore:
         self._write_lock = threading.RLock()
         self._object_leases: dict[str, int] = {}
         self._readers: weakref.WeakSet[typing.Any] = weakref.WeakSet()
-        self._closed = True
+        self._state: typing.Literal["open", "conflicted", "closed"] = "closed"
         self._handle_generation = 0
         self._h5_file: typing.Any = None
         self._path_identity: tuple[int, int] | None = None
@@ -83,9 +83,10 @@ class WorkspaceStore:
         """Return the store that owns *path*, if this process has one."""
         with cls._active_lock:
             store = cls._active.get(cls._key(path))
-        if store is None or store.closed:
+        if store is None:
             return None
-        return store
+        with store.lock:
+            return None if store.closed else store
 
     @property
     def path(self) -> pathlib.Path:
@@ -102,11 +103,21 @@ class WorkspaceStore:
 
     @property
     def closed(self) -> bool:
-        return self._closed
+        """Return whether this store released ownership of its path."""
+        return self._state == "closed"
+
+    @property
+    def conflicted(self) -> bool:
+        """Return whether the workspace path changed outside this store."""
+        return self._state == "conflicted"
 
     @property
     def h5_file(self) -> typing.Any:
-        if self._closed:
+        if self.conflicted:
+            raise WorkspaceStoreConflictError(
+                f"Workspace store no longer owns its path: {self._path}"
+            )
+        if self.closed:
             raise RuntimeError("Workspace store is closed")
         return self._h5_file
 
@@ -119,7 +130,7 @@ class WorkspaceStore:
         key = self._key(self._path)
         with self._active_lock:
             existing = self._active.get(key)
-            if existing is not None and existing is not self and not existing.closed:
+            if existing is not None and existing is not self:
                 self._close_handle()
                 raise RuntimeError(
                     f"Workspace already has an active store: {self._path}"
@@ -153,7 +164,7 @@ class WorkspaceStore:
         self._handle_generation += 1
         path_stat = self._path.stat()
         self._path_identity = (path_stat.st_dev, path_stat.st_ino)
-        self._closed = False
+        self._state = "open"
 
     def _close_handle(self) -> None:
         for reader in tuple(self._readers):
@@ -164,20 +175,42 @@ class WorkspaceStore:
         if h5_file is not None:
             with contextlib.suppress(Exception):
                 h5_file.close()
-        self._closed = True
+        self._state = "closed"
 
-    def require_current_path(self) -> None:
-        """Fail if the open handle is no longer the file at ``path``."""
+    def _mark_conflicted(self) -> None:
+        """Close the handle and quarantine this path until explicit recovery."""
+        if self._h5_file is not None:
+            self._close_handle()
+        self._state = "conflicted"
+
+    def _require_path_identity(self, expected: tuple[int, int]) -> None:
         try:
             path_stat = self._path.stat()
         except OSError as exc:
             raise WorkspaceStoreConflictError(
                 f"Open workspace path is no longer available: {self._path}"
             ) from exc
-        if (path_stat.st_dev, path_stat.st_ino) != self._path_identity:
+        if (path_stat.st_dev, path_stat.st_ino) != expected:
             raise WorkspaceStoreConflictError(
                 f"Open workspace path now identifies another file: {self._path}"
             )
+
+    def require_current_path(self) -> None:
+        """Fail if the open handle is no longer the file at ``path``."""
+        if self.conflicted:
+            raise WorkspaceStoreConflictError(
+                f"Workspace store no longer owns its path: {self._path}"
+            )
+        if self.closed:
+            raise RuntimeError("Workspace store is closed")
+        path_identity = self._path_identity
+        if path_identity is None:
+            raise RuntimeError("Workspace store has no path identity")
+        try:
+            self._require_path_identity(path_identity)
+        except WorkspaceStoreConflictError:
+            self._mark_conflicted()
+            raise
 
     def close(self) -> None:
         """Close the document handle and remove this store from the registry."""
@@ -190,6 +223,7 @@ class WorkspaceStore:
         new_path = pathlib.Path(path).resolve()
         with self._write_lock, self._lock:
             old_path = self._path
+            old_conflicted = self.conflicted
             self._unregister(old_path)
             self._close_handle()
             self._path = new_path
@@ -197,14 +231,23 @@ class WorkspaceStore:
                 self._open(create=False)
                 self._register()
             except Exception:
+                self._close_handle()
                 self._path = old_path
-                self._open(create=False)
-                self._register()
+                if old_conflicted:
+                    self._state = "conflicted"
+                    self._register()
+                else:
+                    self._open(create=False)
+                    self._register()
                 raise
 
     def reopen(self) -> None:
         """Close and reopen the current file through the same store object."""
         with self._write_lock, self._lock:
+            if self.conflicted:
+                raise WorkspaceStoreConflictError(
+                    f"Workspace store no longer owns its path: {self._path}"
+                )
             self._close_handle()
             self._open(create=False)
 
@@ -222,23 +265,37 @@ class WorkspaceStore:
         """
         source = pathlib.Path(prepared_path).resolve()
         with self._write_lock, self._lock:
+            if self.conflicted:
+                raise WorkspaceStoreConflictError(
+                    f"Workspace store no longer owns its path: {self._path}"
+                )
+            if self.closed:
+                raise RuntimeError("Workspace store is closed")
             if before_close is not None:
-                before_close()
+                try:
+                    before_close()
+                except WorkspaceStoreConflictError:
+                    self._mark_conflicted()
+                    raise
             path_identity = self._path_identity
+            if path_identity is None:
+                raise RuntimeError("Workspace store has no path identity")
             self._close_handle()
             try:
-                try:
-                    path_stat = self._path.stat()
-                except OSError as exc:
-                    raise WorkspaceStoreConflictError(
-                        f"Open workspace path is no longer available: {self._path}"
-                    ) from exc
-                if (path_stat.st_dev, path_stat.st_ino) != path_identity:
-                    raise WorkspaceStoreConflictError(
-                        f"Open workspace path now identifies another file: {self._path}"
-                    )
+                self._require_path_identity(path_identity)
                 replace(source, self._path)
-            finally:
+            except WorkspaceStoreConflictError:
+                self._mark_conflicted()
+                raise
+            except Exception as exc:
+                try:
+                    self._require_path_identity(path_identity)
+                except WorkspaceStoreConflictError as conflict:
+                    self._mark_conflicted()
+                    raise conflict from exc
+                self._open(create=False)
+                raise
+            else:
                 self._open(create=False)
 
     def acquire_object(self, object_id: str) -> None:

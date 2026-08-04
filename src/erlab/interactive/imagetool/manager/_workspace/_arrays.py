@@ -359,7 +359,13 @@ class WorkspaceFileManager(CachingFileManager):
             return
 
         ensure_workspace_hdf5_filters_registered()
-        self.lock = SerializableLock()
+        reader_key = (
+            "erlab-workspace-reader",
+            *_workspace_file_identity(target),
+            "r",
+        )
+        with _WORKSPACE_FILE_LOCKS_LOCK:
+            self.lock = SerializableLock(reader_key)
         super().__init__(
             h5netcdf.File,
             target,
@@ -370,11 +376,7 @@ class WorkspaceFileManager(CachingFileManager):
                 "decode_vlen_strings": True,
             },
             lock=self.lock,
-            manager_id=(
-                "erlab-workspace-reader",
-                *_workspace_file_identity(target),
-                "r",
-            ),
+            manager_id=reader_key,
         )
 
     def _check_process(self) -> None:

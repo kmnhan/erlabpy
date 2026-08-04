@@ -70,6 +70,7 @@ def test_replace_workspace_file_retries_transient_access_denied(
     original_replace = workspace_storage.os.replace
     replace_attempts = 0
     delays: list[float] = []
+    synced_parents: list[pathlib.Path] = []
 
     def _replace_with_transient_denial(src, dst) -> None:
         nonlocal replace_attempts
@@ -85,6 +86,9 @@ def test_replace_workspace_file_retries_transient_access_denied(
     )
     monkeypatch.setattr(workspace_storage.os, "replace", _replace_with_transient_denial)
     monkeypatch.setattr(workspace_storage.time, "sleep", delays.append)
+    monkeypatch.setattr(
+        workspace_storage, "_fsync_parent_directory", synced_parents.append
+    )
 
     workspace_storage._replace_workspace_file(
         source, destination, expected_state=expected_state
@@ -92,6 +96,7 @@ def test_replace_workspace_file_retries_transient_access_denied(
 
     assert replace_attempts == 3
     assert delays == [0.02, 0.05]
+    assert synced_parents == [destination]
     assert destination.read_bytes() == b"new"
 
 
@@ -134,6 +139,7 @@ def test_replace_workspace_file_preserves_permission_error_after_retries(
     destination.write_bytes(b"old")
     expected_state = workspace_storage._workspace_publication_state(destination)
     attempts = 0
+    synced_parents: list[pathlib.Path] = []
 
     def _deny_replace(_src, dst) -> None:
         nonlocal attempts
@@ -152,6 +158,9 @@ def test_replace_workspace_file_preserves_permission_error_after_retries(
     )
     monkeypatch.setattr(workspace_storage.os, "replace", _deny_replace)
     monkeypatch.setattr(workspace_storage.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(
+        workspace_storage, "_fsync_parent_directory", synced_parents.append
+    )
 
     with pytest.raises(PermissionError, match="file is in use"):
         workspace_storage._replace_workspace_file(
@@ -159,6 +168,7 @@ def test_replace_workspace_file_preserves_permission_error_after_retries(
         )
 
     assert attempts == 3
+    assert synced_parents == []
     assert source.read_bytes() == b"new"
     assert destination.read_bytes() == b"old"
 
