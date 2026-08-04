@@ -104,8 +104,9 @@ def _open_workspace_h5_file_for_read(
     active_store = workspace_store.WorkspaceStore.active(path)
     if active_store is not None:
         with active_store.lock:
-            active_store.require_current_path()
-            yield active_store.h5_file
+            with contextlib.suppress(workspace_store.WorkspaceStoreConflictError):
+                active_store.require_current_path()
+            yield active_store.read_h5_file
         return
 
     ensure_workspace_hdf5_filters_registered()
@@ -408,7 +409,7 @@ class WorkspaceFileManager(CachingFileManager):
                 with contextlib.suppress(Exception):
                     self._netcdf_file.close()
             self._netcdf_file = h5netcdf.File(
-                store.h5_file,
+                store.read_h5_file,
                 mode="r",
                 invalid_netcdf=True,
                 phony_dims="sort",
@@ -630,7 +631,7 @@ def _read_workspace_root_attrs_h5py(
     active_store = workspace_store.WorkspaceStore.active(fname)
     if active_store is not None:
         with active_store.lock:
-            attrs = _h5py_attrs_to_dict(active_store.h5_file.attrs)
+            attrs = _h5py_attrs_to_dict(active_store.read_h5_file.attrs)
             if int(attrs.get("imagetool_workspace_schema_version", 1)) == 5:
                 attrs[_WORKSPACE_MANIFEST_ATTR] = json.dumps(
                     active_store.current_generation().manifest

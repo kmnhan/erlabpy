@@ -664,14 +664,15 @@ class _WorkspaceSaver:
                     create=not pathlib.Path(fname).exists(),
                 )
                 owned_store = True
-            workspace_storage._write_workspace_generation(
+            committed_generation = workspace_storage._write_workspace_generation(
                 target_store,
                 snapshot.generation_plan,
                 compression_mode=snapshot.compression_mode,
             )
-            self._controller._commit_saved_tool_data_references(snapshot)
-            self._manager._workspace_state.schema_version = (
-                workspace_format._current_workspace_schema_version()
+            self._controller._adopt_committed_workspace_generation(
+                fname,
+                snapshot,
+                manifest=committed_generation.manifest,
             )
         finally:
             if snapshot is not None:

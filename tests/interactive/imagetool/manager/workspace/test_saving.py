@@ -3133,6 +3133,74 @@ def test_manager_workspace_compact_drops_history_and_keeps_store(
         assert generations[0].manifest == generations[1].manifest == current_manifest
 
 
+def test_manager_workspace_upgrade_repoints_pending_payload_before_compaction(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(30).reshape((5, 6)),
+            dims=["x", "y"],
+            coords={"x": np.arange(5), "y": np.arange(6)},
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "schema-4-pending.itws"
+        tree = manager._workspace_controller.saving._to_datatree()
+        manifest = manager._workspace_controller.saving._workspace_manifest()
+        manifest["schema_version"] = 4
+        manifest["nodes"][0]["data_backing"] = "memory"
+        tree.attrs["imagetool_workspace_schema_version"] = 4
+        tree.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(manifest)
+        payload_attrs = tree["0/imagetool"].attrs
+        payload_attrs.pop("itool_window_state", None)
+        payload_attrs["itool_visible"] = False
+        tree.to_netcdf(fname, engine="h5netcdf", invalid_netcdf=True)
+        tree.close()
+
+        manager.remove_all_tools()
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        wrapper = manager._tool_graph.root_wrappers[0]
+        assert wrapper.pending_workspace_memory_payload == (
+            fname.resolve(),
+            "0/imagetool",
+        )
+
+        manager._workspace_controller._mark_node_state_dirty(wrapper.uid)
+        assert _request_workspace_save_and_wait(qtbot, manager)
+        payload_path = _current_workspace_payload_path(fname)
+        assert wrapper.pending_workspace_memory_payload == (
+            fname.resolve(),
+            payload_path.lstrip("/"),
+        )
+
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "wait_dialog",
+            lambda *args, **kwargs: contextlib.nullcontext(),
+        )
+        assert manager.compact_workspace()
+        operation_errors: list[tuple[object, ...]] = []
+        monkeypatch.setattr(
+            manager,
+            "_show_operation_error",
+            lambda *args: operation_errors.append(args),
+        )
+        pending = manager._workspace_controller.loading.pending
+        assert pending._materialize_pending_workspace_payload(wrapper)
+        assert not operation_errors
+        np.testing.assert_array_equal(wrapper.slicer_area._data.values, data.values)
+
+
 def test_manager_workspace_save_collects_old_generations_in_background(
     qtbot,
     tmp_path,

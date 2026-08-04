@@ -527,6 +527,42 @@ def test_workspace_compaction_does_not_overwrite_external_replacement(
             )
 
 
+def test_workspace_compaction_rejects_replacement_after_identity_check(
+    monkeypatch, tmp_path: pathlib.Path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    external_path = tmp_path / "external.itws"
+    with workspace_store.WorkspaceStore(external_path, create=True) as external_store:
+        external_store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group(
+            "external"
+        )
+        external_store.publish(_manifest("external"))
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
+        store.publish(_manifest("current"))
+        original_require_identity = store._require_path_identity
+
+        def _replace_after_identity_check(expected: tuple[int, int]) -> None:
+            original_require_identity(expected)
+            external_path.replace(path)
+
+        monkeypatch.setattr(
+            store, "_require_path_identity", _replace_after_identity_check
+        )
+
+        with pytest.raises(workspace_store.WorkspaceStoreConflictError):
+            workspace_storage._compact_workspace_store(store)
+
+        assert store.conflicted
+        assert store.current_generation().manifest == _manifest("current")
+        store.close()
+        with workspace_store.WorkspaceStore(path) as replacement_store:
+            assert replacement_store.current_generation().manifest == _manifest(
+                "external"
+            )
+
+
 def test_workspace_compaction_preserves_leased_payloads(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -654,3 +690,60 @@ def test_workspace_store_rejects_replaced_document_path(
         assert workspace_store.WorkspaceStore.active(path) is store
         with pytest.raises(workspace_store.WorkspaceStoreConflictError):
             _ = store.h5_file
+
+
+def test_workspace_store_conflict_keeps_lazy_data_for_save_as(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    replacement = tmp_path / "replacement.itws"
+    recovered = tmp_path / "recovered.itws"
+    dataset = xr.Dataset({"data": ("x", np.arange(5, dtype=np.float64))})
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        workspace_arrays._write_workspace_dataset_group_to_file(
+            store.h5_file,
+            store.object_path("current"),
+            dataset,
+            compression_mode="none",
+        )
+        store.publish(_manifest("current"))
+        opened = workspace_arrays.open_workspace_dataset(
+            path, store.object_path("current"), chunks={}
+        )
+        try:
+            with workspace_store.WorkspaceStore(replacement, create=True) as other:
+                other.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group(
+                    "external"
+                )
+                other.publish(_manifest("external"))
+            replacement.replace(path)
+
+            with pytest.raises(workspace_store.WorkspaceStoreConflictError):
+                store.publish(_manifest("current"))
+
+            assert store.conflicted
+            assert float(opened["data"].sum().compute()) == 10.0
+            plan = workspace_storage._WorkspaceGenerationPlan(
+                manifest=_manifest("current"),
+                objects=(
+                    workspace_storage._WorkspaceObjectWrite(
+                        "current",
+                        source_file=str(path),
+                        source_path=store.object_path("current"),
+                    ),
+                ),
+            )
+            with workspace_store.WorkspaceStore(recovered, create=True) as target:
+                workspace_storage._write_workspace_generation(
+                    target, plan, compression_mode="none"
+                )
+
+            store.switch_path(recovered)
+            assert not store.conflicted
+            assert float(opened["data"].sum().compute()) == 10.0
+        finally:
+            opened.close()
+
+    with workspace_store.WorkspaceStore(path) as replacement_store:
+        assert replacement_store.current_generation().manifest == _manifest("external")

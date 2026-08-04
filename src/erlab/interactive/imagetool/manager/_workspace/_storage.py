@@ -81,7 +81,7 @@ def _workspace_generation_copy_source(
     active_store = workspace_store.WorkspaceStore.active(path)
     if active_store is not None:
         with active_store.lock:
-            yield active_store.h5_file
+            yield active_store.read_h5_file
         return
     workspace_arrays.ensure_workspace_hdf5_filters_registered()
     with workspace_arrays._workspace_file_lock(path), h5py.File(path, "r") as h5_file:
@@ -258,13 +258,23 @@ def _compact_workspace_store(store: workspace_store.WorkspaceStore) -> None:
                     )
                 compacted.flush(durable=True)
 
-            store.replace_from(
-                prepared_path,
-                lambda source, destination: _replace_workspace_file(
+            expected_identity = expected_state[1:3]
+
+            def _publish_compacted_workspace(
+                source: pathlib.Path, destination: pathlib.Path
+            ) -> None:
+                closed_state = _workspace_publication_state(destination)
+                if not closed_state[0] or closed_state[1:3] != expected_identity:
+                    raise _WorkspacePublicationConflictError(destination)
+                _replace_workspace_file(
                     source,
                     destination,
-                    expected_state=_workspace_publication_state(destination),
-                ),
+                    expected_state=closed_state,
+                )
+
+            store.replace_from(
+                prepared_path,
+                _publish_compacted_workspace,
                 before_close=lambda: _require_workspace_publication_state(
                     workspace_path, expected_state
                 ),

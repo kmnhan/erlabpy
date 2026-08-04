@@ -67,6 +67,7 @@ class WorkspaceStore:
         self._handle_generation = 0
         self._h5_file: typing.Any = None
         self._path_identity: tuple[int, int] | None = None
+        self._recovery_path: pathlib.Path | None = None
         try:
             self._open(create=create)
             self._register()
@@ -113,12 +114,20 @@ class WorkspaceStore:
 
     @property
     def h5_file(self) -> typing.Any:
+        """Return the writable document handle."""
         if self.conflicted:
             raise WorkspaceStoreConflictError(
                 f"Workspace store no longer owns its path: {self._path}"
             )
         if self.closed:
             raise RuntimeError("Workspace store is closed")
+        return self._h5_file
+
+    @property
+    def read_h5_file(self) -> typing.Any:
+        """Return the readable session handle, including during recovery."""
+        if self.closed or self._h5_file is None:
+            raise RuntimeError("Workspace store has no readable handle")
         return self._h5_file
 
     @property
@@ -164,6 +173,7 @@ class WorkspaceStore:
         self._handle_generation += 1
         path_stat = self._path.stat()
         self._path_identity = (path_stat.st_dev, path_stat.st_ino)
+        self._recovery_path = None
         self._state = "open"
 
     def _close_handle(self) -> None:
@@ -175,12 +185,29 @@ class WorkspaceStore:
         if h5_file is not None:
             with contextlib.suppress(Exception):
                 h5_file.close()
+        recovery_path = self._recovery_path
+        self._recovery_path = None
+        if recovery_path is not None:
+            with contextlib.suppress(OSError):
+                recovery_path.unlink()
         self._state = "closed"
 
     def _mark_conflicted(self) -> None:
-        """Close the handle and quarantine this path until explicit recovery."""
-        if self._h5_file is not None:
-            self._close_handle()
+        """Quarantine writes while retaining readable session data."""
+        self._state = "conflicted"
+
+    def _use_recovery_source(self, path: pathlib.Path) -> None:
+        """Use a prepared document as the read-only source after a conflict."""
+        self._close_handle()
+        try:
+            self._h5_file = h5py.File(path, "r")
+        except Exception:
+            self._h5_file = None
+            self._state = "conflicted"
+            raise
+        self._handle_generation += 1
+        self._path_identity = None
+        self._recovery_path = path
         self._state = "conflicted"
 
     def _require_path_identity(self, expected: tuple[int, int]) -> None:
@@ -222,24 +249,28 @@ class WorkspaceStore:
         """Open *path* through this store without invalidating store references."""
         new_path = pathlib.Path(path).resolve()
         with self._write_lock, self._lock:
-            old_path = self._path
-            old_conflicted = self.conflicted
-            self._unregister(old_path)
-            self._close_handle()
-            self._path = new_path
-            try:
-                self._open(create=False)
-                self._register()
-            except Exception:
-                self._close_handle()
-                self._path = old_path
-                if old_conflicted:
-                    self._state = "conflicted"
-                    self._register()
-                else:
-                    self._open(create=False)
-                    self._register()
-                raise
+            new_h5_file = h5py.File(new_path, "r+")
+            with contextlib.ExitStack() as cleanup:
+                cleanup.callback(new_h5_file.close)
+                new_stat = new_path.stat()
+                new_identity = (new_stat.st_dev, new_stat.st_ino)
+                with self._active_lock:
+                    existing = self._active.get(self._key(new_path))
+                    if existing is not None and existing is not self:
+                        raise RuntimeError(
+                            f"Workspace already has an active store: {new_path}"
+                        )
+                    old_path = self._path
+                    self._unregister(old_path)
+                    self._close_handle()
+                    self._path = new_path
+                    self._h5_file = new_h5_file
+                    new_h5_file = None
+                    self._handle_generation += 1
+                    self._path_identity = new_identity
+                    self._state = "open"
+                    self._active[self._key(new_path)] = self
+                    cleanup.pop_all()
 
     def reopen(self) -> None:
         """Close and reopen the current file through the same store object."""
@@ -285,7 +316,10 @@ class WorkspaceStore:
                 self._require_path_identity(path_identity)
                 replace(source, self._path)
             except WorkspaceStoreConflictError:
-                self._mark_conflicted()
+                try:
+                    self._use_recovery_source(source)
+                except Exception:
+                    self._mark_conflicted()
                 raise
             except Exception as exc:
                 try:
@@ -336,14 +370,14 @@ class WorkspaceStore:
                 for reader in self._readers
                 if (path := reader.legacy_group_path) not in {None, "/"}
             }
+            h5_file = self.read_h5_file
             return frozenset(
                 path
                 for path in paths
-                if path.strip("/") in self.h5_file
-                and isinstance(self.h5_file[path], h5py.Group)
+                if path.strip("/") in h5_file
+                and isinstance(h5_file[path], h5py.Group)
                 and any(
-                    isinstance(item, h5py.Dataset)
-                    for item in self.h5_file[path].values()
+                    isinstance(item, h5py.Dataset) for item in h5_file[path].values()
                 )
             )
 
@@ -409,7 +443,7 @@ class WorkspaceStore:
     def generations(self) -> tuple[_WorkspaceGeneration, ...]:
         """Return all valid committed generations in ascending order."""
         with self._lock:
-            root = self.h5_file.get(_WORKSPACE_GENERATIONS_GROUP)
+            root = self.read_h5_file.get(_WORKSPACE_GENERATIONS_GROUP)
             if root is None:
                 return ()
             generations: list[_WorkspaceGeneration] = []

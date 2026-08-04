@@ -621,21 +621,48 @@ class _WorkspaceController:
         self,
         workspace_path: str | os.PathLike[str],
         *,
+        manifest: Mapping[str, typing.Any],
         exclude_uids: Collection[str] = frozenset(),
     ) -> None:
+        payload_paths = {
+            uid: payload_path
+            for uid, _kind, payload_path in (
+                workspace_format._workspace_manifest_payload_entries(manifest)
+            )
+        }
         for uid, node in self._manager._tool_graph.nodes.items():
             if uid in exclude_uids:
                 continue
             pending = node.pending_workspace_payload
             kind = node.pending_workspace_payload_kind
-            if pending is None or kind is None:
+            payload_path = payload_paths.get(uid)
+            if pending is None or kind is None or payload_path is None:
                 continue
             node.set_pending_workspace_payload(
                 kind,
                 workspace_path,
-                self.loading._workspace_payload_path_for_uid(workspace_path, node.uid),
+                payload_path,
                 payload_attrs=node.pending_workspace_payload_attrs,
             )
+
+    def _adopt_committed_workspace_generation(
+        self,
+        workspace_path: str | os.PathLike[str],
+        snapshot: workspace_saving._WorkspaceSaveSnapshot,
+        *,
+        manifest: Mapping[str, typing.Any],
+        exclude_uids: Collection[str] = frozenset(),
+    ) -> None:
+        """Apply one committed generation to live manager references."""
+        self._commit_saved_tool_data_references(snapshot)
+        self._repoint_saved_pending_workspace_payloads(
+            workspace_path,
+            manifest=manifest,
+            exclude_uids=exclude_uids,
+        )
+        self._manager._workspace_state.schema_version = (
+            workspace_format._current_workspace_schema_version()
+        )
 
     def _pending_workspace_payload_snapshot(
         self,
@@ -974,9 +1001,6 @@ class _WorkspaceController:
             )
             live_imagetool_snapshot = self._live_imagetool_rebind_snapshot(
                 dask_rebind_uids
-            )
-            self._repoint_saved_pending_workspace_payloads(
-                workspace_path, exclude_uids=skip_live_data_rebind_uids
             )
             if dask_rebind_uids:
                 self.loading._rebind_workspace_backed_imagetools(
@@ -1869,9 +1893,14 @@ class _WorkspaceController:
             self._manager._workspace_state.dirty_generation > snapshot.generation
             and self._manager.is_workspace_modified
         )
-        self._commit_saved_tool_data_references(snapshot)
-        self._manager._workspace_state.schema_version = (
-            workspace_format._current_workspace_schema_version()
+        post_save_uids = frozenset(
+            event.uid for event in post_save_events if event.uid is not None
+        )
+        self._adopt_committed_workspace_generation(
+            workspace_path,
+            snapshot,
+            manifest=snapshot.generation_plan.manifest,
+            exclude_uids=post_save_uids,
         )
         if post_save_events:
             self._restore_workspace_dirty_events(post_save_events)
@@ -2202,10 +2231,6 @@ class _WorkspaceController:
                     on_finished(False)
                 return
 
-            self._commit_saved_tool_data_references(snapshot)
-            self._manager._workspace_state.schema_version = (
-                workspace_format._current_workspace_schema_version()
-            )
             saved_path = access.path
             self._set_workspace_path(
                 saved_path,
@@ -2213,6 +2238,12 @@ class _WorkspaceController:
                 store=new_store,
             )
             access = None
+            self._adopt_committed_workspace_generation(
+                saved_path,
+                snapshot,
+                manifest=snapshot.generation_plan.manifest,
+                exclude_uids=post_save_uids,
+            )
             try:
                 self._refresh_workspace_payload_bindings_after_full_save(
                     saved_path,
