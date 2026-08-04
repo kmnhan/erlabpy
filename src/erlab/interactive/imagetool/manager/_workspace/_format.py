@@ -19,7 +19,7 @@ import typing
 import numpy as np
 import pydantic
 
-import erlab
+from erlab.interactive.imagetool import _serialization
 
 if typing.TYPE_CHECKING:
     import os
@@ -29,7 +29,8 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_WORKSPACE_SCHEMA_VERSION = 4
+_WORKSPACE_SCHEMA_VERSION = 5
+_WORKSPACE_MANIFEST_SCHEMA_VERSION = 4
 _WORKSPACE_LEGACY_SCHEMA_VERSION = 3
 _WORKSPACE_MANIFEST_ATTR = "imagetool_workspace_manifest"
 _WORKSPACE_TRANSACTION_PROTOCOL = "recoverable-delta-v1"
@@ -114,15 +115,33 @@ def _workspace_manifest_payload_entries(
     for entry in _iter_workspace_manifest_node_entries(manifest):
         uid = entry.get("uid")
         kind = entry.get("kind")
-        path = entry.get("path")
+        path = entry.get("payload_path")
+        if not isinstance(path, str):
+            node_path = entry.get("path")
+            path = (
+                f"{node_path}/{kind}"
+                if isinstance(node_path, str) and isinstance(kind, str)
+                else None
+            )
         if (
             isinstance(uid, str)
             and isinstance(kind, str)
             and kind in {"imagetool", "tool"}
             and isinstance(path, str)
         ):
-            entries.append((uid, kind, f"{path}/{kind}"))
+            entries.append((uid, kind, path))
     return entries
+
+
+def _workspace_manifest_payload_path(
+    manifest: Mapping[str, typing.Any] | None,
+    uid: str,
+) -> str | None:
+    """Return the immutable payload path for one manifest node."""
+    for entry_uid, _kind, payload_path in _workspace_manifest_payload_entries(manifest):
+        if entry_uid == uid:
+            return payload_path
+    return None
 
 
 def _decode_workspace_attr_text(value: object) -> str | None:
@@ -134,105 +153,14 @@ def _decode_workspace_attr_text(value: object) -> str | None:
     return None
 
 
-def _workspace_delta_save_count_from_attrs(
-    attrs: Mapping[typing.Any, typing.Any],
-) -> int:
-    value = _workspace_manifest_from_attrs(attrs).get("delta_save_count", 0)
-    with contextlib.suppress(TypeError, ValueError):
-        return max(0, int(value))
-    return 0
-
-
-def _workspace_manifest_nonnegative_int(
-    manifest: Mapping[str, typing.Any], key: str
-) -> int:
-    value = manifest.get(key, 0)
-    with contextlib.suppress(TypeError, ValueError):
-        return max(0, int(value))
-    return 0
-
-
-def _workspace_manifest_repack_estimate(
-    manifest: Mapping[str, typing.Any] | None,
-    *,
-    delta_save_count: int,
-) -> tuple[int, int, bool]:
-    if delta_save_count <= 0:
-        return 0, 0, True
-    if manifest is None:
-        return 0, 0, False
-    has_estimate = (
-        "estimated_obsolete_bytes" in manifest and "replacement_delta_count" in manifest
-    )
-    return (
-        _workspace_manifest_nonnegative_int(manifest, "estimated_obsolete_bytes"),
-        _workspace_manifest_nonnegative_int(manifest, "replacement_delta_count"),
-        has_estimate,
-    )
-
-
 def _workspace_file_metadata_from_attrs(
     attrs: Mapping[typing.Any, typing.Any],
-) -> tuple[int, int, dict[str, typing.Any] | None]:
+) -> tuple[int, dict[str, typing.Any] | None]:
     schema_version = int(attrs.get("imagetool_workspace_schema_version", 1))
     manifest = None
-    if schema_version >= _WORKSPACE_SCHEMA_VERSION:
+    if schema_version >= _WORKSPACE_MANIFEST_SCHEMA_VERSION:
         manifest = _workspace_manifest_from_attrs(attrs) or None
-    return schema_version, _workspace_delta_save_count_from_attrs(attrs), manifest
-
-
-def _compacted_workspace_root_attrs(
-    attrs: Mapping[typing.Any, typing.Any],
-) -> dict[str, typing.Any]:
-    schema_version, _delta_save_count, manifest = _workspace_file_metadata_from_attrs(
-        attrs
-    )
-    if schema_version != _WORKSPACE_SCHEMA_VERSION or manifest is None:
-        raise ValueError(
-            "File-level workspace repack requires current workspace schema"
-        )
-    compacted_manifest = dict(manifest)
-    compacted_manifest["schema_version"] = _WORKSPACE_SCHEMA_VERSION
-    compacted_manifest["erlab_version"] = erlab.__version__
-    compacted_manifest.pop("delta_save_count", None)
-    compacted_manifest.pop("transaction_protocol", None)
-    compacted_manifest.pop("estimated_obsolete_bytes", None)
-    compacted_manifest.pop("replacement_delta_count", None)
-
-    root_attrs = {str(key): value for key, value in attrs.items()}
-    root_attrs["imagetool_workspace_schema_version"] = _WORKSPACE_SCHEMA_VERSION
-    root_attrs[_WORKSPACE_MANIFEST_ATTR] = json.dumps(compacted_manifest)
-    root_attrs["erlab_version"] = erlab.__version__
-    return root_attrs
-
-
-def _workspace_root_attrs_with_repack_estimate(
-    attrs: Mapping[typing.Any, typing.Any],
-    *,
-    estimated_obsolete_bytes: int,
-    replacement_delta_count: int,
-    repack_estimate_known: bool = True,
-) -> dict[str, typing.Any]:
-    schema_version, delta_save_count, manifest = _workspace_file_metadata_from_attrs(
-        attrs
-    )
-    if schema_version != _WORKSPACE_SCHEMA_VERSION or manifest is None:
-        return {str(key): value for key, value in attrs.items()}
-    updated_manifest = dict(manifest)
-    if delta_save_count > 0 and repack_estimate_known:
-        updated_manifest["estimated_obsolete_bytes"] = max(
-            0, int(estimated_obsolete_bytes)
-        )
-        updated_manifest["replacement_delta_count"] = max(
-            0, int(replacement_delta_count)
-        )
-    else:
-        updated_manifest.pop("estimated_obsolete_bytes", None)
-        updated_manifest.pop("replacement_delta_count", None)
-
-    root_attrs = {str(key): value for key, value in attrs.items()}
-    root_attrs[_WORKSPACE_MANIFEST_ATTR] = json.dumps(updated_manifest)
-    return root_attrs
+    return schema_version, manifest
 
 
 def _current_workspace_schema_version() -> int:
@@ -260,17 +188,10 @@ def _workspace_schema_requires_conversion(schema_version: int) -> bool:
     return schema_version < _WORKSPACE_LEGACY_SCHEMA_VERSION
 
 
-def _workspace_schema_requires_full_save(schema_version: int) -> bool:
-    return (
-        _WORKSPACE_LEGACY_SCHEMA_VERSION <= schema_version < _WORKSPACE_SCHEMA_VERSION
-    )
-
-
-def _workspace_root_attrs_payload(
+def _workspace_manifest_payload(
     *,
     root_order: Iterable[typing.Any],
     nodes: Iterable[Mapping[str, typing.Any]],
-    delta_save_count: int,
     erlab_version: str,
     workspace_link_id: str | None = None,
     manager_layout: Mapping[str, typing.Any] | None = None,
@@ -278,9 +199,6 @@ def _workspace_root_attrs_payload(
     standalone_apps: Mapping[str, typing.Any] | None = None,
     option_overrides: Mapping[str, typing.Any] | None = None,
     acquisition_context: Mapping[str, typing.Any] | None = None,
-    estimated_obsolete_bytes: int = 0,
-    replacement_delta_count: int = 0,
-    repack_estimate_known: bool = True,
 ) -> dict[str, typing.Any]:
     manifest: dict[str, typing.Any] = {
         "schema_version": _WORKSPACE_SCHEMA_VERSION,
@@ -308,28 +226,55 @@ def _workspace_root_attrs_payload(
     if acquisition_context is not None:
         # Context defaults are workspace-scoped and independent of loader choices.
         manifest["acquisition_context"] = dict(acquisition_context)
-    if delta_save_count > 0:
-        # Marks files written through the recoverable in-place delta-save protocol.
-        manifest["transaction_protocol"] = _WORKSPACE_TRANSACTION_PROTOCOL
-        manifest["delta_save_count"] = int(delta_save_count)
-        if repack_estimate_known:
-            manifest["estimated_obsolete_bytes"] = max(0, int(estimated_obsolete_bytes))
-            manifest["replacement_delta_count"] = max(0, int(replacement_delta_count))
-    return {
-        "imagetool_workspace_schema_version": _WORKSPACE_SCHEMA_VERSION,
-        _WORKSPACE_MANIFEST_ATTR: json.dumps(manifest),
-        "erlab_version": erlab_version,
-    }
+    return manifest
 
 
 def _is_workspace_internal_group_name(name: typing.Any) -> bool:
     return str(name).startswith(
         (
+            "__itws_objects",
+            "__itws_staging",
+            "__itws_generations",
             _WORKSPACE_PENDING_GROUP_PREFIX,
             _WORKSPACE_BACKUP_GROUP_PREFIX,
             _WORKSPACE_TRANSACTION_GROUP_PREFIX,
         )
     )
+
+
+def _workspace_manifest_attrs(
+    attrs: Mapping[typing.Any, typing.Any],
+) -> list[list[dict[str, typing.Any]]]:
+    """Encode dataset attributes for storage inside a JSON manifest."""
+    encoded: list[list[dict[str, typing.Any]]] = []
+    for key, value in attrs.items():
+        try:
+            encoded.append(
+                [_workspace_encode_attr_key(key), _workspace_encode_attr_value(value)]
+            )
+        except TypeError:
+            logger.warning(
+                "Dropping workspace attribute %r with unsupported value type %s",
+                key,
+                type(value).__name__,
+            )
+    return encoded
+
+
+def _restore_workspace_manifest_attrs(
+    payload: object,
+) -> dict[typing.Hashable, typing.Any]:
+    """Decode dataset attributes stored in a generation manifest."""
+    if not isinstance(payload, list):
+        raise TypeError("Workspace manifest attributes must be a list")
+    attrs: dict[typing.Hashable, typing.Any] = {}
+    for item in payload:
+        if not isinstance(item, list) or len(item) != 2:
+            raise TypeError("Workspace manifest attribute entry is invalid")
+        attrs[_workspace_decode_attr_key(item[0])] = _workspace_decode_attr_value(
+            item[1]
+        )
+    return attrs
 
 
 def _workspace_root_keys(
@@ -687,4 +632,4 @@ def _restore_workspace_dataset_attrs(ds: xr.Dataset) -> xr.Dataset:
     restored.attrs = _restore_workspace_serialized_attrs(restored.attrs)
     for variable in restored.variables.values():
         variable.attrs = _restore_workspace_serialized_attrs(variable.attrs)
-    return restored
+    return _serialization.restore_private_coords(restored)

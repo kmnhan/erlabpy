@@ -40,7 +40,6 @@ class _WorkspaceStateSnapshot(typing.TypedDict):
     path: pathlib.Path | None
     document_id: str
     link_id: str
-    needs_full_save: bool
     node_uid_counter: int
     structure_modified: bool
     dirty_added: frozenset[str]
@@ -56,10 +55,6 @@ class _WorkspaceStateSnapshot(typing.TypedDict):
     metadata_editor_layout: dict[str, typing.Any]
     dirty_generation: int
     dirty_events: tuple[_WorkspaceDirtyEvent, ...]
-    delta_save_count: int
-    estimated_obsolete_bytes: int
-    replacement_delta_count: int
-    repack_estimate_known: bool
     schema_version: int
 
 
@@ -84,14 +79,9 @@ class _ManagerWorkspaceState:
         self.context_modified: bool = False
         self.acquisition_context: dict[str, typing.Any] = {}
         self.metadata_editor_layout: dict[str, typing.Any] = {}
-        self.needs_full_save: bool = False
         self.dirty_generation: int = 0
         self.dirty_events: list[_WorkspaceDirtyEvent] = []
         self.save_in_progress: bool = False
-        self.delta_save_count: int = 0
-        self.estimated_obsolete_bytes: int = 0
-        self.replacement_delta_count: int = 0
-        self.repack_estimate_known: bool = True
         self.schema_version: int = _current_workspace_schema_version()
         self.lock: QtCore.QLockFile | None = None
         self.closing_document: bool = False
@@ -192,22 +182,6 @@ class _ManagerWorkspaceState:
         self.structure_reasons.clear()
         self.dirty_events.clear()
 
-    def reset_repack_estimate(self) -> None:
-        self.estimated_obsolete_bytes = 0
-        self.replacement_delta_count = 0
-        self.repack_estimate_known = True
-
-    def set_repack_estimate(
-        self,
-        *,
-        estimated_obsolete_bytes: int,
-        replacement_delta_count: int,
-        known: bool = True,
-    ) -> None:
-        self.estimated_obsolete_bytes = max(0, int(estimated_obsolete_bytes))
-        self.replacement_delta_count = max(0, int(replacement_delta_count))
-        self.repack_estimate_known = known
-
     def advance_document_identity(self) -> None:
         self.document_id = uuid.uuid4().hex
 
@@ -224,7 +198,6 @@ class _ManagerWorkspaceState:
             "path": self.path,
             "document_id": self.document_id,
             "link_id": self.link_id,
-            "needs_full_save": self.needs_full_save,
             "node_uid_counter": node_uid_counter,
             "structure_modified": self.structure_modified,
             "dirty_added": frozenset(self.dirty_added),
@@ -240,10 +213,6 @@ class _ManagerWorkspaceState:
             "metadata_editor_layout": copy.deepcopy(self.metadata_editor_layout),
             "dirty_generation": self.dirty_generation,
             "dirty_events": tuple(self.dirty_events),
-            "delta_save_count": self.delta_save_count,
-            "estimated_obsolete_bytes": self.estimated_obsolete_bytes,
-            "replacement_delta_count": self.replacement_delta_count,
-            "repack_estimate_known": self.repack_estimate_known,
             "schema_version": self.schema_version,
         }
 
@@ -251,7 +220,6 @@ class _ManagerWorkspaceState:
         self.path = snapshot["path"]
         self.document_id = snapshot["document_id"]
         self.link_id = snapshot["link_id"]
-        self.needs_full_save = snapshot["needs_full_save"]
         self.structure_modified = snapshot["structure_modified"]
         self.dirty_added = set(snapshot["dirty_added"])
         self.dirty_data = set(snapshot["dirty_data"])
@@ -266,9 +234,5 @@ class _ManagerWorkspaceState:
         self.metadata_editor_layout = copy.deepcopy(snapshot["metadata_editor_layout"])
         self.dirty_generation = snapshot["dirty_generation"]
         self.dirty_events = list(snapshot["dirty_events"])
-        self.delta_save_count = snapshot["delta_save_count"]
-        self.estimated_obsolete_bytes = snapshot["estimated_obsolete_bytes"]
-        self.replacement_delta_count = snapshot["replacement_delta_count"]
-        self.repack_estimate_known = snapshot["repack_estimate_known"]
         self.schema_version = snapshot["schema_version"]
         return self.dirty_added | self.dirty_data | self.dirty_state

@@ -37,6 +37,7 @@ from tests.interactive.imagetool.manager.helpers import (
     trigger_menu_action,
 )
 from tests.interactive.imagetool.manager.workspace._support import (
+    _current_workspace_payload_path,
     _request_workspace_save_as_and_wait,
 )
 
@@ -960,9 +961,7 @@ def test_manager_workspace_restores_figure_preview_and_live_details(
         figure_uid = manager.add_figuretool(figure_tool, show=False)
         assert figure_tool.refresh_preview_pixmap(allow_offscreen=True) is not None
 
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
@@ -1527,12 +1526,10 @@ def test_manager_workspace_figure_sources_save_as_references(
             )
 
             fname = tmp_path / "figure-source-references.itws"
-            manager._workspace_controller.saving._save_workspace_document(
-                fname, force_full=True
-            )
+            manager._workspace_controller.saving._save_workspace_document(fname)
             saved_ds = workspace_arrays._read_workspace_dataset_group_h5py(
                 fname,
-                f"figures/{figure_uid}/tool",
+                _current_workspace_payload_path(fname, f"figures/{figure_uid}"),
                 preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
             )
             assert saved_ds is not None
@@ -1620,16 +1617,41 @@ def test_manager_figure_workspace_reference_helper_edges(
                 current_reference, data
             )
 
+        saved_references = {"source": current_reference}
         snapshot = workspace_saving._WorkspaceSaveSnapshot(
             generation=0,
-            root_attrs={},
-            delta_save_count=0,
+            generation_plan=workspace_storage._WorkspaceGenerationPlan(
+                manifest={"schema_version": 5, "nodes": []},
+                objects=(),
+            ),
+            compression_mode="none",
             serialized_tool_data_references=(
-                ("missing", {}),
-                (root_node.uid, {}),
+                ("missing", "missing-token", {}),
+                (root_node.uid, root_node.snapshot_token, {}),
+                (figure_uid, figure_node.snapshot_token, saved_references),
             ),
         )
         controller._commit_saved_tool_data_references(snapshot)
+        assert figure_node._workspace_tool_data_references == saved_references
+
+        snapshot.serialized_tool_data_references = ((figure_uid, stale_revision, {}),)
+        controller._commit_saved_tool_data_references(snapshot)
+        assert figure_node._workspace_tool_data_references == saved_references
+
+        snapshot.serialized_tool_data_references = (
+            (
+                figure_uid,
+                figure_node.snapshot_token,
+                {
+                    "source": {
+                        **current_reference,
+                        "node_snapshot_token": stale_revision,
+                    }
+                },
+            ),
+        )
+        controller._commit_saved_tool_data_references(snapshot)
+        assert figure_node._workspace_tool_data_references == saved_references
 
         invalid_tool_dataset = xr.Dataset(
             attrs={"manager_node_kind": "tool", "manager_node_uid": ""}
@@ -1661,7 +1683,7 @@ def test_manager_figure_workspace_reference_helper_edges(
         )
 
         workspace_path = tmp_path / "reference-helper-edges.itws"
-        saver._save_workspace_document(workspace_path, force_full=True)
+        saver._save_workspace_document(workspace_path)
         adopt_workspace_path(manager, workspace_path)
         reference_datasets: dict[tuple[Path, str], xr.Dataset] = {}
         try:
@@ -1752,7 +1774,7 @@ def test_manager_workspace_embeds_figure_snapshot_after_source_transpose(
         assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
         saved_figure = workspace_arrays._read_workspace_dataset_group_h5py(
             workspace_path,
-            f"figures/{figure_uid}/tool",
+            _current_workspace_payload_path(workspace_path, f"figures/{figure_uid}"),
             preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
         )
         assert saved_figure is not None
@@ -1770,12 +1792,10 @@ def test_manager_workspace_embeds_figure_snapshot_after_source_transpose(
         assert root_node.snapshot_token != source_state.node_snapshot_token
         assert figure_tool.source_data()[primary_source].dims == data.dims
 
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=False
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
         rewritten_figure = workspace_arrays._read_workspace_dataset_group_h5py(
             workspace_path,
-            f"figures/{figure_uid}/tool",
+            _current_workspace_payload_path(workspace_path, f"figures/{figure_uid}"),
             preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
         )
         assert rewritten_figure is not None
@@ -1837,9 +1857,7 @@ def test_manager_failed_save_keeps_last_saved_figure_references(
         figure_node = manager._child_node(figure_uid)
 
         workspace_path = tmp_path / "failed-figure-source-transpose.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
         adopt_workspace_path(manager, workspace_path)
         saved_references = dict(figure_node._workspace_tool_data_references)
         assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME in saved_references
@@ -1852,21 +1870,20 @@ def test_manager_failed_save_keeps_last_saved_figure_references(
 
         monkeypatch.setattr(
             workspace_storage,
-            "_write_workspace_transaction_file",
+            "_write_workspace_generation",
             _raise_write_error,
         )
 
         with pytest.raises(RuntimeError, match="write failed"):
             manager._workspace_controller.saving._save_workspace_document(
-                workspace_path, force_full=False
+                workspace_path
             )
 
         assert figure_node._workspace_tool_data_references == saved_references
 
 
-def test_manager_full_save_fallback_preserves_figure_source_snapshot(
+def test_manager_save_as_preserves_figure_source_snapshot(
     qtbot,
-    monkeypatch,
     tmp_path: Path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -1894,26 +1911,17 @@ def test_manager_full_save_fallback_preserves_figure_source_snapshot(
         source_name = figure.tool_status.primary_source
 
         source_path = tmp_path / "full-save-source.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            source_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(source_path)
         adopt_workspace_path(manager, source_path)
         manager._workspace_controller._mark_workspace_clean()
 
         root.slicer_area.transpose_main_image()
-        monkeypatch.setattr(
-            manager._workspace_controller.saving,
-            "_workspace_full_save_manifest_first_snapshot",
-            lambda *_args, **_kwargs: None,
-        )
         target_path = tmp_path / "full-save-target.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            target_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(target_path)
 
         saved_figure = workspace_arrays._read_workspace_dataset_group_h5py(
             target_path,
-            f"figures/{figure_uid}/tool",
+            _current_workspace_payload_path(target_path, f"figures/{figure_uid}"),
             preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
         )
         assert saved_figure is not None
@@ -1934,7 +1942,7 @@ def test_manager_full_save_fallback_preserves_figure_source_snapshot(
         xr.testing.assert_identical(restored.source_data()[source_name], data)
 
 
-def test_manager_incremental_save_preserves_pending_figure_snapshot(
+def test_manager_generation_save_preserves_pending_figure_snapshot(
     qtbot,
     tmp_path: Path,
     manager_context: Callable[
@@ -1956,9 +1964,7 @@ def test_manager_incremental_save_preserves_pending_figure_snapshot(
         assert figure_uid is not None
 
         workspace_path = tmp_path / "pending-figure-source-transpose.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,
@@ -1978,12 +1984,10 @@ def test_manager_incremental_save_preserves_pending_figure_snapshot(
         source_node.slicer_area.transpose_main_image()
         assert source_node.data_for_role("displayed").dims == ("eV", "kx")
 
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=False
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
         rewritten_figure = workspace_arrays._read_workspace_dataset_group_h5py(
             workspace_path,
-            f"figures/{figure_uid}/tool",
+            _current_workspace_payload_path(workspace_path, f"figures/{figure_uid}"),
             preferred_data_name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME,
         )
         assert rewritten_figure is not None
@@ -2033,12 +2037,11 @@ def test_manager_pending_figure_source_reference_uses_saved_imagetool_dim_order(
         assert figure_uid is not None
 
         workspace_path = tmp_path / "pending-figure-source-order.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+        payload_path = _current_workspace_payload_path(workspace_path)
         saved_ds = workspace_arrays._read_workspace_dataset_group_h5py(
             workspace_path,
-            "0/imagetool",
+            payload_path,
             preferred_data_name=_ITOOL_DATA_NAME,
         )
         assert saved_ds is not None
@@ -2047,9 +2050,9 @@ def test_manager_pending_figure_source_reference_uses_saved_imagetool_dim_order(
             attrs=dict(saved_ds.attrs),
         )
         with h5py.File(workspace_path, "r+") as h5_file:
-            del h5_file["0/imagetool"]
+            del h5_file[payload_path]
         assert workspace_arrays._write_workspace_dataset_group_h5py(
-            workspace_path, "0/imagetool", stored
+            workspace_path, payload_path, stored
         )
 
         assert manager._workspace_controller.loading._load_workspace_file(
@@ -2074,8 +2077,9 @@ def test_manager_pending_figure_source_reference_uses_saved_imagetool_dim_order(
         assert source_node.pending_workspace_memory_payload is not None
 
 
-def test_manager_workspace_delta_snapshot_rewrites_stale_figure_source_references(
+def test_manager_workspace_generation_rewrites_stale_figure_source_references(
     qtbot,
+    tmp_path: Path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -2131,17 +2135,26 @@ def test_manager_workspace_delta_snapshot_rewrites_stale_figure_source_reference
         )
         manager._mark_workspace_layout_dirty()
 
-        snapshot = manager._workspace_controller.saving._workspace_delta_save_snapshot(
-            manager._workspace_state.dirty_generation,
-            manager._workspace_controller.saving._workspace_root_attrs_payload(
-                delta_save_count=1
-            ),
-            1,
+        snapshot = (
+            manager._workspace_controller.saving._workspace_generation_save_snapshot(
+                manager._workspace_state.dirty_generation,
+                fname=tmp_path / "snapshot.itws",
+            )
         )
         try:
-            rewrite_map = dict(snapshot.rewrite_groups)
-            constructor = rewrite_map[f"figures/{figure_uid}"]
-            rewritten_ds = constructor[f"figures/{figure_uid}/tool"]
+            figure_entry = next(
+                entry
+                for entry in snapshot.generation_plan.manifest["nodes"]
+                if entry["uid"] == figure_uid
+            )
+            object_id = figure_entry["payload_object_id"]
+            object_write = next(
+                item
+                for item in snapshot.generation_plan.objects
+                if item.object_id == object_id
+            )
+            rewritten_ds = object_write.dataset
+            assert rewritten_ds is not None
             rewritten_refs = json.loads(
                 rewritten_ds.attrs[erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR]
             )

@@ -22,6 +22,7 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._pending as workspace_pending
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
+import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
 from erlab.interactive import _qt_state
@@ -189,7 +190,7 @@ def _workspace_payload_window_visible_h5py(
     *,
     default: bool = True,
 ) -> bool | None:
-    with workspace_arrays._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
+    with workspace_arrays._open_workspace_h5_file_for_read(fname) as h5_file:
         obj = h5_file.get(payload_path.strip("/"))
         if not isinstance(obj, h5py.Group):
             return None
@@ -203,7 +204,7 @@ def _workspace_payload_attrs_h5py(
     fname: str | os.PathLike[str],
     payload_path: str,
 ) -> dict[typing.Hashable, typing.Any] | None:
-    with workspace_arrays._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
+    with workspace_arrays._open_workspace_h5_file_for_read(fname) as h5_file:
         obj = h5_file.get(payload_path.strip("/"))
         if not isinstance(obj, h5py.Group):
             return None
@@ -472,7 +473,7 @@ class _WorkspaceLoader:
         )
         if workspace_path is None:
             return None
-        payload_path = self._controller.saving._workspace_payload_path(node.uid)
+        payload_path = self._workspace_payload_path_for_uid(workspace_path, node.uid)
         opened = self._workspace_imagetool_reference_dataset_at(
             workspace_path,
             payload_path,
@@ -749,7 +750,7 @@ class _WorkspaceLoader:
     def _workspace_file_can_restore_replace_backup(self, path: pathlib.Path) -> bool:
         try:
             root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(path)
-            schema_version, _delta_save_count, manifest = (
+            schema_version, manifest = (
                 workspace_format._workspace_file_metadata_from_attrs(root_attrs)
             )
         except Exception:
@@ -1542,14 +1543,27 @@ class _WorkspaceLoader:
         def _load_dataset(
             payload_path: str, *, entry: Mapping[str, typing.Any], imagetool: bool
         ) -> tuple[xr.Dataset, tuple[str | os.PathLike[str], str] | None]:
+            manifest_attrs = entry.get("payload_attrs")
+            current_attrs = (
+                workspace_format._restore_workspace_manifest_attrs(manifest_attrs)
+                if manifest_attrs is not None
+                else None
+            )
+            prefix = "itool" if imagetool else "tool"
+            if current_attrs is None:
+                window_visible = _workspace_payload_window_visible_h5py(
+                    fname, payload_path, prefix
+                )
+            else:
+                window_visible = _workspace_dataset_window_visible(
+                    xr.Dataset(attrs=current_attrs), prefix
+                )
             if imagetool and entry.get("data_backing") == "dask":
                 return _load_xarray_dataset(payload_path, chunks={}, load=False), None
             if (
                 imagetool
                 and entry.get("data_backing") == "memory"
-                and not _workspace_payload_window_visible_h5py(
-                    fname, payload_path, "itool"
-                )
+                and not window_visible
             ):
                 try:
                     ds = self._read_workspace_imagetool_payload_dataset(
@@ -1562,11 +1576,8 @@ class _WorkspaceLoader:
                         exc_info=True,
                     )
                 else:
-                    if not _workspace_dataset_window_visible(ds, "itool"):
-                        return ds, (fname, payload_path)
-            if not imagetool and not _workspace_payload_window_visible_h5py(
-                fname, payload_path, "tool"
-            ):
+                    return ds, (fname, payload_path)
+            if not imagetool and not window_visible:
                 try:
                     attrs = _workspace_payload_attrs_h5py(fname, payload_path)
                 except Exception:
@@ -1605,10 +1616,18 @@ class _WorkspaceLoader:
             entry = entries_by_path[path]
             kind = typing.cast("str", entry["kind"])
             is_imagetool = kind == "imagetool"
-            payload_path = f"{path}/{'imagetool' if is_imagetool else 'tool'}"
+            payload_path = entry.get("payload_path")
+            if not isinstance(payload_path, str):
+                payload_path = f"{path}/{'imagetool' if is_imagetool else 'tool'}"
             with profiler.stage("payload read"):
                 ds, pending_payload = _load_dataset(
                     payload_path, entry=entry, imagetool=is_imagetool
+                )
+            manifest_attrs = entry.get("payload_attrs")
+            if manifest_attrs is not None:
+                ds = ds.copy(deep=False)
+                ds.attrs = workspace_format._restore_workspace_manifest_attrs(
+                    manifest_attrs
                 )
             if is_imagetool:
                 target = self._load_workspace_imagetool_dataset(
@@ -1748,7 +1767,7 @@ class _WorkspaceLoader:
             self._manager.remove_all_tools()
             self._controller._drain_workspace_restore_events()
             root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(path)
-            schema_version, _delta_save_count, manifest = (
+            schema_version, manifest = (
                 workspace_format._workspace_file_metadata_from_attrs(root_attrs)
             )
             if (
@@ -1801,7 +1820,7 @@ class _WorkspaceLoader:
             if not self._is_datatree_workspace(tree):
                 raise ValueError("Not a valid workspace file")
 
-            schema_version, _delta_save_count, manifest = (
+            schema_version, manifest = (
                 workspace_format._workspace_file_metadata_from_attrs(tree.attrs)
             )
             match schema_version:
@@ -2137,9 +2156,10 @@ class _WorkspaceLoader:
         chunks: typing.Any,
     ) -> xr.DataArray:
         ds = workspace_arrays.open_workspace_dataset(
-            fname, self._controller.saving._workspace_payload_path(uid), chunks=chunks
+            fname, self._workspace_payload_path_for_uid(fname, uid), chunks=chunks
         )
         try:
+            ds = workspace_format._restore_workspace_dataset_attrs(ds)
             data_name: Hashable
             if _ITOOL_DATA_NAME in ds.data_vars:
                 data_name = _ITOOL_DATA_NAME
@@ -2150,6 +2170,31 @@ class _WorkspaceLoader:
             return ds[data_name].rename(name).copy(deep=False)
         finally:
             ds.close()
+
+    def _workspace_payload_path_for_uid(
+        self,
+        fname: str | os.PathLike[str],
+        uid: str,
+    ) -> str:
+        manifest = None
+        store = getattr(self._controller, "_workspace_store", None)
+        if (
+            store is not None
+            and not store.closed
+            and store.path == pathlib.Path(fname).resolve()
+        ):
+            with contextlib.suppress(Exception):
+                manifest = store.current_generation().manifest
+        if manifest is None:
+            with contextlib.suppress(Exception):
+                attrs = workspace_arrays._read_workspace_root_attrs_h5py(fname)
+                _schema, manifest = (
+                    workspace_format._workspace_file_metadata_from_attrs(attrs)
+                )
+        payload_path = workspace_format._workspace_manifest_payload_path(manifest, uid)
+        if payload_path is not None:
+            return payload_path
+        return self._controller.saving._workspace_payload_path(uid)
 
     def _workspace_data_backing_snapshot(
         self,
@@ -2269,6 +2314,7 @@ class _WorkspaceLoader:
         self._missing_workspace_colormaps = []
         self._skipped_workspace_nodes = []
         profiler = _WorkspaceLoadProfiler(fname)
+        schema_version = 1
         try:
             with self._controller._workspace_document_access_context(fname) as access:
                 with profiler.stage("metadata read"):
@@ -2278,7 +2324,7 @@ class _WorkspaceLoader:
                         root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(
                             access.path
                         )
-                        schema_version, delta_save_count, manifest = (
+                        schema_version, manifest = (
                             workspace_format._workspace_file_metadata_from_attrs(
                                 root_attrs
                             )
@@ -2288,95 +2334,120 @@ class _WorkspaceLoader:
                         == workspace_format._current_workspace_schema_version()
                         and manifest is not None
                     ):
-                        selected_paths: set[str] | None = None
-                        if select:
-                            with profiler.stage("selection dialog setup"):
-                                dialog = _ChooseFromWorkspaceManifestDialog(
-                                    self._manager, manifest
-                                )
-                            if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-                                return self._finish_workspace_file_load(False)
-                            selected_paths = dialog.selected_paths()
-                        loaded = self._from_h5py_workspace_file(
-                            access.path,
-                            manifest,
-                            replace=replace,
-                            mark_dirty=mark_dirty,
-                            selected_paths=selected_paths,
-                            profiler=profiler,
-                        )
-                        if loaded and associate:
-                            (
-                                estimated_obsolete_bytes,
-                                replacement_delta_count,
-                                repack_estimate_known,
-                            ) = workspace_format._workspace_manifest_repack_estimate(
-                                manifest,
-                                delta_save_count=delta_save_count,
+                        load_store = None
+                        owns_load_store = False
+                        store_adopted = False
+                        if associate:
+                            load_store = workspace_store.WorkspaceStore.active(
+                                access.path
                             )
-                            self._controller._associate_loaded_workspace_file(
+                            if load_store is None:
+                                load_store = workspace_store.WorkspaceStore(access.path)
+                                owns_load_store = True
+                        try:
+                            selected_paths: set[str] | None = None
+                            if select:
+                                with profiler.stage("selection dialog setup"):
+                                    dialog = _ChooseFromWorkspaceManifestDialog(
+                                        self._manager, manifest
+                                    )
+                                if (
+                                    dialog.exec()
+                                    != QtWidgets.QDialog.DialogCode.Accepted
+                                ):
+                                    return self._finish_workspace_file_load(False)
+                                selected_paths = dialog.selected_paths()
+                            loaded = self._from_h5py_workspace_file(
                                 access.path,
-                                schema_version,
-                                native=native,
-                                delta_save_count=delta_save_count,
-                                estimated_obsolete_bytes=estimated_obsolete_bytes,
-                                replacement_delta_count=replacement_delta_count,
-                                repack_estimate_known=repack_estimate_known,
-                                workspace_access=access,
-                                rebind_data=False,
+                                manifest,
+                                replace=replace,
+                                mark_dirty=mark_dirty,
+                                selected_paths=selected_paths,
+                                profiler=profiler,
                             )
-                            if replace:
-                                self._restore_workspace_option_overrides(manifest)
-                                self._restore_workspace_loader_state(
-                                    manifest, apply_explorer=False
+                            if loaded and associate:
+                                self._controller._associate_loaded_workspace_file(
+                                    access.path,
+                                    schema_version,
+                                    native=native,
+                                    workspace_access=access,
+                                    rebind_data=False,
                                 )
-                        return self._finish_workspace_file_load(loaded)
+                                store_adopted = True
+                                if replace:
+                                    self._restore_workspace_option_overrides(manifest)
+                                    self._restore_workspace_loader_state(
+                                        manifest, apply_explorer=False
+                                    )
+                            return self._finish_workspace_file_load(loaded)
+                        finally:
+                            if (
+                                owns_load_store
+                                and not store_adopted
+                                and load_store is not None
+                            ):
+                                load_store.close()
                 except Exception:
+                    if (
+                        schema_version
+                        == workspace_format._current_workspace_schema_version()
+                    ):
+                        raise
                     logger.debug(
                         "Failed h5py workspace load path; falling back to DataTree",
                         exc_info=True,
                     )
-                with profiler.stage("metadata read"):
-                    tree = workspace_arrays.open_workspace_datatree(
-                        access.path, chunks=None
-                    )
-                    schema_version, delta_save_count, manifest = (
-                        workspace_format._workspace_file_metadata_from_attrs(tree.attrs)
-                    )
-                loaded = self._from_datatree(
-                    tree,
-                    replace=replace,
-                    mark_dirty=mark_dirty,
-                    select=select,
-                    workspace_file_path=access.path,
-                    profiler=profiler,
-                )
-                if loaded and associate:
-                    (
-                        estimated_obsolete_bytes,
-                        replacement_delta_count,
-                        repack_estimate_known,
-                    ) = workspace_format._workspace_manifest_repack_estimate(
-                        manifest,
-                        delta_save_count=delta_save_count,
-                    )
-                    self._controller._associate_loaded_workspace_file(
-                        access.path,
-                        schema_version,
-                        native=native,
-                        delta_save_count=delta_save_count,
-                        estimated_obsolete_bytes=estimated_obsolete_bytes,
-                        replacement_delta_count=replacement_delta_count,
-                        repack_estimate_known=repack_estimate_known,
-                        workspace_access=access,
-                        rebind_data=False,
-                    )
-                    if replace:
-                        self._restore_workspace_option_overrides(manifest)
-                        self._restore_workspace_loader_state(
-                            manifest, apply_explorer=False
+                fallback_store = None
+                owns_fallback_store = False
+                fallback_store_adopted = False
+                if (
+                    associate
+                    and schema_version
+                    >= workspace_format._WORKSPACE_LEGACY_SCHEMA_VERSION
+                ):
+                    fallback_store = workspace_store.WorkspaceStore.active(access.path)
+                    if fallback_store is None:
+                        fallback_store = workspace_store.WorkspaceStore(access.path)
+                        owns_fallback_store = True
+                try:
+                    with profiler.stage("metadata read"):
+                        tree = workspace_arrays.open_workspace_datatree(
+                            access.path, chunks=None
                         )
-                return self._finish_workspace_file_load(loaded)
+                        schema_version, manifest = (
+                            workspace_format._workspace_file_metadata_from_attrs(
+                                tree.attrs
+                            )
+                        )
+                    loaded = self._from_datatree(
+                        tree,
+                        replace=replace,
+                        mark_dirty=mark_dirty,
+                        select=select,
+                        workspace_file_path=access.path,
+                        profiler=profiler,
+                    )
+                    if loaded and associate:
+                        self._controller._associate_loaded_workspace_file(
+                            access.path,
+                            schema_version,
+                            native=native,
+                            workspace_access=access,
+                        )
+                        fallback_store_adopted = True
+                        if replace:
+                            self._restore_workspace_option_overrides(manifest)
+                            self._restore_workspace_loader_state(
+                                manifest, apply_explorer=False
+                            )
+                    return self._finish_workspace_file_load(loaded)
+                finally:
+                    if (
+                        owns_fallback_store
+                        and not fallback_store_adopted
+                        and fallback_store is not None
+                    ):
+                        fallback_store.close()
         finally:
             self._missing_workspace_colormaps = previous_missing_colormaps
             self._skipped_workspace_nodes = previous_skipped_nodes

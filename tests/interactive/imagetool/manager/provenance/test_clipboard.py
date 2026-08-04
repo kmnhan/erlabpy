@@ -1660,9 +1660,7 @@ def test_manager_paste_structured_provenance_steps_into_pending_memory_imagetool
         tool.hide()
 
         workspace_path = tmp_path / "pending-provenance-paste.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path, replace=True, associate=True, mark_dirty=False, select=False
         )

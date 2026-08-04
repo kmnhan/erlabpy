@@ -1833,9 +1833,7 @@ def test_watched_metadata_assignments_retain_workspace_replay_source(
         assert manager._provenance_edit_controller.can_reorder_steps()[0]
 
         workspace_path = tmp_path / "watched-metadata-replay.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,
@@ -3851,9 +3849,7 @@ def test_batch_action_counts_pending_memory_imagetools_without_materializing(
             tool.hide()
 
         workspace_path = tmp_path / "pending-batch-targets.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -6899,9 +6895,7 @@ def test_manager_workspace_reload_preserves_manual_root_name(
 
         manager.rename_imagetool(0, "saved manual root")
         workspace_path = tmp_path / "manual-root-name.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
 
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
@@ -6972,9 +6966,7 @@ def test_manager_workspace_reload_preserves_manual_child_imagetool_name(
         manager._child_node(child_uid).name = "saved manual child"
 
         workspace_path = tmp_path / "manual-child-name.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
 
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
@@ -7046,9 +7038,7 @@ def test_manager_notes_persist_workspace_roundtrip(
         )
 
         workspace_path = tmp_path / "notes.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
 
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
@@ -7110,15 +7100,10 @@ def test_acquisition_context_persists_on_open_but_not_workspace_import(
         _add_batch_tools(qtbot, manager, _batch_data("scan"))
         manager._acquisition_context.set_state(saved_state, mark_dirty=False)
         workspace_path = tmp_path / "acquisition-context.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
 
         manager._acquisition_context.set_state(delta_saved_state)
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=False
-        )
-        assert manager._workspace_state.delta_save_count == 1
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
 
         manager._acquisition_context.set_state(transient_state, mark_dirty=False)
         assert manager._workspace_controller.loading._load_workspace_file(
@@ -7160,9 +7145,7 @@ def test_metadata_assignment_provenance_persists_for_live_replacement(
         )
 
         workspace_path = tmp_path / "metadata-assignment.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,
@@ -7237,9 +7220,7 @@ def test_metadata_editor_layout_persists_with_workspace(
         reopened.reject()
 
         workspace_path = tmp_path / "metadata-layout.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
         manager._metadata_editor.set_layout_fields((transient,))
         manager._metadata_editor.set_column_width(None, 301)
         manager._metadata_editor.set_column_width(transient, 181)
@@ -7295,9 +7276,7 @@ def test_metadata_editor_reads_deferred_workspace_metadata_without_materializing
             tool.hide()
 
         workspace_path = tmp_path / "deferred-metadata-editor.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,

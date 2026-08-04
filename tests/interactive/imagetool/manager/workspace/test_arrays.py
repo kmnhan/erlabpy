@@ -4,9 +4,6 @@ import json
 import logging
 import os
 import pathlib
-import pickle
-import subprocess
-import sys
 import types
 import typing
 import warnings
@@ -22,101 +19,14 @@ import erlab
 import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
-import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from tests.interactive.imagetool.manager.workspace._support import (
     _assert_rich_workspace_attr,
     _hdf5_blosc2_level_codec,
     _hdf5_filter_ids,
     _rich_workspace_attr_value,
+    _write_transaction_test_workspace,
 )
-
-
-def test_workspace_h5py_helpers_reject_non_workspace_files(tmp_path) -> None:
-
-    fname = tmp_path / "not-workspace.itws"
-    with h5py.File(fname, "w") as h5_file:
-        h5_file.create_group("0")
-
-    with pytest.raises(ValueError, match="Not a valid workspace file"):
-        workspace_arrays._workspace_live_root_group_copy_groups(fname)
-    with pytest.raises(ValueError, match="Not a valid workspace file"):
-        workspace_arrays._workspace_h5_paths_storage_size(fname, ("0",))
-    with pytest.raises(ValueError, match="Not a valid workspace file"):
-        workspace_arrays._workspace_live_h5_storage_size(fname)
-
-    assert (
-        workspace_storage._workspace_obsolete_estimate(tmp_path / "missing.itws") == 0
-    )
-    assert workspace_arrays._workspace_h5_object_storage_size(object()) == 0
-
-
-def test_workspace_h5py_filter_matching_edge_cases(tmp_path) -> None:
-
-    fname = tmp_path / "filters.h5"
-    with h5py.File(fname, "w") as h5_file:
-        plain = h5_file.create_dataset("plain", data=np.arange(3))
-        compressed = h5_file.create_dataset(
-            "compressed",
-            data=np.arange(3),
-            **hdf5plugin.Blosc2(
-                cname="zstd",
-                clevel=1,
-                filters=hdf5plugin.Blosc2.SHUFFLE,
-            ),
-        )
-        group = h5_file.create_group("payload")
-        gzip_data = group.create_dataset("data", data=np.arange(3), compression="gzip")
-        metadata_group = h5_file.create_group("metadata")
-        metadata_group.create_group("nested")
-
-        assert workspace_arrays._workspace_h5py_blosc2_options_match((1, 2), (1, 2))
-        assert not workspace_arrays._workspace_h5py_blosc2_options_match((1,), (2,))
-        assert workspace_arrays._workspace_h5py_dataset_matches_encoding(plain, {})
-        assert not workspace_arrays._workspace_h5py_dataset_matches_encoding(
-            plain, {"compression": hdf5plugin.Blosc2.filter_id}
-        )
-        assert workspace_arrays._workspace_h5py_dataset_matches_encoding(
-            compressed, {"compression": hdf5plugin.Blosc2.filter_id}
-        )
-        assert workspace_arrays._workspace_h5py_dataset_matches_encoding(
-            compressed, workspace_arrays._workspace_blosc2_encoding("zstd1")
-        )
-        assert not workspace_arrays._workspace_h5py_dataset_matches_encoding(
-            compressed, workspace_arrays._workspace_blosc2_encoding("blosclz3")
-        )
-        gzip_filter = workspace_arrays._workspace_h5py_filter_options(gzip_data)
-        assert workspace_arrays._workspace_h5py_dataset_matches_encoding(
-            gzip_data,
-            {"compression": 1, "compression_opts": gzip_filter[1]},
-        )
-        assert not workspace_arrays._h5_group_matches_compression(
-            h5_file, "missing", "none"
-        )
-        assert not workspace_arrays._h5_group_matches_compression(
-            h5_file, "plain", "none"
-        )
-        assert workspace_arrays._h5_group_matches_compression(
-            h5_file, "metadata", "none"
-        )
-        assert not workspace_arrays._workspace_h5_group_matches_compression_mode(
-            h5_file,
-            "missing",
-            xr.Dataset({"data": ("x", np.arange(3))}),
-            "none",
-        )
-        assert not workspace_arrays._workspace_h5_group_matches_compression_mode(
-            h5_file,
-            "payload",
-            xr.Dataset({"missing": ("x", np.arange(3))}),
-            "none",
-        )
-        assert not workspace_arrays._workspace_h5_group_matches_compression_mode(
-            h5_file,
-            "payload",
-            xr.Dataset({"data": ("x", np.arange(3))}),
-            "none",
-        )
 
 
 def test_workspace_h5py_copy_rebuilds_attrs_and_dimension_scales(tmp_path) -> None:
@@ -454,55 +364,27 @@ def test_workspace_xarray_path_helpers_cover_fallbacks(monkeypatch, tmp_path) ->
 
 
 def test_workspace_file_manager_uses_fsdecode_fallback(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
     monkeypatch.setattr(workspace_arrays, "_normalized_file_path", lambda _path: None)
-
-    def _reader_snapshot(path: str):
-        captured["path"] = path
-        return "snapshot"
-
-    def _initialize(self, snapshot: object) -> None:
-        captured["snapshot"] = snapshot
-        self.workspace_path = "fallback.itws"
-        self._key = "fake-key"
-        self._ref_counter = types.SimpleNamespace(decrement=lambda _key: 1)
-        self._cache = {}
-
-    monkeypatch.setattr(
-        workspace_arrays, "_workspace_reader_snapshot", _reader_snapshot
-    )
-    monkeypatch.setattr(
-        workspace_arrays.WorkspaceFileManager, "_initialize", _initialize
-    )
-
     file_manager = workspace_arrays.WorkspaceFileManager("fallback.itws")
-
-    assert file_manager.workspace_path == "fallback.itws"
-    assert captured == {"path": "fallback.itws", "snapshot": "snapshot"}
-
-
-def test_workspace_file_manager_uses_immutable_read_only_copy(tmp_path) -> None:
-    fname = tmp_path / "reader-copy.itws"
-    tree = xr.DataTree.from_dict(
-        {"0/imagetool": xr.Dataset({"data": ("x", np.arange(4.0))})}
-    )
     try:
-        workspace_storage._write_full_workspace_tree_file(
-            fname, tree, {"imagetool_workspace_schema_version": 4}
-        )
+        assert file_manager.workspace_path == "fallback.itws"
+        assert file_manager.reader_path == "fallback.itws"
     finally:
-        tree.close()
+        file_manager.close()
+
+
+def test_workspace_file_manager_opens_unassociated_file_read_only(tmp_path) -> None:
+    fname = tmp_path / "reader-copy.itws"
+    _write_transaction_test_workspace(fname)
 
     manager = workspace_arrays.WorkspaceFileManager(fname)
     reader_path = pathlib.Path(manager.reader_path)
     try:
-        assert reader_path != fname.resolve()
-        assert reader_path.read_bytes() == fname.read_bytes()
-        assert manager._args == (str(reader_path.resolve()),)
+        assert reader_path == fname.resolve()
+        assert manager._args == (str(fname.resolve()),)
         assert manager._mode == "r"
         with manager.acquire_context() as h5_file:
-            assert pathlib.Path(h5_file.filename).resolve() == reader_path.resolve()
+            assert pathlib.Path(h5_file.filename).resolve() == fname.resolve()
     finally:
         manager.close()
         del manager
@@ -510,239 +392,16 @@ def test_workspace_file_manager_uses_immutable_read_only_copy(tmp_path) -> None:
 
 
 def test_workspace_file_manager_reports_missing_published_file(tmp_path) -> None:
-    with pytest.raises(FileNotFoundError):
-        workspace_arrays.WorkspaceFileManager(tmp_path / "missing.itws")
-
-
-def test_workspace_reader_cleanup_removes_only_safe_stale_directories(
-    monkeypatch, tmp_path
-) -> None:
-    stale = tmp_path / "erlab-itws-readers-1234-stale"
-    stale.mkdir()
-    (stale / "reader-1234-data.itws").write_bytes(b"stale")
-    unsafe = tmp_path / "erlab-itws-readers-5678-unsafe"
-    unsafe.mkdir()
-    (unsafe / "unrelated.txt").write_text("keep")
-    monkeypatch.setattr(workspace_arrays.tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(
-        workspace_arrays, "_workspace_process_is_running", lambda _pid: False
-    )
-    monkeypatch.setattr(workspace_arrays, "_WORKSPACE_READER_STALE_CLEANUP_DONE", False)
-
-    workspace_arrays._cleanup_stale_workspace_reader_directories()
-
-    assert not stale.exists()
-    assert unsafe.exists()
-
-
-def test_workspace_process_liveness_uses_non_destructive_probe(monkeypatch) -> None:
-    process_id = os.getpid()
-    probed: list[int] = []
-
-    def _pid_exists(pid: int) -> bool:
-        probed.append(pid)
-        return pid == process_id
-
-    def _fail_kill(*_args) -> None:
-        raise AssertionError("workspace cleanup must not signal another process")
-
-    monkeypatch.setattr(workspace_arrays.psutil, "pid_exists", _pid_exists)
-    monkeypatch.setattr(workspace_arrays.os, "kill", _fail_kill)
-
-    assert workspace_arrays._workspace_process_is_running(process_id)
-    assert not workspace_arrays._workspace_process_is_running(process_id + 1)
-    assert probed == [process_id, process_id + 1]
-
-    monkeypatch.setattr(
-        workspace_arrays.psutil,
-        "pid_exists",
-        lambda _pid: (_ for _ in ()).throw(OSError()),
-    )
-    assert workspace_arrays._workspace_process_is_running(process_id + 1)
-
-
-def test_workspace_reader_directory_rejects_non_directory(
-    monkeypatch, tmp_path
-) -> None:
-    invalid = tmp_path / "reader-path"
-    invalid.write_text("not a directory")
-    monkeypatch.setattr(
-        workspace_arrays, "_cleanup_stale_workspace_reader_directories", lambda: None
-    )
-    monkeypatch.setattr(
-        workspace_arrays, "_workspace_reader_directory", lambda: invalid
-    )
-
-    with pytest.raises(OSError, match="not a private directory"):
-        workspace_arrays._ensure_workspace_reader_directory()
-
-
-def test_workspace_reader_file_falls_back_to_copy_when_link_fails(
-    monkeypatch, tmp_path
-) -> None:
-    source = tmp_path / "source.itws"
-    source.write_bytes(b"workspace")
-    reader_directory = tmp_path / "readers"
-    reader_directory.mkdir()
-    monkeypatch.setattr(
-        workspace_arrays, "_ensure_workspace_reader_directory", lambda: reader_directory
-    )
-    monkeypatch.setattr(
-        workspace_arrays.os,
-        "link",
-        lambda _source, _destination: (_ for _ in ()).throw(OSError("no links")),
-    )
-
-    reader = workspace_arrays._create_workspace_reader_file(source, copy_only=False)
-
-    assert reader.read_bytes() == b"workspace"
-
-
-def test_open_workspace_dataset_keeps_old_generation_after_full_save(tmp_path) -> None:
-    fname = tmp_path / "immutable-generation.itws"
-
-    def _write(value: float) -> None:
-        tree = xr.DataTree.from_dict(
-            {"0/imagetool": xr.Dataset({"data": ("x", [value])})}
-        )
-        try:
-            workspace_storage._write_full_workspace_tree_file(
-                fname, tree, {"imagetool_workspace_schema_version": 4}
-            )
-        finally:
-            tree.close()
-
-    _write(1.0)
-    old = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks={})
-    try:
-        assert workspace_arrays.dataarray_source_paths(old["data"]) == (
-            str(fname.resolve()),
-        )
-        _write(2.0)
-        assert float(old["data"].compute().item()) == 1.0
-        new = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks={})
-        try:
-            assert float(new["data"].compute().item()) == 2.0
-        finally:
-            new.close()
-    finally:
-        old.close()
-
-
-def test_workspace_reader_pickle_reuses_process_owned_generation(tmp_path) -> None:
-    workspace_arrays._cleanup_workspace_reader_snapshots()
-    fname = tmp_path / "serialized-generation.itws"
-    tree = xr.DataTree.from_dict(
-        {"0/imagetool": xr.Dataset({"data": ("x", np.arange(4.0))})}
-    )
-    try:
-        workspace_storage._write_full_workspace_tree_file(
-            fname, tree, {"imagetool_workspace_schema_version": 4}
-        )
-    finally:
-        tree.close()
-
-    opened: xr.Dataset | None = workspace_arrays.open_workspace_dataset(
-        fname, "0/imagetool", chunks={}
-    )
-    restored: list[xr.DataArray] = []
-    try:
-        source_snapshots = tuple(workspace_arrays._WORKSPACE_READER_SNAPSHOTS.values())
-        assert len(source_snapshots) == 1
-        reader_path = source_snapshots[0].path
-        payload = pickle.dumps(opened["data"])
-        opened.close()
-        opened = None
-        gc.collect()
-
-        assert pathlib.Path(reader_path).exists()
-        restored = [pickle.loads(payload), pickle.loads(payload)]
-
-        assert len(workspace_arrays._WORKSPACE_READER_SNAPSHOTS) == 1
-        assert next(
-            iter(workspace_arrays._WORKSPACE_READER_SNAPSHOTS.values())
-        ).path == (reader_path)
-        for data in restored:
-            np.testing.assert_array_equal(data.compute(), np.arange(4.0))
-        for data in restored:
-            data.close()
-        restored.clear()
-        del payload
-        gc.collect()
-
-        assert pathlib.Path(reader_path).exists()
-    finally:
-        if opened is not None:
-            opened.close()
-        for data in restored:
-            data.close()
-        workspace_arrays._cleanup_workspace_reader_snapshots()
-
-
-def test_workspace_reader_pickle_creates_receiver_owned_generation(tmp_path) -> None:
-    workspace_arrays._cleanup_workspace_reader_snapshots()
-    fname = tmp_path / "cross-process-generation.itws"
-    payload_path = tmp_path / "data.pickle"
-    tree = xr.DataTree.from_dict(
-        {"0/imagetool": xr.Dataset({"data": ("x", np.arange(4.0))})}
-    )
-    try:
-        workspace_storage._write_full_workspace_tree_file(
-            fname, tree, {"imagetool_workspace_schema_version": 4}
-        )
-    finally:
-        tree.close()
-    opened = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks={})
-    try:
-        payload_path.write_bytes(pickle.dumps(opened["data"]))
-        parent_reader = next(
-            iter(workspace_arrays._WORKSPACE_READER_SNAPSHOTS.values())
-        ).path
-        code = """
-import json
-import pathlib
-import pickle
-import sys
-
-from erlab.interactive.imagetool.manager._workspace import _arrays
-
-data = pickle.loads(pathlib.Path(sys.argv[1]).read_bytes())
-print(json.dumps({
-    "values": data.compute().values.tolist(),
-    "readers": [
-        snapshot.path
-        for snapshot in _arrays._WORKSPACE_READER_SNAPSHOTS.values()
-    ],
-}))
-data.close()
-"""
-        completed = subprocess.run(
-            [sys.executable, "-c", code, str(payload_path)],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        result = json.loads(completed.stdout)
-        assert result["values"] == [0.0, 1.0, 2.0, 3.0]
-        assert len(result["readers"]) == 1
-        assert result["readers"][0] != parent_reader
-    finally:
-        opened.close()
-        workspace_arrays._cleanup_workspace_reader_snapshots()
+    manager = workspace_arrays.WorkspaceFileManager(tmp_path / "missing.itws")
+    with pytest.raises(FileNotFoundError), manager.acquire_context():
+        pass
 
 
 def test_workspace_file_manager_rejects_inherited_process_access(
     monkeypatch, tmp_path
 ) -> None:
     fname = tmp_path / "process-owned.itws"
-    tree = xr.DataTree.from_dict({"0/imagetool": xr.Dataset({"data": ("x", [1.0])})})
-    try:
-        workspace_storage._write_full_workspace_tree_file(
-            fname, tree, {"imagetool_workspace_schema_version": 4}
-        )
-    finally:
-        tree.close()
+    _write_transaction_test_workspace(fname)
     manager = workspace_arrays.WorkspaceFileManager(fname)
     process_id = manager._process_id
     monkeypatch.setattr(workspace_arrays.os, "getpid", lambda: process_id + 1)
@@ -781,7 +440,14 @@ def test_open_workspace_dataset_uses_fsdecode_fallback(monkeypatch) -> None:
     calls: list[tuple[object, str, str | None]] = []
 
     class _FakeFileManager:
-        def __init__(self, path: str) -> None:
+        def __init__(
+            self,
+            path: str,
+            *,
+            object_id: str | None = None,
+            group_path: str | None = None,
+        ) -> None:
+            del object_id, group_path
             self.workspace_path = path
 
     def _fake_open(file_manager, group: str, *, chunks: str | None):
@@ -818,11 +484,20 @@ def test_open_workspace_datatree_closes_partial_groups_on_error(monkeypatch) -> 
     class _FakeFileManager:
         workspace_path = "fallback.itws"
 
-        def __init__(self, _path: str) -> None:
-            pass
+        def __init__(
+            self,
+            _path: str,
+            *,
+            object_id: str | None = None,
+            group_path: str | None = None,
+        ) -> None:
+            del object_id, group_path
 
         def acquire_context(self):
             return contextlib.nullcontext(object())
+
+        def close(self) -> None:
+            pass
 
     def _fake_open(_file_manager, group_path: str, *, chunks: str | None):
         if group_path == "/broken":
@@ -1401,6 +1076,9 @@ def test_workspace_writer_drops_invalid_attr_names_from_fallback(tmp_path) -> No
     _assert_rich_workspace_attr(loaded["left"].attrs["Single Motor Scan"])
     assert "" not in loaded.coords["x"].attrs
     assert loaded.coords["x"].attrs["axis_note"] == ""
+    assert all(
+        "_FillValue" not in variable.attrs for variable in loaded.variables.values()
+    )
     _assert_rich_workspace_attr(loaded.coords["x"].attrs["axis_config"])
     _assert_rich_workspace_attr(loaded.attrs["dataset_config"])
 

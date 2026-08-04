@@ -2,29 +2,25 @@
 
 from __future__ import annotations
 
-import atexit
 import contextlib
+import json
 import os
 import pathlib
-import shutil
-import stat
-import tempfile
 import threading
 import typing
-import uuid
-import weakref
-from dataclasses import dataclass, field
 
 import h5netcdf
 import hdf5plugin
 import numpy as np
-import psutil
 import xarray as xr
 from xarray.backends import CachingFileManager, H5NetCDFStore
+from xarray.backends.common import ArrayWriter
 from xarray.backends.locks import SerializableLock
+from xarray.backends.writers import dump_to_store
 
 import erlab
 from erlab.interactive.imagetool import _serialization
+from erlab.interactive.imagetool.manager._workspace import _store as workspace_store
 
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Iterable, Iterator, Mapping
@@ -38,7 +34,7 @@ else:
     h5py = _lazy.load("h5py")
 
 from erlab.interactive.imagetool.manager._workspace._format import (
-    _is_workspace_internal_group_name,
+    _WORKSPACE_MANIFEST_ATTR,
     _restore_workspace_serialized_attrs,
     _sanitize_workspace_attr_names,
     _workspace_file_is_workspace,
@@ -47,12 +43,6 @@ from erlab.interactive.imagetool.manager._workspace._format import (
 
 _WORKSPACE_FILE_LOCKS: dict[str, threading.RLock] = {}
 _WORKSPACE_FILE_LOCKS_LOCK = threading.Lock()
-_WORKSPACE_READER_SNAPSHOTS: dict[tuple[object, ...], _WorkspaceReaderSnapshot] = {}
-_WORKSPACE_READER_SNAPSHOTS_BY_PATH: dict[str, _WorkspaceReaderSnapshot] = {}
-_WORKSPACE_READER_SNAPSHOTS_LOCK = threading.RLock()
-_WORKSPACE_READER_OWNER_PID = os.getpid()
-_WORKSPACE_READER_SESSION_ID = uuid.uuid4().hex
-_WORKSPACE_READER_STALE_CLEANUP_DONE = False
 _WORKSPACE_COMPRESSION_MIN_BYTES = 1 << 20  # 1 MiB
 _TOOL_DATA_BLOB_NAME_ATTR = _serialization.TOOL_DATA_BLOB_NAME_ATTR
 _SAVED_TOOL_DATA_REFERENCE_DIM = _serialization.SAVED_TOOL_DATA_REFERENCE_DIM
@@ -102,6 +92,27 @@ def _workspace_save_lock(path: str | os.PathLike[str]) -> threading.RLock:
     return _workspace_file_lock(path)
 
 
+@contextlib.contextmanager
+def _open_workspace_h5_file_for_read(
+    path: str | os.PathLike[str],
+) -> Iterator[typing.Any]:
+    """Open a workspace for a bounded raw HDF5 read.
+
+    An associated workspace has one manager-owned handle. Reuse that handle so
+    metadata and preview reads obey the same lock as lazy reads and saves.
+    """
+    active_store = workspace_store.WorkspaceStore.active(path)
+    if active_store is not None:
+        with active_store.lock:
+            active_store.require_current_path()
+            yield active_store.h5_file
+        return
+
+    ensure_workspace_hdf5_filters_registered()
+    with _workspace_file_lock(path), h5py.File(path, "r") as h5_file:
+        yield h5_file
+
+
 def _workspace_file_identity(
     path: str | os.PathLike[str],
 ) -> tuple[str, int, int, int, int]:
@@ -119,336 +130,6 @@ def _workspace_file_identity(
         stat_result.st_size,
         stat_result.st_mtime_ns,
     )
-
-
-def _workspace_reader_directory() -> pathlib.Path:
-    """Return the private directory for immutable workspace reader files."""
-    return pathlib.Path(tempfile.gettempdir()) / (
-        f"erlab-itws-readers-{os.getpid()}-{_WORKSPACE_READER_SESSION_ID}"
-    )
-
-
-def _workspace_process_is_running(process_id: int) -> bool:
-    try:
-        return psutil.pid_exists(process_id)
-    except (OSError, psutil.Error):
-        # Stale cleanup must not remove files when liveness is uncertain.
-        return True
-
-
-def _cleanup_stale_workspace_reader_directories() -> None:
-    """Remove private reader files left by terminated manager processes."""
-    global _WORKSPACE_READER_STALE_CLEANUP_DONE
-
-    with _WORKSPACE_READER_SNAPSHOTS_LOCK:
-        if _WORKSPACE_READER_STALE_CLEANUP_DONE:
-            return
-        _WORKSPACE_READER_STALE_CLEANUP_DONE = True
-    prefix = "erlab-itws-readers-"
-    try:
-        candidates = tuple(pathlib.Path(tempfile.gettempdir()).glob(f"{prefix}*"))
-    except OSError:
-        return
-    for directory in candidates:
-        try:
-            directory_stat = directory.lstat()
-            process_id_text = directory.name.removeprefix(prefix).split("-", 1)[0]
-            process_id = int(process_id_text)
-        except (OSError, ValueError):
-            continue
-        if stat.S_ISLNK(directory_stat.st_mode) or not stat.S_ISDIR(
-            directory_stat.st_mode
-        ):
-            continue
-        if hasattr(os, "getuid") and directory_stat.st_uid != os.getuid():
-            continue
-        if _workspace_process_is_running(process_id):
-            continue
-        try:
-            children = tuple(directory.iterdir())
-        except OSError:
-            continue
-        if any(
-            child.is_symlink()
-            or not child.is_file()
-            or not child.name.startswith("reader-")
-            or child.suffix != ".itws"
-            for child in children
-        ):
-            continue
-        for child in children:
-            with contextlib.suppress(OSError):
-                child.unlink()
-        with contextlib.suppress(OSError):
-            directory.rmdir()
-
-
-def _ensure_workspace_reader_directory() -> pathlib.Path:
-    _cleanup_stale_workspace_reader_directories()
-    directory = _workspace_reader_directory()
-    try:
-        directory.mkdir(mode=0o700)
-    except FileExistsError:
-        directory_stat = directory.lstat()
-        if stat.S_ISLNK(directory_stat.st_mode) or not stat.S_ISDIR(
-            directory_stat.st_mode
-        ):
-            raise OSError(
-                f"Workspace reader path is not a private directory: {directory}"
-            ) from None
-    return directory
-
-
-def _cleanup_workspace_reader_path(path: pathlib.Path) -> None:
-    with contextlib.suppress(OSError):
-        path.unlink()
-    with contextlib.suppress(OSError):
-        path.parent.rmdir()
-
-
-@dataclass
-class _WorkspaceReaderSnapshot:
-    """One immutable local copy used by live workspace readers."""
-
-    cache_key: tuple[object, ...]
-    workspace_path: str
-    path: str
-    identity: tuple[int, int, int, int]
-    owner_pid: int
-    lock: SerializableLock = field(default_factory=SerializableLock)
-    managers: weakref.WeakSet[WorkspaceFileManager] = field(
-        default_factory=weakref.WeakSet
-    )
-    manager_count: int = 0
-    retained_for_serialization: bool = False
-    disposed: bool = False
-
-
-def _create_workspace_reader_file(
-    source_path: str | os.PathLike[str], *, copy_only: bool
-) -> pathlib.Path:
-    """Create one immutable reader file from a stable source."""
-    source = pathlib.Path(source_path)
-    destination = _ensure_workspace_reader_directory() / (
-        f"reader-{os.getpid()}-{uuid.uuid4().hex}.itws"
-    )
-    try:
-        if copy_only:
-            shutil.copyfile(source, destination)
-        else:
-            try:
-                os.link(source, destination)
-            except OSError:
-                shutil.copyfile(source, destination)
-    except BaseException:
-        _cleanup_workspace_reader_path(destination)
-        raise
-    return destination
-
-
-def _register_workspace_reader_snapshot(
-    snapshot: _WorkspaceReaderSnapshot,
-) -> _WorkspaceReaderSnapshot:
-    _WORKSPACE_READER_SNAPSHOTS[snapshot.cache_key] = snapshot
-    normalized_path = _normalized_file_path(snapshot.path)
-    if normalized_path is None:
-        normalized_path = snapshot.path
-    _WORKSPACE_READER_SNAPSHOTS_BY_PATH[normalized_path] = snapshot
-    return snapshot
-
-
-def _workspace_reader_snapshot(
-    workspace_path: str | os.PathLike[str],
-) -> _WorkspaceReaderSnapshot:
-    """Return an immutable local copy of one published workspace generation."""
-    target = _normalized_file_path(workspace_path)
-    if target is None:
-        target = os.fsdecode(workspace_path)
-    with _workspace_save_lock(target):
-        source_identity = _workspace_file_identity(target)
-        if source_identity[1:] == (0, 0, 0, 0):
-            raise FileNotFoundError(target)
-        cache_key: tuple[object, ...] = ("workspace", *source_identity)
-        with _WORKSPACE_READER_SNAPSHOTS_LOCK:
-            snapshot = _WORKSPACE_READER_SNAPSHOTS.get(cache_key)
-            if snapshot is not None and pathlib.Path(snapshot.path).exists():
-                return snapshot
-
-        reader_path = _create_workspace_reader_file(target, copy_only=True)
-        source_identity_after = _workspace_file_identity(target)
-        if source_identity_after != source_identity:
-            _cleanup_workspace_reader_path(reader_path)
-            raise RuntimeError(
-                "Workspace changed while its immutable reader copy was created: "
-                f"{target}"
-            )
-        try:
-            reader_file_identity = _workspace_file_identity(reader_path)
-            snapshot = _WorkspaceReaderSnapshot(
-                cache_key=cache_key,
-                workspace_path=target,
-                path=reader_file_identity[0],
-                identity=reader_file_identity[1:],
-                owner_pid=os.getpid(),
-            )
-            with _WORKSPACE_READER_SNAPSHOTS_LOCK:
-                existing = _WORKSPACE_READER_SNAPSHOTS.get(cache_key)
-                if existing is not None and pathlib.Path(existing.path).exists():
-                    _cleanup_workspace_reader_path(reader_path)
-                    return existing
-                return _register_workspace_reader_snapshot(snapshot)
-        except BaseException:
-            _cleanup_workspace_reader_path(reader_path)
-            raise
-
-
-def _workspace_reader_snapshot_from_state(
-    workspace_path: str,
-    reader_path: str,
-    expected_identity: tuple[int, int, int, int],
-) -> _WorkspaceReaderSnapshot:
-    """Create or reuse a process-owned reader for serialized immutable data."""
-    normalized_reader_path = _normalized_file_path(reader_path)
-    if normalized_reader_path is None:
-        normalized_reader_path = os.fsdecode(reader_path)
-    cache_key: tuple[object, ...] = (
-        "serialized",
-        normalized_reader_path,
-        *expected_identity,
-    )
-    with _WORKSPACE_READER_SNAPSHOTS_LOCK:
-        owned = _WORKSPACE_READER_SNAPSHOTS_BY_PATH.get(normalized_reader_path)
-        if (
-            owned is not None
-            and owned.owner_pid == os.getpid()
-            and owned.identity == expected_identity
-            and pathlib.Path(owned.path).exists()
-        ):
-            return owned
-        existing = _WORKSPACE_READER_SNAPSHOTS.get(cache_key)
-        if existing is not None and pathlib.Path(existing.path).exists():
-            return existing
-
-    source_identity = _workspace_file_identity(normalized_reader_path)[1:]
-    if source_identity != expected_identity:
-        raise RuntimeError(
-            "Serialized workspace reader is no longer available: "
-            f"{normalized_reader_path}"
-        )
-    local_path = _create_workspace_reader_file(normalized_reader_path, copy_only=False)
-    if _workspace_file_identity(normalized_reader_path)[1:] != expected_identity:
-        _cleanup_workspace_reader_path(local_path)
-        raise RuntimeError(
-            "Serialized workspace reader changed while it was imported: "
-            f"{normalized_reader_path}"
-        )
-    try:
-        local_file_identity = _workspace_file_identity(local_path)
-        snapshot = _WorkspaceReaderSnapshot(
-            cache_key=cache_key,
-            workspace_path=workspace_path,
-            path=local_file_identity[0],
-            identity=local_file_identity[1:],
-            owner_pid=os.getpid(),
-        )
-        with _WORKSPACE_READER_SNAPSHOTS_LOCK:
-            existing = _WORKSPACE_READER_SNAPSHOTS.get(cache_key)
-            if existing is not None and pathlib.Path(existing.path).exists():
-                _cleanup_workspace_reader_path(local_path)
-                return existing
-            return _register_workspace_reader_snapshot(snapshot)
-    except BaseException:
-        _cleanup_workspace_reader_path(local_path)
-        raise
-
-
-def _acquire_workspace_reader_snapshot(snapshot: _WorkspaceReaderSnapshot) -> None:
-    with _WORKSPACE_READER_SNAPSHOTS_LOCK:
-        if snapshot.disposed or snapshot.owner_pid != os.getpid():
-            raise RuntimeError("Workspace reader belongs to another process")
-        snapshot.manager_count += 1
-
-
-def _dispose_workspace_reader_snapshot(snapshot: _WorkspaceReaderSnapshot) -> None:
-    if snapshot.owner_pid != os.getpid():
-        return
-    with _WORKSPACE_READER_SNAPSHOTS_LOCK:
-        if snapshot.disposed:
-            return
-        snapshot.disposed = True
-        if _WORKSPACE_READER_SNAPSHOTS.get(snapshot.cache_key) is snapshot:
-            del _WORKSPACE_READER_SNAPSHOTS[snapshot.cache_key]
-        if _WORKSPACE_READER_SNAPSHOTS_BY_PATH.get(snapshot.path) is snapshot:
-            del _WORKSPACE_READER_SNAPSHOTS_BY_PATH[snapshot.path]
-    _cleanup_workspace_reader_path(pathlib.Path(snapshot.path))
-
-
-def _release_workspace_reader_snapshot(snapshot: _WorkspaceReaderSnapshot) -> None:
-    if snapshot.owner_pid != os.getpid():
-        return
-    dispose = False
-    with _WORKSPACE_READER_SNAPSHOTS_LOCK:
-        if snapshot.disposed:
-            return
-        snapshot.manager_count -= 1
-        dispose = (
-            snapshot.manager_count == 0 and not snapshot.retained_for_serialization
-        )
-    if dispose:
-        _dispose_workspace_reader_snapshot(snapshot)
-
-
-def _export_workspace_reader_snapshot(snapshot: _WorkspaceReaderSnapshot) -> None:
-    if snapshot.owner_pid != os.getpid():
-        raise RuntimeError(
-            "Workspace readers cannot be inherited across fork; use spawn"
-        )
-    with _WORKSPACE_READER_SNAPSHOTS_LOCK:
-        if snapshot.disposed or not pathlib.Path(snapshot.path).exists():
-            raise RuntimeError("Workspace reader is no longer available")
-        # Pickle bytes can be loaded later or more than once. Python does not report
-        # when all copies of those bytes are gone, so process cleanup is the first safe
-        # time to remove a serialized reader generation.
-        snapshot.retained_for_serialization = True
-
-
-def _cleanup_workspace_reader_snapshots() -> None:
-    if os.getpid() != _WORKSPACE_READER_OWNER_PID:
-        return
-    with _WORKSPACE_READER_SNAPSHOTS_LOCK:
-        snapshots = tuple(_WORKSPACE_READER_SNAPSHOTS.values())
-    for snapshot in snapshots:
-        for manager in tuple(snapshot.managers):
-            manager.close()
-        _dispose_workspace_reader_snapshot(snapshot)
-
-
-def _reset_workspace_reader_state_after_fork() -> None:
-    """Drop inherited registries without cleaning parent-owned reader files."""
-    global _WORKSPACE_FILE_LOCKS
-    global _WORKSPACE_FILE_LOCKS_LOCK
-    global _WORKSPACE_READER_SNAPSHOTS
-    global _WORKSPACE_READER_SNAPSHOTS_BY_PATH
-    global _WORKSPACE_READER_SNAPSHOTS_LOCK
-    global _WORKSPACE_READER_OWNER_PID
-    global _WORKSPACE_READER_SESSION_ID
-    global _WORKSPACE_READER_STALE_CLEANUP_DONE
-
-    _WORKSPACE_FILE_LOCKS = {}
-    _WORKSPACE_FILE_LOCKS_LOCK = threading.Lock()
-    _WORKSPACE_READER_SNAPSHOTS = {}
-    _WORKSPACE_READER_SNAPSHOTS_BY_PATH = {}
-    _WORKSPACE_READER_SNAPSHOTS_LOCK = threading.RLock()
-    _WORKSPACE_READER_OWNER_PID = os.getpid()
-    _WORKSPACE_READER_SESSION_ID = uuid.uuid4().hex
-    _WORKSPACE_READER_STALE_CLEANUP_DONE = False
-
-
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=_reset_workspace_reader_state_after_fork)
-
-
-atexit.register(_cleanup_workspace_reader_snapshots)
 
 
 def _xarray_source_path(value: object) -> str | None:
@@ -639,82 +320,185 @@ def workspace_dataset_encoding(
 
 
 class WorkspaceFileManager(CachingFileManager):
-    """xarray file manager for manager-owned workspace readers."""
+    """xarray file manager for one workspace payload.
+
+    Associated workspaces acquire the manager-owned HDF5 handle. Other files use
+    xarray's read-only file cache and do not create private workspace copies.
+    """
 
     _base_del = CachingFileManager.__del__
 
-    def __init__(self, path: str | os.PathLike[str]) -> None:
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        object_id: str | None = None,
+        group_path: str | None = None,
+    ) -> None:
+        self._store: workspace_store.WorkspaceStore | None = None
+        self._object_id: str | None = None
+        self._group_path = None if group_path is None else f"/{group_path.strip('/')}"
+        self._store_lease_released = True
+        self._netcdf_file: h5netcdf.File | None = None
+        self._store_handle_generation = -1
+        self.lock: typing.Any
         target = _normalized_file_path(path)
         if target is None:
             target = os.fsdecode(path)
-        self._initialize(_workspace_reader_snapshot(target))
-
-    def _initialize(self, snapshot: _WorkspaceReaderSnapshot) -> None:
-        """Initialize this manager from a process-owned immutable reader."""
-        self._snapshot = snapshot
         self._process_id = os.getpid()
-        self.workspace_path = snapshot.workspace_path
-        self.reader_path = snapshot.path
-        _acquire_workspace_reader_snapshot(snapshot)
-        try:
-            ensure_workspace_hdf5_filters_registered()
-            super().__init__(
-                h5netcdf.File,
-                snapshot.path,
-                mode="r",
-                kwargs={
-                    "invalid_netcdf": None,
-                    "phony_dims": "sort",
-                    "decode_vlen_strings": True,
-                },
-                lock=snapshot.lock,
-                # Readers for one immutable file can share a cached handle.
-                manager_id=("erlab-workspace-reader", *snapshot.identity, "r"),
-            )
-        except BaseException:
-            _release_workspace_reader_snapshot(snapshot)
-            raise
-        snapshot.managers.add(self)
-        self._snapshot_finalizer = weakref.finalize(
-            self, _release_workspace_reader_snapshot, snapshot
+        self.workspace_path = target
+        self.reader_path = target
+        self._store = workspace_store.WorkspaceStore.active(target)
+        self._object_id = object_id
+        if self._store is not None:
+            self.lock = self._store.lock
+            self._store.register_reader(self)
+            if object_id is not None:
+                self._store.acquire_object(object_id)
+                self._store_lease_released = False
+            return
+
+        ensure_workspace_hdf5_filters_registered()
+        self.lock = SerializableLock()
+        super().__init__(
+            h5netcdf.File,
+            target,
+            mode="r",
+            kwargs={
+                "invalid_netcdf": None,
+                "phony_dims": "sort",
+                "decode_vlen_strings": True,
+            },
+            lock=self.lock,
+            manager_id=(
+                "erlab-workspace-reader",
+                *_workspace_file_identity(target),
+                "r",
+            ),
         )
 
     def _check_process(self) -> None:
         if self._process_id != os.getpid():
             raise RuntimeError(
                 "Workspace readers cannot be inherited across fork; "
-                "pass the data through process serialization instead"
+                "use a same-process Dask scheduler"
             )
+
+    @property
+    def legacy_group_path(self) -> str | None:
+        """Return the group needed by a pre-generation lazy reader."""
+        if self._store is None or self._object_id is not None:
+            return None
+        first_component = (self._group_path or "/").strip("/").partition("/")[0]
+        if first_component.startswith("__itws_"):
+            return None
+        return self._group_path
+
+    def _active_netcdf_file(self) -> h5netcdf.File:
+        store = self._store
+        if store is None:
+            raise RuntimeError("Workspace has no active store")
+        if (
+            self._netcdf_file is None
+            or self._store_handle_generation != store.handle_generation
+        ):
+            if self._netcdf_file is not None:
+                with contextlib.suppress(Exception):
+                    self._netcdf_file.close()
+            self._netcdf_file = h5netcdf.File(
+                store.h5_file,
+                mode="r",
+                invalid_netcdf=True,
+                phony_dims="sort",
+                decode_vlen_strings=True,
+            )
+            self._store_handle_generation = store.handle_generation
+        return self._netcdf_file
+
+    def _close_store_wrapper(self) -> None:
+        netcdf_file = self._netcdf_file
+        self._netcdf_file = None
+        self._store_handle_generation = -1
+        if netcdf_file is not None:
+            netcdf_file.close()
 
     def acquire(self, needs_lock: bool = True) -> typing.Any:
         self._check_process()
+        if self._store is not None:
+            if needs_lock:
+                with self.lock:
+                    return self._active_netcdf_file()
+            return self._active_netcdf_file()
         return super().acquire(needs_lock)
 
-    def acquire_context(self, needs_lock: bool = True) -> typing.Any:
+    @contextlib.contextmanager
+    def acquire_context(self, needs_lock: bool = True) -> Iterator[typing.Any]:
         self._check_process()
-        return super().acquire_context(needs_lock)
+        if self._store is not None:
+            if needs_lock:
+                with self.lock:
+                    yield self._active_netcdf_file()
+            else:
+                yield self._active_netcdf_file()
+            return
+        with super().acquire_context(needs_lock) as file:
+            yield file
 
     def close(self, needs_lock: bool = True) -> None:
-        if self._process_id == os.getpid():
+        if self._store is None and self._process_id == os.getpid():
             super().close(needs_lock)
 
-    def __getstate__(self) -> tuple[str, str, tuple[int, int, int, int]]:
+    def __getstate__(self) -> typing.Any:
         self._check_process()
-        _export_workspace_reader_snapshot(self._snapshot)
-        return self.workspace_path, self.reader_path, self._snapshot.identity
+        if self._store is not None:
+            raise TypeError(
+                "An open writable workspace cannot be sent to another process"
+            )
+        return super().__getstate__()
 
-    def __setstate__(self, state: tuple[str, str, tuple[int, int, int, int]]) -> None:
-        workspace_path, reader_path, identity = state
-        self._initialize(
-            _workspace_reader_snapshot_from_state(workspace_path, reader_path, identity)
+    def __setstate__(self, state: typing.Any) -> None:
+        super().__setstate__(state)
+        self._process_id = os.getpid()
+        self._store = None
+        self._object_id = None
+        self._group_path = None
+        self._store_lease_released = True
+        self._netcdf_file = None
+        self._store_handle_generation = -1
+        self.workspace_path = os.fsdecode(self._args[0])
+        self.reader_path = self.workspace_path
+        self.lock = self._lock
+
+    def __dask_tokenize__(self) -> tuple[str, str, str | None, str | None]:
+        store_identity = (
+            None if self._store is None else f"{id(self._store)}:{self._store.path}"
+        )
+        return (
+            type(self).__name__,
+            self.workspace_path,
+            self._object_id or store_identity,
+            self._group_path,
         )
 
-    def __dask_tokenize__(
-        self,
-    ) -> tuple[str, str, tuple[int, int, int, int]]:
-        return type(self).__name__, self.workspace_path, self._snapshot.identity
+    def _release_store_lease(self) -> None:
+        store = getattr(self, "_store", None)
+        object_id = getattr(self, "_object_id", None)
+        if (
+            store is not None
+            and object_id is not None
+            and not getattr(self, "_store_lease_released", True)
+        ):
+            self._store_lease_released = True
+            store.release_object(object_id)
 
     def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            store = getattr(self, "_store", None)
+            if store is not None:
+                with store.lock:
+                    self._close_store_wrapper()
+                    store.unregister_reader(self)
+                    self._release_store_lease()
         if hasattr(self, "_ref_counter"):
             self._base_del()
 
@@ -737,7 +521,7 @@ def _open_workspace_dataset_from_manager(
         file_manager,
         group=group,
         mode="r",
-        lock=file_manager._snapshot.lock,
+        lock=file_manager.lock,
         autoclose=False,
     )
     if chunks is None:
@@ -759,8 +543,17 @@ def open_workspace_dataset(
     target = _normalized_file_path(path)
     if target is None:
         target = os.fsdecode(path)
+    group_parts = group.strip("/").split("/")
+    object_id = (
+        group_parts[1]
+        if len(group_parts) >= 2
+        and group_parts[0] == workspace_store._WORKSPACE_OBJECTS_GROUP
+        else None
+    )
     return _open_workspace_dataset_from_manager(
-        WorkspaceFileManager(target), group, chunks=chunks
+        WorkspaceFileManager(target, object_id=object_id, group_path=group),
+        group,
+        chunks=chunks,
     )
 
 
@@ -772,14 +565,17 @@ def open_workspace_datatree(
     if target is None:
         target = os.fsdecode(path)
     file_manager = WorkspaceFileManager(target)
-    with file_manager.acquire_context() as h5_file:
-        group_paths = tuple(_iter_h5netcdf_group_paths(h5_file))
+    try:
+        with file_manager.acquire_context() as h5_file:
+            group_paths = tuple(_iter_h5netcdf_group_paths(h5_file))
+    finally:
+        file_manager.close()
 
     groups: dict[str, xr.Dataset] = {}
     try:
         for group_path in group_paths:
-            groups[group_path] = _open_workspace_dataset_from_manager(
-                file_manager, group_path, chunks=chunks
+            groups[group_path] = open_workspace_dataset(
+                target, group_path, chunks=chunks
             )
         tree = xr.DataTree.from_dict(groups)
     except Exception:
@@ -829,66 +625,40 @@ def _read_workspace_root_attrs_h5py(
     fname: str | os.PathLike[str],
 ) -> dict[typing.Hashable, typing.Any]:
     ensure_workspace_hdf5_filters_registered()
-    with _workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
+    active_store = workspace_store.WorkspaceStore.active(fname)
+    if active_store is not None:
+        with active_store.lock:
+            attrs = _h5py_attrs_to_dict(active_store.h5_file.attrs)
+            if int(attrs.get("imagetool_workspace_schema_version", 1)) == 5:
+                attrs[_WORKSPACE_MANIFEST_ATTR] = json.dumps(
+                    active_store.current_generation().manifest
+                )
+            return attrs
+
+    with _open_workspace_h5_file_for_read(fname) as h5_file:
         if not _workspace_file_is_workspace(h5_file):
             raise ValueError("Not a valid workspace file")
-        return _h5py_attrs_to_dict(h5_file.attrs)
-
-
-def _workspace_live_root_group_copy_groups(
-    fname: str | os.PathLike[str],
-) -> tuple[tuple[str, str, dict[str, typing.Any] | None], ...]:
-    ensure_workspace_hdf5_filters_registered()
-    with _workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
-        if not _workspace_file_is_workspace(h5_file):
-            raise ValueError("Not a valid workspace file")
-        return tuple(
-            (name, name, None)
-            for name, item in h5_file.items()
-            if isinstance(item, h5py.Group)
-            and not _is_workspace_internal_group_name(name)
-        )
-
-
-def _workspace_h5_object_storage_size(obj: typing.Any) -> int:
-    if isinstance(obj, h5py.Dataset):
-        return max(0, int(obj.id.get_storage_size()))
-    if isinstance(obj, h5py.Group):
-        return sum(_workspace_h5_object_storage_size(child) for child in obj.values())
-    return 0
-
-
-def _workspace_h5_paths_storage_size(
-    fname: str | os.PathLike[str],
-    paths: Iterable[str],
-) -> tuple[int, int]:
-    total = 0
-    existing_count = 0
-    ensure_workspace_hdf5_filters_registered()
-    with _workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
-        if not _workspace_file_is_workspace(h5_file):
-            raise ValueError("Not a valid workspace file")
-        for path in paths:
-            path = path.strip("/")
-            if path not in h5_file:
-                continue
-            existing_count += 1
-            total += _workspace_h5_object_storage_size(h5_file[path])
-    return total, existing_count
-
-
-def _workspace_live_h5_storage_size(fname: str | os.PathLike[str]) -> int:
-    total = 0
-    ensure_workspace_hdf5_filters_registered()
-    with _workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
-        if not _workspace_file_is_workspace(h5_file):
-            raise ValueError("Not a valid workspace file")
-        for name, item in h5_file.items():
-            if isinstance(item, h5py.Group) and not _is_workspace_internal_group_name(
-                name
-            ):
-                total += _workspace_h5_object_storage_size(item)
-    return total
+        attrs = _h5py_attrs_to_dict(h5_file.attrs)
+        if int(attrs.get("imagetool_workspace_schema_version", 1)) == 5:
+            generation_root = h5_file.get(workspace_store._WORKSPACE_GENERATIONS_GROUP)
+            if generation_root is None:
+                raise ValueError("Workspace has no committed generation")
+            for name in sorted(generation_root, reverse=True):
+                if (
+                    len(name) != workspace_store._WORKSPACE_GENERATION_WIDTH
+                    or not name.isdigit()
+                ):
+                    continue
+                with contextlib.suppress(Exception):
+                    attrs[_WORKSPACE_MANIFEST_ATTR] = json.dumps(
+                        workspace_store.WorkspaceStore._read_manifest(
+                            generation_root[name]
+                        )
+                    )
+                    break
+            if _WORKSPACE_MANIFEST_ATTR not in attrs:
+                raise ValueError("Workspace has no valid committed generation")
+        return attrs
 
 
 def _workspace_h5py_dataset_storage_supported(dataset: typing.Any) -> bool:
@@ -998,67 +768,6 @@ def _workspace_h5py_create_kwargs(
     return kwargs
 
 
-def _workspace_h5py_filter_options(dataset: typing.Any) -> dict[int, tuple[int, ...]]:
-    create_plist = dataset.id.get_create_plist()
-    return {
-        create_plist.get_filter(index)[0]: tuple(create_plist.get_filter(index)[2])
-        for index in range(create_plist.get_nfilters())
-    }
-
-
-def _workspace_h5py_blosc2_options_match(
-    actual_options: tuple[int, ...], expected_options: tuple[int, ...]
-) -> bool:
-    if actual_options == expected_options:
-        return True
-    if len(actual_options) < 7 or len(expected_options) < 7:
-        return False
-    return actual_options[4:7] == expected_options[4:7]
-
-
-def _workspace_h5py_dataset_matches_encoding(
-    dataset: typing.Any,
-    encoding: Mapping[typing.Any, typing.Any],
-) -> bool:
-    filters = _workspace_h5py_filter_options(dataset)
-    expected_filter = encoding.get("compression")
-    if expected_filter is None:
-        return not filters
-    actual_options = filters.get(int(expected_filter))
-    if actual_options is None:
-        return False
-    expected_options = encoding.get("compression_opts")
-    if expected_options is None:
-        return True
-    expected_options = tuple(expected_options)
-    if int(expected_filter) == hdf5plugin.Blosc2.filter_id:
-        return _workspace_h5py_blosc2_options_match(actual_options, expected_options)
-    return actual_options == expected_options
-
-
-def _workspace_h5_group_matches_compression_mode(
-    h5_file: typing.Any,
-    group_path: str,
-    ds: xr.Dataset,
-    compression_mode: WorkspaceCompressionMode,
-) -> bool:
-    group_path = group_path.strip("/")
-    if group_path not in h5_file:
-        return False
-    group = h5_file[group_path]
-    encoding = workspace_dataset_encoding(ds, compression_mode=compression_mode)
-    for name in ds.data_vars:
-        dataset_name = str(name)
-        if dataset_name not in group:
-            return False
-        dataset = group[dataset_name]
-        if not _workspace_h5py_dataset_matches_encoding(
-            dataset, encoding.get(name, {})
-        ):
-            return False
-    return True
-
-
 def _workspace_h5py_attr_text(value: typing.Any) -> str | None:
     if isinstance(value, bytes):
         return value.decode()
@@ -1072,36 +781,6 @@ def _workspace_h5py_attr_text(value: typing.Any) -> str | None:
 
 def _workspace_h5py_dataset_is_dimension_scale(dataset: typing.Any) -> bool:
     return _workspace_h5py_attr_text(dataset.attrs.get("CLASS")) == "DIMENSION_SCALE"
-
-
-def _h5_group_matches_compression(
-    h5_file: typing.Any,
-    group_path: str,
-    compression_mode: WorkspaceCompressionMode,
-) -> bool:
-    group_path = group_path.strip("/")
-    if group_path not in h5_file:
-        return False
-    group = h5_file[group_path]
-    if not isinstance(group, h5py.Group):
-        return False
-    compression_encoding = _workspace_blosc2_encoding(compression_mode)
-    for item in group.values():
-        if not isinstance(item, h5py.Dataset):
-            continue
-        if _workspace_h5py_dataset_is_dimension_scale(item):
-            continue
-        encoding = {}
-        if (
-            compression_encoding
-            and item.dtype.kind in "iufc"
-            and int(item.size) * int(item.dtype.itemsize)
-            >= _WORKSPACE_COMPRESSION_MIN_BYTES
-        ):
-            encoding = compression_encoding
-        if not _workspace_h5py_dataset_matches_encoding(item, encoding):
-            return False
-    return True
 
 
 def _workspace_h5py_type_contains_reference(type_id: typing.Any) -> bool:
@@ -1339,7 +1018,7 @@ def _read_workspace_dataset_group_h5py(
         "_Netcdf4Dimid",
         "coordinates",
     )
-    with _workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
+    with _open_workspace_h5_file_for_read(fname) as h5_file:
         if group_path not in h5_file or not isinstance(h5_file[group_path], h5py.Group):
             return None
         group = h5_file[group_path]
@@ -1623,7 +1302,7 @@ def _write_workspace_independent_tool_items_h5py(
 
 
 def _write_workspace_dataset_group_h5py(
-    fname: str | os.PathLike[str],
+    target: str | os.PathLike[str] | typing.Any,
     group_path: str,
     ds: xr.Dataset,
     *,
@@ -1639,7 +1318,12 @@ def _write_workspace_dataset_group_h5py(
 
     ensure_workspace_hdf5_filters_registered()
     group_path = group_path.strip("/")
-    with h5py.File(fname, "a") as h5_file:
+    file_context = (
+        contextlib.nullcontext(target)
+        if isinstance(target, h5py.File)
+        else h5py.File(target, "a")
+    )
+    with file_context as h5_file:
         if group_path in h5_file:
             del h5_file[group_path]
         parent = _ensure_h5_parent_group(h5_file, group_path)
@@ -1758,7 +1442,7 @@ def _write_workspace_dataset_group_h5py(
 
 
 def _write_workspace_dataset_group_to_file(
-    fname: str | os.PathLike[str],
+    fname: str | os.PathLike[str] | typing.Any,
     group_path: str,
     ds: xr.Dataset,
     *,
@@ -1779,6 +1463,7 @@ def _write_workspace_dataset_group_to_file(
         ds = _serialization.encode_private_coords(ds, data_name)
     ds = _sanitize_workspace_attr_names(ds)
     stale_encoding_keys = {
+        "_FillValue",
         "chunksizes",
         "compression",
         "compression_opts",
@@ -1790,6 +1475,7 @@ def _write_workspace_dataset_group_to_file(
         "source",
     }
     for variable in ds.variables.values():
+        variable.attrs.pop("_FillValue", None)
         for key in stale_encoding_keys:
             variable.encoding.pop(key, None)
 
@@ -1803,11 +1489,49 @@ def _write_workspace_dataset_group_to_file(
             fname, group_path, ds, encoding=encoding
         ):
             return
-        ds.to_netcdf(
-            fname,
-            mode="a",
-            engine="h5netcdf",
+        netcdf_encoding = {
+            name: {**encoding.get(name, {}), "_FillValue": None}
+            for name in ds.variables
+        }
+        if not isinstance(fname, h5py.File):
+            ds.to_netcdf(
+                fname,
+                mode="a",
+                engine="h5netcdf",
+                group=f"/{group_path.strip('/')}",
+                invalid_netcdf=True,
+                encoding=netcdf_encoding,
+            )
+            return
+
+        netcdf_file = h5netcdf.File(fname, mode="a", invalid_netcdf=True)
+        active_store = workspace_store.WorkspaceStore.active(fname.filename)
+        store = H5NetCDFStore(
+            netcdf_file,
             group=f"/{group_path.strip('/')}",
-            invalid_netcdf=True,
-            encoding=encoding,
+            mode="a",
+            lock=(
+                active_store.lock
+                if active_store is not None
+                else _workspace_file_lock(fname.filename)
+            ),
+            autoclose=False,
         )
+        writer = ArrayWriter()
+        try:
+            dump_to_store(
+                ds,
+                store,
+                writer,
+                encoding=netcdf_encoding,
+                unlimited_dims=None,
+            )
+            # The active workspace handle belongs to this process. Use Dask
+            # threads so a default process-based client does not receive it.
+            writer.sync(
+                compute=True,
+                chunkmanager_store_kwargs={"scheduler": "threads"},
+            )
+            store.sync()
+        finally:
+            store.close()

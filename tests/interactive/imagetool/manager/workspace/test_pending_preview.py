@@ -24,6 +24,9 @@ from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool._provenance._model import full_data
 from tests.interactive.imagetool.manager.helpers import select_tools
+from tests.interactive.imagetool.manager.workspace._support import (
+    _edit_current_workspace_payload_attrs,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
@@ -181,9 +184,7 @@ def test_manager_pending_memory_sidebar_shows_metadata_without_materializing(
         root.hide()
 
         fname = tmp_path / "pending-sidebar-metadata.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -342,9 +343,7 @@ def test_manager_pending_memory_preview_button_materializes_selected_node(
             root.hide()
 
         fname = tmp_path / "pending-preview-button.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -438,11 +437,8 @@ def test_manager_pending_memory_sidebar_renders_partial_preview_without_material
         root.hide()
 
         fname = tmp_path / "pending-partial-preview.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
-        with h5py.File(fname, "r+") as h5_file:
-            attrs = h5_file["0/imagetool"].attrs
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        with _edit_current_workspace_payload_attrs(fname) as attrs:
             state = json.loads(attrs["itool_state"])
             state["slice"]["indices"][0] = [2, 3, 999]
             attrs["itool_state"] = json.dumps(state)
@@ -504,9 +500,7 @@ def test_manager_pending_memory_partial_preview_read_cap_falls_back_to_load_butt
         root.hide()
 
         fname = tmp_path / "pending-preview-cap.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -549,9 +543,7 @@ def test_manager_pending_memory_1d_preview_read_cap_falls_back_to_load_button(
         root.hide()
 
         fname = tmp_path / "pending-1d-preview-cap.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -595,9 +587,7 @@ def test_manager_pending_memory_1d_preview_uses_promoted_stack_dim(
         root.hide()
 
         fname = tmp_path / "pending-1d-preview.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -1433,9 +1423,7 @@ def test_manager_pending_memory_hover_preview_does_not_materialize(
         root.hide()
 
         fname = tmp_path / "pending-hover-preview.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -1489,9 +1477,7 @@ def test_hidden_2d_workspace_preview_does_not_build_invalid_secondary_plots(
         manager.add_imagetool(root, show=False)
 
         fname = tmp_path / "hidden-2d-preview.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
