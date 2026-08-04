@@ -94,6 +94,15 @@ from erlab.interactive.imagetool.viewer_state import (
 logger = logging.getLogger(__name__)
 
 
+def _workspace_computation_session(
+    value: xr.DataArray | xr.Dataset,
+) -> contextlib.AbstractContextManager[None]:
+    """Return the manager workspace gate for one lazy computation."""
+    from erlab.interactive.imagetool.manager._workspace import _arrays
+
+    return _arrays.workspace_computation_session(value)
+
+
 class ImageSlicerArea(QtWidgets.QWidget):
     """An interactive tool based on :mod:`pyqtgraph` for exploring 3D data.
 
@@ -1429,7 +1438,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """Return a writable owned copy of the underlying values buffer."""
         values = darr.data
         if getattr(values, "chunks", None) is not None and hasattr(values, "compute"):
-            return values.compute()
+            with _workspace_computation_session(darr):
+                return values.compute()
         if hasattr(values, "copy"):
             return values.copy()
         return np.array(values, copy=True)
@@ -2265,7 +2275,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             )
 
         if arrays_list_flat:
-            arrays_list_flat = dask.compute(*arrays_list_flat)
+            with _workspace_computation_session(self._data):
+                arrays_list_flat = dask.compute(*arrays_list_flat)
 
         arrays_it = iter(arrays_list_flat)
 
@@ -2474,7 +2485,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             and (source.nbytes * 1e-6)
             < erlab.interactive.options.model.io.dask.compute_threshold
         ):
-            source = source.compute()
+            with _workspace_computation_session(source):
+                source = source.compute()
             shares_external_values = False
 
         self._data = source.copy(deep=False)
@@ -3298,7 +3310,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             try:
                 state = copy.deepcopy(self.state)
                 with erlab.interactive.utils.wait_dialog(self, "Computing…"):
-                    self.set_data(self._data.load())
+                    with _workspace_computation_session(self._data):
+                        self.set_data(self._data.load())
                     self.state = state
                 self.sigDataBackingChanged.emit()
             except Exception:

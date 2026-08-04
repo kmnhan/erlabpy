@@ -36,9 +36,10 @@ def _manifest(*object_ids: str) -> dict[str, object]:
 def test_workspace_store_publishes_valid_generations(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "workspace.itws"
     with workspace_store.WorkspaceStore(path, create=True) as store:
-        objects = store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
-        objects.create_group("first")
-        objects.create_group("second")
+        with store.write_session() as h5_file:
+            objects = h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
+            objects.create_group("first")
+            objects.create_group("second")
         first = store.publish(_manifest("first"))
         second = store.publish(_manifest("second"))
 
@@ -46,12 +47,13 @@ def test_workspace_store_publishes_valid_generations(tmp_path: pathlib.Path) -> 
         assert second.sequence == 2
         assert store.current_generation() == second
 
-        generation_group = store.h5_file[
-            f"{workspace_store._WORKSPACE_GENERATIONS_GROUP}/{second.sequence:020d}"
-        ]
-        generation_group[workspace_store._WORKSPACE_MANIFEST_DATASET].attrs[
-            "sha256"
-        ] = "invalid"
+        with store.write_session() as h5_file:
+            generation_group = h5_file[
+                f"{workspace_store._WORKSPACE_GENERATIONS_GROUP}/{second.sequence:020d}"
+            ]
+            generation_group[workspace_store._WORKSPACE_MANIFEST_DATASET].attrs[
+                "sha256"
+            ] = "invalid"
 
         assert store.current_generation() == first
 
@@ -68,26 +70,46 @@ def test_workspace_store_rejects_generation_with_missing_object(
         assert len(store.h5_file[workspace_store._WORKSPACE_STAGING_GROUP]) == 0
 
 
+def test_workspace_store_limits_writable_handle_to_write_session(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        assert store.h5_file.mode == "r"
+        with store.write_session() as h5_file:
+            assert h5_file.mode == "r+"
+        assert store._h5_file is None
+        assert store.h5_file.mode == "r"
+
+
 def test_workspace_store_gc_retains_two_generations_and_leases(
     tmp_path: pathlib.Path,
 ) -> None:
     path = tmp_path / "workspace.itws"
     with workspace_store.WorkspaceStore(path, create=True) as store:
-        objects = store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
-        for object_id in ("first", "second", "third"):
-            objects.create_group(object_id)
+        with store.write_session() as h5_file:
+            objects = h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
+            for object_id in ("first", "second", "third"):
+                objects.create_group(object_id)
         store.publish(_manifest("first"))
         store.publish(_manifest("second"))
         store.acquire_object("first")
         store.publish(_manifest("third"))
 
         assert not store.collect_garbage(max_objects=10)
-        assert set(objects) == {"first", "second", "third"}
+        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+            "first",
+            "second",
+            "third",
+        }
         assert len(store.generations()) == 2
 
         store.release_object("first")
         assert not store.collect_garbage(max_objects=10)
-        assert set(objects) == {"second", "third"}
+        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+            "second",
+            "third",
+        }
 
 
 def test_workspace_store_gc_removes_malformed_generation_names(
@@ -95,15 +117,17 @@ def test_workspace_store_gc_removes_malformed_generation_names(
 ) -> None:
     path = tmp_path / "workspace.itws"
     with workspace_store.WorkspaceStore(path, create=True) as store:
-        objects = store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
-        objects.create_group("current")
+        with store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
         store.publish(_manifest("current"))
-        generation_root = store.h5_file[workspace_store._WORKSPACE_GENERATIONS_GROUP]
-        generation_root.create_group("1")
+        with store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_GENERATIONS_GROUP].create_group("1")
 
         assert not store.collect_garbage(max_objects=1)
 
-        assert set(generation_root) == {"00000000000000000001"}
+        assert set(store.h5_file[workspace_store._WORKSPACE_GENERATIONS_GROUP]) == {
+            "00000000000000000001"
+        }
 
 
 def test_workspace_generation_write_blocks_concurrent_gc(
@@ -215,9 +239,8 @@ def test_workspace_generation_removes_partial_object_after_copy_error(
     source_path = tmp_path / "source.itws"
     target_path = tmp_path / "target.itws"
     with workspace_store.WorkspaceStore(source_path, create=True) as source_store:
-        source_store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group(
-            "source"
-        )
+        with source_store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("source")
         source_store.publish(_manifest("source"))
 
     def _copy_partial_then_fail(
@@ -372,6 +395,162 @@ def test_workspace_store_shares_lazy_reader_and_generation_writer(
             opened.close()
 
 
+def test_workspace_lazy_array_uses_bounded_process_reads(
+    tmp_path: pathlib.Path,
+) -> None:
+    import dask
+
+    path = tmp_path / "workspace.itws"
+    dataset = xr.Dataset(
+        {"data": (("x", "y"), np.arange(30, dtype=np.float64).reshape(5, 6))}
+    )
+    object_id = "payload"
+    plan = workspace_storage._WorkspaceGenerationPlan(
+        manifest=_manifest(object_id),
+        objects=(workspace_storage._WorkspaceObjectWrite(object_id, dataset=dataset),),
+    )
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store, plan, compression_mode="none"
+        )
+        opened = workspace_arrays.open_workspace_dataset(
+            path, store.object_path(object_id), chunks={"x": 2}
+        )
+        try:
+            with (
+                store.computation_session(),
+                dask.config.set(scheduler="processes"),
+            ):
+                result = opened["data"].sum().compute()
+            assert float(result) == 435.0
+            assert store.h5_file.mode == "r"
+        finally:
+            opened.close()
+
+
+def test_workspace_lazy_array_uses_process_localcluster_without_copy(
+    tmp_path: pathlib.Path,
+) -> None:
+    distributed = pytest.importorskip("distributed")
+
+    path = tmp_path / "workspace.itws"
+    dataset = xr.Dataset(
+        {"data": (("x", "y"), np.arange(30, dtype=np.float64).reshape(5, 6))}
+    )
+    object_id = "payload"
+    plan = workspace_storage._WorkspaceGenerationPlan(
+        manifest=_manifest(object_id),
+        objects=(workspace_storage._WorkspaceObjectWrite(object_id, dataset=dataset),),
+    )
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store, plan, compression_mode="none"
+        )
+        opened = workspace_arrays.open_workspace_dataset(
+            path, store.object_path(object_id), chunks={"x": 2}
+        )
+        try:
+            with (
+                distributed.LocalCluster(
+                    n_workers=2,
+                    threads_per_worker=1,
+                    processes=True,
+                    dashboard_address=None,
+                ) as cluster,
+                distributed.Client(cluster),
+                store.computation_session(),
+            ):
+                result = opened["data"].sum().compute()
+            assert float(result) == 435.0
+            assert set(tmp_path.iterdir()) == {path}
+        finally:
+            opened.close()
+
+
+def test_workspace_computation_session_blocks_background_write(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    write_started = threading.Event()
+    write_finished = threading.Event()
+    errors: list[BaseException] = []
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        value = xr.DataArray([1.0])
+        value.encoding["source"] = str(path)
+
+        def _write() -> None:
+            write_started.set()
+            try:
+                store.clear_staging()
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                write_finished.set()
+
+        with workspace_arrays.workspace_computation_session(value):
+            writer = threading.Thread(target=_write)
+            writer.start()
+            assert write_started.wait(2)
+            assert not write_finished.wait(0.05)
+
+        writer.join(2)
+        assert not writer.is_alive()
+        assert write_finished.is_set()
+        assert errors == []
+
+
+def test_workspace_worker_reports_inaccessible_shared_path(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    group_path = workspace_store.WorkspaceStore.object_path("payload")
+    with workspace_store.WorkspaceStore(path, create=True):
+        manager = workspace_arrays.WorkspaceFileManager(
+            path, object_id="payload", group_path=group_path
+        )
+        state = manager.__getstate__()
+    path.unlink()
+    worker_manager = workspace_arrays.WorkspaceFileManager.__new__(
+        workspace_arrays.WorkspaceFileManager
+    )
+    worker_manager.__setstate__(state)
+
+    with pytest.raises(
+        workspace_arrays.WorkspaceWorkerAccessError,
+        match="same readable file on every worker",
+    ):
+        worker_manager._read_bounded_variable("data", slice(None))
+
+
+def test_workspace_worker_rejects_different_file_at_shared_path(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    replacement = tmp_path / "replacement.itws"
+    group_path = workspace_store.WorkspaceStore.object_path("payload")
+    with workspace_store.WorkspaceStore(path, create=True):
+        manager = workspace_arrays.WorkspaceFileManager(
+            path, object_id="payload", group_path=group_path
+        )
+        state = manager.__getstate__()
+    with workspace_store.WorkspaceStore(replacement, create=True):
+        pass
+    replacement.replace(path)
+    worker_manager = workspace_arrays.WorkspaceFileManager.__new__(
+        workspace_arrays.WorkspaceFileManager
+    )
+    worker_manager.__setstate__(state)
+
+    with pytest.raises(
+        workspace_store.WorkspaceStoreConflictError,
+        match="identity changed",
+    ):
+        worker_manager._read_bounded_variable("data", slice(None))
+
+
 def test_workspace_raw_reads_reuse_active_store_handle(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -388,20 +567,23 @@ def test_workspace_compaction_keeps_current_state_and_reopens_store(
 ) -> None:
     path = tmp_path / "workspace.itws"
     with workspace_store.WorkspaceStore(path, create=True) as store:
-        objects = store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
-        objects.create_group("obsolete").create_dataset(
-            "data", data=np.ones(2_000_000, dtype=np.float64)
-        )
-        objects.create_group("current").create_dataset(
-            "data", data=np.arange(10, dtype=np.float64)
-        )
+        with store.write_session() as h5_file:
+            objects = h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
+            objects.create_group("obsolete").create_dataset(
+                "data", data=np.ones(2_000_000, dtype=np.float64)
+            )
+            objects.create_group("current").create_dataset(
+                "data", data=np.arange(10, dtype=np.float64)
+            )
         store.publish(_manifest("obsolete"))
         store.publish(_manifest("current"))
         size_before = path.stat().st_size
+        workspace_id = store.workspace_id
 
         workspace_storage._compact_workspace_store(store)
 
         assert workspace_store.WorkspaceStore.active(path) is store
+        assert store.workspace_id == workspace_id
         assert store.h5_file.id.valid
         assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
             "current"
@@ -419,13 +601,13 @@ def test_workspace_store_active_waits_for_file_replacement(
     path = tmp_path / "workspace.itws"
     prepared_path = tmp_path / "prepared.itws"
     with workspace_store.WorkspaceStore(prepared_path, create=True) as prepared_store:
-        prepared_store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group(
-            "prepared"
-        )
+        with prepared_store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("prepared")
         prepared_store.publish(_manifest("prepared"))
 
     with workspace_store.WorkspaceStore(path, create=True) as store:
-        store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
+        with store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
         store.publish(_manifest("current"))
         replacement_started = threading.Event()
         allow_replacement = threading.Event()
@@ -494,15 +676,15 @@ def test_workspace_store_uses_prepared_recovery_if_original_cannot_reopen(
     path = tmp_path / "workspace.itws"
     prepared_path = tmp_path / "prepared.itws"
     with workspace_store.WorkspaceStore(prepared_path, create=True) as prepared_store:
-        prepared_store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group(
-            "prepared"
-        )
+        with prepared_store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("prepared")
         prepared_store.publish(_manifest("prepared"))
 
     with workspace_store.WorkspaceStore(path, create=True) as store:
         store.publish(_manifest())
 
-        def _deny_reopen(*, create: bool) -> None:
+        def _deny_reopen(*, create: bool, workspace_id: str | None = None) -> None:
+            del workspace_id
             if create:
                 raise AssertionError("Replacement recovery must not create a file")
             raise PermissionError(errno.EACCES, "reopen denied", path)
@@ -528,9 +710,8 @@ def test_workspace_store_retries_reopen_after_successful_replacement(
     path = tmp_path / "workspace.itws"
     prepared_path = tmp_path / "prepared.itws"
     with workspace_store.WorkspaceStore(prepared_path, create=True) as prepared_store:
-        prepared_store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group(
-            "prepared"
-        )
+        with prepared_store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("prepared")
         prepared_store.publish(_manifest("prepared"))
 
     with workspace_store.WorkspaceStore(path, create=True) as store:
@@ -539,8 +720,11 @@ def test_workspace_store_retries_reopen_after_successful_replacement(
         reopen_attempts = 0
         delays: list[float] = []
 
-        def _open_with_transient_denial(*, create: bool) -> None:
+        def _open_with_transient_denial(
+            *, create: bool, workspace_id: str | None = None
+        ) -> None:
             nonlocal reopen_attempts
+            del workspace_id
             reopen_attempts += 1
             if reopen_attempts < 3:
                 raise PermissionError(errno.EACCES, "reopen denied", path)
@@ -567,10 +751,12 @@ def test_workspace_compaction_retains_prepared_recovery_file(
     path = tmp_path / "workspace.itws"
     recovery_path: pathlib.Path | None = None
     with workspace_store.WorkspaceStore(path, create=True) as store:
-        store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
+        with store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
         store.publish(_manifest("current"))
 
-        def _deny_reopen(*, create: bool) -> None:
+        def _deny_reopen(*, create: bool, workspace_id: str | None = None) -> None:
+            del workspace_id
             if create:
                 raise AssertionError("Replacement recovery must not create a file")
             raise PermissionError(errno.EACCES, "reopen denied", path)
@@ -602,25 +788,25 @@ def test_workspace_compaction_does_not_overwrite_external_replacement(
     path = tmp_path / "workspace.itws"
     external_path = tmp_path / "external.itws"
     with workspace_store.WorkspaceStore(external_path, create=True) as external_store:
-        external_store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group(
-            "external"
-        )
+        with external_store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("external")
         external_store.publish(_manifest("external"))
 
     with workspace_store.WorkspaceStore(path, create=True) as store:
-        store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
+        with store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
         store.publish(_manifest("current"))
-        original_close = store._close_handle
+        original_release = store._release_handle
         replacement_installed = False
 
-        def _close_and_replace_document() -> None:
+        def _release_and_replace_document() -> None:
             nonlocal replacement_installed
-            original_close()
+            original_release()
             if not replacement_installed:
                 replacement_installed = True
                 external_path.replace(path)
 
-        monkeypatch.setattr(store, "_close_handle", _close_and_replace_document)
+        monkeypatch.setattr(store, "_release_handle", _release_and_replace_document)
 
         with pytest.raises(workspace_store.WorkspaceStoreConflictError):
             workspace_storage._compact_workspace_store(store)
@@ -642,13 +828,13 @@ def test_workspace_compaction_rejects_replacement_after_identity_check(
     path = tmp_path / "workspace.itws"
     external_path = tmp_path / "external.itws"
     with workspace_store.WorkspaceStore(external_path, create=True) as external_store:
-        external_store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group(
-            "external"
-        )
+        with external_store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("external")
         external_store.publish(_manifest("external"))
 
     with workspace_store.WorkspaceStore(path, create=True) as store:
-        store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
+        with store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
         store.publish(_manifest("current"))
         original_require_identity = store._require_path_identity
 
@@ -677,20 +863,25 @@ def test_workspace_compaction_preserves_leased_payloads(
 ) -> None:
     path = tmp_path / "workspace.itws"
     with workspace_store.WorkspaceStore(path, create=True) as store:
-        objects = store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
-        objects.create_group("leased")
-        objects.create_group("current")
+        with store.write_session() as h5_file:
+            objects = h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
+            objects.create_group("leased")
+            objects.create_group("current")
         store.publish(_manifest("leased"))
         store.publish(_manifest("current"))
         store.acquire_object("leased")
 
         workspace_storage._compact_workspace_store(store)
 
-        objects = store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
-        assert set(objects) == {"current", "leased"}
+        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+            "current",
+            "leased",
+        }
         store.release_object("leased")
         assert not store.collect_garbage(max_objects=1)
-        assert set(objects) == {"current"}
+        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+            "current"
+        }
 
 
 def test_workspace_compaction_preserves_live_legacy_group(
@@ -699,11 +890,11 @@ def test_workspace_compaction_preserves_live_legacy_group(
     path = tmp_path / "workspace.itws"
     dataset = xr.Dataset({"data": ("x", np.arange(5, dtype=np.float64))})
     with workspace_store.WorkspaceStore(path, create=True) as store:
-        workspace_arrays._write_workspace_dataset_group_to_file(
-            store.h5_file, "legacy/imagetool", dataset, compression_mode="none"
-        )
-        objects = store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
-        objects.create_group("current")
+        with store.write_session() as h5_file:
+            workspace_arrays._write_workspace_dataset_group_to_file(
+                h5_file, "legacy/imagetool", dataset, compression_mode="none"
+            )
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
         store.publish(_manifest("current"))
         opened = workspace_arrays.open_workspace_dataset(
             path, "legacy/imagetool", chunks={}
@@ -724,17 +915,18 @@ def test_workspace_store_switch_keeps_preserved_lazy_readers(
     target_path = tmp_path / "target.itws"
     dataset = xr.Dataset({"data": ("x", np.arange(5, dtype=np.float64))})
     with workspace_store.WorkspaceStore(source_path, create=True) as source_store:
-        for group_path in (
-            source_store.object_path("old"),
-            source_store.object_path("current"),
-            "/legacy/imagetool",
-        ):
-            workspace_arrays._write_workspace_dataset_group_to_file(
-                source_store.h5_file,
-                group_path,
-                dataset,
-                compression_mode="none",
-            )
+        with source_store.write_session() as h5_file:
+            for group_path in (
+                source_store.object_path("old"),
+                source_store.object_path("current"),
+                "/legacy/imagetool",
+            ):
+                workspace_arrays._write_workspace_dataset_group_to_file(
+                    h5_file,
+                    group_path,
+                    dataset,
+                    compression_mode="none",
+                )
         source_store.publish(_manifest("current"))
         old_reader = workspace_arrays.open_workspace_dataset(
             source_path, source_store.object_path("old"), chunks={}
@@ -775,8 +967,14 @@ def test_workspace_store_switch_keeps_preserved_lazy_readers(
             source_store.switch_path(target_path)
             source_path.unlink()
 
-            assert float(old_reader["data"].sum().compute()) == 10.0
-            assert float(legacy_reader["data"].sum().compute()) == 10.0
+            import dask
+
+            with (
+                source_store.computation_session(),
+                dask.config.set(scheduler="processes"),
+            ):
+                assert float(old_reader["data"].sum().compute()) == 10.0
+                assert float(legacy_reader["data"].sum().compute()) == 10.0
         finally:
             old_reader.close()
             legacy_reader.close()
@@ -810,21 +1008,23 @@ def test_workspace_store_conflict_keeps_lazy_data_for_save_as(
     dataset = xr.Dataset({"data": ("x", np.arange(5, dtype=np.float64))})
 
     with workspace_store.WorkspaceStore(path, create=True) as store:
-        workspace_arrays._write_workspace_dataset_group_to_file(
-            store.h5_file,
-            store.object_path("current"),
-            dataset,
-            compression_mode="none",
-        )
+        with store.write_session() as h5_file:
+            workspace_arrays._write_workspace_dataset_group_to_file(
+                h5_file,
+                store.object_path("current"),
+                dataset,
+                compression_mode="none",
+            )
         store.publish(_manifest("current"))
         opened = workspace_arrays.open_workspace_dataset(
             path, store.object_path("current"), chunks={}
         )
         try:
             with workspace_store.WorkspaceStore(replacement, create=True) as other:
-                other.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group(
-                    "external"
-                )
+                with other.write_session() as h5_file:
+                    h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group(
+                        "external"
+                    )
                 other.publish(_manifest("external"))
             replacement.replace(path)
 

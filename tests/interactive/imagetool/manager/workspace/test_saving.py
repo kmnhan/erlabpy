@@ -3004,9 +3004,9 @@ def test_workspace_save_as_snapshot_preserves_live_history(
 
         store = manager._workspace_controller._workspace_store
         assert store is not None
-        with store.lock:
+        with store.write_session() as h5_file:
             workspace_arrays._write_workspace_dataset_group_to_file(
-                store.h5_file,
+                h5_file,
                 "/legacy/imagetool",
                 data.to_dataset(name="data"),
                 compression_mode="none",

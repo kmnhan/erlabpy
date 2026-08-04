@@ -1,4 +1,4 @@
-"""Long-lived HDF5 storage for one ImageTool Manager workspace."""
+"""Document lifetime and HDF5 access for ImageTool Manager workspaces."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ _WORKSPACE_STAGING_GROUP = "__itws_staging"
 _WORKSPACE_GENERATIONS_GROUP = "__itws_generations"
 _WORKSPACE_MANIFEST_DATASET = "manifest"
 _WORKSPACE_GENERATION_WIDTH = 20
+_WORKSPACE_ID_ATTR = "imagetool_workspace_id"
 _FILE_ACCESS_RETRY_DELAYS = (0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0)
 _RETRYABLE_FILE_ACCESS_ERRNOS = frozenset(
     {
@@ -83,10 +84,13 @@ class WorkspaceStoreReopenError(RuntimeError):
 
 
 class WorkspaceStore:
-    """Own the HDF5 handle used by one open workspace document.
+    """Own the lifetime and access policy for one workspace document.
 
     Payload objects are immutable. A generation becomes visible only after its
-    completed staging group moves into the generations group.
+    completed staging group moves into the generations group. The store keeps a
+    read-only handle while the document is idle. A bounded write session closes
+    that handle, opens the document for writing, and closes the writable handle
+    before it returns.
     """
 
     _active: weakref.WeakValueDictionary[str, WorkspaceStore] = (
@@ -94,7 +98,15 @@ class WorkspaceStore:
     )
     _active_lock = threading.RLock()
 
-    def __init__(self, path: str | os.PathLike[str], *, create: bool = False) -> None:
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        create: bool = False,
+        workspace_id: str | None = None,
+    ) -> None:
+        if not create and workspace_id is not None:
+            raise ValueError("workspace_id is valid only when create is true")
         self._path = pathlib.Path(path).resolve()
         self._lock = threading.RLock()
         self._write_lock = threading.RLock()
@@ -103,10 +115,12 @@ class WorkspaceStore:
         self._state: typing.Literal["open", "conflicted", "closed"] = "closed"
         self._handle_generation = 0
         self._h5_file: typing.Any = None
+        self._write_depth = 0
+        self._workspace_id = ""
         self._path_identity: tuple[int, int] | None = None
         self._recovery_path: pathlib.Path | None = None
         try:
-            self._open(create=create)
+            self._open(create=create, workspace_id=workspace_id)
             self._register()
         except Exception:
             self._close_handle()
@@ -151,21 +165,29 @@ class WorkspaceStore:
 
     @property
     def h5_file(self) -> typing.Any:
-        """Return the writable document handle."""
+        """Return the current document handle.
+
+        The handle is read-only outside :meth:`write_session`.
+        """
         if self.conflicted:
             raise WorkspaceStoreConflictError(
                 f"Workspace store no longer owns its path: {self._path}"
             )
         if self.closed:
             raise RuntimeError("Workspace store is closed")
-        return self._h5_file
+        return self._ensure_read_handle()
 
     @property
     def read_h5_file(self) -> typing.Any:
         """Return the readable session handle, including during recovery."""
-        if self.closed or self._h5_file is None:
+        if self.closed:
             raise RuntimeError("Workspace store has no readable handle")
-        return self._h5_file
+        return self._ensure_read_handle()
+
+    @property
+    def workspace_id(self) -> str:
+        """Return the stable identity stored inside this workspace file."""
+        return self._workspace_id
 
     @property
     def handle_generation(self) -> int:
@@ -195,31 +217,54 @@ class WorkspaceStore:
             if self._active.get(key) is self:
                 self._active.pop(key, None)
 
-    def _open(self, *, create: bool) -> None:
+    @staticmethod
+    def _ensure_workspace_id(h5_file: typing.Any, preferred: str | None = None) -> str:
+        workspace_id = preferred or h5_file.attrs.get(_WORKSPACE_ID_ATTR)
+        if isinstance(workspace_id, bytes):
+            workspace_id = workspace_id.decode()
+        if not isinstance(workspace_id, str) or not workspace_id:
+            workspace_id = uuid.uuid4().hex
+        if h5_file.attrs.get(_WORKSPACE_ID_ATTR) != workspace_id:
+            h5_file.attrs[_WORKSPACE_ID_ATTR] = workspace_id
+            h5_file.flush()
+        return workspace_id
+
+    def _open(self, *, create: bool, workspace_id: str | None = None) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         if create:
-            self._h5_file = h5py.File(
+            h5_file = h5py.File(
                 self._path,
                 "w",
                 libver="latest",
                 fs_strategy="fsm",
                 fs_persist=True,
             )
-            self._h5_file.attrs["imagetool_workspace_schema_version"] = 5
-            self._h5_file.attrs["erlab_version"] = str(erlab.__version__)
-            self._h5_file.require_group(_WORKSPACE_OBJECTS_GROUP)
-            self._h5_file.require_group(_WORKSPACE_STAGING_GROUP)
-            self._h5_file.require_group(_WORKSPACE_GENERATIONS_GROUP)
-            self._h5_file.flush()
+            self._workspace_id = self._ensure_workspace_id(h5_file, workspace_id)
+            h5_file.attrs["imagetool_workspace_schema_version"] = 5
+            h5_file.attrs["erlab_version"] = str(erlab.__version__)
+            h5_file.require_group(_WORKSPACE_OBJECTS_GROUP)
+            h5_file.require_group(_WORKSPACE_STAGING_GROUP)
+            h5_file.require_group(_WORKSPACE_GENERATIONS_GROUP)
+            h5_file.flush()
+            h5_file.close()
         else:
-            self._h5_file = h5py.File(self._path, "r+")
-        self._handle_generation += 1
+            with h5py.File(self._path, "r+") as h5_file:
+                self._workspace_id = self._ensure_workspace_id(h5_file)
+        self._h5_file = None
         path_stat = self._path.stat()
         self._path_identity = (path_stat.st_dev, path_stat.st_ino)
         self._recovery_path = None
         self._state = "open"
 
-    def _close_handle(self) -> None:
+    def _ensure_read_handle(self) -> typing.Any:
+        if self._h5_file is None:
+            source = self._recovery_path or self._path
+            self._h5_file = _retry_file_access(lambda: h5py.File(source, "r"))
+            self._handle_generation += 1
+        return self._h5_file
+
+    def _release_handle(self) -> None:
+        """Release the current HDF5 handle without closing the store."""
         for reader in tuple(self._readers):
             with contextlib.suppress(Exception):
                 reader._close_store_wrapper()
@@ -228,6 +273,40 @@ class WorkspaceStore:
         if h5_file is not None:
             with contextlib.suppress(Exception):
                 h5_file.close()
+        self._handle_generation += 1
+
+    @contextlib.contextmanager
+    def write_session(self) -> typing.Iterator[typing.Any]:
+        """Yield the only writable handle for one bounded document operation."""
+        with self._write_lock:
+            with self._lock:
+                self.require_current_path()
+                outermost = self._write_depth == 0
+                if outermost:
+                    self._release_handle()
+                    self._h5_file = _retry_file_access(
+                        lambda: h5py.File(self._path, "r+")
+                    )
+                    self._handle_generation += 1
+                self._write_depth += 1
+            try:
+                yield self._h5_file
+            finally:
+                with self._lock:
+                    self._write_depth -= 1
+                    if outermost:
+                        self._release_handle()
+
+    @contextlib.contextmanager
+    def computation_session(self) -> typing.Iterator[None]:
+        """Keep saves and file replacement out of one Dask computation."""
+        with self._write_lock:
+            with self._lock:
+                self.require_current_path()
+            yield
+
+    def _close_handle(self) -> None:
+        self._release_handle()
         recovery_path = self._recovery_path
         self._recovery_path = None
         if recovery_path is not None:
@@ -291,29 +370,25 @@ class WorkspaceStore:
     def switch_path(self, path: str | os.PathLike[str]) -> None:
         """Open *path* through this store without invalidating store references."""
         new_path = pathlib.Path(path).resolve()
-        with self._write_lock, self._lock:
-            new_h5_file = h5py.File(new_path, "r+")
-            with contextlib.ExitStack() as cleanup:
-                cleanup.callback(new_h5_file.close)
-                new_stat = new_path.stat()
-                new_identity = (new_stat.st_dev, new_stat.st_ino)
-                with self._active_lock:
-                    existing = self._active.get(self._key(new_path))
-                    if existing is not None and existing is not self:
-                        raise RuntimeError(
-                            f"Workspace already has an active store: {new_path}"
-                        )
-                    old_path = self._path
-                    self._unregister(old_path)
-                    self._close_handle()
-                    self._path = new_path
-                    self._h5_file = new_h5_file
-                    new_h5_file = None
-                    self._handle_generation += 1
-                    self._path_identity = new_identity
-                    self._state = "open"
-                    self._active[self._key(new_path)] = self
-                    cleanup.pop_all()
+        with self._write_lock, self._lock, h5py.File(new_path, "r+") as new_h5_file:
+            new_stat = new_path.stat()
+            new_identity = (new_stat.st_dev, new_stat.st_ino)
+            workspace_id = self._ensure_workspace_id(new_h5_file)
+            with self._active_lock:
+                existing = self._active.get(self._key(new_path))
+                if existing is not None and existing is not self:
+                    raise RuntimeError(
+                        f"Workspace already has an active store: {new_path}"
+                    )
+                old_path = self._path
+                self._unregister(old_path)
+                self._close_handle()
+                self._path = new_path
+                self._workspace_id = workspace_id
+                self._path_identity = new_identity
+                self._recovery_path = None
+                self._state = "open"
+                self._active[self._key(new_path)] = self
 
     def reopen(self) -> None:
         """Close and reopen the current file through the same store object."""
@@ -366,7 +441,7 @@ class WorkspaceStore:
             path_identity = self._path_identity
             if path_identity is None:
                 raise RuntimeError("Workspace store has no path identity")
-            self._close_handle()
+            self._release_handle()
             try:
                 self._require_path_identity(path_identity)
                 replace(source, self._path)
@@ -532,8 +607,7 @@ class WorkspaceStore:
 
     def publish(self, manifest: Mapping[str, typing.Any]) -> _WorkspaceGeneration:
         """Publish one completed manifest as the newest generation."""
-        with self._write_lock, self._lock:
-            self.require_current_path()
+        with self.write_session():
             generation_root = self.h5_file.require_group(_WORKSPACE_GENERATIONS_GROUP)
             existing_sequences = [
                 int(name)
@@ -600,8 +674,7 @@ class WorkspaceStore:
         """
         if max_objects < 1:
             raise ValueError("max_objects must be positive")
-        with self._write_lock, self._lock:
-            self.require_current_path()
+        with self.write_session():
             generations = self.generations()
             retained = generations[-2:]
             retained_names = {
@@ -627,7 +700,7 @@ class WorkspaceStore:
 
     def clear_staging(self) -> None:
         """Remove unpublished staging groups left by interrupted saves."""
-        with self._write_lock, self._lock:
+        with self.write_session():
             staging_root = self.h5_file.require_group(_WORKSPACE_STAGING_GROUP)
             for name in list(staging_root):
                 del staging_root[name]

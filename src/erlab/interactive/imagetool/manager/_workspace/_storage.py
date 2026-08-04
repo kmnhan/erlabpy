@@ -129,7 +129,7 @@ def _write_workspace_generation(
     compression_mode: WorkspaceCompressionMode,
 ) -> workspace_store._WorkspaceGeneration:
     """Write new immutable objects and publish one generation."""
-    with target_store.write_lock:
+    with target_store.write_session():
         created_object_ids: list[str] = []
         try:
             with target_store.lock:
@@ -211,9 +211,14 @@ def _compact_workspace_store(store: workspace_store.WorkspaceStore) -> None:
             legacy_group_paths = store.leased_legacy_group_paths
             expected_state = _workspace_publication_state(workspace_path)
 
-            with workspace_store.WorkspaceStore(
-                prepared_path, create=True
-            ) as compacted:
+            with (
+                workspace_store.WorkspaceStore(
+                    prepared_path,
+                    create=True,
+                    workspace_id=store.workspace_id,
+                ) as compacted,
+                compacted.write_session(),
+            ):
                 with compacted.lock:
                     for group_path in sorted(legacy_group_paths):
                         copied = workspace_arrays._copy_workspace_h5_group_to_open_file(
@@ -627,7 +632,13 @@ def _recover_workspace_transactions(fname: str | os.PathLike[str]) -> None:
             return
         if not _workspace_path_is_itws(fname):
             return
-        with h5py.File(fname, "a") as h5_file:
+        active_store = workspace_store.WorkspaceStore.active(fname)
+        file_context = (
+            active_store.write_session()
+            if active_store is not None
+            else h5py.File(fname, "a")
+        )
+        with file_context as h5_file:
             if not _workspace_file_is_workspace(h5_file):
                 return
             for name in list(h5_file):
