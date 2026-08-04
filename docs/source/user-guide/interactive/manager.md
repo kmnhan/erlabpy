@@ -385,12 +385,6 @@ Use {menuselection}`File --> Offload to Workspace` to make the selected data laz
 the workspace file. This frees up memory but will slow down indexing and slicing. Use
 {menuselection}`Dask --> Load Into Memory` in ImageTool to bring it back into memory.
 
-:::{versionchanged} 3.27.0
-Workspace-backed Dask arrays can use thread or process workers. Each process opens the
-workspace as read-only for one chunk and closes it after the read. Workers on another
-computer must have read access to the same workspace path.
-:::
-
 If the workspace contains watched notebook variables, the watched rows reopen with
 their variable-name badges. The rows stay disconnected until a notebook defines the
 matching variables and reconnects them, as described in

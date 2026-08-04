@@ -2276,15 +2276,6 @@ def ktool(
         seed the normal emission controls and derived angle offsets.
     initial_delta
         Optional delta value to apply alongside ``initial_normal_emission``.
-
-    Notes
-    -----
-    .. versionchanged:: 3.27.0
-        The tool opens the input-coordinate editor when the configuration or a required
-        scalar energy or angle coordinate is not in the data. Select a configuration
-        and enter a finite value for each blank coordinate to open the tool. The editor
-        also changes existing scalar coordinates such as ``hv`` and ``eV``. The
-        ``alpha`` coordinate and swept coordinates remain required in the source data.
     """
     if data_name is None:
         try:
