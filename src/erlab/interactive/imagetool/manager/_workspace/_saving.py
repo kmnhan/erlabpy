@@ -77,6 +77,9 @@ class _WorkspaceSaveSnapshot:
     serialized_tool_data_references: tuple[
         tuple[str, dict[str, dict[str, typing.Any]]], ...
     ] = ()
+    expected_publication_state: workspace_storage._WorkspacePublicationState | None = (
+        None
+    )
 
     def close(self) -> None:
         if self.full_tree is not None:
@@ -122,6 +125,8 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
         snapshot: _WorkspaceSaveSnapshot,
     ) -> None:
         super().__init__()
+        if snapshot.expected_publication_state is None:
+            raise ValueError("Background save snapshot is not bound to its destination")
         self.signals = _WorkspaceSaveWorkerSignals()
         self._fname = fname
         self._snapshot = snapshot
@@ -139,6 +144,7 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
                     copy_groups=self._snapshot.copy_groups,
                     copy_group_sources=self._snapshot.copy_group_sources,
                     compression_mode=self._snapshot.compression_mode,
+                    expected_state=self._snapshot.expected_publication_state,
                 )
             elif self._snapshot.full_tree is None:
                 workspace_storage._write_workspace_transaction_file(
@@ -147,6 +153,7 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
                     self._snapshot.attr_updates,
                     self._snapshot.root_attrs,
                     compression_mode=self._snapshot.compression_mode,
+                    expected_state=self._snapshot.expected_publication_state,
                 )
             else:
                 workspace_storage._write_full_workspace_tree_file(
@@ -157,6 +164,7 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
                     copy_groups=self._snapshot.copy_groups,
                     copy_group_sources=self._snapshot.copy_group_sources,
                     compression_mode=self._snapshot.compression_mode,
+                    expected_state=self._snapshot.expected_publication_state,
                 )
         except workspace_storage._WorkspaceBackingFileNotFoundError as exc:
             error = _WorkspaceSaveError(
@@ -1070,12 +1078,14 @@ class _WorkspaceSaver:
         reuse_unchanged_groups: bool = True,
         require_matching_compression: bool = False,
     ) -> None:
+        expected_state = workspace_storage._workspace_publication_state(fname)
         snapshot = self._workspace_full_save_snapshot(
             self._manager._workspace_state.dirty_generation,
             fname=fname,
             reuse_unchanged_groups=reuse_unchanged_groups,
             require_matching_compression=require_matching_compression,
         )
+        snapshot.expected_publication_state = expected_state
         try:
             workspace_storage._write_full_workspace_tree_file(
                 fname,
@@ -1085,6 +1095,7 @@ class _WorkspaceSaver:
                 copy_groups=snapshot.copy_groups,
                 copy_group_sources=snapshot.copy_group_sources,
                 compression_mode=snapshot.compression_mode,
+                expected_state=snapshot.expected_publication_state,
             )
             self._controller._commit_saved_tool_data_references(snapshot)
         finally:
@@ -1164,12 +1175,14 @@ class _WorkspaceSaver:
         )
 
     def _save_workspace_delta(self, fname: str | os.PathLike[str]) -> None:
+        expected_state = workspace_storage._workspace_publication_state(fname)
         delta_save_count = self._manager._workspace_state.delta_save_count + 1
         snapshot = self._workspace_delta_save_snapshot(
             self._manager._workspace_state.dirty_generation,
             self._workspace_root_attrs_payload(delta_save_count=delta_save_count),
             delta_save_count,
         )
+        snapshot.expected_publication_state = expected_state
         try:
             workspace_storage._write_workspace_transaction_file(
                 fname,
@@ -1177,6 +1190,7 @@ class _WorkspaceSaver:
                 snapshot.attr_updates,
                 snapshot.root_attrs,
                 compression_mode=snapshot.compression_mode,
+                expected_state=snapshot.expected_publication_state,
             )
             self._controller._commit_saved_tool_data_references(snapshot)
             self._manager._workspace_state.delta_save_count = snapshot.delta_save_count
@@ -1562,27 +1576,31 @@ class _WorkspaceSaver:
     def _workspace_save_snapshot(
         self, fname: str | os.PathLike[str]
     ) -> _WorkspaceSaveSnapshot:
+        expected_state = workspace_storage._workspace_publication_state(fname)
         self._controller._drain_workspace_deferred_events()
         generation = self._manager._workspace_state.dirty_generation
         self._manager._workspace_state.saving_depth += 1
         try:
             if self._workspace_requires_full_save(fname):
-                return self._workspace_full_save_snapshot(generation)
-            if self._workspace_layout_only_modified():
+                snapshot = self._workspace_full_save_snapshot(generation)
+            elif self._workspace_layout_only_modified():
                 delta_save_count = self._manager._workspace_state.delta_save_count
                 root_attrs = self._workspace_root_attrs_payload(
                     delta_save_count=delta_save_count
                 )
-                return self._workspace_delta_save_snapshot(
+                snapshot = self._workspace_delta_save_snapshot(
                     generation, root_attrs, delta_save_count
                 )
-            delta_save_count = self._manager._workspace_state.delta_save_count + 1
-            root_attrs = self._workspace_root_attrs_payload(
-                delta_save_count=delta_save_count
-            )
-            return self._workspace_delta_save_snapshot(
-                generation, root_attrs, delta_save_count
-            )
+            else:
+                delta_save_count = self._manager._workspace_state.delta_save_count + 1
+                root_attrs = self._workspace_root_attrs_payload(
+                    delta_save_count=delta_save_count
+                )
+                snapshot = self._workspace_delta_save_snapshot(
+                    generation, root_attrs, delta_save_count
+                )
+            snapshot.expected_publication_state = expected_state
+            return snapshot
         finally:
             self._manager._workspace_state.saving_depth -= 1
 
@@ -1659,8 +1677,8 @@ class _WorkspaceSaver:
         if workspace_storage._workspace_path_is_likely_network_path(workspace_path):
             return None
         try:
-            root_attrs, copy_groups = workspace_storage._workspace_file_repack_payload(
-                workspace_path
+            root_attrs, copy_groups, expected_state = (
+                workspace_storage._workspace_file_repack_payload(workspace_path)
             )
         except Exception:
             logger.debug(
@@ -1676,6 +1694,7 @@ class _WorkspaceSaver:
             file_repack=True,
             copy_source=str(workspace_path),
             copy_groups=copy_groups,
+            expected_publication_state=expected_state,
         )
 
     def _workspace_should_repack_before_shutdown(self) -> bool:

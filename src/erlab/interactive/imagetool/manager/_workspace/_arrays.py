@@ -220,7 +220,7 @@ class _WorkspaceReaderSnapshot:
         default_factory=weakref.WeakSet
     )
     manager_count: int = 0
-    exported: bool = False
+    retained_for_serialization: bool = False
     disposed: bool = False
 
 
@@ -391,7 +391,9 @@ def _release_workspace_reader_snapshot(snapshot: _WorkspaceReaderSnapshot) -> No
         if snapshot.disposed:
             return
         snapshot.manager_count -= 1
-        dispose = snapshot.manager_count == 0 and not snapshot.exported
+        dispose = (
+            snapshot.manager_count == 0 and not snapshot.retained_for_serialization
+        )
     if dispose:
         _dispose_workspace_reader_snapshot(snapshot)
 
@@ -404,7 +406,10 @@ def _export_workspace_reader_snapshot(snapshot: _WorkspaceReaderSnapshot) -> Non
     with _WORKSPACE_READER_SNAPSHOTS_LOCK:
         if snapshot.disposed or not pathlib.Path(snapshot.path).exists():
             raise RuntimeError("Workspace reader is no longer available")
-        snapshot.exported = True
+        # Pickle bytes can be loaded later or more than once. Python does not report
+        # when all copies of those bytes are gone, so process cleanup is the first safe
+        # time to remove a serialized reader generation.
+        snapshot.retained_for_serialization = True
 
 
 def _cleanup_workspace_reader_snapshots() -> None:

@@ -1467,6 +1467,9 @@ def test_workspace_save_worker_reports_missing_backing_source(tmp_path) -> None:
         root_attrs=_transaction_test_root_attrs(),
         delta_save_count=0,
         full_tree=xr.DataTree(),
+        expected_publication_state=workspace_storage._workspace_publication_state(
+            target
+        ),
         copy_group_sources=(
             (
                 str(missing_source),
@@ -1493,6 +1496,54 @@ def test_workspace_save_worker_reports_missing_backing_source(tmp_path) -> None:
     assert error.traceback_text
 
 
+def test_workspace_save_worker_rejects_unbound_snapshot(tmp_path) -> None:
+    snapshot = workspace_saving._WorkspaceSaveSnapshot(
+        generation=0,
+        root_attrs={},
+        delta_save_count=0,
+    )
+
+    with pytest.raises(ValueError, match="not bound to its destination"):
+        workspace_saving._WorkspaceSaveWorker(tmp_path / "target.itws", snapshot)
+
+
+@pytest.mark.parametrize("full_save", [False, True])
+def test_workspace_save_worker_uses_snapshot_publication_state(
+    monkeypatch, tmp_path, full_save
+) -> None:
+    target = tmp_path / "target.itws"
+    expected_state: workspace_storage._WorkspacePublicationState = (
+        True,
+        1,
+        2,
+        3,
+        4,
+        5,
+    )
+    snapshot = workspace_saving._WorkspaceSaveSnapshot(
+        generation=0,
+        root_attrs=_transaction_test_root_attrs(),
+        delta_save_count=0,
+        full_tree=xr.DataTree() if full_save else None,
+        expected_publication_state=expected_state,
+    )
+    received: list[workspace_storage._WorkspacePublicationState | None] = []
+    writer_name = (
+        "_write_full_workspace_tree_file"
+        if full_save
+        else "_write_workspace_transaction_file"
+    )
+    monkeypatch.setattr(
+        workspace_storage,
+        writer_name,
+        lambda *_args, **kwargs: received.append(kwargs["expected_state"]),
+    )
+
+    workspace_saving._WorkspaceSaveWorker(target, snapshot).run()
+
+    assert received == [expected_state]
+
+
 @pytest.mark.parametrize(
     ("exception_factory", "error_field"),
     [
@@ -1515,6 +1566,9 @@ def test_workspace_save_worker_classifies_publication_errors(
         root_attrs=_transaction_test_root_attrs(),
         delta_save_count=0,
         full_tree=xr.DataTree(),
+        expected_publication_state=workspace_storage._workspace_publication_state(
+            target
+        ),
     )
     monkeypatch.setattr(
         workspace_storage,
@@ -1684,6 +1738,60 @@ def test_manager_save_action_runs_workspace_save_in_background(
         assert not manager.offload_action.isEnabled()
         assert not manager.is_workspace_modified
         assert not operation_errors
+        manager._workspace_state.path = None
+
+
+def test_manager_background_save_rejects_changed_destination(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    workers: list[workspace_saving._WorkspaceSaveWorker] = []
+
+    class _HeldWorkspaceSaveThreadPool:
+        @staticmethod
+        def start(worker: workspace_saving._WorkspaceSaveWorker) -> None:
+            workers.append(worker)
+
+    monkeypatch.setattr(
+        QtCore.QThreadPool,
+        "globalInstance",
+        staticmethod(_HeldWorkspaceSaveThreadPool),
+    )
+
+    with manager_context() as manager:
+        data = xr.DataArray(np.arange(9.0).reshape((3, 3)), dims=("x", "y"))
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._tool_graph.root_wrappers[0].uid
+        fname = tmp_path / "changed-before-background-write.itws"
+        manager._workspace_controller.saving._save_workspace_document(
+            fname, force_full=True
+        )
+        adopt_workspace_path(manager, fname)
+        manager._workspace_controller._mark_workspace_clean()
+        root.slicer_area.replace_source_data(data + 100.0, auto_compute=False)
+        manager._workspace_controller._mark_node_data_dirty(uid)
+        errors: list[workspace_saving._WorkspaceSaveError] = []
+        monkeypatch.setattr(manager, "_show_workspace_save_worker_error", errors.append)
+
+        assert manager._workspace_controller.save(restore_focus=False)
+        assert len(workers) == 1
+        _write_transaction_test_workspace(fname, 2.0)
+
+        workers[0].run()
+        qtbot.wait_until(lambda: not manager._workspace_state.save_in_progress)
+
+        assert len(errors) == 1
+        assert errors[0].publication_conflict_path == str(fname.resolve())
+        with h5py.File(fname, "r") as h5_file:
+            assert float(h5_file["0/imagetool/data"][0]) == 2.0
+        assert manager.is_workspace_modified
+        manager._workspace_controller._mark_workspace_clean()
         manager._workspace_state.path = None
 
 
@@ -3035,7 +3143,7 @@ def test_workspace_full_save_external_dask_rebind_rolls_back_on_later_failure(
         )
         monkeypatch.setattr(
             manager._workspace_controller,
-            "_retarget_workspace_referenced_tool_data",
+            "_refresh_workspace_tool_data_after_full_save",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 workspace_controller._WorkspacePostSaveBindingError("later failure")
             ),
@@ -4324,6 +4432,7 @@ def test_workspace_save_worker_start_and_finish_error_branches(
     class Snapshot:
         def __init__(self) -> None:
             self.closed = False
+            self.expected_publication_state = (False, 0, 0, 0, 0, 0)
 
         def close(self) -> None:
             self.closed = True

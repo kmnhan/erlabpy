@@ -4364,6 +4364,13 @@ def test_tool_window_resolves_references_with_missing_placeholder_variables() ->
         data_items[erlab.interactive.utils._SAVED_TOOL_DATA_NAME],
         xr.DataArray(0, name=erlab.interactive.utils._SAVED_TOOL_DATA_NAME),
     )
+    primary_only = erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(
+        ds,
+        source_parent_data=None,
+        reference_resolver=None,
+        variable_names={erlab.interactive.utils._SAVED_TOOL_DATA_NAME},
+    )
+    assert tuple(primary_only) == (erlab.interactive.utils._SAVED_TOOL_DATA_NAME,)
 
     with pytest.raises(ValueError, match="could not be resolved"):
         erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(

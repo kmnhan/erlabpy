@@ -15,6 +15,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive._options.core
+import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
@@ -737,7 +738,7 @@ class _WorkspaceController:
                 return True
         return False
 
-    def _retarget_workspace_referenced_tool_data(
+    def _refresh_workspace_tool_data_after_full_save(
         self,
         old_workspace_path: str | os.PathLike[str] | None,
         workspace_path: str | os.PathLike[str],
@@ -745,6 +746,7 @@ class _WorkspaceController:
         exclude_data_uids: Collection[str],
         source_snapshot: list[tuple[xr.Variable, bool, typing.Any]],
     ) -> None:
+        """Rebind external Dask tool data and retarget saved references."""
         old_path = workspace_arrays._normalized_file_path(old_workspace_path)
         new_path = workspace_arrays._normalized_file_path(workspace_path)
         if new_path is None or old_path == new_path:
@@ -765,7 +767,6 @@ class _WorkspaceController:
                     node.is_imagetool
                     or tool is None
                     or not tool.can_save_and_load()
-                    or not node._workspace_reference_datasets
                     or node.uid in exclude_data_uids
                     or self._workspace_tool_references_include_uids(
                         node._workspace_tool_data_references,
@@ -774,52 +775,127 @@ class _WorkspaceController:
                     )
                 ):
                     continue
-                ds = tool.to_dataset()
                 original_data_items = {
                     name: data.copy(deep=False)
                     for name, data in tool._persistence_data_items().items()
                 }
+                rebind_names: set[str] = set()
+                retargets_current_workspace = False
+                for name, data in original_data_items.items():
+                    source_paths = workspace_arrays.dataarray_source_paths(data)
+                    if old_path is not None and old_path in source_paths:
+                        retargets_current_workspace = True
+                    uses_current_workspace_reader = (
+                        old_path is not None
+                        and bool(source_paths)
+                        and all(source_path == old_path for source_path in source_paths)
+                    )
+                    if data.chunks is not None and not uses_current_workspace_reader:
+                        rebind_names.add(name)
+                if (
+                    not node._workspace_reference_datasets
+                    and not rebind_names
+                    and not retargets_current_workspace
+                ):
+                    continue
+
+                restore_ds = tool.to_dataset()
                 data_items = {
                     name: data.copy(deep=False)
                     for name, data in original_data_items.items()
                 }
-                for data in data_items.values():
-                    workspace_arrays.set_workspace_xarray_sources(data, workspace_path)
                 original_reference_datasets = dict(node._workspace_reference_datasets)
                 restore_entries.append(
                     (
                         node,
                         tool,
-                        ds,
+                        restore_ds,
                         original_data_items,
                         original_reference_datasets,
                     )
                 )
-                with self._workspace_load_context(), tool._history_suppressed():
-                    tool._replace_persistence_data_items(data_items, ds)
-
-                reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] = {}
-                for (
-                    source_path,
-                    group_path,
-                ), reference_ds in node._workspace_reference_datasets.items():
-                    source_snapshot.extend(
-                        workspace_arrays._workspace_xarray_source_snapshot(reference_ds)
-                    )
-                    if old_path is None:
+                reference_datasets = dict(original_reference_datasets)
+                opened: xr.Dataset | None = None
+                try:
+                    replace_ds = restore_ds
+                    if rebind_names:
+                        opened = workspace_arrays.open_workspace_dataset(
+                            workspace_path,
+                            self.saving._workspace_payload_path(node.uid),
+                            chunks={},
+                        )
+                        replace_ds = workspace_format._restore_workspace_dataset_attrs(
+                            opened
+                        )
+                        replace_ds = imagetool_serialization.restore_private_coords(
+                            replace_ds, erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+                        )
+                        source_parent_data, reference_resolver = (
+                            self.loading._workspace_tool_restore_references(
+                                replace_ds,
+                                parent_target=node.parent_uid,
+                                owner_node=node,
+                                reference_datasets=reference_datasets,
+                            )
+                        )
+                        rebound_items = type(tool)._tool_data_items_from_dataset(
+                            replace_ds,
+                            source_parent_data=source_parent_data,
+                            reference_resolver=reference_resolver,
+                            variable_names=rebind_names,
+                        )
+                        for name in rebind_names:
+                            data_items[name] = rebound_items[name]
+                    for data in data_items.values():
                         workspace_arrays.set_workspace_xarray_sources(
-                            reference_ds, new_path
+                            data, workspace_path
                         )
-                    else:
-                        workspace_arrays.retarget_workspace_xarray_sources(
-                            reference_ds, old_path, new_path
+                    with self._workspace_load_context(), tool._history_suppressed():
+                        tool._replace_persistence_data_items(data_items, replace_ds)
+
+                    retargeted_reference_datasets: dict[
+                        tuple[pathlib.Path, str], xr.Dataset
+                    ] = {}
+                    for (
+                        source_path,
+                        group_path,
+                    ), reference_ds in reference_datasets.items():
+                        source_snapshot.extend(
+                            workspace_arrays._workspace_xarray_source_snapshot(
+                                reference_ds
+                            )
                         )
-                    if old_path is None or (
-                        workspace_arrays._normalized_file_path(source_path) == old_path
-                    ):
-                        source_path = pathlib.Path(new_path)
-                    reference_datasets[(source_path, group_path)] = reference_ds
-                node._replace_workspace_reference_datasets(reference_datasets)
+                        if old_path is None:
+                            workspace_arrays.set_workspace_xarray_sources(
+                                reference_ds, new_path
+                            )
+                        else:
+                            workspace_arrays.retarget_workspace_xarray_sources(
+                                reference_ds, old_path, new_path
+                            )
+                        if old_path is None or (
+                            workspace_arrays._normalized_file_path(source_path)
+                            == old_path
+                        ):
+                            source_path = pathlib.Path(new_path)
+                        retargeted_reference_datasets[(source_path, group_path)] = (
+                            reference_ds
+                        )
+                    node._replace_workspace_reference_datasets(
+                        retargeted_reference_datasets
+                    )
+                except Exception:
+                    original_dataset_ids = {
+                        id(dataset) for dataset in original_reference_datasets.values()
+                    }
+                    for dataset in reference_datasets.values():
+                        if id(dataset) not in original_dataset_ids:
+                            with contextlib.suppress(Exception):
+                                dataset.close()
+                    raise
+                finally:
+                    if opened is not None:
+                        opened.close()
         except Exception as exc:
             for (
                 restore_node,
@@ -905,7 +981,7 @@ class _WorkspaceController:
                             workspace_arrays.set_workspace_xarray_sources(
                                 node.slicer_area._data, workspace_path
                             )
-            self._retarget_workspace_referenced_tool_data(
+            self._refresh_workspace_tool_data_after_full_save(
                 old_workspace_path,
                 workspace_path,
                 exclude_data_uids=skip_live_data_rebind_uids,
@@ -1893,6 +1969,7 @@ class _WorkspaceController:
         started_at = time.perf_counter()
         try:
             access = self._workspace_document_access(fname)
+            expected_state = workspace_storage._workspace_publication_state(access.path)
             self._drain_workspace_deferred_events()
             generation = self._manager._workspace_state.dirty_generation
             self._manager._workspace_state.saving_depth += 1
@@ -1901,6 +1978,7 @@ class _WorkspaceController:
                 snapshot = self.saving._workspace_full_save_snapshot(
                     generation, fname=access.path
                 )
+                snapshot.expected_publication_state = expected_state
                 snapshot_elapsed = time.perf_counter() - snapshot_started_at
             finally:
                 self._manager._workspace_state.saving_depth -= 1

@@ -1,5 +1,6 @@
 import errno
 import json
+import os
 import pathlib
 import threading
 import types
@@ -66,10 +67,13 @@ def test_workspace_file_repack_payload_strips_delta_and_skips_internal_groups(
     assert existing_count == 1
     assert workspace_arrays._workspace_live_h5_storage_size(fname) == storage_size
     assert workspace_storage._workspace_obsolete_estimate(fname) >= 0
-    root_attrs, copy_groups = workspace_storage._workspace_file_repack_payload(fname)
+    root_attrs, copy_groups, expected_state = (
+        workspace_storage._workspace_file_repack_payload(fname)
+    )
 
     manifest = workspace_format._workspace_manifest_from_attrs(root_attrs)
     assert "delta_save_count" not in manifest
+    assert expected_state == workspace_storage._workspace_publication_state(fname)
     assert "transaction_protocol" not in manifest
     assert (
         manifest["schema_version"]
@@ -92,6 +96,32 @@ def test_workspace_file_repack_payload_strips_delta_and_skips_internal_groups(
         assert set(h5_file) == {"0"}
         manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
         assert "delta_save_count" not in manifest
+
+
+def test_workspace_file_repack_payload_rejects_change_during_snapshot(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "changed-during-repack-snapshot.itws"
+    _write_transaction_test_workspace(fname)
+    original_copy_groups = workspace_arrays._workspace_live_root_group_copy_groups
+
+    def _copy_groups_after_external_change(path):
+        copy_groups = original_copy_groups(path)
+        stat_result = os.stat(path)
+        os.utime(
+            path,
+            ns=(stat_result.st_atime_ns, stat_result.st_mtime_ns + 1_000_000),
+        )
+        return copy_groups
+
+    monkeypatch.setattr(
+        workspace_arrays,
+        "_workspace_live_root_group_copy_groups",
+        _copy_groups_after_external_change,
+    )
+
+    with pytest.raises(workspace_storage._WorkspacePublicationConflictError):
+        workspace_storage._workspace_file_repack_payload(fname)
 
 
 def test_write_full_workspace_tree_file_compresses_payload_not_coords(
@@ -711,6 +741,29 @@ def test_replace_workspace_file_preserves_permission_error_after_retries(
     assert destination.read_bytes() == b"old"
 
 
+def test_full_save_rejects_destination_changed_since_snapshot(tmp_path) -> None:
+    fname = tmp_path / "changed-before-worker.itws"
+    _write_transaction_test_workspace(fname, 1.0)
+    expected_state = workspace_storage._workspace_publication_state(fname)
+    _write_transaction_test_workspace(fname, 2.0)
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(3.0, title="snapshot")}
+    )
+
+    try:
+        with pytest.raises(workspace_storage._WorkspacePublicationConflictError):
+            workspace_storage._write_full_workspace_tree_file(
+                fname,
+                tree,
+                _transaction_test_root_attrs(),
+                expected_state=expected_state,
+            )
+    finally:
+        tree.close()
+
+    assert _read_transaction_test_value(fname) == 2.0
+
+
 def test_windows_workspace_replace_retry_filter_is_specific(monkeypatch) -> None:
     access_denied = PermissionError(errno.EACCES, "access denied")
     wrong_error = PermissionError(errno.ENOENT, "missing")
@@ -796,6 +849,28 @@ def test_incremental_workspace_save_does_not_copy_or_replace(
             (rewrite,),
             (),
             _transaction_test_root_attrs(delta_save_count=1),
+        )
+
+    assert _read_transaction_test_value(fname) == 2.0
+
+
+def test_incremental_save_rejects_destination_changed_since_snapshot(tmp_path) -> None:
+    fname = tmp_path / "changed-before-transaction.itws"
+    _write_transaction_test_workspace(fname, 1.0)
+    expected_state = workspace_storage._workspace_publication_state(fname)
+    _write_transaction_test_workspace(fname, 2.0)
+    rewrite = (
+        "0",
+        {"0/imagetool": _transaction_test_dataset(3.0, title="snapshot")},
+    )
+
+    with pytest.raises(workspace_storage._WorkspacePublicationConflictError):
+        workspace_storage._write_workspace_transaction_file(
+            fname,
+            (rewrite,),
+            (),
+            _transaction_test_root_attrs(delta_save_count=1),
+            expected_state=expected_state,
         )
 
     assert _read_transaction_test_value(fname) == 2.0

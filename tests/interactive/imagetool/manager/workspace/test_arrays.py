@@ -642,13 +642,20 @@ def test_workspace_reader_pickle_reuses_process_owned_generation(tmp_path) -> No
     finally:
         tree.close()
 
-    opened = workspace_arrays.open_workspace_dataset(fname, "0/imagetool", chunks={})
+    opened: xr.Dataset | None = workspace_arrays.open_workspace_dataset(
+        fname, "0/imagetool", chunks={}
+    )
     restored: list[xr.DataArray] = []
     try:
         source_snapshots = tuple(workspace_arrays._WORKSPACE_READER_SNAPSHOTS.values())
         assert len(source_snapshots) == 1
         reader_path = source_snapshots[0].path
         payload = pickle.dumps(opened["data"])
+        opened.close()
+        opened = None
+        gc.collect()
+
+        assert pathlib.Path(reader_path).exists()
         restored = [pickle.loads(payload), pickle.loads(payload)]
 
         assert len(workspace_arrays._WORKSPACE_READER_SNAPSHOTS) == 1
@@ -657,8 +664,16 @@ def test_workspace_reader_pickle_reuses_process_owned_generation(tmp_path) -> No
         ).path == (reader_path)
         for data in restored:
             np.testing.assert_array_equal(data.compute(), np.arange(4.0))
+        for data in restored:
+            data.close()
+        restored.clear()
+        del payload
+        gc.collect()
+
+        assert pathlib.Path(reader_path).exists()
     finally:
-        opened.close()
+        if opened is not None:
+            opened.close()
         for data in restored:
             data.close()
         workspace_arrays._cleanup_workspace_reader_snapshots()

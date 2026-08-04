@@ -45,10 +45,13 @@ if typing.TYPE_CHECKING:
 from erlab.interactive.imagetool._provenance._code import uses_default_replay_input
 from tests.interactive.imagetool.manager.workspace._support import (
     _AddedTimeChildTool,
+    _compute_first_value,
     _hdf5_blosc2_level_codec,
+    _open_external_lazy_hdf5_imagetool_data,
     _request_workspace_save_and_wait,
     _request_workspace_save_as_and_wait,
     _WorkspaceManagerReferenceFigureTool,
+    _WorkspaceSweepFigureTool,
 )
 
 
@@ -1813,6 +1816,150 @@ def test_manager_save_as_rebinds_live_tool_reference_dataset(
             "0/imagetool",
         )
         np.testing.assert_array_equal(loaded_figure.tool_data.values, data.values)
+
+
+def test_manager_save_as_rebinds_external_lazy_tool_data(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=["x", "y"],
+            name="source",
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        root.hide()
+        wrapper = manager._tool_graph.root_wrappers[0]
+        figure_uid = manager.add_figuretool(
+            _WorkspaceManagerReferenceFigureTool(
+                data.copy(deep=False), reference_uid=wrapper.uid
+            ),
+            show=False,
+        )
+
+        source = tmp_path / "external-tool-source.itws"
+        target = tmp_path / "external-tool-target.itws"
+        external_path = tmp_path / "external-tool-data.h5"
+        manager._workspace_controller.saving._save_workspace_document(
+            source, force_full=True
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            source, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        loaded_figure = manager.get_childtool(figure_uid)
+        assert isinstance(loaded_figure, _WorkspaceManagerReferenceFigureTool)
+
+        external_data = data + 100.0
+        xr.DataTree.from_dict(
+            {"0/imagetool": external_data.to_dataset(name="data")}
+        ).to_netcdf(external_path, engine="h5netcdf", invalid_netcdf=True)
+        external = _open_external_lazy_hdf5_imagetool_data(external_path)
+        try:
+            loaded_figure.update_data(external + 0.0)
+            manager._workspace_controller._mark_node_data_dirty(figure_uid)
+            monkeypatch.setattr(
+                manager._workspace_controller,
+                "_workspace_save_dialog",
+                lambda **_kwargs: target,
+            )
+
+            assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+            rebound = loaded_figure.tool_data
+            assert workspace_arrays.dataarray_source_paths(rebound) == (
+                str(target.resolve()),
+            )
+        finally:
+            external.close()
+        xr.backends.file_manager.FILE_CACHE.clear()
+        external_path.unlink()
+        assert _compute_first_value(rebound) == 100.0
+
+
+def test_full_save_binding_refresh_skips_in_memory_tool_data(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(9.0).reshape((3, 3)), dims=("x", "y"))
+        figure_uid = manager.add_figuretool(_WorkspaceSweepFigureTool(data), show=False)
+        figure = manager.get_childtool(figure_uid)
+        monkeypatch.setattr(
+            figure,
+            "to_dataset",
+            lambda: pytest.fail("In-memory tool data must stay on the fast path"),
+        )
+        monkeypatch.setattr(
+            workspace_arrays,
+            "open_workspace_dataset",
+            lambda *_args, **_kwargs: pytest.fail(
+                "In-memory tool data must not be reopened after a full save"
+            ),
+        )
+
+        manager._workspace_controller._refresh_workspace_tool_data_after_full_save(
+            None,
+            tmp_path / "saved.itws",
+            exclude_data_uids=frozenset(),
+            source_snapshot=[],
+        )
+
+        xr.testing.assert_identical(figure.tool_data, data)
+
+
+def test_manager_save_as_rebinds_new_external_lazy_figure_data(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    external_path = tmp_path / "new-figure-data.h5"
+    target = tmp_path / "new-figure-target.itws"
+    data = xr.DataArray(np.arange(9.0).reshape((3, 3)), dims=("x", "y"))
+    xr.DataTree.from_dict({"0/imagetool": data.to_dataset(name="data")}).to_netcdf(
+        external_path, engine="h5netcdf", invalid_netcdf=True
+    )
+    external = _open_external_lazy_hdf5_imagetool_data(external_path)
+    try:
+        with manager_context() as manager:
+            qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+            figure_uid = manager.add_figuretool(
+                _WorkspaceSweepFigureTool(external + 0.0), show=False
+            )
+            node = manager._node_for_target(figure_uid)
+            assert node._workspace_reference_datasets == {}
+            monkeypatch.setattr(
+                manager._workspace_controller,
+                "_workspace_save_dialog",
+                lambda **_kwargs: target,
+            )
+
+            assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+            figure = manager.get_childtool(figure_uid)
+            rebound = figure.tool_data
+            assert workspace_arrays.dataarray_source_paths(rebound) == (
+                str(target.resolve()),
+            )
+            external.close()
+            xr.backends.file_manager.FILE_CACHE.clear()
+            external_path.unlink()
+            assert _compute_first_value(rebound) == 0.0
+    finally:
+        external.close()
 
 
 def test_manager_save_as_rebind_failure_keeps_old_live_references(

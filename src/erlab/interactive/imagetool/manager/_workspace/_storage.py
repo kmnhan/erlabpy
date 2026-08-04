@@ -49,6 +49,7 @@ _WorkspaceCopyGroup: typing.TypeAlias = tuple[str, str, dict[str, typing.Any] | 
 _WorkspaceCopyGroupWithSource: typing.TypeAlias = tuple[
     str, str, str, dict[str, typing.Any] | None
 ]
+_WorkspacePublicationState: typing.TypeAlias = tuple[bool, int, int, int, int, int]
 _WINDOWS_WORKSPACE_REPLACE_RETRY_DELAYS = (0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0)
 
 
@@ -77,7 +78,7 @@ class _WorkspacePublicationConflictError(RuntimeError):
 
 def _workspace_publication_state(
     path: str | os.PathLike[str],
-) -> tuple[bool, int, int, int, int, int]:
+) -> _WorkspacePublicationState:
     """Return the state used to detect an external document replacement."""
     try:
         stat_result = os.stat(path)
@@ -106,7 +107,7 @@ def _replace_workspace_file(
     source: str | os.PathLike[str],
     destination: str | os.PathLike[str],
     *,
-    expected_state: tuple[bool, int, int, int, int, int],
+    expected_state: _WorkspacePublicationState,
 ) -> None:
     """Publish a prepared workspace with bounded Windows sharing retries."""
     retry_delays = iter(_WINDOWS_WORKSPACE_REPLACE_RETRY_DELAYS)
@@ -514,14 +515,21 @@ def _workspace_obsolete_estimate(
 def _workspace_file_repack_payload(
     fname: str | os.PathLike[str],
 ) -> tuple[
-    dict[str, typing.Any], tuple[tuple[str, str, dict[str, typing.Any] | None], ...]
+    dict[str, typing.Any],
+    tuple[tuple[str, str, dict[str, typing.Any] | None], ...],
+    _WorkspacePublicationState,
 ]:
     with workspace_arrays._workspace_save_lock(fname):
         _recover_workspace_transactions(fname)
+        expected_state = _workspace_publication_state(fname)
         root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(fname)
+        copy_groups = workspace_arrays._workspace_live_root_group_copy_groups(fname)
+        if _workspace_publication_state(fname) != expected_state:
+            raise _WorkspacePublicationConflictError(fname)
         return (
             _compacted_workspace_root_attrs(root_attrs),
-            workspace_arrays._workspace_live_root_group_copy_groups(fname),
+            copy_groups,
+            expected_state,
         )
 
 
@@ -709,6 +717,7 @@ def _write_workspace_transaction_file(
     root_attrs: Mapping[str, typing.Any],
     *,
     compression_mode: WorkspaceCompressionMode | None = None,
+    expected_state: _WorkspacePublicationState | None = None,
 ) -> None:
     with workspace_arrays._workspace_save_lock(fname):
         _write_workspace_transaction_file_locked(
@@ -717,6 +726,7 @@ def _write_workspace_transaction_file(
             attr_updates,
             root_attrs,
             compression_mode=compression_mode,
+            expected_state=expected_state,
         )
 
 
@@ -729,7 +739,13 @@ def _write_workspace_transaction_file_locked(
     root_attrs: Mapping[str, typing.Any],
     *,
     compression_mode: WorkspaceCompressionMode | None = None,
+    expected_state: _WorkspacePublicationState | None = None,
 ) -> None:
+    if (
+        expected_state is not None
+        and _workspace_publication_state(fname) != expected_state
+    ):
+        raise _WorkspacePublicationConflictError(fname)
     _recover_workspace_transactions(fname)
     rewrite_map = {
         group_path.strip("/"): (group_path, constructor)
@@ -778,6 +794,7 @@ def _write_full_workspace_tree_file(
     copy_groups: Iterable[_WorkspaceCopyGroup] = (),
     copy_group_sources: Iterable[_WorkspaceCopyGroupWithSource] = (),
     compression_mode: WorkspaceCompressionMode | None = None,
+    expected_state: _WorkspacePublicationState | None = None,
 ) -> None:
     with workspace_arrays._workspace_save_lock(fname):
         _write_full_workspace_tree_file_locked(
@@ -788,6 +805,7 @@ def _write_full_workspace_tree_file(
             copy_groups=copy_groups,
             copy_group_sources=copy_group_sources,
             compression_mode=compression_mode,
+            expected_state=expected_state,
         )
 
 
@@ -800,9 +818,14 @@ def _write_full_workspace_tree_file_locked(
     copy_groups: Iterable[_WorkspaceCopyGroup] = (),
     copy_group_sources: Iterable[_WorkspaceCopyGroupWithSource] = (),
     compression_mode: WorkspaceCompressionMode | None = None,
+    expected_state: _WorkspacePublicationState | None = None,
 ) -> None:
     fname = os.fsdecode(fname)
-    expected_state = _workspace_publication_state(fname)
+    current_state = _workspace_publication_state(fname)
+    if expected_state is None:
+        expected_state = current_state
+    elif current_state != expected_state:
+        raise _WorkspacePublicationConflictError(fname)
     use_scratch = _workspace_path_is_high_risk(fname)
     tmp_dir: tempfile.TemporaryDirectory[str] | None = None
     destination_tmp: str | None = None
