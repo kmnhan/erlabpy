@@ -100,19 +100,6 @@ class _WorkspaceController:
         ) = None
         self._workspace_gc_requested = False
 
-    def _dask_client_has_live_futures(self) -> bool:
-        """Return whether a Dask client owns results that can need workspace data."""
-        try:
-            client = self._manager._dask_menu.default_client
-        except Exception:
-            return True
-        if client is None:
-            return False
-        try:
-            return bool(client.futures)
-        except Exception:
-            return True
-
     def _tool_data_reference_matches_current_snapshot(
         self, reference: Mapping[str, typing.Any]
     ) -> bool:
@@ -1948,18 +1935,6 @@ class _WorkspaceController:
         self._workspace_gc_requested = True
         QtCore.QTimer.singleShot(0, self._start_workspace_gc)
 
-    def _resume_workspace_gc_after_dask(self) -> None:
-        """Wait without file access until Dask no longer owns workspace results."""
-        if not self._workspace_gc_requested or self._workspace_gc_worker is not None:
-            return
-        if (
-            self._manager._workspace_state.save_in_progress
-            or self._dask_client_has_live_futures()
-        ):
-            QtCore.QTimer.singleShot(1000, self._resume_workspace_gc_after_dask)
-            return
-        self._start_workspace_gc()
-
     def _start_workspace_gc(self) -> None:
         if (
             not self._workspace_gc_requested
@@ -1982,11 +1957,8 @@ class _WorkspaceController:
             return
 
         document_id = self._manager._workspace_state.document_id
-        object_gc_deferred = self._dask_client_has_live_futures()
         worker = workspace_saving._WorkspaceGcWorker(
             store,
-            delete_objects=not object_gc_deferred,
-            can_delete_objects=lambda: not self._dask_client_has_live_futures(),
             reader_closers=self.saving._workspace_reader_closers(workspace_path),
         )
 
@@ -2009,10 +1981,7 @@ class _WorkspaceController:
                 return
             self._workspace_gc_requested = more
             if more:
-                if worker.object_gc_deferred:
-                    QtCore.QTimer.singleShot(1000, self._resume_workspace_gc_after_dask)
-                else:
-                    QtCore.QTimer.singleShot(0, self._start_workspace_gc)
+                QtCore.QTimer.singleShot(0, self._start_workspace_gc)
 
         receiver = workspace_saving._WorkspaceGcResultReceiver(
             _finish,
@@ -2528,12 +2497,6 @@ class _WorkspaceController:
                 "Workspace save already in progress", 3000
             )
             return False
-        if self._dask_client_has_live_futures():
-            self._manager._status_bar.showMessage(
-                "Release Dask results before compacting the workspace", 5000
-            )
-            return False
-
         origin = self._active_managed_window()
         store = self._workspace_store
         if store is None or store.closed or store.path != workspace_path:

@@ -664,18 +664,6 @@ def test_manager_compact_workspace_edge_paths(
         assert not manager.compact_workspace()
         manager._workspace_state.save_in_progress = False
 
-        monkeypatch.setattr(
-            manager._workspace_controller,
-            "_dask_client_has_live_futures",
-            lambda: True,
-        )
-        assert not manager.compact_workspace()
-        monkeypatch.setattr(
-            manager._workspace_controller,
-            "_dask_client_has_live_futures",
-            lambda: False,
-        )
-
         operation_errors: list[tuple[typing.Any, ...]] = []
         monkeypatch.setattr(
             manager,
@@ -1211,13 +1199,9 @@ def test_workspace_gc_worker_reports_contention_and_errors() -> None:
             self,
             *,
             max_objects,
-            delete_objects,
-            can_delete_objects,
             on_contention,
         ):
             assert max_objects == 1
-            assert delete_objects
-            assert can_delete_objects()
             on_contention()
             raise RuntimeError("cleanup failed")
 
@@ -1329,36 +1313,6 @@ def test_serialize_workspace_node_rejects_invalid_pending_tool() -> None:
     assert constructor == {}
 
 
-def test_workspace_gc_dask_client_detection_is_conservative() -> None:
-    controller = workspace_controller._WorkspaceController.__new__(
-        workspace_controller._WorkspaceController
-    )
-    manager = types.SimpleNamespace(
-        _dask_menu=types.SimpleNamespace(default_client=None)
-    )
-    controller._manager = manager
-
-    assert not controller._dask_client_has_live_futures()
-    manager._dask_menu.default_client = types.SimpleNamespace(futures={"key": object()})
-    assert controller._dask_client_has_live_futures()
-
-    class _BrokenClient:
-        @property
-        def futures(self):
-            raise RuntimeError("client closed")
-
-    manager._dask_menu.default_client = _BrokenClient()
-    assert controller._dask_client_has_live_futures()
-
-    class _BrokenMenu:
-        @property
-        def default_client(self):
-            raise RuntimeError("client lookup failed")
-
-    manager._dask_menu = _BrokenMenu()
-    assert controller._dask_client_has_live_futures()
-
-
 def test_workspace_gc_controller_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -1370,7 +1324,6 @@ def test_workspace_gc_controller_lifecycle(
     manager._workspace_state = types.SimpleNamespace(
         save_in_progress=False, document_id="document", path=None
     )
-    manager._dask_menu = types.SimpleNamespace(default_client=None)
     controller._manager = manager
     controller._workspace_gc_requested = False
     controller._workspace_gc_worker = None
@@ -1421,22 +1374,6 @@ def test_workspace_gc_controller_lifecycle(
     pool.workers.pop().signals.finished.emit(True, None)
     assert controller._workspace_gc_requested
     assert scheduled[-1] == (0, controller._start_workspace_gc)
-
-    manager._dask_menu.default_client = types.SimpleNamespace(
-        futures={"result": object()}
-    )
-    controller._start_workspace_gc()
-    worker = pool.workers.pop()
-    assert not worker._delete_objects
-    worker.signals.finished.emit(True, None)
-    assert controller._workspace_gc_requested
-    assert scheduled[-1] == (1000, controller._resume_workspace_gc_after_dask)
-
-    controller._resume_workspace_gc_after_dask()
-    assert scheduled[-1] == (1000, controller._resume_workspace_gc_after_dask)
-    manager._dask_menu.default_client = None
-    controller._resume_workspace_gc_after_dask()
-    assert pool.workers
 
     class _FailingPool:
         @staticmethod

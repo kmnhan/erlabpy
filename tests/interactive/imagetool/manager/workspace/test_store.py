@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import errno
+import gc
 import hashlib
 import json
+import shutil
 import threading
 import typing
 
@@ -229,6 +231,14 @@ def test_workspace_store_defers_missing_identity_until_publish(tmp_path) -> None
     unchanged = path.read_bytes()
     with workspace_store.WorkspaceStore(path) as store:
         assert store.workspace_id is None
+        workspace_store.WorkspaceStore.pin_serialized_reader(
+            workspace_id=None,
+            path=path,
+            object_id="old-object",
+            legacy_group_path="/legacy",
+        )
+        assert store.serialized_object_ids == {"old-object"}
+        assert store.serialized_legacy_group_paths == {"/legacy"}
     assert path.read_bytes() == unchanged
     with h5py.File(path, "r") as h5_file:
         assert workspace_store._WORKSPACE_ID_ATTR not in h5_file.attrs
@@ -236,6 +246,8 @@ def test_workspace_store_defers_missing_identity_until_publish(tmp_path) -> None
     with workspace_store.WorkspaceStore(path) as store:
         store.publish(_manifest())
         workspace_id = store.workspace_id
+        assert store.serialized_object_ids == {"old-object"}
+        assert store.serialized_legacy_group_paths == {"/legacy"}
 
     assert workspace_id
     with h5py.File(path, "r") as h5_file:
@@ -754,7 +766,7 @@ def test_workspace_store_gc_retains_two_generations_and_leases(
         }
 
 
-def test_workspace_store_gc_can_defer_obsolete_object_deletion(
+def test_workspace_store_gc_preserves_serialized_reader_objects(
     tmp_path: pathlib.Path,
 ) -> None:
     path = tmp_path / "workspace.itws"
@@ -763,34 +775,35 @@ def test_workspace_store_gc_can_defer_obsolete_object_deletion(
             objects = h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
             for object_id in ("first", "second", "third"):
                 objects.create_group(object_id)
-        store.publish(_manifest("first"))
+        first_generation = store.publish(_manifest("first"))
+        workspace_store.WorkspaceStore.pin_serialized_reader(
+            workspace_id=None,
+            path=path,
+            object_id="first",
+            legacy_group_path=None,
+        )
         store.publish(_manifest("second"))
         store.publish(_manifest("third"))
 
-        assert store.collect_garbage(max_objects=1, delete_objects=False)
+        assert not store.collect_garbage(max_objects=1)
         assert len(store.generations()) == 2
         assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
             "first",
             "second",
             "third",
         }
+        assert store.serialized_object_ids == {"first"}
 
-        checks = iter((True, False))
-        assert store.collect_garbage(
-            max_objects=1,
-            can_delete_objects=lambda: next(checks),
-        )
-        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
-            "first",
-            "second",
-            "third",
-        }
+    with workspace_store.WorkspaceStore(path) as reopened:
+        assert reopened.serialized_object_ids == {"first"}
+        assert reopened.current_generation().sequence > first_generation.sequence
+        workspace_id = reopened.workspace_id
 
-        assert not store.collect_garbage(max_objects=1)
-        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
-            "second",
-            "third",
-        }
+    copied_path = tmp_path / "copied-workspace.itws"
+    shutil.copy2(path, copied_path)
+    with workspace_store.WorkspaceStore(copied_path) as copied:
+        assert copied.workspace_id == workspace_id
+        assert copied.serialized_object_ids == set()
 
 
 def test_workspace_store_gc_removes_malformed_generation_names(
@@ -1168,10 +1181,11 @@ def test_workspace_lazy_array_uses_process_localcluster_without_copy(
                     processes=True,
                     dashboard_address=None,
                 ) as cluster,
-                distributed.Client(cluster),
+                distributed.Client(cluster, set_as_default=False) as client,
             ):
-                result = opened["data"].sum().compute()
+                result = client.compute(opened["data"].sum()).result()
             assert float(result) == 435.0
+            assert store.serialized_object_ids == {object_id}
             assert set(tmp_path.iterdir()) == {path}
         finally:
             opened.close()
@@ -1675,7 +1689,7 @@ def test_workspace_compaction_rejects_replacement_after_identity_check(
             )
 
 
-def test_workspace_compaction_preserves_leased_payloads(
+def test_workspace_compaction_preserves_leased_and_serialized_payloads(
     tmp_path: pathlib.Path,
 ) -> None:
     path = tmp_path / "workspace.itws"
@@ -1683,25 +1697,34 @@ def test_workspace_compaction_preserves_leased_payloads(
         with store.write_session() as h5_file:
             objects = h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
             objects.create_group("leased")
+            objects.create_group("serialized")
             objects.create_group("current")
         store.publish(_manifest("leased"))
         store.publish(_manifest("current"))
         store.acquire_object("leased")
+        workspace_store.WorkspaceStore.pin_serialized_reader(
+            workspace_id=store.workspace_id,
+            path=path,
+            object_id="serialized",
+            legacy_group_path=None,
+        )
 
         workspace_storage._compact_workspace_store(store)
 
         assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
             "current",
             "leased",
+            "serialized",
         }
         store.release_object("leased")
         assert not store.collect_garbage(max_objects=1)
         assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
-            "current"
+            "current",
+            "serialized",
         }
 
 
-def test_workspace_compaction_preserves_live_legacy_group(
+def test_workspace_compaction_preserves_serialized_legacy_group(
     tmp_path: pathlib.Path,
 ) -> None:
     path = tmp_path / "workspace.itws"
@@ -1713,13 +1736,22 @@ def test_workspace_compaction_preserves_live_legacy_group(
             )
             h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("current")
         store.publish(_manifest("current"))
+        manager = workspace_arrays.WorkspaceFileManager(
+            path,
+            group_path="/legacy/imagetool",
+        )
+        manager.__getstate__()
+        del manager
+        gc.collect()
+        assert store.leased_legacy_group_paths == set()
+
+        workspace_storage._compact_workspace_store(store)
+
+        assert "legacy/imagetool" in store.h5_file
         opened = workspace_arrays.open_workspace_dataset(
             path, "legacy/imagetool", chunks={}
         )
         try:
-            workspace_storage._compact_workspace_store(store)
-
-            assert "legacy/imagetool" in store.h5_file
             assert float(opened["data"].sum().compute()) == 10.0
         finally:
             opened.close()

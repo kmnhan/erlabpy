@@ -503,6 +503,31 @@ def test_workspace_file_manager_lifecycle_guards(tmp_path) -> None:
         backend._getitem(slice(None))
 
 
+def test_workspace_file_manager_serialization_pins_exact_payload(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("payload")
+            h5_file.create_group("legacy")
+        store.publish({"schema_version": 5, "nodes": []})
+        manager = workspace_arrays.WorkspaceFileManager(
+            path,
+            object_id="payload",
+            group_path=store.object_path("payload"),
+        )
+        legacy_manager = workspace_arrays.WorkspaceFileManager(
+            path,
+            group_path="/legacy",
+        )
+        assert store.serialized_object_ids == set()
+        manager.__getstate__()
+        legacy_manager.__getstate__()
+        assert store.serialized_object_ids == {"payload"}
+        assert store.serialized_legacy_group_paths == {"/legacy"}
+        del manager, legacy_manager
+        gc.collect()
+
+
 def test_workspace_file_manager_rejects_inherited_process_access(
     monkeypatch, tmp_path
 ) -> None:

@@ -209,7 +209,10 @@ def _compact_workspace_store(store: workspace_store.WorkspaceStore) -> None:
             baseline_manifest.pop("repack_estimate_known", None)
             object_ids = set(store.manifest_object_ids(baseline_manifest))
             object_ids.update(store.leased_object_ids)
-            legacy_group_paths = store.leased_legacy_group_paths
+            object_ids.update(store.serialized_object_ids)
+            legacy_group_paths = (
+                store.leased_legacy_group_paths | store.serialized_legacy_group_paths
+            )
             expected_state = _workspace_publication_state(workspace_path)
 
             with (

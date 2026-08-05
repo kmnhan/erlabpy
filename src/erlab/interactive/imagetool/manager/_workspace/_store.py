@@ -186,6 +186,8 @@ class WorkspaceStore:
         weakref.WeakValueDictionary()
     )
     _pending_readers: typing.ClassVar[dict[str, weakref.WeakSet[typing.Any]]] = {}
+    _serialized_object_pins: typing.ClassVar[dict[str, set[str]]] = {}
+    _serialized_legacy_group_pins: typing.ClassVar[dict[str, set[str]]] = {}
     _active_lock = threading.RLock()
     _fork_stores: tuple[WorkspaceStore, ...] = ()
 
@@ -226,6 +228,38 @@ class WorkspaceStore:
     @staticmethod
     def _key(path: str | os.PathLike[str]) -> str:
         return os.path.normcase(str(pathlib.Path(path).resolve()))
+
+    @classmethod
+    def _serialization_key(
+        cls,
+        workspace_id: str | None,
+        path: str | os.PathLike[str],
+    ) -> str:
+        return f"{cls._key(path)}\0{workspace_id or ''}"
+
+    @classmethod
+    def pin_serialized_reader(
+        cls,
+        *,
+        workspace_id: str | None,
+        path: str | os.PathLike[str],
+        object_id: str | None,
+        legacy_group_path: str | None,
+    ) -> None:
+        """Keep data reachable after a reader is sent to another process.
+
+        Dask does not provide a release callback that works for every scheduler.
+        These small pins therefore last for this Python process. They do not block
+        saves. They only defer reclamation of the referenced data.
+        """
+        key = cls._serialization_key(workspace_id, path)
+        with cls._active_lock:
+            if object_id is not None:
+                cls._serialized_object_pins.setdefault(key, set()).add(object_id)
+            if legacy_group_path is not None:
+                cls._serialized_legacy_group_pins.setdefault(key, set()).add(
+                    legacy_group_path
+                )
 
     @classmethod
     def active(cls, path: str | os.PathLike[str]) -> WorkspaceStore | None:
@@ -899,6 +933,30 @@ class WorkspaceStore:
         with self._lock:
             return frozenset(self._object_leases)
 
+    def _serialization_keys(self) -> tuple[str, ...]:
+        path_key = self._serialization_key(None, self._path)
+        if self._workspace_id is None:
+            return (path_key,)
+        return (self._serialization_key(self._workspace_id, self._path), path_key)
+
+    @property
+    def serialized_object_ids(self) -> frozenset[str]:
+        """Return objects pinned by readers serialized in this process."""
+        with self._active_lock:
+            object_ids: set[str] = set()
+            for key in self._serialization_keys():
+                object_ids.update(self._serialized_object_pins.get(key, ()))
+            return frozenset(object_ids)
+
+    @property
+    def serialized_legacy_group_paths(self) -> frozenset[str]:
+        """Return old-format groups pinned by serialized readers."""
+        with self._active_lock:
+            group_paths: set[str] = set()
+            for key in self._serialization_keys():
+                group_paths.update(self._serialized_legacy_group_pins.get(key, ()))
+            return frozenset(group_paths)
+
     @property
     def leased_legacy_group_paths(self) -> frozenset[str]:
         """Return old-format payload groups that still have lazy readers."""
@@ -1068,8 +1126,6 @@ class WorkspaceStore:
         self,
         *,
         max_objects: int = 1,
-        delete_objects: bool = True,
-        can_delete_objects: Callable[[], bool] | None = None,
         on_contention: Callable[[], None] | None = None,
     ) -> bool:
         """Retire old generations and unlink a bounded number of dead objects.
@@ -1091,21 +1147,13 @@ class WorkspaceStore:
                     continue
                 del generation_root[name]
 
-            deletion_allowed = delete_objects and (
-                can_delete_objects is None or can_delete_objects()
-            )
             reachable = set(self._object_leases)
+            reachable.update(self.serialized_object_ids)
             for generation in retained:
                 reachable.update(self.manifest_object_ids(generation.manifest))
 
             object_root = self.h5_file.require_group(_WORKSPACE_OBJECTS_GROUP)
             obsolete = [name for name in object_root if name not in reachable]
-            deletion_allowed = deletion_allowed and (
-                can_delete_objects is None or can_delete_objects()
-            )
-            if not deletion_allowed:
-                self.h5_file.flush()
-                return bool(obsolete)
             remove_count = len(obsolete) if not self._locking_supported else max_objects
             for name in obsolete[:remove_count]:
                 del object_root[name]

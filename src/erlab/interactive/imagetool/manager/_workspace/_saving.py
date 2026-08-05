@@ -208,30 +208,12 @@ class _WorkspaceGcWorker(QtCore.QRunnable):
         self,
         store: workspace_store.WorkspaceStore,
         *,
-        delete_objects: bool = True,
-        can_delete_objects: Callable[[], bool] | None = None,
         reader_closers: tuple[Callable[[], None], ...] = (),
     ) -> None:
         super().__init__()
         self.signals = _WorkspaceGcWorkerSignals()
         self._store = store
-        self._delete_objects = delete_objects
-        self._can_delete_objects = can_delete_objects
-        self._object_gc_deferred = not delete_objects
         self._reader_closers = reader_closers
-
-    @property
-    def object_gc_deferred(self) -> bool:
-        """Return whether this run kept obsolete payload objects."""
-        return self._object_gc_deferred
-
-    def _object_deletion_allowed(self) -> bool:
-        allowed = self._delete_objects and (
-            self._can_delete_objects is None or self._can_delete_objects()
-        )
-        if not allowed:
-            self._object_gc_deferred = True
-        return allowed
 
     def _handle_contention(self) -> None:
         for closer in self._reader_closers:
@@ -243,8 +225,6 @@ class _WorkspaceGcWorker(QtCore.QRunnable):
         try:
             more = self._store.collect_garbage(
                 max_objects=1,
-                delete_objects=self._delete_objects,
-                can_delete_objects=self._object_deletion_allowed,
                 on_contention=self._handle_contention,
             )
         except Exception:

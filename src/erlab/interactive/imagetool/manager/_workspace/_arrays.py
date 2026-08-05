@@ -557,6 +557,12 @@ class WorkspaceFileManager(CachingFileManager):
         reader_path = self.reader_path if store is None else str(store.path)
         workspace_path = self.workspace_path if store is None else reader_path
         workspace_id = self._workspace_id if store is None else store.workspace_id
+        workspace_store.WorkspaceStore.pin_serialized_reader(
+            workspace_id=workspace_id,
+            path=reader_path,
+            object_id=self._object_id,
+            legacy_group_path=self.legacy_group_path,
+        )
         return (
             "erlab-workspace-bounded-reader-v1",
             workspace_path,
