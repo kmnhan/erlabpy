@@ -1,0 +1,4 @@
+interface:
+  display_name: "ARPES Research Assistant"
+  short_description: "Analyze ARPES data and create reproducible workflows"
+  default_prompt: "Use $arpes-analysis to analyze this ARPES dataset, explain the workflow, and produce a reproducible notebook."

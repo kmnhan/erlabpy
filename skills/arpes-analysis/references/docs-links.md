@@ -1,142 +1,52 @@
-# ERLabPy docs links (stable)
+# ERLabPy documentation links
 
-Last updated: 2026-06-18.
+Use these stable pages only when exact API behavior or a public citation is needed.
+Prefer the documentation that matches the installed ERLabPy version when it is
+available locally.
 
-## Base links
+## Contents
 
-- Home: https://erlabpy.readthedocs.io/en/stable/index.html
-- Getting Started: https://erlabpy.readthedocs.io/en/stable/getting-started.html
-- User Guide index: https://erlabpy.readthedocs.io/en/stable/user-guide/
-- API Reference index: https://erlabpy.readthedocs.io/en/stable/reference.html
-- General index: https://erlabpy.readthedocs.io/en/stable/genindex.html
-- Search: https://erlabpy.readthedocs.io/en/stable/search.html
-- LLM sitemap: https://erlabpy.readthedocs.io/en/stable/llms.txt
-- LLM full export (trimmed):
-  https://erlabpy.readthedocs.io/en/stable/llms-full-no-changelog.txt
-- LLM full export: https://erlabpy.readthedocs.io/en/stable/llms-full.txt
-- Contributing: https://erlabpy.readthedocs.io/en/stable/contributing.html
-- Changelog: https://erlabpy.readthedocs.io/en/stable/changelog.html
-- References: https://erlabpy.readthedocs.io/en/stable/bibliography.html
+- [Core guides](#core-guides)
+- [Optional GUI guides](#optional-gui-guides)
+- [Analysis APIs](#analysis-apis)
 
-## User guide pages
+## Core guides
 
-- Reading and writing data:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/io.html
-- Selecting and indexing:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/indexing.html
-- Plotting: https://erlabpy.readthedocs.io/en/stable/user-guide/plotting.html
-- Momentum conversion:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/kconv.html
-- Curve fitting:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/curve-fitting.html
-- Filtering:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/filtering.html
-- Data transformations:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/transform.html
-- GUI and Python Side by Side:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/workflow-bridge.html
-- Operation map:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/workflow-bridge.html#workflow-bridge-operations
+- [Reading and writing data](https://erlabpy.readthedocs.io/en/stable/user-guide/io.html)
+- [Selecting and indexing](https://erlabpy.readthedocs.io/en/stable/user-guide/indexing.html)
+- [Momentum conversion](https://erlabpy.readthedocs.io/en/stable/user-guide/kconv.html)
+- [Curve fitting](https://erlabpy.readthedocs.io/en/stable/user-guide/curve-fitting.html)
+- [Plotting](https://erlabpy.readthedocs.io/en/stable/user-guide/plotting.html)
+- [Data transformations](https://erlabpy.readthedocs.io/en/stable/user-guide/transform.html)
+- [Stable API index](https://erlabpy.readthedocs.io/en/stable/reference.html)
+- [Stable documentation search](https://erlabpy.readthedocs.io/en/stable/search.html)
+- [Stable LLM sitemap](https://erlabpy.readthedocs.io/en/stable/llms.txt)
+- [Stable LLM export without changelog](https://erlabpy.readthedocs.io/en/stable/llms-full-no-changelog.txt)
 
-## Interactive pages
+## Optional GUI guides
 
-- Interactive tools index:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/index.html
-- ImageTool:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/imagetool.html
-- ImageTool Manager:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/manager.html
-- Manager notebook integration:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/manager.html#working-with-notebooks
-- Manager data explorer:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/manager.html#imagetool-manager-data-explorer
-- Manager automation APIs:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/manager.html#imagetool-manager-automation
-- Figure Composer:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/figure-composer.html
-- Figure Composer opening:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/figure-composer.html#figure-composer-open
-- Figure Composer recipe steps:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/figure-composer.html#figure-composer-recipe
-- Figure Composer sources:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/figure-composer.html#figure-composer-sources
-- Manager Figure Composer workflow:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/manager.html#imagetool-manager-figure-composer
-- Other interactive tools:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/misc-tools.html
-- ktool:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/misc-tools.html#ktool
-- dtool:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/misc-tools.html#dtool
-- goldtool:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/misc-tools.html#goldtool
-- ftool:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/misc-tools.html#ftool
-- restool:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/misc-tools.html#restool
-- meshtool:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/misc-tools.html#meshtool
-- Data explorer:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/misc-tools.html#data-explorer
-- Notebook shortcuts:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/misc-tools.html#interactive-misc-magics
-- Interactive configuration:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/options.html
-- Interactive tool authoring:
-  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/tool-authoring.html
+- [Interactive tools](https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/index.html)
+- [ImageTool](https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/imagetool.html)
+- [ImageTool Manager notebook integration](https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/manager.html#working-with-notebooks)
+- [Figure Composer](https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/figure-composer.html)
+- [`goldtool`, `ktool`, and `ftool`](https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/misc-tools.html)
+- [GUI and Python side by side](https://erlabpy.readthedocs.io/en/stable/user-guide/workflow-bridge.html)
 
-## API landing pages
+## Analysis APIs
 
-- erlab.analysis: https://erlabpy.readthedocs.io/en/stable/erlab.analysis.html
-- erlab.io: https://erlabpy.readthedocs.io/en/stable/erlab.io.html
-- erlab.plotting: https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html
-- erlab.interactive:
-  https://erlabpy.readthedocs.io/en/stable/erlab.interactive.html
-- erlab.accessors:
-  https://erlabpy.readthedocs.io/en/stable/erlab.accessors.html
-- erlab.utils: https://erlabpy.readthedocs.io/en/stable/erlab.utils.html
-- erlab.lattice: https://erlabpy.readthedocs.io/en/stable/erlab.lattice.html
-- erlab.constants:
-  https://erlabpy.readthedocs.io/en/stable/erlab.constants.html
-
-## High-value symbol pages
-
-- `xarray.DataArray.qsel`:
-  https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.qsel.html
-- `xarray.DataArray.qsel.around`:
-  https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.qsel.around.html
-- `xarray.DataArray.qsel.average`:
-  https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.qsel.average.html
-- `xarray.DataArray.qplot`:
-  https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.qplot.html
-- `xarray.DataArray.qshow`:
-  https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.qshow.html
-- `xarray.DataArray.kspace.convert`:
-  https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.kspace.convert.html
-- `xarray.DataArray.kspace.convert_coords`:
-  https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.kspace.convert_coords.html
-- `xarray.DataArray.kspace.hv_to_kz`:
-  https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.kspace.hv_to_kz.html
-- `erlab.plotting.plot_in_plane_bz`:
-  https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html#erlab.plotting.plot_in_plane_bz
-- `erlab.plotting.plot_out_of_plane_bz`:
-  https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html#erlab.plotting.plot_out_of_plane_bz
-- `xarray.DataArray.xlm.modelfit`:
-  https://xarray-lmfit.readthedocs.io/stable/accessors/xarray.DataArray.xlm.modelfit.html
-- `xarray.Dataset.xlm.modelfit`:
-  https://xarray-lmfit.readthedocs.io/stable/accessors/xarray.Dataset.xlm.modelfit.html
-
-## URL patterns
-
-- Generated API pages:
-  `https://erlabpy.readthedocs.io/en/stable/generated/<fully.qualified.name>.html`
-- Accessor pages:
-  `https://erlabpy.readthedocs.io/en/stable/accessors/<accessor.page.name>.html`
-- Site-search fallback:
-  `site:erlabpy.readthedocs.io/en/stable "<symbol or topic>"`
-- Figure Composer search hints:
-  `site:erlabpy.readthedocs.io/en/stable "Figure Composer" "BZ Overlay"`,
-  `site:erlabpy.readthedocs.io/en/stable "Figure Composer" "Sources"`,
-  `site:erlabpy.readthedocs.io/en/stable "Add to Figure" "Replace Source"`,
-  `site:erlabpy.readthedocs.io/en/stable "plot_in_plane_bz"`, and
-  `site:erlabpy.readthedocs.io/en/stable "hv_to_kz" "Photon Energy Overlay"`
+- [`xarray.DataArray.qsel`](https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.qsel.html)
+- [`xarray.DataArray.qplot`](https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.qplot.html)
+- [`xarray.DataArray.kspace.convert`](https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.kspace.convert.html)
+- [`xarray.DataArray.kspace.convert_coords`](https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.kspace.convert_coords.html)
+- [`xarray.DataArray.kspace.hv_to_kz`](https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.kspace.hv_to_kz.html)
+- [`erlab.analysis.gold.edge`](https://erlabpy.readthedocs.io/en/stable/generated/erlab.analysis.gold.html#erlab.analysis.gold.edge)
+- [`erlab.analysis.gold.poly`](https://erlabpy.readthedocs.io/en/stable/generated/erlab.analysis.gold.html#erlab.analysis.gold.poly)
+- [`erlab.analysis.gold.quick_fit`](https://erlabpy.readthedocs.io/en/stable/generated/erlab.analysis.gold.html#erlab.analysis.gold.quick_fit)
+- [`erlab.analysis.gold.correct_with_edge`](https://erlabpy.readthedocs.io/en/stable/generated/erlab.analysis.gold.html#erlab.analysis.gold.correct_with_edge)
+- [`MultiPeakModel`](https://erlabpy.readthedocs.io/en/stable/generated/erlab.analysis.fit.models.html#erlab.analysis.fit.models.MultiPeakModel)
+- [`FermiEdgeModel`](https://erlabpy.readthedocs.io/en/stable/generated/erlab.analysis.fit.models.html#erlab.analysis.fit.models.FermiEdgeModel)
+- [`erlab.plotting.plot_array`](https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html#erlab.plotting.plot_array)
+- [`erlab.plotting.plot_slices`](https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html#erlab.plotting.plot_slices)
+- [`erlab.plotting.fermiline`](https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html#erlab.plotting.fermiline)
+- [`erlab.plotting.plot_in_plane_bz`](https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html#erlab.plotting.plot_in_plane_bz)
+- [`xarray.DataArray.xlm.modelfit`](https://xarray-lmfit.readthedocs.io/stable/accessors/xarray.DataArray.xlm.modelfit.html)
