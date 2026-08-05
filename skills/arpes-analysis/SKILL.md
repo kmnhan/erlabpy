@@ -1,145 +1,157 @@
 ---
 name: arpes-analysis
-description: Use when answering questions or working on ERLabPy ARPES analysis workflows in Python, including loaders, xarray/qsel selection, momentum conversion, plotting, fitting, filtering, and interactive ImageTool, ImageTool Manager, or Figure Composer workflows. Use when teaching users how to use ERLabPy, writing example code, linking to stable documentation, or troubleshooting ERLabPy and xarray-lmfit behavior.
+description: Conduct, teach, and automate reproducible ARPES analysis with ERLabPy in executable Jupyter notebooks. Use when an agent must guide a user or analyze data by loading and inspecting ARPES datasets, calibrating the Fermi level, determining normal emission, converting angles to momentum, extracting or fitting EDCs and MDCs, tracing dispersions, creating constant-energy maps, producing publication figures, using ERLabPy interactive tools, or troubleshooting ERLabPy and xarray-lmfit.
 ---
 
 # ERLabPy ARPES Analysis
 
-## Defaults
+## Operating contract
 
-- Prefer these imports for full examples:
+- Create or edit an executable Jupyter notebook unless the user requests another
+  artifact.
+- Work autonomously when the data and physical assumptions support a decision. Ask for
+  the minimum missing physical input when they do not.
+- Inspect data, execute the notebook from a clean kernel, inspect the rendered results,
+  and correct invalid analysis before delivery.
+- Keep the loaded data unchanged. Assign each calibration or transformation to a new,
+  semantic variable.
+- Put all input paths, physical parameters, fit choices, and calibration values in
+  visible cells. Do not rely on hidden kernel or GUI state.
+- Use public ERLabPy and xarray-lmfit APIs in copied or generated code.
 
-  ```python
-  import erlab
-  import erlab.analysis as era
-  import erlab.interactive as eri
-  import erlab.plotting as eplt
-  ```
+## Coordinate compatible skills
 
-- Prefer ERLabPy APIs when they exist. Fall back to `numpy`, `scipy`, `xarray`,
-  `pandas`, and `matplotlib` only when ERLabPy does not provide the needed
-  abstraction.
-- Prefer `xarray.DataArray`, `xarray.Dataset`, and ERLabPy accessors as the
-  primary data model.
-- Prefer `xarray-lmfit` for fitting xarray objects via `.xlm.modelfit(...)`.
-  Use plain `lmfit` only when `xarray-lmfit` is unavailable or the user
-  explicitly asks for it.
-- Prefer public stable-doc names and URLs. If exact behavior or page mapping is
-  uncertain, say so and ask for a minimal snippet, traceback, or symbol name
-  instead of guessing.
+Treat this skill as the coordinator for the scientific workflow and final notebook.
+Select only the smallest useful set of available auxiliary skills. Use a notebook skill
+for notebook mechanics, a visualization skill for rendered-output inspection, or a
+file-inspection skill for its supported formats. Do not load overlapping general
+workflow guidance or create separate analysis pipelines.
 
-## Source Priority
+- Keep one notebook as the primary reproducible artifact unless the user requests a
+  different split.
+- Use one visible configuration and provenance section for all analysis stages.
+- Load each raw input once. Pass semantic notebook variables between calibration,
+  conversion, fitting, and plotting stages.
+- Apply the calibration and physical decision rules in this skill to ARPES decisions.
+  Use auxiliary skills only for their specialized mechanics. Follow user and
+  higher-priority instructions when they require a different choice.
+- Execute and inspect the combined notebook as one document. Do not validate isolated
+  fragments and then assume that the assembled notebook works.
+- If no compatible auxiliary skill is available, create, execute, and inspect the
+  notebook directly with the tools that the agent environment provides.
 
-1. Verify exact behavior and URLs against the stable public docs.
-2. Use [references/docs-links.md](references/docs-links.md) for stable public
-   URLs and high-traffic section anchors.
-3. Use `llms.txt` as a compact sitemap and `llms-full-no-changelog.txt` as the
-   default detailed reference corpus when those artifacts are available in the
-   docs build or the knowledge base. If they are not available locally, use the
-   public stable exports at `https://erlabpy.readthedocs.io/en/stable/llms.txt`
-   and `https://erlabpy.readthedocs.io/en/stable/llms-full-no-changelog.txt`.
-4. Use `llms-full.txt` or changelog content only for version-specific questions,
-   release-history questions, or recent behavior changes.
-5. Treat unreleased changelog notes as non-default; do not present them as
-   current stable behavior unless the user explicitly asks about unreleased
-   changes.
+Use these imports in complete examples:
 
-## Search Hints
+```python
+from pathlib import Path
 
-- Search `erlab.io.load`, `loader_context`, `set_loader`, `set_data_dir`,
-  `plugins`, `data explorer`, `Spreadsheet Metadata`, `ExcelMetadataSource`, or
-  `GoogleSheetsMetadataSource` for loading, plugin, and spreadsheet-metadata questions.
-- Search `xarray.DataArray.qsel`, `qsel.mean`, `qsel.min`,
-  `qsel.max`, `qsel.sum`, `qsel.around`, `xarray.DataArray.sortby`, `Sort By`,
-  `Aggregate`, or `workflow-bridge` for slicing and indexing questions.
-- Search `kspace.convert`, `kspace.as_configuration`, `kspace.convert_coords`,
-  `ktool`, `work function`, `inner potential`, or `offsets` for
-  momentum-conversion questions.
-- Search `xlm.modelfit`, `MultiPeakModel`, `FermiEdgeModel`, `gold`, `ftool`,
-  `restool`, or `goldtool` for fitting questions.
-- Search `ImageTool`, `ImageTool Manager`, `%watch`, `fetch`,
-  `show_in_manager`, `load_in_manager`, `managers`, `set_default_manager`,
-  `manager_selection_info`, `workspace_path`, `Save Workspace`,
-  `Open Workspace`, `Open Recent`, `Workspace Properties`, `Add Data Files`,
-  `Add Windows From Workspace`, `%watch --restore`,
-  `Reconnect Watched Variables`, `.itws`, `standalone application`,
-  `recent documents`, `Jump List`, `Dock menu`, `Result Placement`, `stale`,
-  `automatic updates`, `Auto`, `Changed`, `Missing`, `Reload Data`,
-  `Acquisition Context`, `Metadata Editor`, `missing acquisition metadata`,
-  `Concatenate`, `tools[0] - tools[1]`, `tools[0].children`,
-  `tools.selected`, `tools[0].qsel`, `era.transform.rotate(tools[0])`,
-  `xr.concat([tools[0], tools[1]])`, `my_func(tools[0])`,
-  `structured console provenance`, `relink moved file-backed inputs`,
-  `Refit after update`, `code for repeating steps`,
-  `reuses shared load and processing work`, `shared loader setup`,
-  `ImageTool windows opened from tools`, or
-  `workflow-bridge` for notebook and interactive-workflow questions.
-- Search `interactive-tool-authoring`, `ToolWindow`, `tool_status`,
-  `_append_persistence_payload`, `_restore_persistence_payload`,
-  `COPY_PROVENANCE`, `ToolScriptProvenanceDefinition`, `expression_method`,
-  `assign`, `IMAGE_TOOL_OUTPUTS`, `set_source_binding`, or `update_data` for
-  contributor questions about adding new interactive tools.
-- Search `Figure Composer`, `Add to Figure`, `Append to Figure`, `New Figure`,
-  `Recipe steps`, `Sources`, `Add New Step`, `Add Source Only`,
-  `Replace Source`, `Set Palette`, `Image Plot`, `Slice Plot`, `Line/Profile`,
-  `Python`, `plot_array`, `plot_slices`, `qplot`, `fermiline`, `nice_colorbar`,
-  `plot_bz`, `BZ Overlay`, `Photon Energy Overlay`, `plot_in_plane_bz`,
-  `plot_out_of_plane_bz`, or `hv_to_kz` for plotting and Figure Composer
-  questions.
+import matplotlib.pyplot as plt
+import numpy as np
+import xarray as xr
 
-## Linking and Citation
+import erlab
+import erlab.analysis as era
+import erlab.plotting as eplt
+```
 
-- Link to the exact stable docs page when verified.
-- Link to the closest stable index page and suggest a site search when the
-  exact symbol page is not verified.
-- Cite only public URLs in user-facing answers.
-- Do not mention internal skill files, uploaded knowledge files, or local build
-  artifacts unless the user explicitly asks about configuration.
+Import `erlab.interactive as eri` only in a cell that uses a GUI tool to keep a headless
+analysis notebook executable when no optional Qt binding is installed.
 
-## Interactive Tools
+## Data intake
 
-- Suggest interactive tools proactively when the task involves exploration, ROI
-  picking, momentum conversion, comparing datasets, or iterative parameter
-  tuning.
-- Describe tool capabilities only when they are verified from the relevant
-  stable docs page.
-- Prefer a confirmed-features list over inferred features when the user asks
-  about ImageTool, Manager, or other GUIs.
-- Prefer `ftool` for interactive fitting of 1D slices across 2D data,
-  especially when parameter propagation between slices matters.
-- Prefer the manager workflow when the user needs a tree that shows top-level ImageTool
-  rows, tools opened from those ImageTools, and ImageTool windows made by those tools;
-  rows that update after data changes; code that repeats GUI steps; multiple windows;
-  notebook synchronization; reusable workspaces; or shared `.ipynb` and `.itws`
-  files.
-- Mention `%watch` or `erlab.interactive.imagetool.manager.watch()` when
-  notebook synchronization is relevant.
-- Mention `%watch --restore` when a saved manager workspace contains disconnected
-  watched rows that should reconnect to variables in an open notebook.
-- Mention Figure Composer when the user wants to create Matplotlib figures from the GUI.
-- Mention the Figure Composer `Image Plot` step for one rendered 2D image on one axes.
-- Mention the Figure Composer `Slice Plot` step for multi-cursor, multi-slice, or
-  slice-grid image plots.
-- Mention the Figure Composer `BZ Overlay` step when the user wants
-  Brillouin-zone slice overlays on in-plane or out-of-plane momentum plots.
-- Mention the Figure Composer `Photon Energy Overlay` step when the user wants
-  constant-photon-energy annotations on `k_parallel`-`k_z` plots.
+- Reuse a notebook variable only when an earlier visible cell creates it from a
+  reproducible input.
+- Load files with `erlab.io.load` and an explicit `Path`. Select a loader explicitly
+  when automatic loader selection is ambiguous.
+- Keep loader settings, scan identifiers, and concatenation choices in the notebook.
+- Use a semantic raw variable such as `raw_data` or `gold_reference`. Do not overwrite it
+  with corrected or converted data.
+- Stop and report missing files, unsupported layouts, or incomplete acquisition
+  metadata. Do not create synthetic replacements unless the user requests simulation.
 
-## Troubleshooting
+## Analysis order
 
-- Start from `dims`, `coords`, `attrs`, axis order, units, and geometry
-  parameters.
-- Check whether axes are descending or nonuniform before discussing selection,
-  fitting, or momentum-conversion issues.
-- Ask only for the minimum missing context: ERLabPy version, Python version, OS
-  if relevant, minimal code, full traceback, and coordinate names.
-- State what is verified and what still needs a check when an API or GUI
-  feature cannot be confirmed from the docs.
+1. State the objective, requested outputs, assumptions, and success criteria.
+2. Record package versions, input paths, loader settings, and physical parameters.
+3. Load the data once and keep an unchanged raw-data variable.
+4. Inspect `dims`, `coords`, `attrs`, units, coordinate order, monotonicity, finite
+   values, and sampling. Plot representative raw slices.
+5. Establish the Fermi level. Read
+   [references/fermi-calibration.md](references/fermi-calibration.md) only when the
+   energy zero is unverified, a reference must be fit, residual curvature must be
+   assessed, or a photon-energy-dependent correction is needed. Otherwise record the
+   accepted calibration provenance and skip the fit.
+6. Determine normal emission and convert to momentum only after accepting the energy
+   scale. Read [references/momentum-conversion.md](references/momentum-conversion.md)
+   only for angle-space data that needs momentum coordinates or when an existing
+   conversion must be validated.
+7. Read [references/curve-analysis.md](references/curve-analysis.md) only when the task
+   includes EDC or MDC extraction, curve fitting, or dispersion tracing.
+8. Read
+   [references/publication-plotting.md](references/publication-plotting.md) only when
+   the task includes constant-energy maps, figure construction, fit overlays, or
+   figure export.
+9. Summarize results, uncertainties, calibration provenance, failed checks, and
+   limitations next to the relevant outputs.
 
-## Common Recommendations
+Skip an inapplicable stage explicitly. Do not silently assume that the energy or
+momentum axes are calibrated.
 
-- Recommend the stable Getting Started page for installation questions.
-- Recommend the conda-based install path first for users who are new to
-  scientific Python environments.
-- Recommend Visual Studio Code plus the ERLab extension only when the user asks
-  about notebook or editor workflow, or about manager integration.
+## Notebook requirements
+
+- Keep cells small and runnable in top-to-bottom order.
+- Put selections and fit parameters in a short configuration cell before their use.
+- Display compact dataset summaries instead of full arrays.
+- Show raw data beside processed data when a transformation can change interpretation.
+- Show fit data, best fit, and residuals. Report failed fits and unconstrained
+  parameters instead of hiding them.
+- Save final figures from explicit figure objects. Record the output paths.
+- Execute once from a clean kernel. Repeat only when randomness, in-place mutation,
+  calibration-file writes, or other rerun-sensitive behavior is present.
+
+## Decision rules
+
+- Prefer an approved reference calibration over inference from sample data.
+- Treat implicit zero offsets as defaults, not measured normal-emission values.
+- Do not infer an angle-dependent Fermi correction from sample bands.
+- For `gold.poly`, use reliable `sample_temp` metadata. Use `fast=True` when that
+  temperature is missing or unreliable, and supply a unit-checked resolution estimate.
+- Do not use symmetrized data to justify a normal-emission calibration.
+- Do not interpret optimizer success alone as a valid physical fit.
+- Use Voigt spectral peaks by default. Tie their Gaussian sigma parameters to one
+  instrumental-width parameter with expressions.
+- Do not track a band through missing intensity only because the optimizer returned a
+  peak center.
+- Treat a constant-energy contour as an intensity map unless the user explicitly asks
+  for line contours.
+- Preserve descending coordinates when APIs support them. Sort explicitly when an API
+  requires monotonic increasing coordinates, and record the change.
+- Confirm energy units before supplying temperature, resolution, or fit windows.
+
+## Interactive tools
+
+- Use optional GUI tools only when they are available and visual interaction will
+  reduce uncertainty. Do not install Qt only to use a diagnostic GUI unless the user
+  requests it.
+- Use ImageTool when exploration or region selection benefits from linked views.
+- Use `goldtool` when Fermi-edge windows or model choices need visual adjustment.
+- Use `ktool` when normal emission, geometry, or momentum-conversion candidates need
+  interactive comparison.
+- Use `ftool` when 1D or sequence fits need visual initialization or propagation.
+- Use Figure Composer when visual figure construction is useful.
+- Reproduce every accepted GUI operation with explicit notebook code. Do not deliver a
+  notebook that depends on an open GUI or clipboard state.
+
+## Source priority
+
+1. Inspect the installed ERLabPy version and its public API.
+2. Use the local documentation that matches the environment when available.
+3. Read [references/docs-links.md](references/docs-links.md) only when exact public
+   documentation or a stable link is needed.
+4. Use the stable `llms.txt` and `llms-full-no-changelog.txt` exports only when the
+   focused pages do not contain enough detail.
+5. Use changelog content only for version-specific or unreleased behavior.
+
+State what was verified and what remains uncertain. Ask for a reference spectrum,
+geometry value, fit model choice, or physical interpretation only when the notebook
+cannot determine it safely.

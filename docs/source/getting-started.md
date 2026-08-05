@@ -11,7 +11,7 @@ Welcome to ERLabPy! This page will guide you through the installation process an
 :::{admonition} Recommended Editor Setup
 :class: important
 
-For the smoothest notebook workflow, use [Visual Studio Code](https://code.visualstudio.com) (or VS Code-based editors such as [Cursor](https://cursor.com/), [Windsurf](https://windsurf.dev/), or [Antigravity](https://antigravity.google/)) with:
+For the smoothest notebook workflow, use [Visual Studio Code](https://code.visualstudio.com) with:
 
 1. The [Jupyter extension](https://marketplace.visualstudio.com/items?itemName=ms-toolsai.jupyter)
 2. The dedicated [erlab extension](https://marketplace.visualstudio.com/items?itemName=khan.erlab)
@@ -21,17 +21,17 @@ This setup enables convenient ERLabPy actions directly from notebooks and the ed
 
 ## AI Assistance
 
-For quick guidance while working with ERLabPy (including installation):
+- Try the `arpes-analysis` agent skill that enables agents to answer various questions about ERLabPy and perform basic analysis tasks.
+
+  With the [GitHub CLI](https://cli.github.com/) installed, run the following command to install the skill:
+
+  ```bash
+  gh skill install kmnhan/erlabpy arpes-analysis
+  ```
 
 - Use the [ARPES Analysis Assistant custom GPT](https://chatgpt.com/g/g-6962fdab53008191ac5e3307a694b0a9-arpes-analysis-assistant) for ChatGPT-based help.
 
   The assistant is trained on ERLabPy documentation and can help with code examples, explanations of functions and parameters, and general guidance on installing and using the package.
-
-- Ask questions and explore auto-generated docs at [DeepWiki](https://deepwiki.com/kmnhan/erlabpy).
-
-  Advanced users may also consider connecting the [DeepWiki MCP](https://docs.devin.ai/work-with-devin/deepwiki-mcp) ([Model Context Protocol](https://modelcontextprotocol.io/), not microchannel plates 😉) server to their LLM setup.
-
-- An [agent skill](https://agentskills.io/) for ERLabPy is available in the [GitHub repository](https://github.com/kmnhan/erlabpy/tree/main/skills) (beta).
 
 :::{warning}
 
