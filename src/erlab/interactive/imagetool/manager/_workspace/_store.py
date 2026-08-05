@@ -20,7 +20,7 @@ from typing import Self
 import erlab
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Mapping
 
     import h5py
 else:
@@ -145,6 +145,8 @@ def _wait_for_hdf5_access(
         except OSError as exc:
             if after_failed_attempt is not None:
                 after_failed_attempt()
+            if _is_hdf5_file_lock_unavailable_error(exc):
+                raise
             if not _is_hdf5_file_contention_error(exc):
                 raise
             if on_wait is not None:
@@ -164,12 +166,36 @@ class _WorkspaceGeneration:
     manifest: dict[str, typing.Any]
 
 
+@dataclass(frozen=True)
+class _SerializedReaderPinSnapshot:
+    """Versioned reader pins captured at one instant."""
+
+    object_versions: dict[str, int]
+    legacy_group_versions: dict[str, int]
+
+    @property
+    def object_ids(self) -> frozenset[str]:
+        return frozenset(self.object_versions)
+
+    @property
+    def legacy_group_paths(self) -> frozenset[str]:
+        return frozenset(self.legacy_group_versions)
+
+    @property
+    def empty(self) -> bool:
+        return not self.object_versions and not self.legacy_group_versions
+
+
 class WorkspaceStoreConflictError(RuntimeError):
     """The path no longer identifies the file opened by the store."""
 
 
 class WorkspaceStoreReopenError(RuntimeError):
     """A replaced workspace could not be reopened."""
+
+
+class WorkspaceReaderUnavailableError(RuntimeError):
+    """A workspace reader no longer has a payload that it can export."""
 
 
 class WorkspaceStore:
@@ -186,8 +212,9 @@ class WorkspaceStore:
         weakref.WeakValueDictionary()
     )
     _pending_readers: typing.ClassVar[dict[str, weakref.WeakSet[typing.Any]]] = {}
-    _serialized_object_pins: typing.ClassVar[dict[str, set[str]]] = {}
-    _serialized_legacy_group_pins: typing.ClassVar[dict[str, set[str]]] = {}
+    _serialized_object_pins: typing.ClassVar[dict[str, dict[str, int]]] = {}
+    _serialized_legacy_group_pins: typing.ClassVar[dict[str, dict[str, int]]] = {}
+    _serialized_pin_version = 0
     _active_lock = threading.RLock()
     _fork_stores: tuple[WorkspaceStore, ...] = ()
 
@@ -255,12 +282,14 @@ class WorkspaceStore:
         """
         key = cls._serialization_key(workspace_id, path)
         with cls._active_lock:
+            cls._serialized_pin_version += 1
+            version = cls._serialized_pin_version
             if object_id is not None:
-                cls._serialized_object_pins.setdefault(key, set()).add(object_id)
+                cls._serialized_object_pins.setdefault(key, {})[object_id] = version
             if legacy_group_path is not None:
-                cls._serialized_legacy_group_pins.setdefault(key, set()).add(
+                cls._serialized_legacy_group_pins.setdefault(key, {})[
                     legacy_group_path
-                )
+                ] = version
 
     @classmethod
     def active(cls, path: str | os.PathLike[str]) -> WorkspaceStore | None:
@@ -915,6 +944,42 @@ class WorkspaceStore:
         with self._lock:
             self._readers.add(reader)
 
+    def pin_serialized_reader_reference(
+        self,
+        *,
+        object_id: str | None,
+        legacy_group_path: str | None,
+    ) -> None:
+        """Pin one exported reader without racing workspace compaction."""
+        with self._lock:
+            if self.closed or self.conflicted:
+                raise WorkspaceReaderUnavailableError(
+                    "The workspace changed before its Dask reader was exported"
+                )
+            with self.read_session() as h5_file:
+                if (
+                    object_id is not None
+                    and self.object_path(object_id).strip("/") not in h5_file
+                ):
+                    raise WorkspaceReaderUnavailableError(
+                        "The workspace payload was compacted before its Dask reader "
+                        "was exported"
+                    )
+                if (
+                    legacy_group_path is not None
+                    and legacy_group_path.strip("/") not in h5_file
+                ):
+                    raise WorkspaceReaderUnavailableError(
+                        "The workspace payload was compacted before its Dask reader "
+                        "was exported"
+                    )
+            self.pin_serialized_reader(
+                workspace_id=self.workspace_id,
+                path=self.path,
+                object_id=object_id,
+                legacy_group_path=legacy_group_path,
+            )
+
     def unregister_reader(self, reader: object) -> None:
         """Remove a reader that no longer uses this store."""
         with self._lock:
@@ -943,20 +1008,35 @@ class WorkspaceStore:
     @property
     def serialized_object_ids(self) -> frozenset[str]:
         """Return objects pinned by readers serialized in this process."""
-        with self._active_lock:
-            object_ids: set[str] = set()
-            for key in self._serialization_keys():
-                object_ids.update(self._serialized_object_pins.get(key, ()))
-            return frozenset(object_ids)
+        return self.serialized_reader_pin_snapshot().object_ids
 
     @property
     def serialized_legacy_group_paths(self) -> frozenset[str]:
         """Return old-format groups pinned by serialized readers."""
+        return self.serialized_reader_pin_snapshot().legacy_group_paths
+
+    def serialized_reader_pin_snapshot(self) -> _SerializedReaderPinSnapshot:
+        """Return the newest pin version for each exported reader target."""
         with self._active_lock:
-            group_paths: set[str] = set()
+            object_versions: dict[str, int] = {}
+            legacy_group_versions: dict[str, int] = {}
             for key in self._serialization_keys():
-                group_paths.update(self._serialized_legacy_group_pins.get(key, ()))
-            return frozenset(group_paths)
+                for object_id, version in self._serialized_object_pins.get(
+                    key, {}
+                ).items():
+                    object_versions[object_id] = max(
+                        version, object_versions.get(object_id, -1)
+                    )
+                for group_path, version in self._serialized_legacy_group_pins.get(
+                    key, {}
+                ).items():
+                    legacy_group_versions[group_path] = max(
+                        version, legacy_group_versions.get(group_path, -1)
+                    )
+            return _SerializedReaderPinSnapshot(
+                object_versions=object_versions,
+                legacy_group_versions=legacy_group_versions,
+            )
 
     @property
     def has_serialized_readers(self) -> bool:
@@ -977,24 +1057,38 @@ class WorkspaceStore:
 
     def release_serialized_reader_pins(
         self,
-        *,
-        object_ids: Iterable[str] = (),
-        legacy_group_paths: Iterable[str] = (),
+        snapshot: _SerializedReaderPinSnapshot,
     ) -> None:
         """Release a confirmed snapshot of serialized reader pins."""
-        released_object_ids = frozenset(object_ids)
-        released_group_paths = frozenset(legacy_group_paths)
         with self._active_lock:
             for key in self._serialization_keys():
-                pinned_object_ids = self._serialized_object_pins.get(key)
-                if pinned_object_ids is not None:
-                    pinned_object_ids.difference_update(released_object_ids)
-                    if not pinned_object_ids:
+                pinned_objects = self._serialized_object_pins.get(key)
+                if pinned_objects is not None:
+                    for (
+                        object_id,
+                        confirmed_version,
+                    ) in snapshot.object_versions.items():
+                        current_version = pinned_objects.get(object_id)
+                        if (
+                            current_version is not None
+                            and current_version <= confirmed_version
+                        ):
+                            pinned_objects.pop(object_id, None)
+                    if not pinned_objects:
                         self._serialized_object_pins.pop(key, None)
-                pinned_group_paths = self._serialized_legacy_group_pins.get(key)
-                if pinned_group_paths is not None:
-                    pinned_group_paths.difference_update(released_group_paths)
-                    if not pinned_group_paths:
+                pinned_groups = self._serialized_legacy_group_pins.get(key)
+                if pinned_groups is not None:
+                    for (
+                        group_path,
+                        confirmed_version,
+                    ) in snapshot.legacy_group_versions.items():
+                        current_version = pinned_groups.get(group_path)
+                        if (
+                            current_version is not None
+                            and current_version <= confirmed_version
+                        ):
+                            pinned_groups.pop(group_path, None)
+                    if not pinned_groups:
                         self._serialized_legacy_group_pins.pop(key, None)
 
     @property

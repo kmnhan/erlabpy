@@ -765,21 +765,30 @@ def test_manager_compaction_warns_only_for_exported_readers(
         def _compact(
             current_store: workspace_store.WorkspaceStore,
             *,
-            discard_serialized_object_ids=(),
-            discard_serialized_legacy_group_paths=(),
+            discard_serialized_reader_pins=None,
         ) -> None:
             compacted.append(current_store)
+            snapshot = (
+                discard_serialized_reader_pins
+                or workspace_store._SerializedReaderPinSnapshot({}, {})
+            )
             discarded.append(
                 (
-                    frozenset(discard_serialized_object_ids),
-                    frozenset(discard_serialized_legacy_group_paths),
+                    snapshot.object_ids,
+                    snapshot.legacy_group_paths,
                 )
             )
-            if discard_serialized_object_ids:
+            if snapshot.object_ids:
                 workspace_store.WorkspaceStore.pin_serialized_reader(
                     workspace_id=store.workspace_id,
                     path=path,
                     object_id="new-export",
+                    legacy_group_path=None,
+                )
+                workspace_store.WorkspaceStore.pin_serialized_reader(
+                    workspace_id=store.workspace_id,
+                    path=path,
+                    object_id="exported",
                     legacy_group_path=None,
                 )
 
@@ -815,7 +824,7 @@ def test_manager_compaction_warns_only_for_exported_readers(
         assert manager.compact_workspace()
         assert compacted == [store, store]
         assert discarded[-1] == (frozenset({"exported"}), frozenset())
-        assert store.serialized_object_ids == {"new-export"}
+        assert store.serialized_object_ids == {"exported", "new-export"}
         store.clear_serialized_reader_pins()
 
         controller._workspace_store = None
@@ -1968,6 +1977,70 @@ def test_manager_background_save_as_preserves_post_snapshot_non_node_changes(
         assert manager._workspace_state.layout_modified
         assert manager._workspace_state.options_modified
         assert manager._workspace_state.context_modified
+
+
+def test_manager_background_save_as_preserves_change_from_final_event_drain(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    pool = _install_deferred_workspace_save_worker(monkeypatch)
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = itool(
+            xr.DataArray(np.arange(9.0).reshape((3, 3)), dims=("x", "y")),
+            manager=False,
+            execute=False,
+        )
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        source_path = tmp_path / "source.itws"
+        target_path = tmp_path / "target.itws"
+        controller = manager._workspace_controller
+        controller.saving._save_workspace_document(source_path)
+        adopt_workspace_path(manager, source_path)
+        controller._mark_workspace_clean()
+        monkeypatch.setattr(
+            controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: target_path,
+        )
+
+        assert controller.save_as(native=False)
+        worker = pool.workers[0]
+        original_drain = controller._drain_workspace_deferred_events
+        drain_count = 0
+
+        def _drain_and_edit_on_final_call() -> None:
+            nonlocal drain_count
+            original_drain()
+            drain_count += 1
+            if drain_count == 2:
+                assert manager._workspace_state.mark_layout_dirty()
+
+        monkeypatch.setattr(
+            controller,
+            "_drain_workspace_deferred_events",
+            _drain_and_edit_on_final_call,
+        )
+        with workspace_store.WorkspaceStore(worker._fname, create=True) as store:
+            workspace_storage._write_workspace_generation(
+                store,
+                worker._snapshot.generation_plan,
+                compression_mode=worker._snapshot.compression_mode,
+            )
+        worker.finish()
+        qtbot.wait_until(lambda: not manager._workspace_state.save_in_progress)
+
+        assert drain_count == 2
+        assert manager.workspace_path == str(target_path.resolve())
+        assert manager.is_workspace_modified
+        assert manager._workspace_state.layout_modified
 
 
 def test_manager_background_save_as_repoints_post_snapshot_pending_edit(

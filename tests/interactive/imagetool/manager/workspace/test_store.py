@@ -237,6 +237,7 @@ def test_workspace_store_defers_missing_identity_until_publish(tmp_path) -> None
             object_id="old-object",
             legacy_group_path="/legacy",
         )
+        old_pins = store.serialized_reader_pin_snapshot()
         assert store.serialized_object_ids == {"old-object"}
         assert store.serialized_legacy_group_paths == {"/legacy"}
     assert path.read_bytes() == unchanged
@@ -255,10 +256,7 @@ def test_workspace_store_defers_missing_identity_until_publish(tmp_path) -> None
             object_id="kept-object",
             legacy_group_path="/kept-legacy",
         )
-        store.release_serialized_reader_pins(
-            object_ids={"old-object"},
-            legacy_group_paths={"/legacy"},
-        )
+        store.release_serialized_reader_pins(old_pins)
         assert store.serialized_object_ids == {"kept-object"}
         assert store.serialized_legacy_group_paths == {"/kept-legacy"}
         store.clear_serialized_reader_pins()
@@ -281,6 +279,26 @@ def test_hdf5_error_filters_cover_platform_independent_messages() -> None:
     assert workspace_store._is_hdf5_file_lock_unavailable_error(
         OSError(errno.ENOSYS, "unsupported")
     )
+
+
+def test_hdf5_access_does_not_retry_when_locking_is_unavailable() -> None:
+    attempts = 0
+    waits = 0
+
+    def _open() -> None:
+        nonlocal attempts
+        attempts += 1
+        raise OSError(errno.ENOSYS, "unable to lock file: function not implemented")
+
+    def _wait() -> None:
+        nonlocal waits
+        waits += 1
+
+    with pytest.raises(OSError, match="unable to lock file"):
+        workspace_store._wait_for_hdf5_access(_open, on_wait=_wait)
+
+    assert attempts == 1
+    assert waits == 0
 
 
 def test_workspace_store_rejects_non_lock_open_errors(
@@ -731,7 +749,7 @@ def test_workspace_store_detects_unavailable_required_locking(
 
     def _open_file(*args, **kwargs):
         if kwargs.get("locking") is True:
-            raise OSError(errno.ENOSYS, "file locking is not supported")
+            raise OSError(errno.ENOSYS, "unable to lock file: not supported")
         return original_file(*args, **kwargs)
 
     monkeypatch.setattr(workspace_store.h5py, "File", _open_file)
@@ -829,6 +847,69 @@ def test_workspace_store_gc_preserves_serialized_reader_objects(
     with workspace_store.WorkspaceStore(copied_path) as copied:
         assert copied.workspace_id == workspace_id
         assert copied.serialized_object_ids == set()
+
+
+def test_workspace_reader_export_waits_for_compaction_boundary(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+    export_started = threading.Event()
+    export_finished = threading.Event()
+    export_errors: list[Exception] = []
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("obsolete")
+
+        def _export_reader() -> None:
+            export_started.set()
+            try:
+                store.pin_serialized_reader_reference(
+                    object_id="obsolete",
+                    legacy_group_path=None,
+                )
+            except Exception as exc:
+                export_errors.append(exc)
+            finally:
+                export_finished.set()
+
+        with store.lock:
+            export_thread = threading.Thread(target=_export_reader)
+            export_thread.start()
+            assert export_started.wait(timeout=2)
+            assert not export_finished.wait(timeout=0.05)
+            with store.write_session() as h5_file:
+                del h5_file[f"{workspace_store._WORKSPACE_OBJECTS_GROUP}/obsolete"]
+
+        export_thread.join(timeout=2)
+        assert not export_thread.is_alive()
+        assert len(export_errors) == 1
+        assert isinstance(
+            export_errors[0], workspace_store.WorkspaceReaderUnavailableError
+        )
+        assert not store.has_serialized_readers
+
+
+def test_workspace_reader_export_rejects_unavailable_targets(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+    store = workspace_store.WorkspaceStore(path, create=True)
+
+    with pytest.raises(
+        workspace_store.WorkspaceReaderUnavailableError,
+        match="payload was compacted",
+    ):
+        store.pin_serialized_reader_reference(
+            object_id=None,
+            legacy_group_path="/missing-legacy",
+        )
+
+    store.close()
+    with pytest.raises(
+        workspace_store.WorkspaceReaderUnavailableError,
+        match="workspace changed",
+    ):
+        store.pin_serialized_reader_reference(
+            object_id=None,
+            legacy_group_path=None,
+        )
 
 
 def test_workspace_store_gc_removes_malformed_generation_names(
@@ -1272,7 +1353,9 @@ def test_workspace_worker_reports_inaccessible_shared_path(
 ) -> None:
     path = tmp_path / "workspace.itws"
     group_path = workspace_store.WorkspaceStore.object_path("payload")
-    with workspace_store.WorkspaceStore(path, create=True):
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.require_group(group_path)
         manager = workspace_arrays.WorkspaceFileManager(
             path, object_id="payload", group_path=group_path
         )
@@ -1387,7 +1470,9 @@ def test_workspace_worker_rejects_different_file_at_shared_path(
     path = tmp_path / "workspace.itws"
     replacement = tmp_path / "replacement.itws"
     group_path = workspace_store.WorkspaceStore.object_path("payload")
-    with workspace_store.WorkspaceStore(path, create=True):
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.require_group(group_path)
         manager = workspace_arrays.WorkspaceFileManager(
             path, object_id="payload", group_path=group_path
         )
@@ -1742,9 +1827,28 @@ def test_workspace_compaction_preserves_leased_and_serialized_payloads(
             "serialized",
         }
 
+        confirmed_pins = store.serialized_reader_pin_snapshot()
+        workspace_store.WorkspaceStore.pin_serialized_reader(
+            workspace_id=store.workspace_id,
+            path=path,
+            object_id="serialized",
+            legacy_group_path=None,
+        )
         workspace_storage._compact_workspace_store(
             store,
-            discard_serialized_object_ids={"serialized"},
+            discard_serialized_reader_pins=confirmed_pins,
+        )
+
+        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+            "current",
+            "leased",
+            "serialized",
+        }
+
+        discarded_pins = store.serialized_reader_pin_snapshot()
+        workspace_storage._compact_workspace_store(
+            store,
+            discard_serialized_reader_pins=discarded_pins,
         )
 
         assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
@@ -1752,7 +1856,7 @@ def test_workspace_compaction_preserves_leased_and_serialized_payloads(
             "leased",
         }
         assert store.serialized_object_ids == {"serialized"}
-        store.release_serialized_reader_pins(object_ids={"serialized"})
+        store.release_serialized_reader_pins(discarded_pins)
         assert not store.has_serialized_readers
         store.release_object("leased")
         assert not store.collect_garbage(max_objects=1)

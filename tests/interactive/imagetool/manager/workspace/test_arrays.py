@@ -521,12 +521,39 @@ def test_workspace_file_manager_serialization_pins_exact_payload(tmp_path) -> No
             group_path="/legacy",
         )
         assert store.serialized_object_ids == set()
-        manager.__getstate__()
+        state = manager.__getstate__()
         legacy_manager.__getstate__()
         assert store.serialized_object_ids == {"payload"}
         assert store.serialized_legacy_group_paths == {"/legacy"}
+
+        store.clear_serialized_reader_pins()
+        forwarded_manager = workspace_arrays.WorkspaceFileManager.__new__(
+            workspace_arrays.WorkspaceFileManager
+        )
+        forwarded_manager.__setstate__(state)
+        forwarded_manager.__getstate__()
+        assert store.serialized_object_ids == {"payload"}
         del manager, legacy_manager
         gc.collect()
+
+
+def test_detached_workspace_file_manager_serialization_pins_legacy_group(
+    tmp_path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    with (
+        workspace_store.WorkspaceStore(path, create=True) as store,
+        store.write_session() as h5_file,
+    ):
+        h5_file.create_group("legacy")
+
+    manager = workspace_arrays.WorkspaceFileManager(path, group_path="/legacy")
+    manager.__getstate__()
+
+    with workspace_store.WorkspaceStore(path) as store:
+        assert store.serialized_legacy_group_paths == {"/legacy"}
+        store.clear_serialized_reader_pins()
+    manager.close()
 
 
 def test_workspace_dask_tokenization_pins_only_serialized_graph(tmp_path) -> None:

@@ -27,7 +27,7 @@ from erlab.interactive.imagetool.manager._workspace._format import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Iterator, Mapping
+    from collections.abc import Callable, Iterator, Mapping
 
     import h5py
     import xarray as xr
@@ -196,8 +196,9 @@ def _write_workspace_generation(
 def _compact_workspace_store(
     store: workspace_store.WorkspaceStore,
     *,
-    discard_serialized_object_ids: Collection[str] = (),
-    discard_serialized_legacy_group_paths: Collection[str] = (),
+    discard_serialized_reader_pins: (
+        workspace_store._SerializedReaderPinSnapshot | None
+    ) = None,
 ) -> None:
     """Rewrite a workspace while omitting confirmed obsolete reader pins."""
     workspace_path = store.path
@@ -214,13 +215,21 @@ def _compact_workspace_store(
             baseline_manifest.pop("repack_estimate_known", None)
             object_ids = set(store.manifest_object_ids(baseline_manifest))
             object_ids.update(store.leased_object_ids)
+            serialized_pins = store.serialized_reader_pin_snapshot()
+            discarded_pins = (
+                discard_serialized_reader_pins
+                or workspace_store._SerializedReaderPinSnapshot({}, {})
+            )
             object_ids.update(
-                store.serialized_object_ids - set(discard_serialized_object_ids)
+                object_id
+                for object_id, version in serialized_pins.object_versions.items()
+                if version > discarded_pins.object_versions.get(object_id, -1)
             )
-            legacy_group_paths = store.leased_legacy_group_paths | (
-                store.serialized_legacy_group_paths
-                - set(discard_serialized_legacy_group_paths)
-            )
+            legacy_group_paths = store.leased_legacy_group_paths | {
+                group_path
+                for group_path, version in serialized_pins.legacy_group_versions.items()
+                if version > discarded_pins.legacy_group_versions.get(group_path, -1)
+            }
             expected_state = _workspace_publication_state(workspace_path)
 
             with (

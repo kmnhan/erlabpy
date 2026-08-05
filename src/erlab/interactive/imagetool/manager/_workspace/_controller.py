@@ -2387,17 +2387,15 @@ class _WorkspaceController:
                 return
 
             self._drain_workspace_deferred_events()
-            post_save_events = tuple(
+            pre_rebind_post_save_events = tuple(
                 event
                 for event in self._manager._workspace_state.dirty_events
                 if event.generation > snapshot.generation
             )
-            has_new_dirty_generation = (
-                self._manager._workspace_state.dirty_generation > snapshot.generation
-                and self._manager.is_workspace_modified
-            )
             post_save_uids = frozenset(
-                event.uid for event in post_save_events if event.uid is not None
+                event.uid
+                for event in pre_rebind_post_save_events
+                if event.uid is not None
             )
             old_store = self._workspace_store
             try:
@@ -2445,6 +2443,15 @@ class _WorkspaceController:
                 return
             self._release_unused_imported_workspace_accesses()
             self._drain_workspace_deferred_events()
+            post_save_events = tuple(
+                event
+                for event in self._manager._workspace_state.dirty_events
+                if event.generation > snapshot.generation
+            )
+            has_new_dirty_generation = (
+                self._manager._workspace_state.dirty_generation > snapshot.generation
+                and self._manager.is_workspace_modified
+            )
             if post_save_events:
                 self._restore_workspace_dirty_events(post_save_events)
             elif not has_new_dirty_generation:
@@ -2529,12 +2536,12 @@ class _WorkspaceController:
                 "The workspace file is not open. Reopen it and try again.",
             )
             return False
-        serialized_object_ids = store.serialized_object_ids
-        serialized_legacy_group_paths = store.serialized_legacy_group_paths
+        serialized_reader_pins = store.serialized_reader_pin_snapshot()
         if (
-            serialized_object_ids or serialized_legacy_group_paths
-        ) and not self._confirm_compaction_with_exported_readers(
-            origin or self._manager
+            not serialized_reader_pins.empty
+            and not self._confirm_compaction_with_exported_readers(
+                origin or self._manager
+            )
         ):
             self._restore_focus_after_workspace_save(origin)
             return False
@@ -2554,15 +2561,9 @@ class _WorkspaceController:
                     )
                 workspace_storage._compact_workspace_store(
                     store,
-                    discard_serialized_object_ids=serialized_object_ids,
-                    discard_serialized_legacy_group_paths=(
-                        serialized_legacy_group_paths
-                    ),
+                    discard_serialized_reader_pins=serialized_reader_pins,
                 )
-            store.release_serialized_reader_pins(
-                object_ids=serialized_object_ids,
-                legacy_group_paths=serialized_legacy_group_paths,
-            )
+            store.release_serialized_reader_pins(serialized_reader_pins)
             self._manager._status_bar.showMessage("Workspace compacted", 5000)
             self._mark_workspace_clean()
         except Exception as exc:

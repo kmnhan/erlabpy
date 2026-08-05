@@ -422,7 +422,7 @@ class WorkspaceFileManager(CachingFileManager):
     @property
     def legacy_group_path(self) -> str | None:
         """Return the group needed by a pre-generation lazy reader."""
-        if self._store is None or self._object_id is not None:
+        if self._object_id is not None:
             return None
         first_component = (self._group_path or "/").strip("/").partition("/")[0]
         if first_component.startswith("__itws_"):
@@ -557,12 +557,25 @@ class WorkspaceFileManager(CachingFileManager):
         reader_path = self.reader_path if store is None else str(store.path)
         workspace_path = self.workspace_path if store is None else reader_path
         workspace_id = self._workspace_id if store is None else store.workspace_id
-        workspace_store.WorkspaceStore.pin_serialized_reader(
-            workspace_id=workspace_id,
-            path=reader_path,
-            object_id=self._object_id,
-            legacy_group_path=self.legacy_group_path,
-        )
+        pin_store = store
+        if pin_store is None:
+            active_store = workspace_store.WorkspaceStore.active(reader_path)
+            if active_store is not None and (
+                workspace_id is None or active_store.workspace_id == workspace_id
+            ):
+                pin_store = active_store
+        if pin_store is None:
+            workspace_store.WorkspaceStore.pin_serialized_reader(
+                workspace_id=workspace_id,
+                path=reader_path,
+                object_id=self._object_id,
+                legacy_group_path=self.legacy_group_path,
+            )
+        else:
+            pin_store.pin_serialized_reader_reference(
+                object_id=self._object_id,
+                legacy_group_path=self.legacy_group_path,
+            )
         return (
             "erlab-workspace-bounded-reader-v1",
             workspace_path,
