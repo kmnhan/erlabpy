@@ -1186,6 +1186,7 @@ class ImageToolManager(_ImageToolManagerBase):
                 self.console.deleteLater()
 
             logger.debug("Releasing workspace lock...")
+            self._workspace_controller._release_imported_workspace_accesses()
             self._workspace_controller._release_workspace_lock()
 
             logger.debug("Closing dask client (if any)...")
@@ -1265,6 +1266,8 @@ class ImageToolManager(_ImageToolManagerBase):
         if not self._workspace_state.closing_document:
             self._refresh_dependency_dependents(uid)
             self._figure_workflows._refresh_figure_source_controls()
+        if self._workspace_state.loading_depth == 0:
+            self._workspace_controller._release_unused_imported_workspace_accesses()
 
     def _iter_descendant_uids(self, uid: str) -> list[str]:
         return self._tool_graph.descendant_uids(uid)
@@ -1477,6 +1480,8 @@ class ImageToolManager(_ImageToolManagerBase):
             self._figure_workflows._refresh_figure_source_controls()
         wrapper.dispose()
         wrapper.deleteLater()
+        if self._workspace_state.loading_depth == 0:
+            self._workspace_controller._release_unused_imported_workspace_accesses()
 
     @contextlib.contextmanager
     def _bulk_remove_context(self) -> Iterator[None]:

@@ -90,6 +90,10 @@ class _WorkspaceController:
         ) = None
         self._background_save_requested = False
         self._workspace_store: workspace_store.WorkspaceStore | None = None
+        self._imported_workspace_accesses: dict[
+            pathlib.Path, _WorkspaceDocumentAccess
+        ] = {}
+        self._imported_workspace_dependents: dict[pathlib.Path, set[str]] = {}
         self._workspace_gc_worker: workspace_saving._WorkspaceGcWorker | None = None
         self._workspace_gc_receiver: (
             workspace_saving._WorkspaceGcResultReceiver | None
@@ -527,6 +531,106 @@ class _WorkspaceController:
         self._manager._workspace_state.lock.unlock()
         self._manager._workspace_state.lock = None
 
+    def _release_imported_workspace_accesses(self) -> None:
+        """Release all source documents retained by imported lazy payloads."""
+        accesses = tuple(self._imported_workspace_accesses.values())
+        self._imported_workspace_accesses.clear()
+        self._imported_workspace_dependents.clear()
+        for access in accesses:
+            access.release()
+
+    @staticmethod
+    def _workspace_node_source_paths(
+        node: _ManagedWindowNode,
+    ) -> frozenset[pathlib.Path]:
+        """Return workspace paths directly referenced by one managed node."""
+        paths: set[pathlib.Path] = set()
+        pending = node.pending_workspace_payload
+        if pending is not None:
+            paths.add(pending[0].resolve())
+        if node.is_imagetool and node.imagetool is not None:
+            paths.update(
+                pathlib.Path(path).resolve()
+                for path in workspace_arrays.dataarray_source_paths(
+                    node.slicer_area._data
+                )
+            )
+        paths.update(
+            path.resolve() for path, _group in node._workspace_reference_datasets
+        )
+        return frozenset(paths)
+
+    def _retain_imported_workspace_access(
+        self,
+        access: _WorkspaceDocumentAccess,
+        candidate_uids: Collection[str],
+    ) -> None:
+        """Retain an imported source only when loaded nodes still read from it."""
+        path = access.path.resolve()
+        dependents = {
+            uid
+            for uid in candidate_uids
+            if (
+                (node := self._manager._tool_graph.nodes.get(uid)) is not None
+                and path in self._workspace_node_source_paths(node)
+            )
+        }
+        if not dependents:
+            return
+        self._imported_workspace_dependents.setdefault(path, set()).update(dependents)
+        if path in self._imported_workspace_accesses:
+            return
+        workspace_lock = access.take_lock()
+        if workspace_lock is not None:
+            self._imported_workspace_accesses[path] = _WorkspaceDocumentAccess(
+                path, workspace_lock
+            )
+
+    def _release_unused_imported_workspace_accesses(self) -> None:
+        """Release imported sources after all dependent payloads are rehomed."""
+        for path, access in tuple(self._imported_workspace_accesses.items()):
+            previous_dependents = self._imported_workspace_dependents.get(path, set())
+            dependents: set[str] = set()
+            for uid, node in self._manager._tool_graph.nodes.items():
+                source_paths = self._workspace_node_source_paths(node)
+                if path in source_paths:
+                    dependents.add(uid)
+                    continue
+                if (
+                    uid in previous_dependents
+                    and node.is_imagetool
+                    and node.imagetool is not None
+                    and node.slicer_area._data.chunks is not None
+                    and not source_paths
+                ):
+                    # Some Dask transformations discard xarray's source encoding.
+                    # Keep ownership until a save rebinds or materializes this node.
+                    dependents.add(uid)
+            if dependents:
+                self._imported_workspace_dependents[path] = dependents
+                continue
+            self._imported_workspace_accesses.pop(path, None)
+            self._imported_workspace_dependents.pop(path, None)
+            access.release()
+
+    def _take_imported_workspace_lock(
+        self, path: str | os.PathLike[str]
+    ) -> QtCore.QLockFile | None:
+        """Transfer a retained source lock to the associated workspace document."""
+        resolved = pathlib.Path(path).resolve()
+        access = self._imported_workspace_accesses.pop(resolved, None)
+        self._imported_workspace_dependents.pop(resolved, None)
+        return None if access is None else access.take_lock()
+
+    def _take_workspace_access_lock(
+        self, access: _WorkspaceDocumentAccess
+    ) -> QtCore.QLockFile | None:
+        """Transfer the lock that owns one workspace document."""
+        workspace_lock = access.take_lock()
+        if workspace_lock is None:
+            workspace_lock = self._take_imported_workspace_lock(access.path)
+        return workspace_lock
+
     def _current_workspace_document_path(self) -> pathlib.Path | None:
         path = self._manager._workspace_state.path
         if path is None or not workspace_format._workspace_path_is_itws(path):
@@ -538,7 +642,10 @@ class _WorkspaceController:
     ) -> _WorkspaceDocumentAccess:
         workspace_path = pathlib.Path(fname).resolve()
         workspace_lock = None
-        if workspace_path != self._manager._workspace_state.path:
+        if (
+            workspace_path != self._manager._workspace_state.path
+            and workspace_path not in self._imported_workspace_accesses
+        ):
             workspace_lock = workspace_storage._acquire_workspace_document_lock(
                 workspace_path
             )
@@ -1058,6 +1165,64 @@ class _WorkspaceController:
                 "rebound to the saved file."
             ) from exc
 
+    def _imported_workspace_backing_snapshot(
+        self,
+    ) -> dict[str, tuple[str, tuple[str, ...]]] | None:
+        """Capture data backing only when imported source ownership is active."""
+        if not self._imported_workspace_accesses:
+            return None
+        return self.loading._workspace_data_backing_snapshot()
+
+    def _rebind_imported_workspace_imagetools_after_save(
+        self,
+        workspace_path: str | os.PathLike[str],
+        backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]] | None,
+        *,
+        exclude_uids: Collection[str],
+    ) -> None:
+        """Move imported lazy readers to objects committed by the current save."""
+        if backing_snapshot is None:
+            self._release_unused_imported_workspace_accesses()
+            return
+        imported_uids: set[str] = set().union(
+            *self._imported_workspace_dependents.values()
+        )
+        dask_targets = {
+            uid
+            for uid, (kind, _source_paths) in backing_snapshot.items()
+            if kind == "dask" and uid in imported_uids and uid not in exclude_uids
+        }
+        file_lazy_targets = {
+            uid
+            for uid, (kind, _source_paths) in backing_snapshot.items()
+            if kind == "file_lazy" and uid in imported_uids and uid not in exclude_uids
+        }
+        targets = dask_targets | file_lazy_targets
+        live_snapshot = self._live_imagetool_rebind_snapshot(targets)
+        try:
+            if dask_targets:
+                self.loading._rebind_workspace_backed_imagetools(
+                    workspace_path,
+                    targets=dask_targets,
+                    chunks={},
+                    exclude_uids=exclude_uids,
+                )
+            if file_lazy_targets:
+                self.loading._rebind_workspace_backed_imagetools(
+                    workspace_path,
+                    targets=file_lazy_targets,
+                    chunks=None,
+                    exclude_uids=exclude_uids,
+                )
+        except Exception as exc:
+            with contextlib.suppress(Exception):
+                self._restore_live_imagetool_rebind_snapshot(live_snapshot)
+            raise _WorkspacePostSaveBindingError(
+                "Workspace file was saved, but imported lazy data could not be "
+                "rebound to the saved file."
+            ) from exc
+        self._release_unused_imported_workspace_accesses()
+
     def _active_managed_window(self) -> QtWidgets.QWidget | None:
         active_window = QtWidgets.QApplication.activeWindow()
         if not isinstance(active_window, QtWidgets.QWidget):
@@ -1264,7 +1429,10 @@ class _WorkspaceController:
         return self._mark_workspace_dirty(uid=uid, added=True, structure="Added window")
 
     def _mark_node_data_dirty(self, uid: str) -> bool:
-        return self._mark_workspace_dirty(uid=uid, data=True)
+        changed = self._mark_workspace_dirty(uid=uid, data=True)
+        if self._manager._workspace_state.loading_depth == 0:
+            self._release_unused_imported_workspace_accesses()
+        return changed
 
     def _mark_node_state_dirty(self, uid: str) -> bool:
         return self._mark_workspace_dirty(uid=uid, state=True)
@@ -1504,7 +1672,9 @@ class _WorkspaceController:
                     existing_access.path,
                     document_access=existing_access,
                 )
-            return str(existing_access.path), existing_access.take_lock()
+            return str(existing_access.path), self._take_workspace_access_lock(
+                existing_access
+            )
 
         with self._workspace_document_access_context(converted_fname) as access:
             with erlab.interactive.utils.wait_dialog(
@@ -1540,7 +1710,7 @@ class _WorkspaceController:
             associated_fname, associated_lock = converted
             schema_version = workspace_format._current_workspace_schema_version()
         elif workspace_access is not None:
-            associated_lock = workspace_access.take_lock()
+            associated_lock = self._take_workspace_access_lock(workspace_access)
 
         associated_store = None
         if schema_version >= workspace_format._WORKSPACE_LEGACY_SCHEMA_VERSION:
@@ -1864,6 +2034,7 @@ class _WorkspaceController:
         snapshot_elapsed: float,
         started_at: float,
         restore_focus: bool,
+        imported_backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]] | None,
     ) -> bool:
         total_elapsed = time.perf_counter() - started_at
         logger.debug(
@@ -1901,6 +2072,21 @@ class _WorkspaceController:
             snapshot,
             manifest=snapshot.generation_plan.manifest,
         )
+        post_save_uids = frozenset(
+            event.uid for event in post_save_events if event.uid is not None
+        )
+        try:
+            self._rebind_imported_workspace_imagetools_after_save(
+                workspace_path,
+                imported_backing_snapshot,
+                exclude_uids=post_save_uids,
+            )
+        except _WorkspacePostSaveBindingError:
+            self._mark_workspace_post_save_binding_refresh_failed()
+            self._show_workspace_post_save_binding_error(workspace_path)
+            if restore_focus:
+                self._restore_focus_after_workspace_save(origin)
+            return False
         if post_save_events:
             self._restore_workspace_dirty_events(post_save_events)
             message = "Workspace saved; new changes remain unsaved"
@@ -1931,6 +2117,8 @@ class _WorkspaceController:
         snapshot_elapsed: float,
         started_at: float,
         restore_focus: bool,
+        imported_backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]]
+        | None = None,
         on_finished: Callable[[bool], None] | None = None,
     ) -> None:
         try:
@@ -1944,6 +2132,7 @@ class _WorkspaceController:
                 snapshot_elapsed=snapshot_elapsed,
                 started_at=started_at,
                 restore_focus=restore_focus,
+                imported_backing_snapshot=imported_backing_snapshot,
             )
             queued = self._background_save_requested
             if (
@@ -1990,6 +2179,7 @@ class _WorkspaceController:
 
         origin = self._active_managed_window()
         document_id = self._manager._workspace_state.document_id
+        imported_backing_snapshot = self._imported_workspace_backing_snapshot()
         self._manager._status_bar.showMessage("Saving workspace...")
         started_at = time.perf_counter()
         snapshot: workspace_saving._WorkspaceSaveSnapshot | None = None
@@ -2038,6 +2228,7 @@ class _WorkspaceController:
                 snapshot_elapsed=snapshot_elapsed,
                 started_at=started_at,
                 restore_focus=restore_focus,
+                imported_backing_snapshot=imported_backing_snapshot,
                 on_finished=on_finished,
             ),
             on_start_error=_start_error,
@@ -2233,7 +2424,7 @@ class _WorkspaceController:
             saved_path = access.path
             self._set_workspace_path(
                 saved_path,
-                workspace_lock=access.take_lock(),
+                workspace_lock=self._take_workspace_access_lock(access),
                 store=new_store,
             )
             access = None
@@ -2255,6 +2446,7 @@ class _WorkspaceController:
                 if on_finished is not None:
                     on_finished(False)
                 return
+            self._release_unused_imported_workspace_accesses()
             self._drain_workspace_deferred_events()
             if post_save_events or has_new_dirty_generation:
                 self._restore_workspace_dirty_events(post_save_events)

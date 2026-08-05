@@ -1019,6 +1019,7 @@ class _PendingWorkspacePayloads:
                     node.update_title()
                     self._loader._sync_materialized_workspace_link_group(node)
                 node._notify_change(_ManagedNodeChange.ROW | _ManagedNodeChange.INFO)
+                self._controller._release_unused_imported_workspace_accesses()
                 return True
         except Exception:
             logger.exception(
@@ -1126,6 +1127,7 @@ class _PendingWorkspacePayloads:
             return False
         else:
             node._notify_change(_ManagedNodeChange.ROW | _ManagedNodeChange.INFO)
+            self._controller._release_unused_imported_workspace_accesses()
             return True
 
     def _has_pending_workspace_linked_slicers(

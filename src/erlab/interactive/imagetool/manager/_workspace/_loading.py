@@ -65,6 +65,7 @@ if typing.TYPE_CHECKING:
     import h5py
 
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
+    from erlab.interactive.imagetool.manager._widgets import _WorkspaceDocumentAccess
     from erlab.interactive.imagetool.manager._workspace._controller import (
         _WorkspaceController,
     )
@@ -2315,6 +2316,23 @@ class _WorkspaceLoader:
         self._skipped_workspace_nodes = []
         profiler = _WorkspaceLoadProfiler(fname)
         schema_version = 1
+        nodes_before_load = frozenset(self._manager._tool_graph.nodes)
+
+        def _retain_imported_source(
+            access: _WorkspaceDocumentAccess, loaded: bool
+        ) -> bool:
+            finished = self._finish_workspace_file_load(loaded)
+            if finished and not associate:
+                candidate_uids = (
+                    frozenset(self._manager._tool_graph.nodes)
+                    if replace
+                    else frozenset(self._manager._tool_graph.nodes) - nodes_before_load
+                )
+                self._controller._retain_imported_workspace_access(
+                    access, candidate_uids
+                )
+            return finished
+
         try:
             with self._controller._workspace_document_access_context(fname) as access:
                 with profiler.stage("metadata read"):
@@ -2379,7 +2397,7 @@ class _WorkspaceLoader:
                                     self._restore_workspace_loader_state(
                                         manifest, apply_explorer=False
                                     )
-                            return self._finish_workspace_file_load(loaded)
+                            return _retain_imported_source(access, loaded)
                         finally:
                             if (
                                 owns_load_store
@@ -2440,7 +2458,7 @@ class _WorkspaceLoader:
                             self._restore_workspace_loader_state(
                                 manifest, apply_explorer=False
                             )
-                    return self._finish_workspace_file_load(loaded)
+                    return _retain_imported_source(access, loaded)
                 finally:
                     if (
                         owns_fallback_store
@@ -2449,5 +2467,6 @@ class _WorkspaceLoader:
                     ):
                         fallback_store.close()
         finally:
+            self._controller._release_unused_imported_workspace_accesses()
             self._missing_workspace_colormaps = previous_missing_colormaps
             self._skipped_workspace_nodes = previous_skipped_nodes

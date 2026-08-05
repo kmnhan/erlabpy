@@ -212,7 +212,7 @@ class WorkspaceStore:
         self._write_opening = False
         self._write_target_path: pathlib.Path | None = None
         self._locking_supported = True
-        self._workspace_id = ""
+        self._workspace_id: str | None = None
         self._path_identity: tuple[int, int] | None = None
         self._recovery_path: pathlib.Path | None = None
         try:
@@ -378,8 +378,8 @@ class WorkspaceStore:
         return self._ensure_read_handle()
 
     @property
-    def workspace_id(self) -> str:
-        """Return the stable identity stored inside this workspace file."""
+    def workspace_id(self) -> str | None:
+        """Return the stored identity, or ``None`` before first publication."""
         return self._workspace_id
 
     @property
@@ -469,15 +469,12 @@ class WorkspaceStore:
             h5_file.close()
         else:
             with self._open_with_lock_detection("r") as h5_file:
-                self._workspace_id = self._workspace_id_from_file(h5_file) or ""
+                self._workspace_id = self._workspace_id_from_file(h5_file)
         self._h5_file = None
         path_stat = self._path.stat()
         self._path_identity = (path_stat.st_dev, path_stat.st_ino)
         self._recovery_path = None
         self._state = "open"
-        if not self._workspace_id:
-            with self.write_session() as h5_file:
-                self._workspace_id = self._ensure_workspace_id(h5_file, workspace_id)
 
     def _ensure_read_handle(self) -> typing.Any:
         if self._h5_file is None:
@@ -997,6 +994,8 @@ class WorkspaceStore:
     def publish(self, manifest: Mapping[str, typing.Any]) -> _WorkspaceGeneration:
         """Publish one completed manifest as the newest generation."""
         with self.write_session():
+            if self._workspace_id is None:
+                self._workspace_id = self._ensure_workspace_id(self.h5_file)
             generation_root = self.h5_file.require_group(_WORKSPACE_GENERATIONS_GROUP)
             existing_sequences = [
                 int(name)

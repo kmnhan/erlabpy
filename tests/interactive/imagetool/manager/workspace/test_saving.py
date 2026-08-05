@@ -2271,6 +2271,68 @@ def test_manager_workspace_import_reopens_offloaded_data_as_dask(
         assert _compute_first_value(loaded_data) == 0.0
 
 
+def test_manager_workspace_save_rehomes_imported_dask_data(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = tmp_path / "source.itws"
+    target = tmp_path / "target.itws"
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        imported_data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
+        imported = itool(imported_data, manager=False, execute=False)
+        assert isinstance(imported, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(imported, show=False)
+        manager._workspace_controller.saving._save_workspace_document(source)
+        adopt_workspace_path(manager, source)
+        manager._workspace_controller._mark_workspace_clean()
+        assert manager.offload_to_workspace([0], native=False)
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        existing = itool(
+            xr.DataArray(np.ones((2, 2)), dims=["x", "y"]),
+            manager=False,
+            execute=False,
+        )
+        assert isinstance(existing, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(existing, show=False)
+        manager._workspace_controller.saving._save_workspace_document(target)
+        adopt_workspace_path(manager, target)
+        manager._workspace_controller._mark_workspace_clean()
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            source,
+            replace=False,
+            associate=False,
+            mark_dirty=True,
+            select=False,
+        )
+        imported = manager.get_imagetool(1).slicer_area._data
+        assert imported.chunks is not None
+        assert source.resolve() in (
+            manager._workspace_controller._imported_workspace_accesses
+        )
+        with pytest.raises(BlockingIOError):
+            workspace_storage._acquire_workspace_document_lock(source)
+
+        assert _request_workspace_save_and_wait(qtbot, manager)
+        rebound = manager.get_imagetool(1).slicer_area._data
+        assert rebound.chunks is not None
+        assert workspace_arrays._normalized_file_path(
+            rebound.encoding.get("source")
+        ) == str(target.resolve())
+        assert _compute_first_value(rebound) == 0.0
+        assert source.resolve() not in (
+            manager._workspace_controller._imported_workspace_accesses
+        )
+        lock = workspace_storage._acquire_workspace_document_lock(source)
+        lock.unlock()
+
+
 def test_manager_workspace_load_reopens_offloaded_spaced_coord_data_as_dask(
     qtbot,
     tmp_path,

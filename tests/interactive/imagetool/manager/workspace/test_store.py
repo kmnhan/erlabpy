@@ -6,6 +6,7 @@ import json
 import threading
 import typing
 
+import h5py
 import numpy as np
 import pytest
 import xarray as xr
@@ -215,6 +216,30 @@ def test_workspace_store_identity_helpers_decode_bytes() -> None:
         workspace_store.WorkspaceStore._workspace_id_from_file(_File(b"bytes-id"))
         == "bytes-id"
     )
+
+
+def test_workspace_store_defers_missing_identity_until_publish(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True):
+        pass
+    with h5py.File(path, "a") as h5_file:
+        del h5_file.attrs[workspace_store._WORKSPACE_ID_ATTR]
+        h5_file.attrs["imagetool_workspace_schema_version"] = 4
+
+    unchanged = path.read_bytes()
+    with workspace_store.WorkspaceStore(path) as store:
+        assert store.workspace_id is None
+    assert path.read_bytes() == unchanged
+    with h5py.File(path, "r") as h5_file:
+        assert workspace_store._WORKSPACE_ID_ATTR not in h5_file.attrs
+
+    with workspace_store.WorkspaceStore(path) as store:
+        store.publish(_manifest())
+        workspace_id = store.workspace_id
+
+    assert workspace_id
+    with h5py.File(path, "r") as h5_file:
+        assert h5_file.attrs[workspace_store._WORKSPACE_ID_ATTR] == workspace_id
 
 
 def test_hdf5_error_filters_cover_platform_independent_messages() -> None:
