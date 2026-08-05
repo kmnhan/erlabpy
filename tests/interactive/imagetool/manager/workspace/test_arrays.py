@@ -20,6 +20,7 @@ import erlab
 import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
+import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from tests.interactive.imagetool.manager.workspace._support import (
     _assert_rich_workspace_attr,
@@ -433,6 +434,75 @@ def test_workspace_file_manager_reports_missing_published_file(tmp_path) -> None
         pass
 
 
+def test_workspace_file_manager_lifecycle_guards(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+    other_path = tmp_path / "other.itws"
+    with (
+        workspace_store.WorkspaceStore(path, create=True) as store,
+        workspace_store.WorkspaceStore(other_path, create=True) as other_store,
+    ):
+        manager = workspace_arrays.WorkspaceFileManager(
+            path,
+            group_path=f"/{workspace_store._WORKSPACE_GENERATIONS_GROUP}/current",
+        )
+        try:
+            manager._attach_store(store)
+            assert manager.legacy_group_path is None
+            assert manager.__dask_tokenize__()[1] == store.workspace_id
+            assert manager.acquire().filename == str(path)
+            assert manager.acquire(needs_lock=False).filename == str(path)
+            with manager.acquire_context() as netcdf_file:
+                assert netcdf_file.filename == str(path)
+            with manager.acquire_context(needs_lock=False) as netcdf_file:
+                assert netcdf_file.filename == str(path)
+            with pytest.raises(RuntimeError, match="already attached"):
+                manager._attach_store(other_store)
+        finally:
+            manager.close(needs_lock=False)
+
+    unattached = workspace_arrays.WorkspaceFileManager(path)
+    try:
+        with pytest.raises(RuntimeError, match="no active store"):
+            unattached._active_netcdf_file()
+    finally:
+        unattached.close()
+
+    worker = workspace_arrays.WorkspaceFileManager.__new__(
+        workspace_arrays.WorkspaceFileManager
+    )
+    with pytest.raises(ValueError, match="Unsupported serialized"):
+        worker.__setstate__(("wrong-marker", str(path), str(path), None, None, "/"))
+
+    worker.__setstate__(
+        (
+            "erlab-workspace-bounded-reader-v1",
+            str(path),
+            str(path),
+            None,
+            None,
+            "/",
+        )
+    )
+    with pytest.raises(RuntimeError, match="array selections only"):
+        worker.acquire()
+    with (
+        pytest.raises(RuntimeError, match="array selections only"),
+        worker.acquire_context(),
+    ):
+        pass
+    assert worker.__dask_tokenize__()[1] == str(path)
+    worker.close()
+
+    backend = workspace_arrays._WorkspaceBackendArray(
+        "data",
+        types.SimpleNamespace(_manager=object()),
+        shape=(1,),
+        dtype=np.dtype(float),
+    )
+    with pytest.raises(TypeError, match="WorkspaceFileManager"):
+        backend._getitem(slice(None))
+
+
 def test_workspace_file_manager_rejects_inherited_process_access(
     monkeypatch, tmp_path
 ) -> None:
@@ -470,6 +540,71 @@ def test_retarget_workspace_xarray_sources_changes_only_matching_sources(
     assert data.encoding["source"] == str(new_path.resolve())
     assert data.coords["x"].encoding["source"] == str(new_path.resolve())
     assert data.coords["other"].encoding["source"] == str(other_path)
+
+
+def test_workspace_xarray_source_lifecycle_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    source = tmp_path / "source.itws"
+    data = xr.DataArray([1.0], dims="x", coords={"x": [0.0]})
+    data.encoding["source"] = str(source)
+    snapshot = workspace_arrays._workspace_xarray_source_snapshot(data)
+
+    data.encoding.pop("source")
+    data.coords["x"].encoding["source"] = "added"
+    workspace_arrays._restore_workspace_xarray_source_snapshot(snapshot)
+    assert data.encoding["source"] == str(source)
+    assert "source" not in data.coords["x"].encoding
+
+    workspace_arrays.retarget_workspace_xarray_sources(data, source, source)
+    assert data.encoding["source"] == str(source)
+    workspace_arrays.set_workspace_xarray_sources(data, typing.cast("str", None))
+    assert data.encoding["source"] == str(source)
+
+    active_store = types.SimpleNamespace(write_in_progress=True)
+    monkeypatch.setattr(
+        workspace_store.WorkspaceStore,
+        "active",
+        lambda _path: active_store,
+    )
+    assert workspace_arrays.workspace_write_in_progress(data)
+
+
+def test_workspace_h5py_create_kwargs_maps_chunksizes() -> None:
+    assert workspace_arrays._workspace_h5py_create_kwargs(None) == {}
+    assert workspace_arrays._workspace_h5py_create_kwargs(
+        {
+            "chunksizes": (2, 3),
+            "compression": "gzip",
+            "compression_opts": 1,
+            "shuffle": True,
+            "fletcher32": False,
+            "ignored": "value",
+        }
+    ) == {
+        "chunks": (2, 3),
+        "compression": "gzip",
+        "compression_opts": 1,
+        "shuffle": True,
+        "fletcher32": False,
+    }
+
+
+def test_workspace_root_attrs_require_valid_generation(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+    with h5py.File(path, "w") as h5_file:
+        h5_file.attrs["imagetool_workspace_schema_version"] = 5
+
+    with pytest.raises(ValueError, match="no committed generation"):
+        workspace_arrays._read_workspace_root_attrs_h5py(path)
+
+    with h5py.File(path, "r+") as h5_file:
+        generations = h5_file.create_group(workspace_store._WORKSPACE_GENERATIONS_GROUP)
+        generations.create_group("invalid-name")
+        generations.create_group("00000000000000000001")
+    with pytest.raises(ValueError, match="no valid committed generation"):
+        workspace_arrays._read_workspace_root_attrs_h5py(path)
 
 
 def test_open_workspace_dataset_uses_fsdecode_fallback(monkeypatch) -> None:

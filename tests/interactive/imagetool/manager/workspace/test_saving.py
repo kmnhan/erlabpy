@@ -1111,6 +1111,10 @@ def test_workspace_save_worker_reports_missing_backing_source(tmp_path) -> None:
             "publication_conflict_path",
         ),
         (
+            lambda _path: workspace_store.WorkspaceStoreConflictError("changed"),
+            "publication_conflict_path",
+        ),
+        (
             lambda path: PermissionError(errno.EACCES, "access denied", path),
             "access_denied_path",
         ),
@@ -1185,6 +1189,198 @@ def test_workspace_save_worker_closes_readers_only_after_contention(
 
     assert close_calls == ([None] if contended else [])
     assert waiting == ([None] if contended else [])
+
+
+def test_workspace_gc_worker_reports_contention_and_errors() -> None:
+    closed: list[None] = []
+
+    class _Store:
+        def collect_garbage(self, *, max_objects, on_contention):
+            assert max_objects == 1
+            on_contention()
+            raise RuntimeError("cleanup failed")
+
+    worker = workspace_saving._WorkspaceGcWorker(
+        typing.cast("workspace_store.WorkspaceStore", _Store()),
+        reader_closers=(lambda: closed.append(None),),
+    )
+    results: list[tuple[bool, str | None]] = []
+    worker.signals.finished.connect(
+        lambda more, error: results.append((more, typing.cast("str | None", error)))
+    )
+
+    worker.run()
+
+    assert closed == [None]
+    assert len(results) == 1
+    assert not results[0][0]
+    assert results[0][1] is not None
+    assert "cleanup failed" in results[0][1]
+
+
+def test_pending_workspace_tool_attrs_update_source_metadata() -> None:
+    saver = workspace_saving._WorkspaceSaver.__new__(workspace_saving._WorkspaceSaver)
+    pending_base = {
+        "tool_display_name": "old",
+        "tool_title": "prefix old",
+        erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR: "stale",
+    }
+    saver._pending_workspace_node_attrs = types.MethodType(
+        lambda _self, _node, _attrs, *, kind: dict(pending_base),
+        saver,
+    )
+    model = types.SimpleNamespace(model_dump=lambda **_kwargs: {"value": 1})
+    node = types.SimpleNamespace(
+        pending_workspace_payload_attrs={},
+        name="new",
+        source_spec=model,
+        source_binding=None,
+        has_source_binding=True,
+        source_state="valid",
+        source_auto_update=True,
+    )
+
+    attrs = saver._pending_workspace_tool_attrs(node)
+
+    assert attrs["tool_title"] == "prefix new"
+    assert erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR in attrs
+    assert erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR not in attrs
+    assert attrs[erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR] == "valid"
+    assert attrs[erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR] is True
+
+    node.name = "plain"
+    node.source_spec = None
+    node.source_binding = model
+    node.has_source_binding = False
+    pending_base.clear()
+    attrs = saver._pending_workspace_tool_attrs(node)
+
+    assert attrs["tool_title"] == "plain"
+    assert erlab.interactive.utils._TOOL_SOURCE_SPEC_ATTR not in attrs
+    assert erlab.interactive.utils._TOOL_SOURCE_BINDING_ATTR in attrs
+    assert erlab.interactive.utils._TOOL_SOURCE_STATE_ATTR not in attrs
+    assert erlab.interactive.utils._TOOL_SOURCE_AUTO_UPDATE_ATTR not in attrs
+
+
+def test_workspace_reference_uid_detection_and_invalid_reader_path() -> None:
+    references = {
+        "parent": {"kind": "parent_source"},
+        "node": {"kind": "manager_node", "node_uid": "source"},
+        "other": {"kind": "external"},
+    }
+    controller_type = workspace_controller._WorkspaceController
+    includes_uids = controller_type._workspace_tool_references_include_uids
+
+    assert not includes_uids(references, (), parent_uid="parent")
+    assert includes_uids(references, {"parent"}, parent_uid="parent")
+    assert includes_uids(references, {"source"}, parent_uid=None)
+    assert not includes_uids(references, {"missing"}, parent_uid=None)
+
+    saver = workspace_saving._WorkspaceSaver.__new__(workspace_saving._WorkspaceSaver)
+    assert saver._workspace_reader_closers(typing.cast("str", None)) == ()
+
+    closed: list[str] = []
+    saver._workspace_reader_closers = types.MethodType(
+        lambda _self, _path: (lambda: closed.append("closed"),), saver
+    )
+    saver._close_workspace_idle_readers("workspace.itws")
+    assert closed == ["closed"]
+
+
+def test_serialize_workspace_node_rejects_invalid_pending_tool() -> None:
+    saver = workspace_saving._WorkspaceSaver.__new__(workspace_saving._WorkspaceSaver)
+    saver._manager = types.SimpleNamespace()
+    pending = types.SimpleNamespace(
+        is_imagetool=False,
+        pending_workspace_payload=("workspace.itws", "/tool"),
+        materialize_pending_workspace_payload=lambda: False,
+    )
+    with pytest.raises(ValueError, match="Could not read this saved tool"):
+        saver._serialize_workspace_node({}, pending, "0", include_children=False)
+
+    unsavable = types.SimpleNamespace(
+        is_imagetool=False,
+        pending_workspace_payload=None,
+        tool_window=types.SimpleNamespace(can_save_and_load=lambda: False),
+    )
+    constructor: dict[str, xr.Dataset] = {}
+    saver._serialize_workspace_node(constructor, unsavable, "0", include_children=False)
+    assert constructor == {}
+
+
+def test_workspace_gc_controller_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    controller = workspace_controller._WorkspaceController.__new__(
+        workspace_controller._WorkspaceController
+    )
+    manager = QtCore.QObject()
+    manager._workspace_state = types.SimpleNamespace(
+        save_in_progress=False, document_id="document", path=None
+    )
+    controller._manager = manager
+    controller._workspace_gc_requested = False
+    controller._workspace_gc_worker = None
+    controller._workspace_gc_receiver = None
+    controller._workspace_store = None
+    controller._start_workspace_gc()
+
+    controller._workspace_gc_requested = True
+    controller._start_workspace_gc()
+    assert not controller._workspace_gc_requested
+
+    path = tmp_path / "workspace.itws"
+    store = types.SimpleNamespace(closed=False, path=path)
+    controller._workspace_store = store
+    controller._current_workspace_document_path = types.MethodType(
+        lambda _self: path, controller
+    )
+    controller.saving = types.SimpleNamespace(
+        _workspace_reader_closers=lambda _path: ()
+    )
+    controller._workspace_gc_requested = True
+    monkeypatch.setattr(QtCore.QThreadPool, "globalInstance", lambda: None)
+    controller._start_workspace_gc()
+    assert controller._workspace_gc_worker is None
+
+    class _Pool:
+        def __init__(self) -> None:
+            self.workers = []
+
+        def start(self, worker) -> None:
+            self.workers.append(worker)
+
+    pool = _Pool()
+    scheduled: list[typing.Callable[[], None]] = []
+    monkeypatch.setattr(QtCore.QThreadPool, "globalInstance", lambda: pool)
+    monkeypatch.setattr(
+        QtCore.QTimer,
+        "singleShot",
+        lambda _delay, callback: scheduled.append(callback),
+    )
+    controller._start_workspace_gc()
+    pool.workers.pop().signals.finished.emit(False, "cleanup failed")
+    assert not controller._workspace_gc_requested
+    assert controller._workspace_gc_worker is None
+
+    controller._workspace_gc_requested = True
+    controller._start_workspace_gc()
+    pool.workers.pop().signals.finished.emit(True, None)
+    assert controller._workspace_gc_requested
+    assert scheduled[-1] == controller._start_workspace_gc
+
+    class _FailingPool:
+        @staticmethod
+        def start(_worker) -> None:
+            raise RuntimeError("cannot start")
+
+    controller._workspace_gc_worker = None
+    controller._workspace_gc_receiver = None
+    monkeypatch.setattr(QtCore.QThreadPool, "globalInstance", _FailingPool)
+    controller._start_workspace_gc()
+    assert controller._workspace_gc_requested
+    assert controller._workspace_gc_worker is None
 
 
 def test_manager_async_save_request_error_paths(

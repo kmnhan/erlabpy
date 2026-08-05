@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import errno
+import hashlib
+import json
 import threading
 import typing
 
@@ -31,6 +33,463 @@ def _manifest(*object_ids: str) -> dict[str, object]:
         ],
         "root_order": list(range(len(object_ids))),
     }
+
+
+def test_workspace_file_access_retry_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+    waits = 0
+    failed_attempts = 0
+
+    def _temporarily_blocked() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise BlockingIOError(errno.EAGAIN, "busy")
+        return "opened"
+
+    def _waited() -> None:
+        nonlocal waits
+        waits += 1
+
+    def _failed() -> None:
+        nonlocal failed_attempts
+        failed_attempts += 1
+
+    monkeypatch.setattr(workspace_store.time, "sleep", lambda _delay: None)
+    assert (
+        workspace_store._wait_for_hdf5_access(
+            _temporarily_blocked,
+            on_wait=_waited,
+            before_attempt=_waited,
+            after_failed_attempt=_failed,
+        )
+        == "opened"
+    )
+    assert attempts == 2
+    assert waits == 3
+    assert failed_attempts == 1
+
+    attempts = 0
+    waits = 0
+    assert (
+        workspace_store._retry_file_access(_temporarily_blocked, on_wait=_waited)
+        == "opened"
+    )
+    assert attempts == 2
+    assert waits == 1
+
+    permission_error = PermissionError(errno.EACCES, "denied")
+    monkeypatch.setattr(workspace_store, "_FILE_ACCESS_RETRY_DELAYS", ())
+    with pytest.raises(PermissionError, match="denied"):
+        workspace_store._retry_file_access(
+            lambda: (_ for _ in ()).throw(permission_error)
+        )
+
+    with pytest.raises(OSError, match="invalid"):
+        workspace_store._wait_for_hdf5_access(
+            lambda: (_ for _ in ()).throw(OSError(errno.EINVAL, "invalid"))
+        )
+
+
+def test_workspace_store_manifest_validation_contract() -> None:
+    class _Dataset:
+        def __init__(self, raw: object, checksum: object) -> None:
+            self._raw = raw
+            self.attrs = {"sha256": checksum}
+
+        def asstr(self):
+            return self
+
+        def __getitem__(self, _key):
+            return self._raw
+
+    class _Group(dict):
+        def __init__(
+            self, dataset: _Dataset | None, objects: set[str] | None = None
+        ) -> None:
+            super().__init__()
+            if dataset is not None:
+                self[workspace_store._WORKSPACE_MANIFEST_DATASET] = dataset
+            self.file = set() if objects is None else objects
+
+    def _group(manifest: object, *, objects: set[str] | None = None) -> _Group:
+        raw = json.dumps(manifest)
+        checksum = hashlib.sha256(raw.encode()).hexdigest().encode()
+        return _Group(_Dataset(raw, checksum), objects)
+
+    with pytest.raises(ValueError, match="no manifest"):
+        workspace_store.WorkspaceStore._read_manifest(_Group(None))
+    with pytest.raises(TypeError, match="not text"):
+        workspace_store.WorkspaceStore._read_manifest(_Group(_Dataset(1, "unused")))
+    with pytest.raises(ValueError, match="checksum"):
+        workspace_store.WorkspaceStore._read_manifest(
+            _Group(_Dataset(json.dumps(_manifest()), "wrong"))
+        )
+    with pytest.raises(TypeError, match="not an object"):
+        workspace_store.WorkspaceStore._read_manifest(_group([]))
+    with pytest.raises(ValueError, match="unsupported schema"):
+        workspace_store.WorkspaceStore._read_manifest(
+            _group({"schema_version": 4, "nodes": []})
+        )
+    with pytest.raises(TypeError, match="not a list"):
+        workspace_store.WorkspaceStore._read_manifest(
+            _group({"schema_version": 5, "nodes": {}})
+        )
+    with pytest.raises(TypeError, match="not an object"):
+        workspace_store.WorkspaceStore._read_manifest(
+            _group({"schema_version": 5, "nodes": [None]})
+        )
+    with pytest.raises(TypeError, match="no payload object"):
+        workspace_store.WorkspaceStore._read_manifest(
+            _group({"schema_version": 5, "nodes": [{}]})
+        )
+    with pytest.raises(ValueError, match="not canonical"):
+        workspace_store.WorkspaceStore._read_manifest(
+            _group(
+                {
+                    "schema_version": 5,
+                    "nodes": [{"payload_object_id": "data", "payload_path": "/bad"}],
+                }
+            )
+        )
+    with pytest.raises(ValueError, match="object is missing"):
+        workspace_store.WorkspaceStore._read_manifest(_group(_manifest("data")))
+
+
+def test_workspace_store_value_validation_and_closed_state(
+    tmp_path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    with pytest.raises(ValueError, match="only when create is true"):
+        workspace_store.WorkspaceStore(path, workspace_id="invalid")
+    for object_id in ("", "nested/object"):
+        with pytest.raises(ValueError, match="one path component"):
+            workspace_store.WorkspaceStore.object_path(object_id)
+
+    assert workspace_store.WorkspaceStore.manifest_object_ids({"nodes": {}}) == set()
+    assert workspace_store.WorkspaceStore.manifest_object_ids(
+        {"nodes": [None, {}, {"payload_object_id": ""}, {"payload_object_id": "ok"}]}
+    ) == {"ok"}
+
+    store = workspace_store.WorkspaceStore(path, create=True)
+    store.close()
+    assert workspace_store.WorkspaceStore.active(path) is None
+    with pytest.raises(RuntimeError, match="closed"):
+        _ = store.h5_file
+    with pytest.raises(RuntimeError, match="no readable handle"):
+        _ = store.read_h5_file
+    with pytest.raises(RuntimeError, match="closed"), store.read_session():
+        pass
+    with pytest.raises(RuntimeError, match="closed"):
+        store.require_current_path()
+    with pytest.raises(RuntimeError, match="closed"):
+        store.replace_from(path, lambda _source, _target: None)
+
+
+def test_workspace_store_identity_helpers_decode_bytes() -> None:
+    class _File:
+        def __init__(self, value: object) -> None:
+            self.attrs = {workspace_store._WORKSPACE_ID_ATTR: value}
+            self.flush_count = 0
+
+        def flush(self) -> None:
+            self.flush_count += 1
+
+    existing = _File(b"workspace-id")
+    assert (
+        workspace_store.WorkspaceStore._ensure_workspace_id(existing) == "workspace-id"
+    )
+    assert workspace_store.WorkspaceStore._workspace_id_from_file(existing) == (
+        "workspace-id"
+    )
+
+    missing = _File(None)
+    generated = workspace_store.WorkspaceStore._ensure_workspace_id(missing)
+    assert generated
+    assert missing.attrs[workspace_store._WORKSPACE_ID_ATTR] == generated
+    assert missing.flush_count == 1
+    assert workspace_store.WorkspaceStore._workspace_id_from_file(_File("")) is None
+    assert (
+        workspace_store.WorkspaceStore._workspace_id_from_file(_File(b"bytes-id"))
+        == "bytes-id"
+    )
+
+
+def test_hdf5_error_filters_cover_platform_independent_messages() -> None:
+    sharing_error = OSError("sharing violation")
+    sharing_error.winerror = 32
+    assert workspace_store._is_hdf5_file_contention_error(sharing_error)
+    assert workspace_store._is_hdf5_file_lock_unavailable_error(
+        OSError("HDF5 locking is disabled")
+    )
+    assert workspace_store._is_hdf5_file_lock_unavailable_error(
+        OSError(errno.ENOSYS, "unsupported")
+    )
+
+
+def test_workspace_store_rejects_non_lock_open_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        monkeypatch.setattr(
+            workspace_store.h5py,
+            "File",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError(errno.EINVAL, "invalid HDF5 open")
+            ),
+        )
+        with pytest.raises(OSError, match="invalid HDF5 open"):
+            store._open_with_lock_detection("r")
+
+
+def test_workspace_store_switches_when_required_locking_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    source_path = tmp_path / "source.itws"
+    target_path = tmp_path / "target.itws"
+    with workspace_store.WorkspaceStore(target_path, create=True):
+        pass
+    with workspace_store.WorkspaceStore(source_path, create=True) as source:
+        monkeypatch.setattr(
+            workspace_store,
+            "_wait_for_hdf5_access",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError(errno.ENOSYS, "locking is not supported")
+            ),
+        )
+
+        source.switch_path(target_path)
+
+        assert source.path == target_path.resolve()
+        assert not source.locking_supported
+
+
+def test_workspace_store_conflicted_guards(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+    prepared = tmp_path / "prepared.itws"
+    with workspace_store.WorkspaceStore(prepared, create=True):
+        pass
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        store._mark_conflicted()
+        with pytest.raises(workspace_store.WorkspaceStoreConflictError):
+            store.require_current_path()
+        with pytest.raises(workspace_store.WorkspaceStoreConflictError):
+            store.reopen()
+        with pytest.raises(workspace_store.WorkspaceStoreConflictError):
+            store.replace_from(prepared, lambda _source, _target: None)
+
+
+def test_workspace_store_missing_path_and_recovery_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        identity = typing.cast("tuple[int, int]", store._path_identity)
+        path.unlink()
+        with pytest.raises(workspace_store.WorkspaceStoreConflictError):
+            store._require_path_identity(identity)
+        with pytest.raises(workspace_store.WorkspaceStoreConflictError):
+            store._require_path_state((*identity, 0, 0))
+
+        monkeypatch.setattr(
+            workspace_store.h5py,
+            "File",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unreadable")),
+        )
+        with pytest.raises(OSError, match="unreadable"):
+            store._use_recovery_source(tmp_path / "missing-recovery.itws")
+        assert store.conflicted
+
+
+def test_workspace_store_flush_accepts_tuple_vfd_handle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    class _Id:
+        @staticmethod
+        def get_vfd_handle():
+            return (123, object())
+
+    class _File:
+        id = _Id()
+
+        @staticmethod
+        def flush() -> None:
+            pass
+
+    synced: list[int] = []
+    store = workspace_store.WorkspaceStore(tmp_path / "workspace.itws", create=True)
+    store._release_handle()
+    store._h5_file = _File()
+    monkeypatch.setattr(workspace_store.os, "fsync", synced.append)
+    try:
+        store.flush(durable=True)
+    finally:
+        store._h5_file = None
+        store.close()
+    assert synced == [123]
+
+
+def test_workspace_store_rejects_duplicate_owner_and_invalid_switch(
+    tmp_path,
+) -> None:
+    import h5py
+
+    source_path = tmp_path / "source.itws"
+    target_path = tmp_path / "target.itws"
+    invalid_path = tmp_path / "invalid.itws"
+    with workspace_store.WorkspaceStore(source_path, create=True) as source:
+        with pytest.raises(RuntimeError, match="active store"):
+            workspace_store.WorkspaceStore(source_path)
+
+        with h5py.File(invalid_path, "w"):
+            pass
+        with pytest.raises(ValueError, match="no stable identity"):
+            source.switch_path(invalid_path)
+
+        with (
+            workspace_store.WorkspaceStore(target_path, create=True),
+            pytest.raises(RuntimeError, match="active store"),
+        ):
+            source.switch_path(target_path)
+
+
+def test_workspace_store_write_open_failure_restores_idle_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    prepared = tmp_path / ".workspace.itws.write-test"
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        store._locking_supported = False
+
+        def _prepare() -> pathlib.Path:
+            prepared.write_bytes(b"not-hdf5")
+            return prepared
+
+        monkeypatch.setattr(store, "_prepare_copy_on_write", _prepare)
+        with pytest.raises(OSError, match="file signature"), store.write_session():
+            pass
+
+        assert not store.write_in_progress
+        assert store._write_target_path is None
+        assert not prepared.exists()
+
+        store._path_identity = None
+        with (
+            pytest.raises(RuntimeError, match="no path identity"),
+            store.write_session(),
+        ):
+            pass
+        assert not store.write_in_progress
+
+
+def test_workspace_store_replace_conflict_callbacks_quarantine_writes(
+    tmp_path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    prepared = tmp_path / "prepared.itws"
+    with workspace_store.WorkspaceStore(prepared, create=True):
+        pass
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with pytest.raises(workspace_store.WorkspaceStoreConflictError):
+            store.replace_from(
+                prepared,
+                lambda _source, _target: None,
+                before_close=lambda: (_ for _ in ()).throw(
+                    workspace_store.WorkspaceStoreConflictError("changed")
+                ),
+            )
+        assert store.conflicted
+
+
+def test_workspace_store_replace_detects_path_change_after_failure(
+    tmp_path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    prepared = tmp_path / "prepared.itws"
+    with workspace_store.WorkspaceStore(prepared, create=True):
+        pass
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+
+        def _remove_then_fail(_source, target) -> None:
+            target.unlink()
+            raise RuntimeError("replace failed")
+
+        with pytest.raises(workspace_store.WorkspaceStoreConflictError):
+            store.replace_from(prepared, _remove_then_fail)
+        assert store.conflicted
+
+
+def test_workspace_store_replace_failure_keeps_recovery_error_quarantined(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    prepared = tmp_path / "prepared.itws"
+    with workspace_store.WorkspaceStore(prepared, create=True):
+        pass
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        monkeypatch.setattr(
+            store,
+            "_reopen_after_file_operation",
+            lambda: (_ for _ in ()).throw(OSError("cannot reopen")),
+        )
+        monkeypatch.setattr(
+            store,
+            "_use_recovery_source",
+            lambda _path: (_ for _ in ()).throw(OSError("cannot recover")),
+        )
+
+        with pytest.raises(RuntimeError, match="replace failed"):
+            store.replace_from(
+                prepared,
+                lambda _source, _target: (_ for _ in ()).throw(
+                    RuntimeError("replace failed")
+                ),
+            )
+        assert store.conflicted
+
+
+def test_workspace_store_reports_reopen_failure_after_successful_replace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    prepared = tmp_path / "prepared.itws"
+    with workspace_store.WorkspaceStore(prepared, create=True):
+        pass
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        monkeypatch.setattr(
+            store,
+            "_reopen_after_file_operation",
+            lambda: (_ for _ in ()).throw(OSError("cannot reopen")),
+        )
+
+        with pytest.raises(workspace_store.WorkspaceStoreReopenError):
+            store.replace_from(prepared, lambda source, target: source.replace(target))
+
+
+def test_workspace_store_rejects_invalid_gc_limit_and_clears_staging(
+    tmp_path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with pytest.raises(ValueError, match="must be positive"):
+            store.collect_garbage(max_objects=0)
+
+        store.clear_staging()
+        with store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_STAGING_GROUP].create_group("orphan")
+        store.clear_staging()
+        assert len(store.h5_file[workspace_store._WORKSPACE_STAGING_GROUP]) == 0
 
 
 def test_workspace_store_publishes_valid_generations(tmp_path: pathlib.Path) -> None:

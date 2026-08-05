@@ -169,6 +169,78 @@ def test_workspace_file_access_retry_filter_is_specific() -> None:
     assert not workspace_store._is_retryable_file_access_error(wrong_error)
 
 
+def test_copy_workspace_group_rejects_missing_source_group(tmp_path) -> None:
+    source = tmp_path / "source.itws"
+    target = tmp_path / "target.itws"
+    with h5py.File(source, "w"):
+        pass
+    with workspace_store.WorkspaceStore(target, create=True) as target_store:
+        with (
+            target_store.write_session(),
+            pytest.raises(KeyError, match="payload group"),
+        ):
+            workspace_storage._copy_workspace_group(
+                target_store,
+                source_file=str(source),
+                source_path="/missing",
+                target_path=target_store.object_path("missing"),
+            )
+        assert target_store.object_path("missing").strip("/") not in (
+            target_store.h5_file
+        )
+
+
+def test_workspace_generation_keeps_existing_preserved_group(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+    plan = workspace_storage._WorkspaceGenerationPlan(
+        manifest={"schema_version": 5, "nodes": [], "root_order": []},
+        objects=(),
+        preserved_groups=(
+            workspace_storage._WorkspaceGroupCopy(
+                source_file=str(tmp_path / "unused.itws"),
+                source_path="/unused",
+                target_path="/preserved",
+            ),
+        ),
+    )
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.create_group("preserved")
+        generation = workspace_storage._write_workspace_generation(
+            store, plan, compression_mode="none"
+        )
+
+        assert generation.sequence == 1
+        assert "preserved" in store.h5_file
+
+
+def test_workspace_storage_rejects_changed_publication_and_nonworkspace_recovery(
+    tmp_path,
+) -> None:
+    path = tmp_path / "plain.h5"
+    with h5py.File(path, "w") as h5_file:
+        h5_file.attrs["plain"] = True
+    expected = workspace_storage._workspace_publication_state(path)
+    path.write_bytes(b"changed")
+
+    with pytest.raises(workspace_storage._WorkspacePublicationConflictError):
+        workspace_storage._require_workspace_publication_state(path, expected)
+
+    workspace_storage._recover_workspace_transactions(tmp_path / "missing.itws")
+    workspace_storage._recover_workspace_transactions(tmp_path / "not-workspace.txt")
+    with h5py.File(path, "w") as h5_file:
+        h5_file.attrs["plain"] = True
+    workspace_storage._recover_workspace_transactions(path)
+
+
+def test_open_workspace_h5_file_for_update_uses_legacy_path(tmp_path) -> None:
+    path = tmp_path / "legacy.h5"
+    with workspace_storage._open_workspace_h5_file_for_update(path) as h5_file:
+        h5_file.attrs["updated"] = True
+    with h5py.File(path, "r") as h5_file:
+        assert h5_file.attrs["updated"]
+
+
 def test_workspace_recovery_discards_prepared_legacy_transaction(tmp_path) -> None:
     fname = tmp_path / "prepared.itws"
     _write_transaction_test_workspace(fname)

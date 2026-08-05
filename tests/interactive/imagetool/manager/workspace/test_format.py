@@ -391,3 +391,36 @@ def test_workspace_metadata_helpers_cover_invalid_payloads() -> None:
         )
         == {}
     )
+
+    assert list(workspace_format._iter_workspace_manifest_node_entries(None)) == []
+    assert (
+        list(
+            workspace_format._iter_workspace_manifest_node_entries({"nodes": "invalid"})
+        )
+        == []
+    )
+    assert workspace_format._workspace_manifest_payload_entries(
+        {
+            "nodes": [
+                {"uid": "legacy", "kind": "tool", "path": "2"},
+                {"uid": "missing", "kind": "tool"},
+            ]
+        }
+    ) == [("legacy", "tool", "2/tool")]
+    assert (
+        workspace_format._workspace_manifest_payload_path(manifest, "missing") is None
+    )
+
+
+def test_workspace_manifest_attrs_reject_invalid_entries(caplog) -> None:
+    with caplog.at_level(logging.WARNING):
+        encoded = workspace_format._workspace_manifest_attrs(
+            {"kept": 1, "dropped": object()}
+        )
+    assert workspace_format._restore_workspace_manifest_attrs(encoded) == {"kept": 1}
+    assert "Dropping workspace attribute" in caplog.text
+
+    with pytest.raises(TypeError, match="must be a list"):
+        workspace_format._restore_workspace_manifest_attrs({})
+    with pytest.raises(TypeError, match="entry is invalid"):
+        workspace_format._restore_workspace_manifest_attrs([["too-short"]])
