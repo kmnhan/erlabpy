@@ -642,11 +642,20 @@ class WorkspaceStore:
                             and copy_on_write_path is not None
                             and expected_path_state is not None
                         ):
-                            self._publish_copy_on_write(
-                                copy_on_write_path,
-                                expected_path_state,
-                                on_contention=on_contention,
-                            )
+                            try:
+                                self._publish_copy_on_write(
+                                    copy_on_write_path,
+                                    expected_path_state,
+                                    on_contention=on_contention,
+                                )
+                            except WorkspaceStoreConflictError:
+                                try:
+                                    self._use_recovery_source(copy_on_write_path)
+                                except Exception:
+                                    self._mark_conflicted()
+                                else:
+                                    copy_on_write_path = None
+                                raise
                     finally:
                         with self._access_condition:
                             self._write_pending = False
@@ -1059,6 +1068,8 @@ class WorkspaceStore:
         self,
         *,
         max_objects: int = 1,
+        delete_objects: bool = True,
+        can_delete_objects: Callable[[], bool] | None = None,
         on_contention: Callable[[], None] | None = None,
     ) -> bool:
         """Retire old generations and unlink a bounded number of dead objects.
@@ -1080,12 +1091,21 @@ class WorkspaceStore:
                     continue
                 del generation_root[name]
 
+            deletion_allowed = delete_objects and (
+                can_delete_objects is None or can_delete_objects()
+            )
             reachable = set(self._object_leases)
             for generation in retained:
                 reachable.update(self.manifest_object_ids(generation.manifest))
 
             object_root = self.h5_file.require_group(_WORKSPACE_OBJECTS_GROUP)
             obsolete = [name for name in object_root if name not in reachable]
+            deletion_allowed = deletion_allowed and (
+                can_delete_objects is None or can_delete_objects()
+            )
+            if not deletion_allowed:
+                self.h5_file.flush()
+                return bool(obsolete)
             remove_count = len(obsolete) if not self._locking_supported else max_objects
             for name in obsolete[:remove_count]:
                 del object_root[name]

@@ -2322,7 +2322,8 @@ class _WorkspaceLoader:
             access: _WorkspaceDocumentAccess, loaded: bool
         ) -> bool:
             finished = self._finish_workspace_file_load(loaded)
-            if finished and not associate:
+            source_is_associated = self._manager._workspace_state.path == access.path
+            if finished and not source_is_associated:
                 candidate_uids = (
                     frozenset(self._manager._tool_graph.nodes)
                     if replace
@@ -2391,7 +2392,9 @@ class _WorkspaceLoader:
                                     workspace_access=access,
                                     rebind_data=False,
                                 )
-                                store_adopted = True
+                                store_adopted = (
+                                    self._controller._workspace_store is load_store
+                                )
                                 if replace:
                                     self._restore_workspace_option_overrides(manifest)
                                     self._restore_workspace_loader_state(
@@ -2452,7 +2455,9 @@ class _WorkspaceLoader:
                             native=native,
                             workspace_access=access,
                         )
-                        fallback_store_adopted = True
+                        fallback_store_adopted = (
+                            self._controller._workspace_store is fallback_store
+                        )
                         if replace:
                             self._restore_workspace_option_overrides(manifest)
                             self._restore_workspace_loader_state(

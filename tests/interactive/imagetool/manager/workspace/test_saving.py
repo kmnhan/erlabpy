@@ -664,6 +664,18 @@ def test_manager_compact_workspace_edge_paths(
         assert not manager.compact_workspace()
         manager._workspace_state.save_in_progress = False
 
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_dask_client_has_live_futures",
+            lambda: True,
+        )
+        assert not manager.compact_workspace()
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_dask_client_has_live_futures",
+            lambda: False,
+        )
+
         operation_errors: list[tuple[typing.Any, ...]] = []
         monkeypatch.setattr(
             manager,
@@ -1195,8 +1207,17 @@ def test_workspace_gc_worker_reports_contention_and_errors() -> None:
     closed: list[None] = []
 
     class _Store:
-        def collect_garbage(self, *, max_objects, on_contention):
+        def collect_garbage(
+            self,
+            *,
+            max_objects,
+            delete_objects,
+            can_delete_objects,
+            on_contention,
+        ):
             assert max_objects == 1
+            assert delete_objects
+            assert can_delete_objects()
             on_contention()
             raise RuntimeError("cleanup failed")
 
@@ -1308,6 +1329,36 @@ def test_serialize_workspace_node_rejects_invalid_pending_tool() -> None:
     assert constructor == {}
 
 
+def test_workspace_gc_dask_client_detection_is_conservative() -> None:
+    controller = workspace_controller._WorkspaceController.__new__(
+        workspace_controller._WorkspaceController
+    )
+    manager = types.SimpleNamespace(
+        _dask_menu=types.SimpleNamespace(default_client=None)
+    )
+    controller._manager = manager
+
+    assert not controller._dask_client_has_live_futures()
+    manager._dask_menu.default_client = types.SimpleNamespace(futures={"key": object()})
+    assert controller._dask_client_has_live_futures()
+
+    class _BrokenClient:
+        @property
+        def futures(self):
+            raise RuntimeError("client closed")
+
+    manager._dask_menu.default_client = _BrokenClient()
+    assert controller._dask_client_has_live_futures()
+
+    class _BrokenMenu:
+        @property
+        def default_client(self):
+            raise RuntimeError("client lookup failed")
+
+    manager._dask_menu = _BrokenMenu()
+    assert controller._dask_client_has_live_futures()
+
+
 def test_workspace_gc_controller_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -1319,6 +1370,7 @@ def test_workspace_gc_controller_lifecycle(
     manager._workspace_state = types.SimpleNamespace(
         save_in_progress=False, document_id="document", path=None
     )
+    manager._dask_menu = types.SimpleNamespace(default_client=None)
     controller._manager = manager
     controller._workspace_gc_requested = False
     controller._workspace_gc_worker = None
@@ -1352,12 +1404,12 @@ def test_workspace_gc_controller_lifecycle(
             self.workers.append(worker)
 
     pool = _Pool()
-    scheduled: list[typing.Callable[[], None]] = []
+    scheduled: list[tuple[int, typing.Callable[[], None]]] = []
     monkeypatch.setattr(QtCore.QThreadPool, "globalInstance", lambda: pool)
     monkeypatch.setattr(
         QtCore.QTimer,
         "singleShot",
-        lambda _delay, callback: scheduled.append(callback),
+        lambda delay, callback: scheduled.append((delay, callback)),
     )
     controller._start_workspace_gc()
     pool.workers.pop().signals.finished.emit(False, "cleanup failed")
@@ -1368,7 +1420,23 @@ def test_workspace_gc_controller_lifecycle(
     controller._start_workspace_gc()
     pool.workers.pop().signals.finished.emit(True, None)
     assert controller._workspace_gc_requested
-    assert scheduled[-1] == controller._start_workspace_gc
+    assert scheduled[-1] == (0, controller._start_workspace_gc)
+
+    manager._dask_menu.default_client = types.SimpleNamespace(
+        futures={"result": object()}
+    )
+    controller._start_workspace_gc()
+    worker = pool.workers.pop()
+    assert not worker._delete_objects
+    worker.signals.finished.emit(True, None)
+    assert controller._workspace_gc_requested
+    assert scheduled[-1] == (1000, controller._resume_workspace_gc_after_dask)
+
+    controller._resume_workspace_gc_after_dask()
+    assert scheduled[-1] == (1000, controller._resume_workspace_gc_after_dask)
+    manager._dask_menu.default_client = None
+    controller._resume_workspace_gc_after_dask()
+    assert pool.workers
 
     class _FailingPool:
         @staticmethod
@@ -1377,6 +1445,7 @@ def test_workspace_gc_controller_lifecycle(
 
     controller._workspace_gc_worker = None
     controller._workspace_gc_receiver = None
+    controller._workspace_gc_requested = True
     monkeypatch.setattr(QtCore.QThreadPool, "globalInstance", _FailingPool)
     controller._start_workspace_gc()
     assert controller._workspace_gc_requested
@@ -3644,6 +3713,56 @@ def test_manager_workspace_upgrade_repoints_pending_payload_before_compaction(
         assert pending._materialize_pending_workspace_payload(wrapper)
         assert not operation_errors
         np.testing.assert_array_equal(wrapper.slicer_area._data.values, data.values)
+
+
+def test_manager_releases_eager_legacy_source_when_conversion_is_canceled(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    fname = tmp_path / "schema-2-canceled.itws"
+    data = xr.DataArray(
+        np.arange(30).reshape((5, 6)),
+        dims=["x", "y"],
+    )
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        tree = manager._workspace_controller.saving._to_datatree()
+        tree.attrs["imagetool_workspace_schema_version"] = 2
+        tree.attrs.pop(workspace_format._WORKSPACE_MANIFEST_ATTR, None)
+        tree.to_netcdf(fname, engine="h5netcdf", invalid_netcdf=True)
+        tree.close()
+        manager.remove_all_tools()
+
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_save_legacy_workspace_as_current",
+            lambda *args, **kwargs: None,
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+
+        loaded = manager.get_imagetool(0).slicer_area._data
+        assert manager._workspace_state.path is None
+        assert loaded.chunks is None
+        assert _compute_first_value(loaded) == 0.0
+        assert fname.resolve() not in (
+            manager._workspace_controller._imported_workspace_accesses
+        )
+        assert workspace_store.WorkspaceStore.active(fname) is None
+        lock = workspace_storage._acquire_workspace_document_lock(fname)
+        lock.unlock()
 
 
 def test_manager_workspace_save_collects_old_generations_in_background(

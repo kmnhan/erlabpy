@@ -625,8 +625,53 @@ def test_workspace_store_rejects_changed_copy_on_write_source(
         ):
             _write_while_source_changes()
 
-        assert "staged" not in store.h5_file.attrs
-        assert store.h5_file.attrs["external"]
+        assert store.conflicted
+        assert store.recovery_path is not None
+        assert store.read_h5_file.attrs["staged"]
+        with h5py.File(path, "r", locking=False) as external:
+            assert "staged" not in external.attrs
+            assert external.attrs["external"]
+        with (
+            pytest.raises(
+                workspace_store.WorkspaceStoreConflictError,
+                match="no longer owns its path",
+            ),
+            store.write_session(),
+        ):
+            pass
+
+
+def test_workspace_store_quarantines_failed_copy_on_write_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    import h5py
+
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        store._locking_supported = False
+        monkeypatch.setattr(
+            store,
+            "_use_recovery_source",
+            lambda _path: (_ for _ in ()).throw(RuntimeError("cannot reopen")),
+        )
+
+        def _write_while_source_changes() -> None:
+            with (
+                store.write_session(),
+                h5py.File(path, "r+", locking=False) as external,
+            ):
+                external.attrs["external"] = True
+                external.flush()
+
+        with pytest.raises(
+            workspace_store.WorkspaceStoreConflictError,
+            match="changed during save",
+        ):
+            _write_while_source_changes()
+
+        assert store.conflicted
+        assert store.recovery_path is None
         assert set(tmp_path.iterdir()) == {path}
 
 
@@ -703,6 +748,45 @@ def test_workspace_store_gc_retains_two_generations_and_leases(
 
         store.release_object("first")
         assert not store.collect_garbage(max_objects=10)
+        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+            "second",
+            "third",
+        }
+
+
+def test_workspace_store_gc_can_defer_obsolete_object_deletion(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            objects = h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]
+            for object_id in ("first", "second", "third"):
+                objects.create_group(object_id)
+        store.publish(_manifest("first"))
+        store.publish(_manifest("second"))
+        store.publish(_manifest("third"))
+
+        assert store.collect_garbage(max_objects=1, delete_objects=False)
+        assert len(store.generations()) == 2
+        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+            "first",
+            "second",
+            "third",
+        }
+
+        checks = iter((True, False))
+        assert store.collect_garbage(
+            max_objects=1,
+            can_delete_objects=lambda: next(checks),
+        )
+        assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+            "first",
+            "second",
+            "third",
+        }
+
+        assert not store.collect_garbage(max_objects=1)
         assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
             "second",
             "third",
