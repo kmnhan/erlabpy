@@ -249,6 +249,18 @@ def test_workspace_store_defers_missing_identity_until_publish(tmp_path) -> None
         assert store.serialized_object_ids == {"old-object"}
         assert store.serialized_legacy_group_paths == {"/legacy"}
         assert store.has_serialized_readers
+        workspace_store.WorkspaceStore.pin_serialized_reader(
+            workspace_id=workspace_id,
+            path=path,
+            object_id="kept-object",
+            legacy_group_path="/kept-legacy",
+        )
+        store.release_serialized_reader_pins(
+            object_ids={"old-object"},
+            legacy_group_paths={"/legacy"},
+        )
+        assert store.serialized_object_ids == {"kept-object"}
+        assert store.serialized_legacy_group_paths == {"/kept-legacy"}
         store.clear_serialized_reader_pins()
         assert not store.has_serialized_readers
         assert store.serialized_object_ids == set()
@@ -1729,12 +1741,23 @@ def test_workspace_compaction_preserves_leased_and_serialized_payloads(
             "leased",
             "serialized",
         }
-        store.release_object("leased")
-        assert not store.collect_garbage(max_objects=1)
+
+        workspace_storage._compact_workspace_store(
+            store,
+            discard_serialized_object_ids={"serialized"},
+        )
+
         assert set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
             "current",
-            "serialized",
+            "leased",
         }
+        assert store.serialized_object_ids == {"serialized"}
+        store.release_serialized_reader_pins(object_ids={"serialized"})
+        assert not store.has_serialized_readers
+        store.release_object("leased")
+        assert not store.collect_garbage(max_objects=1)
+        remaining = set(store.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP])
+        assert remaining == {"current"}
 
 
 def test_workspace_compaction_preserves_serialized_legacy_group(

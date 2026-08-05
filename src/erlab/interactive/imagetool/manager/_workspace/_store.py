@@ -20,7 +20,7 @@ from typing import Self
 import erlab
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
 
     import h5py
 else:
@@ -248,10 +248,10 @@ class WorkspaceStore:
     ) -> None:
         """Keep data reachable after a reader is sent to another process.
 
-        Dask does not provide a release callback for a serialized task graph. The
-        controller clears these small pins when its client no longer owns Futures.
-        The pins do not block saves. They only defer reclamation of the referenced
-        data.
+        Dask does not provide a reliable release callback for every client and
+        scheduler. These small pins therefore remain until the user confirms
+        workspace compaction. They do not block saves. They only defer reclamation
+        of the referenced data.
         """
         key = cls._serialization_key(workspace_id, path)
         with cls._active_lock:
@@ -974,6 +974,28 @@ class WorkspaceStore:
             for key in self._serialization_keys():
                 self._serialized_object_pins.pop(key, None)
                 self._serialized_legacy_group_pins.pop(key, None)
+
+    def release_serialized_reader_pins(
+        self,
+        *,
+        object_ids: Iterable[str] = (),
+        legacy_group_paths: Iterable[str] = (),
+    ) -> None:
+        """Release a confirmed snapshot of serialized reader pins."""
+        released_object_ids = frozenset(object_ids)
+        released_group_paths = frozenset(legacy_group_paths)
+        with self._active_lock:
+            for key in self._serialization_keys():
+                pinned_object_ids = self._serialized_object_pins.get(key)
+                if pinned_object_ids is not None:
+                    pinned_object_ids.difference_update(released_object_ids)
+                    if not pinned_object_ids:
+                        self._serialized_object_pins.pop(key, None)
+                pinned_group_paths = self._serialized_legacy_group_pins.get(key)
+                if pinned_group_paths is not None:
+                    pinned_group_paths.difference_update(released_group_paths)
+                    if not pinned_group_paths:
+                        self._serialized_legacy_group_pins.pop(key, None)
 
     @property
     def leased_legacy_group_paths(self) -> frozenset[str]:

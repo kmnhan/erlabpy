@@ -710,7 +710,7 @@ def test_workspace_compaction_dask_warning_choices(
 
     accept_dialog(
         lambda: results.append(
-            controller._confirm_compaction_with_dask_futures(parent)
+            controller._confirm_compaction_with_exported_readers(parent)
         ),
         accept_call=_choose_button,
     )
@@ -718,7 +718,7 @@ def test_workspace_compaction_dask_warning_choices(
     assert results == [expected]
 
 
-def test_manager_compaction_warns_only_for_exported_readers_with_futures(
+def test_manager_compaction_warns_only_for_exported_readers(
     monkeypatch,
     tmp_path: pathlib.Path,
     manager_context: Callable[
@@ -742,23 +742,40 @@ def test_manager_compaction_warns_only_for_exported_readers_with_futures(
             "wait_dialog",
             lambda *args, **kwargs: contextlib.nullcontext(),
         )
-        monkeypatch.setattr(
-            workspace_storage,
-            "_compact_workspace_store",
-            compacted.append,
-        )
-        monkeypatch.setattr(
-            controller, "_default_dask_client_has_futures", lambda: True
-        )
+        discarded: list[tuple[frozenset[str], frozenset[str]]] = []
+
+        def _compact(
+            current_store: workspace_store.WorkspaceStore,
+            *,
+            discard_serialized_object_ids=(),
+            discard_serialized_legacy_group_paths=(),
+        ) -> None:
+            compacted.append(current_store)
+            discarded.append(
+                (
+                    frozenset(discard_serialized_object_ids),
+                    frozenset(discard_serialized_legacy_group_paths),
+                )
+            )
+            if discard_serialized_object_ids:
+                workspace_store.WorkspaceStore.pin_serialized_reader(
+                    workspace_id=store.workspace_id,
+                    path=path,
+                    object_id="new-export",
+                    legacy_group_path=None,
+                )
+
+        monkeypatch.setattr(workspace_storage, "_compact_workspace_store", _compact)
         confirmations: list[QtWidgets.QWidget] = []
         monkeypatch.setattr(
             controller,
-            "_confirm_compaction_with_dask_futures",
+            "_confirm_compaction_with_exported_readers",
             lambda parent: confirmations.append(parent) or False,
         )
 
         assert manager.compact_workspace()
         assert compacted == [store]
+        assert discarded == [(frozenset(), frozenset())]
         assert confirmations == []
 
         workspace_store.WorkspaceStore.pin_serialized_reader(
@@ -774,12 +791,14 @@ def test_manager_compaction_warns_only_for_exported_readers_with_futures(
 
         monkeypatch.setattr(
             controller,
-            "_confirm_compaction_with_dask_futures",
+            "_confirm_compaction_with_exported_readers",
             lambda _parent: True,
         )
         assert manager.compact_workspace()
         assert compacted == [store, store]
-        assert not store.has_serialized_readers
+        assert discarded[-1] == (frozenset({"exported"}), frozenset())
+        assert store.serialized_object_ids == {"new-export"}
+        store.clear_serialized_reader_pins()
 
         controller._workspace_store = None
         manager._workspace_state.path = None
@@ -816,6 +835,7 @@ def test_manager_compact_workspace_detaches_store_that_cannot_reopen(
 
         def _fail_after_replacement(
             current_store: workspace_store.WorkspaceStore,
+            **_kwargs,
         ) -> None:
             current_store._close_handle()
             raise workspace_store.WorkspaceStoreReopenError(path)
@@ -823,11 +843,24 @@ def test_manager_compact_workspace_detaches_store_that_cannot_reopen(
         monkeypatch.setattr(
             workspace_storage, "_compact_workspace_store", _fail_after_replacement
         )
+        workspace_store.WorkspaceStore.pin_serialized_reader(
+            workspace_id=store.workspace_id,
+            path=path,
+            object_id="exported",
+            legacy_group_path=None,
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_confirm_compaction_with_exported_readers",
+            lambda _parent: True,
+        )
 
         assert not manager.compact_workspace()
         assert len(operation_errors) == 1
+        assert store.serialized_object_ids == {"exported"}
         assert manager._workspace_controller._workspace_store is None
         assert workspace_store.WorkspaceStore.active(path) is None
+        store.clear_serialized_reader_pins()
         manager._workspace_state.path = None
 
 
@@ -919,7 +952,7 @@ def test_manager_compact_workspace_upgrades_previous_schema(
         monkeypatch.setattr(
             workspace_storage,
             "_compact_workspace_store",
-            lambda current_store: calls.append(
+            lambda current_store, **_kwargs: calls.append(
                 "compact" if current_store is store else "wrong-store"
             ),
         )
@@ -1418,35 +1451,6 @@ def test_serialize_workspace_node_rejects_invalid_pending_tool() -> None:
     assert constructor == {}
 
 
-@pytest.mark.parametrize(
-    ("client", "expected_clear_count"),
-    [
-        (None, 1),
-        (types.SimpleNamespace(futures={}), 1),
-        (types.SimpleNamespace(futures={"task": object()}), 0),
-    ],
-)
-def test_workspace_controller_releases_finished_dask_reader_pins(
-    client: object,
-    expected_clear_count: int,
-) -> None:
-    controller = workspace_controller._WorkspaceController.__new__(
-        workspace_controller._WorkspaceController
-    )
-    controller._manager = types.SimpleNamespace(
-        _dask_menu=types.SimpleNamespace(default_client=client)
-    )
-    clear_calls: list[None] = []
-    store = types.SimpleNamespace(
-        has_serialized_readers=True,
-        clear_serialized_reader_pins=lambda: clear_calls.append(None),
-    )
-
-    controller._release_finished_dask_reader_pins(store)
-
-    assert len(clear_calls) == expected_clear_count
-
-
 def test_workspace_gc_controller_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -1470,11 +1474,7 @@ def test_workspace_gc_controller_lifecycle(
     assert not controller._workspace_gc_requested
 
     path = tmp_path / "workspace.itws"
-    store = types.SimpleNamespace(
-        closed=False,
-        path=path,
-        has_serialized_readers=False,
-    )
+    store = types.SimpleNamespace(closed=False, path=path)
     controller._workspace_store = store
     controller._current_workspace_document_path = types.MethodType(
         lambda _self: path, controller
