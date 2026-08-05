@@ -17,7 +17,6 @@ import xarray as xr
 from xarray.backends import BackendArray, CachingFileManager, H5NetCDFStore
 from xarray.backends.common import ArrayWriter
 from xarray.backends.locks import SerializableLock
-from xarray.backends.writers import dump_to_store
 from xarray.core import indexing
 
 import erlab
@@ -1713,10 +1712,9 @@ def _write_workspace_dataset_group_to_file(
         )
         writer = ArrayWriter()
         try:
-            dump_to_store(
-                ds,
+            ds.dump_to_store(
                 store,
-                writer,
+                writer=writer,
                 encoding=netcdf_encoding,
                 unlimited_dims=None,
             )
