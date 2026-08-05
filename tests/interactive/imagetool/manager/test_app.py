@@ -41,6 +41,7 @@ from erlab.interactive.imagetool.manager._widgets import _WorkspacePropertiesSta
 from erlab.interactive.imagetool.manager._workspace import (
     _controller as workspace_controller,
 )
+from erlab.interactive.imagetool.manager._workspace import _store as workspace_store
 from erlab.interactive.ptable import PeriodicTableWindow
 from tests.interactive.imagetool.manager.helpers import (
     action_map_by_object_name,
@@ -747,7 +748,8 @@ def test_manager_workspace_properties_action_uses_current_state(
         assert dialog_calls[-1][2] is manager
 
         workspace_path = tmp_path / "workspace.itws"
-        workspace_path.touch()
+        with workspace_store.WorkspaceStore(workspace_path, create=True):
+            pass
         adopt_workspace_path(manager, workspace_path)
 
         manager.workspace_properties_action.trigger()
