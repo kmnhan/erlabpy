@@ -248,6 +248,11 @@ def test_workspace_store_defers_missing_identity_until_publish(tmp_path) -> None
         workspace_id = store.workspace_id
         assert store.serialized_object_ids == {"old-object"}
         assert store.serialized_legacy_group_paths == {"/legacy"}
+        assert store.has_serialized_readers
+        store.clear_serialized_reader_pins()
+        assert not store.has_serialized_readers
+        assert store.serialized_object_ids == set()
+        assert store.serialized_legacy_group_paths == set()
 
     assert workspace_id
     with h5py.File(path, "r") as h5_file:
@@ -796,8 +801,16 @@ def test_workspace_store_gc_preserves_serialized_reader_objects(
 
     with workspace_store.WorkspaceStore(path) as reopened:
         assert reopened.serialized_object_ids == {"first"}
+        assert reopened.has_serialized_readers
         assert reopened.current_generation().sequence > first_generation.sequence
         workspace_id = reopened.workspace_id
+        reopened.clear_serialized_reader_pins()
+        assert not reopened.has_serialized_readers
+        assert not reopened.collect_garbage(max_objects=10)
+        assert set(reopened.h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP]) == {
+            "second",
+            "third",
+        }
 
     copied_path = tmp_path / "copied-workspace.itws"
     shutil.copy2(path, copied_path)

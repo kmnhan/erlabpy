@@ -680,6 +680,111 @@ def test_manager_compact_workspace_edge_paths(
         ]
 
 
+@pytest.mark.parametrize(
+    ("button_role", "expected"),
+    [
+        (QtWidgets.QMessageBox.ButtonRole.DestructiveRole, True),
+        (QtWidgets.QMessageBox.ButtonRole.RejectRole, False),
+    ],
+)
+def test_workspace_compaction_dask_warning_choices(
+    qtbot,
+    accept_dialog,
+    button_role: QtWidgets.QMessageBox.ButtonRole,
+    expected: bool,
+) -> None:
+    controller = workspace_controller._WorkspaceController.__new__(
+        workspace_controller._WorkspaceController
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    results: list[bool] = []
+
+    def _choose_button(dialog: QtWidgets.QMessageBox) -> None:
+        button = next(
+            button
+            for button in dialog.buttons()
+            if dialog.buttonRole(button) == button_role
+        )
+        button.click()
+
+    accept_dialog(
+        lambda: results.append(
+            controller._confirm_compaction_with_dask_futures(parent)
+        ),
+        accept_call=_choose_button,
+    )
+
+    assert results == [expected]
+
+
+def test_manager_compaction_warns_only_for_exported_readers_with_futures(
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    path = tmp_path / "workspace.itws"
+    compacted: list[workspace_store.WorkspaceStore] = []
+    with (
+        manager_context() as manager,
+        workspace_store.WorkspaceStore(path, create=True) as store,
+    ):
+        controller = manager._workspace_controller
+        manager._workspace_state.path = path.resolve()
+        manager._workspace_state.schema_version = (
+            workspace_format._current_workspace_schema_version()
+        )
+        controller._workspace_store = store
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "wait_dialog",
+            lambda *args, **kwargs: contextlib.nullcontext(),
+        )
+        monkeypatch.setattr(
+            workspace_storage,
+            "_compact_workspace_store",
+            compacted.append,
+        )
+        monkeypatch.setattr(
+            controller, "_default_dask_client_has_futures", lambda: True
+        )
+        confirmations: list[QtWidgets.QWidget] = []
+        monkeypatch.setattr(
+            controller,
+            "_confirm_compaction_with_dask_futures",
+            lambda parent: confirmations.append(parent) or False,
+        )
+
+        assert manager.compact_workspace()
+        assert compacted == [store]
+        assert confirmations == []
+
+        workspace_store.WorkspaceStore.pin_serialized_reader(
+            workspace_id=store.workspace_id,
+            path=path,
+            object_id="exported",
+            legacy_group_path=None,
+        )
+        assert not manager.compact_workspace()
+        assert compacted == [store]
+        assert len(confirmations) == 1
+        assert store.has_serialized_readers
+
+        monkeypatch.setattr(
+            controller,
+            "_confirm_compaction_with_dask_futures",
+            lambda _parent: True,
+        )
+        assert manager.compact_workspace()
+        assert compacted == [store, store]
+        assert not store.has_serialized_readers
+
+        controller._workspace_store = None
+        manager._workspace_state.path = None
+
+
 def test_manager_compact_workspace_detaches_store_that_cannot_reopen(
     monkeypatch,
     tmp_path,
@@ -1313,6 +1418,35 @@ def test_serialize_workspace_node_rejects_invalid_pending_tool() -> None:
     assert constructor == {}
 
 
+@pytest.mark.parametrize(
+    ("client", "expected_clear_count"),
+    [
+        (None, 1),
+        (types.SimpleNamespace(futures={}), 1),
+        (types.SimpleNamespace(futures={"task": object()}), 0),
+    ],
+)
+def test_workspace_controller_releases_finished_dask_reader_pins(
+    client: object,
+    expected_clear_count: int,
+) -> None:
+    controller = workspace_controller._WorkspaceController.__new__(
+        workspace_controller._WorkspaceController
+    )
+    controller._manager = types.SimpleNamespace(
+        _dask_menu=types.SimpleNamespace(default_client=client)
+    )
+    clear_calls: list[None] = []
+    store = types.SimpleNamespace(
+        has_serialized_readers=True,
+        clear_serialized_reader_pins=lambda: clear_calls.append(None),
+    )
+
+    controller._release_finished_dask_reader_pins(store)
+
+    assert len(clear_calls) == expected_clear_count
+
+
 def test_workspace_gc_controller_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -1336,7 +1470,11 @@ def test_workspace_gc_controller_lifecycle(
     assert not controller._workspace_gc_requested
 
     path = tmp_path / "workspace.itws"
-    store = types.SimpleNamespace(closed=False, path=path)
+    store = types.SimpleNamespace(
+        closed=False,
+        path=path,
+        has_serialized_readers=False,
+    )
     controller._workspace_store = store
     controller._current_workspace_document_path = types.MethodType(
         lambda _self: path, controller

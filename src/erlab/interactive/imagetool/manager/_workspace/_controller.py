@@ -1935,6 +1935,18 @@ class _WorkspaceController:
         self._workspace_gc_requested = True
         QtCore.QTimer.singleShot(0, self._start_workspace_gc)
 
+    def _default_dask_client_has_futures(self) -> bool:
+        """Return whether the manager's Dask client owns any Futures."""
+        client = self._manager._dask_menu.default_client
+        return client is not None and bool(client.futures)
+
+    def _release_finished_dask_reader_pins(
+        self, store: workspace_store.WorkspaceStore
+    ) -> None:
+        """Release serialized readers when no GUI-managed Future can use them."""
+        if store.has_serialized_readers and not self._default_dask_client_has_futures():
+            store.clear_serialized_reader_pins()
+
     def _start_workspace_gc(self) -> None:
         if (
             not self._workspace_gc_requested
@@ -1952,6 +1964,7 @@ class _WorkspaceController:
         ):
             self._workspace_gc_requested = False
             return
+        self._release_finished_dask_reader_pins(store)
         thread_pool = QtCore.QThreadPool.globalInstance()
         if thread_pool is None:
             return
@@ -2487,6 +2500,25 @@ class _WorkspaceController:
             on_start_error=_start_error,
         )
 
+    def _confirm_compaction_with_dask_futures(self, parent: QtWidgets.QWidget) -> bool:
+        """Confirm that compaction can invalidate serialized Dask readers."""
+        msg_box = QtWidgets.QMessageBox(parent)
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle("Compact Workspace")
+        msg_box.setText("This workspace was sent to Dask workers.")
+        msg_box.setInformativeText(
+            "The connected Dask client still owns Futures. Compacting can remove "
+            "data that those Futures need for recomputation. Release the Futures "
+            "before you compact, or continue and invalidate their workspace readers."
+        )
+        cancel_button = msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        compact_button = msg_box.addButton(
+            "Compact Workspace", QtWidgets.QMessageBox.ButtonRole.DestructiveRole
+        )
+        msg_box.setDefaultButton(cancel_button)
+        msg_box.exec()
+        return msg_box.clickedButton() == compact_button
+
     def compact_workspace(self) -> bool:
         """Rewrite the current workspace with only reachable payload objects."""
         workspace_path = self._current_workspace_document_path()
@@ -2505,6 +2537,12 @@ class _WorkspaceController:
                 "The workspace file is not open. Reopen it and try again.",
             )
             return False
+        self._release_finished_dask_reader_pins(store)
+        if store.has_serialized_readers:
+            if not self._confirm_compaction_with_dask_futures(origin or self._manager):
+                self._restore_focus_after_workspace_save(origin)
+                return False
+            store.clear_serialized_reader_pins()
         try:
             with erlab.interactive.utils.wait_dialog(
                 origin or self._manager, "Compacting workspace..."
@@ -2519,6 +2557,7 @@ class _WorkspaceController:
                         workspace_path,
                         mark_clean=False,
                     )
+                self._release_finished_dask_reader_pins(store)
                 workspace_storage._compact_workspace_store(store)
             self._manager._status_bar.showMessage("Workspace compacted", 5000)
             self._mark_workspace_clean()

@@ -248,9 +248,10 @@ class WorkspaceStore:
     ) -> None:
         """Keep data reachable after a reader is sent to another process.
 
-        Dask does not provide a release callback that works for every scheduler.
-        These small pins therefore last for this Python process. They do not block
-        saves. They only defer reclamation of the referenced data.
+        Dask does not provide a release callback for a serialized task graph. The
+        controller clears these small pins when its client no longer owns Futures.
+        The pins do not block saves. They only defer reclamation of the referenced
+        data.
         """
         key = cls._serialization_key(workspace_id, path)
         with cls._active_lock:
@@ -956,6 +957,23 @@ class WorkspaceStore:
             for key in self._serialization_keys():
                 group_paths.update(self._serialized_legacy_group_pins.get(key, ()))
             return frozenset(group_paths)
+
+    @property
+    def has_serialized_readers(self) -> bool:
+        """Return whether this workspace has data pinned after serialization."""
+        with self._active_lock:
+            return any(
+                self._serialized_object_pins.get(key)
+                or self._serialized_legacy_group_pins.get(key)
+                for key in self._serialization_keys()
+            )
+
+    def clear_serialized_reader_pins(self) -> None:
+        """Release data pinned when this workspace's readers were serialized."""
+        with self._active_lock:
+            for key in self._serialization_keys():
+                self._serialized_object_pins.pop(key, None)
+                self._serialized_legacy_group_pins.pop(key, None)
 
     @property
     def leased_legacy_group_paths(self) -> frozenset[str]:
