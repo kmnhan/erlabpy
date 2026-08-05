@@ -24,6 +24,7 @@ import erlab.interactive.imagetool.manager._modelview as manager_modelview
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
+import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
@@ -1584,7 +1585,9 @@ def test_manager_records_recent_workspace_accesses(
     opened = tmp_path / "opened.itws"
     saved = tmp_path / "saved.itws"
     imported = tmp_path / "imported.itws"
-    for path in (opened, saved, imported):
+    with workspace_store.WorkspaceStore(opened, create=True):
+        pass
+    for path in (saved, imported):
         path.touch()
 
     with manager_context() as manager:

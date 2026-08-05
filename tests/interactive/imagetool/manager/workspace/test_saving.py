@@ -991,11 +991,13 @@ class _DeferredWorkspaceSaveWorker:
         snapshot: workspace_saving._WorkspaceSaveSnapshot,
         *,
         store: workspace_store.WorkspaceStore | None = None,
+        reader_closers: tuple[Callable[[], None], ...] = (),
     ) -> None:
         self.signals = workspace_saving._WorkspaceSaveWorkerSignals()
         self._fname = pathlib.Path(_fname)
         self._snapshot = snapshot
         self._store = store
+        self._reader_closers = reader_closers
 
     def finish(
         self,
@@ -1145,6 +1147,44 @@ def test_workspace_save_worker_classifies_publication_errors(
     error = results[0]
     assert isinstance(error, workspace_saving._WorkspaceSaveError)
     assert getattr(error, error_field) == str(target)
+
+
+@pytest.mark.parametrize("contended", [False, True])
+def test_workspace_save_worker_closes_readers_only_after_contention(
+    monkeypatch,
+    tmp_path,
+    contended: bool,
+) -> None:
+    target = tmp_path / "target.itws"
+    snapshot = workspace_saving._WorkspaceSaveSnapshot(
+        generation=0,
+        generation_plan=workspace_storage._WorkspaceGenerationPlan(
+            manifest={"schema_version": 5, "nodes": []},
+            objects=(),
+        ),
+        compression_mode="none",
+    )
+    close_calls: list[None] = []
+
+    def _write(*_args, on_contention=None, **_kwargs) -> None:
+        assert close_calls == []
+        if contended:
+            assert on_contention is not None
+            on_contention()
+
+    monkeypatch.setattr(workspace_storage, "_write_workspace_generation", _write)
+    worker = workspace_saving._WorkspaceSaveWorker(
+        target,
+        snapshot,
+        reader_closers=(lambda: close_calls.append(None),),
+    )
+    waiting: list[None] = []
+    worker.signals.waiting.connect(lambda: waiting.append(None))
+
+    worker.run()
+
+    assert close_calls == ([None] if contended else [])
+    assert waiting == ([None] if contended else [])
 
 
 def test_manager_async_save_request_error_paths(
@@ -3498,6 +3538,7 @@ def test_workspace_save_worker_start_and_finish_error_branches(
                 self.worker = worker
 
         errors: list[tuple[str, str]] = []
+        status_messages: list[tuple[typing.Any, ...]] = []
         pool = RecordingPool()
         monkeypatch.setattr(
             workspace_controller.QtCore.QThreadPool,
@@ -3509,12 +3550,19 @@ def test_workspace_save_worker_start_and_finish_error_branches(
             "_show_operation_error",
             lambda title, text: errors.append((title, text)),
         )
+        monkeypatch.setattr(
+            manager._status_bar,
+            "showMessage",
+            lambda *args: status_messages.append(args),
+        )
         assert controller._start_workspace_save_worker(
             tmp_path / "finish.itws",
             typing.cast("workspace_saving._WorkspaceSaveSnapshot", Snapshot()),
             on_finished=lambda *_args: (_ for _ in ()).throw(RuntimeError("boom")),
         )
         assert pool.worker is not None
+        pool.worker.signals.waiting.emit()
+        assert len(status_messages) == 1
         pool.worker.signals.finished.emit(0.1, None)
         assert errors == [
             (

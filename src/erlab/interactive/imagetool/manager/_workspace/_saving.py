@@ -75,6 +75,7 @@ class _WorkspaceSaveError:
 
 
 class _WorkspaceSaveWorkerSignals(QtCore.QObject):
+    waiting = QtCore.Signal()
     finished = QtCore.Signal(float, object)
 
 
@@ -83,10 +84,17 @@ class _WorkspaceSaveResultReceiver(QtCore.QObject):
         self,
         *,
         callback: Callable[[float, _WorkspaceSaveError | None], None] | None = None,
+        waiting_callback: Callable[[], None] | None = None,
         parent: QtCore.QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._callback = callback
+        self._waiting_callback = waiting_callback
+
+    @QtCore.Slot()
+    def wait(self) -> None:
+        if self._waiting_callback is not None:
+            self._waiting_callback()
 
     @QtCore.Slot(float, object)
     def finish(
@@ -105,12 +113,22 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
         snapshot: _WorkspaceSaveSnapshot,
         *,
         store: workspace_store.WorkspaceStore | None = None,
+        reader_closers: tuple[Callable[[], None], ...] = (),
     ) -> None:
         super().__init__()
         self.signals = _WorkspaceSaveWorkerSignals()
         self._fname = fname
         self._snapshot = snapshot
         self._store = store
+        self._reader_closers = reader_closers
+        self._waiting_reported = False
+
+    def _handle_contention(self) -> None:
+        for closer in self._reader_closers:
+            closer()
+        if not self._waiting_reported:
+            self._waiting_reported = True
+            self.signals.waiting.emit()
 
     def run(self) -> None:
         start_time = time.perf_counter()
@@ -131,6 +149,7 @@ class _WorkspaceSaveWorker(QtCore.QRunnable):
                     target_store,
                     self._snapshot.generation_plan,
                     compression_mode=self._snapshot.compression_mode,
+                    on_contention=self._handle_contention,
                 )
             finally:
                 if owned_store:
@@ -185,16 +204,29 @@ class _WorkspaceGcResultReceiver(QtCore.QObject):
 class _WorkspaceGcWorker(QtCore.QRunnable):
     """Unlink at most one obsolete payload object outside the save path."""
 
-    def __init__(self, store: workspace_store.WorkspaceStore) -> None:
+    def __init__(
+        self,
+        store: workspace_store.WorkspaceStore,
+        *,
+        reader_closers: tuple[Callable[[], None], ...] = (),
+    ) -> None:
         super().__init__()
         self.signals = _WorkspaceGcWorkerSignals()
         self._store = store
+        self._reader_closers = reader_closers
+
+    def _handle_contention(self) -> None:
+        for closer in self._reader_closers:
+            closer()
 
     def run(self) -> None:
         more = False
         error: str | None = None
         try:
-            more = self._store.collect_garbage(max_objects=1)
+            more = self._store.collect_garbage(
+                max_objects=1,
+                on_contention=self._handle_contention,
+            )
         except Exception:
             error = traceback.format_exc()
         self.signals.finished.emit(more, error)
@@ -208,6 +240,33 @@ class _WorkspaceSaver:
     ) -> None:
         self._manager = manager
         self._controller = controller
+
+    def _workspace_reader_closers(
+        self, fname: str | os.PathLike[str]
+    ) -> tuple[Callable[[], None], ...]:
+        """Return reusable closers for displayed data from one workspace."""
+        target = workspace_arrays._normalized_file_path(fname)
+        if target is None:
+            return ()
+        closers: list[Callable[[], None]] = []
+        seen: set[int] = set()
+        for node in self._manager._tool_graph.nodes.values():
+            if node.imagetool is None:
+                continue
+            if target not in workspace_arrays.dataarray_source_paths(
+                node.slicer_area._data
+            ):
+                continue
+            closer = node.slicer_area._data_resource_close_callback()
+            if closer is None or id(closer) in seen:
+                continue
+            seen.add(id(closer))
+            closers.append(closer)
+        return tuple(closers)
+
+    def _close_workspace_idle_readers(self, fname: str | os.PathLike[str]) -> None:
+        for closer in self._workspace_reader_closers(fname):
+            closer()
 
     @staticmethod
     def _serialized_tool_data_references(
@@ -657,6 +716,7 @@ class _WorkspaceSaver:
                 self._manager._workspace_state.dirty_generation,
                 fname=fname,
             )
+            self._close_workspace_idle_readers(fname)
             target_store = workspace_store.WorkspaceStore.active(fname)
             if target_store is None:
                 target_store = workspace_store.WorkspaceStore(

@@ -23,6 +23,7 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
+import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.plot_items as imagetool_plot_items
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive.derivative import DerivativeTool
@@ -2184,7 +2185,8 @@ def test_manager_loaded_workspace_association_updates_file_path(
 ) -> None:
     with manager_context() as manager:
         workspace = tmp_path / "loaded.itws"
-        workspace.touch()
+        with workspace_store.WorkspaceStore(workspace, create=True):
+            pass
         file_path_calls: list[str] = []
 
         with monkeypatch.context() as patch:
@@ -2218,7 +2220,8 @@ def test_manager_loaded_workspace_association_rebinds_data_after_path_update(
 ) -> None:
     with manager_context() as manager:
         workspace = tmp_path / "loaded-rebind.itws"
-        workspace.touch()
+        with workspace_store.WorkspaceStore(workspace, create=True):
+            pass
         rebind_paths: list[pathlib.Path] = []
 
         monkeypatch.setattr(

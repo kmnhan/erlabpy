@@ -82,6 +82,119 @@ def test_workspace_store_limits_writable_handle_to_write_session(
         assert store.h5_file.mode == "r"
 
 
+def test_workspace_store_uses_copy_on_write_without_filesystem_locks(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        store._locking_supported = False
+        with store.write_session() as h5_file:
+            assert h5_file.filename != str(path)
+            h5_file.attrs["copy_on_write"] = True
+
+        assert store.h5_file.attrs["copy_on_write"]
+        assert set(tmp_path.iterdir()) == {path}
+
+
+def test_workspace_store_discards_failed_copy_on_write(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        store._locking_supported = False
+
+        def _fail_write() -> None:
+            with store.write_session() as h5_file:
+                h5_file.attrs["must_not_publish"] = True
+                raise RuntimeError("injected failure")
+
+        with pytest.raises(RuntimeError, match="injected failure"):
+            _fail_write()
+
+        assert "must_not_publish" not in store.h5_file.attrs
+        assert set(tmp_path.iterdir()) == {path}
+
+
+def test_workspace_store_rejects_changed_copy_on_write_source(
+    tmp_path: pathlib.Path,
+) -> None:
+    import h5py
+
+    path = tmp_path / "workspace.itws"
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        store._locking_supported = False
+
+        def _write_while_source_changes() -> None:
+            with store.write_session() as staged:
+                staged.attrs["staged"] = True
+                with h5py.File(path, "r+", locking=False) as external:
+                    external.attrs["external"] = True
+                    external.create_dataset("external_payload", data=np.arange(1000))
+                    external.flush()
+
+        with pytest.raises(
+            workspace_store.WorkspaceStoreConflictError,
+            match="changed during save",
+        ):
+            _write_while_source_changes()
+
+        assert "staged" not in store.h5_file.attrs
+        assert store.h5_file.attrs["external"]
+        assert set(tmp_path.iterdir()) == {path}
+
+
+def test_workspace_store_fast_path_does_not_copy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+
+        def _unexpected_copy() -> pathlib.Path:
+            raise AssertionError("locking-supported writes must not copy the workspace")
+
+        monkeypatch.setattr(store, "_prepare_copy_on_write", _unexpected_copy)
+        with store.write_session() as h5_file:
+            h5_file.attrs["direct"] = True
+
+        assert store.h5_file.attrs["direct"]
+
+
+def test_workspace_store_detects_unavailable_required_locking(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    original_file = workspace_store.h5py.File
+
+    def _open_file(*args, **kwargs):
+        if kwargs.get("locking") is True:
+            raise OSError(errno.ENOSYS, "file locking is not supported")
+        return original_file(*args, **kwargs)
+
+    monkeypatch.setattr(workspace_store.h5py, "File", _open_file)
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        assert not store.locking_supported
+        with store.write_session() as h5_file:
+            assert h5_file.filename != str(path)
+            h5_file.attrs["safe_fallback"] = True
+
+        assert store.h5_file.attrs["safe_fallback"]
+
+
+def test_hdf5_contention_filter_does_not_treat_permissions_as_overlap() -> None:
+    permission_error = PermissionError(errno.EACCES, "access denied")
+    lock_error = BlockingIOError(errno.EAGAIN, "resource temporarily unavailable")
+
+    assert not workspace_store._is_hdf5_file_contention_error(permission_error)
+    assert workspace_store._is_hdf5_file_contention_error(lock_error)
+
+
 def test_workspace_store_gc_retains_two_generations_and_leases(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -395,6 +508,37 @@ def test_workspace_store_shares_lazy_reader_and_generation_writer(
             opened.close()
 
 
+def test_standalone_lazy_reader_attaches_when_workspace_store_opens(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    object_id = "payload"
+    dataset = xr.Dataset({"data": ("x", np.arange(5, dtype=np.float64))})
+    plan = workspace_storage._WorkspaceGenerationPlan(
+        manifest=_manifest(object_id),
+        objects=(workspace_storage._WorkspaceObjectWrite(object_id, dataset=dataset),),
+    )
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store, plan, compression_mode="none"
+        )
+
+    opened = workspace_arrays.open_workspace_dataset(
+        path,
+        workspace_store.WorkspaceStore.object_path(object_id),
+        chunks={},
+    )
+    try:
+        assert float(opened["data"].sum().compute()) == 10.0
+        with workspace_store.WorkspaceStore(path) as store:
+            assert object_id in store.leased_object_ids
+            with store.write_session() as h5_file:
+                h5_file.attrs["attached_reader"] = True
+            assert float(opened["data"].sum().compute()) == 10.0
+    finally:
+        opened.close()
+
+
 def test_workspace_lazy_array_uses_bounded_process_reads(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -418,10 +562,7 @@ def test_workspace_lazy_array_uses_bounded_process_reads(
             path, store.object_path(object_id), chunks={"x": 2}
         )
         try:
-            with (
-                store.computation_session(),
-                dask.config.set(scheduler="processes"),
-            ):
+            with dask.config.set(scheduler="processes"):
                 result = opened["data"].sum().compute()
             assert float(result) == 435.0
             assert store.h5_file.mode == "r"
@@ -460,7 +601,6 @@ def test_workspace_lazy_array_uses_process_localcluster_without_copy(
                     dashboard_address=None,
                 ) as cluster,
                 distributed.Client(cluster),
-                store.computation_session(),
             ):
                 result = opened["data"].sum().compute()
             assert float(result) == 435.0
@@ -469,37 +609,55 @@ def test_workspace_lazy_array_uses_process_localcluster_without_copy(
             opened.close()
 
 
-def test_workspace_computation_session_blocks_background_write(
+def test_workspace_writer_waits_only_for_active_hdf5_reader(
     tmp_path: pathlib.Path,
 ) -> None:
+    import h5py
+
     path = tmp_path / "workspace.itws"
     write_started = threading.Event()
+    write_waiting = threading.Event()
     write_finished = threading.Event()
     errors: list[BaseException] = []
 
     with workspace_store.WorkspaceStore(path, create=True) as store:
-        value = xr.DataArray([1.0])
-        value.encoding["source"] = str(path)
 
         def _write() -> None:
             write_started.set()
             try:
-                store.clear_staging()
+                with store.write_session(on_contention=write_waiting.set) as h5_file:
+                    h5_file.attrs["overlap_test"] = True
             except BaseException as exc:
                 errors.append(exc)
             finally:
                 write_finished.set()
 
-        with workspace_arrays.workspace_computation_session(value):
+        with h5py.File(path, "r", locking="best-effort"):
             writer = threading.Thread(target=_write)
             writer.start()
             assert write_started.wait(2)
-            assert not write_finished.wait(0.05)
+            assert write_waiting.wait(2)
+            assert not write_finished.is_set()
+            assert store.generations() == ()
 
         writer.join(2)
         assert not writer.is_alive()
         assert write_finished.is_set()
         assert errors == []
+        assert store.h5_file.attrs["overlap_test"]
+
+
+def test_workspace_writer_does_not_report_wait_without_overlap(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    waiting = threading.Event()
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session(on_contention=waiting.set) as h5_file:
+            h5_file.attrs["direct_write"] = True
+
+        assert not waiting.is_set()
 
 
 def test_workspace_worker_reports_inaccessible_shared_path(
@@ -523,6 +681,97 @@ def test_workspace_worker_reports_inaccessible_shared_path(
         match="same readable file on every worker",
     ):
         worker_manager._read_bounded_variable("data", slice(None))
+
+
+def test_workspace_worker_waits_for_overlapping_writer(
+    tmp_path: pathlib.Path,
+) -> None:
+    import subprocess
+    import sys
+
+    path = tmp_path / "workspace.itws"
+    group_path = workspace_store.WorkspaceStore.object_path("payload")
+    dataset = xr.Dataset({"data": ("x", np.arange(4, dtype=np.float64))})
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            workspace_arrays._write_workspace_dataset_group_to_file(
+                h5_file,
+                group_path,
+                dataset,
+                compression_mode="none",
+            )
+        manager = workspace_arrays.WorkspaceFileManager(
+            path,
+            object_id="payload",
+            group_path=group_path,
+        )
+        state = manager.__getstate__()
+        code = """
+import sys
+from erlab.interactive.imagetool.manager._workspace import _arrays
+m = _arrays.WorkspaceFileManager.__new__(_arrays.WorkspaceFileManager)
+m.__setstate__((
+    "erlab-workspace-bounded-reader-v1",
+    sys.argv[1], sys.argv[1], sys.argv[2], "payload", sys.argv[3]
+))
+print("ready", flush=True)
+print(float(m._read_bounded_variable("data", slice(None)).sum()), flush=True)
+"""
+        with store.write_session():
+            reader = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    code,
+                    str(path),
+                    typing.cast("str", state[3]),
+                    group_path,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            if reader.stdout is None:
+                raise RuntimeError("Worker stdout is unavailable")
+            assert reader.stdout.readline().strip() == "ready"
+            assert reader.poll() is None
+
+        stdout, stderr = reader.communicate(timeout=5)
+        assert reader.returncode == 0, stderr
+        assert float(stdout.strip()) == 6.0
+
+
+def test_workspace_store_closes_cached_handles_before_fork(
+    tmp_path: pathlib.Path,
+) -> None:
+    import multiprocessing
+
+    if "fork" not in multiprocessing.get_all_start_methods():
+        pytest.skip("fork is unavailable")
+
+    path = tmp_path / "workspace.itws"
+    context = multiprocessing.get_context("fork")
+    child_ready = context.Event()
+    child_release = context.Event()
+
+    def _wait_in_child() -> None:
+        child_ready.set()
+        child_release.wait(5)
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        _ = store.h5_file
+        process = context.Process(target=_wait_in_child)
+        process.start()
+        try:
+            assert child_ready.wait(2)
+            with store.write_session() as h5_file:
+                h5_file.attrs["written_after_fork"] = True
+        finally:
+            child_release.set()
+            process.join(5)
+        assert process.exitcode == 0
+        assert store.h5_file.attrs["written_after_fork"]
 
 
 def test_workspace_worker_rejects_different_file_at_shared_path(
@@ -969,10 +1218,7 @@ def test_workspace_store_switch_keeps_preserved_lazy_readers(
 
             import dask
 
-            with (
-                source_store.computation_session(),
-                dask.config.set(scheduler="processes"),
-            ):
+            with dask.config.set(scheduler="processes"):
                 assert float(old_reader["data"].sum().compute()) == 10.0
                 assert float(legacy_reader["data"].sum().compute()) == 10.0
         finally:

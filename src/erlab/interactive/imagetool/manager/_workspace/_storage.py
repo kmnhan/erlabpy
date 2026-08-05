@@ -27,7 +27,7 @@ from erlab.interactive.imagetool.manager._workspace._format import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Callable, Iterator, Mapping
 
     import h5py
     import xarray as xr
@@ -79,8 +79,8 @@ def _workspace_generation_copy_source(
 ) -> Iterator[typing.Any]:
     active_store = workspace_store.WorkspaceStore.active(path)
     if active_store is not None:
-        with active_store.lock:
-            yield active_store.read_h5_file
+        with active_store.read_session() as h5_file:
+            yield h5_file
         return
     workspace_arrays.ensure_workspace_hdf5_filters_registered()
     with workspace_arrays._workspace_file_lock(path), h5py.File(path, "r") as h5_file:
@@ -127,9 +127,10 @@ def _write_workspace_generation(
     plan: _WorkspaceGenerationPlan,
     *,
     compression_mode: WorkspaceCompressionMode,
+    on_contention: Callable[[], None] | None = None,
 ) -> workspace_store._WorkspaceGeneration:
     """Write new immutable objects and publish one generation."""
-    with target_store.write_session():
+    with target_store.write_session(on_contention=on_contention):
         created_object_ids: list[str] = []
         try:
             with target_store.lock:

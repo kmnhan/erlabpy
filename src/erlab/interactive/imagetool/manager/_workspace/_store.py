@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import pathlib
+import shutil
 import threading
 import time
 import typing
@@ -35,6 +36,7 @@ _WORKSPACE_MANIFEST_DATASET = "manifest"
 _WORKSPACE_GENERATION_WIDTH = 20
 _WORKSPACE_ID_ATTR = "imagetool_workspace_id"
 _FILE_ACCESS_RETRY_DELAYS = (0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0)
+_HDF5_CONTENTION_RETRY_DELAYS = (0.02, 0.05, 0.1, 0.2, 0.4, 0.8, 1.0)
 _RETRYABLE_FILE_ACCESS_ERRNOS = frozenset(
     {
         errno.EACCES,
@@ -44,6 +46,21 @@ _RETRYABLE_FILE_ACCESS_ERRNOS = frozenset(
         getattr(errno, "ETXTBSY", errno.EBUSY),
     }
 )
+_HDF5_CONTENTION_ERRNOS = frozenset(
+    {
+        errno.EAGAIN,
+        errno.EBUSY,
+        getattr(errno, "EWOULDBLOCK", errno.EAGAIN),
+        getattr(errno, "ETXTBSY", errno.EBUSY),
+    }
+)
+_HDF5_LOCK_UNAVAILABLE_ERRNOS = frozenset(
+    {
+        errno.ENOSYS,
+        getattr(errno, "ENOTSUP", errno.ENOSYS),
+        getattr(errno, "EOPNOTSUPP", errno.ENOSYS),
+    }
+)
 
 
 def _is_retryable_file_access_error(exc: OSError) -> bool:
@@ -51,19 +68,91 @@ def _is_retryable_file_access_error(exc: OSError) -> bool:
     return exc.errno in _RETRYABLE_FILE_ACCESS_ERRNOS
 
 
-def _retry_file_access(operation: Callable[[], typing.Any]) -> typing.Any:
+def _retry_file_access(
+    operation: Callable[[], typing.Any],
+    *,
+    on_wait: Callable[[], None] | None = None,
+) -> typing.Any:
     """Run one file operation with bounded retries for temporary access errors."""
     retry_delays = iter(_FILE_ACCESS_RETRY_DELAYS)
+    waiting = False
     while True:
         try:
             return operation()
         except OSError as exc:
             if not _is_retryable_file_access_error(exc):
                 raise
+            if not waiting:
+                waiting = True
+                if on_wait is not None:
+                    on_wait()
             try:
                 delay = next(retry_delays)
             except StopIteration:
                 raise exc from None
+            time.sleep(delay)
+
+
+def _is_hdf5_file_contention_error(exc: OSError) -> bool:
+    """Return whether another HDF5 reader or writer blocked an open."""
+    if exc.errno in _HDF5_CONTENTION_ERRNOS:
+        return True
+    if getattr(exc, "winerror", None) in {32, 33}:
+        return True
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "file is already open for read-only",
+            "file is already open for write",
+            "unable to lock file",
+            "resource temporarily unavailable",
+            "sharing violation",
+            "lock violation",
+        )
+    )
+
+
+def _is_hdf5_file_lock_unavailable_error(exc: OSError) -> bool:
+    """Return whether the filesystem rejected required HDF5 locking."""
+    if exc.errno in _HDF5_LOCK_UNAVAILABLE_ERRNOS:
+        return True
+    message = str(exc).lower()
+    return "lock" in message and any(
+        marker in message
+        for marker in (
+            "function not implemented",
+            "not supported",
+            "locking is disabled",
+        )
+    )
+
+
+def _wait_for_hdf5_access(
+    operation: Callable[[], typing.Any],
+    *,
+    on_wait: Callable[[], None] | None = None,
+    before_attempt: Callable[[], None] | None = None,
+    after_failed_attempt: Callable[[], None] | None = None,
+) -> typing.Any:
+    """Wait until a conflicting HDF5 reader or writer releases the file."""
+    delay_index = 0
+    while True:
+        if before_attempt is not None:
+            before_attempt()
+        try:
+            return operation()
+        except OSError as exc:
+            if after_failed_attempt is not None:
+                after_failed_attempt()
+            if not _is_hdf5_file_contention_error(exc):
+                raise
+            if on_wait is not None:
+                on_wait()
+            delay = _HDF5_CONTENTION_RETRY_DELAYS[
+                min(delay_index, len(_HDF5_CONTENTION_RETRY_DELAYS) - 1)
+            ]
+            delay_index += 1
             time.sleep(delay)
 
 
@@ -96,7 +185,9 @@ class WorkspaceStore:
     _active: weakref.WeakValueDictionary[str, WorkspaceStore] = (
         weakref.WeakValueDictionary()
     )
+    _pending_readers: typing.ClassVar[dict[str, weakref.WeakSet[typing.Any]]] = {}
     _active_lock = threading.RLock()
+    _fork_stores: tuple[WorkspaceStore, ...] = ()
 
     def __init__(
         self,
@@ -109,6 +200,7 @@ class WorkspaceStore:
             raise ValueError("workspace_id is valid only when create is true")
         self._path = pathlib.Path(path).resolve()
         self._lock = threading.RLock()
+        self._access_condition = threading.Condition(self._lock)
         self._write_lock = threading.RLock()
         self._object_leases: dict[str, int] = {}
         self._readers: weakref.WeakSet[typing.Any] = weakref.WeakSet()
@@ -116,10 +208,15 @@ class WorkspaceStore:
         self._handle_generation = 0
         self._h5_file: typing.Any = None
         self._write_depth = 0
+        self._write_pending = False
+        self._write_opening = False
+        self._write_target_path: pathlib.Path | None = None
+        self._locking_supported = True
         self._workspace_id = ""
         self._path_identity: tuple[int, int] | None = None
         self._recovery_path: pathlib.Path | None = None
         try:
+            self._close_pending_reader_caches()
             self._open(create=create, workspace_id=workspace_id)
             self._register()
         except Exception:
@@ -140,6 +237,92 @@ class WorkspaceStore:
         with store.lock:
             return None if store.closed else store
 
+    def _close_pending_reader_caches(self) -> None:
+        """Release local caches before this store opens their shared path."""
+        with self._active_lock:
+            readers = tuple(self._pending_readers.get(self._key(self._path), ()))
+        for reader in readers:
+            reader.close()
+
+    @classmethod
+    def register_path_reader(
+        cls,
+        path: str | os.PathLike[str],
+        reader: typing.Any,
+    ) -> WorkspaceStore | None:
+        """Register a reader and return the active store for its path."""
+        key = cls._key(path)
+        with cls._active_lock:
+            store = cls._active.get(key)
+            if store is None or store.closed:
+                cls._pending_readers.setdefault(key, weakref.WeakSet()).add(reader)
+                return None
+        store.register_reader(reader)
+        return store
+
+    @classmethod
+    def unregister_path_reader(
+        cls,
+        path: str | os.PathLike[str],
+        reader: typing.Any,
+    ) -> None:
+        """Remove a reader that is not attached to an active store."""
+        key = cls._key(path)
+        with cls._active_lock:
+            readers = cls._pending_readers.get(key)
+            if readers is None:
+                return
+            readers.discard(reader)
+            if not readers:
+                cls._pending_readers.pop(key, None)
+
+    @classmethod
+    def _before_fork(cls) -> None:
+        """Close inherited HDF5 handles before a process forks."""
+        with cls._active_lock:
+            stores = tuple(
+                sorted(
+                    (store for store in cls._active.values() if not store.closed),
+                    key=lambda store: str(store.path),
+                )
+            )
+        acquired: list[WorkspaceStore] = []
+        try:
+            for store in stores:
+                store._write_lock.acquire()
+                store._lock.acquire()
+                acquired.append(store)
+            for store in stores:
+                store._release_handle()
+        except Exception:
+            for store in reversed(acquired):
+                store._lock.release()
+                store._write_lock.release()
+            raise
+        cls._fork_stores = stores
+
+    @classmethod
+    def _after_fork_parent(cls) -> None:
+        for store in reversed(cls._fork_stores):
+            store._lock.release()
+            store._write_lock.release()
+        cls._fork_stores = ()
+
+    @classmethod
+    def _after_fork_child(cls) -> None:
+        for store in cls._fork_stores:
+            store._h5_file = None
+            store._state = "closed"
+            store._lock = threading.RLock()
+            store._access_condition = threading.Condition(store._lock)
+            store._write_lock = threading.RLock()
+            store._write_pending = False
+            store._write_opening = False
+        cls._active = weakref.WeakValueDictionary()
+        cls._pending_readers = {}
+        cls._active_lock = threading.RLock()
+        cls._fork_stores = ()
+
     @property
     def path(self) -> pathlib.Path:
         return self._path
@@ -152,6 +335,16 @@ class WorkspaceStore:
     def write_lock(self) -> threading.RLock:
         """Serialize complete saves and maintenance operations."""
         return self._write_lock
+
+    @property
+    def locking_supported(self) -> bool:
+        """Return whether required HDF5 locks work for this workspace path."""
+        return self._locking_supported
+
+    @property
+    def write_in_progress(self) -> bool:
+        """Return whether this store is waiting to write or is writing."""
+        return self._write_pending or self._write_depth > 0
 
     @property
     def closed(self) -> bool:
@@ -210,6 +403,9 @@ class WorkspaceStore:
                     f"Workspace already has an active store: {self._path}"
                 )
             self._active[key] = self
+            pending_readers = tuple(self._pending_readers.pop(key, ()))
+        for reader in pending_readers:
+            reader._attach_store(self)
 
     def _unregister(self, path: pathlib.Path | None = None) -> None:
         key = self._key(self._path if path is None else path)
@@ -229,11 +425,35 @@ class WorkspaceStore:
             h5_file.flush()
         return workspace_id
 
+    @staticmethod
+    def _workspace_id_from_file(h5_file: typing.Any) -> str | None:
+        workspace_id = h5_file.attrs.get(_WORKSPACE_ID_ATTR)
+        if isinstance(workspace_id, bytes):
+            workspace_id = workspace_id.decode()
+        if isinstance(workspace_id, str) and workspace_id:
+            return workspace_id
+        return None
+
+    def _open_with_lock_detection(
+        self,
+        mode: str,
+        **kwargs: typing.Any,
+    ) -> typing.Any:
+        try:
+            return _wait_for_hdf5_access(
+                lambda: h5py.File(self._path, mode, locking=True, **kwargs)
+            )
+        except OSError as exc:
+            if not _is_hdf5_file_lock_unavailable_error(exc):
+                raise
+        self._locking_supported = False
+        return h5py.File(self._path, mode, locking=False, **kwargs)
+
     def _open(self, *, create: bool, workspace_id: str | None = None) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._locking_supported = True
         if create:
-            h5_file = h5py.File(
-                self._path,
+            h5_file = self._open_with_lock_detection(
                 "w",
                 libver="latest",
                 fs_strategy="fsm",
@@ -248,18 +468,27 @@ class WorkspaceStore:
             h5_file.flush()
             h5_file.close()
         else:
-            with h5py.File(self._path, "r+") as h5_file:
-                self._workspace_id = self._ensure_workspace_id(h5_file)
+            with self._open_with_lock_detection("r") as h5_file:
+                self._workspace_id = self._workspace_id_from_file(h5_file) or ""
         self._h5_file = None
         path_stat = self._path.stat()
         self._path_identity = (path_stat.st_dev, path_stat.st_ino)
         self._recovery_path = None
         self._state = "open"
+        if not self._workspace_id:
+            with self.write_session() as h5_file:
+                self._workspace_id = self._ensure_workspace_id(h5_file, workspace_id)
 
     def _ensure_read_handle(self) -> typing.Any:
         if self._h5_file is None:
             source = self._recovery_path or self._path
-            self._h5_file = _retry_file_access(lambda: h5py.File(source, "r"))
+            self._h5_file = _wait_for_hdf5_access(
+                lambda: h5py.File(
+                    source,
+                    "r",
+                    locking="best-effort",
+                )
+            )
             self._handle_generation += 1
         return self._h5_file
 
@@ -275,35 +504,160 @@ class WorkspaceStore:
                 h5_file.close()
         self._handle_generation += 1
 
+    def _prepare_copy_on_write(self) -> pathlib.Path:
+        target = self._path.with_name(f".{self._path.name}.write-{uuid.uuid4().hex}")
+        shutil.copy2(self._path, target)
+        return target
+
+    def _publish_copy_on_write(
+        self,
+        source: pathlib.Path,
+        expected_state: tuple[int, int, int, int],
+        *,
+        on_contention: Callable[[], None] | None,
+    ) -> None:
+        def _replace() -> None:
+            self._require_path_state(expected_state)
+            os.replace(source, self._path)
+
+        _retry_file_access(_replace, on_wait=on_contention)
+        path_stat = self._path.stat()
+        self._path_identity = (path_stat.st_dev, path_stat.st_ino)
+        if os.name == "posix":
+            with contextlib.suppress(OSError):
+                file_descriptor = os.open(self._path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(file_descriptor)
+                finally:
+                    os.close(file_descriptor)
+
     @contextlib.contextmanager
-    def write_session(self) -> typing.Iterator[typing.Any]:
+    def read_session(self) -> typing.Iterator[typing.Any]:
+        """Yield the shared handle when no writer is changing its open mode."""
+        with self._access_condition:
+            while self._write_opening:
+                self._access_condition.wait()
+            if self.closed:
+                raise RuntimeError("Workspace store is closed")
+            yield self.read_h5_file
+
+    @contextlib.contextmanager
+    def write_session(
+        self,
+        *,
+        on_contention: Callable[[], None] | None = None,
+    ) -> typing.Iterator[typing.Any]:
         """Yield the only writable handle for one bounded document operation."""
         with self._write_lock:
-            with self._lock:
+            copy_on_write_path: pathlib.Path | None = None
+            expected_path_state: tuple[int, int, int, int] | None = None
+            succeeded = False
+            with self._access_condition:
                 self.require_current_path()
                 outermost = self._write_depth == 0
                 if outermost:
-                    self._release_handle()
-                    self._h5_file = _retry_file_access(
-                        lambda: h5py.File(self._path, "r+")
-                    )
+                    self._write_pending = True
+                    path_identity = self._path_identity
+                    if not self._locking_supported and path_identity is None:
+                        self._write_pending = False
+                        self._access_condition.notify_all()
+                        raise RuntimeError("Workspace store has no path identity")
+                else:
+                    self._write_depth += 1
+
+            if outermost:
+
+                def _begin_open_attempt() -> None:
+                    with self._access_condition:
+                        self._release_handle()
+                        self._write_opening = True
+
+                def _end_failed_open_attempt() -> None:
+                    with self._access_condition:
+                        self._write_opening = False
+                        self._access_condition.notify_all()
+
+                try:
+                    if self._locking_supported:
+                        h5_file = _wait_for_hdf5_access(
+                            lambda: h5py.File(
+                                self._path,
+                                "r+",
+                                locking="best-effort",
+                            ),
+                            on_wait=on_contention,
+                            before_attempt=_begin_open_attempt,
+                            after_failed_attempt=_end_failed_open_attempt,
+                        )
+                    else:
+                        with self._access_condition:
+                            self._release_handle()
+                            self._write_opening = True
+                        path_stat = self._path.stat()
+                        expected_path_state = (
+                            path_stat.st_dev,
+                            path_stat.st_ino,
+                            path_stat.st_size,
+                            path_stat.st_mtime_ns,
+                        )
+                        copy_on_write_path = self._prepare_copy_on_write()
+                        h5_file = h5py.File(
+                            copy_on_write_path,
+                            "r+",
+                            locking=False,
+                        )
+                except BaseException:
+                    with self._access_condition:
+                        self._write_target_path = None
+                        self._write_pending = False
+                        self._write_opening = False
+                        self._access_condition.notify_all()
+                    if copy_on_write_path is not None:
+                        with contextlib.suppress(OSError):
+                            copy_on_write_path.unlink()
+                    raise
+                with self._access_condition:
+                    self._h5_file = h5_file
+                    self._write_target_path = copy_on_write_path
                     self._handle_generation += 1
-                self._write_depth += 1
+                    self._write_depth = 1
+                    self._write_opening = False
+                    self._access_condition.notify_all()
             try:
                 yield self._h5_file
+                succeeded = True
             finally:
-                with self._lock:
-                    self._write_depth -= 1
-                    if outermost:
-                        self._release_handle()
-
-    @contextlib.contextmanager
-    def computation_session(self) -> typing.Iterator[None]:
-        """Keep saves and file replacement out of one Dask computation."""
-        with self._write_lock:
-            with self._lock:
-                self.require_current_path()
-            yield
+                if not outermost:
+                    with self._lock:
+                        self._write_depth -= 1
+                else:
+                    try:
+                        with self._lock:
+                            self._write_depth = 0
+                            try:
+                                if succeeded and copy_on_write_path is not None:
+                                    self.flush(durable=True)
+                            finally:
+                                self._release_handle()
+                                self._write_target_path = None
+                        if (
+                            succeeded
+                            and copy_on_write_path is not None
+                            and expected_path_state is not None
+                        ):
+                            self._publish_copy_on_write(
+                                copy_on_write_path,
+                                expected_path_state,
+                                on_contention=on_contention,
+                            )
+                    finally:
+                        with self._access_condition:
+                            self._write_pending = False
+                            self._write_opening = False
+                            self._access_condition.notify_all()
+                        if copy_on_write_path is not None:
+                            with contextlib.suppress(OSError):
+                                copy_on_write_path.unlink()
 
     def _close_handle(self) -> None:
         self._release_handle()
@@ -322,7 +676,11 @@ class WorkspaceStore:
         """Use a prepared document as the read-only source after a conflict."""
         self._close_handle()
         try:
-            self._h5_file = h5py.File(path, "r")
+            self._h5_file = h5py.File(
+                path,
+                "r",
+                locking="best-effort",
+            )
         except Exception:
             self._h5_file = None
             self._state = "conflicted"
@@ -342,6 +700,25 @@ class WorkspaceStore:
         if (path_stat.st_dev, path_stat.st_ino) != expected:
             raise WorkspaceStoreConflictError(
                 f"Open workspace path now identifies another file: {self._path}"
+            )
+
+    def _require_path_state(self, expected: tuple[int, int, int, int]) -> None:
+        """Fail if an unlocked copy-on-write source changed before publication."""
+        try:
+            path_stat = self._path.stat()
+        except OSError as exc:
+            raise WorkspaceStoreConflictError(
+                f"Open workspace path is no longer available: {self._path}"
+            ) from exc
+        current = (
+            path_stat.st_dev,
+            path_stat.st_ino,
+            path_stat.st_size,
+            path_stat.st_mtime_ns,
+        )
+        if current != expected:
+            raise WorkspaceStoreConflictError(
+                f"Open workspace changed during save: {self._path}"
             )
 
     def require_current_path(self) -> None:
@@ -370,10 +747,22 @@ class WorkspaceStore:
     def switch_path(self, path: str | os.PathLike[str]) -> None:
         """Open *path* through this store without invalidating store references."""
         new_path = pathlib.Path(path).resolve()
-        with self._write_lock, self._lock, h5py.File(new_path, "r+") as new_h5_file:
+        locking_supported = True
+        try:
+            new_h5_file = _wait_for_hdf5_access(
+                lambda: h5py.File(new_path, "r", locking=True)
+            )
+        except OSError as exc:
+            if not _is_hdf5_file_lock_unavailable_error(exc):
+                raise
+            locking_supported = False
+            new_h5_file = h5py.File(new_path, "r", locking=False)
+        with self._write_lock, self._lock, new_h5_file:
             new_stat = new_path.stat()
             new_identity = (new_stat.st_dev, new_stat.st_ino)
-            workspace_id = self._ensure_workspace_id(new_h5_file)
+            workspace_id = self._workspace_id_from_file(new_h5_file)
+            if workspace_id is None:
+                raise ValueError("Workspace file has no stable identity")
             with self._active_lock:
                 existing = self._active.get(self._key(new_path))
                 if existing is not None and existing is not self:
@@ -385,6 +774,7 @@ class WorkspaceStore:
                 self._close_handle()
                 self._path = new_path
                 self._workspace_id = workspace_id
+                self._locking_supported = locking_supported
                 self._path_identity = new_identity
                 self._recovery_path = None
                 self._state = "open"
@@ -506,13 +896,12 @@ class WorkspaceStore:
     @property
     def leased_legacy_group_paths(self) -> frozenset[str]:
         """Return old-format payload groups that still have lazy readers."""
-        with self._lock:
+        with self.read_session() as h5_file:
             paths = {
                 path
                 for reader in self._readers
                 if (path := reader.legacy_group_path) not in {None, "/"}
             }
-            h5_file = self.read_h5_file
             return frozenset(
                 path
                 for path in paths
@@ -584,8 +973,8 @@ class WorkspaceStore:
 
     def generations(self) -> tuple[_WorkspaceGeneration, ...]:
         """Return all valid committed generations in ascending order."""
-        with self._lock:
-            root = self.read_h5_file.get(_WORKSPACE_GENERATIONS_GROUP)
+        with self.read_session() as h5_file:
+            root = h5_file.get(_WORKSPACE_GENERATIONS_GROUP)
             if root is None:
                 return ()
             generations: list[_WorkspaceGeneration] = []
@@ -667,14 +1056,19 @@ class WorkspaceStore:
                 object_ids.add(object_id)
         return frozenset(object_ids)
 
-    def collect_garbage(self, *, max_objects: int = 1) -> bool:
+    def collect_garbage(
+        self,
+        *,
+        max_objects: int = 1,
+        on_contention: Callable[[], None] | None = None,
+    ) -> bool:
         """Retire old generations and unlink a bounded number of dead objects.
 
         Returns ``True`` when more obsolete objects remain.
         """
         if max_objects < 1:
             raise ValueError("max_objects must be positive")
-        with self.write_session():
+        with self.write_session(on_contention=on_contention):
             generations = self.generations()
             retained = generations[-2:]
             retained_names = {
@@ -693,13 +1087,18 @@ class WorkspaceStore:
 
             object_root = self.h5_file.require_group(_WORKSPACE_OBJECTS_GROUP)
             obsolete = [name for name in object_root if name not in reachable]
-            for name in obsolete[:max_objects]:
+            remove_count = len(obsolete) if not self._locking_supported else max_objects
+            for name in obsolete[:remove_count]:
                 del object_root[name]
             self.h5_file.flush()
-            return len(obsolete) > max_objects
+            return len(obsolete) > remove_count
 
     def clear_staging(self) -> None:
         """Remove unpublished staging groups left by interrupted saves."""
+        with self.read_session() as h5_file:
+            staging_root = h5_file.get(_WORKSPACE_STAGING_GROUP)
+            if staging_root is None or not staging_root:
+                return
         with self.write_session():
             staging_root = self.h5_file.require_group(_WORKSPACE_STAGING_GROUP)
             for name in list(staging_root):
@@ -711,3 +1110,11 @@ class WorkspaceStore:
 
     def __exit__(self, *_args: object) -> None:
         self.close()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(
+        before=WorkspaceStore._before_fork,
+        after_in_parent=WorkspaceStore._after_fork_parent,
+        after_in_child=WorkspaceStore._after_fork_child,
+    )

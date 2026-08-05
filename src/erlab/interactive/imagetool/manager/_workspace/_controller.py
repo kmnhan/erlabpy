@@ -1708,6 +1708,7 @@ class _WorkspaceController:
             fname,
             snapshot,
             store=store,
+            reader_closers=self.saving._workspace_reader_closers(target_path),
         )
         previous_action_states = self._set_workspace_save_actions_enabled(False)
 
@@ -1738,8 +1739,12 @@ class _WorkspaceController:
 
         receiver = workspace_saving._WorkspaceSaveResultReceiver(
             callback=_finish,
+            waiting_callback=lambda: self._manager._status_bar.showMessage(
+                "Waiting for active workspace computations..."
+            ),
             parent=self._manager,
         )
+        worker.signals.waiting.connect(receiver.wait)
         worker.signals.finished.connect(receiver.finish)
         self._manager._workspace_state.save_in_progress = True
         self._background_save_worker = worker
@@ -1785,7 +1790,10 @@ class _WorkspaceController:
             return
 
         document_id = self._manager._workspace_state.document_id
-        worker = workspace_saving._WorkspaceGcWorker(store)
+        worker = workspace_saving._WorkspaceGcWorker(
+            store,
+            reader_closers=self.saving._workspace_reader_closers(workspace_path),
+        )
 
         def _finish(more: bool, error: str | None) -> None:
             receiver = self._workspace_gc_receiver
@@ -2313,6 +2321,7 @@ class _WorkspaceController:
             with erlab.interactive.utils.wait_dialog(
                 origin or self._manager, "Compacting workspace..."
             ):
+                self.saving._close_workspace_idle_readers(workspace_path)
                 if (
                     self._manager.is_workspace_modified
                     or self._manager._workspace_state.schema_version
