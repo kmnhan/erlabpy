@@ -2445,16 +2445,19 @@ class _WorkspaceController:
                 return
             self._release_unused_imported_workspace_accesses()
             self._drain_workspace_deferred_events()
-            if post_save_events or has_new_dirty_generation:
+            if post_save_events:
                 self._restore_workspace_dirty_events(post_save_events)
-            else:
+            elif not has_new_dirty_generation:
                 self._mark_workspace_clean()
             self._record_recent_workspace(saved_path)
-            message = (
-                f"Workspace saved in {total_elapsed:.1f} s"
-                if total_elapsed >= _WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS
-                else "Workspace saved"
-            )
+            if post_save_events or has_new_dirty_generation:
+                message = "Workspace saved; new changes remain unsaved"
+            else:
+                message = (
+                    f"Workspace saved in {total_elapsed:.1f} s"
+                    if total_elapsed >= _WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS
+                    else "Workspace saved"
+                )
             self._manager._status_bar.showMessage(message, 5000)
             self._restore_focus_after_workspace_save(origin)
             self._schedule_workspace_gc()

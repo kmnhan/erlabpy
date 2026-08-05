@@ -34,6 +34,9 @@ class _WorkspaceDirtyEvent:
     added: bool = False
     removed: str | None = None
     structure: str | None = None
+    layout: bool = False
+    options: bool = False
+    context: bool = False
 
 
 class _WorkspaceStateSnapshot(typing.TypedDict):
@@ -123,6 +126,15 @@ class _ManagerWorkspaceState:
             self.structure_reasons.append(event.structure)
             self.structure_modified = True
             dirty_changed = True
+        if event.layout and not self.layout_modified:
+            self.layout_modified = True
+            dirty_changed = True
+        if event.options and not self.options_modified:
+            self.options_modified = True
+            dirty_changed = True
+        if event.context and not self.context_modified:
+            self.context_modified = True
+            dirty_changed = True
         return dirty_changed
 
     def mark_dirty(self, event: _WorkspaceDirtyEvent) -> bool:
@@ -133,6 +145,9 @@ class _ManagerWorkspaceState:
                 event.uid is not None
                 or event.removed is not None
                 or event.structure is not None
+                or event.layout
+                or event.options
+                or event.context
             )
         ):
             self.dirty_generation = event.generation
@@ -141,34 +156,28 @@ class _ManagerWorkspaceState:
         return False
 
     def mark_layout_dirty(self) -> bool:
-        if self.layout_modified:
-            if self.save_in_progress:
-                self.dirty_generation += 1
-                return True
-            return False
-        self.layout_modified = True
-        self.dirty_generation += 1
-        return True
+        return self.mark_dirty(
+            _WorkspaceDirtyEvent(
+                generation=self.dirty_generation + 1,
+                layout=True,
+            )
+        )
 
     def mark_options_dirty(self) -> bool:
-        if self.options_modified:
-            if self.save_in_progress:
-                self.dirty_generation += 1
-                return True
-            return False
-        self.options_modified = True
-        self.dirty_generation += 1
-        return True
+        return self.mark_dirty(
+            _WorkspaceDirtyEvent(
+                generation=self.dirty_generation + 1,
+                options=True,
+            )
+        )
 
     def mark_context_dirty(self) -> bool:
-        if self.context_modified:
-            if self.save_in_progress:
-                self.dirty_generation += 1
-                return True
-            return False
-        self.context_modified = True
-        self.dirty_generation += 1
-        return True
+        return self.mark_dirty(
+            _WorkspaceDirtyEvent(
+                generation=self.dirty_generation + 1,
+                context=True,
+            )
+        )
 
     def mark_clean(self) -> None:
         self.structure_modified = False

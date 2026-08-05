@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import pathlib
+import pickle
 import threading
 import types
 import typing
@@ -526,6 +527,36 @@ def test_workspace_file_manager_serialization_pins_exact_payload(tmp_path) -> No
         assert store.serialized_legacy_group_paths == {"/legacy"}
         del manager, legacy_manager
         gc.collect()
+
+
+def test_workspace_dask_tokenization_pins_only_serialized_graph(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+    object_id = "payload"
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        name=_ITOOL_DATA_NAME,
+    ).to_dataset()
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            assert workspace_arrays._write_workspace_dataset_group_h5py(
+                h5_file,
+                store.object_path(object_id),
+                data,
+            )
+        store.publish({"schema_version": 5, "nodes": []})
+
+        opened = workspace_arrays.open_workspace_dataset(
+            path,
+            store.object_path(object_id),
+            chunks={},
+        )
+        try:
+            assert store.serialized_object_ids == set()
+            pickle.dumps(opened[_ITOOL_DATA_NAME].data.__dask_graph__())
+            assert store.serialized_object_ids == {object_id}
+        finally:
+            opened.close()
 
 
 def test_workspace_file_manager_rejects_inherited_process_access(

@@ -385,18 +385,36 @@ def test_manager_load_workspace_dataset_ignores_invalid_saved_metadata(
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
 
-def test_workspace_state_repeated_options_dirty_during_save() -> None:
+@pytest.mark.parametrize(
+    ("mark_method", "event_field"),
+    [
+        ("mark_layout_dirty", "layout"),
+        ("mark_options_dirty", "options"),
+        ("mark_context_dirty", "context"),
+    ],
+)
+def test_workspace_state_repeated_non_node_dirty_during_save(
+    mark_method: str,
+    event_field: str,
+) -> None:
     state = workspace_state._ManagerWorkspaceState()
+    mark_dirty = getattr(state, mark_method)
 
-    assert state.mark_options_dirty()
+    assert mark_dirty()
     assert state.dirty_generation == 1
-    assert not state.mark_options_dirty()
+    assert len(state.dirty_events) == 1
+    assert getattr(state.dirty_events[0], event_field)
+    assert not mark_dirty()
     assert state.dirty_generation == 1
+    assert len(state.dirty_events) == 1
 
     state.save_in_progress = True
 
-    assert state.mark_options_dirty()
+    assert mark_dirty()
     assert state.dirty_generation == 2
+    assert len(state.dirty_events) == 2
+    assert state.dirty_events[-1].generation == 2
+    assert getattr(state.dirty_events[-1], event_field)
 
 
 def test_manager_close_save_path_updates_file_path(
@@ -1885,6 +1903,71 @@ def test_manager_background_save_as_preserves_post_snapshot_data_edit(
         assert manager.workspace_path == str(target_path.resolve())
         np.testing.assert_array_equal(root.slicer_area._data.values, replacement.values)
         assert manager.is_workspace_modified
+
+
+def test_manager_background_save_as_preserves_post_snapshot_non_node_changes(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    pool = _install_deferred_workspace_save_worker(monkeypatch)
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25.0).reshape((5, 5)),
+            dims=("x", "y"),
+            name="source",
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        source_path = tmp_path / "source.itws"
+        target_path = tmp_path / "target.itws"
+        manager._workspace_controller.saving._save_workspace_document(source_path)
+        adopt_workspace_path(manager, source_path)
+        manager._workspace_controller._mark_workspace_clean()
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: target_path,
+        )
+
+        assert manager._workspace_controller.save_as(native=False)
+        assert len(pool.workers) == 1
+        worker = pool.workers[0]
+        snapshot_generation = worker._snapshot.generation
+
+        assert manager._workspace_state.mark_layout_dirty()
+        assert manager._workspace_state.mark_options_dirty()
+        assert manager._workspace_state.mark_context_dirty()
+        post_save_events = [
+            event
+            for event in manager._workspace_state.dirty_events
+            if event.generation > snapshot_generation
+        ]
+        assert any(event.layout for event in post_save_events)
+        assert any(event.options for event in post_save_events)
+        assert any(event.context for event in post_save_events)
+
+        with workspace_store.WorkspaceStore(worker._fname, create=True) as store:
+            workspace_storage._write_workspace_generation(
+                store,
+                worker._snapshot.generation_plan,
+                compression_mode=worker._snapshot.compression_mode,
+            )
+        worker.finish()
+        qtbot.wait_until(lambda: not manager._workspace_state.save_in_progress)
+
+        assert manager.workspace_path == str(target_path.resolve())
+        assert manager.is_workspace_modified
+        assert manager._workspace_state.layout_modified
+        assert manager._workspace_state.options_modified
+        assert manager._workspace_state.context_modified
 
 
 def test_manager_background_save_as_repoints_post_snapshot_pending_edit(

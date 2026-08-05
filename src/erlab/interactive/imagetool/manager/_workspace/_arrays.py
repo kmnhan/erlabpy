@@ -681,6 +681,13 @@ class _WorkspaceBackendArray(BackendArray):
 class _WorkspaceH5NetCDFStore(H5NetCDFStore):
     """Build workspace arrays with a process-safe read boundary."""
 
+    def __dask_tokenize__(
+        self,
+    ) -> tuple[str, tuple[str, str, str | None, str | None]]:
+        """Return a stable token without serializing the workspace reader."""
+        manager = typing.cast("WorkspaceFileManager", self._manager)
+        return type(self).__name__, manager.__dask_tokenize__()
+
     def open_store_variable(self, name: str, var: typing.Any) -> xr.Variable:
         variable = super().open_store_variable(name, var)
         data = indexing.LazilyIndexedArray(
