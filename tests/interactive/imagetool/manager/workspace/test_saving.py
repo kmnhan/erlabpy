@@ -4096,13 +4096,13 @@ def test_workspace_save_worker_start_and_finish_error_branches(
         def close(self) -> None:
             self.closed = True
 
-    with manager_context() as manager:
+    with manager_context() as manager, monkeypatch.context() as worker_patch:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         controller = manager._workspace_controller
 
         start_errors: list[str] = []
         snapshot = Snapshot()
-        monkeypatch.setattr(
+        worker_patch.setattr(
             workspace_controller.QtCore.QThreadPool,
             "globalInstance",
             staticmethod(lambda: None),
@@ -4121,7 +4121,7 @@ def test_workspace_save_worker_start_and_finish_error_branches(
                 raise RuntimeError("cannot start")
 
         snapshot = Snapshot()
-        monkeypatch.setattr(
+        worker_patch.setattr(
             workspace_controller.QtCore.QThreadPool,
             "globalInstance",
             staticmethod(lambda: RaisingPool()),
@@ -4148,17 +4148,17 @@ def test_workspace_save_worker_start_and_finish_error_branches(
         errors: list[tuple[str, str]] = []
         status_messages: list[tuple[typing.Any, ...]] = []
         pool = RecordingPool()
-        monkeypatch.setattr(
+        worker_patch.setattr(
             workspace_controller.QtCore.QThreadPool,
             "globalInstance",
             staticmethod(lambda: pool),
         )
-        monkeypatch.setattr(
+        worker_patch.setattr(
             manager,
             "_show_operation_error",
             lambda title, text: errors.append((title, text)),
         )
-        monkeypatch.setattr(
+        worker_patch.setattr(
             manager._status_bar,
             "showMessage",
             lambda *args: status_messages.append(args),
