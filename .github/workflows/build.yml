@@ -55,12 +55,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Python
+        id: python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.PYTHON_VERSION }}
+          check-latest: true
+
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
-          python-version: ${{ matrix.PYTHON_VERSION }}
 
       - name: Install macOS runtime libraries
         if: runner.os == 'macOS'
@@ -68,6 +74,8 @@ jobs:
 
       - name: Install project with all optional deps and pyinstaller
         shell: bash
+        env:
+          UV_PYTHON: ${{ steps.python.outputs.python-path }}
         run: |
           uv_args="--no-editable --all-extras --group pyqt6 --group pyinstaller"
           if [[ "${{ github.event.inputs.upgrade_dependencies }}" == "true" ]]; then
@@ -85,6 +93,21 @@ jobs:
 
       - name: Build ImageTool Manager
         run: uv run --no-editable pyinstaller manager.spec
+
+      - name: Verify macOS ARM SDK
+        if: matrix.SUFFIX == 'macos-arm'
+        shell: bash
+        run: |
+          app="dist/ImageTool Manager.app/Contents/MacOS/ImageTool Manager"
+          sdk_version=$(otool -l "$app" | awk '$1 == "sdk" { print $2; exit }')
+
+          echo "Python ${{ steps.python.outputs.python-version }}"
+          echo "Application SDK ${sdk_version}"
+
+          if [[ -z "$sdk_version" || "${sdk_version%%.*}" -lt 26 ]]; then
+            echo "::error::Expected macOS SDK 26 or later. Found SDK ${sdk_version}."
+            exit 1
+          fi
 
       - name: Build installer (Windows only)
         if: runner.os == 'Windows'
