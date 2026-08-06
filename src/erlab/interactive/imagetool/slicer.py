@@ -263,6 +263,11 @@ def qsel_args_from_indexers(
         Dimensions whose index slices should become ``qsel`` center and width
         arguments.
 
+    Notes
+    -----
+    Dimensions without indexes use temporary coordinates from zero to ``n - 1``.
+    This matches the positional selection behavior of :meth:`xarray.DataArray.qsel`.
+
     Returns
     -------
     dict
@@ -274,18 +279,31 @@ def qsel_args_from_indexers(
         If a requested dimension is missing or a binned selection cannot be expressed
         by the current coordinate values.
     """
+    for dim in indexers:
+        if dim not in data.dims:
+            raise ValueError(f"Dimension `{dim}` not found in data")
+
+    temporary_coords = {
+        dim: np.arange(data.sizes[dim]) for dim in indexers if dim not in data.indexes
+    }
+    selection_data = data.assign_coords(temporary_coords) if temporary_coords else data
+
     out: dict[Hashable, float] = {}
     binned_dim_set = set(binned_dims)
 
     for dim, selector in indexers.items():
-        if dim not in data.dims:
-            raise ValueError(f"Dimension `{dim}` not found in data")
-        coord_values = data[dim].values
+        coord_values = selection_data[dim].values
         inc = _get_inc(coord_values)
         order = 3 if inc == 0 else erlab.utils.array.effective_decimals(inc)
 
         if dim in binned_dim_set:
-            coord = data[dim][selector].values
+            if not isinstance(selector, slice):
+                raise ValueError(
+                    f"Bin selection for dimension `{dim}` must be an index slice"
+                )
+            coord = selection_data[dim][selector].values
+            if coord.size == 0:
+                raise ValueError(f"Bin selection for dimension `{dim}` is empty")
             center = float(np.round(coord.mean(), order))
             width = float(np.abs(np.round(coord[-1] - coord[0] + inc, order)))
 
@@ -298,7 +316,7 @@ def qsel_args_from_indexers(
                     -slice_obj.step if slice_obj.step is not None else None,
                 )
 
-            if not np.allclose(data[dim].sel({dim: slice_obj}).values, coord):
+            if not np.allclose(selection_data[dim].sel({dim: slice_obj}).values, coord):
                 raise ValueError(
                     "Bin does not contain the same values as the original data."
                 )

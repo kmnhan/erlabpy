@@ -4917,6 +4917,42 @@ def test_image_open_in_new_window_preserves_spaced_qsel_dimension(qtbot) -> None
     win.close()
 
 
+def test_image_open_in_new_window_handles_binned_unindexed_dimension(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(60.0).reshape(3, 4, 5),
+        dims=("x", "y", "z"),
+        name="map",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    image = win.slicer_area.images[0]
+    win.slicer_area.set_bin(axis=2, value=3, cursor=0)
+    expected = data.isel(z=slice(1, 4)).mean("z")
+
+    source_spec = image.make_tool_source_spec()
+    resolved = source_spec.apply(data)
+    xr.testing.assert_identical(resolved, expected)
+    np.testing.assert_allclose(image.current_data.values, expected.values)
+
+    image.open_in_new_window()
+    qtbot.wait_until(
+        lambda: isinstance(win.slicer_area._associated_tools_list[-1], ImageTool),
+        timeout=5000,
+    )
+    child = typing.cast("ImageTool", win.slicer_area._associated_tools_list[-1])
+
+    np.testing.assert_allclose(child.slicer_area.data.values, expected.values)
+    assert child.provenance_spec is not None
+    display_code = child.provenance_spec.display_code()
+    assert display_code is not None
+    namespace = _exec_generated_code(display_code, {"data": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+    child.close()
+    win.close()
+
+
 def test_image_open_in_new_window_restores_nonuniform_public_dims(qtbot) -> None:
     data = xr.DataArray(
         np.arange(60.0).reshape(3, 4, 5),
