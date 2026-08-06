@@ -878,6 +878,7 @@ def test_manager_registry_heartbeat_controller_edge_paths(
             for record in caplog.records
         )
 
+        controller._in_flight_generation = None
         controller.stop()
         controller.request_refresh("ignored.itws", coalesce_if_busy=True)
         assert not controller.is_busy
