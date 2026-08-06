@@ -1,3 +1,4 @@
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
@@ -9,6 +10,7 @@ from erlab.plotting.annotations import (
     integer_ticks,
     mark_points,
     mark_points_outside,
+    plot_core_levels,
     property_labels,
     scale_units,
     set_titles,
@@ -368,3 +370,236 @@ def test_mark_points_outside_iterable_axes():
             "$\\mathdefault{B}$",
         ]
     plt.close(fig)
+
+
+def _vertical_line_energy(line: matplotlib.lines.Line2D) -> float:
+    return float(line.get_xdata()[0])
+
+
+def _horizontal_line_energy(line: matplotlib.lines.Line2D) -> float:
+    return float(line.get_ydata()[0])
+
+
+def test_plot_core_levels_is_available_from_public_namespace() -> None:
+    import erlab.plotting as eplt
+
+    assert eplt.plot_core_levels is plot_core_levels
+
+
+def test_plot_core_levels_uses_current_limits_and_negative_binding_energy() -> None:
+    fig, ax = plt.subplots()
+    ax.set_xlim(-5.3, -54.7)
+
+    lines, texts = plot_core_levels(["Li", "Lithium", 3], ax=ax)
+
+    assert [_vertical_line_energy(line) for line in lines] == pytest.approx(
+        [-54.7, -5.3]
+    )
+    assert all(isinstance(line, matplotlib.lines.Line2D) for line in lines)
+    assert all(isinstance(text, matplotlib.text.Text) for text in texts)
+    assert len(texts) == len(lines)
+    assert all(text.get_rotation() == 90 for text in texts)
+    assert all(text.get_position()[1] == pytest.approx(1.0) for text in texts)
+    assert [text.get_color() for text in texts] == [line.get_color() for line in lines]
+    plt.close(fig)
+
+
+def test_plot_core_levels_supports_positive_binding_energy_and_horizontal_lines() -> (
+    None
+):
+    fig, ax = plt.subplots()
+    ax.set_ylim(54.7, 5.3)
+
+    lines, texts = plot_core_levels(
+        "Li",
+        ax=ax,
+        orientation="h",
+        text_kw={"color": "black"},
+        linewidth=2.0,
+    )
+
+    assert [_horizontal_line_energy(line) for line in lines] == pytest.approx(
+        [5.3, 54.7]
+    )
+    assert all(line.get_linewidth() == 2.0 for line in lines)
+    assert all(text.get_position()[0] == pytest.approx(1.0) for text in texts)
+    assert all(text.get_rotation() == 0 for text in texts)
+    assert all(text.get_color() == "black" for text in texts)
+    plt.close(fig)
+
+
+def test_plot_core_levels_calculates_kinetic_energy_and_skips_nonpositive() -> None:
+    fig, ax = plt.subplots()
+
+    lines, texts = plot_core_levels(
+        "Li",
+        ax=ax,
+        energy="kinetic",
+        hv=20.0,
+        work_function=4.5,
+        limits=(-100.0, 100.0),
+        text_labels=False,
+    )
+
+    assert [_vertical_line_energy(line) for line in lines] == pytest.approx([10.2])
+    assert texts == []
+    plt.close(fig)
+
+
+def test_plot_core_levels_infers_kinetic_energy_from_increasing_axis() -> None:
+    fig, ax = plt.subplots()
+    ax.set_xlim(1.0, 15.0)
+
+    lines, texts = plot_core_levels(
+        "Li",
+        ax=ax,
+        hv=20.0,
+        work_function=4.5,
+        text_labels=False,
+    )
+
+    assert [_vertical_line_energy(line) for line in lines] == pytest.approx([10.2])
+    assert texts == []
+    plt.close(fig)
+
+
+def test_plot_core_levels_uses_one_default_color_per_element() -> None:
+    fig, ax = plt.subplots()
+
+    lines, texts = plot_core_levels(
+        ["Li", "Fe"],
+        ax=ax,
+        limits=(-60.0, -5.0),
+    )
+
+    assert [_vertical_line_energy(line) for line in lines] == pytest.approx(
+        [-54.7, -52.7, -52.7, -5.3]
+    )
+    assert lines[0].get_color() == lines[3].get_color()
+    assert lines[1].get_color() == lines[2].get_color()
+    assert lines[0].get_color() != lines[1].get_color()
+    assert [text.get_color() for text in texts] == [line.get_color() for line in lines]
+    plt.close(fig)
+
+
+def test_plot_core_levels_accepts_ordered_colors_and_legend_labels() -> None:
+    fig, ax = plt.subplots()
+
+    lines, _ = plot_core_levels(
+        ["Li", "Fe"],
+        ax=ax,
+        limits=(-60.0, -5.0),
+        colors=["red", "green", "blue", "black"],
+        legend_labels=True,
+        text_labels=False,
+    )
+
+    assert [line.get_color() for line in lines] == [
+        "red",
+        "green",
+        "blue",
+        "black",
+    ]
+    assert all(not line.get_label().startswith("_") for line in lines)
+    ax.legend()
+    fig.canvas.draw()
+    plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    "color",
+    ["purple", ["purple"], (0.1, 0.2, 0.3)],
+    ids=("scalar", "single-item-sequence", "rgb"),
+)
+def test_plot_core_levels_broadcasts_single_color(color) -> None:
+    fig, ax = plt.subplots()
+
+    lines, texts = plot_core_levels(
+        ["Li", "Fe"],
+        ax=ax,
+        limits=(-60.0, -5.0),
+        colors=color,
+    )
+
+    expected = matplotlib.colors.to_rgba_array(color)[0]
+    assert all(
+        np.allclose(matplotlib.colors.to_rgba(line.get_color()), expected)
+        for line in lines
+    )
+    assert all(
+        np.allclose(matplotlib.colors.to_rgba(text.get_color()), expected)
+        for text in texts
+    )
+    plt.close(fig)
+
+
+def test_plot_core_levels_disables_legend_labels_by_default() -> None:
+    fig, ax = plt.subplots()
+
+    lines, _ = plot_core_levels("Li", ax=ax, limits=(-60.0, 0.0), text_labels=False)
+
+    assert all(line.get_label().startswith("_") for line in lines)
+    plt.close(fig)
+
+
+def test_plot_core_levels_uses_current_axes_and_can_return_empty() -> None:
+    fig, ax = plt.subplots()
+    plt.sca(ax)
+    ax.set_xlim(-4.0, -3.0)
+
+    lines, texts = plot_core_levels([])
+    empty_lines, empty_texts = plot_core_levels("Li")
+
+    assert lines == texts == []
+    assert empty_lines == empty_texts == []
+    assert not ax.lines
+    assert not ax.texts
+    plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"energy": "invalid"}, "energy must be"),
+        ({"orientation": "invalid"}, "orientation must be"),
+        ({"binding_energy_sign": "invalid"}, "binding_energy_sign must be"),
+        ({"energy": "kinetic"}, "hv is required"),
+        ({"limits": 1.0}, "limits must contain"),
+        ({"limits": (1.0,)}, "limits must contain"),
+        ({"limits": (0.0, np.inf)}, "limits must contain"),
+        ({"label": "custom"}, "label is controlled"),
+    ],
+)
+def test_plot_core_levels_validates_options(kwargs, match: str) -> None:
+    fig, ax = plt.subplots()
+    try:
+        with pytest.raises(ValueError, match=match):
+            plot_core_levels("Li", ax=ax, **kwargs)
+        assert not ax.lines
+        assert not ax.texts
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"colors": ["red", "blue", "green"]}, "one color for each"),
+        ({"colors": "red", "color": "black"}, "cannot be used"),
+    ],
+)
+def test_plot_core_levels_validates_custom_colors(kwargs, match: str) -> None:
+    fig, ax = plt.subplots()
+    try:
+        with pytest.raises(ValueError, match=match):
+            plot_core_levels(
+                "Li",
+                ax=ax,
+                limits=(-60.0, 0.0),
+                text_labels=False,
+                **kwargs,
+            )
+        assert not ax.lines
+        assert not ax.texts
+    finally:
+        plt.close(fig)

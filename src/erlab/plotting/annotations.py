@@ -12,6 +12,7 @@ __all__ = [
     "label_subplots",
     "mark_points",
     "mark_points_outside",
+    "plot_core_levels",
     "property_labels",
     "scale_units",
     "set_titles",
@@ -35,18 +36,22 @@ import matplotlib.ticker
 import matplotlib.transforms as mtransforms
 import numpy as np
 
+import erlab
 from erlab.accessors.utils import either_dict_or_kwargs
 from erlab.plotting.colors import axes_textcolor
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Collection, Mapping, Sequence
 
     import pyperclip
+    import xraydb
+    from matplotlib.typing import ColorType
     from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 else:
     import lazy_loader as _lazy
 
     pyperclip = _lazy.load("pyperclip")
+    xraydb = _lazy.load("xraydb")
 
 PRETTY_NAMES: dict[str, tuple[str, str]] = {
     "temperature": ("Temperature", "Temperature"),
@@ -825,6 +830,217 @@ def mark_points_outside(
                 **kwargs,
             )
         label_ax.set_frame_on(False)
+
+
+def plot_core_levels(
+    elements: str | int | Collection[str | int],
+    *,
+    ax: matplotlib.axes.Axes | None = None,
+    energy: typing.Literal["binding", "kinetic"] | None = None,
+    limits: tuple[float, float] | None = None,
+    binding_energy_sign: typing.Literal["negative", "positive"] | None = None,
+    hv: float | None = None,
+    work_function: float = 0.0,
+    orientation: typing.Literal["h", "v"] = "v",
+    legend_labels: bool = False,
+    text_labels: bool = True,
+    colors: ColorType | Sequence[ColorType] | None = None,
+    text_kw: Mapping[str, typing.Any] | None = None,
+    **line_kw,
+) -> tuple[list[matplotlib.lines.Line2D], list[matplotlib.text.Text]]:
+    """Plot core level energies for selected elements.
+
+    Core level energies are loaded with :func:`erlab.analysis.xps.get_edge`.
+
+    Parameters
+    ----------
+    elements
+        One element or an ordered list of element symbols, names, or atomic numbers.
+        Duplicate elements are ignored.
+    ax
+        The `matplotlib.axes.Axes` to annotate. The current axes are used by default.
+    energy
+        The energy scale. ``"binding"`` uses the x-ray absorption edges as core-level
+        binding energies. ``"kinetic"`` converts them with ``hv`` and ``work_function``.
+        By default, the energy scale is inferred from the axis limits.
+    limits
+        Inclusive lower and upper energy limits. Reversed limits are accepted. The
+        current limits of the selected axis are used by default. When ``energy`` is
+        inferred, the order and sign of these limits determine the energy convention.
+    binding_energy_sign
+        Use ``"negative"`` for occupied-state ARPES coordinates or ``"positive"`` for
+        the conventional XPS binding-energy scale. The sign is inferred from the
+        selected axis by default.
+    hv
+        Photon energy in eV. This value is required for kinetic energy.
+    work_function
+        Work function in eV for kinetic-energy conversion.
+    orientation
+        ``"h"`` draws horizontal lines. ``"v"`` draws vertical lines.
+    legend_labels
+        Add an element and orbital label to each line for use in a legend.
+    text_labels
+        Add an element and orbital label next to each line.
+    colors
+        One color for all plotted lines, or colors in ascending energy order. A color
+        sequence must contain one color or one color for each line after range
+        filtering. By default, all levels from one element use the same color.
+    text_kw
+        Keyword arguments passed to :meth:`matplotlib.axes.Axes.text`.
+    **line_kw
+        Keyword arguments passed to :meth:`matplotlib.axes.Axes.axhline` or
+        :meth:`matplotlib.axes.Axes.axvline`.
+
+    Returns
+    -------
+    lines
+        Lines artists in ascending energy order.
+    texts
+        Text artists in the same order. The list is empty when ``text_labels`` is false.
+
+    Examples
+    --------
+    >>> import matplotlib.pyplot as plt
+    >>> import erlab.plotting as eplt
+    >>> fig, ax = plt.subplots()
+    >>> ax.set_xlim(-100, 0)
+    >>> lines, texts = eplt.plot_core_levels(["Fe", "Au"], ax=ax)
+    """
+    if orientation not in {"h", "v"}:
+        raise ValueError("orientation must be either 'h' or 'v'")
+    if "label" in line_kw:
+        raise ValueError("label is controlled by legend_labels")
+    if text_kw is None:
+        text_kw = {}
+    if colors is not None and ({"color", "c"} & line_kw.keys()):
+        raise ValueError("colors cannot be used with color or c in line options")
+
+    if ax is None:
+        ax = plt.gca()
+
+    if limits is None:
+        limits = ax.get_ylim() if orientation == "h" else ax.get_xlim()
+    else:
+        try:
+            first_limit, second_limit = limits
+            limits = (float(first_limit), float(second_limit))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("limits must contain two finite values") from exc
+    if not np.all(np.isfinite(limits)):
+        raise ValueError("limits must contain two finite values")
+
+    has_negative_energy = any(limit < 0.0 for limit in limits)
+    if energy is None:
+        if has_negative_energy:
+            energy = "binding"
+        elif limits[0] < limits[1]:
+            energy = "kinetic"
+        elif limits[0] > limits[1]:
+            energy = "binding"
+        else:
+            raise ValueError("cannot infer energy convention; provide energy")
+    elif energy not in {"binding", "kinetic"}:
+        raise ValueError("energy must be either 'binding' or 'kinetic'")
+    if binding_energy_sign is None:
+        binding_energy_sign = "negative" if has_negative_energy else "positive"
+    elif binding_energy_sign not in {"negative", "positive"}:
+        raise ValueError("binding_energy_sign must be either 'negative' or 'positive'")
+    if energy == "kinetic" and hv is None:
+        raise ValueError("hv is required when energy='kinetic'")
+    lower, upper = sorted(limits)
+
+    element_values = (elements,) if isinstance(elements, str | int) else tuple(elements)
+    symbols = list(
+        dict.fromkeys(xraydb.atomic_symbol(value) for value in element_values)
+    )
+    level_records: list[tuple[float, str, str]] = []
+    sign = -1.0 if binding_energy_sign == "negative" else 1.0
+    for symbol in symbols:
+        if energy == "binding":
+            for orbital, edge in erlab.analysis.xps.get_edge(symbol).items():
+                level_energy = sign * edge
+                if lower <= level_energy <= upper:
+                    level_records.append((level_energy, symbol, orbital))
+        else:
+            levels = erlab.analysis.xps.get_edge(
+                symbol,
+                hv=typing.cast("float", hv),
+                work_function=work_function,
+            )
+            for orbital, level in levels.items():
+                level_energy = level.kinetic_energies[1]
+                if level_energy > 0.0 and lower <= level_energy <= upper:
+                    level_records.append((level_energy, symbol, orbital))
+    level_records.sort(key=lambda record: record[0])
+
+    custom_colors = None
+    if colors is not None:
+        color_array = matplotlib.colors.to_rgba_array(colors)
+        if len(color_array) == 1:
+            custom_colors = [color_array[0]] * len(level_records)
+        else:
+            custom_colors = list(colors)
+            if len(custom_colors) != len(level_records):
+                raise ValueError(
+                    "colors must contain one color or one color for each plotted "
+                    "core-level line"
+                )
+
+    cycle_colors = matplotlib.rcParams["axes.prop_cycle"].by_key().get("color", [])
+    if not cycle_colors:
+        cycle_colors = [axes_textcolor(ax)]
+    element_colors = {
+        symbol: cycle_colors[index % len(cycle_colors)]
+        for index, symbol in enumerate(symbols)
+    }
+
+    lines: list[matplotlib.lines.Line2D] = []
+    texts: list[matplotlib.text.Text] = []
+    for line_index, (level_energy, symbol, orbital) in enumerate(level_records):
+        orbital_label = (
+            orbital if len(orbital) == 2 else f"{orbital[:2]}_{{{orbital[2:]}}}"
+        )
+        label = f" {symbol} ${orbital_label}$"
+        current_line_kw = dict(line_kw)
+        if custom_colors is not None:
+            current_line_kw["color"] = custom_colors[line_index]
+        elif "color" not in current_line_kw and "c" not in current_line_kw:
+            current_line_kw["color"] = element_colors[symbol]
+        current_line_kw["label"] = label if legend_labels else "_nolegend_"
+
+        if orientation == "h":
+            line = ax.axhline(level_energy, **current_line_kw)
+        else:
+            line = ax.axvline(level_energy, **current_line_kw)
+        lines.append(line)
+
+        if text_labels:
+            current_text_kw = dict(text_kw)
+            if orientation == "h":
+                current_text_kw.setdefault("transform", ax.get_yaxis_transform())
+                current_text_kw["ha"] = current_text_kw.pop(
+                    "ha", current_text_kw.pop("horizontalalignment", "left")
+                )
+                current_text_kw["va"] = current_text_kw.pop(
+                    "va", current_text_kw.pop("verticalalignment", "center")
+                )
+                text_position = (1.0, level_energy)
+            else:
+                current_text_kw.setdefault("transform", ax.get_xaxis_transform())
+                current_text_kw["ha"] = current_text_kw.pop(
+                    "ha", current_text_kw.pop("horizontalalignment", "left")
+                )
+                current_text_kw["va"] = current_text_kw.pop(
+                    "va", current_text_kw.pop("verticalalignment", "center")
+                )
+                current_text_kw.setdefault("rotation", 90)
+                current_text_kw.setdefault("rotation_mode", "anchor")
+                text_position = (level_energy, 1.0)
+
+            current_text_kw.setdefault("color", line.get_color())
+            texts.append(ax.text(*text_position, label, **current_text_kw))
+
+    return lines, texts
 
 
 def property_label(key, value, decimals=None, si=0, name=None, unit=None) -> str:

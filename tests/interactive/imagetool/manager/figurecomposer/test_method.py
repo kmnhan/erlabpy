@@ -1767,6 +1767,11 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
                     name="unify_clim",
                     axes=axes,
                 ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="plot_core_levels",
+                    axes=axes,
+                ),
             ),
             primary_source="data",
         ),
@@ -2013,6 +2018,36 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
         "vmax": 1.0,
     }
 
+    page = select_method(13)
+    set_line_edit(page, "figureComposerERLabCoreLevelsElementsEdit", '["Li", "Fe"]')
+    set_combo(page, "figureComposerERLabCoreLevelsEnergyCombo", "binding")
+    set_line_edit(page, "figureComposerERLabCoreLevelsLimitsEdit", "-60, -5")
+    set_combo(page, "figureComposerERLabCoreLevelsBindingSignCombo", "negative")
+    set_line_edit(page, "figureComposerERLabCoreLevelsPhotonEnergyEdit", "100")
+    double_spin_box(page, "figureComposerERLabCoreLevelsWorkFunctionEdit").setValue(4.5)
+    set_combo(page, "figureComposerERLabCoreLevelsOrientationCombo", "h")
+    set_combo(page, "figureComposerERLabCoreLevelsLegendLabelsCombo", "True")
+    set_combo(page, "figureComposerERLabCoreLevelsTextLabelsCombo", "False")
+    set_line_edit(page, "figureComposerERLabCoreLevelsColorEdit", "tab:purple")
+    set_line_edit(page, "figureComposerERLabCoreLevelsTextKwEdit", '{"fontsize": 8}')
+    set_combo(page, "figureComposerERLabCoreLevelsLineStyleCombo", "--")
+    set_line_edit(page, "figureComposerERLabCoreLevelsLineWidthEdit", "1.25")
+    assert operation(13).method_args == (["Li", "Fe"],)
+    assert operation(13).method_kwargs == {
+        "energy": "binding",
+        "limits": (-60.0, -5.0),
+        "binding_energy_sign": "negative",
+        "hv": 100.0,
+        "work_function": 4.5,
+        "orientation": "h",
+        "legend_labels": True,
+        "text_labels": False,
+        "colors": "tab:purple",
+        "text_kw": {"fontsize": 8},
+        "linestyle": "--",
+        "linewidth": 1.25,
+    }
+
     code = tool.generated_code()
     assert "ticks=(0, 0.5, 1)" in code
     assert "ticks=[0, 1]" in code
@@ -2031,6 +2066,9 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     assert "eplt.unify_clim(" in code
     assert "image_only=True" in code
     assert "autoscale=True" in code
+    assert "eplt.plot_core_levels(" in code
+    assert 'binding_energy_sign="negative"' in code
+    assert 'colors="tab:purple"' in code
 
 
 def test_figure_composer_tick_params_editor_edge_commits(qtbot) -> None:

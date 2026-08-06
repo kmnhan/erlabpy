@@ -1,6 +1,7 @@
 import typing
 import warnings
 
+import matplotlib.colors
 import matplotlib.pyplot as plt
 import matplotlib.scale as mscale
 import matplotlib.transforms as mtransforms
@@ -194,6 +195,58 @@ def test_figure_composer_method_framework_dispatch_policies(qtbot, monkeypatch) 
     assert calls[3][1] is axs.flat[1]
     assert calls[3][2] == {"color": "red"}
     assert calls[4][1] == ("value",)
+
+
+def test_figure_composer_plot_core_levels_renders_and_generates_code(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.ERLAB,
+        name="plot_core_levels",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        args=(("Li",),),
+        kwargs={
+            "energy": "binding",
+            "limits": (-60.0, 0.0),
+            "binding_energy_sign": "negative",
+            "text_labels": False,
+            "colors": "red",
+        },
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    preview_figure = Figure()
+    figurecomposer_rendering._render_into_figure(
+        tool, preview_figure, sync_visible=False
+    )
+
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    generated_figure = typing.cast("Figure", namespace["fig"])
+
+    for figure in (preview_figure, generated_figure):
+        assert [
+            float(line.get_xdata()[0]) for line in figure.axes[0].lines
+        ] == pytest.approx([-54.7, -5.3])
+        assert all(
+            matplotlib.colors.to_rgba(line.get_color())
+            == matplotlib.colors.to_rgba("red")
+            for line in figure.axes[0].lines
+        )
+        assert not figure.axes[0].texts
+        plt.close(figure)
 
 
 def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
