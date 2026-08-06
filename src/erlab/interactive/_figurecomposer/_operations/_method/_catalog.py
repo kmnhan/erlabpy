@@ -2215,7 +2215,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
         tooltip="Runs erlab.plotting.plot_core_levels once for each selected axis.",
         target_domain=MethodTargetDomain.AXES,
         call_policy=MethodCallPolicy.EACH_AXIS_AX_KEYWORD,
-        default_args=(("Fe",),),
+        default_args=(("Se",),),
         controls=(
             _literal_arg(
                 "Elements",
@@ -2225,7 +2225,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                     "One element or a Python list/tuple of element symbols, names, "
                     "or atomic numbers."
                 ),
-                default=("Fe",),
+                default=("Se",),
             ),
             _kwarg_combo(
                 "Energy",
