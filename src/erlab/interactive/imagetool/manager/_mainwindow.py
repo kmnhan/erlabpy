@@ -1141,16 +1141,6 @@ class ImageToolManager(_ImageToolManagerBase):
                         event.ignore()
                     return
 
-            def _close_after_compaction() -> None:
-                self.close()
-
-            if self._workspace_controller._compact_workspace_before_shutdown(
-                on_finished=_close_after_compaction
-            ):
-                if event:
-                    event.ignore()
-                return
-
             logger.debug("Stopping servers...")
             self._registry_heartbeat_timer.stop()
             self._registry_heartbeat.stop()
@@ -1196,6 +1186,7 @@ class ImageToolManager(_ImageToolManagerBase):
                 self.console.deleteLater()
 
             logger.debug("Releasing workspace lock...")
+            self._workspace_controller._release_imported_workspace_accesses()
             self._workspace_controller._release_workspace_lock()
 
             logger.debug("Closing dask client (if any)...")
@@ -1275,6 +1266,8 @@ class ImageToolManager(_ImageToolManagerBase):
         if not self._workspace_state.closing_document:
             self._refresh_dependency_dependents(uid)
             self._figure_workflows._refresh_figure_source_controls()
+        if self._workspace_state.loading_depth == 0:
+            self._workspace_controller._release_unused_imported_workspace_accesses()
 
     def _iter_descendant_uids(self, uid: str) -> list[str]:
         return self._tool_graph.descendant_uids(uid)
@@ -1487,6 +1480,8 @@ class ImageToolManager(_ImageToolManagerBase):
             self._figure_workflows._refresh_figure_source_controls()
         wrapper.dispose()
         wrapper.deleteLater()
+        if self._workspace_state.loading_depth == 0:
+            self._workspace_controller._release_unused_imported_workspace_accesses()
 
     @contextlib.contextmanager
     def _bulk_remove_context(self) -> Iterator[None]:
@@ -2191,10 +2186,6 @@ class ImageToolManager(_ImageToolManagerBase):
         schema_version: int,
         *,
         native: bool = True,
-        delta_save_count: int = 0,
-        estimated_obsolete_bytes: int = 0,
-        replacement_delta_count: int = 0,
-        repack_estimate_known: bool = True,
         workspace_access: _WorkspaceDocumentAccess | None = None,
         rebind_data: bool = True,
     ) -> None:
@@ -2202,10 +2193,6 @@ class ImageToolManager(_ImageToolManagerBase):
             fname,
             schema_version,
             native=native,
-            delta_save_count=delta_save_count,
-            estimated_obsolete_bytes=estimated_obsolete_bytes,
-            replacement_delta_count=replacement_delta_count,
-            repack_estimate_known=repack_estimate_known,
             workspace_access=workspace_access,
             rebind_data=rebind_data,
         )

@@ -1038,16 +1038,12 @@ def test_options_get_set():
     assert options["colors/cmap/name"] == AppOptions().colors.cmap.name
     assert options["io/workspace/compression"] == "zstd1"
     assert options["io/workspace/compress"] is True
-    assert options["io/workspace/use_incremental"] is True
-    assert options["io/workspace/incremental_save_on_remote"] is False
     assert options["io/default_directory"] == ""
     assert options["io/recent_workspace_limit"] == 20
     assert options["figure/dpi"] is None
 
     options["colors/cmap/name"] = "viridis"
     options["io/workspace/compression"] = "blosclz3"
-    options["io/workspace/use_incremental"] = False
-    options["io/workspace/incremental_save_on_remote"] = True
     options["io/default_directory"] = "~/data"
     options["io/recent_workspace_limit"] = 35
     options["figure/stylesheets"] = ["classic", "missing-style"]
@@ -1056,15 +1052,11 @@ def test_options_get_set():
     assert options["colors/cmap/name"] == "viridis"
     assert options["io/workspace/compression"] == "blosclz3"
     assert options["io/workspace/compress"] is True
-    assert options["io/workspace/use_incremental"] is False
-    assert options["io/workspace/incremental_save_on_remote"] is True
     assert options["io/default_directory"] == "~/data"
     assert options["io/recent_workspace_limit"] == 35
     assert options["figure/stylesheets"] == ["classic", "missing-style"]
     assert options["figure/dpi"] == pytest.approx(150.0)
     assert options.model.io.workspace.compression == "blosclz3"
-    assert not options.model.io.workspace.use_incremental
-    assert options.model.io.workspace.incremental_save_on_remote
     assert options.model.io.recent_workspace_limit == 35
     assert options.model.figure.stylesheets == ["classic", "missing-style"]
     assert options.model.figure.dpi == pytest.approx(150.0)

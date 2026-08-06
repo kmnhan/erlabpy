@@ -486,9 +486,7 @@ def test_manager_duplicate_deferred_figure_materializes_saved_payload(
         manager.get_imagetool(0).hide()
 
         workspace_path = tmp_path / "deferred-figure-duplicate.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,

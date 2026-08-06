@@ -5560,10 +5560,14 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         source_parent_data: xr.DataArray | None,
         reference_resolver: Callable[[Mapping[str, typing.Any]], xr.DataArray | None]
         | None,
+        variable_names: Collection[str] | None = None,
     ) -> dict[str, xr.DataArray]:
+        requested = None if variable_names is None else frozenset(variable_names)
         references = cls._saved_tool_data_references(ds)
         data_items: dict[str, xr.DataArray] = {}
         for variable_name, reference in references.items():
+            if requested is not None and variable_name not in requested:
+                continue
             try:
                 data_items[variable_name] = cls._resolve_saved_tool_data_reference(
                     reference,
@@ -5579,6 +5583,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 raise
 
         for variable_name, data_array in ds.data_vars.items():
+            if requested is not None and variable_name not in requested:
+                continue
             if variable_name in data_items:
                 continue
             if _TOOL_DATA_BLOB_NAME_ATTR in data_array.attrs:
@@ -5586,7 +5592,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     raise TypeError("Saved tool data variable names must be strings")
                 data_items[variable_name] = _tool_data_from_blob(data_array)
 
-        if _SAVED_TOOL_DATA_NAME not in data_items:
+        if (
+            requested is None or _SAVED_TOOL_DATA_NAME in requested
+        ) and _SAVED_TOOL_DATA_NAME not in data_items:
             if _SAVED_TOOL_DATA_NAME not in ds:
                 raise ValueError("Saved tool dataset is missing primary tool data")
             data_items[_SAVED_TOOL_DATA_NAME] = ds[_SAVED_TOOL_DATA_NAME]

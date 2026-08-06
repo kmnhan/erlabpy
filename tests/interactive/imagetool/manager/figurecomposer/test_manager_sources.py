@@ -658,9 +658,7 @@ def test_manager_figure_action_add_source_only_keeps_recipe_steps(
         assert isinstance(figure_tool, FigureComposerTool)
         operation_count = len(figure_tool.tool_status.operations)
         workspace_path = tmp_path / "add-source-only-delta.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
 
         select_tools(manager, [1])
 
@@ -1144,9 +1142,7 @@ def test_manager_figure_remove_unused_source_persists_workspace(
         assert figure_uid in snapshot["dirty_state"]
 
         workspace_path = tmp_path / "remove-unused-figure-source.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
         assert manager._workspace_controller.loading._load_workspace_file(

@@ -23,6 +23,7 @@ import erlab.interactive.imagetool.manager._workspace._arrays as workspace_array
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
+import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.plot_items as imagetool_plot_items
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive.derivative import DerivativeTool
@@ -47,6 +48,10 @@ from erlab.interactive.imagetool.manager._dialogs import (
 from tests.interactive.imagetool.manager.helpers import adopt_workspace_path
 from tests.interactive.imagetool.manager.workspace._support import (
     _AddedTimeChildTool,
+    _current_workspace_manifest,
+    _current_workspace_payload_attrs,
+    _current_workspace_payload_path,
+    _edit_current_workspace_payload_attrs,
     _request_workspace_save_and_wait,
     _workspace_test_file_spec,
     _WorkspaceSweepChildTool,
@@ -311,8 +316,8 @@ def _workspace_sweep_h5_attr_payload(
         "tool_input_provenance_spec",
         "tool_data_references",
     }
-    with h5py.File(fname, "r") as h5_file:
-        attrs = dict(h5_file[payload_path].attrs)
+    node_path, _separator, _kind = payload_path.rpartition("/")
+    attrs = _current_workspace_payload_attrs(fname, node_path)
     payload: dict[str, typing.Any] = {}
     for key, value in attrs.items():
         if isinstance(value, bytes):
@@ -381,9 +386,7 @@ def test_manager_workspace_load_preserves_added_time(
         )
 
         fname = tmp_path / "added-time-load.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname,
             replace=True,
@@ -435,14 +438,12 @@ def test_manager_workspace_load_warns_for_unavailable_colormap(
         manager.add_imagetool(tool, show=False)
 
         fname = tmp_path / "missing-cmap.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
 
-        with h5py.File(fname, "a") as h5_file:
-            state = json.loads(h5_file["0/imagetool"].attrs["itool_state"])
+        with _edit_current_workspace_payload_attrs(fname) as attrs:
+            state = json.loads(attrs["itool_state"])
             state["color"]["cmap"] = missing
-            h5_file["0/imagetool"].attrs["itool_state"] = json.dumps(state)
+            attrs["itool_state"] = json.dumps(state)
 
         assert manager._workspace_controller.loading._load_workspace_file(
             fname,
@@ -519,15 +520,13 @@ def test_manager_workspace_load_falls_back_for_legacy_or_invalid_added_time(
             show=False,
         )
         fname = tmp_path / "legacy-added-time.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
 
-        with h5py.File(fname, "a") as h5_file:
+        with _edit_current_workspace_payload_attrs(fname) as attrs:
             if saved_attr is None:
-                del h5_file["0/imagetool"].attrs["manager_node_added_at"]
+                del attrs["manager_node_added_at"]
             else:
-                h5_file["0/imagetool"].attrs["manager_node_added_at"] = saved_attr
+                attrs["manager_node_added_at"] = saved_attr
 
         assert manager._workspace_controller.loading._load_workspace_file(
             fname,
@@ -571,12 +570,9 @@ def test_manager_workspace_roundtrip_restores_manager_layout(
         expected_right_sizes = manager.right_splitter.sizes()
 
         fname = tmp_path / "manager-layout.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
 
-        with h5py.File(fname, "r") as h5_file:
-            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
+        manifest = _current_workspace_manifest(fname)
         assert manifest["manager_layout"] == expected_layout
 
         manager.resize(480, 500)
@@ -623,9 +619,7 @@ def test_manager_workspace_import_does_not_restore_manager_layout(
         manager.main_splitter.setSizes([220, 420])
         manager.right_splitter.setSizes([240, 140, 120])
         import_fname = tmp_path / "import-layout.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            import_fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(import_fname)
 
         manager.resize(480, 500)
         manager.main_splitter.setSizes([120, 360])
@@ -634,10 +628,7 @@ def test_manager_workspace_import_does_not_restore_manager_layout(
             manager._workspace_controller.saving._workspace_layout_snapshot()
         )
 
-        import h5py
-
-        with h5py.File(import_fname, "r") as h5_file:
-            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
+        manifest = _current_workspace_manifest(import_fname)
         assert manager._workspace_controller.loading._from_h5py_workspace_file(
             import_fname, manifest, replace=False, mark_dirty=True
         )
@@ -646,13 +637,12 @@ def test_manager_workspace_import_does_not_restore_manager_layout(
             == current_layout
         )
 
-        tree = workspace_arrays.open_workspace_datatree(import_fname, chunks=None)
-        assert manager._workspace_controller.loading._from_datatree(
-            tree,
+        assert manager._workspace_controller.loading._load_workspace_file(
+            import_fname,
             replace=False,
             mark_dirty=True,
             select=False,
-            workspace_file_path=import_fname,
+            associate=False,
         )
         assert (
             manager._workspace_controller.saving._workspace_layout_snapshot()
@@ -733,13 +723,10 @@ def test_manager_workspace_roundtrip_restores_loader_and_standalone_apps(
         ptable._refresh_window_state(ensure_visible=False)
 
         fname = tmp_path / "loader-standalone.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         expected_ptable_size = ptable.size()
 
-        with h5py.File(fname, "r") as h5_file:
-            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
+        manifest = _current_workspace_manifest(fname)
         assert manifest["loader_state"]["recent_directory"] == str(example_data_dir)
         assert manifest["loader_state"]["recent_name_filter"] == name_filter
         saved_manager_kwargs = manifest["loader_state"][
@@ -1089,15 +1076,15 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
         qtbot.wait(100)
 
         fname = tmp_path / "maximal-state.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         expected_snapshot = _workspace_sweep_runtime_snapshot(manager)
         expected_data_items = _workspace_sweep_data_items(manager)
 
         root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(fname)
         manifest = workspace_format._workspace_manifest_from_attrs(root_attrs)
-        assert root_attrs["imagetool_workspace_schema_version"] == 4
+        assert root_attrs["imagetool_workspace_schema_version"] == (
+            workspace_format._current_workspace_schema_version()
+        )
         assert manifest["root_order"] == [1, 0]
         assert manifest["workspace_link_id"] == manager._workspace_state.link_id
         assert manifest["loader_state"] == expected_snapshot["loader_state"]
@@ -1208,7 +1195,9 @@ def test_manager_workspace_roundtrip_restores_full_serializable_state(
         )
         assert "tool_source_binding" not in tool_payload
         with h5py.File(fname, "r") as h5_file:
-            tool_group = h5_file["0/childtools/sweep-child-tool/tool"]
+            tool_group = h5_file[
+                _current_workspace_payload_path(fname, "0/childtools/sweep-child-tool")
+            ]
             assert "auxiliary" in tool_group
             assert (
                 tool_group["auxiliary"].attrs[
@@ -1266,11 +1255,8 @@ def test_manager_workspace_loader_state_does_not_create_explorer_app_state(
         )
 
         fname = tmp_path / "loader-no-explorer.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
-        with h5py.File(fname, "r") as h5_file:
-            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        manifest = _current_workspace_manifest(fname)
         assert manifest["loader_state"]["explorer_loader_kwargs_by_name"] == (
             explorer_kwargs
         )
@@ -1295,8 +1281,7 @@ def test_manager_workspace_loader_state_does_not_create_explorer_app_state(
 
         manager._mark_workspace_layout_dirty()
         assert _request_workspace_save_and_wait(qtbot, manager)
-        with h5py.File(fname, "r") as h5_file:
-            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
+        manifest = _current_workspace_manifest(fname)
         assert "explorer" not in manifest["standalone_apps"]["apps"]
         assert manifest["loader_state"]["explorer_loader_kwargs_by_name"] == (
             explorer_kwargs
@@ -1527,9 +1512,7 @@ def test_manager_workspace_import_does_not_restore_standalone_apps(
         ptable._refresh_window_state(ensure_visible=False)
 
         fname = tmp_path / "import-standalone.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
 
         ptable.hv_edit.setText("30")
         ptable._set_selection_state(
@@ -1537,21 +1520,19 @@ def test_manager_workspace_import_does_not_restore_standalone_apps(
         )
         ptable._refresh_window_state(ensure_visible=False)
 
-        with h5py.File(fname, "r") as h5_file:
-            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
+        manifest = _current_workspace_manifest(fname)
         assert manager._workspace_controller.loading._from_h5py_workspace_file(
             fname, manifest, replace=False, mark_dirty=True
         )
         assert ptable.hv_edit.text() == "30"
         assert ptable.selected_atomic_numbers == (1,)
 
-        tree = workspace_arrays.open_workspace_datatree(fname, chunks=None)
-        assert manager._workspace_controller.loading._from_datatree(
-            tree,
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname,
             replace=False,
             mark_dirty=True,
             select=False,
-            workspace_file_path=fname,
+            associate=False,
         )
         assert ptable.hv_edit.text() == "30"
         assert ptable.selected_atomic_numbers == (1,)
@@ -1876,9 +1857,7 @@ def test_manager_workspace_roundtrips_child_plot_appearance(
         )
 
         fname = tmp_path / "child-plot-appearance.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname,
             replace=True,
@@ -1997,6 +1976,44 @@ def test_manager_from_h5py_workspace_manifest_validation(
             )
 
 
+def test_manager_from_h5py_workspace_restores_empty_workspace(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+        manager.resize(640, 520)
+        expected_size = manager.size()
+        fname = tmp_path / "empty.itws"
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        manifest = _current_workspace_manifest(fname)
+        assert manifest["nodes"] == []
+
+        root = itool(
+            xr.DataArray(np.arange(9.0).reshape(3, 3), dims=("x", "y")),
+            manager=False,
+            execute=False,
+        )
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        manager.resize(480, 500)
+
+        assert manager._workspace_controller.loading._from_h5py_workspace_file(
+            fname,
+            manifest,
+            replace=True,
+            mark_dirty=False,
+        )
+        qtbot.wait_until(
+            lambda: manager.ntools == 0 and manager.size() == expected_size,
+            timeout=5000,
+        )
+
+
 def test_manager_from_h5py_workspace_falls_back_after_fast_read_error(
     qtbot,
     monkeypatch,
@@ -2013,11 +2030,8 @@ def test_manager_from_h5py_workspace_falls_back_after_fast_read_error(
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
         fname = tmp_path / "fallback-load.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
-        with h5py.File(fname, "r") as h5_file:
-            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        manifest = _current_workspace_manifest(fname)
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
@@ -2037,7 +2051,7 @@ def test_manager_from_h5py_workspace_falls_back_after_fast_read_error(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
 
-def test_manager_load_workspace_file_falls_back_after_fast_path_error(
+def test_manager_load_workspace_file_reports_generation_loader_error(
     qtbot,
     monkeypatch,
     tmp_path,
@@ -2052,9 +2066,7 @@ def test_manager_load_workspace_file_falls_back_after_fast_path_error(
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
         fname = tmp_path / "load-fallback.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
@@ -2067,15 +2079,16 @@ def test_manager_load_workspace_file_falls_back_after_fast_path_error(
             _raise_fast_load,
         )
 
-        assert manager._workspace_controller.loading._load_workspace_file(
-            fname,
-            replace=True,
-            associate=True,
-            mark_dirty=False,
-            select=False,
-        )
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-        assert manager._workspace_state.path == fname.resolve()
+        with pytest.raises(RuntimeError, match="fast load failed"):
+            manager._workspace_controller.loading._load_workspace_file(
+                fname,
+                replace=True,
+                associate=True,
+                mark_dirty=False,
+                select=False,
+            )
+        assert manager.ntools == 0
+        assert manager._workspace_state.path is None
 
 
 def test_manager_from_h5py_workspace_logs_restore_failure(
@@ -2095,11 +2108,8 @@ def test_manager_from_h5py_workspace_logs_restore_failure(
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
         fname = tmp_path / "restore-failure.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
-        with h5py.File(fname, "r") as h5_file:
-            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        manifest = _current_workspace_manifest(fname)
 
         def _raise_load(*_args, **_kwargs):
             raise RuntimeError("load failed")
@@ -2175,7 +2185,8 @@ def test_manager_loaded_workspace_association_updates_file_path(
 ) -> None:
     with manager_context() as manager:
         workspace = tmp_path / "loaded.itws"
-        workspace.touch()
+        with workspace_store.WorkspaceStore(workspace, create=True):
+            pass
         file_path_calls: list[str] = []
 
         with monkeypatch.context() as patch:
@@ -2209,7 +2220,8 @@ def test_manager_loaded_workspace_association_rebinds_data_after_path_update(
 ) -> None:
     with manager_context() as manager:
         workspace = tmp_path / "loaded-rebind.itws"
-        workspace.touch()
+        with workspace_store.WorkspaceStore(workspace, create=True):
+            pass
         rebind_paths: list[pathlib.Path] = []
 
         monkeypatch.setattr(
@@ -2436,9 +2448,7 @@ def test_open_multiple_files_loads_workspace_and_reads_metadata(
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
         fname = tmp_path / "open-multiple.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
@@ -2485,9 +2495,7 @@ def test_manager_workspace_import_appends_without_reassociation(
         manager.add_imagetool(base_tool, show=False)
 
         current_fname = tmp_path / "current.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            current_fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(current_fname)
         adopt_workspace_path(manager, current_fname)
         manager._workspace_controller._mark_workspace_clean()
 
@@ -2495,9 +2503,7 @@ def test_manager_workspace_import_appends_without_reassociation(
         assert isinstance(import_tool, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(import_tool, show=False)
         import_fname = tmp_path / "import.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            import_fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(import_fname)
 
         manager.remove_imagetool(1)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
@@ -2548,11 +2554,8 @@ def test_manager_workspace_selected_import_uses_manifest_fast_path(
         )
 
         fname = tmp_path / "manifest-selected-import.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
-        with h5py.File(fname, "r") as h5_file:
-            manifest = workspace_format._workspace_manifest_from_attrs(h5_file.attrs)
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        manifest = _current_workspace_manifest(fname)
         nodes = manifest["nodes"]
         paths = {
             str(entry["path"])
@@ -2757,9 +2760,7 @@ def test_manager_workspace_load_uses_h5py_fast_path(
         manager.add_imagetool(root, show=False)
 
         fname = tmp_path / "h5py-fast-load.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
@@ -2806,13 +2807,9 @@ def test_manager_h5py_workspace_load_defers_hidden_imagetool_refresh_and_profile
         manager.add_imagetool(root, show=False)
 
         fname = tmp_path / "profiled-h5py-load.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(fname)
-        _, _, manifest = workspace_format._workspace_file_metadata_from_attrs(
-            root_attrs
-        )
+        _, manifest = workspace_format._workspace_file_metadata_from_attrs(root_attrs)
         assert manifest is not None
 
         manager.remove_all_tools()
@@ -2885,9 +2882,7 @@ def test_manager_h5py_workspace_load_defers_hidden_secondary_plot_widgets(
             )
 
         fname = tmp_path / "lazy-secondary-plots.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
@@ -2968,9 +2963,7 @@ def test_manager_workspace_load_preserves_transposed_inverted_axis_limits(
         manager.add_imagetool(root, show=False)
 
         fname = tmp_path / "transposed-inverted-limits.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
@@ -3021,9 +3014,7 @@ def test_manager_workspace_load_h5py_fast_path_falls_back_per_payload(
         manager.add_imagetool(root, show=False)
 
         fname = tmp_path / "h5py-group-fallback.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
@@ -3063,9 +3054,7 @@ def test_manager_workspace_load_dialog_skips_stale_internal_groups(
         manager.add_imagetool(root, show=False)
 
         fname = tmp_path / "stale-dialog.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         with h5py.File(fname, "a") as h5_file:
             h5_file.create_group(
                 f"{workspace_format._WORKSPACE_PENDING_GROUP_PREFIX}stale"
@@ -3077,13 +3066,13 @@ def test_manager_workspace_load_dialog_skips_stale_internal_groups(
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
-        tree = workspace_arrays.open_workspace_datatree(fname, chunks="auto")
         accept_dialog(
-            lambda: manager._workspace_controller.loading._from_datatree(
-                tree,
+            lambda: manager._workspace_controller.loading._load_workspace_file(
+                fname,
                 replace=True,
                 mark_dirty=False,
                 select=True,
+                associate=False,
             )
         )
 
@@ -3111,9 +3100,7 @@ def test_manager_workspace_replace_load_failure_restores_previous_workspace(
         manager.add_imagetool(root, show=False)
 
         current_fname = tmp_path / "current.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            current_fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(current_fname)
         adopt_workspace_path(manager, current_fname)
         manager._workspace_controller._mark_workspace_clean()
 
@@ -3160,9 +3147,7 @@ def test_manager_workspace_replace_load_failure_uses_clean_file_backup(
         manager.add_imagetool(root, show=False)
 
         current_fname = tmp_path / "current-clean.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            current_fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(current_fname)
         adopt_workspace_path(manager, current_fname)
         manager._workspace_controller._mark_workspace_clean()
 
@@ -3211,9 +3196,7 @@ def test_manager_workspace_replace_load_failure_keeps_dirty_memory_backup(
         uid = manager._tool_graph.root_wrappers[0].uid
 
         current_fname = tmp_path / "current-dirty.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            current_fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(current_fname)
         adopt_workspace_path(manager, current_fname)
         manager._workspace_controller._mark_workspace_clean()
         manager._workspace_controller._mark_node_state_dirty(uid)
@@ -3269,9 +3252,7 @@ def test_manager_workspace_load_visible_windows_stays_clean_after_events(
         qtbot.wait_until(root.isVisible)
 
         fname = tmp_path / "visible.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         adopt_workspace_path(manager, fname)
         manager._workspace_controller._mark_workspace_clean()
 

@@ -3284,9 +3284,7 @@ def test_manager_reload_script_inputs_after_workspace_roundtrip(
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
         workspace_path = tmp_path / "script-derived-reload.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,
@@ -3618,9 +3616,7 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
         workspace_path = tmp_path / "shared-replay.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            workspace_path, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
         assert manager._workspace_controller.loading._load_workspace_file(
             workspace_path,
             replace=True,

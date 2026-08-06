@@ -94,6 +94,33 @@ from erlab.interactive.imagetool.viewer_state import (
 logger = logging.getLogger(__name__)
 
 
+def _workspace_write_in_progress(value: xr.DataArray | xr.Dataset) -> bool:
+    """Return whether a source workspace is waiting to write or is writing."""
+    from erlab.interactive.imagetool.manager._workspace import _arrays
+
+    return _arrays.workspace_write_in_progress(value)
+
+
+def _repeatable_xarray_resource_closer(
+    value: xr.DataArray | xr.Dataset | xr.DataTree,
+) -> typing.Callable[[], None] | None:
+    """Return the backend closer without xarray's one-shot wrapper."""
+    closer = getattr(value, "_close", None)
+    seen_owners: set[int] = set()
+    while callable(closer):
+        owner = getattr(closer, "__self__", None)
+        if not isinstance(owner, xr.DataArray | xr.Dataset | xr.DataTree):
+            break
+        if id(owner) in seen_owners:
+            return None
+        seen_owners.add(id(owner))
+        owner_closer = getattr(owner, "_close", None)
+        if not callable(owner_closer):
+            break
+        closer = owner_closer
+    return closer if callable(closer) else None
+
+
 class ImageSlicerArea(QtWidgets.QWidget):
     """An interactive tool based on :mod:`pyqtgraph` for exploring 3D data.
 
@@ -289,6 +316,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._in_manager: bool = _in_manager  #: Internal flag for tools inside manager
         self._update_delayed: bool = _in_manager  #: Internal flag for delayed updates
         self._defer_dask_point_value_readout: bool = False
+        self._workspace_dask_refresh_scheduled = False
+        self._workspace_pending_dask_refresh: (
+            tuple[int | tuple[int, ...], tuple[int, ...] | None] | None
+        ) = None
+        self._data_resource_closer: typing.Callable[[], None] | None = None
         self._defer_state_refresh = _defer_state_refresh
         self._defer_secondary_plots = _defer_secondary_plots
         self._secondary_plots_materialized = False
@@ -2238,6 +2270,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         if self.array_slicer._obj.chunks is None:
             return
+        if _workspace_write_in_progress(self._data):
+            self._workspace_pending_dask_refresh = (cursor, axes)
+            if not self._workspace_dask_refresh_scheduled:
+                self._workspace_dask_refresh_scheduled = True
+                QtCore.QTimer.singleShot(100, self._retry_workspace_dask_refresh)
+            return
+        self._workspace_pending_dask_refresh = None
 
         import dask
 
@@ -2287,6 +2326,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.sigPointValueChanged.emit(
                 self.array_slicer.display_safe_float(next(arrays_it))
             )
+
+    @QtCore.Slot()
+    def _retry_workspace_dask_refresh(self) -> None:
+        self._workspace_dask_refresh_scheduled = False
+        pending = self._workspace_pending_dask_refresh
+        if pending is not None:
+            self._handle_refresh_dask(*pending)
 
     def link(self, proxy: SlicerLinkProxy) -> None:
         proxy.add(self)
@@ -2369,6 +2415,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.refresh_current()
         self.sigCurrentCursorChanged.emit(cursor)
 
+    def _close_data_resource_cache(self) -> None:
+        """Close the current backend cache while keeping it reusable."""
+        if self._data_resource_closer is not None:
+            self._data_resource_closer()
+
+    def _data_resource_close_callback(self) -> typing.Callable[[], None] | None:
+        """Return the repeatable backend closer for manager coordination."""
+        return self._data_resource_closer
+
     def set_data(
         self,
         data: xr.DataArray | npt.NDArray,
@@ -2408,6 +2463,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
             size is below the threshold defined in options.
 
         """
+        input_resource_closer = (
+            _repeatable_xarray_resource_closer(data)
+            if isinstance(data, xr.DataArray)
+            else None
+        )
         prepared_data = _prepare_input_data(data, self)
         if prepared_data is None:
             raise ValueError("Opening high-dimensional data was canceled.")
@@ -2419,6 +2479,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             )
         if not preparation_operations:
             preparation_operations = prepared_data[0].operations
+        data_resource_closer = (
+            _repeatable_xarray_resource_closer(darr_list[0]) or input_resource_closer
+        )
 
         self._file_path = pathlib.Path(file_path) if file_path is not None else None
 
@@ -2437,8 +2500,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         if hasattr(self, "_array_slicer") and hasattr(self, "_data"):
             n_cursors_old = self.n_cursors
-            if isinstance(self._data, xr.DataArray):  # pragma: no branch
-                self._data.close()
+            self._close_data_resource_cache()
+            self._data_resource_closer = None
             del self._data
             self.disconnect_axes_signals()
         else:
@@ -2476,8 +2539,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         ):
             source = source.compute()
             shares_external_values = False
+            if data_resource_closer is not None:
+                data_resource_closer()
+                data_resource_closer = None
 
         self._data = source.copy(deep=False)
+        self._data_resource_closer = data_resource_closer
         self._data_shares_external_values = shares_external_values
         self._obj_shares_data_values = True
         self._applied_func = None

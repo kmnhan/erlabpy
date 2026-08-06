@@ -1441,7 +1441,7 @@ class _ActionsController:
             )
 
     def _show_operation_error(self, log_message: str, text: str) -> None:
-        logger.exception(log_message, extra={"suppress_ui_alert": True})
+        logger.error(log_message, extra={"suppress_ui_alert": True})
         erlab.interactive.utils.MessageDialog.critical(
             self._manager,
             "Error",
@@ -1455,15 +1455,9 @@ class _ActionsController:
         self, error: workspace_saving._WorkspaceSaveError
     ) -> None:
         source_path = error.missing_source_path
-        if source_path is None:
-            title = "Error"
-            text = "An error occurred while saving the workspace file."
-            logger.error(
-                "Error while saving workspace\n%s",
-                error.traceback_text,
-                extra={"suppress_ui_alert": True},
-            )
-        else:
+        conflict_path = error.publication_conflict_path
+        access_denied_path = error.access_denied_path
+        if source_path is not None:
             title = "Workspace Backing File Missing"
             text = (
                 "ImageTool Manager could not save this workspace because it still "
@@ -1476,12 +1470,38 @@ class _ActionsController:
                 "memory cannot be recovered. Items already loaded may remain available "
                 "in the current session."
             )
-            logger.error(
-                "Error while saving workspace; backing file is missing: %s\n%s",
-                source_path,
-                error.traceback_text,
-                extra={"suppress_ui_alert": True},
+            log_message = f"Workspace backing file is missing: {source_path}"
+        elif conflict_path is not None:
+            title = "Workspace Changed on Disk"
+            text = (
+                "ImageTool Manager did not overwrite the workspace because the file "
+                "changed while the save was in progress:\n\n"
+                f"{conflict_path}\n\n"
+                "Your changes remain open in ImageTool Manager. Reopen the file to use "
+                "the version on disk, or use Save As to keep your open changes."
             )
+            log_message = f"Workspace changed during save: {conflict_path}"
+        elif access_denied_path is not None:
+            title = "Workspace File Cannot Be Updated"
+            text = (
+                "ImageTool Manager could not update this workspace file:\n\n"
+                f"{access_denied_path}\n\n"
+                "Another program may have the file open, or the folder may not permit "
+                "changes. Close file previews and other programs that use the file. "
+                "Also verify that you can write to the folder, and then try again.\n\n"
+                "Your changes remain open in ImageTool Manager."
+            )
+            log_message = f"Access was denied while saving: {access_denied_path}"
+        else:
+            title = "Error"
+            text = "An error occurred while saving the workspace file."
+            log_message = "Error while saving workspace"
+        logger.error(
+            "%s\n%s",
+            log_message,
+            error.traceback_text,
+            extra={"suppress_ui_alert": True},
+        )
         erlab.interactive.utils.MessageDialog.critical(
             self._manager,
             title,

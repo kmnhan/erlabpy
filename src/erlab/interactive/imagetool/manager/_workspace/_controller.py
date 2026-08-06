@@ -10,20 +10,22 @@ import os
 import pathlib
 import time
 import typing
+import uuid
 
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive._options.core
+import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
 import erlab.interactive.imagetool.manager._workspace._saving as workspace_saving
 import erlab.interactive.imagetool.manager._workspace._state as workspace_state
 import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
+import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.slicer
 import erlab.interactive.imagetool.viewer_linking
-from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager._widgets import (
     _RECENT_WORKSPACES_SETTINGS_KEY,
@@ -87,7 +89,16 @@ class _WorkspaceController:
             workspace_saving._WorkspaceSaveResultReceiver | None
         ) = None
         self._background_save_requested = False
-        self._shutdown_compaction_attempted = False
+        self._workspace_store: workspace_store.WorkspaceStore | None = None
+        self._imported_workspace_accesses: dict[
+            pathlib.Path, _WorkspaceDocumentAccess
+        ] = {}
+        self._imported_workspace_dependents: dict[pathlib.Path, set[str]] = {}
+        self._workspace_gc_worker: workspace_saving._WorkspaceGcWorker | None = None
+        self._workspace_gc_receiver: (
+            workspace_saving._WorkspaceGcResultReceiver | None
+        ) = None
+        self._workspace_gc_requested = False
 
     def _tool_data_reference_matches_current_snapshot(
         self, reference: Mapping[str, typing.Any]
@@ -134,10 +145,19 @@ class _WorkspaceController:
     def _commit_saved_tool_data_references(
         self, snapshot: workspace_saving._WorkspaceSaveSnapshot
     ) -> None:
-        for uid, references in snapshot.serialized_tool_data_references:
+        for uid, snapshot_token, references in snapshot.serialized_tool_data_references:
             node = self._manager._tool_graph.nodes.get(uid)
-            if node is not None and not node.is_imagetool:
-                node._set_workspace_tool_data_references(references)
+            if (
+                node is None
+                or node.is_imagetool
+                or node.snapshot_token != snapshot_token
+                or not all(
+                    self._tool_data_reference_matches_current_snapshot(reference)
+                    for reference in references.values()
+                )
+            ):
+                continue
+            node._set_workspace_tool_data_references(references)
 
     @staticmethod
     def _normalize_recent_workspace_paths(
@@ -503,10 +523,110 @@ class _WorkspaceController:
         self._workspace_window_state_applied = (window_file_path, title, modified)
 
     def _release_workspace_lock(self) -> None:
+        if self._workspace_store is not None:
+            self._workspace_store.close()
+            self._workspace_store = None
         if self._manager._workspace_state.lock is None:
             return
         self._manager._workspace_state.lock.unlock()
         self._manager._workspace_state.lock = None
+
+    def _release_imported_workspace_accesses(self) -> None:
+        """Release all source documents retained by imported lazy payloads."""
+        accesses = tuple(self._imported_workspace_accesses.values())
+        self._imported_workspace_accesses.clear()
+        self._imported_workspace_dependents.clear()
+        for access in accesses:
+            access.release()
+
+    @staticmethod
+    def _workspace_node_source_paths(
+        node: _ManagedWindowNode,
+    ) -> frozenset[pathlib.Path]:
+        """Return workspace paths directly referenced by one managed node."""
+        paths: set[pathlib.Path] = set()
+        pending = node.pending_workspace_payload
+        if pending is not None:
+            paths.add(pending[0].resolve())
+        if node.is_imagetool and node.imagetool is not None:
+            data_backing, source_paths = node.persistence_data_backing()
+            if data_backing in {"dask", "file_lazy"}:
+                paths.update(pathlib.Path(path).resolve() for path in source_paths)
+        paths.update(
+            path.resolve() for path, _group in node._workspace_reference_datasets
+        )
+        return frozenset(paths)
+
+    def _retain_imported_workspace_access(
+        self,
+        access: _WorkspaceDocumentAccess,
+        candidate_uids: Collection[str],
+    ) -> None:
+        """Retain an imported source only when loaded nodes still read from it."""
+        path = access.path.resolve()
+        dependents = {
+            uid
+            for uid in candidate_uids
+            if (
+                (node := self._manager._tool_graph.nodes.get(uid)) is not None
+                and path in self._workspace_node_source_paths(node)
+            )
+        }
+        if not dependents:
+            return
+        self._imported_workspace_dependents.setdefault(path, set()).update(dependents)
+        if path in self._imported_workspace_accesses:
+            return
+        workspace_lock = access.take_lock()
+        if workspace_lock is not None:
+            self._imported_workspace_accesses[path] = _WorkspaceDocumentAccess(
+                path, workspace_lock
+            )
+
+    def _release_unused_imported_workspace_accesses(self) -> None:
+        """Release imported sources after all dependent payloads are rehomed."""
+        for path, access in tuple(self._imported_workspace_accesses.items()):
+            previous_dependents = self._imported_workspace_dependents.get(path, set())
+            dependents: set[str] = set()
+            for uid, node in self._manager._tool_graph.nodes.items():
+                source_paths = self._workspace_node_source_paths(node)
+                if path in source_paths:
+                    dependents.add(uid)
+                    continue
+                if (
+                    uid in previous_dependents
+                    and node.is_imagetool
+                    and node.imagetool is not None
+                    and node.slicer_area._data.chunks is not None
+                    and not source_paths
+                ):
+                    # Some Dask transformations discard xarray's source encoding.
+                    # Keep ownership until a save rebinds or materializes this node.
+                    dependents.add(uid)
+            if dependents:
+                self._imported_workspace_dependents[path] = dependents
+                continue
+            self._imported_workspace_accesses.pop(path, None)
+            self._imported_workspace_dependents.pop(path, None)
+            access.release()
+
+    def _take_imported_workspace_lock(
+        self, path: str | os.PathLike[str]
+    ) -> QtCore.QLockFile | None:
+        """Transfer a retained source lock to the associated workspace document."""
+        resolved = pathlib.Path(path).resolve()
+        access = self._imported_workspace_accesses.pop(resolved, None)
+        self._imported_workspace_dependents.pop(resolved, None)
+        return None if access is None else access.take_lock()
+
+    def _take_workspace_access_lock(
+        self, access: _WorkspaceDocumentAccess
+    ) -> QtCore.QLockFile | None:
+        """Transfer the lock that owns one workspace document."""
+        workspace_lock = access.take_lock()
+        if workspace_lock is None:
+            workspace_lock = self._take_imported_workspace_lock(access.path)
+        return workspace_lock
 
     def _current_workspace_document_path(self) -> pathlib.Path | None:
         path = self._manager._workspace_state.path
@@ -519,7 +639,10 @@ class _WorkspaceController:
     ) -> _WorkspaceDocumentAccess:
         workspace_path = pathlib.Path(fname).resolve()
         workspace_lock = None
-        if workspace_path != self._manager._workspace_state.path:
+        if (
+            workspace_path != self._manager._workspace_state.path
+            and workspace_path not in self._imported_workspace_accesses
+        ):
             workspace_lock = workspace_storage._acquire_workspace_document_lock(
                 workspace_path
             )
@@ -540,11 +663,16 @@ class _WorkspaceController:
         fname: str | os.PathLike[str] | None,
         *,
         workspace_lock: QtCore.QLockFile | None = None,
+        store: workspace_store.WorkspaceStore | None = None,
     ) -> None:
         workspace_path = None if fname is None else pathlib.Path(fname).resolve()
         if workspace_path == self._manager._workspace_state.path:
             if workspace_lock is not None:
                 workspace_lock.unlock()
+            if store is not None and store is not self._workspace_store:
+                if self._workspace_store is not None:
+                    self._workspace_store.close()
+                self._workspace_store = store
             self._update_workspace_window_title()
             self._refresh_manager_record()
             return
@@ -554,12 +682,13 @@ class _WorkspaceController:
                 "Changing the workspace path requires a pre-acquired document lock"
             )
         old_workspace_path = self._manager._workspace_state.path
+        if store is self._workspace_store:
+            self._workspace_store = None
         self._release_workspace_lock()
         self._manager._workspace_state.lock = workspace_lock
+        self._workspace_store = store
         self._manager._workspace_state.path = workspace_path
         self._manager._workspace_state.advance_document_identity()
-        self._manager._workspace_state.delta_save_count = 0
-        self._manager._workspace_state.reset_repack_estimate()
         if old_workspace_path is not None and workspace_path is not None:
             self._repoint_pending_workspace_payloads(old_workspace_path, workspace_path)
         if self._manager._workspace_state.path is not None:
@@ -593,121 +722,46 @@ class _WorkspaceController:
                 )
 
     def _repoint_saved_pending_workspace_payloads(
-        self, workspace_path: str | os.PathLike[str]
+        self,
+        workspace_path: str | os.PathLike[str],
+        *,
+        manifest: Mapping[str, typing.Any],
     ) -> None:
-        for node in self._manager._tool_graph.nodes.values():
+        payload_paths = {
+            uid: payload_path
+            for uid, _kind, payload_path in (
+                workspace_format._workspace_manifest_payload_entries(manifest)
+            )
+        }
+        for uid, node in self._manager._tool_graph.nodes.items():
             pending = node.pending_workspace_payload
             kind = node.pending_workspace_payload_kind
-            if pending is None or kind is None:
+            payload_path = payload_paths.get(uid)
+            if pending is None or kind is None or payload_path is None:
                 continue
             node.set_pending_workspace_payload(
                 kind,
                 workspace_path,
-                self.saving._workspace_payload_path(node.uid),
+                payload_path,
                 payload_attrs=node.pending_workspace_payload_attrs,
             )
 
-    def _saved_tool_payload_dataset_for_rebind(
+    def _adopt_committed_workspace_generation(
         self,
         workspace_path: str | os.PathLike[str],
-        node: _ManagedWindowNode,
-        reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset],
-    ) -> xr.Dataset:
-        payload_path = self.saving._workspace_payload_path(node.uid)
-        key = self.loading._workspace_reference_key(workspace_path, payload_path)
-        try:
-            opened = reference_datasets[key]
-        except KeyError:
-            opened = workspace_arrays.open_workspace_dataset(
-                workspace_path, payload_path, chunks={}
-            )
-            reference_datasets[key] = opened
-        ds = workspace_format._restore_workspace_dataset_attrs(opened.copy(deep=False))
-        return _serialization.restore_private_coords(
-            ds, erlab.interactive.utils._SAVED_TOOL_DATA_NAME
-        )
-
-    def _rebind_workspace_referenced_tool_data(
-        self,
-        workspace_path: str | os.PathLike[str],
+        snapshot: workspace_saving._WorkspaceSaveSnapshot,
         *,
-        exclude_data_uids: Collection[str] = frozenset(),
+        manifest: Mapping[str, typing.Any],
     ) -> None:
-        for node in self._manager._tool_graph.nodes.values():
-            tool = node.tool_window
-            if (
-                node.is_imagetool
-                or tool is None
-                or not tool.can_save_and_load()
-                or not node._workspace_reference_datasets
-                or node.uid in exclude_data_uids
-                or self._workspace_tool_references_include_uids(
-                    node._workspace_tool_data_references,
-                    exclude_data_uids,
-                    parent_uid=node.parent_uid,
-                )
-            ):
-                continue
-            reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] = {}
-            try:
-                with tool._save_tool_data_reference_context(
-                    self._manager._tool_graph.nodes,
-                    reference_validator=self._tool_data_reference_matches_current_data,
-                ):
-                    ds = tool.to_dataset()
-                references = type(tool)._saved_tool_data_references(ds)
-                if not references:
-                    ds = self._saved_tool_payload_dataset_for_rebind(
-                        workspace_path, node, reference_datasets
-                    )
-                    references = type(tool)._saved_tool_data_references(ds)
-                source_parent_data, tool_data_reference_resolver = (
-                    self.loading._workspace_tool_restore_references(
-                        ds,
-                        parent_target=node.parent_uid,
-                        owner_node=node,
-                        reference_datasets=reference_datasets,
-                        resolver_error_types=(Exception,),
-                        log_resolver_errors=True,
-                    )
-                )
-                data_items = type(tool)._tool_data_items_from_dataset(
-                    ds,
-                    source_parent_data=source_parent_data,
-                    reference_resolver=tool_data_reference_resolver,
-                )
-                with (
-                    self._workspace_load_context(),
-                    tool._history_suppressed(),
-                ):
-                    tool._replace_persistence_data_items(data_items, ds)
-                node._set_workspace_tool_data_references(references)
-                node._replace_workspace_reference_datasets(reference_datasets)
-                reference_datasets = {}
-            except Exception as exc:
-                self.loading._close_workspace_reference_datasets(reference_datasets)
-                raise _WorkspacePostSaveBindingError(
-                    "Workspace file was saved, but live ToolWindow data could not "
-                    f"be rebound for node {node.uid!r}."
-                ) from exc
-
-    @staticmethod
-    def _workspace_tool_references_include_uids(
-        references: Mapping[str, Mapping[str, typing.Any]],
-        uids: Collection[str],
-        *,
-        parent_uid: str | None,
-    ) -> bool:
-        if not uids:
-            return False
-        for reference in references.values():
-            kind = reference.get("kind")
-            if kind == "parent_source":
-                if parent_uid in uids:
-                    return True
-            elif kind == "manager_node" and reference.get("node_uid") in uids:
-                return True
-        return False
+        """Apply one committed generation to live manager references."""
+        self._commit_saved_tool_data_references(snapshot)
+        self._repoint_saved_pending_workspace_payloads(
+            workspace_path,
+            manifest=manifest,
+        )
+        self._manager._workspace_state.schema_version = (
+            workspace_format._current_workspace_schema_version()
+        )
 
     def _pending_workspace_payload_snapshot(
         self,
@@ -756,34 +810,48 @@ class _WorkspaceController:
                 payload_attrs=attrs,
             )
 
-    def _live_imagetool_rebind_snapshot(
+    def _dask_rebind_uids_after_full_save(
         self,
         *,
         backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]] | None,
         old_workspace_path: str | os.PathLike[str] | None,
-    ) -> dict[str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]]:
-        snapshot: dict[
-            str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]
-        ] = {}
+        exclude_uids: Collection[str],
+    ) -> frozenset[str]:
+        """Return Dask nodes that still depend on data outside the document."""
+        if backing_snapshot is None:
+            return frozenset()
         old_path = workspace_arrays._normalized_file_path(old_workspace_path)
-        for uid, node in self._manager._tool_graph.nodes.items():
+        rebind_uids: set[str] = set()
+        for uid, (kind, source_paths) in backing_snapshot.items():
+            node = self._manager._tool_graph.nodes.get(uid)
             if (
-                not node.is_imagetool
+                kind != "dask"
+                or uid in exclude_uids
+                or node is None
+                or not node.is_imagetool
                 or node.imagetool is None
                 or node.pending_workspace_memory_payload is not None
             ):
                 continue
-            if backing_snapshot is not None:
-                backing = backing_snapshot.get(uid)
-                if backing is None:
-                    continue
-                kind, source_paths = backing
-                if kind == "memory":
-                    continue
-                if kind == "file_lazy" and (
-                    old_path is None or old_path not in source_paths
-                ):
-                    continue
+            uses_current_workspace_reader = (
+                old_path is not None
+                and bool(source_paths)
+                and all(source_path == old_path for source_path in source_paths)
+            )
+            if not uses_current_workspace_reader:
+                rebind_uids.add(uid)
+        return frozenset(rebind_uids)
+
+    def _live_imagetool_rebind_snapshot(
+        self, uids: Collection[str]
+    ) -> dict[str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]]:
+        snapshot: dict[
+            str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]
+        ] = {}
+        for uid in uids:
+            node = self._manager._tool_graph.nodes.get(uid)
+            if node is None or node.imagetool is None:
+                continue
             snapshot[uid] = (
                 node,
                 node.slicer_area._data,
@@ -808,6 +876,209 @@ class _WorkspaceController:
                 node.slicer_area.state = state
                 node._set_name(name, manual=False)
 
+    @staticmethod
+    def _workspace_tool_references_include_uids(
+        references: Mapping[str, Mapping[str, typing.Any]],
+        uids: Collection[str],
+        *,
+        parent_uid: str | None,
+    ) -> bool:
+        if not uids:
+            return False
+        for reference in references.values():
+            kind = reference.get("kind")
+            if kind == "parent_source":
+                if parent_uid in uids:
+                    return True
+            elif kind == "manager_node" and reference.get("node_uid") in uids:
+                return True
+        return False
+
+    def _refresh_workspace_tool_data_after_full_save(
+        self,
+        old_workspace_path: str | os.PathLike[str] | None,
+        workspace_path: str | os.PathLike[str],
+        *,
+        exclude_data_uids: Collection[str],
+        source_snapshot: list[tuple[xr.Variable, bool, typing.Any]],
+    ) -> None:
+        """Rebind external Dask tool data and retarget saved references."""
+        old_path = workspace_arrays._normalized_file_path(old_workspace_path)
+        new_path = workspace_arrays._normalized_file_path(workspace_path)
+        if new_path is None or old_path == new_path:
+            return
+        restore_entries: list[
+            tuple[
+                _ManagedWindowNode,
+                typing.Any,
+                xr.Dataset,
+                dict[str, xr.DataArray],
+                dict[tuple[pathlib.Path, str], xr.Dataset],
+            ]
+        ] = []
+        try:
+            for node in self._manager._tool_graph.nodes.values():
+                tool = node.tool_window
+                if (
+                    node.is_imagetool
+                    or tool is None
+                    or not tool.can_save_and_load()
+                    or node.uid in exclude_data_uids
+                    or self._workspace_tool_references_include_uids(
+                        node._workspace_tool_data_references,
+                        exclude_data_uids,
+                        parent_uid=node.parent_uid,
+                    )
+                ):
+                    continue
+                original_data_items = {
+                    name: data.copy(deep=False)
+                    for name, data in tool._persistence_data_items().items()
+                }
+                rebind_names: set[str] = set()
+                retargets_current_workspace = False
+                for name, data in original_data_items.items():
+                    source_paths = workspace_arrays.dataarray_source_paths(data)
+                    if old_path is not None and old_path in source_paths:
+                        retargets_current_workspace = True
+                    uses_current_workspace_reader = (
+                        old_path is not None
+                        and bool(source_paths)
+                        and all(source_path == old_path for source_path in source_paths)
+                    )
+                    if data.chunks is not None and not uses_current_workspace_reader:
+                        rebind_names.add(name)
+                if (
+                    not node._workspace_reference_datasets
+                    and not rebind_names
+                    and not retargets_current_workspace
+                ):
+                    continue
+
+                restore_ds = tool.to_dataset()
+                data_items = {
+                    name: data.copy(deep=False)
+                    for name, data in original_data_items.items()
+                }
+                original_reference_datasets = dict(node._workspace_reference_datasets)
+                restore_entries.append(
+                    (
+                        node,
+                        tool,
+                        restore_ds,
+                        original_data_items,
+                        original_reference_datasets,
+                    )
+                )
+                reference_datasets = dict(original_reference_datasets)
+                opened: xr.Dataset | None = None
+                try:
+                    replace_ds = restore_ds
+                    if rebind_names:
+                        opened = workspace_arrays.open_workspace_dataset(
+                            workspace_path,
+                            self.loading._workspace_payload_path_for_uid(
+                                workspace_path, node.uid
+                            ),
+                            chunks={},
+                        )
+                        replace_ds = workspace_format._restore_workspace_dataset_attrs(
+                            opened
+                        )
+                        replace_ds = imagetool_serialization.restore_private_coords(
+                            replace_ds, erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+                        )
+                        source_parent_data, reference_resolver = (
+                            self.loading._workspace_tool_restore_references(
+                                replace_ds,
+                                parent_target=node.parent_uid,
+                                owner_node=node,
+                                reference_datasets=reference_datasets,
+                            )
+                        )
+                        rebound_items = type(tool)._tool_data_items_from_dataset(
+                            replace_ds,
+                            source_parent_data=source_parent_data,
+                            reference_resolver=reference_resolver,
+                            variable_names=rebind_names,
+                        )
+                        for name in rebind_names:
+                            data_items[name] = rebound_items[name]
+                    for data in data_items.values():
+                        workspace_arrays.set_workspace_xarray_sources(
+                            data, workspace_path
+                        )
+                    with self._workspace_load_context(), tool._history_suppressed():
+                        tool._replace_persistence_data_items(data_items, replace_ds)
+
+                    retargeted_reference_datasets: dict[
+                        tuple[pathlib.Path, str], xr.Dataset
+                    ] = {}
+                    for (
+                        source_path,
+                        group_path,
+                    ), reference_ds in reference_datasets.items():
+                        source_snapshot.extend(
+                            workspace_arrays._workspace_xarray_source_snapshot(
+                                reference_ds
+                            )
+                        )
+                        if old_path is None:
+                            workspace_arrays.set_workspace_xarray_sources(
+                                reference_ds, new_path
+                            )
+                        else:
+                            workspace_arrays.retarget_workspace_xarray_sources(
+                                reference_ds, old_path, new_path
+                            )
+                        if old_path is None or (
+                            workspace_arrays._normalized_file_path(source_path)
+                            == old_path
+                        ):
+                            source_path = pathlib.Path(new_path)
+                        retargeted_reference_datasets[(source_path, group_path)] = (
+                            reference_ds
+                        )
+                    node._replace_workspace_reference_datasets(
+                        retargeted_reference_datasets
+                    )
+                except Exception:
+                    original_dataset_ids = {
+                        id(dataset) for dataset in original_reference_datasets.values()
+                    }
+                    for dataset in reference_datasets.values():
+                        if id(dataset) not in original_dataset_ids:
+                            with contextlib.suppress(Exception):
+                                dataset.close()
+                    raise
+                finally:
+                    if opened is not None:
+                        opened.close()
+        except Exception as exc:
+            for (
+                restore_node,
+                restore_tool,
+                restore_ds,
+                restore_data_items,
+                restore_reference_datasets,
+            ) in reversed(restore_entries):
+                with contextlib.suppress(Exception):
+                    restore_node._replace_workspace_reference_datasets(
+                        restore_reference_datasets
+                    )
+                with (
+                    contextlib.suppress(Exception),
+                    self._workspace_load_context(),
+                    restore_tool._history_suppressed(),
+                ):
+                    restore_tool._replace_persistence_data_items(
+                        restore_data_items, restore_ds
+                    )
+            raise _WorkspacePostSaveBindingError(
+                "Workspace file was saved, but live ToolWindow references could "
+                "not be updated."
+            ) from exc
+
     def _refresh_workspace_payload_bindings_after_full_save(
         self,
         workspace_path: str | os.PathLike[str],
@@ -817,36 +1088,137 @@ class _WorkspaceController:
         skip_live_data_rebind_uids: Collection[str] = frozenset(),
     ) -> None:
         pending_snapshot = self._pending_workspace_payload_snapshot()
-        live_imagetool_snapshot = self._live_imagetool_rebind_snapshot(
-            backing_snapshot=backing_snapshot,
-            old_workspace_path=old_workspace_path,
-        )
+        live_imagetool_snapshot: dict[
+            str, tuple[_ManagedWindowNode, xr.DataArray, typing.Any, str]
+        ] = {}
+        source_snapshot: list[tuple[xr.Variable, bool, typing.Any]] = []
         try:
-            self._repoint_saved_pending_workspace_payloads(workspace_path)
-            self.loading._rebind_workspace_backed_imagetools(
-                workspace_path,
+            dask_rebind_uids = self._dask_rebind_uids_after_full_save(
                 backing_snapshot=backing_snapshot,
                 old_workspace_path=old_workspace_path,
                 exclude_uids=skip_live_data_rebind_uids,
             )
-            self._rebind_workspace_referenced_tool_data(
-                workspace_path, exclude_data_uids=skip_live_data_rebind_uids
+            live_imagetool_snapshot = self._live_imagetool_rebind_snapshot(
+                dask_rebind_uids
+            )
+            if dask_rebind_uids:
+                self.loading._rebind_workspace_backed_imagetools(
+                    workspace_path,
+                    targets=dask_rebind_uids,
+                    backing_snapshot=backing_snapshot,
+                    old_workspace_path=old_workspace_path,
+                    exclude_uids=skip_live_data_rebind_uids,
+                )
+            old_path = workspace_arrays._normalized_file_path(old_workspace_path)
+            for uid, node in self._manager._tool_graph.nodes.items():
+                if (
+                    uid not in skip_live_data_rebind_uids
+                    and node.is_imagetool
+                    and node.imagetool is not None
+                    and node.pending_workspace_memory_payload is None
+                    and backing_snapshot is not None
+                ):
+                    backing = backing_snapshot.get(uid)
+                    if backing is not None:
+                        kind, source_paths = backing
+                        should_retarget = uid not in dask_rebind_uids and (
+                            kind == "dask"
+                            or (
+                                kind == "file_lazy"
+                                and old_path is not None
+                                and old_path in source_paths
+                            )
+                        )
+                        if should_retarget:
+                            source_snapshot.extend(
+                                workspace_arrays._workspace_xarray_source_snapshot(
+                                    node.slicer_area._data
+                                )
+                            )
+                            workspace_arrays.set_workspace_xarray_sources(
+                                node.slicer_area._data, workspace_path
+                            )
+            self._refresh_workspace_tool_data_after_full_save(
+                old_workspace_path,
+                workspace_path,
+                exclude_data_uids=skip_live_data_rebind_uids,
+                source_snapshot=source_snapshot,
             )
         except _WorkspacePostSaveBindingError:
             with contextlib.suppress(Exception):
                 self._restore_pending_workspace_payload_snapshot(pending_snapshot)
+            workspace_arrays._restore_workspace_xarray_source_snapshot(source_snapshot)
             with contextlib.suppress(Exception):
                 self._restore_live_imagetool_rebind_snapshot(live_imagetool_snapshot)
             raise
         except Exception as exc:
             with contextlib.suppress(Exception):
                 self._restore_pending_workspace_payload_snapshot(pending_snapshot)
+            workspace_arrays._restore_workspace_xarray_source_snapshot(source_snapshot)
             with contextlib.suppress(Exception):
                 self._restore_live_imagetool_rebind_snapshot(live_imagetool_snapshot)
             raise _WorkspacePostSaveBindingError(
                 "Workspace file was saved, but live workspace data could not be "
                 "rebound to the saved file."
             ) from exc
+
+    def _imported_workspace_backing_snapshot(
+        self,
+    ) -> dict[str, tuple[str, tuple[str, ...]]] | None:
+        """Capture data backing only when imported source ownership is active."""
+        if not self._imported_workspace_accesses:
+            return None
+        return self.loading._workspace_data_backing_snapshot()
+
+    def _rebind_imported_workspace_imagetools_after_save(
+        self,
+        workspace_path: str | os.PathLike[str],
+        backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]] | None,
+        *,
+        exclude_uids: Collection[str],
+    ) -> None:
+        """Move imported lazy readers to objects committed by the current save."""
+        if backing_snapshot is None:
+            self._release_unused_imported_workspace_accesses()
+            return
+        imported_uids: set[str] = set().union(
+            *self._imported_workspace_dependents.values()
+        )
+        dask_targets = {
+            uid
+            for uid, (kind, _source_paths) in backing_snapshot.items()
+            if kind == "dask" and uid in imported_uids and uid not in exclude_uids
+        }
+        file_lazy_targets = {
+            uid
+            for uid, (kind, _source_paths) in backing_snapshot.items()
+            if kind == "file_lazy" and uid in imported_uids and uid not in exclude_uids
+        }
+        targets = dask_targets | file_lazy_targets
+        live_snapshot = self._live_imagetool_rebind_snapshot(targets)
+        try:
+            if dask_targets:
+                self.loading._rebind_workspace_backed_imagetools(
+                    workspace_path,
+                    targets=dask_targets,
+                    chunks={},
+                    exclude_uids=exclude_uids,
+                )
+            if file_lazy_targets:
+                self.loading._rebind_workspace_backed_imagetools(
+                    workspace_path,
+                    targets=file_lazy_targets,
+                    chunks=None,
+                    exclude_uids=exclude_uids,
+                )
+        except Exception as exc:
+            with contextlib.suppress(Exception):
+                self._restore_live_imagetool_rebind_snapshot(live_snapshot)
+            raise _WorkspacePostSaveBindingError(
+                "Workspace file was saved, but imported lazy data could not be "
+                "rebound to the saved file."
+            ) from exc
+        self._release_unused_imported_workspace_accesses()
 
     def _active_managed_window(self) -> QtWidgets.QWidget | None:
         active_window = QtWidgets.QApplication.activeWindow()
@@ -1054,7 +1426,10 @@ class _WorkspaceController:
         return self._mark_workspace_dirty(uid=uid, added=True, structure="Added window")
 
     def _mark_node_data_dirty(self, uid: str) -> bool:
-        return self._mark_workspace_dirty(uid=uid, data=True)
+        changed = self._mark_workspace_dirty(uid=uid, data=True)
+        if self._manager._workspace_state.loading_depth == 0:
+            self._release_unused_imported_workspace_accesses()
+        return changed
 
     def _mark_node_state_dirty(self, uid: str) -> bool:
         return self._mark_workspace_dirty(uid=uid, state=True)
@@ -1267,7 +1642,7 @@ class _WorkspaceController:
         msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Ok)
         msg_box.exec()
 
-    def _save_legacy_workspace_as_v4(
+    def _save_legacy_workspace_as_current(
         self,
         fname: str | os.PathLike[str],
         *,
@@ -1292,10 +1667,11 @@ class _WorkspaceController:
             ):
                 self.saving._save_workspace_document(
                     existing_access.path,
-                    force_full=True,
                     document_access=existing_access,
                 )
-            return str(existing_access.path), existing_access.take_lock()
+            return str(existing_access.path), self._take_workspace_access_lock(
+                existing_access
+            )
 
         with self._workspace_document_access_context(converted_fname) as access:
             with erlab.interactive.utils.wait_dialog(
@@ -1303,7 +1679,6 @@ class _WorkspaceController:
             ):
                 self.saving._save_workspace_document(
                     access.path,
-                    force_full=True,
                     document_access=access,
                 )
             return str(access.path), access.take_lock()
@@ -1314,46 +1689,40 @@ class _WorkspaceController:
         schema_version: int,
         *,
         native: bool = True,
-        delta_save_count: int = 0,
-        estimated_obsolete_bytes: int = 0,
-        replacement_delta_count: int = 0,
-        repack_estimate_known: bool = True,
         workspace_access: _WorkspaceDocumentAccess | None = None,
         rebind_data: bool = True,
     ) -> None:
         associated_fname = fname
         associated_lock: QtCore.QLockFile | None = None
         if workspace_format._workspace_schema_requires_conversion(schema_version):
-            converted = self._save_legacy_workspace_as_v4(
+            converted = self._save_legacy_workspace_as_current(
                 fname, native=native, existing_access=workspace_access
             )
             if converted is None:
                 self._set_workspace_path(None)
-                self._manager._workspace_state.needs_full_save = True
                 self._mark_workspace_structure_dirty(
                     "Legacy workspace needs conversion"
                 )
                 return
             associated_fname, associated_lock = converted
-            delta_save_count = 0
-            estimated_obsolete_bytes = 0
-            replacement_delta_count = 0
-            repack_estimate_known = True
             schema_version = workspace_format._current_workspace_schema_version()
         elif workspace_access is not None:
-            associated_lock = workspace_access.take_lock()
+            associated_lock = self._take_workspace_access_lock(workspace_access)
 
-        self._set_workspace_path(associated_fname, workspace_lock=associated_lock)
-        self._manager._workspace_state.delta_save_count = delta_save_count
-        self._manager._workspace_state.set_repack_estimate(
-            estimated_obsolete_bytes=estimated_obsolete_bytes,
-            replacement_delta_count=replacement_delta_count,
-            known=repack_estimate_known,
+        associated_store = None
+        if schema_version >= workspace_format._WORKSPACE_LEGACY_SCHEMA_VERSION:
+            associated_store = workspace_store.WorkspaceStore.active(associated_fname)
+            if associated_store is None:
+                associated_store = workspace_store.WorkspaceStore(associated_fname)
+            if schema_version == workspace_format._current_workspace_schema_version():
+                associated_store.clear_staging()
+
+        self._set_workspace_path(
+            associated_fname,
+            workspace_lock=associated_lock,
+            store=associated_store,
         )
         self._manager._workspace_state.schema_version = schema_version
-        self._manager._workspace_state.needs_full_save = (
-            workspace_format._workspace_schema_requires_full_save(schema_version)
-        )
         if rebind_data:
             self.loading._rebind_workspace_backed_imagetools(associated_fname)
         self._drain_workspace_restore_events()
@@ -1395,7 +1764,11 @@ class _WorkspaceController:
         state = self._manager._workspace_state
         if state.path is None:
             return self.save_as(native=native, on_finished=_offload_after_save)
-        if self._manager.is_workspace_modified or state.needs_full_save:
+        if (
+            self._manager.is_workspace_modified
+            or state.schema_version
+            < workspace_format._current_workspace_schema_version()
+        ):
             return self.save(native=native, on_finished=_offload_after_save)
         return self._offload_targets_to_current_workspace(offload_targets)
 
@@ -1416,14 +1789,17 @@ class _WorkspaceController:
                     targets=offload_targets,
                     chunks={},
                 )
-                workspace_storage._write_workspace_root_attrs_to_file(
+                self.saving._save_workspace_document(
                     workspace_path,
-                    self.saving._workspace_root_attrs_payload(
-                        delta_save_count=self._manager._workspace_state.delta_save_count
-                    ),
+                    mark_clean=False,
                 )
             self._manager._status_bar.showMessage("Data offloaded to workspace", 5000)
+            self._schedule_workspace_gc()
         except Exception:
+            logger.exception(
+                "Could not offload data to the current workspace",
+                extra={"suppress_ui_alert": True},
+            )
             self._manager._show_operation_error(
                 "Error while offloading to workspace",
                 "An error occurred while reconnecting data from the workspace file.",
@@ -1487,7 +1863,20 @@ class _WorkspaceController:
                 on_start_error()
             return False
 
-        worker = workspace_saving._WorkspaceSaveWorker(fname, snapshot)
+        target_path = pathlib.Path(fname).resolve()
+        store = (
+            self._workspace_store
+            if self._workspace_store is not None
+            and not self._workspace_store.closed
+            and self._workspace_store.path == target_path
+            else None
+        )
+        worker = workspace_saving._WorkspaceSaveWorker(
+            fname,
+            snapshot,
+            store=store,
+            reader_closers=self.saving._workspace_reader_closers(target_path),
+        )
         previous_action_states = self._set_workspace_save_actions_enabled(False)
 
         def _finish(
@@ -1517,8 +1906,12 @@ class _WorkspaceController:
 
         receiver = workspace_saving._WorkspaceSaveResultReceiver(
             callback=_finish,
+            waiting_callback=lambda: self._manager._status_bar.showMessage(
+                "Waiting for active workspace computations..."
+            ),
             parent=self._manager,
         )
+        worker.signals.waiting.connect(receiver.wait)
         worker.signals.finished.connect(receiver.finish)
         self._manager._workspace_state.save_in_progress = True
         self._background_save_worker = worker
@@ -1537,6 +1930,79 @@ class _WorkspaceController:
             return False
         return True
 
+    def _schedule_workspace_gc(self) -> None:
+        """Schedule bounded cleanup after the current save has finished."""
+        self._workspace_gc_requested = True
+        QtCore.QTimer.singleShot(0, self._start_workspace_gc)
+
+    def _start_workspace_gc(self) -> None:
+        if (
+            not self._workspace_gc_requested
+            or self._workspace_gc_worker is not None
+            or self._manager._workspace_state.save_in_progress
+        ):
+            return
+        store = self._workspace_store
+        workspace_path = self._current_workspace_document_path()
+        if (
+            store is None
+            or store.closed
+            or workspace_path is None
+            or store.path != workspace_path
+        ):
+            self._workspace_gc_requested = False
+            return
+        thread_pool = QtCore.QThreadPool.globalInstance()
+        if thread_pool is None:
+            return
+
+        document_id = self._manager._workspace_state.document_id
+        worker = workspace_saving._WorkspaceGcWorker(
+            store,
+            reader_closers=self.saving._workspace_reader_closers(workspace_path),
+        )
+
+        def _finish(more: bool, error: str | None) -> None:
+            receiver = self._workspace_gc_receiver
+            self._workspace_gc_receiver = None
+            self._workspace_gc_worker = None
+            if receiver is not None:
+                receiver.deleteLater()
+            if error is not None:
+                logger.warning(
+                    "Workspace cleanup failed:\n%s",
+                    error,
+                    extra={"suppress_ui_alert": True},
+                )
+                self._workspace_gc_requested = False
+                return
+            if self._manager._workspace_state.document_id != document_id:
+                self._workspace_gc_requested = False
+                return
+            self._workspace_gc_requested = more
+            if more:
+                QtCore.QTimer.singleShot(0, self._start_workspace_gc)
+
+        receiver = workspace_saving._WorkspaceGcResultReceiver(
+            _finish,
+            parent=self._manager,
+        )
+        worker.signals.finished.connect(receiver.finish)
+        self._workspace_gc_requested = False
+        self._workspace_gc_worker = worker
+        self._workspace_gc_receiver = receiver
+        try:
+            thread_pool.start(worker)
+        except Exception:
+            self._workspace_gc_worker = None
+            self._workspace_gc_receiver = None
+            receiver.deleteLater()
+            self._workspace_gc_requested = True
+            logger.exception(
+                "Could not start workspace cleanup",
+                extra={"suppress_ui_alert": True},
+            )
+
     def _show_workspace_post_save_binding_error(
         self, workspace_path: str | os.PathLike[str]
     ) -> None:
@@ -1549,7 +2015,6 @@ class _WorkspaceController:
         )
 
     def _mark_workspace_post_save_binding_refresh_failed(self) -> None:
-        self._manager._workspace_state.needs_full_save = True
         self._mark_workspace_structure_dirty(
             "Live workspace data references need refresh"
         )
@@ -1559,8 +2024,6 @@ class _WorkspaceController:
         *,
         document_id: str,
         workspace_path: pathlib.Path,
-        old_workspace_path: pathlib.Path | None,
-        backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]],
         snapshot: workspace_saving._WorkspaceSaveSnapshot,
         worker_elapsed: float,
         error: workspace_saving._WorkspaceSaveError | None,
@@ -1568,6 +2031,7 @@ class _WorkspaceController:
         snapshot_elapsed: float,
         started_at: float,
         restore_focus: bool,
+        imported_backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]] | None,
     ) -> bool:
         total_elapsed = time.perf_counter() - started_at
         logger.debug(
@@ -1600,36 +2064,26 @@ class _WorkspaceController:
             self._manager._workspace_state.dirty_generation > snapshot.generation
             and self._manager.is_workspace_modified
         )
-        post_save_data_uids = frozenset(
-            event.uid
-            for event in post_save_events
-            if event.uid is not None and (event.data or event.added)
+        self._adopt_committed_workspace_generation(
+            workspace_path,
+            snapshot,
+            manifest=snapshot.generation_plan.manifest,
         )
-        if snapshot.full_tree is not None:
-            try:
-                self._refresh_workspace_payload_bindings_after_full_save(
-                    workspace_path,
-                    backing_snapshot=backing_snapshot,
-                    old_workspace_path=old_workspace_path,
-                    skip_live_data_rebind_uids=post_save_data_uids,
-                )
-            except _WorkspacePostSaveBindingError:
-                self._mark_workspace_post_save_binding_refresh_failed()
-                self._show_workspace_post_save_binding_error(workspace_path)
-                if restore_focus:
-                    self._restore_focus_after_workspace_save(origin)
-                return False
-            self._manager._workspace_state.schema_version = (
-                workspace_format._current_workspace_schema_version()
+        post_save_uids = frozenset(
+            event.uid for event in post_save_events if event.uid is not None
+        )
+        try:
+            self._rebind_imported_workspace_imagetools_after_save(
+                workspace_path,
+                imported_backing_snapshot,
+                exclude_uids=post_save_uids,
             )
-        self._commit_saved_tool_data_references(snapshot)
-        self._manager._workspace_state.needs_full_save = False
-        self._manager._workspace_state.delta_save_count = snapshot.delta_save_count
-        self._manager._workspace_state.set_repack_estimate(
-            estimated_obsolete_bytes=snapshot.estimated_obsolete_bytes,
-            replacement_delta_count=snapshot.replacement_delta_count,
-            known=snapshot.repack_estimate_known,
-        )
+        except _WorkspacePostSaveBindingError:
+            self._mark_workspace_post_save_binding_refresh_failed()
+            self._show_workspace_post_save_binding_error(workspace_path)
+            if restore_focus:
+                self._restore_focus_after_workspace_save(origin)
+            return False
         if post_save_events:
             self._restore_workspace_dirty_events(post_save_events)
             message = "Workspace saved; new changes remain unsaved"
@@ -1653,8 +2107,6 @@ class _WorkspaceController:
         *,
         document_id: str,
         workspace_path: pathlib.Path,
-        old_workspace_path: pathlib.Path | None,
-        backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]],
         snapshot: workspace_saving._WorkspaceSaveSnapshot,
         worker_elapsed: float,
         error: workspace_saving._WorkspaceSaveError | None,
@@ -1662,14 +2114,14 @@ class _WorkspaceController:
         snapshot_elapsed: float,
         started_at: float,
         restore_focus: bool,
+        imported_backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]]
+        | None = None,
         on_finished: Callable[[bool], None] | None = None,
     ) -> None:
         try:
             save_succeeded = self._finish_workspace_save_result(
                 document_id=document_id,
                 workspace_path=workspace_path,
-                old_workspace_path=old_workspace_path,
-                backing_snapshot=backing_snapshot,
                 snapshot=snapshot,
                 worker_elapsed=worker_elapsed,
                 error=error,
@@ -1677,6 +2129,7 @@ class _WorkspaceController:
                 snapshot_elapsed=snapshot_elapsed,
                 started_at=started_at,
                 restore_focus=restore_focus,
+                imported_backing_snapshot=imported_backing_snapshot,
             )
             queued = self._background_save_requested
             if (
@@ -1686,6 +2139,8 @@ class _WorkspaceController:
                 and self._current_workspace_document_path() == workspace_path
             ):
                 QtCore.QTimer.singleShot(0, self.save)
+            elif save_succeeded:
+                self._schedule_workspace_gc()
             if on_finished is not None:
                 on_finished(save_succeeded)
         except Exception:
@@ -1721,8 +2176,7 @@ class _WorkspaceController:
 
         origin = self._active_managed_window()
         document_id = self._manager._workspace_state.document_id
-        old_workspace_path = workspace_path
-        backing_snapshot = self.loading._workspace_data_backing_snapshot()
+        imported_backing_snapshot = self._imported_workspace_backing_snapshot()
         self._manager._status_bar.showMessage("Saving workspace...")
         started_at = time.perf_counter()
         snapshot: workspace_saving._WorkspaceSaveSnapshot | None = None
@@ -1764,8 +2218,6 @@ class _WorkspaceController:
             on_finished=lambda elapsed, error: self._finish_background_workspace_save(
                 document_id=document_id,
                 workspace_path=workspace_path,
-                old_workspace_path=old_workspace_path,
-                backing_snapshot=backing_snapshot,
                 snapshot=snapshot,
                 worker_elapsed=elapsed,
                 error=error,
@@ -1773,6 +2225,7 @@ class _WorkspaceController:
                 snapshot_elapsed=snapshot_elapsed,
                 started_at=started_at,
                 restore_focus=restore_focus,
+                imported_backing_snapshot=imported_backing_snapshot,
                 on_finished=on_finished,
             ),
             on_start_error=_start_error,
@@ -1803,22 +2256,41 @@ class _WorkspaceController:
             if on_finished is not None:
                 on_finished(False)
             return False
+        if (
+            self._manager._workspace_state.path is not None
+            and pathlib.Path(fname).resolve() == self._manager._workspace_state.path
+        ):
+            return self.save(
+                native=native,
+                on_finished=on_finished,
+            )
         old_workspace_path = self._manager._workspace_state.path
         document_id = self._manager._workspace_state.document_id
         backing_snapshot = self.loading._workspace_data_backing_snapshot()
         access: _WorkspaceDocumentAccess | None = None
         snapshot: workspace_saving._WorkspaceSaveSnapshot | None = None
+        target_expected_state: workspace_storage._WorkspacePublicationState | None = (
+            None
+        )
+        worker_path: pathlib.Path | None = None
         self._manager._status_bar.showMessage("Saving workspace...")
         started_at = time.perf_counter()
         try:
             access = self._workspace_document_access(fname)
+            target_expected_state = workspace_storage._workspace_publication_state(
+                access.path
+            )
+            worker_path = access.path.with_name(
+                f".{access.path.name}.tmp-{uuid.uuid4().hex}"
+            )
             self._drain_workspace_deferred_events()
             generation = self._manager._workspace_state.dirty_generation
             self._manager._workspace_state.saving_depth += 1
             try:
                 snapshot_started_at = time.perf_counter()
-                snapshot = self.saving._workspace_full_save_snapshot(
-                    generation, fname=access.path
+                snapshot = self.saving._workspace_generation_save_snapshot(
+                    generation,
+                    fname=worker_path,
                 )
                 snapshot_elapsed = time.perf_counter() - snapshot_started_at
             finally:
@@ -1826,6 +2298,9 @@ class _WorkspaceController:
         except Exception:
             if snapshot is not None:
                 snapshot.close()
+            if worker_path is not None:
+                with contextlib.suppress(OSError):
+                    worker_path.unlink()
             if access is not None:
                 access.release()
             logger.exception(
@@ -1868,12 +2343,18 @@ class _WorkspaceController:
                     access.path,
                     extra={"suppress_ui_alert": True},
                 )
+                if worker_path is not None:
+                    with contextlib.suppress(OSError):
+                        worker_path.unlink()
                 access.release()
                 access = None
                 if on_finished is not None:
                     on_finished(False)
                 return
             if error is not None:
+                if worker_path is not None:
+                    with contextlib.suppress(OSError):
+                        worker_path.unlink()
                 self._manager._status_bar.clearMessage()
                 self._manager._show_workspace_save_worker_error(error)
                 access.release()
@@ -1882,6 +2363,85 @@ class _WorkspaceController:
                     on_finished(False)
                 return
 
+            if target_expected_state is None:  # pragma: no cover
+                raise RuntimeError("Save As publication state was not prepared")
+            try:
+                workspace_storage._replace_workspace_file(
+                    worker_path,
+                    access.path,
+                    expected_state=target_expected_state,
+                )
+            except Exception:
+                with contextlib.suppress(OSError):
+                    worker_path.unlink()
+                self._manager._status_bar.clearMessage()
+                self._manager._show_operation_error(
+                    "Error while saving workspace",
+                    "The new workspace was written, but it could not replace the "
+                    "selected destination.",
+                )
+                access.release()
+                self._restore_focus_after_workspace_save(origin)
+                if on_finished is not None:
+                    on_finished(False)
+                return
+
+            self._drain_workspace_deferred_events()
+            pre_rebind_post_save_events = tuple(
+                event
+                for event in self._manager._workspace_state.dirty_events
+                if event.generation > snapshot.generation
+            )
+            post_save_uids = frozenset(
+                event.uid
+                for event in pre_rebind_post_save_events
+                if event.uid is not None
+            )
+            old_store = self._workspace_store
+            try:
+                if old_store is not None:
+                    old_store.switch_path(access.path)
+                    new_store = old_store
+                else:
+                    new_store = workspace_store.WorkspaceStore(access.path)
+            except Exception:
+                logger.exception(
+                    "Could not open the saved workspace store",
+                    extra={"suppress_ui_alert": True},
+                )
+                self._show_workspace_post_save_binding_error(access.path)
+                access.release()
+                self._restore_focus_after_workspace_save(origin)
+                if on_finished is not None:
+                    on_finished(False)
+                return
+
+            saved_path = access.path
+            self._set_workspace_path(
+                saved_path,
+                workspace_lock=self._take_workspace_access_lock(access),
+                store=new_store,
+            )
+            access = None
+            self._adopt_committed_workspace_generation(
+                saved_path,
+                snapshot,
+                manifest=snapshot.generation_plan.manifest,
+            )
+            try:
+                self._refresh_workspace_payload_bindings_after_full_save(
+                    saved_path,
+                    backing_snapshot=backing_snapshot,
+                    old_workspace_path=old_workspace_path,
+                    skip_live_data_rebind_uids=post_save_uids,
+                )
+            except _WorkspacePostSaveBindingError:
+                self._show_workspace_post_save_binding_error(saved_path)
+                self._restore_focus_after_workspace_save(origin)
+                if on_finished is not None:
+                    on_finished(False)
+                return
+            self._release_unused_imported_workspace_accesses()
             self._drain_workspace_deferred_events()
             post_save_events = tuple(
                 event
@@ -1892,59 +2452,29 @@ class _WorkspaceController:
                 self._manager._workspace_state.dirty_generation > snapshot.generation
                 and self._manager.is_workspace_modified
             )
-            if post_save_events or has_new_dirty_generation:
-                access.release()
-                self._manager._status_bar.showMessage(
-                    "Workspace saved; new changes remain unsaved", 5000
-                )
-                self._restore_focus_after_workspace_save(origin)
-                if on_finished is not None:
-                    on_finished(False)
-                return
-
-            if snapshot.full_tree is not None:
-                try:
-                    self._refresh_workspace_payload_bindings_after_full_save(
-                        access.path,
-                        backing_snapshot=backing_snapshot,
-                        old_workspace_path=old_workspace_path,
-                    )
-                except _WorkspacePostSaveBindingError:
-                    self._show_workspace_post_save_binding_error(access.path)
-                    access.release()
-                    self._restore_focus_after_workspace_save(origin)
-                    if on_finished is not None:
-                        on_finished(False)
-                    return
-
-            self._commit_saved_tool_data_references(snapshot)
-            self._manager._workspace_state.needs_full_save = False
-            self._manager._workspace_state.delta_save_count = snapshot.delta_save_count
-            self._manager._workspace_state.set_repack_estimate(
-                estimated_obsolete_bytes=snapshot.estimated_obsolete_bytes,
-                replacement_delta_count=snapshot.replacement_delta_count,
-                known=snapshot.repack_estimate_known,
-            )
-            self._manager._workspace_state.schema_version = (
-                workspace_format._current_workspace_schema_version()
-            )
-            saved_path = access.path
-            self._set_workspace_path(saved_path, workspace_lock=access.take_lock())
-            access = None
-            self._drain_workspace_deferred_events()
-            self._mark_workspace_clean()
+            if post_save_events:
+                self._restore_workspace_dirty_events(post_save_events)
+            elif not has_new_dirty_generation:
+                self._mark_workspace_clean()
             self._record_recent_workspace(saved_path)
-            message = (
-                f"Workspace saved in {total_elapsed:.1f} s"
-                if total_elapsed >= _WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS
-                else "Workspace saved"
-            )
+            if post_save_events or has_new_dirty_generation:
+                message = "Workspace saved; new changes remain unsaved"
+            else:
+                message = (
+                    f"Workspace saved in {total_elapsed:.1f} s"
+                    if total_elapsed >= _WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS
+                    else "Workspace saved"
+                )
             self._manager._status_bar.showMessage(message, 5000)
             self._restore_focus_after_workspace_save(origin)
+            self._schedule_workspace_gc()
             if on_finished is not None:
                 on_finished(True)
 
         def _start_error() -> None:
+            if worker_path is not None:
+                with contextlib.suppress(OSError):
+                    worker_path.unlink()
             if access is not None:
                 access.release()
             self._manager._status_bar.clearMessage()
@@ -1956,121 +2486,40 @@ class _WorkspaceController:
             if on_finished is not None:
                 on_finished(False)
 
+        if worker_path is None:  # pragma: no cover
+            snapshot.close()
+            access.release()
+            raise RuntimeError("Save As worker path was not prepared")
         return self._start_workspace_save_worker(
-            access.path,
+            worker_path,
             snapshot,
             on_finished=_finish_save_as,
             on_start_error=_start_error,
         )
 
-    def _compact_workspace_before_shutdown(
-        self, on_finished: Callable[[], None] | None = None
+    def _confirm_compaction_with_exported_readers(
+        self, parent: QtWidgets.QWidget
     ) -> bool:
-        if (
-            self._manager._workspace_state.path is None
-            or self._manager._workspace_state.delta_save_count <= 0
-            or self._manager.is_workspace_modified
-            or self._manager._workspace_state.save_in_progress
-            or self._manager._workspace_state.loading_depth > 0
-            or self._shutdown_compaction_attempted
-        ):
-            return False
-        if not self.saving._workspace_should_repack_before_shutdown():
-            return False
-        try:
-            logger.debug("Compacting workspace before shutdown...")
-            self._shutdown_compaction_attempted = True
-            document_id = self._manager._workspace_state.document_id
-            self._drain_workspace_deferred_events()
-            generation = self._manager._workspace_state.dirty_generation
-            self._manager._workspace_state.saving_depth += 1
-            try:
-                snapshot = self.saving._workspace_file_repack_snapshot(generation)
-                if snapshot is None:
-                    return False
-            finally:
-                self._manager._workspace_state.saving_depth -= 1
-        except Exception:
-            logger.exception(
-                "Failed to compact workspace before shutdown",
-                extra={"suppress_ui_alert": True},
-            )
-            return False
-
-        def _finish_compaction(
-            _elapsed: float,
-            error: workspace_saving._WorkspaceSaveError | None,
-        ) -> None:
-            if self._manager._workspace_state.document_id != document_id:
-                logger.info(
-                    "Ignoring completed shutdown compaction for inactive document",
-                    extra={"suppress_ui_alert": True},
-                )
-                if on_finished is not None:
-                    on_finished()
-                return
-            if error is not None:
-                logger.error(
-                    "Failed to compact workspace before shutdown%s",
-                    f":\n{error.traceback_text}",
-                    extra={"suppress_ui_alert": True},
-                )
-            else:
-                self._manager._workspace_state.needs_full_save = False
-                self._manager._workspace_state.delta_save_count = 0
-                self._manager._workspace_state.reset_repack_estimate()
-                self._manager._workspace_state.schema_version = (
-                    workspace_format._current_workspace_schema_version()
-                )
-                workspace_path = self._manager._workspace_state.path
-                if workspace_path is not None:
-                    try:
-                        self._refresh_workspace_payload_bindings_after_full_save(
-                            workspace_path
-                        )
-                    except _WorkspacePostSaveBindingError:
-                        logger.exception(
-                            "Workspace was compacted before shutdown, but live "
-                            "workspace data could not be rebound",
-                            extra={"suppress_ui_alert": True},
-                        )
-                        if on_finished is not None:
-                            on_finished()
-                        return
-                self._drain_workspace_deferred_events()
-                post_save_events = tuple(
-                    event
-                    for event in self._manager._workspace_state.dirty_events
-                    if event.generation > snapshot.generation
-                )
-                if post_save_events:
-                    self._restore_workspace_dirty_events(post_save_events)
-                else:
-                    self._mark_workspace_clean()
-            if on_finished is not None:
-                on_finished()
-
-        def _start_error() -> None:
-            logger.error(
-                "Failed to start workspace compaction before shutdown",
-                extra={"suppress_ui_alert": True},
-            )
-            if on_finished is not None:
-                on_finished()
-
-        workspace_path = self._manager._workspace_state.path
-        if workspace_path is None:
-            snapshot.close()
-            return False
-        return self._start_workspace_save_worker(
-            workspace_path,
-            snapshot,
-            on_finished=_finish_compaction,
-            on_start_error=_start_error,
+        """Confirm that compaction can invalidate serialized Dask readers."""
+        msg_box = QtWidgets.QMessageBox(parent)
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle("Compact Workspace")
+        msg_box.setText("This workspace was sent to Dask workers.")
+        msg_box.setInformativeText(
+            "Some Dask Futures can still need this data for retry or recomputation. "
+            "ImageTool Manager cannot determine when every client has released it. "
+            "Continue only if you no longer need those Futures."
         )
+        cancel_button = msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        compact_button = msg_box.addButton(
+            "Compact Workspace", QtWidgets.QMessageBox.ButtonRole.DestructiveRole
+        )
+        msg_box.setDefaultButton(cancel_button)
+        msg_box.exec()
+        return msg_box.clickedButton() == compact_button
 
     def compact_workspace(self) -> bool:
-        """Rewrite the current workspace file to remove unused space."""
+        """Rewrite the current workspace with only reachable payload objects."""
         workspace_path = self._current_workspace_document_path()
         if workspace_path is None:
             return self.save_as()
@@ -2079,44 +2528,67 @@ class _WorkspaceController:
                 "Workspace save already in progress", 3000
             )
             return False
-
         origin = self._active_managed_window()
-        old_workspace_path = workspace_path
-        backing_snapshot = self.loading._workspace_data_backing_snapshot()
+        store = self._workspace_store
+        if store is None or store.closed or store.path != workspace_path:
+            self._manager._show_operation_error(
+                "Error while compacting workspace",
+                "The workspace file is not open. Reopen it and try again.",
+            )
+            return False
+        serialized_reader_pins = store.serialized_reader_pin_snapshot()
+        if (
+            not serialized_reader_pins.empty
+            and not self._confirm_compaction_with_exported_readers(
+                origin or self._manager
+            )
+        ):
+            self._restore_focus_after_workspace_save(origin)
+            return False
         try:
             with erlab.interactive.utils.wait_dialog(
                 origin or self._manager, "Compacting workspace..."
             ):
-                self.saving._save_workspace_document(
-                    workspace_path,
-                    force_full=True,
-                    require_matching_compression=True,
-                    mark_clean=False,
+                self.saving._close_workspace_idle_readers(workspace_path)
+                if (
+                    self._manager.is_workspace_modified
+                    or self._manager._workspace_state.schema_version
+                    < workspace_format._current_workspace_schema_version()
+                ):
+                    self.saving._save_workspace_document(
+                        workspace_path,
+                        mark_clean=False,
+                    )
+                workspace_storage._compact_workspace_store(
+                    store,
+                    discard_serialized_reader_pins=serialized_reader_pins,
                 )
-                self._refresh_workspace_payload_bindings_after_full_save(
-                    workspace_path,
-                    backing_snapshot=backing_snapshot,
-                    old_workspace_path=old_workspace_path,
-                )
-            self._manager._workspace_state.delta_save_count = 0
+            store.release_serialized_reader_pins(serialized_reader_pins)
             self._manager._status_bar.showMessage("Workspace compacted", 5000)
-            self._manager._workspace_state.needs_full_save = False
             self._mark_workspace_clean()
-        except _WorkspacePostSaveBindingError:
-            self._mark_workspace_post_save_binding_refresh_failed()
-            self._show_workspace_post_save_binding_error(workspace_path)
-            self._restore_focus_after_workspace_save(origin)
-            return False
-        except Exception:
+        except Exception as exc:
+            logger.exception(
+                "Could not compact workspace",
+                extra={"suppress_ui_alert": True},
+            )
+            if isinstance(exc, workspace_store.WorkspaceStoreReopenError):
+                store.close()
+                if self._workspace_store is store:
+                    self._workspace_store = None
+                error_text = (
+                    "The compacted workspace was saved, but it could not be "
+                    "reopened. Close and reopen the workspace before you continue."
+                )
+            else:
+                error_text = "An error occurred while compacting the workspace file."
             self._manager._show_operation_error(
                 "Error while compacting workspace",
-                "An error occurred while compacting the workspace file.",
+                error_text,
             )
             self._restore_focus_after_workspace_save(origin)
             return False
 
         self._restore_focus_after_workspace_save(origin)
-        self._manager._workspace_state.reset_repack_estimate()
         return True
 
     def load(self, *, native: bool = True) -> bool:

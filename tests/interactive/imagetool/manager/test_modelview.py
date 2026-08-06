@@ -3280,6 +3280,7 @@ def test_remove_imagetool_removes_childtools() -> None:
     removed_uids: list[str] = []
     removed_rows: list[int] = []
     refresh_calls: list[None] = []
+    imported_access_release_calls: list[None] = []
     cleared_dependency_uids: list[str] = []
     canceled_node_change_uids: list[str] = []
 
@@ -3315,7 +3316,15 @@ def test_remove_imagetool_removes_childtools() -> None:
         _dependency_tracker=types.SimpleNamespace(
             clear_uid=cleared_dependency_uids.append
         ),
-        _workspace_state=types.SimpleNamespace(closing_document=False),
+        _workspace_state=types.SimpleNamespace(
+            closing_document=False,
+            loading_depth=0,
+        ),
+        _workspace_controller=types.SimpleNamespace(
+            _release_unused_imported_workspace_accesses=lambda: (
+                imported_access_release_calls.append(None)
+            )
+        ),
         tree_view=types.SimpleNamespace(
             imagetool_removed=lambda index: removed_rows.append(index)
         ),
@@ -3325,6 +3334,7 @@ def test_remove_imagetool_removes_childtools() -> None:
     assert removed_uids == [uid]
     assert removed_rows == [0]
     assert refresh_calls == [None]
+    assert imported_access_release_calls == [None]
     assert cleared_dependency_uids == [wrapper.uid]
     assert canceled_node_change_uids == [wrapper.uid]
     assert wrapper.disposed

@@ -535,10 +535,9 @@ class _PendingWorkspacePayloads:
         attrs = node.pending_workspace_payload_attrs
         workspace_path, payload_path = pending
         try:
-            with (
-                workspace_arrays._workspace_file_lock(workspace_path),
-                h5py.File(workspace_path, "r") as h5_file,
-            ):
+            with workspace_arrays._open_workspace_h5_file_for_read(
+                workspace_path
+            ) as h5_file:
                 group = h5_file.get(payload_path.strip("/"))
                 if not isinstance(group, h5py.Group):
                     return None
@@ -632,10 +631,9 @@ class _PendingWorkspacePayloads:
         attrs = node.pending_workspace_payload_attrs
         workspace_path, payload_path = pending
         try:
-            with (
-                workspace_arrays._workspace_file_lock(workspace_path),
-                h5py.File(workspace_path, "r") as h5_file,
-            ):
+            with workspace_arrays._open_workspace_h5_file_for_read(
+                workspace_path
+            ) as h5_file:
                 group = h5_file.get(payload_path.strip("/"))
                 if not isinstance(group, h5py.Group):
                     return None
@@ -1021,6 +1019,7 @@ class _PendingWorkspacePayloads:
                     node.update_title()
                     self._loader._sync_materialized_workspace_link_group(node)
                 node._notify_change(_ManagedNodeChange.ROW | _ManagedNodeChange.INFO)
+                self._controller._release_unused_imported_workspace_accesses()
                 return True
         except Exception:
             logger.exception(
@@ -1128,6 +1127,7 @@ class _PendingWorkspacePayloads:
             return False
         else:
             node._notify_change(_ManagedNodeChange.ROW | _ManagedNodeChange.INFO)
+            self._controller._release_unused_imported_workspace_accesses()
             return True
 
     def _has_pending_workspace_linked_slicers(

@@ -12,6 +12,7 @@ import erlab
 import erlab.interactive.imagetool._highdim as imagetool_highdim
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
+import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive._mesh import MeshTool
 from erlab.interactive.derivative import DerivativeTool
@@ -215,12 +216,11 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
 
         workspace_link_id = manager._workspace_state.link_id
         tree = manager._workspace_controller.saving._to_datatree()
-        tree.attrs.update(
-            manager._workspace_controller.saving._workspace_root_attrs_payload(
-                delta_save_count=0
-            )
+        manifest = manager._workspace_controller.saving._workspace_manifest()
+        tree.attrs["imagetool_workspace_schema_version"] = (
+            workspace_format._WORKSPACE_MANIFEST_SCHEMA_VERSION
         )
-        manifest = json.loads(tree.attrs["imagetool_workspace_manifest"])
+        tree.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(manifest)
         assert manifest["workspace_link_id"] == workspace_link_id
         attrs = tree["0/imagetool"].attrs
         assert attrs["manager_node_watched_varname"] == "data"

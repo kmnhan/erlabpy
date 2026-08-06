@@ -1,4 +1,4 @@
-"""Low-level storage, locking, and transaction mechanics for workspaces."""
+"""Immutable workspace generations and legacy transaction recovery."""
 
 from __future__ import annotations
 
@@ -8,31 +8,26 @@ import errno
 import json
 import os
 import pathlib
-import shutil
 import stat
 import sys
-import tempfile
 import typing
 import uuid
 from dataclasses import dataclass
 
 from qtpy import QtCore
 
-import erlab
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
+import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 from erlab.interactive.imagetool.manager._workspace._format import (
     _WORKSPACE_BACKUP_GROUP_PREFIX,
     _WORKSPACE_PENDING_GROUP_PREFIX,
-    _WORKSPACE_SCHEMA_VERSION,
     _WORKSPACE_TRANSACTION_GROUP_PREFIX,
-    _WORKSPACE_TRANSACTION_PROTOCOL,
-    _compacted_workspace_root_attrs,
     _workspace_file_is_workspace,
     _workspace_path_is_itws,
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping
+    from collections.abc import Callable, Iterator, Mapping
 
     import h5py
     import xarray as xr
@@ -44,10 +39,278 @@ else:
     h5py = _lazy.load("h5py")
 
 
-_WorkspaceCopyGroup: typing.TypeAlias = tuple[str, str, dict[str, typing.Any] | None]
-_WorkspaceCopyGroupWithSource: typing.TypeAlias = tuple[
-    str, str, str, dict[str, typing.Any] | None
-]
+@dataclass(frozen=True)
+class _WorkspaceObjectWrite:
+    """One immutable payload object required by a generation."""
+
+    object_id: str
+    dataset: xr.Dataset | None = None
+    source_file: str | None = None
+    source_path: str | None = None
+
+
+@dataclass(frozen=True)
+class _WorkspaceGroupCopy:
+    """One live old-format group that a new document must preserve."""
+
+    source_file: str
+    source_path: str
+    target_path: str
+
+
+@dataclass(frozen=True)
+class _WorkspaceGenerationPlan:
+    """A complete manifest and the new objects that it references."""
+
+    manifest: dict[str, typing.Any]
+    objects: tuple[_WorkspaceObjectWrite, ...]
+    preserved_groups: tuple[_WorkspaceGroupCopy, ...] = ()
+
+
+def _workspace_object_copy_source(item: _WorkspaceObjectWrite) -> tuple[str, str]:
+    if item.source_file is None or item.source_path is None:
+        raise ValueError(f"Workspace object {item.object_id!r} has no source")
+    return item.source_file, item.source_path
+
+
+@contextlib.contextmanager
+def _workspace_generation_copy_source(
+    path: str | os.PathLike[str],
+) -> Iterator[typing.Any]:
+    active_store = workspace_store.WorkspaceStore.active(path)
+    if active_store is not None:
+        with active_store.read_session() as h5_file:
+            yield h5_file
+        return
+    workspace_arrays.ensure_workspace_hdf5_filters_registered()
+    with workspace_arrays._workspace_file_lock(path), h5py.File(path, "r") as h5_file:
+        yield h5_file
+
+
+def _copy_workspace_group(
+    target_store: workspace_store.WorkspaceStore,
+    *,
+    source_file: str,
+    source_path: str,
+    target_path: str,
+) -> None:
+    try:
+        with (
+            _workspace_generation_copy_source(source_file) as source_h5_file,
+            target_store.lock,
+        ):
+            copied = workspace_arrays._copy_workspace_h5_group_to_open_file(
+                source_h5_file,
+                target_store.h5_file,
+                source_path,
+                target_path,
+                None,
+            )
+    except Exception as exc:
+        with target_store.lock:
+            workspace_arrays._delete_h5_path(target_store.h5_file, target_path)
+            target_store.h5_file.flush()
+        if isinstance(exc, FileNotFoundError):
+            raise _WorkspaceBackingFileNotFoundError(source_file) from exc
+        raise
+    if not copied:
+        with target_store.lock:
+            workspace_arrays._delete_h5_path(target_store.h5_file, target_path)
+            target_store.h5_file.flush()
+        raise KeyError(
+            f"Workspace payload group {source_path!r} is missing from {source_file!r}"
+        )
+
+
+def _write_workspace_generation(
+    target_store: workspace_store.WorkspaceStore,
+    plan: _WorkspaceGenerationPlan,
+    *,
+    compression_mode: WorkspaceCompressionMode,
+    on_contention: Callable[[], None] | None = None,
+) -> workspace_store._WorkspaceGeneration:
+    """Write new immutable objects and publish one generation."""
+    with target_store.write_session(on_contention=on_contention):
+        created_object_ids: list[str] = []
+        try:
+            with target_store.lock:
+                target_store.require_current_path()
+            for item in plan.preserved_groups:
+                with target_store.lock:
+                    if item.target_path.strip("/") in target_store.h5_file:
+                        continue
+                _copy_workspace_group(
+                    target_store,
+                    source_file=item.source_file,
+                    source_path=item.source_path,
+                    target_path=item.target_path,
+                )
+            for item in plan.objects:
+                target_path = target_store.object_path(item.object_id)
+                with target_store.lock:
+                    if target_path.strip("/") in target_store.h5_file:
+                        continue
+                created_object_ids.append(item.object_id)
+                if item.dataset is not None:
+                    if workspace_arrays._workspace_dataset_can_write_h5py(item.dataset):
+                        with target_store.lock:
+                            workspace_arrays._write_workspace_dataset_group_to_file(
+                                target_store.h5_file,
+                                target_path,
+                                item.dataset,
+                                compression_mode=compression_mode,
+                            )
+                    else:
+                        workspace_arrays._write_workspace_dataset_group_to_file(
+                            target_store.h5_file,
+                            target_path,
+                            item.dataset,
+                            compression_mode=compression_mode,
+                        )
+                    continue
+                source_file, source_path = _workspace_object_copy_source(item)
+                _copy_workspace_group(
+                    target_store,
+                    source_file=source_file,
+                    source_path=source_path,
+                    target_path=target_path,
+                )
+            return target_store.publish(plan.manifest)
+        except Exception:
+            with contextlib.suppress(Exception), target_store.lock:
+                referenced_object_ids: set[str] = set()
+                for generation in target_store.generations():
+                    referenced_object_ids.update(
+                        target_store.manifest_object_ids(generation.manifest)
+                    )
+                for object_id in created_object_ids:
+                    if object_id not in referenced_object_ids:
+                        workspace_arrays._delete_h5_path(
+                            target_store.h5_file,
+                            target_store.object_path(object_id),
+                        )
+                target_store.h5_file.flush()
+            raise
+
+
+def _compact_workspace_store(
+    store: workspace_store.WorkspaceStore,
+    *,
+    discard_serialized_reader_pins: (
+        workspace_store._SerializedReaderPinSnapshot | None
+    ) = None,
+) -> None:
+    """Rewrite a workspace while omitting confirmed obsolete reader pins."""
+    workspace_path = store.path
+    prepared_path = workspace_path.with_name(
+        f".{workspace_path.name}.compact-{uuid.uuid4().hex}"
+    )
+    try:
+        with store.write_lock, store.lock:
+            current = store.current_generation()
+            baseline_manifest = dict(current.manifest)
+            baseline_manifest.pop("delta_save_count", None)
+            baseline_manifest.pop("estimated_obsolete_bytes", None)
+            baseline_manifest.pop("replacement_delta_count", None)
+            baseline_manifest.pop("repack_estimate_known", None)
+            object_ids = set(store.manifest_object_ids(baseline_manifest))
+            object_ids.update(store.leased_object_ids)
+            serialized_pins = store.serialized_reader_pin_snapshot()
+            discarded_pins = (
+                discard_serialized_reader_pins
+                or workspace_store._SerializedReaderPinSnapshot({}, {})
+            )
+            object_ids.update(
+                object_id
+                for object_id, version in serialized_pins.object_versions.items()
+                if version > discarded_pins.object_versions.get(object_id, -1)
+            )
+            legacy_group_paths = store.leased_legacy_group_paths | {
+                group_path
+                for group_path, version in serialized_pins.legacy_group_versions.items()
+                if version > discarded_pins.legacy_group_versions.get(group_path, -1)
+            }
+            expected_state = _workspace_publication_state(workspace_path)
+
+            with (
+                workspace_store.WorkspaceStore(
+                    prepared_path,
+                    create=True,
+                    workspace_id=store.workspace_id,
+                ) as compacted,
+                compacted.write_session(),
+            ):
+                with compacted.lock:
+                    for group_path in sorted(legacy_group_paths):
+                        copied = workspace_arrays._copy_workspace_h5_group_to_open_file(
+                            store.h5_file,
+                            compacted.h5_file,
+                            group_path,
+                            group_path,
+                            None,
+                        )
+                        if not copied:
+                            raise KeyError(
+                                f"Workspace payload group {group_path!r} is missing"
+                            )
+                    for object_id in sorted(object_ids):
+                        object_path = store.object_path(object_id)
+                        copied = workspace_arrays._copy_workspace_h5_group_to_open_file(
+                            store.h5_file,
+                            compacted.h5_file,
+                            object_path,
+                            object_path,
+                            None,
+                        )
+                        if not copied:
+                            raise KeyError(f"Workspace object {object_id!r} is missing")
+                compacted.publish(baseline_manifest)
+                compacted.publish(baseline_manifest)
+                generations = compacted.generations()
+                if (
+                    len(generations) != 2
+                    or generations[0].manifest != generations[1].manifest
+                ):
+                    raise RuntimeError(
+                        "Compacted workspace baseline generations do not match"
+                    )
+                if any(
+                    compacted.object_path(object_id).strip("/") not in compacted.h5_file
+                    for object_id in object_ids
+                ):
+                    raise RuntimeError(
+                        "Compacted workspace is missing a payload object"
+                    )
+                compacted.flush(durable=True)
+
+            expected_identity = expected_state[1:3]
+
+            def _publish_compacted_workspace(
+                source: pathlib.Path, destination: pathlib.Path
+            ) -> None:
+                closed_state = _workspace_publication_state(destination)
+                if not closed_state[0] or closed_state[1:3] != expected_identity:
+                    raise _WorkspacePublicationConflictError(destination)
+                _replace_workspace_file(
+                    source,
+                    destination,
+                    expected_state=closed_state,
+                )
+
+            store.replace_from(
+                prepared_path,
+                _publish_compacted_workspace,
+                before_close=lambda: _require_workspace_publication_state(
+                    workspace_path, expected_state
+                ),
+            )
+    finally:
+        if store.recovery_path != prepared_path:
+            with contextlib.suppress(OSError):
+                prepared_path.unlink()
+
+
+_WorkspacePublicationState: typing.TypeAlias = tuple[bool, int, int, int, int, int]
 
 
 class _WorkspaceBackingFileNotFoundError(FileNotFoundError):
@@ -60,6 +323,74 @@ class _WorkspaceBackingFileNotFoundError(FileNotFoundError):
             "Workspace backing file is missing",
             self.source_path,
         )
+
+
+class _WorkspacePublicationConflictError(workspace_store.WorkspaceStoreConflictError):
+    """A published workspace changed while a save was in progress."""
+
+    def __init__(self, path: str | os.PathLike[str]) -> None:
+        self.path = os.fsdecode(path)
+        super().__init__(
+            "Workspace changed outside ImageTool Manager while it was being saved: "
+            f"{self.path}"
+        )
+
+
+def _workspace_publication_state(
+    path: str | os.PathLike[str],
+) -> _WorkspacePublicationState:
+    """Return the state used to detect an external document replacement."""
+    try:
+        stat_result = os.stat(path)
+    except FileNotFoundError:
+        return False, 0, 0, 0, 0, 0
+    return (
+        True,
+        stat_result.st_dev,
+        stat_result.st_ino,
+        stat_result.st_size,
+        stat_result.st_mtime_ns,
+        stat_result.st_ctime_ns,
+    )
+
+
+def _replace_workspace_file(
+    source: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+    *,
+    expected_state: _WorkspacePublicationState | None,
+) -> None:
+    """Publish a prepared workspace with bounded file-access retries."""
+
+    def _replace() -> None:
+        if (
+            expected_state is not None
+            and _workspace_publication_state(destination) != expected_state
+        ):
+            raise _WorkspacePublicationConflictError(destination)
+        os.replace(source, destination)
+
+    workspace_store._retry_file_access(_replace)
+    _fsync_parent_directory(destination)
+
+
+def _fsync_parent_directory(path: str | os.PathLike[str]) -> None:
+    """Ask POSIX to persist a completed directory entry replacement."""
+    if os.name != "posix":
+        return
+    with contextlib.suppress(OSError):
+        file_descriptor = os.open(pathlib.Path(path).parent, os.O_RDONLY)
+        try:
+            os.fsync(file_descriptor)
+        finally:
+            os.close(file_descriptor)
+
+
+def _require_workspace_publication_state(
+    path: str | os.PathLike[str], expected_state: _WorkspacePublicationState
+) -> None:
+    if _workspace_publication_state(path) != expected_state:
+        raise _WorkspacePublicationConflictError(path)
 
 
 @dataclass(frozen=True)
@@ -179,83 +510,6 @@ def _acquire_workspace_document_lock(
         )
     _hide_workspace_lock_file(lock_path)
     return lock
-
-
-def _workspace_path_is_unc(path: str | os.PathLike[str]) -> bool:
-    path_str = os.fsdecode(path)
-    return path_str.startswith(("\\\\", "//"))
-
-
-def _workspace_path_is_likely_cloud_path(path: str | os.PathLike[str]) -> bool:
-    cloud_markers = {
-        "com~apple~clouddocs",
-        "dropbox",
-        "google drive",
-        "icloud drive",
-        "icloud~com~apple~clouddocs",
-        "mobile documents",
-        "onedrive",
-        "one drive",
-    }
-    try:
-        parts = pathlib.Path(path).resolve().parts
-    except OSError:
-        parts = pathlib.Path(path).absolute().parts
-    normalized_parts = {part.casefold().replace("-", " ") for part in parts}
-    return any(marker in part for part in normalized_parts for marker in cloud_markers)
-
-
-def _workspace_path_is_likely_network_path(path: str | os.PathLike[str]) -> bool:
-    if _workspace_path_is_unc(path):
-        return True
-    try:
-        resolved = pathlib.Path(path).resolve()
-    except OSError:
-        resolved = pathlib.Path(path).absolute()
-    parts = resolved.parts
-    if sys.platform == "darwin" and len(parts) > 2 and parts[1] == "Volumes":
-        return True
-    return len(parts) > 1 and parts[1] in {"net", "nfs", "smb"}
-
-
-def _workspace_path_is_high_risk(path: str | os.PathLike[str]) -> bool:
-    return _workspace_path_is_likely_network_path(
-        path
-    ) or _workspace_path_is_likely_cloud_path(path)
-
-
-def _workspace_use_incremental_enabled() -> bool:
-    return bool(erlab.interactive.options.model.io.workspace.use_incremental)
-
-
-def _workspace_incremental_save_on_remote_enabled() -> bool:
-    return bool(erlab.interactive.options.model.io.workspace.incremental_save_on_remote)
-
-
-def _workspace_requires_full_save(
-    fname: str | os.PathLike[str],
-    *,
-    needs_full_save: bool,
-    schema_version: int,
-    structure_modified: bool,
-    has_dirty_added: bool,
-    has_dirty_removed: bool,
-) -> bool:
-    if not _workspace_use_incremental_enabled():
-        return True
-    if (
-        not _workspace_incremental_save_on_remote_enabled()
-        and _workspace_path_is_high_risk(fname)
-    ):
-        return True
-    return (
-        needs_full_save
-        or not pathlib.Path(fname).exists()
-        or schema_version != _WORKSPACE_SCHEMA_VERSION
-        or structure_modified
-        or has_dirty_added
-        or has_dirty_removed
-    )
 
 
 def _workspace_txn_attr_target(h5_file, target_path: str):
@@ -394,432 +648,22 @@ def _cleanup_orphan_workspace_internal_groups(h5_file) -> None:
 
 
 def _recover_workspace_transactions(fname: str | os.PathLike[str]) -> None:
-    if not pathlib.Path(fname).exists():
-        return
-    if not _workspace_path_is_itws(fname):
-        return
-    with workspace_arrays._workspace_file_lock(fname), h5py.File(fname, "a") as h5_file:
-        if not _workspace_file_is_workspace(h5_file):
+    with workspace_arrays._workspace_save_lock(fname):
+        if not pathlib.Path(fname).exists():
             return
-        for name in list(h5_file):
-            if name.startswith(_WORKSPACE_TRANSACTION_GROUP_PREFIX):
-                _recover_open_workspace_transaction(h5_file, name)
-        _cleanup_orphan_workspace_internal_groups(h5_file)
-        h5_file.flush()
-
-
-def _write_root_attrs_to_open_workspace_file(
-    h5_file,
-    attrs: Mapping[str, typing.Any],
-    *,
-    replace: bool = False,
-) -> None:
-    if replace:
-        for key in list(h5_file.attrs):
-            del h5_file.attrs[key]
-    for key, value in attrs.items():
-        h5_file.attrs[key] = value
-
-
-def _write_workspace_root_attrs_to_file(
-    fname: str | os.PathLike[str],
-    attrs: Mapping[str, typing.Any],
-    *,
-    replace: bool = False,
-) -> None:
-    with _open_workspace_h5_file_for_update(fname) as h5_file:
-        _write_root_attrs_to_open_workspace_file(h5_file, attrs, replace=replace)
-
-
-def _workspace_obsolete_estimate(
-    fname: str | os.PathLike[str],
-) -> int:
-    try:
-        file_size = pathlib.Path(fname).stat().st_size
-    except OSError:
-        return 0
-    live_storage_size = workspace_arrays._workspace_live_h5_storage_size(fname)
-    return max(0, int(file_size) - live_storage_size)
-
-
-def _workspace_file_repack_payload(
-    fname: str | os.PathLike[str],
-) -> tuple[
-    dict[str, typing.Any], tuple[tuple[str, str, dict[str, typing.Any] | None], ...]
-]:
-    _recover_workspace_transactions(fname)
-    root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(fname)
-    return (
-        _compacted_workspace_root_attrs(root_attrs),
-        workspace_arrays._workspace_live_root_group_copy_groups(fname),
-    )
-
-
-def _write_workspace_constructor_groups_to_pending(
-    fname: str | os.PathLike[str],
-    constructor: Mapping[str, xr.Dataset],
-    group_path: str,
-    pending_path: str,
-    *,
-    compression_mode: WorkspaceCompressionMode | None = None,
-) -> None:
-    target_group_path = group_path.strip("/")
-    pending_path = pending_path.strip("/")
-    for constructor_group_path, ds in sorted(
-        constructor.items(), key=lambda item: item[0].count("/")
-    ):
-        source_group_path = constructor_group_path.strip("/")
-        if source_group_path != target_group_path and not source_group_path.startswith(
-            f"{target_group_path}/"
-        ):
-            continue
-        relative_path = source_group_path.removeprefix(target_group_path).strip("/")
-        pending_group_path = (
-            pending_path if not relative_path else f"{pending_path}/{relative_path}"
+        if not _workspace_path_is_itws(fname):
+            return
+        active_store = workspace_store.WorkspaceStore.active(fname)
+        file_context = (
+            active_store.write_session()
+            if active_store is not None
+            else h5py.File(fname, "a")
         )
-        workspace_arrays._write_workspace_dataset_group_to_file(
-            fname,
-            pending_group_path,
-            ds,
-            lock_path=fname,
-            compression_mode=compression_mode,
-        )
-
-
-def _path_is_at_or_under(path: str, root_path: str) -> bool:
-    path = path.strip("/")
-    root_path = root_path.strip("/")
-    return path == root_path or path.startswith(f"{root_path}/")
-
-
-def _move_h5_path(h5_file, source_path: str, destination_path: str) -> None:
-    workspace_arrays._ensure_h5_parent_group(h5_file, destination_path)
-    h5_file.move(source_path.strip("/"), destination_path.strip("/"))
-
-
-def _set_workspace_transaction_status(h5_file, txn_path: str, status: str) -> None:
-    h5_file[txn_path].attrs["status"] = status
-    h5_file.flush()
-
-
-def _prepare_workspace_transaction(
-    fname: str | os.PathLike[str],
-    txn_path: str,
-    pending_root: str,
-    backup_root: str,
-    rewrite_map: dict[str, tuple[str, dict[str, xr.Dataset]]],
-    attr_updates: tuple[
-        tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]], ...
-    ],
-    root_attrs: Mapping[str, typing.Any],
-) -> tuple[
-    list[dict[str, typing.Any]],
-    list[tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]]],
-]:
-    attr_updates_to_write: list[
-        tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]]
-    ] = []
-    with _open_workspace_h5_file_for_update(fname) as h5_file:
-        txn_group = h5_file.create_group(txn_path)
-        txn_group.attrs["protocol"] = _WORKSPACE_TRANSACTION_PROTOCOL
-        txn_group.attrs["status"] = "preparing"
-        txn_group.attrs["pending_root"] = pending_root
-        txn_group.attrs["backup_root"] = backup_root
-
-        attr_backup_index = 0
-        for payload_path, attrs, fallback in attr_updates:
-            attr_path = payload_path.strip("/")
-            if any(
-                _path_is_at_or_under(attr_path, rewrite_path)
-                for rewrite_path in rewrite_map
-            ):
-                continue
-            if attr_path in h5_file:
-                _write_workspace_attr_backup(
-                    txn_group,
-                    attr_backup_index,
-                    payload_path,
-                    h5_file[attr_path].attrs,
-                )
-                attr_backup_index += 1
-                attr_updates_to_write.append((payload_path, attrs, fallback))
-            else:
-                fallback_path = fallback[0].strip("/")
-                if not any(
-                    _path_is_at_or_under(fallback_path, rewrite_path)
-                    for rewrite_path in rewrite_map
-                ):
-                    rewrite_map[fallback_path] = fallback
-
-        _write_workspace_attr_backup(txn_group, attr_backup_index, "/", h5_file.attrs)
-
-        group_operations: list[dict[str, typing.Any]] = []
-        for group_path in sorted(rewrite_map):
-            pending_path = f"{pending_root}/{group_path}"
-            backup_path = f"{backup_root}/{group_path}"
-            group_operations.append(
-                {
-                    "group_path": group_path,
-                    "pending_path": pending_path,
-                    "backup_path": backup_path,
-                    "old_exists": workspace_arrays._h5_path_exists(h5_file, group_path),
-                }
-            )
-        txn_group.attrs["operations"] = json.dumps(
-            {"group_replacements": group_operations}
-        )
-        h5_file.flush()
-    return group_operations, attr_updates_to_write
-
-
-def _write_workspace_transaction_pending_groups(
-    fname: str | os.PathLike[str],
-    rewrite_map: Mapping[str, tuple[str, dict[str, xr.Dataset]]],
-    pending_root: str,
-    *,
-    compression_mode: WorkspaceCompressionMode | None = None,
-) -> None:
-    try:
-        for group_path, (rewrite_group_path, constructor) in sorted(
-            rewrite_map.items()
-        ):
-            pending_group_path = f"{pending_root}/{group_path}"
-            _write_workspace_constructor_groups_to_pending(
-                fname,
-                constructor,
-                rewrite_group_path,
-                pending_group_path,
-                compression_mode=compression_mode,
-            )
-    except Exception:
-        with _open_workspace_h5_file_for_update(fname) as h5_file:
-            workspace_arrays._delete_h5_path(h5_file, pending_root)
+        with file_context as h5_file:
+            if not _workspace_file_is_workspace(h5_file):
+                return
+            for name in list(h5_file):
+                if name.startswith(_WORKSPACE_TRANSACTION_GROUP_PREFIX):
+                    _recover_open_workspace_transaction(h5_file, name)
+            _cleanup_orphan_workspace_internal_groups(h5_file)
             h5_file.flush()
-        raise
-
-
-def _commit_workspace_transaction(
-    fname: str | os.PathLike[str],
-    txn_path: str,
-    group_operations: Iterable[Mapping[str, typing.Any]],
-    attr_updates: Iterable[
-        tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]]
-    ],
-    root_attrs: Mapping[str, typing.Any],
-) -> None:
-    with _open_workspace_h5_file_for_update(fname) as h5_file:
-        _set_workspace_transaction_status(h5_file, txn_path, "committing")
-        for operation in group_operations:
-            group_path = typing.cast("str", operation["group_path"])
-            pending_path = typing.cast("str", operation["pending_path"])
-            backup_path = typing.cast("str", operation["backup_path"])
-            if not workspace_arrays._h5_path_exists(h5_file, pending_path):
-                raise KeyError(
-                    f"Workspace pending group {pending_path!r} was not written"
-                )
-            if workspace_arrays._h5_path_exists(h5_file, group_path):
-                _move_h5_path(h5_file, group_path, backup_path)
-            _move_h5_path(h5_file, pending_path, group_path)
-
-        for payload_path, attrs, _fallback in attr_updates:
-            target_attrs = _workspace_txn_attr_target(h5_file, payload_path)
-            if target_attrs is not None:
-                workspace_arrays._replace_h5_attrs(target_attrs, attrs)
-
-        _write_root_attrs_to_open_workspace_file(h5_file, root_attrs)
-        _set_workspace_transaction_status(h5_file, txn_path, "committed")
-
-
-def _write_workspace_transaction_file(
-    fname: str | os.PathLike[str],
-    rewrite_groups: Iterable[tuple[str, dict[str, xr.Dataset]]],
-    attr_updates: Iterable[
-        tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]]
-    ],
-    root_attrs: Mapping[str, typing.Any],
-    *,
-    compression_mode: WorkspaceCompressionMode | None = None,
-) -> None:
-    _recover_workspace_transactions(fname)
-    rewrite_map = {
-        group_path.strip("/"): (group_path, constructor)
-        for group_path, constructor in rewrite_groups
-    }
-    attr_updates_tuple = tuple(attr_updates)
-    txn_id = uuid.uuid4().hex
-    txn_path = f"{_WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
-    pending_root = f"{_WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
-    backup_root = f"{_WORKSPACE_BACKUP_GROUP_PREFIX}{txn_id}"
-    group_operations, attr_updates_to_write = _prepare_workspace_transaction(
-        fname,
-        txn_path,
-        pending_root,
-        backup_root,
-        rewrite_map,
-        attr_updates_tuple,
-        root_attrs,
-    )
-    try:
-        _write_workspace_transaction_pending_groups(
-            fname,
-            rewrite_map,
-            pending_root,
-            compression_mode=compression_mode,
-        )
-        _commit_workspace_transaction(
-            fname,
-            txn_path,
-            group_operations,
-            attr_updates_to_write,
-            root_attrs,
-        )
-    except Exception:
-        _recover_workspace_transactions(fname)
-        raise
-    _recover_workspace_transactions(fname)
-
-
-def _write_full_workspace_tree_file(
-    fname: str | os.PathLike[str],
-    tree: xr.DataTree | None,
-    root_attrs: Mapping[str, typing.Any],
-    *,
-    copy_source: str | os.PathLike[str] | None = None,
-    copy_groups: Iterable[_WorkspaceCopyGroup] = (),
-    copy_group_sources: Iterable[_WorkspaceCopyGroupWithSource] = (),
-    compression_mode: WorkspaceCompressionMode | None = None,
-) -> None:
-    fname = os.fsdecode(fname)
-    use_scratch = _workspace_path_is_high_risk(fname)
-    tmp_dir: tempfile.TemporaryDirectory[str] | None = None
-    destination_tmp: str | None = None
-    if use_scratch:
-        tmp_dir = tempfile.TemporaryDirectory(prefix="erlab-itws-")
-        tmp_fname = str(pathlib.Path(tmp_dir.name) / pathlib.Path(fname).name)
-    else:
-        tmp_fname = f"{fname}.tmp-{uuid.uuid4().hex}"
-    try:
-        copied_paths: set[str] = set()
-        workspace_arrays.ensure_workspace_hdf5_filters_registered()
-        copy_groups_tuple = tuple(copy_groups)
-        copy_group_sources_tuple = tuple(
-            (os.fsdecode(source_file), source_path, destination_path, attrs)
-            for source_file, source_path, destination_path, attrs in copy_group_sources
-        )
-        if use_scratch and _workspace_path_is_likely_network_path(fname):
-            if tree is None and copy_source is not None and copy_groups_tuple:
-                raise ValueError(
-                    "File-level workspace repack cannot run when HDF5 group "
-                    "copy reuse is disabled"
-                )
-            copy_source = None
-            copy_groups_tuple = ()
-
-        copy_jobs_by_source: dict[
-            str, list[tuple[str, str, dict[str, typing.Any] | None, bool]]
-        ] = {}
-        if copy_source is not None and copy_groups_tuple:
-            copy_jobs_by_source[os.fsdecode(copy_source)] = [
-                (source_path, destination_path, attrs, False)
-                for source_path, destination_path, attrs in copy_groups_tuple
-            ]
-        for (
-            source_file,
-            source_path,
-            destination_path,
-            attrs,
-        ) in copy_group_sources_tuple:
-            copy_jobs_by_source.setdefault(source_file, []).append(
-                (source_path, destination_path, attrs, True)
-            )
-
-        with h5py.File(tmp_fname, "w") as tmp_file:
-            _write_root_attrs_to_open_workspace_file(tmp_file, root_attrs, replace=True)
-
-        for source_fname, copy_jobs in copy_jobs_by_source.items():
-            with workspace_arrays._workspace_file_lock(source_fname):
-                try:
-                    source_file = h5py.File(source_fname, "r")
-                except FileNotFoundError as exc:
-                    raise _WorkspaceBackingFileNotFoundError(source_fname) from exc
-                with source_file, h5py.File(tmp_fname, "a") as tmp_file:
-                    for source_path, destination_path, attrs, required in copy_jobs:
-                        destination_path = destination_path.strip("/")
-                        if workspace_arrays._copy_workspace_h5_group_to_open_file(
-                            source_file,
-                            tmp_file,
-                            source_path,
-                            destination_path,
-                            attrs,
-                        ):
-                            copied_paths.add(destination_path)
-                        elif required:
-                            raise ValueError(
-                                "Required workspace payload group "
-                                f"{source_path!r} was not found in {source_fname!r}"
-                            )
-
-        if tree is not None:
-            for node in sorted(tree.subtree, key=lambda value: value.path.count("/")):
-                group_path = node.path.strip("/")
-                if not group_path or group_path in copied_paths:
-                    continue
-                ds = node.to_dataset(inherit=False)
-                if ds.variables or ds.attrs:
-                    workspace_arrays._write_workspace_dataset_group_to_file(
-                        tmp_fname,
-                        group_path,
-                        ds,
-                        compression_mode=compression_mode,
-                    )
-
-        _validate_workspace_h5_file(tmp_fname)
-        _fsync_file(tmp_fname)
-        if use_scratch:
-            try:
-                os.replace(tmp_fname, fname)
-            except OSError as err:
-                if err.errno != errno.EXDEV:
-                    raise
-                destination_tmp = f"{fname}.tmp-{uuid.uuid4().hex}"
-                shutil.copyfile(tmp_fname, destination_tmp)
-                _fsync_file(destination_tmp)
-                os.replace(destination_tmp, fname)
-            _fsync_parent_directory(fname)
-        else:
-            os.replace(tmp_fname, fname)
-            _fsync_parent_directory(fname)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(tmp_fname)
-        if destination_tmp is not None:
-            with contextlib.suppress(FileNotFoundError):
-                os.remove(destination_tmp)
-        if tmp_dir is not None:
-            tmp_dir.cleanup()
-
-
-def _validate_workspace_h5_file(fname: str | os.PathLike[str]) -> None:
-    with h5py.File(fname, "r") as h5_file:
-        if not _workspace_file_is_workspace(h5_file):
-            raise ValueError(f"Temporary workspace file is not valid: {fname}")
-
-
-def _fsync_file(fname: str | os.PathLike[str]) -> None:
-    with contextlib.suppress(OSError):
-        fd = os.open(fname, os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-
-
-def _fsync_parent_directory(fname: str | os.PathLike[str]) -> None:
-    if os.name != "posix":
-        return
-    with contextlib.suppress(OSError):
-        fd = os.open(pathlib.Path(fname).parent, os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)

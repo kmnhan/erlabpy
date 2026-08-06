@@ -4,7 +4,6 @@ import json
 import logging
 import pathlib
 import tempfile
-import types
 import typing
 import warnings
 from collections.abc import Callable
@@ -25,6 +24,7 @@ import erlab.interactive.imagetool.manager._modelview as manager_modelview
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
+import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
@@ -136,9 +136,7 @@ def test_manager_workspace_option_overrides_roundtrip_and_mark_dirty(
         assert manager.workspace_option_overrides() == overrides
 
         fname = tmp_path / "option-overrides.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         manager._set_workspace_option_overrides({})
         manager._workspace_controller._mark_workspace_clean()
 
@@ -639,16 +637,12 @@ def test_manager_workspace_preserves_link_groups(
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
         fname = tmp_path / "linked.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert not manager.is_workspace_modified
 
         manager.link_imagetools(0, 1, link_colors=False)
         assert manager.is_workspace_modified
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
 
         manifest = workspace_format._workspace_manifest_from_attrs(
             workspace_arrays._read_workspace_root_attrs_h5py(fname)
@@ -698,9 +692,7 @@ def test_manager_unlink_selected_prunes_live_link_singleton(
             manager.add_imagetool(root, show=False)
         manager.link_imagetools(0, 1, link_colors=False)
         fname = tmp_path / "live-unlink-singleton.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         adopt_workspace_path(manager, fname)
         manager._workspace_controller._mark_workspace_clean()
 
@@ -991,7 +983,6 @@ def test_workspace_controller_helper_branch_edges(
     with manager_context() as manager:
         controller = manager._workspace_controller
         loader = controller.loading
-        saver = controller.saving
 
         invalid = xr.Dataset(attrs={"itool_state": b"not text"})
         assert (
@@ -1018,28 +1009,6 @@ def test_workspace_controller_helper_branch_edges(
             )
             is None
         )
-
-        try:
-            manager._tool_graph.nodes["parent"] = types.SimpleNamespace(parent_uid=None)
-            manager._tool_graph.nodes["child"] = types.SimpleNamespace(
-                parent_uid="parent"
-            )
-            manager._tool_graph.nodes["sibling"] = types.SimpleNamespace(
-                parent_uid=None
-            )
-            manager._workspace_state.dirty_data.update({"parent", "child", "sibling"})
-            with monkeypatch.context() as patch:
-                patch.setattr(saver, "_workspace_node_path", lambda uid: uid)
-                assert saver._workspace_highest_dirty_data_roots() == [
-                    "parent",
-                    "sibling",
-                ]
-        finally:
-            for uid in ("parent", "child", "sibling"):
-                manager._tool_graph.nodes.pop(uid, None)
-            manager._workspace_state.dirty_data.difference_update(
-                {"parent", "child", "sibling"}
-            )
 
         calls: list[str] = []
         with monkeypatch.context() as patch:
@@ -1616,7 +1585,9 @@ def test_manager_records_recent_workspace_accesses(
     opened = tmp_path / "opened.itws"
     saved = tmp_path / "saved.itws"
     imported = tmp_path / "imported.itws"
-    for path in (opened, saved, imported):
+    with workspace_store.WorkspaceStore(opened, create=True):
+        pass
+    for path in (saved, imported):
         path.touch()
 
     with manager_context() as manager:
@@ -2101,9 +2072,7 @@ def test_manager_workspace_h5py_fast_path_preserves_spaced_associated_coord(
         fname = tmp_path / "spaced-coord.itws"
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            manager._workspace_controller.saving._save_workspace_document(
-                fname, force_full=True
-            )
+            manager._workspace_controller.saving._save_workspace_document(fname)
         assert not any("space in its name" in str(item.message) for item in caught)
 
         manager.remove_all_tools()
@@ -2146,9 +2115,7 @@ def test_manager_workspace_dirty_markers_are_node_scoped(
         child_uid = manager.add_imagetool_child(child, 0, show=False)
 
         fname = tmp_path / "dirty.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         adopt_workspace_path(manager, fname)
         assert not manager.is_workspace_modified
         assert not root.isWindowModified()
@@ -2187,9 +2154,7 @@ def test_manager_close_suppresses_child_visibility_dirty(
         qtbot.wait_until(root.isVisible)
 
         fname = tmp_path / "quit-clean.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         adopt_workspace_path(manager, fname)
         manager._workspace_controller._drain_workspace_deferred_events()
         manager._workspace_controller._mark_workspace_clean()
@@ -2265,9 +2230,8 @@ def test_manager_update_info_accepts_selected_root_uid(
         assert rendered_uids == [wrappers[0].uid]
 
 
-def test_manager_workspace_rejects_external_xarray_reader_for_active_workspace(
+def test_manager_workspace_state_save_keeps_external_reader_usable(
     qtbot,
-    monkeypatch,
     tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -2282,9 +2246,7 @@ def test_manager_workspace_rejects_external_xarray_reader_for_active_workspace(
         manager.add_imagetool(root, show=False)
 
         fname = tmp_path / "lazy-state.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -2294,12 +2256,9 @@ def test_manager_workspace_rejects_external_xarray_reader_for_active_workspace(
         assert _compute_first_value(manager.get_imagetool(0).slicer_area._data) == 0
         manager._workspace_controller._mark_workspace_clean()
 
-        errors: list[str] = []
-        monkeypatch.setattr(manager, "_show_workspace_save_worker_error", errors.append)
-
         manager.rename_imagetool(0, "lazy state")
-        assert not _request_workspace_save_and_wait(qtbot, manager)
-        assert errors
+        assert _request_workspace_save_and_wait(qtbot, manager)
+        assert _compute_first_value(lazy) == 0
         with contextlib.suppress(Exception):
             lazy.close()
 
@@ -2326,9 +2285,7 @@ def test_manager_workspace_roundtrip_preserves_controls_visibility(
         qtbot.wait_until(lambda: manager.is_workspace_modified, timeout=5000)
 
         fname = tmp_path / "controls.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         adopt_workspace_path(manager, fname)
         assert not manager.is_workspace_modified
 
@@ -2670,9 +2627,7 @@ def test_manager_workspace_roundtrip_fit2d_child_with_spaced_axis(
         fname = tmp_path / "fit2d-spaced-axis.itws"
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            manager._workspace_controller.saving._save_workspace_document(
-                fname, force_full=True
-            )
+            manager._workspace_controller.saving._save_workspace_document(fname)
 
         assert not any("space in its name" in str(item.message) for item in caught)
         manager.remove_all_tools()

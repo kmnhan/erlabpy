@@ -19,12 +19,10 @@ import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._console as manager_console
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
-import erlab.interactive.imagetool.manager._modelview as manager_modelview
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._loading as workspace_loading
 import erlab.interactive.imagetool.manager._workspace._pending as workspace_pending
-import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive.imagetool import itool
@@ -62,6 +60,9 @@ if typing.TYPE_CHECKING:
     )
 from tests.interactive.imagetool.manager.workspace._support import (
     _AddedTimeChildTool,
+    _current_workspace_manifest_entry,
+    _current_workspace_payload_attrs,
+    _current_workspace_payload_path,
     _open_external_file_backed_hdf5_imagetool_data,
     _request_workspace_save_and_wait,
     _transaction_test_root_attrs,
@@ -94,9 +95,7 @@ def test_manager_workspace_restore_hidden_memory_link_group_keeps_payload_pendin
 
         manager.link_imagetools(0, 1, link_colors=False)
         fname = tmp_path / "hidden-memory-linked.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
 
         def _fail_materialize_pending_payload(_node) -> bool:
             pytest.fail("link restore should not materialize hidden memory payloads")
@@ -120,7 +119,7 @@ def test_manager_workspace_restore_hidden_memory_link_group_keeps_payload_pendin
         for index, wrapper in enumerate(wrappers):
             assert wrapper.pending_workspace_memory_payload == (
                 fname.resolve(),
-                f"{index}/imagetool",
+                _current_workspace_payload_path(fname, str(index)).lstrip("/"),
             )
             assert wrapper.imagetool is None
             assert wrapper.workspace_linked
@@ -129,32 +128,27 @@ def test_manager_workspace_restore_hidden_memory_link_group_keeps_payload_pendin
         assert wrappers[0].workspace_link_key == wrappers[1].workspace_link_key
         assert not manager.is_workspace_modified
 
-        icon_colors: list[QtGui.QColor] = []
-        original_icon = manager_modelview.qta.icon
-
-        def _record_icon(name, *args, **kwargs):
-            if name == "mdi6.link-variant":
-                icon_colors.append(kwargs["color"])
-            return original_icon(name, *args, **kwargs)
-
-        monkeypatch.setattr(manager_modelview.qta, "icon", _record_icon)
+        delegate = manager.tree_view._delegate
+        delegate._link_icon_cache.clear()
         index = manager.tree_view._model.index(0, 0)
-        option = manager.tree_view._delegate._option_for_index(manager.tree_view, index)
+        option = delegate._option_for_index(manager.tree_view, index)
         canvas = QtGui.QPixmap(200, 32)
         canvas.fill(QtGui.QColor("white"))
         painter = QtGui.QPainter(canvas)
         try:
-            manager.tree_view._delegate.paint(painter, option, index)
+            delegate.paint(painter, option, index)
         finally:
             painter.end()
 
-        assert icon_colors
-        assert icon_colors[-1] != option.palette.color(QtGui.QPalette.ColorRole.Mid)
+        link_color = manager.color_for_workspace_link_key(
+            typing.cast("str", wrappers[0].workspace_link_key)
+        )
+        assert link_color.rgba() in delegate._link_icon_cache
+        assert link_color != option.palette.color(QtGui.QPalette.ColorRole.Mid)
 
 
 def test_manager_workspace_mixed_pending_link_badge_uses_group_color(
     qtbot,
-    monkeypatch,
     tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -175,9 +169,7 @@ def test_manager_workspace_mixed_pending_link_badge_uses_group_color(
         manager.link_imagetools(0, 1, link_colors=False)
 
         fname = tmp_path / "mixed-hidden-memory-linked.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -194,28 +186,21 @@ def test_manager_workspace_mixed_pending_link_badge_uses_group_color(
         assert wrappers[0].slicer_area._linking_proxy is None
         assert wrappers[1].pending_workspace_memory_payload is not None
 
-        icon_colors: list[QtGui.QColor] = []
-        original_icon = manager_modelview.qta.icon
-
-        def _record_icon(name, *args, **kwargs):
-            if name == "mdi6.link-variant":
-                icon_colors.append(kwargs["color"])
-            return original_icon(name, *args, **kwargs)
-
-        monkeypatch.setattr(manager_modelview.qta, "icon", _record_icon)
+        delegate = manager.tree_view._delegate
+        delegate._link_icon_cache.clear()
         index = manager.tree_view._model.index(0, 0)
-        option = manager.tree_view._delegate._option_for_index(manager.tree_view, index)
+        option = delegate._option_for_index(manager.tree_view, index)
         canvas = QtGui.QPixmap(200, 32)
         canvas.fill(QtGui.QColor("white"))
         painter = QtGui.QPainter(canvas)
         try:
-            manager.tree_view._delegate.paint(painter, option, index)
+            delegate.paint(painter, option, index)
         finally:
             painter.end()
 
-        assert icon_colors
-        assert icon_colors[-1] == manager.color_for_workspace_link_key(link_key)
-        assert icon_colors[-1] != option.palette.color(QtGui.QPalette.ColorRole.Mid)
+        link_color = manager.color_for_workspace_link_key(link_key)
+        assert link_color.rgba() in delegate._link_icon_cache
+        assert link_color != option.palette.color(QtGui.QPalette.ColorRole.Mid)
 
 
 def test_manager_workspace_link_badge_colors_do_not_depend_on_materialization(
@@ -241,9 +226,7 @@ def test_manager_workspace_link_badge_colors_do_not_depend_on_materialization(
         manager.link_imagetools(2, 3, link_colors=False)
 
         fname = tmp_path / "pending-link-badge-colors.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -461,9 +444,7 @@ def test_manager_update_actions_for_pending_memory_link_state_does_not_materiali
             root.hide()
 
         fname = tmp_path / "pending-actions.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -525,9 +506,7 @@ def test_manager_pending_memory_reload_unavailable_does_not_materialize(
         root.hide()
 
         fname = tmp_path / "pending-reload.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -587,9 +566,7 @@ def test_manager_pending_memory_file_source_reload_available_without_materializi
         root.hide()
 
         fname = tmp_path / "pending-file-source-reload.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -662,9 +639,7 @@ def test_manager_pending_memory_child_routes_reload_to_file_source_parent(
         child.hide()
 
         fname = tmp_path / "pending-file-source-child-reload.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -744,9 +719,7 @@ def test_manager_pending_memory_child_source_change_marks_stale_not_unavailable(
         child.hide()
 
         fname = tmp_path / "pending-child-source-stale.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -805,9 +778,7 @@ def test_manager_pending_memory_output_child_source_change_marks_stale(
         output_tool.hide()
 
         fname = tmp_path / "pending-output-child-source-change.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -860,9 +831,7 @@ def test_manager_link_imagetools_keeps_hidden_memory_payload_pending(
             root.hide()
 
         fname = tmp_path / "pending-link.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -911,9 +880,7 @@ def test_manager_unlink_selected_keeps_hidden_memory_payload_pending(
         manager.link_imagetools(0, 1, link_colors=False)
 
         fname = tmp_path / "pending-unlink.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -961,9 +928,7 @@ def test_manager_unlink_selected_prunes_pending_link_singleton(
         manager.link_imagetools(0, 1, link_colors=False)
 
         fname = tmp_path / "pending-unlink-singleton.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -1012,9 +977,7 @@ def test_manager_remove_pending_linked_root_prunes_partner_without_materializing
         manager.link_imagetools(0, 1, link_colors=False)
 
         fname = tmp_path / "pending-remove-linked-root.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -1042,9 +1005,7 @@ def test_manager_remove_pending_linked_root_prunes_partner_without_materializing
         assert survivor.uid in manager._workspace_state.dirty_state
         assert survivor.uid not in manager._workspace_state.dirty_data
 
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         manifest = workspace_format._workspace_manifest_from_attrs(
             workspace_arrays._read_workspace_root_attrs_h5py(fname)
         )
@@ -1081,9 +1042,7 @@ def test_manager_remove_pending_linked_child_prunes_partner_without_materializin
         manager.link_imagetools(*child_uids, link_colors=False)
 
         fname = tmp_path / "pending-remove-linked-child.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -1127,9 +1086,7 @@ def test_manager_remove_pending_linked_child_prunes_partner_without_materializin
         assert survivor.uid in manager._workspace_state.dirty_state
         assert survivor.uid not in manager._workspace_state.dirty_data
 
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         manifest = workspace_format._workspace_manifest_from_attrs(
             workspace_arrays._read_workspace_root_attrs_h5py(fname)
         )
@@ -1160,9 +1117,7 @@ def test_manager_materializing_pending_linked_partner_uses_pending_state(
         manager.link_imagetools(0, 1, link_colors=False)
 
         fname = tmp_path / "pending-linked-partner-materialize-state.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -1473,13 +1428,10 @@ def test_manager_pending_linked_partner_respects_link_color_setting(
         manager.link_imagetools(0, 1, link_colors=False)
 
         fname = tmp_path / "pending-linked-partner-color-state.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        original_partner_state = json.loads(
+            _current_workspace_payload_attrs(fname, "1")["itool_state"]
         )
-        with h5py.File(fname, "r") as h5_file:
-            original_partner_state = json.loads(
-                h5_file["1/imagetool"].attrs["itool_state"]
-            )
         new_cmap = (
             "viridis"
             if original_partner_state["color"]["cmap"] != "viridis"
@@ -1522,10 +1474,9 @@ def test_manager_pending_linked_partner_respects_link_color_setting(
         assert materialized_calls == 1
         assert wrappers[1].pending_workspace_memory_payload is not None
 
-        with h5py.File(fname, "r") as h5_file:
-            saved_partner_state = json.loads(
-                h5_file["1/imagetool"].attrs["itool_state"]
-            )
+        saved_partner_state = json.loads(
+            _current_workspace_payload_attrs(fname, "1")["itool_state"]
+        )
         assert saved_partner_state["slice"]["indices"][0][0] == 3
         assert saved_partner_state["color"] == original_partner_state["color"]
 
@@ -1865,9 +1816,7 @@ def test_manager_workspace_data_backing_snapshot_includes_pending_memory(
         root.hide()
 
         fname = tmp_path / "pending-backing-snapshot.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -1905,15 +1854,13 @@ def test_manager_workspace_file_backed_data_can_load_into_memory(
         dims=["x", "y"],
         coords={"x": np.arange(5), "y": np.arange(5)},
     )
-    tree = xr.DataTree.from_dict(
-        {"0/imagetool": source.to_dataset(name=_ITOOL_DATA_NAME)}
+    workspace_arrays._write_workspace_dataset_group_to_file(
+        source_file,
+        "0/imagetool",
+        source.to_dataset(name=_ITOOL_DATA_NAME),
     )
-    try:
-        workspace_storage._write_full_workspace_tree_file(
-            source_file, tree, _transaction_test_root_attrs()
-        )
-    finally:
-        tree.close()
+    with h5py.File(source_file, "a") as h5_file:
+        h5_file.attrs.update(_transaction_test_root_attrs())
 
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
@@ -1952,9 +1899,7 @@ def test_manager_workspace_load_keeps_hidden_memory_payload_pending(
         root.hide()
 
         fname = tmp_path / "load-hidden-memory.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
 
         def _fail_h5py_payload_read(*_args, **_kwargs):
             pytest.fail("hidden memory payload should not use fake h5py data")
@@ -1972,7 +1917,7 @@ def test_manager_workspace_load_keeps_hidden_memory_payload_pending(
         wrapper = manager._tool_graph.root_wrappers[0]
         assert wrapper.pending_workspace_memory_payload == (
             fname.resolve(),
-            "0/imagetool",
+            _current_workspace_payload_path(fname).lstrip("/"),
         )
         assert wrapper.imagetool is None
         index = manager.tree_view._model.index(0, 0)
@@ -2114,9 +2059,7 @@ def test_pending_workspace_1d_roles_match_materialized_provenance_input(
         }
 
         fname = tmp_path / "pending-1d-role-parity.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -2218,9 +2161,7 @@ def test_manager_workspace_open_coalesces_pending_memory_wait_dialogs(
         root.hide()
 
         fname = tmp_path / "pending-wait-dialogs.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         messages: list[str] = []
 
         @contextlib.contextmanager
@@ -2282,9 +2223,7 @@ def test_hidden_workspace_toolwindows_restore_pending_until_shown(
         figure.hide()
 
         fname = tmp_path / "hidden-toolwindows-pending.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
 
         original_from_dataset = erlab.interactive.utils.ToolWindow.from_dataset.__func__
         constructed: list[str] = []
@@ -2400,9 +2339,7 @@ def test_manager_get_imagetool_materializes_hidden_memory_payload(
         root.hide()
 
         fname = tmp_path / "get-hidden-memory.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -2439,9 +2376,7 @@ def test_manager_persistence_view_materializes_hidden_memory_payload(
         root.hide()
 
         fname = tmp_path / "persistence-view-hidden-memory.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -2479,9 +2414,7 @@ def test_manager_console_namespace_materializes_hidden_memory_payload(
         root.hide()
 
         fname = tmp_path / "console-hidden-memory.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -2517,9 +2450,7 @@ def test_manager_figure_operation_materializes_hidden_memory_payload(
         root.hide()
 
         fname = tmp_path / "figure-hidden-memory.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -2560,9 +2491,7 @@ def test_manager_reload_selected_materializes_hidden_memory_payload(
         root.hide()
 
         fname = tmp_path / "reload-hidden-memory.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -2627,9 +2556,7 @@ def test_manager_active_filter_edit_materializes_hidden_memory_payload(
         root.hide()
 
         fname = tmp_path / "active-filter-hidden-memory.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -2673,9 +2600,7 @@ def test_manager_workspace_show_materializes_hidden_memory_payload(
         root.hide()
 
         fname = tmp_path / "show-hidden-memory.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -2720,13 +2645,12 @@ def test_manager_workspace_child_tool_reference_keeps_pending_parent_unmateriali
         child_uid = manager.add_childtool(child, 0, show=False)
 
         fname = tmp_path / "pending-parent-child-reference.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        references = json.loads(
+            _current_workspace_payload_attrs(fname, f"0/childtools/{child_uid}")[
+                "tool_data_references"
+            ]
         )
-        with h5py.File(fname, "r") as h5_file:
-            references = json.loads(
-                h5_file[f"0/childtools/{child_uid}/tool"].attrs["tool_data_references"]
-            )
         assert references[imagetool_serialization.SAVED_TOOL_DATA_NAME] == {
             "kind": "parent_source"
         }
@@ -2804,12 +2728,13 @@ def test_manager_workspace_tool_manager_node_reference_keeps_pending_source(
         )
 
         fname = tmp_path / "pending-manager-node-reference.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        figure_attrs = _current_workspace_payload_attrs(fname, f"figures/{figure_uid}")
+        references = json.loads(figure_attrs["tool_data_references"])
         with h5py.File(fname, "r") as h5_file:
-            figure_group = h5_file[f"figures/{figure_uid}/tool"]
-            references = json.loads(figure_group.attrs["tool_data_references"])
+            figure_group = h5_file[
+                _current_workspace_payload_path(fname, f"figures/{figure_uid}")
+            ]
             assert references[imagetool_serialization.SAVED_TOOL_DATA_NAME] == {
                 "kind": "manager_node",
                 "node_uid": wrapper.uid,
@@ -2893,14 +2818,10 @@ def test_manager_workspace_embedded_child_tool_keeps_parent_payload_pending(
         )
 
         fname = tmp_path / "pending-parent-embedded-child.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        assert "tool_data_references" not in _current_workspace_payload_attrs(
+            fname, f"0/childtools/{child_uid}"
         )
-        with h5py.File(fname, "r") as h5_file:
-            assert (
-                "tool_data_references"
-                not in h5_file[f"0/childtools/{child_uid}/tool"].attrs
-            )
 
         materialize_calls = 0
         pending_payloads = manager._workspace_controller.loading.pending
@@ -2952,9 +2873,7 @@ def test_manager_workspace_replacing_pending_memory_data_clears_pending_payload(
         root.hide()
 
         fname = tmp_path / "replace-pending-memory.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
@@ -2976,8 +2895,10 @@ def test_manager_workspace_replacing_pending_memory_data_clears_pending_payload(
         assert wrapper.pending_workspace_memory_payload is None
 
         with h5py.File(fname, "r") as h5_file:
-            group = h5_file["0/imagetool"]
-            assert group.attrs["itool_name"] == "replacement"
+            group = h5_file[_current_workspace_payload_path(fname)]
+            assert _current_workspace_payload_attrs(fname)["itool_name"] == (
+                "replacement"
+            )
             np.testing.assert_array_equal(
                 group[_ITOOL_DATA_NAME][...],
                 replacement.values,
@@ -3011,15 +2932,14 @@ def test_manager_workspace_attr_update_keeps_pending_hidden_memory_unmaterialize
         root.hide()
 
         fname = tmp_path / "save-pending-hidden-memory.itws"
-        manager._workspace_controller.saving._save_workspace_document(
-            fname, force_full=True
-        )
+        manager._workspace_controller.saving._save_workspace_document(fname)
         assert manager._workspace_controller.loading._load_workspace_file(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
 
         wrapper = manager._tool_graph.root_wrappers[0]
         assert wrapper.pending_workspace_memory_payload is not None
+        object_id = _current_workspace_manifest_entry(fname)["payload_object_id"]
 
         materialize_calls = 0
         pending_payloads = manager._workspace_controller.loading.pending
@@ -3037,25 +2957,19 @@ def test_manager_workspace_attr_update_keeps_pending_hidden_memory_unmaterialize
         )
 
         wrapper.name = "renamed"
-        update = manager._workspace_controller.saving._workspace_attr_update_snapshot(
-            wrapper.uid
-        )
-
-        assert update is not None
-        payload_path, attrs, (_node_path, constructor) = update
         assert materialize_calls == 0
         assert wrapper.pending_workspace_memory_payload is not None
-        assert attrs["itool_name"] == "renamed"
-        assert payload_path == "0/imagetool"
-        assert constructor == {}
 
         assert _request_workspace_save_and_wait(qtbot, manager)
         assert materialize_calls == 0
         assert wrapper.pending_workspace_memory_payload is not None
+        assert _current_workspace_manifest_entry(fname)["payload_object_id"] == (
+            object_id
+        )
+        assert _current_workspace_payload_attrs(fname)["itool_name"] == "renamed"
 
         with h5py.File(fname, "r") as h5_file:
-            group = h5_file["0/imagetool"]
-            assert group.attrs["itool_name"] == "renamed"
+            group = h5_file[_current_workspace_payload_path(fname)]
             np.testing.assert_array_equal(
                 group[_ITOOL_DATA_NAME][...],
                 data.values,

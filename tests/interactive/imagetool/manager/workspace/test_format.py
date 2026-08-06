@@ -370,61 +370,57 @@ def test_workspace_attr_typed_encoding_roundtrips_safe_values(caplog) -> None:
 
 
 def test_workspace_metadata_helpers_cover_invalid_payloads() -> None:
-    manifest_attrs = workspace_format._workspace_root_attrs_payload(
+    manifest = workspace_format._workspace_manifest_payload(
         root_order=["1"],
         nodes=[{"path": "1"}],
-        delta_save_count=2,
         erlab_version="test",
     )
-    raw_manifest = manifest_attrs[workspace_format._WORKSPACE_MANIFEST_ATTR]
+    raw_manifest = json.dumps(manifest)
 
-    assert (
-        workspace_format._workspace_manifest_from_attrs(
-            {workspace_format._WORKSPACE_MANIFEST_ATTR: raw_manifest.encode()}
-        )["delta_save_count"]
-        == 2
+    encoded_manifest = workspace_format._workspace_manifest_from_attrs(
+        {workspace_format._WORKSPACE_MANIFEST_ATTR: raw_manifest.encode()}
     )
-    manifest = workspace_format._workspace_manifest_from_attrs(
+    assert encoded_manifest["root_order"] == ["1"]
+    decoded_manifest = workspace_format._workspace_manifest_from_attrs(
         {workspace_format._WORKSPACE_MANIFEST_ATTR: raw_manifest}
     )
-    assert workspace_format._workspace_manifest_repack_estimate(
-        manifest, delta_save_count=2
-    ) == (0, 0, True)
-    assert workspace_format._workspace_manifest_repack_estimate(
-        {"delta_save_count": 2}, delta_save_count=2
-    ) == (0, 0, False)
-    assert workspace_format._workspace_manifest_repack_estimate(
-        None, delta_save_count=2
-    ) == (0, 0, False)
-    assert (
-        workspace_format._workspace_manifest_nonnegative_int(
-            {"estimated_obsolete_bytes": "not-an-int"},
-            "estimated_obsolete_bytes",
-        )
-        == 0
-    )
+    assert decoded_manifest["nodes"] == [{"path": "1"}]
     assert (
         workspace_format._workspace_manifest_from_attrs(
             {workspace_format._WORKSPACE_MANIFEST_ATTR: "{not-json"}
         )
         == {}
     )
+
+    assert list(workspace_format._iter_workspace_manifest_node_entries(None)) == []
     assert (
-        workspace_format._workspace_delta_save_count_from_attrs(
-            {
-                workspace_format._WORKSPACE_MANIFEST_ATTR: (
-                    '{"delta_save_count": "not-an-int"}'
-                )
-            }
+        list(
+            workspace_format._iter_workspace_manifest_node_entries({"nodes": "invalid"})
         )
-        == 0
+        == []
     )
-    with pytest.raises(ValueError, match="current workspace schema"):
-        workspace_format._compacted_workspace_root_attrs(
-            {"imagetool_workspace_schema_version": 1}
+    assert workspace_format._workspace_manifest_payload_entries(
+        {
+            "nodes": [
+                {"uid": "legacy", "kind": "tool", "path": "2"},
+                {"uid": "missing", "kind": "tool"},
+            ]
+        }
+    ) == [("legacy", "tool", "2/tool")]
+    assert (
+        workspace_format._workspace_manifest_payload_path(manifest, "missing") is None
+    )
+
+
+def test_workspace_manifest_attrs_reject_invalid_entries(caplog) -> None:
+    with caplog.at_level(logging.WARNING):
+        encoded = workspace_format._workspace_manifest_attrs(
+            {"kept": 1, "dropped": object()}
         )
-    assert workspace_format._workspace_root_attrs_with_repack_estimate(
-        {"imagetool_workspace_schema_version": 1},
-        estimated_obsolete_bytes=1,
-        replacement_delta_count=1,
-    ) == {"imagetool_workspace_schema_version": 1}
+    assert workspace_format._restore_workspace_manifest_attrs(encoded) == {"kept": 1}
+    assert "Dropping workspace attribute" in caplog.text
+
+    with pytest.raises(TypeError, match="must be a list"):
+        workspace_format._restore_workspace_manifest_attrs({})
+    with pytest.raises(TypeError, match="entry is invalid"):
+        workspace_format._restore_workspace_manifest_attrs([["too-short"]])

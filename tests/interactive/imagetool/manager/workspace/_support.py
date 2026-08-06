@@ -1,7 +1,8 @@
+import contextlib
 import json
 import pathlib
 import typing
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 
 import h5py
 import hdf5plugin
@@ -11,8 +12,9 @@ import xarray as xr
 
 import erlab
 import erlab.interactive.imagetool._serialization as imagetool_serialization
+import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
-import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
+import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 from erlab.interactive.imagetool._provenance._model import (
     FileLoadSource,
     FileReplayCall,
@@ -169,12 +171,28 @@ def _open_external_hdf5_imagetool_data(
     }
     if chunks is not None:
         open_kwargs["chunks"] = chunks
-    tree = xr.open_datatree(fname, **open_kwargs)
     try:
-        ds = typing.cast("xr.DataTree", tree["0/imagetool"]).to_dataset(inherit=False)
-        return ds[next(iter(ds.data_vars))]
-    finally:
-        tree.close()
+        root_attrs = workspace_arrays._read_workspace_root_attrs_h5py(fname)
+    except ValueError:
+        schema_version = None
+    else:
+        schema_version, _manifest = (
+            workspace_format._workspace_file_metadata_from_attrs(root_attrs)
+        )
+    if schema_version == workspace_format._current_workspace_schema_version():
+        ds = xr.open_dataset(
+            fname,
+            group=_current_workspace_payload_path(fname),
+            **open_kwargs,
+        )
+        data = ds[imagetool_serialization.ITOOL_DATA_NAME]
+        data.set_close(ds.close)
+        return data
+    tree = xr.open_datatree(fname, **open_kwargs)
+    ds = typing.cast("xr.DataTree", tree["0/imagetool"]).to_dataset(inherit=False)
+    data = ds[next(iter(ds.data_vars))]
+    data.set_close(tree.close)
+    return data
 
 
 def _open_external_lazy_hdf5_imagetool_data(fname: pathlib.Path) -> xr.DataArray:
@@ -189,6 +207,81 @@ def _open_external_file_backed_hdf5_imagetool_data(
 
 def _compute_first_value(darr: xr.DataArray) -> object:
     return darr.isel(dict.fromkeys(darr.dims, 0)).compute().item()
+
+
+def _current_workspace_manifest(path: pathlib.Path) -> dict[str, typing.Any]:
+    return workspace_format._workspace_manifest_from_attrs(
+        workspace_arrays._read_workspace_root_attrs_h5py(path)
+    )
+
+
+def _current_workspace_manifest_entry(
+    path: pathlib.Path, node_path: str = "0"
+) -> dict[str, typing.Any]:
+    for entry in workspace_format._iter_workspace_manifest_node_entries(
+        _current_workspace_manifest(path)
+    ):
+        if entry.get("path") == node_path:
+            return entry
+    raise AssertionError(f"No saved payload for node path {node_path!r}")
+
+
+def _current_workspace_payload_path(path: pathlib.Path, node_path: str = "0") -> str:
+    payload_path = _current_workspace_manifest_entry(path, node_path).get(
+        "payload_path"
+    )
+    assert isinstance(payload_path, str)
+    return payload_path
+
+
+def _current_workspace_payload_attrs(
+    path: pathlib.Path, node_path: str = "0"
+) -> dict[typing.Any, typing.Any]:
+    payload_attrs = _current_workspace_manifest_entry(path, node_path).get(
+        "payload_attrs"
+    )
+    if payload_attrs is None:
+        raise AssertionError(f"No saved payload attributes for node path {node_path!r}")
+    return workspace_format._restore_workspace_manifest_attrs(payload_attrs)
+
+
+def _publish_workspace_manifest(
+    path: pathlib.Path, manifest: Mapping[str, typing.Any]
+) -> None:
+    store = workspace_store.WorkspaceStore.active(path)
+    owns_store = store is None
+    if store is None:
+        store = workspace_store.WorkspaceStore(path)
+    try:
+        store.publish(manifest)
+    finally:
+        if owns_store:
+            store.close()
+
+
+@contextlib.contextmanager
+def _edit_current_workspace_payload_attrs(
+    path: pathlib.Path, node_path: str = "0"
+) -> Iterator[dict[typing.Any, typing.Any]]:
+    manifest = _current_workspace_manifest(path)
+    entry = next(
+        (
+            entry
+            for entry in workspace_format._iter_workspace_manifest_node_entries(
+                manifest
+            )
+            if entry.get("path") == node_path
+        ),
+        None,
+    )
+    if entry is None:
+        raise AssertionError(f"No saved payload for node path {node_path!r}")
+    attrs = workspace_format._restore_workspace_manifest_attrs(
+        entry.get("payload_attrs", {})
+    )
+    yield attrs
+    entry["payload_attrs"] = workspace_format._workspace_manifest_attrs(attrs)
+    _publish_workspace_manifest(path, manifest)
 
 
 def _hdf5_filter_ids(dataset) -> list[int]:
@@ -229,23 +322,29 @@ def _transaction_test_dataset(value: float, *, title: str) -> xr.Dataset:
 
 
 def _write_transaction_test_workspace(fname: pathlib.Path, value: float = 1.0) -> None:
-    tree = xr.DataTree.from_dict(
-        {"0/imagetool": _transaction_test_dataset(value, title="old")}
+    workspace_arrays._write_workspace_dataset_group_to_file(
+        fname,
+        "0/imagetool",
+        _transaction_test_dataset(value, title="old"),
     )
-    try:
-        workspace_storage._write_full_workspace_tree_file(
-            fname, tree, _transaction_test_root_attrs()
-        )
-    finally:
-        tree.close()
+    with h5py.File(fname, "a") as h5_file:
+        h5_file.attrs.update(_transaction_test_root_attrs())
 
 
 def _assert_no_workspace_internal_groups(fname: pathlib.Path) -> None:
-
     with h5py.File(fname, "r") as h5_file:
+        generation_groups = {
+            workspace_store._WORKSPACE_OBJECTS_GROUP,
+            workspace_store._WORKSPACE_STAGING_GROUP,
+            workspace_store._WORKSPACE_GENERATIONS_GROUP,
+        }
         assert not any(
-            workspace_format._is_workspace_internal_group_name(name) for name in h5_file
+            workspace_format._is_workspace_internal_group_name(name)
+            and name not in generation_groups
+            for name in h5_file
         )
+        if workspace_store._WORKSPACE_STAGING_GROUP in h5_file:
+            assert len(h5_file[workspace_store._WORKSPACE_STAGING_GROUP]) == 0
 
 
 def _rich_workspace_attr_value() -> dict[str, typing.Any]:

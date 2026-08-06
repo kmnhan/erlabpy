@@ -1,8 +1,11 @@
 import contextlib
+import gc
 import json
 import logging
 import os
 import pathlib
+import pickle
+import threading
 import types
 import typing
 import warnings
@@ -18,101 +21,15 @@ import erlab
 import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
-import erlab.interactive.imagetool.manager._workspace._storage as workspace_storage
+import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from tests.interactive.imagetool.manager.workspace._support import (
     _assert_rich_workspace_attr,
     _hdf5_blosc2_level_codec,
     _hdf5_filter_ids,
     _rich_workspace_attr_value,
+    _write_transaction_test_workspace,
 )
-
-
-def test_workspace_h5py_helpers_reject_non_workspace_files(tmp_path) -> None:
-
-    fname = tmp_path / "not-workspace.itws"
-    with h5py.File(fname, "w") as h5_file:
-        h5_file.create_group("0")
-
-    with pytest.raises(ValueError, match="Not a valid workspace file"):
-        workspace_arrays._workspace_live_root_group_copy_groups(fname)
-    with pytest.raises(ValueError, match="Not a valid workspace file"):
-        workspace_arrays._workspace_h5_paths_storage_size(fname, ("0",))
-    with pytest.raises(ValueError, match="Not a valid workspace file"):
-        workspace_arrays._workspace_live_h5_storage_size(fname)
-
-    assert (
-        workspace_storage._workspace_obsolete_estimate(tmp_path / "missing.itws") == 0
-    )
-    assert workspace_arrays._workspace_h5_object_storage_size(object()) == 0
-
-
-def test_workspace_h5py_filter_matching_edge_cases(tmp_path) -> None:
-
-    fname = tmp_path / "filters.h5"
-    with h5py.File(fname, "w") as h5_file:
-        plain = h5_file.create_dataset("plain", data=np.arange(3))
-        compressed = h5_file.create_dataset(
-            "compressed",
-            data=np.arange(3),
-            **hdf5plugin.Blosc2(
-                cname="zstd",
-                clevel=1,
-                filters=hdf5plugin.Blosc2.SHUFFLE,
-            ),
-        )
-        group = h5_file.create_group("payload")
-        gzip_data = group.create_dataset("data", data=np.arange(3), compression="gzip")
-        metadata_group = h5_file.create_group("metadata")
-        metadata_group.create_group("nested")
-
-        assert workspace_arrays._workspace_h5py_blosc2_options_match((1, 2), (1, 2))
-        assert not workspace_arrays._workspace_h5py_blosc2_options_match((1,), (2,))
-        assert workspace_arrays._workspace_h5py_dataset_matches_encoding(plain, {})
-        assert not workspace_arrays._workspace_h5py_dataset_matches_encoding(
-            plain, {"compression": hdf5plugin.Blosc2.filter_id}
-        )
-        assert workspace_arrays._workspace_h5py_dataset_matches_encoding(
-            compressed, {"compression": hdf5plugin.Blosc2.filter_id}
-        )
-        assert workspace_arrays._workspace_h5py_dataset_matches_encoding(
-            compressed, workspace_arrays._workspace_blosc2_encoding("zstd1")
-        )
-        assert not workspace_arrays._workspace_h5py_dataset_matches_encoding(
-            compressed, workspace_arrays._workspace_blosc2_encoding("blosclz3")
-        )
-        gzip_filter = workspace_arrays._workspace_h5py_filter_options(gzip_data)
-        assert workspace_arrays._workspace_h5py_dataset_matches_encoding(
-            gzip_data,
-            {"compression": 1, "compression_opts": gzip_filter[1]},
-        )
-        assert not workspace_arrays._h5_group_matches_compression(
-            h5_file, "missing", "none"
-        )
-        assert not workspace_arrays._h5_group_matches_compression(
-            h5_file, "plain", "none"
-        )
-        assert workspace_arrays._h5_group_matches_compression(
-            h5_file, "metadata", "none"
-        )
-        assert not workspace_arrays._workspace_h5_group_matches_compression_mode(
-            h5_file,
-            "missing",
-            xr.Dataset({"data": ("x", np.arange(3))}),
-            "none",
-        )
-        assert not workspace_arrays._workspace_h5_group_matches_compression_mode(
-            h5_file,
-            "payload",
-            xr.Dataset({"missing": ("x", np.arange(3))}),
-            "none",
-        )
-        assert not workspace_arrays._workspace_h5_group_matches_compression_mode(
-            h5_file,
-            "payload",
-            xr.Dataset({"data": ("x", np.arange(3))}),
-            "none",
-        )
 
 
 def test_workspace_h5py_copy_rebuilds_attrs_and_dimension_scales(tmp_path) -> None:
@@ -430,7 +347,7 @@ def test_workspace_xarray_path_helpers_cover_fallbacks(monkeypatch, tmp_path) ->
     assert lock is workspace_arrays._workspace_file_lock("fallback.itws")
 
     def _raise_stat_oserror(_path: str):
-        raise OSError
+        raise FileNotFoundError
 
     monkeypatch.setattr(workspace_arrays.os, "stat", _raise_stat_oserror)
     assert workspace_arrays._workspace_file_identity("missing.itws") == (
@@ -438,41 +355,353 @@ def test_workspace_xarray_path_helpers_cover_fallbacks(monkeypatch, tmp_path) ->
         0,
         0,
         0,
+        0,
     )
+    monkeypatch.setattr(
+        workspace_arrays.os,
+        "stat",
+        lambda _path: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+    with pytest.raises(PermissionError, match="denied"):
+        workspace_arrays._workspace_file_identity("denied.itws")
 
 
 def test_workspace_file_manager_uses_fsdecode_fallback(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    def _fake_init(self, opener, *args, **kwargs):
-        captured["opener"] = opener
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        self._key = "fake-key"
-        self._ref_counter = types.SimpleNamespace(decrement=lambda _key: None)
-        self._cache = {}
-
-    monkeypatch.setattr(
-        workspace_arrays, "ensure_workspace_hdf5_filters_registered", lambda: None
-    )
     monkeypatch.setattr(workspace_arrays, "_normalized_file_path", lambda _path: None)
-    monkeypatch.setattr(
-        workspace_arrays, "_workspace_file_identity", lambda path: (path, 0, 0, 0)
-    )
-    monkeypatch.setattr(workspace_arrays.CachingFileManager, "__init__", _fake_init)
-
     file_manager = workspace_arrays.WorkspaceFileManager("fallback.itws")
+    try:
+        assert file_manager.workspace_path == "fallback.itws"
+        assert file_manager.reader_path == "fallback.itws"
+    finally:
+        file_manager.close()
 
-    assert file_manager.workspace_path == "fallback.itws"
-    assert captured["args"][0] == "fallback.itws"
-    assert captured["kwargs"]["mode"] == "r+"
+
+def test_workspace_file_manager_opens_unassociated_file_read_only(tmp_path) -> None:
+    fname = tmp_path / "reader-copy.itws"
+    _write_transaction_test_workspace(fname)
+
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    reader_path = pathlib.Path(manager.reader_path)
+    try:
+        assert reader_path == fname.resolve()
+        assert manager._args == (str(fname.resolve()),)
+        assert manager._mode == "r"
+        with manager.acquire_context() as h5_file:
+            assert pathlib.Path(h5_file.filename).resolve() == fname.resolve()
+    finally:
+        manager.close()
+        del manager
+        gc.collect()
+
+
+def test_workspace_file_managers_serialize_shared_cached_handle_access(
+    tmp_path,
+) -> None:
+    fname = tmp_path / "shared-reader.itws"
+    _write_transaction_test_workspace(fname)
+    first = workspace_arrays.WorkspaceFileManager(fname)
+    second = workspace_arrays.WorkspaceFileManager(fname)
+    close_started = threading.Event()
+    close_finished = threading.Event()
+
+    def _close_second() -> None:
+        close_started.set()
+        second.close()
+        close_finished.set()
+
+    close_thread = threading.Thread(target=_close_second)
+    try:
+        with first.lock:
+            first.acquire(needs_lock=False)
+            close_thread.start()
+            assert close_started.wait(2)
+            assert not close_finished.wait(0.05)
+        close_thread.join(2)
+        assert not close_thread.is_alive()
+        assert close_finished.is_set()
+        with first.lock:
+            reopened = first.acquire(needs_lock=False)
+            assert pathlib.Path(reopened.filename).resolve() == fname.resolve()
+    finally:
+        first.close()
+        second.close()
+        close_thread.join(2)
+        gc.collect()
+
+
+def test_workspace_file_manager_reports_missing_published_file(tmp_path) -> None:
+    manager = workspace_arrays.WorkspaceFileManager(tmp_path / "missing.itws")
+    with pytest.raises(FileNotFoundError), manager.acquire_context():
+        pass
+
+
+def test_workspace_file_manager_lifecycle_guards(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+    other_path = tmp_path / "other.itws"
+    with (
+        workspace_store.WorkspaceStore(path, create=True) as store,
+        workspace_store.WorkspaceStore(other_path, create=True) as other_store,
+    ):
+        manager = workspace_arrays.WorkspaceFileManager(
+            path,
+            group_path=f"/{workspace_store._WORKSPACE_GENERATIONS_GROUP}/current",
+        )
+        try:
+            manager._attach_store(store)
+            assert manager.legacy_group_path is None
+            assert manager.__dask_tokenize__()[1] == store.workspace_id
+            assert manager.acquire().filename == str(path)
+            assert manager.acquire(needs_lock=False).filename == str(path)
+            with manager.acquire_context() as netcdf_file:
+                assert netcdf_file.filename == str(path)
+            with manager.acquire_context(needs_lock=False) as netcdf_file:
+                assert netcdf_file.filename == str(path)
+            with pytest.raises(RuntimeError, match="already attached"):
+                manager._attach_store(other_store)
+        finally:
+            manager.close(needs_lock=False)
+
+    unattached = workspace_arrays.WorkspaceFileManager(path)
+    try:
+        with pytest.raises(RuntimeError, match="no active store"):
+            unattached._active_netcdf_file()
+    finally:
+        unattached.close()
+
+    worker = workspace_arrays.WorkspaceFileManager.__new__(
+        workspace_arrays.WorkspaceFileManager
+    )
+    with pytest.raises(ValueError, match="Unsupported serialized"):
+        worker.__setstate__(("wrong-marker", str(path), str(path), None, None, "/"))
+
+    worker.__setstate__(
+        (
+            "erlab-workspace-bounded-reader-v1",
+            str(path),
+            str(path),
+            None,
+            None,
+            "/",
+        )
+    )
+    with pytest.raises(RuntimeError, match="array selections only"):
+        worker.acquire()
+    with (
+        pytest.raises(RuntimeError, match="array selections only"),
+        worker.acquire_context(),
+    ):
+        pass
+    assert worker.__dask_tokenize__()[1] == str(path)
+    worker.close()
+
+    backend = workspace_arrays._WorkspaceBackendArray(
+        "data",
+        types.SimpleNamespace(_manager=object()),
+        shape=(1,),
+        dtype=np.dtype(float),
+    )
+    with pytest.raises(TypeError, match="WorkspaceFileManager"):
+        backend._getitem(slice(None))
+
+
+def test_workspace_file_manager_serialization_pins_exact_payload(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file[workspace_store._WORKSPACE_OBJECTS_GROUP].create_group("payload")
+            h5_file.create_group("legacy")
+        store.publish({"schema_version": 5, "nodes": []})
+        manager = workspace_arrays.WorkspaceFileManager(
+            path,
+            object_id="payload",
+            group_path=store.object_path("payload"),
+        )
+        legacy_manager = workspace_arrays.WorkspaceFileManager(
+            path,
+            group_path="/legacy",
+        )
+        assert store.serialized_object_ids == set()
+        state = manager.__getstate__()
+        legacy_manager.__getstate__()
+        assert store.serialized_object_ids == {"payload"}
+        assert store.serialized_legacy_group_paths == {"/legacy"}
+
+        store.clear_serialized_reader_pins()
+        forwarded_manager = workspace_arrays.WorkspaceFileManager.__new__(
+            workspace_arrays.WorkspaceFileManager
+        )
+        forwarded_manager.__setstate__(state)
+        forwarded_manager.__getstate__()
+        assert store.serialized_object_ids == {"payload"}
+        del manager, legacy_manager
+        gc.collect()
+
+
+def test_detached_workspace_file_manager_serialization_pins_legacy_group(
+    tmp_path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    with (
+        workspace_store.WorkspaceStore(path, create=True) as store,
+        store.write_session() as h5_file,
+    ):
+        h5_file.create_group("legacy")
+
+    manager = workspace_arrays.WorkspaceFileManager(path, group_path="/legacy")
+    manager.__getstate__()
+
+    with workspace_store.WorkspaceStore(path) as store:
+        assert store.serialized_legacy_group_paths == {"/legacy"}
+        store.clear_serialized_reader_pins()
+    manager.close()
+
+
+def test_workspace_dask_tokenization_pins_only_serialized_graph(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+    object_id = "payload"
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        name=_ITOOL_DATA_NAME,
+    ).to_dataset()
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            assert workspace_arrays._write_workspace_dataset_group_h5py(
+                h5_file,
+                store.object_path(object_id),
+                data,
+            )
+        store.publish({"schema_version": 5, "nodes": []})
+
+        opened = workspace_arrays.open_workspace_dataset(
+            path,
+            store.object_path(object_id),
+            chunks={},
+        )
+        try:
+            assert store.serialized_object_ids == set()
+            pickle.dumps(opened[_ITOOL_DATA_NAME].data.__dask_graph__())
+            assert store.serialized_object_ids == {object_id}
+        finally:
+            opened.close()
+
+
+def test_workspace_file_manager_rejects_inherited_process_access(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "process-owned.itws"
+    _write_transaction_test_workspace(fname)
+    manager = workspace_arrays.WorkspaceFileManager(fname)
+    process_id = manager._process_id
+    monkeypatch.setattr(workspace_arrays.os, "getpid", lambda: process_id + 1)
+
+    with pytest.raises(RuntimeError, match="cannot be inherited across fork"):
+        manager.acquire()
+    monkeypatch.undo()
+    manager.close()
+    del manager
+    gc.collect()
+
+
+def test_retarget_workspace_xarray_sources_changes_only_matching_sources(
+    tmp_path,
+) -> None:
+    old_path = tmp_path / "old.itws"
+    new_path = tmp_path / "new.itws"
+    other_path = tmp_path / "other.itws"
+    data = xr.DataArray(
+        [1.0],
+        dims="x",
+        coords={"x": [0.0], "other": ("x", [2.0])},
+    )
+    data.encoding["source"] = str(old_path)
+    data.coords["x"].encoding["source"] = str(old_path)
+    data.coords["other"].encoding["source"] = str(other_path)
+
+    workspace_arrays.retarget_workspace_xarray_sources(data, old_path, new_path)
+
+    assert data.encoding["source"] == str(new_path.resolve())
+    assert data.coords["x"].encoding["source"] == str(new_path.resolve())
+    assert data.coords["other"].encoding["source"] == str(other_path)
+
+
+def test_workspace_xarray_source_lifecycle_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    source = tmp_path / "source.itws"
+    data = xr.DataArray([1.0], dims="x", coords={"x": [0.0]})
+    data.encoding["source"] = str(source)
+    snapshot = workspace_arrays._workspace_xarray_source_snapshot(data)
+
+    data.encoding.pop("source")
+    data.coords["x"].encoding["source"] = "added"
+    workspace_arrays._restore_workspace_xarray_source_snapshot(snapshot)
+    assert data.encoding["source"] == str(source)
+    assert "source" not in data.coords["x"].encoding
+
+    workspace_arrays.retarget_workspace_xarray_sources(data, source, source)
+    assert data.encoding["source"] == str(source)
+    workspace_arrays.set_workspace_xarray_sources(data, typing.cast("str", None))
+    assert data.encoding["source"] == str(source)
+
+    active_store = types.SimpleNamespace(write_in_progress=True)
+    monkeypatch.setattr(
+        workspace_store.WorkspaceStore,
+        "active",
+        lambda _path: active_store,
+    )
+    assert workspace_arrays.workspace_write_in_progress(data)
+
+
+def test_workspace_h5py_create_kwargs_maps_chunksizes() -> None:
+    assert workspace_arrays._workspace_h5py_create_kwargs(None) == {}
+    assert workspace_arrays._workspace_h5py_create_kwargs(
+        {
+            "chunksizes": (2, 3),
+            "compression": "gzip",
+            "compression_opts": 1,
+            "shuffle": True,
+            "fletcher32": False,
+            "ignored": "value",
+        }
+    ) == {
+        "chunks": (2, 3),
+        "compression": "gzip",
+        "compression_opts": 1,
+        "shuffle": True,
+        "fletcher32": False,
+    }
+
+
+def test_workspace_root_attrs_require_valid_generation(tmp_path) -> None:
+    path = tmp_path / "workspace.itws"
+    with h5py.File(path, "w") as h5_file:
+        h5_file.attrs["imagetool_workspace_schema_version"] = 5
+
+    with pytest.raises(ValueError, match="no committed generation"):
+        workspace_arrays._read_workspace_root_attrs_h5py(path)
+
+    with h5py.File(path, "r+") as h5_file:
+        generations = h5_file.create_group(workspace_store._WORKSPACE_GENERATIONS_GROUP)
+        generations.create_group("invalid-name")
+        generations.create_group("00000000000000000001")
+    with pytest.raises(ValueError, match="no valid committed generation"):
+        workspace_arrays._read_workspace_root_attrs_h5py(path)
 
 
 def test_open_workspace_dataset_uses_fsdecode_fallback(monkeypatch) -> None:
     calls: list[tuple[object, str, str | None]] = []
 
     class _FakeFileManager:
-        def __init__(self, path: str) -> None:
+        def __init__(
+            self,
+            path: str,
+            *,
+            object_id: str | None = None,
+            group_path: str | None = None,
+        ) -> None:
+            del object_id, group_path
             self.workspace_path = path
 
     def _fake_open(file_manager, group: str, *, chunks: str | None):
@@ -509,11 +738,20 @@ def test_open_workspace_datatree_closes_partial_groups_on_error(monkeypatch) -> 
     class _FakeFileManager:
         workspace_path = "fallback.itws"
 
-        def __init__(self, _path: str) -> None:
-            pass
+        def __init__(
+            self,
+            _path: str,
+            *,
+            object_id: str | None = None,
+            group_path: str | None = None,
+        ) -> None:
+            del object_id, group_path
 
         def acquire_context(self):
             return contextlib.nullcontext(object())
+
+        def close(self) -> None:
+            pass
 
     def _fake_open(_file_manager, group_path: str, *, chunks: str | None):
         if group_path == "/broken":
@@ -1092,6 +1330,9 @@ def test_workspace_writer_drops_invalid_attr_names_from_fallback(tmp_path) -> No
     _assert_rich_workspace_attr(loaded["left"].attrs["Single Motor Scan"])
     assert "" not in loaded.coords["x"].attrs
     assert loaded.coords["x"].attrs["axis_note"] == ""
+    assert all(
+        "_FillValue" not in variable.attrs for variable in loaded.variables.values()
+    )
     _assert_rich_workspace_attr(loaded.coords["x"].attrs["axis_config"])
     _assert_rich_workspace_attr(loaded.attrs["dataset_config"])
 
