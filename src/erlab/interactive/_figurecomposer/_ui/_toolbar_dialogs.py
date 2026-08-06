@@ -974,8 +974,6 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     tool.sigInfoChanged.connect(sync_minor_ticks_check)
 
     def disconnect_minor_ticks_sync(_obj: QtCore.QObject | None = None) -> None:
-        if not erlab.interactive.utils.qt_is_valid(tool):
-            return
         with contextlib.suppress(TypeError, RuntimeError):
             tool.sigInfoChanged.disconnect(sync_minor_ticks_check)
 

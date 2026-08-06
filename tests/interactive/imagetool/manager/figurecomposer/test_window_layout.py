@@ -8564,6 +8564,12 @@ def test_figure_composer_toolbar_minor_ticks_follow_rendered_locators(
     assert tool.tool_status.operations == operations
     assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Unchecked
 
+    axis.minorticks_on()
+    with monkeypatch.context() as context:
+        context.setattr(erlab.interactive.utils, "qt_is_valid", lambda *_args: False)
+        tool.sigInfoChanged.emit()
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Unchecked
+
     dialog.close()
     QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
     assert not erlab.interactive.utils.qt_is_valid(dialog)
