@@ -7757,6 +7757,48 @@ def test_tool_provenance_compose_display_replay_omits_synthetic_1d_squeeze() -> 
     xr.testing.assert_identical(explicit_derived, watched_data.squeeze(drop=True))
 
 
+@pytest.mark.parametrize(
+    "operation",
+    [
+        QSelOperation(kwargs={"stack_dim": 0.0}),
+        IselOperation(kwargs={"stack_dim": 0}),
+    ],
+)
+def test_tool_provenance_compose_display_replay_omits_synthetic_1d_selection(
+    operation: ToolProvenanceOperation,
+) -> None:
+    parent = script(
+        start_label="Start from watched variable 'my_1d'",
+        seed_code="derived = my_1d",
+    )
+    parent_data = xr.DataArray(
+        np.arange(5).reshape((5, 1)),
+        dims=("x", "stack_dim"),
+        coords={"x": np.arange(5), "stack_dim": [0]},
+    )
+    parent_data = mark_promoted_1d_source(parent_data)
+
+    composed = compose_display_provenance(
+        parent,
+        selection(operation),
+        parent_data=parent_data,
+    )
+
+    assert composed is not None
+    code = composed.display_code()
+    assert code is not None
+    assert "stack_dim" not in code
+    watched_data = xr.DataArray(
+        np.arange(5),
+        dims=("x",),
+        coords={"x": np.arange(5)},
+    )
+    namespace = _exec_generated_code(code, {"my_1d": watched_data.copy(deep=True)})
+    derived = namespace["derived"]
+    assert isinstance(derived, xr.DataArray)
+    xr.testing.assert_identical(derived, watched_data)
+
+
 def test_model_fit_operation_replays_selected_parameter_as_dataarray() -> None:
     x = np.linspace(-1.0, 1.0, 11)
     y = np.array([0, 1])

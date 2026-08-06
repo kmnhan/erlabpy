@@ -13,6 +13,7 @@ import erlab.interactive.imagetool._highdim as imagetool_highdim
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace._format as workspace_format
+from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive._mesh import MeshTool
 from erlab.interactive.derivative import DerivativeTool
@@ -1166,6 +1167,48 @@ def test_manager_watched_1d_root_ftool_copy_code_omits_synthetic_squeeze(
         child_tool.copy_code()
 
         assert copied
+        _assert_modelfit_code_replays_source(copied[-1], "my_1d", data)
+
+
+def test_manager_watched_1d_profile_ftool_copy_code_omits_synthetic_selection(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(np.arange(5), dims=("x",), coords={"x": np.arange(5)})
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager._data_ingress.receive_data(
+            [data], {}, watched_var=("my_1d", "kernel-0")
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.profiles[0].open_in_ftool()
+        qtbot.wait_until(
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtool_indices) == 1,
+            timeout=5000,
+        )
+
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
+        child_tool = manager.get_childtool(child_uid)
+        assert isinstance(child_tool, Fit1DTool)
+
+        copied: list[str] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "copy_to_clipboard",
+            lambda text: copied.append(text) or text,
+        )
+        child_tool.copy_code()
+
+        assert copied
+        assert "stack_dim" not in copied[-1]
         _assert_modelfit_code_replays_source(copied[-1], "my_1d", data)
 
 

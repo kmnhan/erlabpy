@@ -282,6 +282,23 @@ class _PlotOperationBuilder:
             selected_dims = {self.selection_dim_name(axis) for axis in non_display_axes}
             selection_count = self.slicer_area.n_cursors
 
+        if qsel_kwargs is not None:
+            # Omit slicer-only dimensions, such as the synthetic 1D stack_dim.
+            public_dims = set(self.slicer_area.displayed_data.dims)
+            slicer_dims = {
+                self.selection_dim_name(axis)
+                for axis in range(self.slicer_area.data.ndim)
+            }
+            qsel_kwargs = {
+                key: value
+                for key, value in qsel_kwargs.items()
+                if (
+                    (dim := key.removesuffix("_width") if isinstance(key, str) else key)
+                    not in slicer_dims
+                    or dim in public_dims
+                )
+            }
+
         invalid_qsel_keys = (
             tuple(key for key in qsel_kwargs if not _qsel_key_is_editable(key))
             if qsel_kwargs is not None
