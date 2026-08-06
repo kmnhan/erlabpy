@@ -8502,6 +8502,67 @@ def test_figure_composer_toolbar_axes_dialog_shows_mixed_axis_selection(
     assert grid_ops[0].method_args == (True,)
 
 
+def test_figure_composer_toolbar_minor_ticks_follow_rendered_locators(
+    qtbot,
+    monkeypatch,
+) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    tool.figure.axes[0].minorticks_off()
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    xscale_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarAxesXScaleCombo"
+    )
+    minor_ticks_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerToolbarAxesMinorTicksCheck"
+    )
+    assert xscale_combo is not None
+    assert minor_ticks_check is not None
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Unchecked
+
+    redraw_count = 0
+    original_redraw = tool._redraw_plot
+
+    def count_redraw(
+        *, show_window: bool | None = None, emit_info: bool = False
+    ) -> None:
+        nonlocal redraw_count
+        redraw_count += 1
+        original_redraw(show_window=show_window, emit_info=emit_info)
+
+    monkeypatch.setattr(tool, "_redraw_plot", count_redraw)
+    _activate_combo_text(xscale_combo, "log")
+
+    assert redraw_count == 1
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.PartiallyChecked
+
+    operations = tool.tool_status.operations
+    axis = tool.figure.axes[0]
+    axis.yaxis.set_minor_locator(mticker.AutoMinorLocator())
+    tool.sigInfoChanged.emit()
+
+    assert redraw_count == 1
+    assert tool.tool_status.operations == operations
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Checked
+
+    axis.xaxis.set_minor_locator(mticker.NullLocator())
+    axis.yaxis.set_minor_locator(mticker.NullLocator())
+    tool.sigInfoChanged.emit()
+
+    assert redraw_count == 1
+    assert tool.tool_status.operations == operations
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Unchecked
+
+    dialog.close()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    assert not erlab.interactive.utils.qt_is_valid(dialog)
+    assert tool._axes_customize_dialog is None
+    tool.sigInfoChanged.emit()
+
+
 def test_figure_composer_toolbar_minor_ticks_override_later_scale(qtbot) -> None:
     data = _figure_composer_image_source("data")
     axes = FigureAxesSelectionState(axes=((0, 0),))

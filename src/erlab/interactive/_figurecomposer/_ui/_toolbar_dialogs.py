@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import typing
 import weakref
@@ -573,6 +574,18 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     def current_selection() -> FigureAxesSelectionState:
         return _selector_selection(tool, selector)
 
+    def sync_minor_ticks_check(axes: Sequence[Axes] | None = None) -> None:
+        if not erlab.interactive.utils.qt_is_valid(dialog, minor_ticks_check):
+            return
+        if axes is None:
+            axes = _axes_for_selection(tool, current_selection())
+        state = (
+            _axis_value_state(axes, _axis_minor_ticks_visible)
+            if axes
+            else _AxisValueState()
+        )
+        _apply_axis_check_state(minor_ticks_check, state)
+
     def upsert_axis_method(
         name: str,
         *,
@@ -759,7 +772,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
                 tick_params_editor.set_tick_params({})
                 tick_params_editor.setEnabled(False)
                 _apply_axis_check_state(grid_check, unavailable_state)
-                _apply_axis_check_state(minor_ticks_check, unavailable_state)
+                sync_minor_ticks_check(axes)
                 return
             _apply_axis_plain_text_edit_state(
                 title_edit, _axis_value_state(axes, lambda axis: axis.get_title())
@@ -805,10 +818,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
                     ),
                 ),
             )
-            _apply_axis_check_state(
-                minor_ticks_check,
-                _axis_value_state(axes, _axis_minor_ticks_visible),
-            )
+            sync_minor_ticks_check(axes)
             for edit in (xlim_edit, ylim_edit, aspect_edit):
                 edit.setModified(False)
         finally:
@@ -959,6 +969,15 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     curves_combo.activated.connect(lambda _index: rebuild_curve_editor())
     images_combo.activated.connect(lambda _index: rebuild_image_editor())
     selector.sigSelectionChanged.connect(selection_changed)
+    tool.sigInfoChanged.connect(sync_minor_ticks_check)
+
+    def disconnect_minor_ticks_sync(_obj: QtCore.QObject | None = None) -> None:
+        if not erlab.interactive.utils.qt_is_valid(tool):
+            return
+        with contextlib.suppress(TypeError, RuntimeError):
+            tool.sigInfoChanged.disconnect(sync_minor_ticks_check)
+
+    dialog.destroyed.connect(disconnect_minor_ticks_sync)
     refresh_from_axis()
 
     button_box = QtWidgets.QDialogButtonBox(
