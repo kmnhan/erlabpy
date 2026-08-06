@@ -1324,6 +1324,21 @@ class ItoolPlotItem(pg.PlotItem):
         selection_indexers = self.array_slicer.isel_args(
             cursor, self.display_axis, int_if_one=True
         )
+        public_dims = set(self.slicer_area.displayed_data.dims)
+        slicer_only_selection_dims = {
+            dim
+            for dim in selection_indexers
+            if (
+                dim in selection_data.dims
+                and dim not in public_dims
+                and selection_data.sizes[dim] == 1
+            )
+        }
+        selection_indexers = {
+            dim: indexer
+            for dim, indexer in selection_indexers.items()
+            if dim not in slicer_only_selection_dims
+        }
         if selection_indexers and selection_code.startswith(".qsel"):
             binned = self.array_slicer.get_binned(cursor)
             selection_binned_dims: list[Hashable] = []
@@ -1392,7 +1407,10 @@ class ItoolPlotItem(pg.PlotItem):
             operations.append(
                 TransposeOperation(dims=tuple(reversed(self.current_data.dims)))
             )
-        if squeeze and any(size == 1 for size in self.current_data.shape):
+        if squeeze and (
+            slicer_only_selection_dims
+            or any(size == 1 for size in self.current_data.shape)
+        ):
             operations.append(SqueezeOperation())
         return selection(*operations)
 

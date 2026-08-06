@@ -1098,7 +1098,7 @@ class ToolProvenanceOperation(pydantic.BaseModel):
     def __pydantic_on_complete__(cls) -> None:
         super().__pydantic_on_complete__()
 
-        if "op" not in cls.__dict__.get("__annotations__", {}):
+        if "op" not in inspect.get_annotations(cls):
             return
 
         op_field = cls.model_fields.get("op")
@@ -3829,22 +3829,32 @@ def compose_display_provenance(
         and parent_data.attrs.get(_PROMOTED_1D_SOURCE_ATTR, False)
         and source.kind == "selection"
     ):
-        saw_squeeze = False
+        saw_synthetic_cleanup = False
         for operation in source.operations:
             if _operation_is(operation, "qsel", "isel", "sel"):
-                if getattr(operation, "decoded_kwargs", {}):
-                    break
+                selection_kwargs = getattr(operation, "decoded_kwargs", {})
+                if selection_kwargs:
+                    selection_dims = {
+                        key.removesuffix("_width") if isinstance(key, str) else key
+                        for key in selection_kwargs
+                    }
+                    if not (
+                        parent_data.sizes.get("stack_dim") == 1
+                        and selection_dims == {"stack_dim"}
+                    ):
+                        break
+                    saw_synthetic_cleanup = True
                 continue
             if (
                 _operation_is(operation, "squeeze")
                 and getattr(operation, "dims", None) is None
                 and not getattr(operation, "drop", False)
             ):
-                saw_squeeze = True
+                saw_synthetic_cleanup = True
                 continue
             break
         else:
-            if saw_squeeze:
+            if saw_synthetic_cleanup:
                 return parent_spec
 
     source_kind = typing.cast(

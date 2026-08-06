@@ -8470,6 +8470,46 @@ def test_profile_open_in_ftool_omits_noop_squeeze_source_binding(
     win.close()
 
 
+def test_1d_profile_ftool_copy_code_omits_slicer_only_selection(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(np.arange(5), dims=("x",), coords={"x": np.arange(5)})
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    profile = win.slicer_area.profiles[0]
+
+    source_spec = profile.make_tool_source_spec(squeeze=True)
+    assert source_spec.operations == (SqueezeOperation(),)
+    resolved = source_spec.apply(win.slicer_area.data)
+    assert resolved.coords["stack_dim"].ndim == 0
+    xr.testing.assert_identical(resolved.drop_vars("stack_dim"), data)
+
+    profile.open_in_ftool()
+    child = win.slicer_area._associated_tools_list[-1]
+    assert isinstance(child, erlab.interactive.utils.ToolWindow)
+
+    copied: list[str] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "copy_to_clipboard",
+        lambda text: copied.append(text) or text,
+    )
+    child.copy_code()
+
+    assert copied
+    assert "stack_dim" not in copied[-1]
+    namespace = _exec_generated_code(copied[-1], {"data": data.copy(deep=True)})
+    result = namespace["result"]
+    assert isinstance(result, xr.Dataset)
+    xr.testing.assert_identical(
+        result["modelfit_data"].rename(data.name),
+        data.astype(np.float64),
+    )
+
+    child.close()
+    win.close()
+
+
 def test_itool_guideline_undo_redo(qtbot) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
     win = itool(data, execute=False)
