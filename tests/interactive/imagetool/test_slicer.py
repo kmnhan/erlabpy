@@ -720,6 +720,38 @@ def test_qsel_args_from_indexers_validates_live_bin_coordinates() -> None:
         qsel_args_from_indexers(data, {"x": slice(2, 5)}, ("x",))
 
 
+@pytest.mark.parametrize("has_unindexed_coord", [False, True])
+def test_qsel_args_from_indexers_uses_positions_for_unindexed_dimension(
+    has_unindexed_coord: bool,
+) -> None:
+    data = xr.DataArray(
+        np.array([0.0, 10.0, 100.0, 1000.0, 10000.0]),
+        dims=("x",),
+    )
+    if has_unindexed_coord:
+        data = data.assign_coords(x=[10.0, 20.0, 30.0, 40.0, 50.0]).drop_indexes("x")
+    original = data.copy(deep=True)
+
+    args = qsel_args_from_indexers(data, {"x": slice(1, 4)}, ("x",))
+
+    assert args == {"x": 2.0, "x_width": 3.0}
+    np.testing.assert_allclose(
+        data.qsel(args).values,
+        data.isel(x=slice(1, 4)).mean("x").values,
+    )
+    xr.testing.assert_identical(data, original)
+
+
+def test_qsel_args_from_indexers_rejects_invalid_bin_indexers() -> None:
+    data = xr.DataArray(np.arange(5.0), dims=("x",))
+
+    with pytest.raises(ValueError, match="must be an index slice"):
+        qsel_args_from_indexers(data, {"x": 2}, ("x",))
+
+    with pytest.raises(ValueError, match="is empty"):
+        qsel_args_from_indexers(data, {"x": slice(2, 2)}, ("x",))
+
+
 def test_qsel_args_desc_uniform_descending_axis_emits_positive_width() -> None:
     data = xr.DataArray(
         np.arange(5, dtype=np.float32),
