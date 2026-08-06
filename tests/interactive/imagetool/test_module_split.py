@@ -277,6 +277,7 @@ def test_plot_items_loads_figure_composer_only_for_action() -> None:
             _in_manager=True,
             _manager_instance=manager,
             data=types.SimpleNamespace(ndim=2, dims=("x", "y")),
+            displayed_data=types.SimpleNamespace(dims=("x", "y")),
             n_cursors=1,
             manual_limits={},
             colormap_properties={
