@@ -8542,6 +8542,14 @@ def test_figure_composer_toolbar_minor_ticks_follow_rendered_locators(
     operations = tool.tool_status.operations
     axis = tool.figure.axes[0]
     axis.yaxis.set_minor_locator(mticker.AutoMinorLocator())
+    tool._preview_render_update_pending = True
+    tool.sigInfoChanged.emit()
+
+    assert redraw_count == 1
+    assert tool.tool_status.operations == operations
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.PartiallyChecked
+
+    tool._preview_render_update_pending = False
     tool.sigInfoChanged.emit()
 
     assert redraw_count == 1
@@ -8561,6 +8569,39 @@ def test_figure_composer_toolbar_minor_ticks_follow_rendered_locators(
     assert not erlab.interactive.utils.qt_is_valid(dialog)
     assert tool._axes_customize_dialog is None
     tool.sigInfoChanged.emit()
+
+
+def test_figure_composer_toolbar_minor_ticks_wait_for_manual_redraw(qtbot) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    tool.figure.axes[0].minorticks_off()
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    minor_ticks_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerToolbarAxesMinorTicksCheck"
+    )
+    assert minor_ticks_check is not None
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Unchecked
+
+    tool.auto_redraw_check.setChecked(False)
+    minor_ticks_check.setChecked(True)
+
+    axis = tool.figure.axes[0]
+    assert tool._auto_redraw_dirty
+    assert isinstance(axis.xaxis.get_minor_locator(), mticker.NullLocator)
+    assert isinstance(axis.yaxis.get_minor_locator(), mticker.NullLocator)
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Checked
+    assert len(_method_operations(tool, FigureMethodFamily.AXES, "minorticks_on")) == 1
+
+    tool._redraw_plot_requested()
+
+    axis = tool.figure.axes[0]
+    assert not tool._auto_redraw_dirty
+    assert not isinstance(axis.xaxis.get_minor_locator(), mticker.NullLocator)
+    assert not isinstance(axis.yaxis.get_minor_locator(), mticker.NullLocator)
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Checked
 
 
 def test_figure_composer_toolbar_minor_ticks_override_later_scale(qtbot) -> None:

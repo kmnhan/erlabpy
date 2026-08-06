@@ -578,6 +578,8 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
         if not erlab.interactive.utils.qt_is_valid(dialog, minor_ticks_check):
             return
         if axes is None:
+            if tool._auto_redraw_dirty or tool._preview_render_update_pending:
+                return
             axes = _axes_for_selection(tool, current_selection())
         state = (
             _axis_value_state(axes, _axis_minor_ticks_visible)
