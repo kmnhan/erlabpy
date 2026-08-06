@@ -9,6 +9,7 @@ from pathlib import Path
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 import pytest
 import xarray as xr
@@ -8499,6 +8500,76 @@ def test_figure_composer_toolbar_axes_dialog_shows_mixed_axis_selection(
     assert len(grid_ops) == 1
     assert grid_ops[0].axes.axes == ((0, 0), (0, 1))
     assert grid_ops[0].method_args == (True,)
+
+
+def test_figure_composer_toolbar_minor_ticks_override_later_scale(qtbot) -> None:
+    data = _figure_composer_image_source("data")
+    axes = FigureAxesSelectionState(axes=((0, 0),))
+    minor_ticks = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="minorticks_on",
+        axes=axes,
+    )
+    scale = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="set_xscale",
+        axes=axes,
+        args=("log",),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(minor_ticks, scale),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    minor_ticks_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerToolbarAxesMinorTicksCheck"
+    )
+    assert minor_ticks_check is not None
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Checked
+
+    tool.operation_panel.select_row(0)
+    current_id = tool.operation_panel.current_id()
+    selected_ids = tool.operation_panel.selected_ids()
+    tool._reset_history_stack()
+    minor_ticks_check.setCheckState(QtCore.Qt.CheckState.Unchecked)
+
+    operations = tool.tool_status.operations
+    assert tuple(operation.operation_id for operation in operations) == (
+        scale.operation_id,
+        minor_ticks.operation_id,
+    )
+    assert operations[-1].method_name == "minorticks_off"
+    assert tool.operation_panel.current_id() == current_id
+    assert tool.operation_panel.selected_ids() == selected_ids
+    axis = tool.figure.axes[0]
+    assert isinstance(axis.xaxis.get_minor_locator(), mticker.NullLocator)
+    assert isinstance(axis.yaxis.get_minor_locator(), mticker.NullLocator)
+
+    tool.undo()
+    assert tuple(
+        operation.operation_id for operation in tool.tool_status.operations
+    ) == (minor_ticks.operation_id, scale.operation_id)
+    assert tool.tool_status.operations[0].method_name == "minorticks_on"
+    axis = tool.figure.axes[0]
+    assert not isinstance(axis.xaxis.get_minor_locator(), mticker.NullLocator)
+    assert not isinstance(axis.yaxis.get_minor_locator(), mticker.NullLocator)
+
+    tool.redo()
+    assert tuple(
+        operation.operation_id for operation in tool.tool_status.operations
+    ) == (scale.operation_id, minor_ticks.operation_id)
+    assert tool.tool_status.operations[-1].method_name == "minorticks_off"
+    axis = tool.figure.axes[0]
+    assert isinstance(axis.xaxis.get_minor_locator(), mticker.NullLocator)
+    assert isinstance(axis.yaxis.get_minor_locator(), mticker.NullLocator)
 
 
 def test_figure_composer_toolbar_axes_dialog_disables_unavailable_axes(

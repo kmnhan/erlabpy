@@ -904,27 +904,31 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
             return
         selection = current_selection()
         name = "minorticks_on" if minor_ticks_check.isChecked() else "minorticks_off"
-        for operation in reversed(tool._document.recipe.operations):
+        operations = tool._document.recipe.operations
+        for index in reversed(range(len(operations))):
+            operation = operations[index]
             if (
                 operation.kind == FigureOperationKind.METHOD
                 and operation.method_family == FigureMethodFamily.AXES
                 and operation.method_name in {"minorticks_on", "minorticks_off"}
                 and _method_axes_match(operation.axes, selection)
             ):
-                _replace_operation_by_id(
-                    tool,
-                    operation.operation_id,
-                    operation.model_copy(
-                        update={
-                            "label": name,
-                            "method_name": name,
-                            "method_args": (),
-                            "method_kwargs": {},
-                            "enabled": True,
-                        }
-                    ),
-                    rebuild_editor=True,
+                current = tool._current_operation()
+                current_id = current[1].operation_id if current is not None else None
+                selected_ids = tool._selected_operation_ids()
+                updated = operation.model_copy(
+                    update={
+                        "label": name,
+                        "method_name": name,
+                        "method_args": (),
+                        "method_kwargs": {},
+                        "enabled": True,
+                    }
                 )
+                tool._document.replace_operations(
+                    (*operations[:index], *operations[index + 1 :], updated)
+                )
+                tool._finish_operation_structure_change(selected_ids, current_id)
                 return
         upsert_axis_method(name)
 
