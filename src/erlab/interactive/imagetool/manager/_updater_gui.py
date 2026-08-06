@@ -22,10 +22,13 @@ from erlab.interactive.imagetool.manager._updater_core import (
     fetch_latest_release,
     get_full_changelog_from,
     get_install_root,
+    remove_update_tmp_dir,
     verify_sha256,
 )
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Callable
+
     from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 
 
@@ -313,9 +316,22 @@ class AutoUpdater(QtCore.QObject):
         install_root: pathlib.Path,
         parent: QtWidgets.QWidget | None,
     ):
+        tmpdir = extract_dir.parent
+        try:
+            launch_update = self._prepare_update_launcher(extract_dir, install_root)
+        except Exception as e:
+            remove_update_tmp_dir(tmpdir)
+            erlab.interactive.utils.MessageDialog.critical(
+                parent,
+                "Update",
+                "Failed to prepare updater.",
+                informative_text=str(e),
+            )
+            return
+
         manager = erlab.interactive.imagetool.manager._manager_instance
         if manager is None:
-            self._install_update(extract_dir, install_root, parent)
+            self._install_update(launch_update, tmpdir, parent)
             return
 
         def _continue_after_close(accepted: bool) -> None:
@@ -323,83 +339,80 @@ class AutoUpdater(QtCore.QObject):
             if accepted:
                 QtCore.QTimer.singleShot(
                     0,
-                    lambda: self._install_update(extract_dir, install_root, parent),
+                    lambda: self._install_update(launch_update, tmpdir, parent),
                 )
+            else:
+                remove_update_tmp_dir(tmpdir)
 
         manager._sigCloseResolved.connect(_continue_after_close)
         manager.close()
 
-    def _install_update(
-        self,
+    @staticmethod
+    def _prepare_update_launcher(
         extract_dir: pathlib.Path,
         install_root: pathlib.Path,
-        parent: QtWidgets.QWidget | None,
-    ) -> None:
+    ) -> Callable[[], subprocess.Popen[bytes]]:
         pid = os.getpid()
         tmpdir = extract_dir.parent
+
+        if sys.platform == "darwin":
+            new_app = next(extract_dir.glob("*.app"), None)
+            if new_app is None:
+                for path in extract_dir.iterdir():
+                    if path.is_dir() and (candidate := next(path.glob("*.app"), None)):
+                        new_app = candidate
+                        break
+            if new_app is None:
+                raise RuntimeError("`.app` bundle not found in extracted zip.")
+
+            app_binary = new_app / "Contents" / "MacOS" / new_app.stem
+            app_binary.chmod(app_binary.stat().st_mode | stat.S_IEXEC)
+
+            script_path = tmpdir / "apply_update.sh"
+            script_path.write_text(
+                _macos_helper_script(
+                    new_app=new_app.resolve(),
+                    old_app=install_root.resolve(),
+                    pid=pid,
+                ),
+                encoding="utf-8",
+            )
+            script_path.chmod(0o755)
+            return lambda: subprocess.Popen(
+                ["/bin/bash", str(script_path.resolve())], close_fds=True
+            )
+
+        if sys.platform.startswith("win"):
+            exe = next(extract_dir.rglob("*.exe"), None)
+            if exe is None:
+                raise RuntimeError("Installer .exe not found in extracted zip.")
+            return lambda: subprocess.Popen([str(exe), "/log"], cwd=str(extract_dir))
+
+        raise RuntimeError(
+            "Auto-update helper is not implemented for this OS and architecture."
+        )
+
+    def _install_update(
+        self,
+        launch_update: Callable[[], subprocess.Popen[bytes]],
+        tmpdir: pathlib.Path,
+        parent: QtWidgets.QWidget | None,
+    ) -> None:
+        try:
+            launch_update()
+        except Exception as e:
+            remove_update_tmp_dir(tmpdir)
+            erlab.interactive.utils.MessageDialog.critical(
+                parent,
+                "Update",
+                "Failed to start updater.",
+                informative_text=str(e),
+            )
+            return
+
         settings = _get_updater_settings()
         settings.setValue("version_before_update", self.current_version)
         settings.sync()
-
-        if sys.platform == "darwin":
-            new_app = None
-            for p in extract_dir.glob("*.app"):
-                new_app = p
-                break
-            if not new_app:
-                for p in extract_dir.iterdir():
-                    if p.is_dir():
-                        candidate = next(p.glob("*.app"), None)
-                        if candidate:
-                            new_app = candidate
-                            break
-            if not new_app:
-                raise RuntimeError("`.app` bundle not found in extracted zip.")
-
-            # Set executable permissions on extracted files
-            app_binary = new_app / "Contents" / "MacOS" / new_app.stem
-            st = app_binary.stat()
-            app_binary.chmod(st.st_mode | stat.S_IEXEC)
-
-            script = _macos_helper_script(
-                new_app=new_app.resolve(), old_app=install_root.resolve(), pid=pid
-            )
-
-            script_path = tmpdir / "apply_update.sh"
-            script_path.write_text(script, encoding="utf-8")
-            script_path.chmod(0o755)
-
-            try:
-                subprocess.Popen(
-                    ["/bin/bash", str(script_path.resolve())], close_fds=True
-                )
-            except Exception as e:
-                erlab.interactive.utils.MessageDialog.critical(
-                    parent,
-                    "Update",
-                    "Failed to start updater.",
-                    informative_text=str(e),
-                )
-                return
-
-        elif sys.platform.startswith("win"):
-            # Find installer .exe in extracted dir
-            exe = None
-            for p in extract_dir.rglob("*.exe"):
-                exe = p
-                break
-            if not exe:
-                raise RuntimeError("Installer .exe not found in extracted zip.")
-
-            # Start installer
-            subprocess.Popen([str(exe), "/log"], cwd=str(extract_dir))
-        else:
-            QtWidgets.QMessageBox.critical(
-                parent,
-                "Update",
-                "Auto-update helper not implemented for this OS and architecture.",
-            )
-            return
 
         # Quit current app; helper will take over and relaunch
         qapp = QtWidgets.QApplication.instance()

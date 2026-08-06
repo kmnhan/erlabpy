@@ -26,6 +26,7 @@ import erlab.interactive.imagetool.manager as manager_package
 import erlab.interactive.imagetool.manager.__main__ as manager_main
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.interactive.imagetool.manager._updater_core as manager_updater_core
 import erlab.interactive.imagetool.manager._updater_gui as manager_updater_gui
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 from erlab.interactive._options.schema import AppOptions
@@ -161,17 +162,30 @@ def test_auto_updater_installs_only_after_manager_close(
 
     manager = _ManagerCloseStub()
     updater = manager_updater_gui.AutoUpdater("1.0.0")
-    install_calls: list[tuple[pathlib.Path, pathlib.Path, None]] = []
-    extract_dir = tmp_path / "extracted"
+    install_calls: list[tuple[Callable[[], object], pathlib.Path, None]] = []
+    cleanup_calls: list[pathlib.Path] = []
+    update_dir = tmp_path / "update"
+    extract_dir = update_dir / "extracted"
     install_root = tmp_path / "installed"
+
+    def launch_update() -> object:
+        return object()
 
     monkeypatch.setattr(manager_package, "_manager_instance", manager)
     monkeypatch.setattr(
         updater,
+        "_prepare_update_launcher",
+        lambda _extracted, _installed: launch_update,
+    )
+    monkeypatch.setattr(
+        updater,
         "_install_update",
-        lambda extracted, installed, parent: install_calls.append(
-            (extracted, installed, parent)
-        ),
+        lambda launch, tmpdir, parent: install_calls.append((launch, tmpdir, parent)),
+    )
+    monkeypatch.setattr(
+        manager_updater_gui,
+        "remove_update_tmp_dir",
+        cleanup_calls.append,
     )
 
     updater._apply_update(extract_dir, install_root, None)
@@ -191,10 +205,11 @@ def test_auto_updater_installs_only_after_manager_close(
     manager._sigCloseResolved.emit(False)
     QtWidgets.QApplication.processEvents()
     assert install_calls == (
-        [(extract_dir, install_root, None)]
+        [(launch_update, update_dir, None)]
         if close_outcome in {"accepted", "deferred"}
         else []
     )
+    assert cleanup_calls == ([update_dir] if close_outcome == "cancelled" else [])
 
 
 def test_auto_updater_cancel_preserves_open_workspace(
@@ -211,6 +226,8 @@ def test_auto_updater_cancel_preserves_open_workspace(
         qtbot.wait_until(lambda: manager.ntools == 1)
         updater = manager_updater_gui.AutoUpdater("1.0.0")
         install_calls: list[None] = []
+        cleanup_calls: list[pathlib.Path] = []
+        update_dir = tmp_path / "update"
 
         with monkeypatch.context() as patch:
             patch.setattr(
@@ -223,9 +240,19 @@ def test_auto_updater_cancel_preserves_open_workspace(
                 "_install_update",
                 lambda *_args: install_calls.append(None),
             )
+            patch.setattr(
+                updater,
+                "_prepare_update_launcher",
+                lambda *_args: lambda: object(),
+            )
+            patch.setattr(
+                manager_updater_gui,
+                "remove_update_tmp_dir",
+                cleanup_calls.append,
+            )
 
             updater._apply_update(
-                tmp_path / "extracted",
+                update_dir / "extracted",
                 tmp_path / "installed",
                 manager,
             )
@@ -234,6 +261,191 @@ def test_auto_updater_cancel_preserves_open_workspace(
             assert manager.isVisible()
             assert manager.ntools == 1
             assert install_calls == []
+            assert cleanup_calls == [update_dir]
+
+
+def test_manager_close_save_failure_resolves_as_cancelled(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        close_results: list[bool] = []
+        manager._sigCloseResolved.connect(close_results.append)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                manager._workspace_controller,
+                "_dirty_workspace_save_choice",
+                lambda _message: "save",
+            )
+
+            def fail_save(*, on_finished, **_kwargs) -> bool:
+                on_finished(False)
+                return False
+
+            patch.setattr(manager._workspace_controller, "save", fail_save)
+
+            assert not manager.close()
+
+        assert manager.isVisible()
+        assert close_results == [False]
+
+
+def test_manager_close_during_save_resolves_as_cancelled(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        close_results: list[bool] = []
+        manager._sigCloseResolved.connect(close_results.append)
+        manager._workspace_state.save_in_progress = True
+        try:
+            assert not manager.close()
+        finally:
+            manager._workspace_state.save_in_progress = False
+
+        assert manager.isVisible()
+        assert close_results == [False]
+
+
+def test_remove_update_tmp_dir_unregisters_and_removes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    settings = QtCore.QSettings(
+        str(tmp_path / "updater.ini"),
+        QtCore.QSettings.Format.IniFormat,
+    )
+    keep_dir = tmp_path / "keep"
+    remove_dir = tmp_path / "remove"
+    keep_dir.mkdir()
+    remove_dir.mkdir()
+    (remove_dir / "update.zip").write_bytes(b"update")
+    settings.setValue("update_tmp_dirs", f"{keep_dir},{remove_dir}")
+    settings.sync()
+    monkeypatch.setattr(
+        manager_updater_core,
+        "_get_updater_settings",
+        lambda: settings,
+    )
+
+    manager_updater_core.remove_update_tmp_dir(remove_dir)
+
+    assert not remove_dir.exists()
+    assert keep_dir.exists()
+    assert settings.value("update_tmp_dirs") == str(keep_dir)
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_auto_updater_prepares_platform_launcher(
+    platform: str,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    update_dir = tmp_path / "update"
+    extract_dir = update_dir / "extracted"
+    extract_dir.mkdir(parents=True)
+    install_root = tmp_path / "installed"
+    popen_calls: list[tuple[list[str], dict[str, object]]] = []
+
+    if platform == "darwin":
+        app_binary = (
+            extract_dir / "ImageTool Manager.app/Contents/MacOS/ImageTool Manager"
+        )
+        app_binary.parent.mkdir(parents=True)
+        app_binary.write_bytes(b"app")
+    else:
+        (extract_dir / "installer.exe").write_bytes(b"installer")
+
+    monkeypatch.setattr(manager_updater_gui.sys, "platform", platform)
+    monkeypatch.setattr(
+        manager_updater_gui.subprocess,
+        "Popen",
+        lambda command, **kwargs: popen_calls.append((command, kwargs)),
+    )
+
+    launch_update = manager_updater_gui.AutoUpdater._prepare_update_launcher(
+        extract_dir,
+        install_root,
+    )
+
+    assert popen_calls == []
+    launch_update()
+    assert len(popen_calls) == 1
+    if platform == "darwin":
+        assert (update_dir / "apply_update.sh").is_file()
+        assert popen_calls[0][0][0] == "/bin/bash"
+    else:
+        assert popen_calls[0][0][0].endswith("installer.exe")
+        assert popen_calls[0][1]["cwd"] == str(extract_dir)
+
+
+def test_auto_updater_preparation_failure_cleans_download(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    updater = manager_updater_gui.AutoUpdater("1.0.0")
+    update_dir = tmp_path / "update"
+    cleanup_calls: list[pathlib.Path] = []
+    errors: list[str] = []
+
+    monkeypatch.setattr(
+        updater,
+        "_prepare_update_launcher",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("invalid package")),
+    )
+    monkeypatch.setattr(
+        manager_updater_gui,
+        "remove_update_tmp_dir",
+        cleanup_calls.append,
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *_args, informative_text, **_kwargs: errors.append(informative_text),
+    )
+
+    updater._apply_update(
+        update_dir / "extracted",
+        tmp_path / "installed",
+        None,
+    )
+
+    assert cleanup_calls == [update_dir]
+    assert errors == ["invalid package"]
+
+
+def test_auto_updater_launch_failure_cleans_download(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    updater = manager_updater_gui.AutoUpdater("1.0.0")
+    update_dir = tmp_path / "update"
+    cleanup_calls: list[pathlib.Path] = []
+    errors: list[str] = []
+
+    monkeypatch.setattr(
+        manager_updater_gui,
+        "remove_update_tmp_dir",
+        cleanup_calls.append,
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *_args, informative_text, **_kwargs: errors.append(informative_text),
+    )
+
+    updater._install_update(
+        lambda: (_ for _ in ()).throw(RuntimeError("could not start")),
+        update_dir,
+        None,
+    )
+
+    assert cleanup_calls == [update_dir]
+    assert errors == ["could not start"]
 
 
 def test_manager_main_cache_directory_uses_qstandardpaths(

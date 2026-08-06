@@ -6,6 +6,7 @@ import os
 import pathlib
 import platform
 import re
+import shutil
 import sys
 
 import requests
@@ -179,4 +180,19 @@ def add_update_tmp_dir(tmpdir: pathlib.Path) -> None:
     tmp_dir_list = tmp_dirs.strip().split(",") if tmp_dirs else []
     tmp_dirs_new = ",".join([*tmp_dir_list, str(tmpdir.resolve())])
     settings.setValue("update_tmp_dirs", tmp_dirs_new)
+    settings.sync()
+
+
+def remove_update_tmp_dir(tmpdir: pathlib.Path) -> None:
+    """Remove one temporary update directory and its cleanup registration."""
+    resolved = tmpdir.resolve()
+    shutil.rmtree(resolved, ignore_errors=True)
+
+    settings = _get_updater_settings()
+    tmp_dirs = settings.value("update_tmp_dirs", "")
+    tmp_dir_list = tmp_dirs.strip().split(",") if tmp_dirs else []
+    remaining = [
+        path for path in tmp_dir_list if pathlib.Path(path).resolve() != resolved
+    ]
+    settings.setValue("update_tmp_dirs", ",".join(remaining))
     settings.sync()
