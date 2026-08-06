@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import typing
 import weakref
 
 import matplotlib.scale as mscale
+import matplotlib.ticker as mticker
 import numpy as np
 from qtpy import QtCore, QtWidgets
 
@@ -456,6 +458,9 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     grid_which_combo = QtWidgets.QComboBox(axes_page)
     grid_which_combo.setObjectName("figureComposerToolbarAxesGridWhichCombo")
     grid_which_combo.addItems(["major", "minor", "both"])
+    minor_ticks_check = QtWidgets.QCheckBox(axes_page)
+    minor_ticks_check.setObjectName("figureComposerToolbarAxesMinorTicksCheck")
+    minor_ticks_check.setText("Show")
     tick_params_editor = TickParamsEditorWidget(
         parent=axes_page,
         object_prefix="figureComposerToolbarAxesTickParams",
@@ -500,6 +505,10 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     grid_axis_tooltip = "Choose the x, y, or both axes for ax.grid(..., axis=...)."
     grid_which_tooltip = (
         "Choose major ticks, minor ticks, or both for ax.grid(..., which=...)."
+    )
+    minor_ticks_tooltip = (
+        "Turn minor ticks on or off on both the x and y directions of every "
+        "selected axis."
     )
 
     _add_axis_form_row(form_layout, "Title", title_edit, title_tooltip)
@@ -547,6 +556,12 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     )
     _add_axis_form_row(
         form_layout,
+        "Minor ticks",
+        minor_ticks_check,
+        minor_ticks_tooltip,
+    )
+    _add_axis_form_row(
+        form_layout,
         "Ticks",
         tick_params_editor,
         "Compact controls for ax.tick_params on every selected axis.",
@@ -558,6 +573,20 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
 
     def current_selection() -> FigureAxesSelectionState:
         return _selector_selection(tool, selector)
+
+    def sync_minor_ticks_check(axes: Sequence[Axes] | None = None) -> None:
+        if not erlab.interactive.utils.qt_is_valid(dialog, minor_ticks_check):
+            return
+        if axes is None:
+            if tool._auto_redraw_dirty or tool._preview_render_update_pending:
+                return
+            axes = _axes_for_selection(tool, current_selection())
+        state = (
+            _axis_value_state(axes, _axis_minor_ticks_visible)
+            if axes
+            else _AxisValueState()
+        )
+        _apply_axis_check_state(minor_ticks_check, state)
 
     def upsert_axis_method(
         name: str,
@@ -745,6 +774,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
                 tick_params_editor.set_tick_params({})
                 tick_params_editor.setEnabled(False)
                 _apply_axis_check_state(grid_check, unavailable_state)
+                sync_minor_ticks_check(axes)
                 return
             _apply_axis_plain_text_edit_state(
                 title_edit, _axis_value_state(axes, lambda axis: axis.get_title())
@@ -790,6 +820,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
                     ),
                 ),
             )
+            sync_minor_ticks_check(axes)
             for edit in (xlim_edit, ylim_edit, aspect_edit):
                 edit.setModified(False)
         finally:
@@ -879,6 +910,40 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     def grid_combo_activated(_index: int) -> None:
         update_grid()
 
+    def minor_ticks_state_changed(state: int) -> None:
+        check_state = QtCore.Qt.CheckState(state)
+        if updating or check_state == QtCore.Qt.CheckState.PartiallyChecked:
+            return
+        selection = current_selection()
+        name = "minorticks_on" if minor_ticks_check.isChecked() else "minorticks_off"
+        operations = tool._document.recipe.operations
+        for index in reversed(range(len(operations))):
+            operation = operations[index]
+            if (
+                operation.kind == FigureOperationKind.METHOD
+                and operation.method_family == FigureMethodFamily.AXES
+                and operation.method_name in {"minorticks_on", "minorticks_off"}
+                and _method_axes_match(operation.axes, selection)
+            ):
+                current = tool._current_operation()
+                current_id = current[1].operation_id if current is not None else None
+                selected_ids = tool._selected_operation_ids()
+                updated = operation.model_copy(
+                    update={
+                        "label": name,
+                        "method_name": name,
+                        "method_args": (),
+                        "method_kwargs": {},
+                        "enabled": True,
+                    }
+                )
+                tool._document.replace_operations(
+                    (*operations[:index], *operations[index + 1 :], updated)
+                )
+                tool._finish_operation_structure_change(selected_ids, current_id)
+                return
+        upsert_axis_method(name)
+
     def tick_params_changed(kwargs: object) -> None:
         if updating:
             return
@@ -901,10 +966,18 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     grid_check.stateChanged.connect(grid_state_changed)
     grid_axis_combo.activated.connect(grid_combo_activated)
     grid_which_combo.activated.connect(grid_combo_activated)
+    minor_ticks_check.stateChanged.connect(minor_ticks_state_changed)
     tick_params_editor.sigTickParamsChanged.connect(tick_params_changed)
     curves_combo.activated.connect(lambda _index: rebuild_curve_editor())
     images_combo.activated.connect(lambda _index: rebuild_image_editor())
     selector.sigSelectionChanged.connect(selection_changed)
+    tool.sigInfoChanged.connect(sync_minor_ticks_check)
+
+    def disconnect_minor_ticks_sync(_obj: QtCore.QObject | None = None) -> None:
+        with contextlib.suppress(TypeError, RuntimeError):
+            tool.sigInfoChanged.disconnect(sync_minor_ticks_check)
+
+    dialog.destroyed.connect(disconnect_minor_ticks_sync)
     refresh_from_axis()
 
     button_box = QtWidgets.QDialogButtonBox(
@@ -2330,6 +2403,15 @@ def _axis_grid_visible(axis: Axes, *, which: str, axis_name: str) -> bool | None
     if axis_name in {"y", "both"}:
         states.append(_axis_direction_grid_visible(axis.yaxis, which))
     return _merge_grid_states(states)
+
+
+def _axis_minor_ticks_visible(axis: Axes) -> bool | None:
+    return _merge_grid_states(
+        (
+            not isinstance(axis.xaxis.get_minor_locator(), mticker.NullLocator),
+            not isinstance(axis.yaxis.get_minor_locator(), mticker.NullLocator),
+        )
+    )
 
 
 def _axis_direction_grid_visible(axis: typing.Any, which: str) -> bool | None:

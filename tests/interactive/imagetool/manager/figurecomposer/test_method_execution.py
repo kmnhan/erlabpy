@@ -4,6 +4,7 @@ import warnings
 import matplotlib.colors
 import matplotlib.pyplot as plt
 import matplotlib.scale as mscale
+import matplotlib.ticker as mticker
 import matplotlib.transforms as mtransforms
 import numpy as np
 import pytest
@@ -247,6 +248,59 @@ def test_figure_composer_plot_core_levels_renders_and_generates_code(qtbot) -> N
         )
         assert not figure.axes[0].texts
         plt.close(figure)
+
+
+def test_figure_composer_minor_tick_methods_render_and_codegen(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(ncols=2, sharex=False, sharey=False),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="minorticks_on",
+                    axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="minorticks_off",
+                    axes=FigureAxesSelectionState(axes=((0, 1),)),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    figurecomposer_rendering._render_into_figure(
+        tool,
+        tool.figure,
+        sync_visible=False,
+    )
+    left_axis, right_axis = tool.figure.axes[:2]
+    assert not isinstance(left_axis.xaxis.get_minor_locator(), mticker.NullLocator)
+    assert not isinstance(left_axis.yaxis.get_minor_locator(), mticker.NullLocator)
+    assert isinstance(right_axis.xaxis.get_minor_locator(), mticker.NullLocator)
+    assert isinstance(right_axis.yaxis.get_minor_locator(), mticker.NullLocator)
+
+    code = tool.generated_code()
+    assert "for ax in axs.flat:\n    ax.minorticks_on()" in code
+    assert "axs[0, 1].minorticks_off()" in code
+
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+    axs = namespace["axs"]
+    assert not isinstance(axs[0, 0].xaxis.get_minor_locator(), mticker.NullLocator)
+    assert not isinstance(axs[0, 0].yaxis.get_minor_locator(), mticker.NullLocator)
+    assert isinstance(axs[0, 1].xaxis.get_minor_locator(), mticker.NullLocator)
+    assert isinstance(axs[0, 1].yaxis.get_minor_locator(), mticker.NullLocator)
 
 
 def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:

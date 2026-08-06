@@ -9,6 +9,7 @@ from pathlib import Path
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 import pytest
 import xarray as xr
@@ -8181,6 +8182,7 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     )
     qtbot.addWidget(tool)
     tool.show_figure_window(activate=False)
+    tool.figure.axes[0].minorticks_off()
 
     tool._show_axes_customize_dialog()
     dialog = tool._axes_customize_dialog
@@ -8211,6 +8213,9 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     grid_axis_combo = dialog.findChild(
         QtWidgets.QComboBox, "figureComposerToolbarAxesGridAxisCombo"
     )
+    minor_ticks_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerToolbarAxesMinorTicksCheck"
+    )
     tick_editor = dialog.findChild(
         figurecomposer_tick_params.TickParamsEditorWidget,
         "figureComposerToolbarAxesTickParamsEditor",
@@ -8223,6 +8228,7 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     assert xscale_combo is not None
     assert grid_check is not None
     assert grid_axis_combo is not None
+    assert minor_ticks_check is not None
     assert tick_editor is not None
     labels_row = dialog.findChild(
         QtWidgets.QWidget, "figureComposerToolbarAxesLabelsRow"
@@ -8339,6 +8345,32 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     assert len(grid_ops) == 1
     assert grid_ops[0].method_kwargs == {"which": "major", "axis": "x"}
 
+    minor_ticks_check.setChecked(True)
+    minor_ticks_ops = _method_operations(
+        tool,
+        FigureMethodFamily.AXES,
+        "minorticks_on",
+    )
+    assert len(minor_ticks_ops) == 1
+    assert minor_ticks_ops[0].axes.axes == ((0, 0),)
+
+    minor_ticks_check.setChecked(False)
+    assert (
+        _method_operations(
+            tool,
+            FigureMethodFamily.AXES,
+            "minorticks_on",
+        )
+        == ()
+    )
+    minor_ticks_off_ops = _method_operations(
+        tool,
+        FigureMethodFamily.AXES,
+        "minorticks_off",
+    )
+    assert len(minor_ticks_off_ops) == 1
+    assert minor_ticks_off_ops[0].axes.axes == ((0, 0),)
+
     _click_tick_params_segment(
         tick_editor,
         "figureComposerToolbarAxesTickParamsAxisCombo",
@@ -8382,6 +8414,8 @@ def test_figure_composer_toolbar_axes_dialog_shows_mixed_axis_selection(
     right_axis.set_xscale("log")
     left_axis.grid(True)
     right_axis.grid(False)
+    left_axis.minorticks_on()
+    right_axis.minorticks_off()
 
     tool._show_axes_customize_dialog()
     dialog = tool._axes_customize_dialog
@@ -8398,16 +8432,21 @@ def test_figure_composer_toolbar_axes_dialog_shows_mixed_axis_selection(
     grid_check = dialog.findChild(
         QtWidgets.QCheckBox, "figureComposerToolbarAxesGridCheck"
     )
+    minor_ticks_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerToolbarAxesMinorTicksCheck"
+    )
     assert title_edit is not None
     assert xlim_edit is not None
     assert xscale_combo is not None
     assert grid_check is not None
+    assert minor_ticks_check is not None
     assert title_edit.toPlainText() == ""
     assert title_edit.placeholderText() == _editor_controls.MIXED_VALUES_TEXT
     assert xlim_edit.text() == ""
     assert xlim_edit.placeholderText() == _editor_controls.MIXED_VALUES_TEXT
     assert xscale_combo.currentData() is _editor_controls.MIXED_VALUE
     assert grid_check.checkState() == QtCore.Qt.CheckState.PartiallyChecked
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.PartiallyChecked
 
     xscale_combo.activated.emit(xscale_combo.currentIndex())
     yscale_combo = dialog.findChild(
@@ -8420,9 +8459,28 @@ def test_figure_composer_toolbar_axes_dialog_shows_mixed_axis_selection(
     )
     yscale_combo.activated.emit(yscale_combo.currentIndex())
     grid_check.stateChanged.emit(int(QtCore.Qt.CheckState.PartiallyChecked.value))
+    minor_ticks_check.stateChanged.emit(
+        int(QtCore.Qt.CheckState.PartiallyChecked.value)
+    )
     assert _method_operations(tool, FigureMethodFamily.AXES, "set_xscale") == ()
     assert _method_operations(tool, FigureMethodFamily.AXES, "set_yscale") == ()
     assert _method_operations(tool, FigureMethodFamily.AXES, "grid") == ()
+    assert (
+        _method_operations(
+            tool,
+            FigureMethodFamily.AXES,
+            "minorticks_on",
+        )
+        == ()
+    )
+    assert (
+        _method_operations(
+            tool,
+            FigureMethodFamily.AXES,
+            "minorticks_off",
+        )
+        == ()
+    )
 
     title_edit.setPlainText("Shared")
 
@@ -8442,6 +8500,184 @@ def test_figure_composer_toolbar_axes_dialog_shows_mixed_axis_selection(
     assert len(grid_ops) == 1
     assert grid_ops[0].axes.axes == ((0, 0), (0, 1))
     assert grid_ops[0].method_args == (True,)
+
+
+def test_figure_composer_toolbar_minor_ticks_follow_rendered_locators(
+    qtbot,
+    monkeypatch,
+) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    tool.figure.axes[0].minorticks_off()
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    xscale_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarAxesXScaleCombo"
+    )
+    minor_ticks_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerToolbarAxesMinorTicksCheck"
+    )
+    assert xscale_combo is not None
+    assert minor_ticks_check is not None
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Unchecked
+
+    redraw_count = 0
+    original_redraw = tool._redraw_plot
+
+    def count_redraw(
+        *, show_window: bool | None = None, emit_info: bool = False
+    ) -> None:
+        nonlocal redraw_count
+        redraw_count += 1
+        original_redraw(show_window=show_window, emit_info=emit_info)
+
+    monkeypatch.setattr(tool, "_redraw_plot", count_redraw)
+    _activate_combo_text(xscale_combo, "log")
+
+    assert redraw_count == 1
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.PartiallyChecked
+
+    operations = tool.tool_status.operations
+    axis = tool.figure.axes[0]
+    axis.yaxis.set_minor_locator(mticker.AutoMinorLocator())
+    tool._preview_render_update_pending = True
+    tool.sigInfoChanged.emit()
+
+    assert redraw_count == 1
+    assert tool.tool_status.operations == operations
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.PartiallyChecked
+
+    tool._preview_render_update_pending = False
+    tool.sigInfoChanged.emit()
+
+    assert redraw_count == 1
+    assert tool.tool_status.operations == operations
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Checked
+
+    axis.xaxis.set_minor_locator(mticker.NullLocator())
+    axis.yaxis.set_minor_locator(mticker.NullLocator())
+    tool.sigInfoChanged.emit()
+
+    assert redraw_count == 1
+    assert tool.tool_status.operations == operations
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Unchecked
+
+    axis.minorticks_on()
+    with monkeypatch.context() as context:
+        context.setattr(erlab.interactive.utils, "qt_is_valid", lambda *_args: False)
+        tool.sigInfoChanged.emit()
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Unchecked
+
+    dialog.close()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    assert not erlab.interactive.utils.qt_is_valid(dialog)
+    assert tool._axes_customize_dialog is None
+    tool.sigInfoChanged.emit()
+
+
+def test_figure_composer_toolbar_minor_ticks_wait_for_manual_redraw(qtbot) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    tool.figure.axes[0].minorticks_off()
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    minor_ticks_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerToolbarAxesMinorTicksCheck"
+    )
+    assert minor_ticks_check is not None
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Unchecked
+
+    tool.auto_redraw_check.setChecked(False)
+    minor_ticks_check.setChecked(True)
+
+    axis = tool.figure.axes[0]
+    assert tool._auto_redraw_dirty
+    assert isinstance(axis.xaxis.get_minor_locator(), mticker.NullLocator)
+    assert isinstance(axis.yaxis.get_minor_locator(), mticker.NullLocator)
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Checked
+    assert len(_method_operations(tool, FigureMethodFamily.AXES, "minorticks_on")) == 1
+
+    tool._redraw_plot_requested()
+
+    axis = tool.figure.axes[0]
+    assert not tool._auto_redraw_dirty
+    assert not isinstance(axis.xaxis.get_minor_locator(), mticker.NullLocator)
+    assert not isinstance(axis.yaxis.get_minor_locator(), mticker.NullLocator)
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Checked
+
+
+def test_figure_composer_toolbar_minor_ticks_override_later_scale(qtbot) -> None:
+    data = _figure_composer_image_source("data")
+    axes = FigureAxesSelectionState(axes=((0, 0),))
+    minor_ticks = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="minorticks_on",
+        axes=axes,
+    )
+    scale = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="set_xscale",
+        axes=axes,
+        args=("log",),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(minor_ticks, scale),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    minor_ticks_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerToolbarAxesMinorTicksCheck"
+    )
+    assert minor_ticks_check is not None
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.Checked
+
+    tool.operation_panel.select_row(0)
+    current_id = tool.operation_panel.current_id()
+    selected_ids = tool.operation_panel.selected_ids()
+    tool._reset_history_stack()
+    minor_ticks_check.setCheckState(QtCore.Qt.CheckState.Unchecked)
+
+    operations = tool.tool_status.operations
+    assert tuple(operation.operation_id for operation in operations) == (
+        scale.operation_id,
+        minor_ticks.operation_id,
+    )
+    assert operations[-1].method_name == "minorticks_off"
+    assert tool.operation_panel.current_id() == current_id
+    assert tool.operation_panel.selected_ids() == selected_ids
+    axis = tool.figure.axes[0]
+    assert isinstance(axis.xaxis.get_minor_locator(), mticker.NullLocator)
+    assert isinstance(axis.yaxis.get_minor_locator(), mticker.NullLocator)
+
+    tool.undo()
+    assert tuple(
+        operation.operation_id for operation in tool.tool_status.operations
+    ) == (minor_ticks.operation_id, scale.operation_id)
+    assert tool.tool_status.operations[0].method_name == "minorticks_on"
+    axis = tool.figure.axes[0]
+    assert not isinstance(axis.xaxis.get_minor_locator(), mticker.NullLocator)
+    assert not isinstance(axis.yaxis.get_minor_locator(), mticker.NullLocator)
+
+    tool.redo()
+    assert tuple(
+        operation.operation_id for operation in tool.tool_status.operations
+    ) == (scale.operation_id, minor_ticks.operation_id)
+    assert tool.tool_status.operations[-1].method_name == "minorticks_off"
+    axis = tool.figure.axes[0]
+    assert isinstance(axis.xaxis.get_minor_locator(), mticker.NullLocator)
+    assert isinstance(axis.yaxis.get_minor_locator(), mticker.NullLocator)
 
 
 def test_figure_composer_toolbar_axes_dialog_disables_unavailable_axes(
@@ -8472,6 +8708,9 @@ def test_figure_composer_toolbar_axes_dialog_disables_unavailable_axes(
     grid_check = dialog.findChild(
         QtWidgets.QCheckBox, "figureComposerToolbarAxesGridCheck"
     )
+    minor_ticks_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerToolbarAxesMinorTicksCheck"
+    )
     tick_editor = dialog.findChild(
         figurecomposer_tick_params.TickParamsEditorWidget,
         "figureComposerToolbarAxesTickParamsEditor",
@@ -8480,11 +8719,13 @@ def test_figure_composer_toolbar_axes_dialog_disables_unavailable_axes(
     assert xscale_combo is not None
     assert grid_axis_combo is not None
     assert grid_check is not None
+    assert minor_ticks_check is not None
     assert tick_editor is not None
     assert not title_edit.isEnabled()
     assert not xscale_combo.isEnabled()
     assert not grid_axis_combo.isEnabled()
     assert not grid_check.isEnabled()
+    assert not minor_ticks_check.isEnabled()
     assert not tick_editor.isEnabled()
 
 
