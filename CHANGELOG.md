@@ -1,6 +1,10 @@
-## Unreleased
+## v3.26.1 (2026-08-06)
 
 ### 🐞 Bug Fixes
+
+- **manager:** isolate workspace readers from saves (#530) ([001147b](https://github.com/kmnhan/erlabpy/commit/001147b1dd2375b4f2b608b749a2bd91f42fb9f1))
+
+  Fixes a problem where workspace saves would sometimes fail on Windows.
 
 - **figurecomposer:** apply axes changes to selected steps (#529) ([b7074ee](https://github.com/kmnhan/erlabpy/commit/b7074ee6f12e82d66cc77a12705f26d9723427db))
 
@@ -35,6 +39,8 @@
 - **ptable:** slightly improve responsiveness (#522) ([a7f99d3](https://github.com/kmnhan/erlabpy/commit/a7f99d31c5f79bcd6d86c8bbbad4a49761402bb1))
 
 ### ♻️ Code Refactor
+
+- improve agent skill (#531) ([763414f](https://github.com/kmnhan/erlabpy/commit/763414f5987eb5c9d373d178ca89e9af1e9eec14))
 
 - **ktool:** allow editing input coordinates in ktool (#524) ([68dfcd6](https://github.com/kmnhan/erlabpy/commit/68dfcd61b85b44aec9a437f18a881c0e44466995))
 
