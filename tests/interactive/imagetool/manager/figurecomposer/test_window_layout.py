@@ -8181,6 +8181,7 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     )
     qtbot.addWidget(tool)
     tool.show_figure_window(activate=False)
+    tool.figure.axes[0].minorticks_off()
 
     tool._show_axes_customize_dialog()
     dialog = tool._axes_customize_dialog
@@ -8211,6 +8212,9 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     grid_axis_combo = dialog.findChild(
         QtWidgets.QComboBox, "figureComposerToolbarAxesGridAxisCombo"
     )
+    minor_ticks_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerToolbarAxesMinorTicksCheck"
+    )
     tick_editor = dialog.findChild(
         figurecomposer_tick_params.TickParamsEditorWidget,
         "figureComposerToolbarAxesTickParamsEditor",
@@ -8223,6 +8227,7 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     assert xscale_combo is not None
     assert grid_check is not None
     assert grid_axis_combo is not None
+    assert minor_ticks_check is not None
     assert tick_editor is not None
     labels_row = dialog.findChild(
         QtWidgets.QWidget, "figureComposerToolbarAxesLabelsRow"
@@ -8339,6 +8344,32 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     assert len(grid_ops) == 1
     assert grid_ops[0].method_kwargs == {"which": "major", "axis": "x"}
 
+    minor_ticks_check.setChecked(True)
+    minor_ticks_ops = _method_operations(
+        tool,
+        FigureMethodFamily.AXES,
+        "minorticks_on",
+    )
+    assert len(minor_ticks_ops) == 1
+    assert minor_ticks_ops[0].axes.axes == ((0, 0),)
+
+    minor_ticks_check.setChecked(False)
+    assert (
+        _method_operations(
+            tool,
+            FigureMethodFamily.AXES,
+            "minorticks_on",
+        )
+        == ()
+    )
+    minor_ticks_off_ops = _method_operations(
+        tool,
+        FigureMethodFamily.AXES,
+        "minorticks_off",
+    )
+    assert len(minor_ticks_off_ops) == 1
+    assert minor_ticks_off_ops[0].axes.axes == ((0, 0),)
+
     _click_tick_params_segment(
         tick_editor,
         "figureComposerToolbarAxesTickParamsAxisCombo",
@@ -8382,6 +8413,8 @@ def test_figure_composer_toolbar_axes_dialog_shows_mixed_axis_selection(
     right_axis.set_xscale("log")
     left_axis.grid(True)
     right_axis.grid(False)
+    left_axis.minorticks_on()
+    right_axis.minorticks_off()
 
     tool._show_axes_customize_dialog()
     dialog = tool._axes_customize_dialog
@@ -8398,16 +8431,21 @@ def test_figure_composer_toolbar_axes_dialog_shows_mixed_axis_selection(
     grid_check = dialog.findChild(
         QtWidgets.QCheckBox, "figureComposerToolbarAxesGridCheck"
     )
+    minor_ticks_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerToolbarAxesMinorTicksCheck"
+    )
     assert title_edit is not None
     assert xlim_edit is not None
     assert xscale_combo is not None
     assert grid_check is not None
+    assert minor_ticks_check is not None
     assert title_edit.toPlainText() == ""
     assert title_edit.placeholderText() == _editor_controls.MIXED_VALUES_TEXT
     assert xlim_edit.text() == ""
     assert xlim_edit.placeholderText() == _editor_controls.MIXED_VALUES_TEXT
     assert xscale_combo.currentData() is _editor_controls.MIXED_VALUE
     assert grid_check.checkState() == QtCore.Qt.CheckState.PartiallyChecked
+    assert minor_ticks_check.checkState() == QtCore.Qt.CheckState.PartiallyChecked
 
     xscale_combo.activated.emit(xscale_combo.currentIndex())
     yscale_combo = dialog.findChild(
@@ -8420,9 +8458,28 @@ def test_figure_composer_toolbar_axes_dialog_shows_mixed_axis_selection(
     )
     yscale_combo.activated.emit(yscale_combo.currentIndex())
     grid_check.stateChanged.emit(int(QtCore.Qt.CheckState.PartiallyChecked.value))
+    minor_ticks_check.stateChanged.emit(
+        int(QtCore.Qt.CheckState.PartiallyChecked.value)
+    )
     assert _method_operations(tool, FigureMethodFamily.AXES, "set_xscale") == ()
     assert _method_operations(tool, FigureMethodFamily.AXES, "set_yscale") == ()
     assert _method_operations(tool, FigureMethodFamily.AXES, "grid") == ()
+    assert (
+        _method_operations(
+            tool,
+            FigureMethodFamily.AXES,
+            "minorticks_on",
+        )
+        == ()
+    )
+    assert (
+        _method_operations(
+            tool,
+            FigureMethodFamily.AXES,
+            "minorticks_off",
+        )
+        == ()
+    )
 
     title_edit.setPlainText("Shared")
 
@@ -8472,6 +8529,9 @@ def test_figure_composer_toolbar_axes_dialog_disables_unavailable_axes(
     grid_check = dialog.findChild(
         QtWidgets.QCheckBox, "figureComposerToolbarAxesGridCheck"
     )
+    minor_ticks_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerToolbarAxesMinorTicksCheck"
+    )
     tick_editor = dialog.findChild(
         figurecomposer_tick_params.TickParamsEditorWidget,
         "figureComposerToolbarAxesTickParamsEditor",
@@ -8480,11 +8540,13 @@ def test_figure_composer_toolbar_axes_dialog_disables_unavailable_axes(
     assert xscale_combo is not None
     assert grid_axis_combo is not None
     assert grid_check is not None
+    assert minor_ticks_check is not None
     assert tick_editor is not None
     assert not title_edit.isEnabled()
     assert not xscale_combo.isEnabled()
     assert not grid_axis_combo.isEnabled()
     assert not grid_check.isEnabled()
+    assert not minor_ticks_check.isEnabled()
     assert not tick_editor.isEnabled()
 
 
