@@ -2197,6 +2197,7 @@ def test_figure_composer_operation_reports_uneditable_plot_slices_details(
         display_axis = (0, 1)
         slicer_area = types.SimpleNamespace(
             data=types.SimpleNamespace(ndim=3, dims=("alpha", "beta", "eV")),
+            displayed_data=types.SimpleNamespace(dims=("alpha", "beta", "eV")),
             n_cursors=1,
         )
         array_slicer = types.SimpleNamespace(_nonuniform_axes=set())

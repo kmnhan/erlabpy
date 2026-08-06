@@ -391,6 +391,39 @@ def test_manager_auto_names_figures_numerically(
         assert manager._child_node(unnamed_uid).display_text == "Figure 6"
 
 
+def test_imagetool_1d_profile_creates_figure_without_internal_stack_dim(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        data = xr.DataArray(
+            np.arange(5.0),
+            dims=("x",),
+            coords={"x": np.arange(5.0)},
+            name="cut",
+        )
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        source_tool = manager._tool_graph.root_wrappers[0]
+        assert source_tool.slicer_area.data.dims == ("x", "stack_dim")
+        source_tool.slicer_area.axes[1].plot_with_matplotlib()
+
+        qtbot.wait_until(
+            lambda: len(manager._tool_graph.figure_uids) == 1, timeout=5000
+        )
+        figure_uid = manager._tool_graph.figure_uids[0]
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        [operation] = figure_tool.tool_status.operations
+        assert operation.kind == FigureOperationKind.LINE
+        assert operation.line_x == "x"
+        assert operation.line_selection == {}
+        xr.testing.assert_equal(figure_tool.source_data()["cut"], data)
+
+
 def test_manager_duplicate_figure_assigns_unique_display_name_and_keeps_state(
     qtbot,
     manager_context: Callable[
