@@ -313,6 +313,28 @@ class AutoUpdater(QtCore.QObject):
         install_root: pathlib.Path,
         parent: QtWidgets.QWidget | None,
     ):
+        manager = erlab.interactive.imagetool.manager._manager_instance
+        if manager is None:
+            self._install_update(extract_dir, install_root, parent)
+            return
+
+        def _continue_after_close(accepted: bool) -> None:
+            manager._sigCloseResolved.disconnect(_continue_after_close)
+            if accepted:
+                QtCore.QTimer.singleShot(
+                    0,
+                    lambda: self._install_update(extract_dir, install_root, parent),
+                )
+
+        manager._sigCloseResolved.connect(_continue_after_close)
+        manager.close()
+
+    def _install_update(
+        self,
+        extract_dir: pathlib.Path,
+        install_root: pathlib.Path,
+        parent: QtWidgets.QWidget | None,
+    ) -> None:
         pid = os.getpid()
         tmpdir = extract_dir.parent
         settings = _get_updater_settings()
@@ -378,12 +400,6 @@ class AutoUpdater(QtCore.QObject):
                 "Auto-update helper not implemented for this OS and architecture.",
             )
             return
-
-        # Close current manager
-        manager = erlab.interactive.imagetool.manager._manager_instance
-        if manager:
-            manager.remove_all_tools()
-            manager.close()
 
         # Quit current app; helper will take over and relaunch
         qapp = QtWidgets.QApplication.instance()

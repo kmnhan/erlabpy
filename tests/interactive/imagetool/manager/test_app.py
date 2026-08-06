@@ -135,6 +135,107 @@ def test_update_workers_emit_failure_tracebacks(qapp, tmp_path, monkeypatch) -> 
     assert "zipfile.BadZipFile" in extract_failures[0][1]
 
 
+@pytest.mark.parametrize("close_outcome", ["accepted", "cancelled", "deferred"])
+def test_auto_updater_installs_only_after_manager_close(
+    close_outcome: str,
+    qtbot,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class _ManagerCloseStub(QtCore.QObject):
+        _sigCloseResolved = QtCore.Signal(bool)
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            if close_outcome == "accepted":
+                self._sigCloseResolved.emit(True)
+            elif close_outcome == "cancelled":
+                self._sigCloseResolved.emit(False)
+
+        def remove_all_tools(self) -> None:
+            raise AssertionError("The updater must not remove workspace tools")
+
+    manager = _ManagerCloseStub()
+    updater = manager_updater_gui.AutoUpdater("1.0.0")
+    install_calls: list[tuple[pathlib.Path, pathlib.Path, None]] = []
+    extract_dir = tmp_path / "extracted"
+    install_root = tmp_path / "installed"
+
+    monkeypatch.setattr(manager_package, "_manager_instance", manager)
+    monkeypatch.setattr(
+        updater,
+        "_install_update",
+        lambda extracted, installed, parent: install_calls.append(
+            (extracted, installed, parent)
+        ),
+    )
+
+    updater._apply_update(extract_dir, install_root, None)
+
+    assert manager.close_calls == 1
+    if close_outcome == "accepted":
+        qtbot.wait_until(lambda: len(install_calls) == 1)
+    else:
+        QtWidgets.QApplication.processEvents()
+        assert install_calls == []
+
+    if close_outcome == "deferred":
+        manager._sigCloseResolved.emit(True)
+        qtbot.wait_until(lambda: len(install_calls) == 1)
+
+    manager._sigCloseResolved.emit(True)
+    manager._sigCloseResolved.emit(False)
+    QtWidgets.QApplication.processEvents()
+    assert install_calls == (
+        [(extract_dir, install_root, None)]
+        if close_outcome in {"accepted", "deferred"}
+        else []
+    )
+
+
+def test_auto_updater_cancel_preserves_open_workspace(
+    qtbot,
+    test_data,
+    tmp_path,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1)
+        updater = manager_updater_gui.AutoUpdater("1.0.0")
+        install_calls: list[None] = []
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                manager._workspace_controller,
+                "_dirty_workspace_save_choice",
+                lambda _message: "cancel",
+            )
+            patch.setattr(
+                updater,
+                "_install_update",
+                lambda *_args: install_calls.append(None),
+            )
+
+            updater._apply_update(
+                tmp_path / "extracted",
+                tmp_path / "installed",
+                manager,
+            )
+            QtWidgets.QApplication.processEvents()
+
+            assert manager.isVisible()
+            assert manager.ntools == 1
+            assert install_calls == []
+
+
 def test_manager_main_cache_directory_uses_qstandardpaths(
     tmp_path, monkeypatch
 ) -> None:

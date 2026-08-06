@@ -216,6 +216,7 @@ class ImageToolManager(_ImageToolManagerBase):
     """
 
     sigLinkersChanged = QtCore.Signal()  #: :meta private:
+    _sigCloseResolved = QtCore.Signal(bool)  #: Emitted when a close request finishes.
     _sigReloadLinkers = QtCore.Signal()  #: Emitted when linker state needs refreshing
 
     _sigDataReplaced = QtCore.Signal()  #: :meta private:
@@ -1102,6 +1103,7 @@ class ImageToolManager(_ImageToolManagerBase):
             )
             if event is not None:
                 event.ignore()
+            self._sigCloseResolved.emit(False)
             return
         self._commit_note_editor()
         previous_closing_workspace_document = self._workspace_state.closing_document
@@ -1113,6 +1115,7 @@ class ImageToolManager(_ImageToolManagerBase):
             if save_choice == "cancel":
                 if event:
                     event.ignore()
+                self._sigCloseResolved.emit(False)
                 return
             if save_choice == "save":
                 if event:
@@ -1121,6 +1124,8 @@ class ImageToolManager(_ImageToolManagerBase):
                 def _close_after_save(save_succeeded: bool) -> None:
                     if save_succeeded and not self.is_workspace_modified:
                         self.close()
+                    else:
+                        self._sigCloseResolved.emit(False)
 
                 self._workspace_controller.save(on_finished=_close_after_save)
                 return
@@ -1139,6 +1144,7 @@ class ImageToolManager(_ImageToolManagerBase):
                 if self._standalone_app_windows:
                     if event:
                         event.ignore()
+                    self._sigCloseResolved.emit(False)
                     return
 
             logger.debug("Stopping servers...")
@@ -1202,6 +1208,7 @@ class ImageToolManager(_ImageToolManagerBase):
                 sys.excepthook = self._previous_excepthook
 
             super().closeEvent(event)
+            self._sigCloseResolved.emit(True)
         finally:
             self._workspace_state.closing_document = previous_closing_workspace_document
 
