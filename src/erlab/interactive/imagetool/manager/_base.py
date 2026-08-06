@@ -183,6 +183,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     menu_bar: QtWidgets.QMenuBar
     server: _ManagerServer
     sigLinkersChanged: QtCore.SignalInstance
+    _sigCloseResolved: QtCore.SignalInstance
     watcher_server: _WatcherServer
     _additional_windows: dict[str, QtWidgets.QWidget]
     _alert_dialogs: list[erlab.interactive.utils.MessageDialog]
