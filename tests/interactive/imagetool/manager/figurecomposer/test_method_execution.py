@@ -477,14 +477,26 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     text_edit = tool.findChild(
         QtWidgets.QPlainTextEdit, "figureComposerAxesMethodTextEdit"
     )
+    horizontal_alignment_combo = tool.findChild(
+        QtWidgets.QComboBox,
+        "figureComposerAxesMethodTextHorizontalAlignmentCombo",
+    )
+    vertical_alignment_combo = tool.findChild(
+        QtWidgets.QComboBox,
+        "figureComposerAxesMethodTextVerticalAlignmentCombo",
+    )
     kwargs_edit = tool.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
     assert method_combo is not None
     assert transform_combo is not None
     assert text_edit is not None
+    assert horizontal_alignment_combo is not None
+    assert vertical_alignment_combo is not None
     assert kwargs_edit is not None
     assert method_combo.currentData() == "text"
     assert text_edit.toPlainText() == "Panel"
-    assert kwargs_edit.text() == 'ha="left", va="top"'
+    assert horizontal_alignment_combo.currentData() == "left"
+    assert vertical_alignment_combo.currentData() == "top"
+    assert kwargs_edit.text() == ""
 
     tool.operation_panel.operation_list.setCurrentItem(
         tool.operation_panel.operation_list.topLevelItem(4)
@@ -638,6 +650,8 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     fig.canvas.draw()
     assert fig.axes[0].texts[0].get_text() == "Panel"
     assert fig.axes[0].texts[0].get_transform() == fig.axes[0].transAxes
+    assert fig.axes[0].texts[0].get_horizontalalignment() == "left"
+    assert fig.axes[0].texts[0].get_verticalalignment() == "top"
     assert fig.axes[0].lines[0].get_color() == "red"
     assert fig.axes[0].axison is False
     assert fig.axes[1].lines[0].get_color() == "red"
@@ -665,8 +679,8 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
 
     code = tool.generated_code()
     assert (
-        'axs[0, 0].text(0.1, 0.9, "Panel", ha="left", va="top", '
-        "transform=axs[0, 0].transAxes)"
+        'axs[0, 0].text(0.1, 0.9, "Panel", horizontalalignment="left", '
+        'verticalalignment="top", transform=axs[0, 0].transAxes)'
     ) in code
     assert (
         'for ax in axs.flat:\n    ax.axvline(0.5, color="red", linestyle="--")' in code
@@ -697,6 +711,8 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     namespace["fig"].canvas.draw()
     axs = namespace["axs"]
     assert axs[0, 0].texts[0].get_text() == "Panel"
+    assert axs[0, 0].texts[0].get_horizontalalignment() == "left"
+    assert axs[0, 0].texts[0].get_verticalalignment() == "top"
     assert axs[0, 0].axison is False
     assert [tick.get_text() for tick in axs[0, 1].get_xticklabels()] == [
         "left",

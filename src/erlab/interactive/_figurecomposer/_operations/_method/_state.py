@@ -79,7 +79,9 @@ def _method_arg_value(
 def _method_kwarg_value(
     operation: FigureOperationState, key: str, default: typing.Any
 ) -> typing.Any:
-    return operation.method_kwargs.get(key, default)
+    return _canonical_method_control_kwargs(
+        operation.method_kwargs, _method_spec(operation)
+    ).get(key, default)
 
 
 def _normalized_method_control_value(
@@ -90,11 +92,73 @@ def _normalized_method_control_value(
     return value
 
 
+def _canonical_method_control_aliases(
+    method_kwargs: Mapping[str, typing.Any], spec: MethodSpec
+) -> dict[str, typing.Any]:
+    kwargs = dict(method_kwargs)
+    for control in spec.controls:
+        if control.key is None or not control.aliases:
+            continue
+        present_aliases = tuple(alias for alias in control.aliases if alias in kwargs)
+        if not present_aliases:
+            continue
+        if control.key not in kwargs:
+            kwargs[control.key] = kwargs[present_aliases[0]]
+        for alias in present_aliases:
+            kwargs.pop(alias)
+    return kwargs
+
+
+def _canonical_method_control_kwargs(
+    method_kwargs: Mapping[str, typing.Any], spec: MethodSpec
+) -> dict[str, typing.Any]:
+    kwargs = _canonical_method_control_aliases(method_kwargs, spec)
+    active_exclusive_groups: set[str] = set()
+    for control in spec.controls:
+        if control.key is None or control.key not in kwargs:
+            continue
+        if kwargs[control.key] is None and (
+            control.none_is_unset or control.exclusive_group is not None
+        ):
+            kwargs.pop(control.key)
+            continue
+        if control.exclusive_group is None:
+            continue
+        if control.exclusive_group in active_exclusive_groups:
+            kwargs.pop(control.key)
+            continue
+        active_exclusive_groups.add(control.exclusive_group)
+    return kwargs
+
+
+def _updated_method_control_kwargs(
+    method_kwargs: Mapping[str, typing.Any],
+    spec: MethodSpec,
+    key: str,
+    value: typing.Any,
+) -> dict[str, typing.Any]:
+    kwargs = _canonical_method_control_kwargs(method_kwargs, spec)
+    if value is None:
+        kwargs.pop(key, None)
+        return kwargs
+    control = next((control for control in spec.controls if control.key == key), None)
+    if control is not None and control.exclusive_group is not None:
+        for peer in spec.controls:
+            if (
+                peer.key is not None
+                and peer.key != key
+                and peer.exclusive_group == control.exclusive_group
+            ):
+                kwargs.pop(peer.key, None)
+    kwargs[key] = value
+    return kwargs
+
+
 def _method_kwargs(
     operation: FigureOperationState, spec: MethodSpec
 ) -> dict[str, typing.Any]:
     kwargs = dict(spec.default_kwargs)
-    kwargs.update(operation.method_kwargs)
+    kwargs.update(_canonical_method_control_kwargs(operation.method_kwargs, spec))
     for control in spec.controls:
         if control.key is not None and control.key in kwargs:
             kwargs[control.key] = _normalized_method_control_value(
@@ -259,6 +323,7 @@ def _control_accepts_value(control: MethodControlSpec, value: typing.Any) -> boo
         return str(value) in control.options
     if control.kind in {
         MethodControlKind.BOOL_ARG_COMBO,
+        MethodControlKind.BOOL_KWARG_CHECK,
         MethodControlKind.BOOL_KWARG_COMBO,
     }:
         return isinstance(value, bool)
@@ -270,9 +335,15 @@ def _control_accepts_value(control: MethodControlSpec, value: typing.Any) -> boo
 def _transfer_axis_label_loc(
     source_spec: MethodSpec, target_spec: MethodSpec, value: typing.Any
 ) -> typing.Any:
-    if source_spec.name == "set_xlabel" and target_spec.name == "set_ylabel":
+    if source_spec.name in {"set_xlabel", "set_xlabels"} and target_spec.name in {
+        "set_ylabel",
+        "set_ylabels",
+    }:
         return {"left": "bottom", "center": "center", "right": "top"}.get(value, value)
-    if source_spec.name == "set_ylabel" and target_spec.name == "set_xlabel":
+    if source_spec.name in {"set_ylabel", "set_ylabels"} and target_spec.name in {
+        "set_xlabel",
+        "set_xlabels",
+    }:
         return {"bottom": "left", "center": "center", "top": "right"}.get(value, value)
     return value
 
@@ -361,7 +432,10 @@ def _method_transfer_updates(
         and source_signature == target_signature
     )
     kwargs: dict[str, typing.Any] = {}
-    for key, value in operation.method_kwargs.items():
+    source_method_kwargs = _canonical_method_control_kwargs(
+        operation.method_kwargs, source_spec
+    )
+    for key, value in source_method_kwargs.items():
         target_control = target_kwargs.get(key)
         if target_control is None:
             if key not in source_kwargs and transfer_extra_kwargs:
@@ -374,6 +448,7 @@ def _method_transfer_updates(
             value = _transfer_axis_label_loc(source_spec, target_spec, value)
         if _control_accepts_value(target_control, value):
             kwargs[key] = value
+    kwargs = _canonical_method_control_kwargs(kwargs, target_spec)
 
     method_call_policy = None
     if operation.method_call_policy is not None:
@@ -448,6 +523,12 @@ def _method_transfer_updates(
 
 
 def _loaded_operation(operation: FigureOperationState) -> FigureOperationState:
+    updates: dict[str, typing.Any] = {}
+    kwargs = _canonical_method_control_kwargs(
+        operation.method_kwargs, _method_spec(operation)
+    )
+    if kwargs != operation.method_kwargs:
+        updates["method_kwargs"] = kwargs
     if operation.method_transform == "custom":
-        return operation.model_copy(update={"trusted": False})
-    return operation
+        updates["trusted"] = False
+    return operation.model_copy(update=updates) if updates else operation

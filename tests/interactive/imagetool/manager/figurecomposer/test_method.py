@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import xarray as xr
+from matplotlib.text import Text
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
@@ -1043,6 +1044,82 @@ def test_figure_composer_method_selector_preserves_compatible_values(qtbot) -> N
     assert operation.method_kwargs == {}
 
 
+@pytest.mark.parametrize(
+    ("source_name", "target_name", "source_loc", "target_loc"),
+    [
+        ("set_xlabels", "set_ylabels", "right", "top"),
+        ("set_ylabels", "set_xlabels", "top", "right"),
+    ],
+)
+def test_figure_composer_erlab_label_method_selector_maps_location(
+    qtbot,
+    source_name: str,
+    target_name: str,
+    source_loc: str,
+    target_loc: str,
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name=source_name,
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                    kwargs={"loc": source_loc, "color": "red", "fontsize": 12},
+                ).model_copy(update={"text_values": ("Momentum",)}),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_editor.select_section("method")
+
+    method_combo = tool.operation_editor.stack.currentWidget().findChild(
+        QtWidgets.QComboBox, "figureComposerERLabMethodCombo"
+    )
+    assert method_combo is not None
+    target_index = method_combo.findData(target_name)
+    assert target_index >= 0
+    _activate_combo_index(method_combo, target_index)
+
+    operation = tool.tool_status.operations[0]
+    assert operation.method_name == target_name
+    assert operation.text_values == ("Momentum",)
+    assert operation.method_kwargs == {
+        "loc": target_loc,
+        "color": "red",
+        "fontsize": 12,
+    }
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+    assert not tool._operation_render_errors
+    position_index = 0 if target_name == "set_xlabels" else 1
+    label = (
+        tool.figure.axes[0].xaxis.label
+        if target_name == "set_xlabels"
+        else tool.figure.axes[0].yaxis.label
+    )
+    assert label.get_text() == "Momentum"
+    assert label.get_position()[position_index] == pytest.approx(1.0)
+    assert label.get_color() == "red"
+    assert label.get_fontsize() == pytest.approx(12.0)
+
+    namespace: dict[str, typing.Any] = {}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    generated_label = (
+        namespace["axs"][0, 0].xaxis.label
+        if target_name == "set_xlabels"
+        else namespace["axs"][0, 0].yaxis.label
+    )
+    assert generated_label.get_text() == "Momentum"
+    assert generated_label.get_position()[position_index] == pytest.approx(1.0)
+    assert generated_label.get_color() == "red"
+    assert generated_label.get_fontsize() == pytest.approx(12.0)
+
+
 def test_figure_composer_method_transfer_edge_contracts(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
@@ -1127,6 +1204,22 @@ def test_figure_composer_method_transfer_edge_contracts(
         )
         == "unchanged"
     )
+    assert (
+        method_state._transfer_axis_label_loc(
+            method_catalog.ERLAB_METHODS["set_xlabels"],
+            method_catalog.ERLAB_METHODS["set_ylabels"],
+            "right",
+        )
+        == "top"
+    )
+    assert (
+        method_state._transfer_axis_label_loc(
+            method_catalog.ERLAB_METHODS["set_ylabels"],
+            method_catalog.ERLAB_METHODS["set_xlabels"],
+            "top",
+        )
+        == "right"
+    )
 
     float_pair_updates = method_state._method_transfer_updates(
         FigureOperationState.method(
@@ -1151,6 +1244,42 @@ def test_figure_composer_method_transfer_edge_contracts(
         default_axis=None,
     )
     assert default_arg_updates["method_args"] == ("y",)
+
+    text_alias_updates = method_state._method_transfer_updates(
+        FigureOperationState.method(
+            family=FigureMethodFamily.AXES,
+            name="text",
+            args=(0.25, 0.75, "Panel"),
+            kwargs={
+                "c": "navy",
+                "ha": "left",
+                "va": "top",
+                "rotation": 30,
+                "rotation_mode": "anchor",
+            },
+        ),
+        method_catalog.AXES_METHODS["set_title"],
+        default_axis=None,
+    )
+    assert text_alias_updates["method_kwargs"] == {
+        "color": "navy",
+        "horizontalalignment": "left",
+        "verticalalignment": "top",
+        "rotation": 30,
+        "rotation_mode": "anchor",
+    }
+
+    axis_label_updates = method_state._method_transfer_updates(
+        FigureOperationState.method(
+            family=FigureMethodFamily.AXES,
+            name="set_title",
+            args=("Title",),
+            kwargs={"loc": "right", "ha": "left", "fontsize": 9},
+        ),
+        method_catalog.AXES_METHODS["set_xlabel"],
+        default_axis=None,
+    )
+    assert axis_label_updates["method_kwargs"] == {"loc": "right"}
 
     plot_operation = FigureOperationState.method(
         family=FigureMethodFamily.AXES,
@@ -1453,6 +1582,861 @@ def test_figure_composer_method_text_args_accept_real_newlines(qtbot) -> None:
 
     label_edit.setPlainText(r"h\nu")
     assert tool.tool_status.operations[0].method_args == (r"h\nu",)
+
+
+@pytest.mark.parametrize(
+    ("family", "name", "kwargs", "expected"),
+    [
+        (
+            FigureMethodFamily.AXES,
+            "plot",
+            {
+                "c": "red",
+                "ls": "--",
+                "lw": 2.0,
+                "ms": 4.0,
+                "mfc": "white",
+                "mec": "black",
+                "label": "data",
+            },
+            {
+                "color": "red",
+                "linestyle": "--",
+                "linewidth": 2.0,
+                "markersize": 4.0,
+                "markerfacecolor": "white",
+                "markeredgecolor": "black",
+                "label": "data",
+            },
+        ),
+        (
+            FigureMethodFamily.AXES,
+            "axvline",
+            {"color": "blue", "c": "red", "ls": ":"},
+            {"color": "blue", "linestyle": ":"},
+        ),
+        (
+            FigureMethodFamily.ERLAB,
+            "fermiline",
+            {"c": "green", "ls": "-.", "lw": 1.5},
+            {"color": "green", "linestyle": "-.", "linewidth": 1.5},
+        ),
+        (
+            FigureMethodFamily.ERLAB,
+            "plot_core_levels",
+            {"ls": "--", "lw": 0.5},
+            {"linestyle": "--", "linewidth": 0.5},
+        ),
+        (
+            FigureMethodFamily.FIGURE,
+            "suptitle",
+            {"c": "purple"},
+            {"color": "purple"},
+        ),
+        (
+            FigureMethodFamily.AXES,
+            "text",
+            {"ha": None, "verticalalignment": None},
+            {},
+        ),
+        (
+            FigureMethodFamily.AXES,
+            "set_xlabel",
+            {"loc": "right", "ha": "left", "fontsize": 9},
+            {"loc": "right", "fontsize": 9},
+        ),
+        (
+            FigureMethodFamily.AXES,
+            "set_ylabel",
+            {"loc": None, "ha": "right"},
+            {"horizontalalignment": "right"},
+        ),
+        (
+            FigureMethodFamily.ERLAB,
+            "set_xlabels",
+            {"loc": "left", "horizontalalignment": "right"},
+            {"loc": "left"},
+        ),
+        (
+            FigureMethodFamily.ERLAB,
+            "set_ylabels",
+            {"loc": "top", "ha": "left"},
+            {"loc": "top"},
+        ),
+    ],
+)
+def test_figure_composer_loaded_method_canonicalizes_control_aliases(
+    family, name, kwargs, expected
+) -> None:
+    operation = FigureOperationState.method(
+        family=family,
+        name=name,
+        kwargs=kwargs,
+    )
+    loaded = method_state._loaded_operation(operation)
+    assert loaded.method_kwargs == expected
+    assert (
+        method_state._method_kwargs(operation, method_catalog._method_spec(operation))
+        == expected
+    )
+
+    if name == "suptitle":
+        loaded = method_state._loaded_operation(
+            operation.model_copy(update={"method_transform": "custom", "trusted": True})
+        )
+        assert loaded.method_kwargs == expected
+        assert not loaded.trusted
+
+
+def test_figure_composer_loaded_method_preserves_semantic_none() -> None:
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="margins",
+        kwargs={"tight": None},
+    )
+    loaded = method_state._loaded_operation(operation)
+    assert loaded.method_kwargs == {"tight": None}
+    assert (
+        method_state._method_kwargs(loaded, method_catalog.AXES_METHODS["margins"])[
+            "tight"
+        ]
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("family", "name"),
+    [
+        (FigureMethodFamily.AXES, "text"),
+        (FigureMethodFamily.AXES, "set_title"),
+        (FigureMethodFamily.AXES, "set_xlabel"),
+        (FigureMethodFamily.AXES, "set_ylabel"),
+        (FigureMethodFamily.FIGURE, "supxlabel"),
+        (FigureMethodFamily.FIGURE, "supylabel"),
+        (FigureMethodFamily.FIGURE, "suptitle"),
+        (FigureMethodFamily.ERLAB, "set_titles"),
+        (FigureMethodFamily.ERLAB, "set_xlabels"),
+        (FigureMethodFamily.ERLAB, "set_ylabels"),
+        (FigureMethodFamily.ERLAB, "mark_points"),
+    ],
+)
+def test_figure_composer_text_methods_share_artist_controls(family, name) -> None:
+    operation = FigureOperationState.method(family=family, name=name)
+    controls = {
+        control.key: control
+        for control in method_catalog._method_spec(operation).controls
+    }
+
+    assert {
+        "color",
+        "horizontalalignment",
+        "verticalalignment",
+        "rotation",
+        "rotation_mode",
+    } <= controls.keys()
+    assert controls["color"].aliases == ("c",)
+    assert controls["horizontalalignment"].aliases == ("ha",)
+    assert controls["verticalalignment"].aliases == ("va",)
+    if name in {"set_xlabel", "set_ylabel", "set_xlabels", "set_ylabels"}:
+        assert controls["loc"].exclusive_group is not None
+        assert (
+            controls["horizontalalignment"].exclusive_group
+            == controls["loc"].exclusive_group
+        )
+    else:
+        assert controls["horizontalalignment"].exclusive_group is None
+
+
+def test_figure_composer_text_controls_handle_constructor_aliases(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="text",
+                    args=(0.25, 0.75, "Panel"),
+                    kwargs={
+                        "c": "navy",
+                        "ha": "left",
+                        "va": "top",
+                        "rotation": 30,
+                        "rotation_mode": "anchor",
+                        "fontsize": 8,
+                    },
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_editor.select_section("method")
+    page = tool.operation_editor.stack.currentWidget()
+    color_edit = page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTextColorEdit"
+    )
+    horizontal_combo = page.findChild(
+        QtWidgets.QComboBox,
+        "figureComposerAxesMethodTextHorizontalAlignmentCombo",
+    )
+    vertical_combo = page.findChild(
+        QtWidgets.QComboBox,
+        "figureComposerAxesMethodTextVerticalAlignmentCombo",
+    )
+    rotation_edit = page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTextRotationEdit"
+    )
+    rotation_mode_combo = page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodTextRotationModeCombo"
+    )
+    extra_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
+    assert color_edit is not None
+    assert horizontal_combo is not None
+    assert vertical_combo is not None
+    assert rotation_edit is not None
+    assert rotation_mode_combo is not None
+    assert extra_edit is not None
+    assert color_edit.text() == "navy"
+    assert horizontal_combo.currentData() == "left"
+    assert vertical_combo.currentData() == "top"
+    assert rotation_edit.text() == "30"
+    assert rotation_mode_combo.currentData() == "anchor"
+    assert extra_edit.text() == "fontsize=8"
+
+    extra_edit.setText('ha="right", va="bottom", fontsize=9')
+    extra_edit.editingFinished.emit()
+
+    assert tool.tool_status.operations[0].method_kwargs == {
+        "color": "navy",
+        "horizontalalignment": "right",
+        "verticalalignment": "bottom",
+        "rotation": 30,
+        "rotation_mode": "anchor",
+        "fontsize": 9,
+    }
+    qtbot.waitUntil(lambda: tool.operation_editor.stack.currentWidget() is not page)
+    rebuilt_page = tool.operation_editor.stack.currentWidget()
+    rebuilt_horizontal_combo = rebuilt_page.findChild(
+        QtWidgets.QComboBox,
+        "figureComposerAxesMethodTextHorizontalAlignmentCombo",
+    )
+    rebuilt_vertical_combo = rebuilt_page.findChild(
+        QtWidgets.QComboBox,
+        "figureComposerAxesMethodTextVerticalAlignmentCombo",
+    )
+    rebuilt_extra_edit = rebuilt_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit"
+    )
+    assert rebuilt_horizontal_combo is not None
+    assert rebuilt_vertical_combo is not None
+    assert rebuilt_extra_edit is not None
+    assert rebuilt_horizontal_combo.currentData() == "right"
+    assert rebuilt_vertical_combo.currentData() == "bottom"
+    assert rebuilt_extra_edit.text() == "fontsize=9"
+
+
+@pytest.mark.parametrize(
+    "alignment_kwargs",
+    [
+        {"ha": None, "va": None},
+        {"horizontalalignment": None, "verticalalignment": None},
+    ],
+)
+def test_figure_composer_loaded_text_none_alignments_are_unset(
+    qtbot, alignment_kwargs
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    recipe = FigureRecipeState.model_validate_json(
+        FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="text",
+                    args=(0.5, 0.5, "Text"),
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                    kwargs={**alignment_kwargs, "fontsize": 8},
+                ),
+            ),
+            primary_source="data",
+        ).model_dump_json()
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    tool.tool_status = recipe
+    tool.operation_editor.select_section("method")
+
+    operation = tool.tool_status.operations[0]
+    assert operation.method_kwargs == {"fontsize": 8}
+    page = tool.operation_editor.stack.currentWidget()
+    horizontal_combo = page.findChild(
+        QtWidgets.QComboBox,
+        "figureComposerAxesMethodTextHorizontalAlignmentCombo",
+    )
+    vertical_combo = page.findChild(
+        QtWidgets.QComboBox,
+        "figureComposerAxesMethodTextVerticalAlignmentCombo",
+    )
+    assert horizontal_combo is not None
+    assert vertical_combo is not None
+    assert horizontal_combo.currentData() is None
+    assert vertical_combo.currentData() is None
+    assert not tool._operation_render_errors
+
+    namespace: dict[str, typing.Any] = {}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    artist = namespace["axs"][0, 0].texts[0]
+    assert artist.get_horizontalalignment() == "left"
+    assert artist.get_verticalalignment() == "baseline"
+    assert artist.get_fontsize() == pytest.approx(8.0)
+
+
+def test_figure_composer_constructor_method_controls_handle_aliases(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="axvline",
+                    args=(0.25,),
+                    kwargs={"c": "red", "ls": "--"},
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_editor.select_section("method")
+    page = tool.operation_editor.stack.currentWidget()
+    color_edit = page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodVLineColorEdit"
+    )
+    style_combo = page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodVLineLineStyleCombo"
+    )
+    extra_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
+    assert color_edit is not None
+    assert style_combo is not None
+    assert extra_edit is not None
+    assert color_edit.text() == "red"
+    assert style_combo.currentData() == "--"
+    assert extra_edit.text() == ""
+
+    color_edit.setText("")
+    color_edit.editingFinished.emit()
+
+    assert tool.tool_status.operations[0].method_kwargs == {"linestyle": "--"}
+
+
+def test_figure_composer_extra_method_kwargs_canonicalize_aliases(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="axvline",
+                    args=(0.25,),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_editor.select_section("method")
+    page = tool.operation_editor.stack.currentWidget()
+    extra_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
+    assert extra_edit is not None
+
+    extra_edit.setText('c="blue", ls=":", alpha=0.5')
+    extra_edit.editingFinished.emit()
+
+    assert tool.tool_status.operations[0].method_kwargs == {
+        "color": "blue",
+        "linestyle": ":",
+        "alpha": 0.5,
+    }
+    qtbot.waitUntil(lambda: tool.operation_editor.stack.currentWidget() is not page)
+    rebuilt_page = tool.operation_editor.stack.currentWidget()
+    color_edit = rebuilt_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodVLineColorEdit"
+    )
+    style_combo = rebuilt_page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodVLineLineStyleCombo"
+    )
+    rebuilt_extra_edit = rebuilt_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit"
+    )
+    assert color_edit is not None
+    assert style_combo is not None
+    assert rebuilt_extra_edit is not None
+    assert color_edit.text() == "blue"
+    assert style_combo.currentData() == ":"
+    assert rebuilt_extra_edit.text() == "alpha=0.5"
+
+
+def test_figure_composer_axis_label_position_controls_are_exclusive(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims="x", name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_xlabel",
+                    args=("Energy",),
+                    kwargs={"loc": "right", "fontsize": 8},
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_editor.select_section("method")
+
+    page = tool.operation_editor.stack.currentWidget()
+    horizontal_combo = page.findChild(
+        QtWidgets.QComboBox,
+        "figureComposerAxesMethodXLabelHorizontalAlignmentCombo",
+    )
+    assert horizontal_combo is not None
+    _activate_combo_text(horizontal_combo, "left")
+    assert tool.tool_status.operations[0].method_kwargs == {
+        "horizontalalignment": "left",
+        "fontsize": 8,
+    }
+
+    qtbot.waitUntil(lambda: tool.operation_editor.stack.currentWidget() is not page)
+    page = tool.operation_editor.stack.currentWidget()
+    location_combo = page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodXLabelLocCombo"
+    )
+    assert location_combo is not None
+    _activate_combo_text(location_combo, "right")
+    assert tool.tool_status.operations[0].method_kwargs == {
+        "loc": "right",
+        "fontsize": 8,
+    }
+
+    qtbot.waitUntil(lambda: tool.operation_editor.stack.currentWidget() is not page)
+    page = tool.operation_editor.stack.currentWidget()
+    extra_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
+    assert extra_edit is not None
+    extra_edit.setText('ha="left", fontsize=9')
+    extra_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_kwargs == {
+        "horizontalalignment": "left",
+        "fontsize": 9,
+    }
+
+    qtbot.waitUntil(lambda: tool.operation_editor.stack.currentWidget() is not page)
+    page = tool.operation_editor.stack.currentWidget()
+    horizontal_combo = page.findChild(
+        QtWidgets.QComboBox,
+        "figureComposerAxesMethodXLabelHorizontalAlignmentCombo",
+    )
+    extra_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
+    assert horizontal_combo is not None
+    assert extra_edit is not None
+    assert horizontal_combo.currentData() == "left"
+    assert extra_edit.text() == "fontsize=9"
+
+    namespace: dict[str, typing.Any] = {}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    assert namespace["fig"].axes[0].xaxis.label.get_horizontalalignment() == "left"
+
+    extra_edit.setText("ha=None, fontsize=10")
+    extra_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_kwargs == {"fontsize": 10}
+
+    qtbot.waitUntil(lambda: tool.operation_editor.stack.currentWidget() is not page)
+    page = tool.operation_editor.stack.currentWidget()
+    horizontal_combo = page.findChild(
+        QtWidgets.QComboBox,
+        "figureComposerAxesMethodXLabelHorizontalAlignmentCombo",
+    )
+    extra_edit = page.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
+    assert horizontal_combo is not None
+    assert extra_edit is not None
+    assert horizontal_combo.currentData() is None
+    assert extra_edit.text() == "fontsize=10"
+
+    namespace = {}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    assert namespace["fig"].axes[0].xaxis.label.get_horizontalalignment() == "center"
+
+
+@pytest.mark.parametrize("rotation_mode", ["xtick", "ytick"])
+def test_figure_composer_text_rotation_modes_require_matplotlib_311(
+    rotation_mode,
+) -> None:
+    operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="text",
+        args=(0.5, 0.5, "Text"),
+        kwargs={"rotation": 45, "rotation_mode": rotation_mode},
+    )
+    spec = method_catalog.AXES_METHODS["text"]
+    kwargs = method_state._method_kwargs(operation, spec)
+    figure, axis = plt.subplots()
+    try:
+        artist = axis.text(*operation.method_args, **kwargs)
+        assert artist.get_rotation_mode() == rotation_mode
+    finally:
+        plt.close(figure)
+
+
+def test_figure_composer_method_controls_restore_literal_kwargs(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    axes = FigureAxesSelectionState(axes=((0, 0),))
+    recipe = FigureRecipeState.model_validate_json(
+        FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="text",
+                    args=(0.1, 0.9, "Panel"),
+                    axes=axes,
+                    kwargs={
+                        "c": "tab:purple",
+                        "ha": "left",
+                        "va": "top",
+                        "rotation": 30,
+                        "rotation_mode": "anchor",
+                        "fontsize": 8,
+                    },
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="axvline",
+                    args=(0.25,),
+                    axes=axes,
+                    kwargs={"c": "red", "ls": "--", "alpha": 0.4},
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="axhline",
+                    args=(0.75,),
+                    axes=axes,
+                    kwargs={"color": "blue", "linestyle": ":"},
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_xticks",
+                    args=((0.0, 0.5), ("zero", "half")),
+                    axes=axes,
+                    kwargs={"minor": True, "fontsize": 8},
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_yticks",
+                    args=((0.0, 0.5),),
+                    axes=axes,
+                    kwargs={"minor": False},
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="set_titles",
+                    axes=axes,
+                    kwargs={
+                        "order": "F",
+                        "loc": "right",
+                        "c": "navy",
+                        "ha": "right",
+                        "va": "top",
+                        "rotation": 15,
+                        "rotation_mode": "anchor",
+                        "fontsize": 9,
+                    },
+                ).model_copy(update={"text_values": ("Title",)}),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="set_xlabels",
+                    axes=axes,
+                    kwargs={"loc": "right", "c": "green"},
+                ).model_copy(update={"text_values": ("X",)}),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="set_ylabels",
+                    axes=axes,
+                    kwargs={"loc": "top", "color": "orange"},
+                ).model_copy(update={"text_values": ("Y",)}),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.FIGURE,
+                    name="suptitle",
+                    args=("Super",),
+                    kwargs={
+                        "c": "black",
+                        "ha": "left",
+                        "va": "top",
+                        "rotation": 10,
+                        "rotation_mode": "anchor",
+                    },
+                ),
+            ),
+            primary_source="data",
+        ).model_dump_json()
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    tool.tool_status = recipe
+
+    def select_method(row: int) -> QtWidgets.QWidget:
+        tool.operation_panel.operation_list.setCurrentItem(
+            tool.operation_panel.operation_list.topLevelItem(row)
+        )
+        tool.operation_editor.select_section("method")
+        page = tool.operation_editor.stack.currentWidget()
+        assert page is not None
+        return page
+
+    def line_edit(page: QtWidgets.QWidget, name: str) -> QtWidgets.QLineEdit:
+        edit = page.findChild(QtWidgets.QLineEdit, name)
+        assert edit is not None
+        return edit
+
+    def combo_box(page: QtWidgets.QWidget, name: str) -> QtWidgets.QComboBox:
+        combo = page.findChild(QtWidgets.QComboBox, name)
+        assert combo is not None
+        return combo
+
+    page = select_method(0)
+    text_color = line_edit(page, "figureComposerAxesMethodTextColorEdit")
+    assert text_color.text() == "tab:purple"
+    assert (
+        combo_box(
+            page, "figureComposerAxesMethodTextHorizontalAlignmentCombo"
+        ).currentData()
+        == "left"
+    )
+    assert (
+        combo_box(
+            page, "figureComposerAxesMethodTextVerticalAlignmentCombo"
+        ).currentData()
+        == "top"
+    )
+    assert line_edit(page, "figureComposerAxesMethodTextRotationEdit").text() == "30"
+    assert (
+        combo_box(page, "figureComposerAxesMethodTextRotationModeCombo").currentData()
+        == "anchor"
+    )
+    assert line_edit(page, "figureComposerAxesMethodKwEdit").text() == "fontsize=8"
+    assert tool.tool_status.operations[0].method_kwargs == {
+        "color": "tab:purple",
+        "horizontalalignment": "left",
+        "verticalalignment": "top",
+        "rotation": 30,
+        "rotation_mode": "anchor",
+        "fontsize": 8,
+    }
+
+    page = select_method(1)
+    assert line_edit(page, "figureComposerAxesMethodVLineColorEdit").text() == "red"
+    vline_style = combo_box(page, "figureComposerAxesMethodVLineLineStyleCombo")
+    assert vline_style.currentData() == "--"
+    assert line_edit(page, "figureComposerAxesMethodKwEdit").text() == "alpha=0.4"
+    _activate_combo_text(vline_style, "-.")
+    assert tool.tool_status.operations[1].method_kwargs == {
+        "color": "red",
+        "linestyle": "-.",
+        "alpha": 0.4,
+    }
+
+    page = select_method(2)
+    assert line_edit(page, "figureComposerAxesMethodHLineColorEdit").text() == "blue"
+    assert (
+        combo_box(page, "figureComposerAxesMethodHLineLineStyleCombo").currentData()
+        == ":"
+    )
+    assert line_edit(page, "figureComposerAxesMethodKwEdit").text() == ""
+
+    page = select_method(3)
+    x_minor = page.findChild(
+        QtWidgets.QCheckBox, "figureComposerAxesMethodXTickMinorCheck"
+    )
+    assert x_minor is not None
+    assert x_minor.isChecked()
+    assert line_edit(page, "figureComposerAxesMethodKwEdit").text() == "fontsize=8"
+    x_minor.setChecked(False)
+    assert tool.tool_status.operations[3].method_kwargs == {
+        "minor": False,
+        "fontsize": 8,
+    }
+
+    page = select_method(4)
+    y_minor = page.findChild(
+        QtWidgets.QCheckBox, "figureComposerAxesMethodYTickMinorCheck"
+    )
+    assert y_minor is not None
+    assert not y_minor.isChecked()
+    assert line_edit(page, "figureComposerAxesMethodKwEdit").text() == ""
+    y_minor.setChecked(True)
+    assert tool.tool_status.operations[4].method_kwargs == {"minor": True}
+
+    page = select_method(5)
+    title_loc = combo_box(page, "figureComposerERLabSetTitlesLocCombo")
+    assert title_loc.currentText() == "right"
+    assert line_edit(page, "figureComposerERLabSetTitlesColorEdit").text() == "navy"
+    assert (
+        combo_box(
+            page, "figureComposerERLabSetTitlesHorizontalAlignmentCombo"
+        ).currentData()
+        == "right"
+    )
+    assert (
+        combo_box(
+            page, "figureComposerERLabSetTitlesVerticalAlignmentCombo"
+        ).currentData()
+        == "top"
+    )
+    assert line_edit(page, "figureComposerERLabSetTitlesRotationEdit").text() == "15"
+    assert (
+        combo_box(page, "figureComposerERLabSetTitlesRotationModeCombo").currentData()
+        == "anchor"
+    )
+    assert line_edit(page, "figureComposerERLabMethodKwEdit").text() == "fontsize=9"
+    _activate_combo_text(title_loc, "left")
+    assert tool.tool_status.operations[5].method_kwargs == {
+        "order": "F",
+        "loc": "left",
+        "color": "navy",
+        "horizontalalignment": "right",
+        "verticalalignment": "top",
+        "rotation": 15,
+        "rotation_mode": "anchor",
+        "fontsize": 9,
+    }
+
+    page = select_method(6)
+    assert combo_box(page, "figureComposerERLabSetXLabelsLocCombo").currentText() == (
+        "right"
+    )
+    assert line_edit(page, "figureComposerERLabSetXLabelsColorEdit").text() == "green"
+    assert line_edit(page, "figureComposerERLabMethodKwEdit").text() == ""
+
+    page = select_method(7)
+    assert combo_box(page, "figureComposerERLabSetYLabelsLocCombo").currentText() == (
+        "top"
+    )
+    assert line_edit(page, "figureComposerERLabSetYLabelsColorEdit").text() == "orange"
+    assert line_edit(page, "figureComposerERLabMethodKwEdit").text() == ""
+
+    page = select_method(8)
+    assert line_edit(page, "figureComposerFigureMethodTextColorEdit").text() == (
+        "black"
+    )
+    assert (
+        combo_box(
+            page, "figureComposerFigureMethodTextHorizontalAlignmentCombo"
+        ).currentData()
+        == "left"
+    )
+    assert (
+        combo_box(
+            page, "figureComposerFigureMethodTextVerticalAlignmentCombo"
+        ).currentData()
+        == "top"
+    )
+    assert line_edit(page, "figureComposerFigureMethodTextRotationEdit").text() == "10"
+    assert (
+        combo_box(page, "figureComposerFigureMethodTextRotationModeCombo").currentData()
+        == "anchor"
+    )
+    assert line_edit(page, "figureComposerFigureMethodKwEdit").text() == ""
+
+    code = tool.generated_code()
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+    axis = namespace["axs"][0, 0]
+    assert axis.texts[0].get_color() == "tab:purple"
+    assert axis.texts[0].get_horizontalalignment() == "left"
+    assert axis.texts[0].get_verticalalignment() == "top"
+    assert axis.texts[0].get_rotation() == pytest.approx(30.0)
+    assert axis.texts[0].get_rotation_mode() == "anchor"
+    assert axis.lines[0].get_linestyle() == "-."
+    assert axis.lines[1].get_color() == "blue"
+    assert axis.get_title(loc="left") == "Title"
+    title = next(
+        artist
+        for artist in axis.get_children()
+        if isinstance(artist, Text) and artist.get_text() == "Title"
+    )
+    assert title.get_horizontalalignment() == "right"
+    assert title.get_verticalalignment() == "top"
+    assert title.get_rotation() == pytest.approx(15.0)
+    assert title.get_rotation_mode() == "anchor"
+    assert axis.xaxis.label.get_color() == "green"
+    assert axis.yaxis.label.get_color() == "orange"
+    assert axis.yaxis.get_minor_locator().locs == pytest.approx((0.0, 0.5))
+    figure_title = namespace["fig"].texts[-1]
+    assert figure_title.get_color() == "black"
+    assert figure_title.get_horizontalalignment() == "left"
+    assert figure_title.get_verticalalignment() == "top"
+    assert figure_title.get_rotation() == pytest.approx(10.0)
+    assert figure_title.get_rotation_mode() == "anchor"
+
+
+def test_figure_composer_batch_minor_tick_control_updates_selected_steps(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_xticks",
+                    args=((0.0, 0.5),),
+                    kwargs={"minor": True},
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_xticks",
+                    args=((0.0, 1.0),),
+                    kwargs={"minor": False},
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    _select_operation_rows(tool, (0, 1))
+    tool.operation_editor.select_section("method")
+    minor_check = tool.operation_editor.stack.currentWidget().findChild(
+        QtWidgets.QCheckBox, "figureComposerAxesMethodXTickMinorCheck"
+    )
+    assert minor_check is not None
+    assert minor_check.isTristate()
+    assert minor_check.checkState() == QtCore.Qt.CheckState.PartiallyChecked
+
+    minor_check.setChecked(True)
+    assert tool.tool_status.operations[0].method_kwargs == {"minor": True}
+    assert tool.tool_status.operations[1].method_kwargs == {"minor": True}
+    assert tool.tool_status.operations[0].method_args == ((0.0, 0.5),)
+    assert tool.tool_status.operations[1].method_args == ((0.0, 1.0),)
+    assert _selected_operation_rows(tool) == (0, 1)
 
 
 def test_figure_composer_batch_incompatible_methods_disable_editor(qtbot) -> None:
