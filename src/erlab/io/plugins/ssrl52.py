@@ -276,7 +276,11 @@ class SSRL52Loader(LoaderBase):
         if (
             "sample_workfunction" in data.attrs
             and "eV" in data.dims
-            and data["eV"].min() > 0
+            # Keep this reduction on NumPy. Xarray can dispatch floating-point
+            # reductions to Numbagg, which starts an uncached Numba/LLVM compilation
+            # on the calling thread. A macOS Qt worker can then exhaust its small
+            # native stack and fail in LLVMPY_FinalizeObject while loading this file.
+            and np.nanmin(data["eV"].values) > 0
         ):
             data = data.assign_coords(
                 eV=data["eV"] - float(data["hv"]) + data.attrs["sample_workfunction"]
