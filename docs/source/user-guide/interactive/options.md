@@ -24,18 +24,13 @@ Use the sidebar to switch between setting groups:
 - {guilabel}`I/O` controls the default loader and the default folder used by
   manager file dialogs and new Data Explorer windows.
 - {guilabel}`ktool` controls defaults for newly opened momentum-conversion tools.
-- {guilabel}`Figure Composer` controls default Matplotlib stylesheets, figure DPI,
-  and export settings.
+- {guilabel}`Figure Composer` controls default Matplotlib stylesheets, figure DPI, and
+  export settings.
 
 Rows in the {guilabel}`User` scope include a reset action that restores the application
 default for that setting. Broadly resetting all user settings still asks for
 confirmation.
 
 When Settings is opened from ImageTool Manager, a {guilabel}`Workspace` scope is also
-available. Workspace settings are sparse overrides saved inside the manager's `.itws`
-workspace file, so they travel with that workspace. Turn on {guilabel}`Override` for a
-row to store a workspace value; turn it off, or use the row action, to inherit the user
-setting again. Clearing all workspace overrides asks for confirmation. Workspace
-Most workspace overrides affect newly opened tools and new Figure Composer defaults.
-Figure export defaults are resolved when you export. They apply to open figures that
-still inherit those values.
+available. Workspace settings are local overrides saved inside the manager's `.itws`
+workspace file. Turn on the checkbox to store a value.
