@@ -54,6 +54,7 @@ class _FigureComposerWorkflowController(QtCore.QObject):
         tool._refresh_reload_data_action()
         if isinstance(tool, FigureComposerTool):
             tool.set_options_getter(lambda: self._host.effective_interactive_options)
+            tool.set_settings_opener(self._host.open_settings)
             self._install_figure_source_refresh_callbacks(node.uid, tool)
 
     def _figure_operations_from_image_targets(

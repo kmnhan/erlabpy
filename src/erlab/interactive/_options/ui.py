@@ -19,6 +19,9 @@ from erlab.interactive._options.parameters import (
     ColorListWidget,
     DirectoryPathWidget,
     FigureDpiOverrideWidget,
+    SavefigDpiWidget,
+    SavefigNumberWidget,
+    SavefigPaddingWidget,
     StylesheetListWidget,
 )
 from erlab.interactive._options.schema import AppOptions
@@ -413,6 +416,29 @@ class OptionDialog(QtWidgets.QDialog):
         self.reset_session_baseline()
         super().showEvent(event)
 
+    def select_setting(self, path: str) -> None:
+        """Show and focus one setting in the current scope."""
+        category = path.partition("/")[0]
+        for index in range(self.category_list.count()):
+            item = self.category_list.item(index)
+            if item is None:
+                continue
+            if item.data(QtCore.Qt.ItemDataRole.UserRole) == category:
+                self.category_list.setCurrentRow(index)
+                break
+        else:
+            raise KeyError(path)
+
+        row = self._rows.get((self._current_scope, path))
+        if row is None:
+            raise KeyError(path)
+        page = self.page_stack.currentWidget()
+        if page is not None:
+            scroll = page.findChild(QtWidgets.QScrollArea)
+            if scroll is not None:
+                scroll.ensureWidgetVisible(row)
+        row.control.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+
     @staticmethod
     def _find_workspace_manager(parent: QtWidgets.QWidget | None) -> typing.Any | None:
         current: QtCore.QObject | None = parent
@@ -609,14 +635,26 @@ class OptionDialog(QtWidgets.QDialog):
             return StylesheetListWidget(parent=self)
         if ui_type == "figure_dpi_override":
             return FigureDpiOverrideWidget(parent=self)
+        if ui_type == "savefig_dpi":
+            return SavefigDpiWidget(parent=self)
+        if ui_type == "savefig_padding":
+            return SavefigPaddingWidget(parent=self)
         if ui_type == "directory_path":
             return DirectoryPathWidget(parent=self)
         if ui_type == "choice_slider":
             return _ChoiceSlider(extra.get("ui_choices", ()), self)
         if ui_type == "list" or "ui_limits" in extra:
             combo = QtWidgets.QComboBox(self)
-            for choice in extra.get("ui_limits", ()):
-                combo.addItem(str(choice), choice)
+            choices = extra.get("ui_choices")
+            if isinstance(choices, list):
+                for choice in choices:
+                    combo.addItem(
+                        str(choice.get("label", choice.get("value"))),
+                        choice.get("value"),
+                    )
+            else:
+                for choice in extra.get("ui_limits", ()):
+                    combo.addItem(str(choice), choice)
             return combo
         if _is_bool_path(path):
             return QtWidgets.QCheckBox(self)
@@ -686,7 +724,7 @@ class OptionDialog(QtWidgets.QDialog):
             control.sigDpiChanged.connect(
                 lambda _value, row=row: self._control_changed(row)
             )
-        elif isinstance(control, _ChoiceSlider):
+        elif isinstance(control, SavefigNumberWidget | _ChoiceSlider):
             control.sigValueChanged.connect(
                 lambda _value, row=row: self._control_changed(row)
             )
@@ -799,6 +837,8 @@ class OptionDialog(QtWidgets.QDialog):
             return control.get_stylesheets()
         if isinstance(control, FigureDpiOverrideWidget):
             return control.get_dpi()
+        if isinstance(control, SavefigNumberWidget):
+            return control.get_value()
         if isinstance(control, DirectoryPathWidget):
             return control.get_path()
         if isinstance(control, QtWidgets.QLineEdit):
@@ -845,6 +885,9 @@ class OptionDialog(QtWidgets.QDialog):
             return
         if isinstance(control, FigureDpiOverrideWidget):
             control.set_dpi(value)
+            return
+        if isinstance(control, SavefigNumberWidget):
+            control.set_value(value)
             return
         if isinstance(control, DirectoryPathWidget):
             control.set_path(None if value is None else str(value))

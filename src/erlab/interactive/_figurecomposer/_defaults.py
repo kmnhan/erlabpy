@@ -15,6 +15,7 @@ if typing.TYPE_CHECKING:
 
     from matplotlib.figure import Figure
 
+    from erlab.interactive._figurecomposer._model._state import FigureExportState
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
     from erlab.interactive._options.schema import AppOptions
 
@@ -146,6 +147,53 @@ def _default_export_transparent() -> bool:
 def _default_export_bbox_inches() -> str | None:
     value = _styled_rcparams_value("savefig.bbox")
     return None if value is None else str(value)
+
+
+def _default_export_pad_inches() -> float | typing.Literal["layout"]:
+    value = _styled_rcparams_value("savefig.pad_inches")
+    if value == "layout":
+        return "layout"
+    return float(value)
+
+
+def _resolved_export_kwargs(export: FigureExportState) -> dict[str, typing.Any]:
+    """Resolve user, workspace, and per-figure export settings."""
+    configured = _current_options().figure.export
+
+    dpi = _default_export_dpi() if configured.dpi == "style" else configured.dpi
+    transparent = (
+        _default_export_transparent()
+        if configured.transparent == "style"
+        else configured.transparent == "true"
+    )
+    bbox_inches = (
+        _default_export_bbox_inches()
+        if configured.bbox_inches == "style"
+        else None
+        if configured.bbox_inches == "standard"
+        else "tight"
+    )
+    pad_inches = (
+        _default_export_pad_inches()
+        if configured.pad_inches == "style"
+        else configured.pad_inches
+    )
+
+    if export.dpi != "inherit":
+        dpi = export.dpi
+    if export.transparent != "inherit":
+        transparent = export.transparent
+    if export.bbox_inches != "inherit":
+        bbox_inches = None if export.bbox_inches == "standard" else "tight"
+    if export.pad_inches != "inherit":
+        pad_inches = export.pad_inches
+
+    return {
+        "dpi": dpi,
+        "transparent": transparent,
+        "bbox_inches": bbox_inches,
+        "pad_inches": pad_inches,
+    }
 
 
 @contextlib.contextmanager

@@ -1914,10 +1914,12 @@ class _WidgetsController:
                     )
                 watcher_server.deleteLater()
 
-    def open_settings(self) -> None:
+    def open_settings(self) -> erlab.interactive._options.OptionDialog:
         """Open the settings dialog for the ImageTool manager."""
         dialog = self._manager._additional_windows.get("settings")
-        if dialog is None or not erlab.interactive.utils.qt_is_valid(dialog):
+        if not isinstance(
+            dialog, erlab.interactive._options.OptionDialog
+        ) or not erlab.interactive.utils.qt_is_valid(dialog):
             dialog = erlab.interactive._options.OptionDialog(self._manager)
             self._manager._additional_windows["settings"] = dialog
 
@@ -1929,6 +1931,7 @@ class _WidgetsController:
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+        return dialog
 
     def open_new_manager_instance(self) -> None:
         """Open another ImageTool Manager window."""

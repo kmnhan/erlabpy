@@ -13,6 +13,8 @@ from erlab.interactive._options.parameters import (
     ColorListParameter,
     DirectoryPathParameter,
     FigureDpiOverrideParameter,
+    SavefigDpiParameter,
+    SavefigPaddingParameter,
     StylesheetListParameter,
     _CustomColorMapParameter,
 )
@@ -31,6 +33,14 @@ pyqtgraph.parametertree.registerParameterType(
 
 pyqtgraph.parametertree.registerParameterType(
     "figure_dpi_override", FigureDpiOverrideParameter, override=True
+)
+
+pyqtgraph.parametertree.registerParameterType(
+    "savefig_dpi", SavefigDpiParameter, override=True
+)
+
+pyqtgraph.parametertree.registerParameterType(
+    "savefig_padding", SavefigPaddingParameter, override=True
 )
 
 pyqtgraph.parametertree.registerParameterType(

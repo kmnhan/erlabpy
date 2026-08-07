@@ -171,6 +171,10 @@ settings, as well as the styling of all figure elements.
 If {guilabel}`DPI` in Settings has {guilabel}`Override stylesheet` enabled, that value
 is used for new figures instead of the stylesheet default.
 
+Use the {guilabel}`Export` tab to set the DPI, background transparency, bounding box,
+and padding that are applied when exporting the figure. Choose {guilabel}`Use Defaults`
+for a value to inherit the workspace or user export setting.
+
 To add custom Matplotlib stylesheets:
 
 1. Open the shared settings window: on macOS, choose {menuselection}`Preferences…` from

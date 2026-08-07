@@ -4,6 +4,8 @@ This module defines custom parameter types for use in the options dialog of the
 ImageTool. It includes list-style parameters and a custom colormap parameter.
 """
 
+from collections.abc import Callable
+
 import pyqtgraph as pg
 import pyqtgraph.parametertree
 from qtpy import QtCore, QtGui, QtWidgets
@@ -264,6 +266,174 @@ class FigureDpiOverrideParameter(
 
     def __init__(self, **opts):
         opts.setdefault("type", "figure_dpi_override")
+        super().__init__(**opts)
+
+
+class SavefigNumberWidget(QtWidgets.QWidget):
+    """Widget for a savefig value that accepts named modes or a number."""
+
+    sigValueChanged = QtCore.Signal(object)
+    _CUSTOM_VALUE = "__custom_savefig_value__"
+
+    def __init__(
+        self,
+        *,
+        special_values: tuple[tuple[str, str], ...],
+        value: float | str,
+        minimum: float,
+        maximum: float,
+        decimals: int,
+        step: float,
+        custom_value: float,
+        suffix: str = "",
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.mode_combo = QtWidgets.QComboBox(self)
+        self.mode_combo.setObjectName("savefigNumberModeCombo")
+        for label, stored_value in special_values:
+            self.mode_combo.addItem(label, stored_value)
+        self.mode_combo.addItem("Custom", self._CUSTOM_VALUE)
+
+        self.value_spin = QtWidgets.QDoubleSpinBox(self)
+        self.value_spin.setObjectName("savefigNumberSpin")
+        self.value_spin.setRange(minimum, maximum)
+        self.value_spin.setDecimals(decimals)
+        self.value_spin.setSingleStep(step)
+        self.value_spin.setValue(custom_value)
+        self.value_spin.setKeyboardTracking(False)
+        if suffix:
+            self.value_spin.setSuffix(f" {suffix}")
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(self.mode_combo)
+        layout.addWidget(self.value_spin)
+        layout.addStretch(1)
+
+        self.mode_combo.currentIndexChanged.connect(self._mode_changed)
+        self.value_spin.valueChanged.connect(self._number_changed)
+        self.set_value(value)
+
+    def get_value(self) -> float | str:
+        value = self.mode_combo.currentData()
+        if value == self._CUSTOM_VALUE:
+            return float(self.value_spin.value())
+        return str(value)
+
+    def set_value(self, value: float | str) -> None:
+        index = self.mode_combo.findData(value)
+        custom = index < 0
+        if custom:
+            numeric = float(value)
+            index = self.mode_combo.findData(self._CUSTOM_VALUE)
+        combo_was_blocked = self.mode_combo.blockSignals(True)
+        spin_was_blocked = self.value_spin.blockSignals(True)
+        try:
+            if custom:
+                self.value_spin.setValue(numeric)
+            self.mode_combo.setCurrentIndex(index)
+            self.value_spin.setEnabled(custom)
+        finally:
+            self.value_spin.blockSignals(spin_was_blocked)
+            self.mode_combo.blockSignals(combo_was_blocked)
+
+    @QtCore.Slot(int)
+    def _mode_changed(self, _index: int) -> None:
+        self.value_spin.setEnabled(self.mode_combo.currentData() == self._CUSTOM_VALUE)
+        self.sigValueChanged.emit(self.get_value())
+
+    @QtCore.Slot(float)
+    def _number_changed(self, _value: float) -> None:
+        if self.mode_combo.currentData() == self._CUSTOM_VALUE:
+            self.sigValueChanged.emit(self.get_value())
+
+
+class SavefigDpiWidget(SavefigNumberWidget):
+    """Widget for a global savefig DPI default."""
+
+    def __init__(
+        self,
+        value: float | str = "style",
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(
+            special_values=(
+                ("Use stylesheet", "style"),
+                ("Use figure DPI", "figure"),
+            ),
+            value=value,
+            minimum=1.0,
+            maximum=10000.0,
+            decimals=1,
+            step=10.0,
+            custom_value=100.0,
+            parent=parent,
+        )
+        self.setObjectName("savefigDpiWidget")
+
+
+class SavefigPaddingWidget(SavefigNumberWidget):
+    """Widget for a global savefig padding default."""
+
+    def __init__(
+        self,
+        value: float | str = "style",
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(
+            special_values=(
+                ("Use stylesheet", "style"),
+                ("Use layout", "layout"),
+            ),
+            value=value,
+            minimum=0.0,
+            maximum=100.0,
+            decimals=3,
+            step=0.05,
+            custom_value=0.1,
+            suffix="in",
+            parent=parent,
+        )
+        self.setObjectName("savefigPaddingWidget")
+
+
+class _SavefigNumberParameterItem(
+    pyqtgraph.parametertree.parameterTypes.WidgetParameterItem
+):
+    widget_class: Callable[[], SavefigNumberWidget]
+
+    def makeWidget(self) -> SavefigNumberWidget:
+        widget = self.widget_class()
+        widget.sigChanged = widget.sigValueChanged  # type: ignore[attr-defined]
+        widget.value = widget.get_value  # type: ignore[attr-defined]
+        widget.setValue = widget.set_value  # type: ignore[attr-defined]
+        self.hideWidget = False
+        return widget
+
+
+class SavefigDpiParameterItem(_SavefigNumberParameterItem):
+    widget_class = SavefigDpiWidget
+
+
+class SavefigDpiParameter(pyqtgraph.parametertree.parameterTypes.SimpleParameter):
+    itemClass = SavefigDpiParameterItem
+
+    def __init__(self, **opts):
+        opts.setdefault("type", "savefig_dpi")
+        super().__init__(**opts)
+
+
+class SavefigPaddingParameterItem(_SavefigNumberParameterItem):
+    widget_class = SavefigPaddingWidget
+
+
+class SavefigPaddingParameter(pyqtgraph.parametertree.parameterTypes.SimpleParameter):
+    itemClass = SavefigPaddingParameterItem
+
+    def __init__(self, **opts):
+        opts.setdefault("type", "savefig_padding")
         super().__init__(**opts)
 
 

@@ -51,7 +51,18 @@ def test_make_parameter_defaults_and_missing_child_continue() -> None:
 
 def test_make_parameter_round_trips_figure_options() -> None:
     options = AppOptions.model_validate(
-        {"figure": {"stylesheets": ["classic", "missing-style"], "dpi": 150.0}}
+        {
+            "figure": {
+                "stylesheets": ["classic", "missing-style"],
+                "dpi": 150.0,
+                "export": {
+                    "dpi": 300.0,
+                    "transparent": "true",
+                    "bbox_inches": "tight",
+                    "pad_inches": "layout",
+                },
+            }
+        }
     )
     param = make_parameter(options)
 
@@ -61,10 +72,22 @@ def test_make_parameter_round_trips_figure_options() -> None:
     dpi_param = param.child("figure").child("dpi")
     assert dpi_param.opts["type"] == "figure_dpi_override"
     assert dpi_param.value() == 150.0
+    export_param = param.child("figure").child("export")
+    assert export_param.child("dpi").opts["type"] == "savefig_dpi"
+    assert export_param.child("dpi").value() == 300.0
+    assert export_param.child("transparent").opts["limits"] == {
+        "Use stylesheet": "style",
+        "Enabled": "true",
+        "Disabled": "false",
+    }
+    assert export_param.child("bbox_inches").value() == "tight"
+    assert export_param.child("pad_inches").opts["type"] == "savefig_padding"
+    assert export_param.child("pad_inches").value() == "layout"
 
     opts = parameter_to_options(param)
     assert opts.figure.stylesheets == ["classic", "missing-style"]
     assert opts.figure.dpi == 150.0
+    assert opts.figure.export == options.figure.export
 
 
 def test_make_parameter_round_trips_default_directory() -> None:

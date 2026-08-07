@@ -13,6 +13,8 @@ from erlab.interactive._options.parameters import (
     DirectoryPathWidget,
     FigureDpiOverrideParameter,
     FigureDpiOverrideWidget,
+    SavefigDpiParameter,
+    SavefigDpiWidget,
     StylesheetListParameter,
     StylesheetListWidget,
     _stylesheet_names,
@@ -155,6 +157,22 @@ def test_figure_dpi_override_parameter_item_widget(qtbot) -> None:
 
     widget.override_check.setChecked(False)
     assert param.value() is None
+
+
+def test_savefig_dpi_parameter_item_widget(qtbot) -> None:
+    param = SavefigDpiParameter(name="dpi", value="style")
+    item = param.makeTreeItem(0)
+    widget = item.widget
+    qtbot.addWidget(widget)
+
+    assert isinstance(widget, SavefigDpiWidget)
+    assert not item.hideWidget
+    assert widget.value() == "style"
+
+    widget.mode_combo.setCurrentIndex(widget.mode_combo.count() - 1)
+    assert param.value() == pytest.approx(100.0)
+    widget.value_spin.setValue(300.0)
+    assert param.value() == pytest.approx(300.0)
 
 
 def test_directory_path_widget_initialization(qtbot) -> None:
