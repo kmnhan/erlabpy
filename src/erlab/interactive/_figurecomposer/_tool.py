@@ -52,6 +52,7 @@ import erlab.interactive._qt_state as _qt_state
 from erlab.interactive._figurecomposer._defaults import (
     _figure_draw_context,
     _figure_style_context,
+    _resolved_export_kwargs,
     _styled_rcparams_value,
     figure_options_context,
 )
@@ -102,6 +103,7 @@ from erlab.interactive._figurecomposer._model._sources import (
 from erlab.interactive._figurecomposer._model._state import (
     FigureAxesSelectionState,
     FigureDataSelectionState,
+    FigureExportState,
     FigureMethodFamily,
     FigureOperationKind,
     FigureOperationState,
@@ -147,6 +149,7 @@ from erlab.interactive._figurecomposer._ui._axes_widgets import (
     _GridSpecViewWidget,
     _subplot_target_preview_descriptor,
 )
+from erlab.interactive._figurecomposer._ui._export_panel import FigureExportPanel
 from erlab.interactive._figurecomposer._ui._figure_window import (
     _FigureComposerDisplayWindow,
 )
@@ -435,6 +438,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             source_data=initial_source_data,
             changed_callback=self._document_changed,
         )
+        self._output_recipe_payload = self._output_recipe_state(self._document.recipe)
         self._figure_window: _FigureComposerDisplayWindow | None = None
         self._subplot_adjust_dialog: QtWidgets.QDialog | None = None
         self._axes_customize_dialog: QtWidgets.QDialog | None = None
@@ -459,11 +463,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         """Publish each committed document mutation through the manager boundary."""
         if not erlab.interactive.utils.qt_is_valid(self):
             return
-        self._notify_provenance_changed()
+        output_recipe_payload = self._output_recipe_state(self._document.recipe)
+        output_recipe_changed = output_recipe_payload != self._output_recipe_payload
+        self._output_recipe_payload = output_recipe_payload
+        if output_recipe_changed or source_payloads_changed:
+            self._notify_provenance_changed()
         if recipe_changed:
             self.sigStateChanged.emit()
         if source_payloads_changed:
             self.sigDataChanged.emit()
+
+    @staticmethod
+    def _output_recipe_state(recipe: FigureRecipeState) -> dict[str, typing.Any]:
+        """Return recipe state that affects rendering and generated code."""
+        return recipe.model_dump(mode="python", exclude={"export"})
 
     def set_options_getter(self, getter: Callable[[], AppOptions] | None) -> None:
         self._options_getter = getter
@@ -598,6 +611,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         window = getattr(self, "_figure_window", None)
         if window is not None and erlab.interactive.utils.qt_is_valid(window):
             window.toolbar.set_history_buttons()
+
+    def _status_assignment_affects_provenance(
+        self, target_state: FigureRecipeState
+    ) -> bool:
+        return self._output_recipe_state(target_state) != self._output_recipe_state(
+            self._document.recipe
+        )
 
     def _disconnect_figure_window(self, window: _FigureComposerDisplayWindow) -> None:
         with contextlib.suppress(TypeError, RuntimeError):
@@ -1373,6 +1393,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.layout_panel = FigureLayoutPanel(self.editor_tabs)
         self.layout_panel.setup_requested.connect(self._layout_setup_requested)
         self.layout_panel.layout_mode_requested.connect(self._layout_mode_requested)
+        self.export_panel = FigureExportPanel(self.editor_tabs)
+        self.export_panel.state_requested.connect(self._export_state_requested)
         self.axes_selector.sigAddRowRequested.connect(
             functools.partial(self._grow_subplot_grid, "row")
         )
@@ -1392,6 +1414,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.editor_tabs.setTabToolTip(
             recipe_index,
             "Ordered plotting steps and controls for the selected step.",
+        )
+        export_index = self.editor_tabs.addTab(self.export_panel, "Export")
+        self.editor_tabs.setTabToolTip(
+            export_index,
+            "Settings used only when the figure is exported to a file.",
         )
         self.editor_tabs.setCurrentWidget(self.operation_panel)
 
@@ -1435,6 +1462,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.layout_panel.set_setup(
                 setup, reserved_names=self._document.source_names()
             )
+            self.export_panel.set_export(self._document.recipe.export)
             self._refresh_source_list()
             self._rebuild_axes_grid()
             self._refresh_operation_list()
@@ -3178,6 +3206,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         setup = typing.cast("FigureSubplotsState", setup_object)
         self._commit_layout_setup(setup)
 
+    @QtCore.Slot(object)
+    def _export_state_requested(self, export_object: object) -> None:
+        if self._updating_controls or self._closing:
+            return
+        export = FigureExportState.model_validate(export_object)
+        if export == self._document.recipe.export:
+            return
+        changed = self._document.replace_recipe(
+            self._document.recipe.model_copy(update={"export": export})
+        )
+        if changed:
+            self._write_state()
+
     def _commit_layout_setup(self, setup: FigureSubplotsState) -> bool:
         if self._updating_controls or self._closing:
             return False
@@ -3476,18 +3517,23 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _undo_recorded_state(self) -> None:
         """Move recipe and source-data history to the previous state."""
+        target_state = self._prev_states[-2]
+        output_changes = self._history_transition_affects_provenance(target_state)
         self._next_states.append(self._prev_states.pop())
         self._next_source_data_states.append(self._prev_source_data_states.pop())
-        self._restore_source_data_history_state(self._prev_source_data_states[-1])
-        self.tool_status = self._prev_states[-1]
+        if output_changes:
+            self._restore_source_data_history_state(self._prev_source_data_states[-1])
+        self.tool_status = target_state
 
     def _redo_recorded_state(self) -> None:
         """Move recipe and source-data history to the next state."""
         next_state = self._next_states.pop()
         next_source_data = self._next_source_data_states.pop()
+        output_changes = self._history_transition_affects_provenance(next_state)
         self._prev_states.append(next_state)
         self._prev_source_data_states.append(next_source_data)
-        self._restore_source_data_history_state(next_source_data)
+        if output_changes:
+            self._restore_source_data_history_state(next_source_data)
         self.tool_status = next_state
 
     @QtCore.Slot(str, bool)
@@ -4270,9 +4316,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         ):
             figure.savefig(
                 filename,
-                dpi=self._document.recipe.export.dpi,
-                transparent=self._document.recipe.export.transparent,
-                bbox_inches=self._document.recipe.export.bbox_inches,
+                **_resolved_export_kwargs(self._document.recipe.export),
             )
 
     @property
@@ -4303,14 +4347,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._ensure_primary_source_data()
             self._normalize_operation_source_selections()
             self._apply_recipe_to_controls()
+        source_data_changed = self._document.source_revision != previous_source_revision
+        output_recipe_changed = self._output_recipe_state(
+            self._document.recipe
+        ) != self._output_recipe_state(previous_recipe)
+        refresh_requested = (
+            self._document.recipe == previous_recipe and not source_data_changed
+        )
+        if output_recipe_changed or source_data_changed or refresh_requested:
             self._sync_figure_window_to_recipe_setup()
             if self._dataset_restore_in_progress:
                 self._mark_preview_pixmap_stale()
             else:
                 _render_preview(self)
-        recipe_changed = self._document.recipe != previous_recipe
-        source_data_changed = self._document.source_revision != previous_source_revision
-        if recipe_changed or source_data_changed:
+        if output_recipe_changed or source_data_changed:
             self.sigInfoChanged.emit()
 
     def set_source_data(self, source_data: Mapping[str, xr.DataArray]) -> None:

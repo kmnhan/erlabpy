@@ -3344,7 +3344,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             if not hasattr(self, "_provenance_change_depth"):
                 setter(self, status)
                 return
-            with self._provenance_mutation():
+            with self._provenance_mutation(
+                changed=self._status_assignment_affects_provenance(status)
+            ):
                 setter(self, status)
 
         type(cls).__setattr__(
@@ -3687,6 +3689,14 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         if hasattr(self, "redo_action") and qt_is_valid(self.redo_action):
             self.redo_action.setEnabled(self.redoable)
 
+    def _status_assignment_affects_provenance(self, target_state: M) -> bool:
+        """Return whether applying a complete state changes provenance output."""
+        return True
+
+    def _history_transition_affects_provenance(self, target_state: M) -> bool:
+        """Return whether moving to a history state changes provenance output."""
+        return self._status_assignment_affects_provenance(target_state)
+
     @property
     def _dataset_restore_in_progress(self) -> bool:
         """Return whether saved dataset state is currently being applied."""
@@ -3837,7 +3847,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         if not self.undoable:
             return
         with self._coalesce_provenance_changes():
-            self._notify_provenance_changed()
+            if self._history_transition_affects_provenance(self._prev_states[-2]):
+                self._notify_provenance_changed()
             with self._history_suppressed():
                 self._undo_recorded_state()
         self._update_history_actions()
@@ -3855,7 +3866,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         if not self.redoable:
             return
         with self._coalesce_provenance_changes():
-            self._notify_provenance_changed()
+            if self._history_transition_affects_provenance(self._next_states[-1]):
+                self._notify_provenance_changed()
             with self._history_suppressed():
                 self._redo_recorded_state()
         self._update_history_actions()

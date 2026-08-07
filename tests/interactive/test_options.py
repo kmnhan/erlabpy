@@ -19,10 +19,13 @@ from erlab.interactive._options.parameters import (
     ColorListWidget,
     DirectoryPathWidget,
     FigureDpiOverrideWidget,
+    SavefigDpiWidget,
+    SavefigPaddingWidget,
     StylesheetListWidget,
 )
 from erlab.interactive._options.schema import (
     AppOptions,
+    FigureExportOptions,
     IOOptions,
     WorkspaceOptions,
     normalize_workspace_compression_mode,
@@ -294,6 +297,58 @@ def test_stylesheet_editor_fits_settings_page(dialog: OptionDialog, qtbot):
     )
 
     qtbot.waitUntil(lambda: page.horizontalScrollBar().maximum() == 0)
+
+
+def test_user_figure_export_settings_save_immediately(dialog: OptionDialog) -> None:
+    dpi = typing.cast(
+        "SavefigDpiWidget",
+        _control(
+            dialog,
+            "user",
+            "figure/export/dpi",
+            SavefigDpiWidget,
+        ),
+    )
+    padding = typing.cast(
+        "SavefigPaddingWidget",
+        _control(
+            dialog,
+            "user",
+            "figure/export/pad_inches",
+            SavefigPaddingWidget,
+        ),
+    )
+    transparent = typing.cast(
+        "QtWidgets.QComboBox",
+        _control(
+            dialog,
+            "user",
+            "figure/export/transparent",
+            QtWidgets.QComboBox,
+        ),
+    )
+    bbox = typing.cast(
+        "QtWidgets.QComboBox",
+        _control(
+            dialog,
+            "user",
+            "figure/export/bbox_inches",
+            QtWidgets.QComboBox,
+        ),
+    )
+
+    dpi.mode_combo.setCurrentIndex(dpi.mode_combo.count() - 1)
+    dpi.value_spin.setValue(300.0)
+    transparent.setCurrentIndex(transparent.findData("true"))
+    bbox.setCurrentIndex(bbox.findData("tight"))
+    padding.mode_combo.setCurrentIndex(padding.mode_combo.findData("layout"))
+
+    assert options.model.figure.export == FigureExportOptions(
+        dpi=300.0,
+        transparent="true",
+        bbox_inches="tight",
+        pad_inches="layout",
+    )
 
 
 def test_stylesheet_names_normalize_saved_values() -> None:
@@ -760,6 +815,42 @@ def test_workspace_figure_dpi_override_supports_unset_and_numeric(qtbot):
     assert manager.overrides[path] is None
 
 
+def test_workspace_figure_export_setting_overrides_user_default(qtbot) -> None:
+    path = "figure/export/dpi"
+    options.model = options.model.model_copy(
+        update={
+            "figure": options.model.figure.model_copy(
+                update={
+                    "export": options.model.figure.export.model_copy(
+                        update={"dpi": 180.0}
+                    )
+                }
+            )
+        }
+    )
+    manager = _WorkspaceManagerStub()
+    qtbot.addWidget(manager)
+    dialog = OptionDialog(manager)
+    qtbot.addWidget(dialog)
+    dialog.scope_tabs.setCurrentIndex(1)
+
+    control = typing.cast(
+        "SavefigDpiWidget",
+        _control(dialog, "workspace", path, SavefigDpiWidget),
+    )
+    override = _override(dialog, path)
+
+    assert not control.isEnabled()
+    assert control.get_value() == pytest.approx(180.0)
+    override.setChecked(True)
+    control.value_spin.setValue(240.0)
+
+    assert manager.overrides[path] == pytest.approx(240.0)
+    assert manager.effective_interactive_options.figure.export.dpi == pytest.approx(
+        240.0
+    )
+
+
 def test_workspace_control_change_without_override_is_ignored(qtbot):
     manager = _WorkspaceManagerStub()
     qtbot.addWidget(manager)
@@ -983,6 +1074,10 @@ def test_workspace_override_helpers_filter_to_curated_subset() -> None:
     assert "io/workspace/compression" in paths
     assert "io/workspace/compress" not in paths
     assert "figure/dpi" in paths
+    assert "figure/export/dpi" in paths
+    assert "figure/export/transparent" in paths
+    assert "figure/export/bbox_inches" in paths
+    assert "figure/export/pad_inches" in paths
     assert "ktool/show_angle_scale_controls" not in paths
     assert normalize_workspace_option_overrides(
         {
@@ -1041,6 +1136,7 @@ def test_options_get_set():
     assert options["io/default_directory"] == ""
     assert options["io/recent_workspace_limit"] == 20
     assert options["figure/dpi"] is None
+    assert options["figure/export/dpi"] == "style"
 
     options["colors/cmap/name"] = "viridis"
     options["io/workspace/compression"] = "blosclz3"
@@ -1048,6 +1144,8 @@ def test_options_get_set():
     options["io/recent_workspace_limit"] = 35
     options["figure/stylesheets"] = ["classic", "missing-style"]
     options["figure/dpi"] = 150.0
+    options["figure/export/dpi"] = 300.0
+    options["figure/export/transparent"] = "true"
 
     assert options["colors/cmap/name"] == "viridis"
     assert options["io/workspace/compression"] == "blosclz3"
@@ -1056,10 +1154,14 @@ def test_options_get_set():
     assert options["io/recent_workspace_limit"] == 35
     assert options["figure/stylesheets"] == ["classic", "missing-style"]
     assert options["figure/dpi"] == pytest.approx(150.0)
+    assert options["figure/export/dpi"] == pytest.approx(300.0)
+    assert options["figure/export/transparent"] == "true"
     assert options.model.io.workspace.compression == "blosclz3"
     assert options.model.io.recent_workspace_limit == 35
     assert options.model.figure.stylesheets == ["classic", "missing-style"]
     assert options.model.figure.dpi == pytest.approx(150.0)
+    assert options.model.figure.export.dpi == pytest.approx(300.0)
+    assert options.model.figure.export.transparent == "true"
 
     options["io/workspace/compress"] = False
     assert options["io/workspace/compression"] == "none"
@@ -1108,6 +1210,22 @@ def test_legacy_workspace_compress_setting_migrates(
 def test_figure_dpi_option_validates(value: object) -> None:
     with pytest.raises(pydantic.ValidationError):
         AppOptions.model_validate({"figure": {"dpi": value}})
+
+
+@pytest.mark.parametrize(
+    "export",
+    [
+        {"dpi": 0.0},
+        {"dpi": "invalid"},
+        {"pad_inches": -0.1},
+        {"pad_inches": "invalid"},
+        {"transparent": "invalid"},
+        {"bbox_inches": "invalid"},
+    ],
+)
+def test_figure_export_options_validate(export: dict[str, object]) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        FigureExportOptions.model_validate(export)
 
 
 def test_option_manager_uses_configured_settings_path(monkeypatch, tmp_path):

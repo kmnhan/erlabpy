@@ -19,6 +19,9 @@ from erlab.interactive._options.parameters import (
     ColorListWidget,
     DirectoryPathWidget,
     FigureDpiOverrideWidget,
+    SavefigDpiWidget,
+    SavefigNumberWidget,
+    SavefigPaddingWidget,
     StylesheetListWidget,
 )
 from erlab.interactive._options.schema import AppOptions
@@ -609,14 +612,26 @@ class OptionDialog(QtWidgets.QDialog):
             return StylesheetListWidget(parent=self)
         if ui_type == "figure_dpi_override":
             return FigureDpiOverrideWidget(parent=self)
+        if ui_type == "savefig_dpi":
+            return SavefigDpiWidget(parent=self)
+        if ui_type == "savefig_padding":
+            return SavefigPaddingWidget(parent=self)
         if ui_type == "directory_path":
             return DirectoryPathWidget(parent=self)
         if ui_type == "choice_slider":
             return _ChoiceSlider(extra.get("ui_choices", ()), self)
         if ui_type == "list" or "ui_limits" in extra:
             combo = QtWidgets.QComboBox(self)
-            for choice in extra.get("ui_limits", ()):
-                combo.addItem(str(choice), choice)
+            choices = extra.get("ui_choices")
+            if isinstance(choices, list):
+                for choice in choices:
+                    combo.addItem(
+                        str(choice.get("label", choice.get("value"))),
+                        choice.get("value"),
+                    )
+            else:
+                for choice in extra.get("ui_limits", ()):
+                    combo.addItem(str(choice), choice)
             return combo
         if _is_bool_path(path):
             return QtWidgets.QCheckBox(self)
@@ -686,7 +701,7 @@ class OptionDialog(QtWidgets.QDialog):
             control.sigDpiChanged.connect(
                 lambda _value, row=row: self._control_changed(row)
             )
-        elif isinstance(control, _ChoiceSlider):
+        elif isinstance(control, SavefigNumberWidget | _ChoiceSlider):
             control.sigValueChanged.connect(
                 lambda _value, row=row: self._control_changed(row)
             )
@@ -799,6 +814,8 @@ class OptionDialog(QtWidgets.QDialog):
             return control.get_stylesheets()
         if isinstance(control, FigureDpiOverrideWidget):
             return control.get_dpi()
+        if isinstance(control, SavefigNumberWidget):
+            return control.get_value()
         if isinstance(control, DirectoryPathWidget):
             return control.get_path()
         if isinstance(control, QtWidgets.QLineEdit):
@@ -845,6 +862,9 @@ class OptionDialog(QtWidgets.QDialog):
             return
         if isinstance(control, FigureDpiOverrideWidget):
             control.set_dpi(value)
+            return
+        if isinstance(control, SavefigNumberWidget):
+            control.set_value(value)
             return
         if isinstance(control, DirectoryPathWidget):
             control.set_path(None if value is None else str(value))

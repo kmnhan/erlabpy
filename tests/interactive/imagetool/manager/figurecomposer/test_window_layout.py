@@ -3030,9 +3030,11 @@ def test_figure_composer_defaults_follow_stylesheet_rcparams(
             expected_export_dpi = float(expected_export_dpi)
         expected_transparent = bool(mpl.rcParams["savefig.transparent"])
         expected_bbox = mpl.rcParams["savefig.bbox"]
+        expected_padding = mpl.rcParams["savefig.pad_inches"]
 
     setup = FigureSubplotsState()
     export = FigureExportState()
+    resolved_export = figurecomposer_defaults._resolved_export_kwargs(export)
 
     assert setup.figsize == expected_figsize
     assert setup.dpi == expected_dpi
@@ -3041,9 +3043,18 @@ def test_figure_composer_defaults_follow_stylesheet_rcparams(
     assert setup.sharey == "row"
     assert setup.width_ratios == ()
     assert setup.height_ratios == ()
-    assert export.dpi == expected_export_dpi
-    assert export.transparent is expected_transparent
-    assert export.bbox_inches == expected_bbox
+    assert export == FigureExportState(
+        dpi="inherit",
+        transparent="inherit",
+        bbox_inches="inherit",
+        pad_inches="inherit",
+    )
+    assert resolved_export == {
+        "dpi": expected_export_dpi,
+        "transparent": expected_transparent,
+        "bbox_inches": expected_bbox,
+        "pad_inches": expected_padding,
+    }
 
 
 def test_figure_composer_default_dpi_option_overrides_stylesheet(

@@ -2058,6 +2058,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "figureComposerSourcesPage",
         "figureComposerLayoutPage",
         "figureComposerRecipePage",
+        "figureComposerExportPage",
     ]
     assert editor_tabs.currentWidget() is tool.operation_panel
     assert isinstance(tool.layout_panel.layout(), QtWidgets.QGridLayout)

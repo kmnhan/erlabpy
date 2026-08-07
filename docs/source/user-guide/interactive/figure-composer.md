@@ -171,6 +171,17 @@ settings, as well as the styling of all figure elements.
 If {guilabel}`DPI` in Settings has {guilabel}`Override stylesheet` enabled, that value
 is used for new figures instead of the stylesheet default.
 
+Use the {guilabel}`Export` tab to set the DPI, background transparency, bounding box,
+and padding for one figure. Choose {guilabel}`Use Defaults` for a value to inherit the
+workspace or user export setting. These controls affect only the {guilabel}`Export`
+button and the export action in the plot window. They do not change the plot preview or
+copied Python code.
+
+Set user export defaults in {guilabel}`Settings`. Select
+{guilabel}`Figure Composer`, then use the rows that start with
+{guilabel}`Export`. Open Settings from ImageTool Manager to add workspace overrides. A
+per-figure value takes priority over both settings scopes.
+
 To add custom Matplotlib stylesheets:
 
 1. Open the shared settings window: on macOS, choose {menuselection}`Preferences…` from

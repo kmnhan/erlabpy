@@ -10,9 +10,6 @@ from collections.abc import Mapping
 import pydantic
 
 from erlab.interactive._figurecomposer._defaults import (
-    _default_export_bbox_inches,
-    _default_export_dpi,
-    _default_export_transparent,
     _default_figsize,
     _default_figure_dpi,
     _default_layout,
@@ -330,15 +327,12 @@ class FigureAxesSelectionState(pydantic.BaseModel):
 
 
 class FigureExportState(pydantic.BaseModel):
-    """Default export settings for the composer."""
+    """Per-figure overrides for explicit Figure Composer exports."""
 
-    dpi: float | typing.Literal["figure"] = pydantic.Field(
-        default_factory=_default_export_dpi
-    )
-    transparent: bool = pydantic.Field(default_factory=_default_export_transparent)
-    bbox_inches: str | None = pydantic.Field(
-        default_factory=_default_export_bbox_inches
-    )
+    dpi: float | typing.Literal["inherit", "figure"] = "inherit"
+    transparent: bool | typing.Literal["inherit"] = "inherit"
+    bbox_inches: typing.Literal["inherit", "standard", "tight"] = "inherit"
+    pad_inches: float | typing.Literal["inherit", "layout"] = "inherit"
 
     model_config = pydantic.ConfigDict(extra="forbid")
 
@@ -346,13 +340,47 @@ class FigureExportState(pydantic.BaseModel):
     @classmethod
     def _validate_export_dpi(
         cls, value: typing.Any
-    ) -> float | typing.Literal["figure"]:
-        if value == "figure":
-            return "figure"
+    ) -> float | typing.Literal["inherit", "figure"]:
+        if isinstance(value, str) and value in {"inherit", "figure"}:
+            return typing.cast('typing.Literal["inherit", "figure"]', value)
         dpi = float(value)
         if dpi <= 0:
             raise ValueError("export dpi must be positive")
         return dpi
+
+    @pydantic.field_validator("transparent", mode="before")
+    @classmethod
+    def _validate_export_transparent(
+        cls, value: typing.Any
+    ) -> bool | typing.Literal["inherit"]:
+        if value == "inherit":
+            return "inherit"
+        if isinstance(value, bool):
+            return value
+        raise ValueError("export transparency must be inherited or boolean")
+
+    @pydantic.field_validator("bbox_inches", mode="before")
+    @classmethod
+    def _validate_export_bbox_inches(
+        cls, value: typing.Any
+    ) -> typing.Literal["inherit", "standard", "tight"]:
+        if value is None:
+            return "standard"
+        if isinstance(value, str) and value in {"inherit", "standard", "tight"}:
+            return typing.cast('typing.Literal["inherit", "standard", "tight"]', value)
+        raise ValueError("export bounding box must be inherited, standard, or tight")
+
+    @pydantic.field_validator("pad_inches", mode="before")
+    @classmethod
+    def _validate_export_pad_inches(
+        cls, value: typing.Any
+    ) -> float | typing.Literal["inherit", "layout"]:
+        if isinstance(value, str) and value in {"inherit", "layout"}:
+            return typing.cast('typing.Literal["inherit", "layout"]', value)
+        padding = float(value)
+        if padding < 0.0:
+            raise ValueError("export padding must be nonnegative")
+        return padding
 
 
 class FigureOperationKind(enum.StrEnum):

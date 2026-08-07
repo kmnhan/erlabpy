@@ -56,6 +56,7 @@ __all__ = [
     "AppOptions",
     "ColorMapOptions",
     "ColorOptions",
+    "FigureExportOptions",
     "FigureOptions",
     "IOOptions",
     "WorkspaceCompressionMode",
@@ -411,6 +412,85 @@ class ColorOptions(BaseModel):
         return v
 
 
+class FigureExportOptions(BaseModel):
+    """Figure Composer export defaults."""
+
+    dpi: float | typing.Literal["style", "figure"] = Field(
+        default="style",
+        title="DPI",
+        description=(
+            "Default resolution for exported figures. Use the active stylesheet "
+            "value, the figure DPI, or a custom value."
+        ),
+        json_schema_extra=_workspace_extra(ui_type="savefig_dpi"),
+    )
+    transparent: typing.Literal["style", "true", "false"] = Field(
+        default="style",
+        title="Transparent background",
+        description=(
+            "Default background transparency for exported figures. Use the active "
+            "stylesheet value, enable transparency, or disable it."
+        ),
+        json_schema_extra=_workspace_extra(
+            ui_type="list",
+            ui_choices=[
+                {"label": "Use stylesheet", "value": "style"},
+                {"label": "Enabled", "value": "true"},
+                {"label": "Disabled", "value": "false"},
+            ],
+        ),
+    )
+    bbox_inches: typing.Literal["style", "standard", "tight"] = Field(
+        default="style",
+        title="Bounding box",
+        description=(
+            "Default bounding box for exported figures. Tight crops the output to "
+            "the figure contents."
+        ),
+        json_schema_extra=_workspace_extra(
+            ui_type="list",
+            ui_choices=[
+                {"label": "Use stylesheet", "value": "style"},
+                {"label": "Standard", "value": "standard"},
+                {"label": "Tight", "value": "tight"},
+            ],
+        ),
+    )
+    pad_inches: float | typing.Literal["style", "layout"] = Field(
+        default="style",
+        title="Padding",
+        description=(
+            "Default padding around tight exported figures. Use the active "
+            "stylesheet value, the layout engine, or a custom value in inches."
+        ),
+        json_schema_extra=_workspace_extra(ui_type="savefig_padding"),
+    )
+
+    @field_validator("dpi", mode="before")
+    @classmethod
+    def validate_dpi(
+        cls, value: typing.Any
+    ) -> float | typing.Literal["style", "figure"]:
+        if isinstance(value, str) and value in {"style", "figure"}:
+            return typing.cast('typing.Literal["style", "figure"]', value)
+        dpi = float(value)
+        if dpi <= 0.0:
+            raise ValueError("export dpi must be positive")
+        return dpi
+
+    @field_validator("pad_inches", mode="before")
+    @classmethod
+    def validate_pad_inches(
+        cls, value: typing.Any
+    ) -> float | typing.Literal["style", "layout"]:
+        if isinstance(value, str) and value in {"style", "layout"}:
+            return typing.cast('typing.Literal["style", "layout"]', value)
+        padding = float(value)
+        if padding < 0.0:
+            raise ValueError("export padding must be nonnegative")
+        return padding
+
+
 class FigureOptions(BaseModel):
     """Figure Composer defaults."""
 
@@ -436,6 +516,11 @@ class FigureOptions(BaseModel):
             ui_type="figure_dpi_override",
             ui_step=10.0,
         ),
+    )
+    export: FigureExportOptions = Field(
+        default_factory=FigureExportOptions,
+        title="Export",
+        description="Defaults used when Figure Composer exports a figure.",
     )
 
     @field_validator("stylesheets", mode="before")
