@@ -153,6 +153,7 @@ class MethodControlKind(enum.StrEnum):
     ASPECT_ARG = "aspect_arg"
     BOOL_ARG_COMBO = "bool_arg_combo"
     KWARG_COMBO = "kwarg_combo"
+    BOOL_KWARG_CHECK = "bool_kwarg_check"
     BOOL_KWARG_COMBO = "bool_kwarg_combo"
     OPTIONAL_BOOL_KWARG_COMBO = "optional_bool_kwarg_combo"
     INT_KWARG = "int_kwarg"
@@ -177,12 +178,15 @@ class MethodControlSpec:
     key: str | None = None
     options: tuple[str, ...] = ()
     option_labels: tuple[str, ...] = ()
+    aliases: tuple[str, ...] = ()
     default: typing.Any = None
     minimum: int | float | None = None
     maximum: int | float | None = None
     decimals: int | None = None
     step: int | float | None = None
     none_label: str | None = None
+    exclusive_group: str | None = None
+    none_is_unset: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -426,6 +430,9 @@ def _kwarg_combo(
     *,
     none_label: str | None = None,
     option_labels: Sequence[str] = (),
+    aliases: Sequence[str] = (),
+    exclusive_group: str | None = None,
+    none_is_unset: bool = False,
 ) -> MethodControlSpec:
     return MethodControlSpec(
         kind=MethodControlKind.KWARG_COMBO,
@@ -435,8 +442,11 @@ def _kwarg_combo(
         tooltip=tooltip,
         options=tuple(options),
         option_labels=tuple(option_labels),
+        aliases=tuple(aliases),
         default=default,
         none_label=none_label,
+        exclusive_group=exclusive_group,
+        none_is_unset=none_is_unset,
     )
 
 
@@ -455,6 +465,24 @@ def _bool_kwarg_combo(
         object_name=object_name,
         tooltip=tooltip,
         options=("True", "False"),
+        default=default,
+    )
+
+
+def _bool_kwarg_check(
+    label: str,
+    key: str,
+    object_name: str,
+    tooltip: str,
+    *,
+    default: bool,
+) -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.BOOL_KWARG_CHECK,
+        label=label,
+        key=key,
+        object_name=object_name,
+        tooltip=tooltip,
         default=default,
     )
 
@@ -514,6 +542,7 @@ def _float_kwarg(
     maximum: float | None = None,
     decimals: int | None = None,
     step: float | None = None,
+    aliases: Sequence[str] = (),
 ) -> MethodControlSpec:
     return MethodControlSpec(
         kind=MethodControlKind.FLOAT_KWARG,
@@ -526,6 +555,7 @@ def _float_kwarg(
         maximum=maximum,
         decimals=decimals,
         step=step,
+        aliases=tuple(aliases),
     )
 
 
@@ -611,7 +641,12 @@ def _float_pair_kwarg(
 
 
 def _color_kwarg(
-    label: str, key: str, object_name: str, tooltip: str
+    label: str,
+    key: str,
+    object_name: str,
+    tooltip: str,
+    *,
+    aliases: Sequence[str] = (),
 ) -> MethodControlSpec:
     return MethodControlSpec(
         kind=MethodControlKind.COLOR_KWARG,
@@ -619,6 +654,7 @@ def _color_kwarg(
         key=key,
         object_name=object_name,
         tooltip=tooltip,
+        aliases=tuple(aliases),
     )
 
 
@@ -726,6 +762,138 @@ _FONT_WEIGHT_OPTIONS = (
     "extra bold",
     "black",
 )
+
+
+def _line_color_style_controls(
+    object_name_prefix: str, description: str
+) -> tuple[MethodControlSpec, ...]:
+    return (
+        _color_kwarg(
+            "Color",
+            "color",
+            f"{object_name_prefix}ColorEdit",
+            f"Matplotlib color for {description}.",
+            aliases=("c",),
+        ),
+        _kwarg_combo(
+            "Line style",
+            "linestyle",
+            LINE_STYLE_OPTIONS,
+            None,
+            f"{object_name_prefix}LineStyleCombo",
+            f"Matplotlib line style for {description}.",
+            none_label=LINE_STYLE_DEFAULT_LABEL,
+            aliases=("ls",),
+        ),
+    )
+
+
+def _title_location_control(object_name: str, tooltip: str) -> MethodControlSpec:
+    return _kwarg_combo(
+        "Location",
+        "loc",
+        ("center", "left", "right"),
+        "center",
+        object_name,
+        tooltip,
+    )
+
+
+_AXIS_LABEL_POSITION_GROUP = "axis_label_position"
+
+
+def _text_color_control(object_name: str, description: str) -> MethodControlSpec:
+    return _color_kwarg(
+        "Color",
+        "color",
+        object_name,
+        f"Matplotlib color for {description}.",
+        aliases=("c",),
+    )
+
+
+def _text_artist_controls(
+    object_name_prefix: str,
+    description: str,
+    *,
+    horizontalalignment_exclusive_group: str | None = None,
+) -> tuple[MethodControlSpec, ...]:
+    horizontalalignment_tooltip = f"Horizontal alignment for {description}."
+    if horizontalalignment_exclusive_group is not None:
+        horizontalalignment_tooltip += "\nSelecting this value clears Location."
+    return (
+        _text_color_control(f"{object_name_prefix}ColorEdit", description),
+        _kwarg_combo(
+            "Horizontal alignment",
+            "horizontalalignment",
+            ("left", "center", "right"),
+            None,
+            f"{object_name_prefix}HorizontalAlignmentCombo",
+            horizontalalignment_tooltip,
+            none_label="Unset",
+            aliases=("ha",),
+            exclusive_group=horizontalalignment_exclusive_group,
+            none_is_unset=True,
+        ),
+        _kwarg_combo(
+            "Vertical alignment",
+            "verticalalignment",
+            ("baseline", "bottom", "center", "center_baseline", "top"),
+            None,
+            f"{object_name_prefix}VerticalAlignmentCombo",
+            f"Vertical alignment for {description}.",
+            none_label="Unset",
+            aliases=("va",),
+            none_is_unset=True,
+        ),
+        _literal_kwarg(
+            "Rotation",
+            "rotation",
+            f"{object_name_prefix}RotationEdit",
+            (
+                f"Rotation for {description}.\n"
+                "Use an angle in degrees or a quoted value such as 'vertical'."
+            ),
+        ),
+        _kwarg_combo(
+            "Rotation mode",
+            "rotation_mode",
+            ("default", "anchor", "xtick", "ytick"),
+            None,
+            f"{object_name_prefix}RotationModeCombo",
+            f"Rotation and alignment order for {description}.",
+            none_label="Unset",
+        ),
+    )
+
+
+def _axis_label_controls(
+    axis: typing.Literal["x", "y"], object_name_prefix: str
+) -> tuple[MethodControlSpec, ...]:
+    if axis == "x":
+        location_options = ("center", "left", "right")
+    else:
+        location_options = ("center", "bottom", "top")
+    description = f"the {axis}-axis label"
+    return (
+        _kwarg_combo(
+            "Location",
+            "loc",
+            location_options,
+            "center",
+            f"{object_name_prefix}LocCombo",
+            (
+                f"{axis}-axis label location.\n"
+                "Selecting this value clears Horizontal alignment."
+            ),
+            exclusive_group=_AXIS_LABEL_POSITION_GROUP,
+        ),
+        *_text_artist_controls(
+            object_name_prefix,
+            description,
+            horizontalalignment_exclusive_group=_AXIS_LABEL_POSITION_GROUP,
+        ),
+    )
 
 
 def _label_subplots_text_controls(
@@ -937,6 +1105,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "figureComposerAxesMethodTextEdit",
                 "Text string passed as the third ax.text argument.",
             ),
+            *_text_artist_controls("figureComposerAxesMethodText", "the text"),
         ),
     ),
     "plot": MethodSpec(
@@ -949,20 +1118,8 @@ AXES_METHODS: dict[str, MethodSpec] = {
         default_args=((0.0, 1.0),),
         controls=(
             _plot_data_args(),
-            _color_kwarg(
-                "Color",
-                "color",
-                "figureComposerAxesMethodPlotColorEdit",
-                "Matplotlib color for the plotted line.",
-            ),
-            _kwarg_combo(
-                "Line style",
-                "linestyle",
-                LINE_STYLE_OPTIONS,
-                None,
-                "figureComposerAxesMethodPlotLineStyleCombo",
-                "Matplotlib line style for the plotted line.",
-                none_label=LINE_STYLE_DEFAULT_LABEL,
+            *_line_color_style_controls(
+                "figureComposerAxesMethodPlot", "the plotted line"
             ),
             _float_kwarg(
                 "Line width",
@@ -973,6 +1130,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 minimum=0.0,
                 maximum=1_000_000.0,
                 step=0.5,
+                aliases=("lw",),
             ),
             _kwarg_combo(
                 "Marker",
@@ -992,18 +1150,21 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 minimum=0.0,
                 maximum=1_000_000.0,
                 step=0.5,
+                aliases=("ms",),
             ),
             _color_kwarg(
                 "Marker face",
                 "markerfacecolor",
                 "figureComposerAxesMethodPlotMarkerFaceColorEdit",
                 "Matplotlib marker face color.",
+                aliases=("mfc",),
             ),
             _color_kwarg(
                 "Marker edge",
                 "markeredgecolor",
                 "figureComposerAxesMethodPlotMarkerEdgeColorEdit",
                 "Matplotlib marker edge color.",
+                aliases=("mec",),
             ),
             _float_kwarg(
                 "Alpha",
@@ -1042,20 +1203,8 @@ AXES_METHODS: dict[str, MethodSpec] = {
         default_args=((0.0, 1.0), (0.0, 1.0)),
         controls=(
             _plot_data_args(),
-            _color_kwarg(
-                "Color",
-                "color",
-                "figureComposerAxesMethodErrorbarColorEdit",
-                "Matplotlib color for the errorbar line.",
-            ),
-            _kwarg_combo(
-                "Line style",
-                "linestyle",
-                LINE_STYLE_OPTIONS,
-                None,
-                "figureComposerAxesMethodErrorbarLineStyleCombo",
-                "Matplotlib line style for the errorbar line.",
-                none_label=LINE_STYLE_DEFAULT_LABEL,
+            *_line_color_style_controls(
+                "figureComposerAxesMethodErrorbar", "the errorbar line"
             ),
             _float_kwarg(
                 "Line width",
@@ -1066,6 +1215,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 minimum=0.0,
                 maximum=1_000_000.0,
                 step=0.5,
+                aliases=("lw",),
             ),
             _kwarg_combo(
                 "Marker",
@@ -1085,18 +1235,21 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 minimum=0.0,
                 maximum=1_000_000.0,
                 step=0.5,
+                aliases=("ms",),
             ),
             _color_kwarg(
                 "Marker face",
                 "markerfacecolor",
                 "figureComposerAxesMethodErrorbarMarkerFaceColorEdit",
                 "Matplotlib marker face color.",
+                aliases=("mfc",),
             ),
             _color_kwarg(
                 "Marker edge",
                 "markeredgecolor",
                 "figureComposerAxesMethodErrorbarMarkerEdgeColorEdit",
                 "Matplotlib marker edge color.",
+                aliases=("mec",),
             ),
             _float_kwarg(
                 "Cap size",
@@ -1159,6 +1312,9 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "figureComposerAxesMethodXEdit",
                 "x coordinate for the vertical line.",
             ),
+            *_line_color_style_controls(
+                "figureComposerAxesMethodVLine", "the vertical line"
+            ),
         ),
     ),
     "axhline": MethodSpec(
@@ -1175,6 +1331,9 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 0,
                 "figureComposerAxesMethodYEdit",
                 "y coordinate for the horizontal line.",
+            ),
+            *_line_color_style_controls(
+                "figureComposerAxesMethodHLine", "the horizontal line"
             ),
         ),
     ),
@@ -1245,6 +1404,13 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "figureComposerAxesMethodTickLabelsEdit",
                 "Optional comma-separated labels passed as set_ticks labels.",
             ),
+            _bool_kwarg_check(
+                "Minor",
+                "minor",
+                "figureComposerAxesMethodXTickMinorCheck",
+                "Set minor x-axis ticks instead of major ticks.",
+                default=False,
+            ),
         ),
     ),
     "set_yticks": MethodSpec(
@@ -1267,6 +1433,13 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 1,
                 "figureComposerAxesMethodTickLabelsEdit",
                 "Optional comma-separated labels passed as set_ticks labels.",
+            ),
+            _bool_kwarg_check(
+                "Minor",
+                "minor",
+                "figureComposerAxesMethodYTickMinorCheck",
+                "Set minor y-axis ticks instead of major ticks.",
+                default=False,
             ),
         ),
     ),
@@ -1317,14 +1490,11 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "figureComposerAxesMethodTitleEdit",
                 "Title text passed to ax.set_title.",
             ),
-            _kwarg_combo(
-                "Location",
-                "loc",
-                ("center", "left", "right"),
-                "center",
+            _title_location_control(
                 "figureComposerAxesMethodTitleLocCombo",
                 "Horizontal title location.",
             ),
+            *_text_artist_controls("figureComposerAxesMethodTitle", "the title"),
             _float_kwarg(
                 "Padding",
                 "pad",
@@ -1352,14 +1522,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "figureComposerAxesMethodXLabelEdit",
                 "x-axis label text passed to ax.set_xlabel.",
             ),
-            _kwarg_combo(
-                "Location",
-                "loc",
-                ("center", "left", "right"),
-                "center",
-                "figureComposerAxesMethodXLabelLocCombo",
-                "x-axis label location.",
-            ),
+            *_axis_label_controls("x", "figureComposerAxesMethodXLabel"),
             _float_kwarg(
                 "Label pad",
                 "labelpad",
@@ -1387,14 +1550,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "figureComposerAxesMethodYLabelEdit",
                 "y-axis label text passed to ax.set_ylabel.",
             ),
-            _kwarg_combo(
-                "Location",
-                "loc",
-                ("center", "bottom", "top"),
-                "center",
-                "figureComposerAxesMethodYLabelLocCombo",
-                "y-axis label location.",
-            ),
+            *_axis_label_controls("y", "figureComposerAxesMethodYLabel"),
             _float_kwarg(
                 "Label pad",
                 "labelpad",
@@ -1632,6 +1788,9 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
                 "figureComposerFigureMethodTextEdit",
                 "Text string passed to fig.supxlabel.",
             ),
+            *_text_artist_controls(
+                "figureComposerFigureMethodText", "the figure x label"
+            ),
         ),
     ),
     "supylabel": MethodSpec(
@@ -1649,6 +1808,9 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
                 "figureComposerFigureMethodTextEdit",
                 "Text string passed to fig.supylabel.",
             ),
+            *_text_artist_controls(
+                "figureComposerFigureMethodText", "the figure y label"
+            ),
         ),
     ),
     "suptitle": MethodSpec(
@@ -1665,6 +1827,9 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
                 0,
                 "figureComposerFigureMethodTextEdit",
                 "Text string passed to fig.suptitle.",
+            ),
+            *_text_artist_controls(
+                "figureComposerFigureMethodText", "the figure title"
             ),
         ),
     ),
@@ -2126,6 +2291,11 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "Flattening order used to match titles to axes.",
                 option_labels=_FLATTEN_ORDER_LABELS,
             ),
+            _title_location_control(
+                "figureComposerERLabSetTitlesLocCombo",
+                "Horizontal title location.",
+            ),
+            *_text_artist_controls("figureComposerERLabSetTitles", "the titles"),
         ),
     ),
     "set_xlabels": MethodSpec(
@@ -2147,6 +2317,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "Flattening order used to match x labels to axes.",
                 option_labels=_FLATTEN_ORDER_LABELS,
             ),
+            *_axis_label_controls("x", "figureComposerERLabSetXLabels"),
         ),
     ),
     "set_ylabels": MethodSpec(
@@ -2168,6 +2339,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "Flattening order used to match y labels to axes.",
                 option_labels=_FLATTEN_ORDER_LABELS,
             ),
+            *_axis_label_controls("y", "figureComposerERLabSetYLabels"),
         ),
     ),
     "fermiline": MethodSpec(
@@ -2201,6 +2373,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                     "Optional Matplotlib color for the line.\n"
                     "Leave blank to let fermiline use the axes text color."
                 ),
+                aliases=("c",),
             ),
             _kwarg_combo(
                 "Line style",
@@ -2213,6 +2386,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                     "Leave unset to let fermiline use its default style."
                 ),
                 none_label=LINE_STYLE_DEFAULT_LABEL,
+                aliases=("ls",),
             ),
             _float_kwarg(
                 "Line width",
@@ -2223,6 +2397,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                     "Leave blank to let fermiline use its default width."
                 ),
                 minimum=0.0,
+                aliases=("lw",),
             ),
         ),
     ),
@@ -2326,6 +2501,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabCoreLevelsLineStyleCombo",
                 "Optional Matplotlib line style.",
                 none_label=LINE_STYLE_DEFAULT_LABEL,
+                aliases=("ls",),
             ),
             _float_kwarg(
                 "Line width",
@@ -2333,6 +2509,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabCoreLevelsLineWidthEdit",
                 "Optional line width.",
                 minimum=0.0,
+                aliases=("lw",),
             ),
         ),
     ),
@@ -2392,6 +2569,7 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "Draw a bar over parsed labels.",
                 default=False,
             ),
+            *_text_artist_controls("figureComposerERLabMarkPoints", "the point labels"),
         ),
     ),
     "sizebar": MethodSpec(

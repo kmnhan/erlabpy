@@ -47,6 +47,8 @@ from erlab.interactive._figurecomposer._operations._method._plot_editor import (
 )
 from erlab.interactive._figurecomposer._operations._method._state import (
     _aspect_value_from_text,
+    _canonical_method_control_aliases,
+    _canonical_method_control_kwargs,
     _default_method_args,
     _empty_text_as_none,
     _format_aspect_value,
@@ -69,6 +71,7 @@ from erlab.interactive._figurecomposer._operations._method._state import (
     _optional_literal_from_text,
     _string_tuple_from_text_or_none,
     _subplots_adjust_values,
+    _updated_method_control_kwargs,
 )
 from erlab.interactive._figurecomposer._subplot_adjust import (
     SUBPLOTS_ADJUST_SPINBOX_DECIMALS,
@@ -636,6 +639,20 @@ def _add_method_control_row(
             )
             combo.setObjectName(control.object_name)
             editor.add_form_row(layout, control.label, combo, control.tooltip)
+        case MethodControlKind.BOOL_KWARG_CHECK:
+            key = _control_key(control)
+            mixed = editor.batch_is_mixed(
+                operation,
+                lambda target: bool(_method_kwarg_value(target, key, control.default)),
+            )
+            check = editor.check_box(
+                bool(_method_kwarg_value(operation, key, control.default)),
+                _method_kwarg_update_callback(editor, key),
+                parent=layout.parentWidget(),
+                mixed=mixed,
+            )
+            check.setObjectName(control.object_name)
+            editor.add_form_row(layout, control.label, check, control.tooltip)
         case MethodControlKind.KWARG_COMBO:
             key = _control_key(control)
             kwarg_value_getter: Callable[[FigureOperationState], typing.Any]
@@ -1077,25 +1094,26 @@ def _method_float_pair_args(
 
 
 def _controlled_method_kwarg_keys(spec: MethodSpec) -> frozenset[str]:
-    keys = {
-        control.key
-        for control in spec.controls
-        if control.key is not None
-        and control.kind
-        in {
-            MethodControlKind.KWARG_COMBO,
-            MethodControlKind.BOOL_KWARG_COMBO,
-            MethodControlKind.OPTIONAL_BOOL_KWARG_COMBO,
-            MethodControlKind.INT_KWARG,
-            MethodControlKind.FLOAT_KWARG,
-            MethodControlKind.SUBPLOTS_ADJUST_KWARG,
-            MethodControlKind.TEXT_KWARG,
-            MethodControlKind.LITERAL_KWARG,
-            MethodControlKind.STRING_TUPLE_KWARG,
-            MethodControlKind.FLOAT_PAIR_KWARG,
-            MethodControlKind.COLOR_KWARG,
-        }
+    controlled_kinds = {
+        MethodControlKind.KWARG_COMBO,
+        MethodControlKind.BOOL_KWARG_CHECK,
+        MethodControlKind.BOOL_KWARG_COMBO,
+        MethodControlKind.OPTIONAL_BOOL_KWARG_COMBO,
+        MethodControlKind.INT_KWARG,
+        MethodControlKind.FLOAT_KWARG,
+        MethodControlKind.SUBPLOTS_ADJUST_KWARG,
+        MethodControlKind.TEXT_KWARG,
+        MethodControlKind.LITERAL_KWARG,
+        MethodControlKind.STRING_TUPLE_KWARG,
+        MethodControlKind.FLOAT_PAIR_KWARG,
+        MethodControlKind.COLOR_KWARG,
     }
+    keys: set[str] = set()
+    for control in spec.controls:
+        if control.key is None or control.kind not in controlled_kinds:
+            continue
+        keys.add(control.key)
+        keys.update(control.aliases)
     if any(control.kind == MethodControlKind.TICK_PARAMS for control in spec.controls):
         keys.update(TICK_PARAMS_CONTROLLED_KWARGS)
     if _is_axes_errorbar_method(spec):
@@ -1120,21 +1138,34 @@ def _update_current_extra_method_kwargs(
     editor: FigureOperationEditor, spec: MethodSpec, extra_kwargs: dict[str, typing.Any]
 ) -> None:
     controlled = _controlled_method_kwarg_keys(spec)
+    alias_control_keys = {
+        control.key
+        for control in spec.controls
+        if control.key is not None
+        and any(alias in extra_kwargs for alias in control.aliases)
+    }
+    extra_kwargs = _canonical_method_control_aliases(extra_kwargs, spec)
 
     def update_kwargs(
         _operation_index: int, operation: FigureOperationState
     ) -> FigureOperationState:
+        current_kwargs = _canonical_method_control_kwargs(operation.method_kwargs, spec)
         kwargs = {
-            key: value
-            for key, value in operation.method_kwargs.items()
-            if key in controlled
+            key: value for key, value in current_kwargs.items() if key in controlled
         }
-        kwargs.update(
-            {key: value for key, value in extra_kwargs.items() if key not in controlled}
-        )
+        for key, value in extra_kwargs.items():
+            if key not in controlled:
+                kwargs[key] = value
+            elif key in alias_control_keys:
+                kwargs = _updated_method_control_kwargs(kwargs, spec, key, value)
         return operation.model_copy(update={"method_kwargs": kwargs})
 
-    editor.request_transform(update_kwargs)
+    rebuild_editor = bool(alias_control_keys)
+    editor.request_transform(
+        update_kwargs,
+        rebuild_editor=rebuild_editor,
+        defer_editor_rebuild=rebuild_editor,
+    )
 
 
 def _update_current_tick_params_kwargs(
@@ -1529,14 +1560,26 @@ def _update_current_method_kwarg(
     def update_kwarg(
         _operation_index: int, operation: FigureOperationState
     ) -> FigureOperationState:
-        kwargs = dict(operation.method_kwargs)
-        if value is None:
-            kwargs.pop(key, None)
-        else:
-            kwargs[key] = value
+        spec = _method_spec(operation)
+        kwargs = _updated_method_control_kwargs(
+            operation.method_kwargs, spec, key, value
+        )
         return operation.model_copy(update={"method_kwargs": kwargs})
 
-    editor.request_transform(update_kwarg)
+    current = editor.current_operation()
+    rebuild_editor = (
+        value is not None
+        and current is not None
+        and any(
+            control.key == key and control.exclusive_group is not None
+            for control in _method_spec(current[1]).controls
+        )
+    )
+    editor.request_transform(
+        update_kwarg,
+        rebuild_editor=rebuild_editor,
+        defer_editor_rebuild=rebuild_editor,
+    )
 
 
 def _update_current_subplots_adjust_kwarg(
