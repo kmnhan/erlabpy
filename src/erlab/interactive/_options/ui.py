@@ -416,6 +416,29 @@ class OptionDialog(QtWidgets.QDialog):
         self.reset_session_baseline()
         super().showEvent(event)
 
+    def select_setting(self, path: str) -> None:
+        """Show and focus one setting in the current scope."""
+        category = path.partition("/")[0]
+        for index in range(self.category_list.count()):
+            item = self.category_list.item(index)
+            if item is None:
+                continue
+            if item.data(QtCore.Qt.ItemDataRole.UserRole) == category:
+                self.category_list.setCurrentRow(index)
+                break
+        else:
+            raise KeyError(path)
+
+        row = self._rows.get((self._current_scope, path))
+        if row is None:
+            raise KeyError(path)
+        page = self.page_stack.currentWidget()
+        if page is not None:
+            scroll = page.findChild(QtWidgets.QScrollArea)
+            if scroll is not None:
+                scroll.ensureWidgetVisible(row)
+        row.control.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+
     @staticmethod
     def _find_workspace_manager(parent: QtWidgets.QWidget | None) -> typing.Any | None:
         current: QtCore.QObject | None = parent

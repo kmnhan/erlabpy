@@ -192,6 +192,7 @@ if typing.TYPE_CHECKING:
     import xarray as xr
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 
+    from erlab.interactive._options import OptionDialog
     from erlab.interactive._options.schema import AppOptions
 
 
@@ -371,6 +372,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     ) -> None:
         super().__init__()
         self._options_getter: Callable[[], AppOptions] | None = None
+        self._settings_opener: Callable[[], OptionDialog] | None = None
+        self._settings_dialog: OptionDialog | None = None
         self._updating_controls = False
         self._rendering = False
         self._auto_redraw_dirty = False
@@ -480,6 +483,24 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def set_options_getter(self, getter: Callable[[], AppOptions] | None) -> None:
         self._options_getter = getter
+
+    def set_settings_opener(self, opener: Callable[[], OptionDialog] | None) -> None:
+        """Set the manager-owned settings dialog opener."""
+        self._settings_opener = opener
+
+    @QtCore.Slot()
+    def _open_export_settings(self) -> None:
+        if self._settings_opener is not None:
+            dialog = self._settings_opener()
+        else:
+            dialog = self._settings_dialog
+            if dialog is None or not erlab.interactive.utils.qt_is_valid(dialog):
+                dialog = erlab.interactive._options.OptionDialog(self)
+                self._settings_dialog = dialog
+        dialog.select_setting("figure/export/dpi")
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _plot_slices_cache_for_render(
         self,
@@ -1395,6 +1416,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.layout_panel.layout_mode_requested.connect(self._layout_mode_requested)
         self.export_panel = FigureExportPanel(self.editor_tabs)
         self.export_panel.state_requested.connect(self._export_state_requested)
+        self.export_panel.settings_requested.connect(self._open_export_settings)
         self.axes_selector.sigAddRowRequested.connect(
             functools.partial(self._grow_subplot_grid, "row")
         )

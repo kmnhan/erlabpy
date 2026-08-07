@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import xarray as xr
 from matplotlib.figure import Figure
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 import erlab.interactive._figurecomposer._defaults as figurecomposer_defaults
 import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
@@ -12,6 +12,7 @@ from erlab.interactive._figurecomposer._defaults import figure_options_context
 from erlab.interactive._figurecomposer._ui._export_panel import FigureExportPanel
 from erlab.interactive._options.core import model_with_workspace_overrides
 from erlab.interactive._options.schema import AppOptions
+from erlab.interactive._options.ui import OptionDialog
 
 
 def _data() -> xr.DataArray:
@@ -110,7 +111,9 @@ def test_export_panel_edits_and_resets_per_figure_state(qtbot) -> None:
     panel = FigureExportPanel()
     qtbot.addWidget(panel)
     requested: list[FigureExportState] = []
+    settings_requested: list[None] = []
     panel.state_requested.connect(requested.append)
+    panel.settings_requested.connect(lambda: settings_requested.append(None))
 
     panel.dpi_control.mode_combo.setCurrentIndex(
         panel.dpi_control.mode_combo.count() - 1
@@ -130,9 +133,51 @@ def test_export_panel_edits_and_resets_per_figure_state(qtbot) -> None:
     )
 
     panel.use_defaults_button.click()
+    panel.settings_button.click()
 
     assert requested[-1] == FigureExportState()
     assert panel.export_state() == FigureExportState()
+    assert settings_requested == [None]
+
+
+def test_export_settings_button_opens_figure_export_settings(qtbot) -> None:
+    tool = FigureComposerTool(_data())
+    qtbot.addWidget(tool)
+
+    tool.export_panel.settings_button.click()
+
+    dialog = tool._settings_dialog
+    assert isinstance(dialog, OptionDialog)
+    assert dialog.isVisible()
+    current_category = dialog.category_list.currentItem()
+    assert current_category is not None
+    assert current_category.data(QtCore.Qt.ItemDataRole.UserRole) == "figure"
+    assert dialog.focusWidget() is dialog._rows[("user", "figure/export/dpi")].control
+
+    tool.export_panel.settings_button.click()
+    assert tool._settings_dialog is dialog
+
+
+def test_export_settings_button_uses_manager_dialog(qtbot) -> None:
+    tool = FigureComposerTool(_data())
+    dialog = OptionDialog()
+    qtbot.addWidget(tool)
+    qtbot.addWidget(dialog)
+    opener_calls: list[None] = []
+
+    def open_settings() -> OptionDialog:
+        opener_calls.append(None)
+        return dialog
+
+    tool.set_settings_opener(open_settings)
+    tool.export_panel.settings_button.click()
+
+    assert opener_calls == [None]
+    assert tool._settings_dialog is None
+    assert dialog.isVisible()
+    current_category = dialog.category_list.currentItem()
+    assert current_category is not None
+    assert current_category.data(QtCore.Qt.ItemDataRole.UserRole) == "figure"
 
 
 def test_export_panel_rejects_an_unknown_control_value(qtbot) -> None:

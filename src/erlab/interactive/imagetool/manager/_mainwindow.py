@@ -2005,8 +2005,8 @@ class ImageToolManager(_ImageToolManagerBase):
     def _stop_servers(self) -> None:
         self._widgets_controller._stop_servers()
 
-    def open_settings(self) -> None:
-        self._widgets_controller.open_settings()
+    def open_settings(self) -> erlab.interactive._options.OptionDialog:
+        return self._widgets_controller.open_settings()
 
     def open_new_manager_instance(self) -> None:
         self._widgets_controller.open_new_manager_instance()

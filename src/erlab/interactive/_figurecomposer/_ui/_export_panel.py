@@ -12,6 +12,7 @@ class FigureExportPanel(QtWidgets.QWidget):
     """Edit per-figure savefig overrides without requesting a redraw."""
 
     state_requested = QtCore.Signal(object)
+    settings_requested = QtCore.Signal()
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -24,14 +25,6 @@ class FigureExportPanel(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
-
-        description = QtWidgets.QLabel(self)
-        description.setWordWrap(True)
-        description.setText(
-            "These settings apply only when you export this figure. "
-            "Inherited values come from the workspace or user settings."
-        )
-        layout.addWidget(description)
 
         form = QtWidgets.QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
@@ -106,6 +99,12 @@ class FigureExportPanel(QtWidgets.QWidget):
         self.use_defaults_button.setObjectName("figureComposerExportUseDefaultsButton")
         self.use_defaults_button.setToolTip("Remove all per-figure export overrides.")
         action_layout.addWidget(self.use_defaults_button)
+        self.settings_button = QtWidgets.QPushButton("Export Settings…", self)
+        self.settings_button.setObjectName("figureComposerExportSettingsButton")
+        self.settings_button.setToolTip(
+            "Open the user and workspace defaults for figure exports."
+        )
+        action_layout.addWidget(self.settings_button)
         action_layout.addStretch(1)
         layout.addLayout(action_layout)
         layout.addStretch(1)
@@ -115,6 +114,7 @@ class FigureExportPanel(QtWidgets.QWidget):
         self.bbox_combo.currentIndexChanged.connect(self._control_changed)
         self.padding_control.sigValueChanged.connect(self._control_changed)
         self.use_defaults_button.clicked.connect(self._use_defaults)
+        self.settings_button.clicked.connect(self.settings_requested)
 
     def set_export(self, export: FigureExportState) -> None:
         """Project one immutable export snapshot into the controls."""

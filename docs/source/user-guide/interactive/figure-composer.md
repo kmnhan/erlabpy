@@ -179,8 +179,9 @@ copied Python code.
 
 Set user export defaults in {guilabel}`Settings`. Select
 {guilabel}`Figure Composer`, then use the rows that start with
-{guilabel}`Export`. Open Settings from ImageTool Manager to add workspace overrides. A
-per-figure value takes priority over both settings scopes.
+{guilabel}`Export`. You can also select {guilabel}`Export Settings…` in the
+{guilabel}`Export` tab to open these settings directly. Open a managed figure to edit
+workspace overrides. A per-figure value takes priority over both settings scopes.
 
 To add custom Matplotlib stylesheets:
 
