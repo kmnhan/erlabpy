@@ -616,6 +616,8 @@ def test_childtool_hover_preview_hides_missing_imageitem_pixmap(
         type_badge_text="",
         source_state="fresh",
         source_auto_update=False,
+        is_imagetool=False,
+        workspace_linked=False,
         imagetool=None,
         pending_workspace_tool_payload=None,
         tool_window=types.SimpleNamespace(
@@ -881,6 +883,130 @@ def test_link_selected_aligns_to_current_child_imagetool(
         )
         assert not child.slicer_area.undoable
         assert not target.slicer_area.undoable
+
+
+def test_linked_child_imagetool_badge_is_interactive(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.zeros((5, 5)), dims=("x", "y"))
+        tools: list[erlab.interactive.imagetool.ImageTool] = []
+        for _ in range(3):
+            tool = itool(data, manager=False, execute=False)
+            assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(tool, show=False)
+            tools.append(tool)
+
+        child = itool(data, manager=False, execute=False)
+        assert isinstance(child, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child,
+            0,
+            show=False,
+            source_spec=full_data(),
+            source_auto_update=True,
+        )
+        manager.link_imagetools(1, 2, child_uid, link_colors=False)
+
+        view = manager.tree_view
+        model = view._model
+        delegate = view._delegate
+        root_index = model._row_index(0)
+        child_index = model._row_index(child_uid)
+        view.expand(root_index)
+        qtbot.wait_until(lambda: not view.visualRect(child_index).isEmpty())
+
+        child_node = manager._child_node(child_uid)
+        option = delegate._option_for_index(view, child_index)
+        _, dask_rect, link_rect, _ = delegate._compute_icons_info(option, child_node)
+        assert dask_rect is None
+        assert link_rect is not None
+
+        status_rect, _, _ = delegate._compute_child_status_info(
+            option,
+            child_node,
+            right_edge=delegate._right_badge_edge(dask_rect, link_rect),
+        )
+        assert status_rect is not None
+        assert status_rect.right() < link_rect.left()
+        assert (
+            delegate._badge_at(option, child_index, link_rect.center()).kind == "link"
+        )
+        assert (
+            delegate._badge_at(option, child_index, status_rect.center()).kind
+            == "source_status"
+        )
+
+        editor = QtWidgets.QLineEdit(view)
+        qtbot.addWidget(editor)
+        delegate.updateEditorGeometry(editor, option, child_index)
+        assert editor.geometry().right() < status_rect.left()
+
+        with monkeypatch.context() as patch:
+            patch.setattr(child_node, "_source_auto_update", False)
+            patch.setattr(
+                manager,
+                "dependency_status_for_uid",
+                lambda uid: "changed" if uid == child_uid else None,
+            )
+            dependency_rect, _, _ = delegate._compute_dependency_status_info(
+                option,
+                child_node,
+                right_edge=delegate._right_badge_edge(dask_rect, link_rect),
+            )
+            assert dependency_rect is not None
+            assert dependency_rect.right() < link_rect.left()
+
+            dependency_editor = QtWidgets.QLineEdit(view)
+            qtbot.addWidget(dependency_editor)
+            delegate.updateEditorGeometry(dependency_editor, option, child_index)
+            assert dependency_editor.geometry().right() < dependency_rect.left()
+
+            dependency_canvas = QtGui.QPixmap(option.rect.size())
+            dependency_canvas.fill(QtGui.QColor("white"))
+            dependency_painter = QtGui.QPainter(dependency_canvas)
+            try:
+                delegate.paint(dependency_painter, option, child_index)
+            finally:
+                dependency_painter.end()
+
+        delegate._link_icon_cache.clear()
+        canvas = QtGui.QPixmap(option.rect.size())
+        canvas.fill(QtGui.QColor("white"))
+        painter = QtGui.QPainter(canvas)
+        try:
+            delegate.paint(painter, option, child_index)
+        finally:
+            painter.end()
+        link_key = child_node.workspace_link_key
+        assert link_key is not None
+        link_color = manager.color_for_workspace_link_key(link_key)
+        assert link_color.rgba() in delegate._link_icon_cache
+
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "question",
+            lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Cancel,
+        )
+        click_tree_view_pos(view, link_rect.center())
+        assert child.slicer_area.is_linked
+        assert all(tool.slicer_area.is_linked for tool in tools[1:])
+
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "question",
+            lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+        click_tree_view_pos(view, link_rect.center())
+        assert not child.slicer_area.is_linked
+        assert not child_node.workspace_linked
+        assert all(tool.slicer_area.is_linked for tool in tools[1:])
+        assert delegate._compute_icons_info(option, child_node)[2] is None
 
 
 def test_link_badge_falls_back_to_live_linker(

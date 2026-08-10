@@ -1528,11 +1528,10 @@ class _DetailsPanelController:
                 selection_offloadable.append(target)
 
         something_selected = bool(imagetool_targets or selection_children)
-        root_imagetool_count = len(self._manager.tree_view.selected_imagetool_indices)
         total_selected = len(imagetool_targets) + len(selection_children)
         single_selected = total_selected == 1
-        multiple_root_imagetools_selected = (
-            root_imagetool_count > 1 and root_imagetool_count == total_selected
+        multiple_imagetools_selected = (
+            len(imagetool_targets) > 1 and len(imagetool_targets) == total_selected
         )
         multiple_selected = len(imagetool_targets) > 1
 
@@ -1541,7 +1540,7 @@ class _DetailsPanelController:
         self._manager.arrange_windows_action.setEnabled(total_selected >= 2)
         self._manager.remove_action.setEnabled(something_selected)
         self._manager.rename_action.setEnabled(
-            single_selected or multiple_root_imagetools_selected
+            single_selected or multiple_imagetools_selected
         )
         self._manager.duplicate_action.setEnabled(something_selected)
         self._manager.promote_action.setEnabled(promotable_child_uid is not None)
@@ -1559,9 +1558,7 @@ class _DetailsPanelController:
         self._manager.create_figure_action.setEnabled(
             bool(self._manager._selected_figure_source_targets())
         )
-        self._manager.store_action.setEnabled(
-            bool(self._manager.tree_view.selected_imagetool_indices)
-        )
+        self._manager.store_action.setEnabled(bool(imagetool_targets))
 
         reload_relevant = reload_candidates is not None
         self._manager.reload_action.setVisible(reload_relevant)

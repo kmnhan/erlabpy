@@ -147,6 +147,91 @@ def test_manager_workspace_restore_hidden_memory_link_group_keeps_payload_pendin
         assert link_color != option.palette.color(QtGui.QPalette.ColorRole.Mid)
 
 
+def test_manager_workspace_pending_child_link_badge_unlinks_without_materializing(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=("x", "y"))
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        root.hide()
+
+        child_uids: list[str] = []
+        for offset in (100.0, 200.0):
+            child = itool(data + offset, manager=False, execute=False)
+            assert isinstance(child, erlab.interactive.imagetool.ImageTool)
+            child_uids.append(manager.add_imagetool_child(child, 0, show=False))
+            child.hide()
+        manager.link_imagetools(*child_uids, link_colors=False)
+
+        fname = tmp_path / "pending-child-link-badge.itws"
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+
+        child_nodes = [manager._child_node(uid) for uid in child_uids]
+        assert all(node.imagetool is None for node in child_nodes)
+        assert all(
+            node.pending_workspace_memory_payload is not None for node in child_nodes
+        )
+        assert all(node.workspace_linked for node in child_nodes)
+
+        view = manager.tree_view
+        delegate = view._delegate
+        child_index = view._model._row_index(child_uids[0])
+        option = QtWidgets.QStyleOptionViewItem()
+        delegate.initStyleOption(option, child_index)
+        option.rect = QtCore.QRect(0, 0, 240, 25)
+        option.widget = view
+        _, _, link_rect, _ = delegate._compute_icons_info(option, child_nodes[0])
+        assert link_rect is not None
+        badge = delegate._badge_at(option, child_index, link_rect.center())
+        assert badge is not None
+        assert badge.kind == "link"
+
+        delegate._link_icon_cache.clear()
+        canvas = QtGui.QPixmap(option.rect.size())
+        canvas.fill(QtGui.QColor("white"))
+        painter = QtGui.QPainter(canvas)
+        try:
+            delegate.paint(painter, option, child_index)
+        finally:
+            painter.end()
+        link_key = child_nodes[0].workspace_link_key
+        assert link_key is not None
+        link_color = manager.color_for_workspace_link_key(link_key)
+        assert link_color.rgba() in delegate._link_icon_cache
+
+        def _fail_materialize_pending_payload(_node) -> bool:
+            pytest.fail("unlinking a child badge should not materialize hidden data")
+
+        monkeypatch.setattr(
+            manager._workspace_controller.loading.pending,
+            "_materialize_pending_workspace_payload",
+            _fail_materialize_pending_payload,
+        )
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "question",
+            lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+        view._handle_badge_click(child_index, badge)
+
+        assert all(node.imagetool is None for node in child_nodes)
+        assert all(
+            node.pending_workspace_memory_payload is not None for node in child_nodes
+        )
+        assert all(not node.workspace_linked for node in child_nodes)
+
+
 def test_manager_workspace_mixed_pending_link_badge_uses_group_color(
     qtbot,
     tmp_path,

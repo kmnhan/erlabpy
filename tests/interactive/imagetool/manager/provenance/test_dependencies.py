@@ -40,6 +40,7 @@ from erlab.interactive.imagetool._provenance._operations import (
 )
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager import fetch, replace_data
+from erlab.interactive.imagetool.manager._dialogs import _RenameDialog
 from erlab.interactive.imagetool.manager._modelview import (
     _NODE_UID_ROLE,
     _ImageToolWrapperItemDelegate,
@@ -2252,6 +2253,7 @@ def test_manager_promote_action_enablement_and_menus(
 
 def test_manager_rename_action_enablement_for_child_selection(
     qtbot,
+    accept_dialog,
     test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -2276,6 +2278,16 @@ def test_manager_rename_action_enablement_for_child_selection(
             timeout=5000,
         )
         nested_uid = manager._child_node(child_uid)._childtool_indices[0]
+        child_tool.slicer_area.images[0].open_in_new_window()
+        qtbot.wait_until(
+            lambda: len(manager._child_node(child_uid)._childtool_indices) == 2,
+            timeout=5000,
+        )
+        nested_image_uid = next(
+            uid
+            for uid in manager._child_node(child_uid)._childtool_indices
+            if manager._is_imagetool_target(uid)
+        )
 
         manager.tree_view.clearSelection()
         select_child_tool(manager, child_uid)
@@ -2284,7 +2296,21 @@ def test_manager_rename_action_enablement_for_child_selection(
 
         select_tools(manager, [0])
         manager._update_actions()
-        assert not manager.rename_action.isEnabled()
+        assert manager.rename_action.isEnabled()
+
+        root_uid = parent.uid
+
+        def _rename_mixed_targets(dialog: _RenameDialog) -> None:
+            assert set(dialog._new_name_lines) == {root_uid, child_uid}
+            dialog._new_name_lines[root_uid].setText("renamed_root")
+            dialog._new_name_lines[child_uid].setText("renamed_child")
+
+        accept_dialog(
+            manager.rename_action.trigger,
+            pre_call=_rename_mixed_targets,
+        )
+        assert parent.name == "renamed_root"
+        assert manager._child_node(child_uid).name == "renamed_child"
 
         manager.tree_view.clearSelection()
         select_child_tool(manager, nested_uid)
@@ -2317,6 +2343,67 @@ def test_manager_rename_action_enablement_for_child_selection(
         select_child_tool(manager, nested_uid)
         manager._update_actions()
         assert not manager.rename_action.isEnabled()
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        select_child_tool(manager, nested_image_uid)
+        manager._update_actions()
+        assert manager.rename_action.isEnabled()
+
+        child_name = manager._child_node(child_uid).name
+        nested_image_name = manager._child_node(nested_image_uid).name
+
+        def _prepare_cancelled_rename(dialog: _RenameDialog) -> None:
+            assert set(dialog._new_name_lines) == {child_uid, nested_image_uid}
+            dialog._new_name_lines[child_uid].setText("cancelled_child")
+            dialog._new_name_lines[nested_image_uid].setText("cancelled_nested")
+
+        accept_dialog(
+            manager.rename_action.trigger,
+            pre_call=_prepare_cancelled_rename,
+            accept_call=lambda dialog: dialog.reject(),
+        )
+        assert manager._child_node(child_uid).name == child_name
+        assert manager._child_node(nested_image_uid).name == nested_image_name
+
+        def _rename_nested_targets(dialog: _RenameDialog) -> None:
+            dialog._new_name_lines[child_uid].setText("renamed_child_again")
+            dialog._new_name_lines[nested_image_uid].setText("renamed_nested")
+
+        accept_dialog(
+            manager.rename_action.trigger,
+            pre_call=_rename_nested_targets,
+        )
+        assert manager._child_node(child_uid).name == "renamed_child_again"
+        assert manager._child_node(nested_image_uid).name == "renamed_nested"
+
+
+def test_manager_batch_rename_tracks_uids_across_root_reindex(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        itool([test_data, test_data.copy(deep=True)], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        first = manager._tool_graph.root_wrappers[0]
+        second = manager._tool_graph.root_wrappers[1]
+        dialog = _RenameDialog(manager)
+        qtbot.addWidget(dialog)
+        dialog.set_names([first.uid, second.uid], [first.name, second.name])
+        dialog._new_name_lines[first.uid].setText("removed")
+        dialog._new_name_lines[second.uid].setText("surviving")
+
+        manager.remove_imagetool(0)
+        manager.reindex()
+        dialog.accept()
+
+        assert manager._tool_graph.root_wrappers[0].uid == second.uid
+        assert manager._tool_graph.root_wrappers[0].name == "surviving"
 
 
 def test_manager_promote_selected_cancel_keeps_nested_imagetool(
