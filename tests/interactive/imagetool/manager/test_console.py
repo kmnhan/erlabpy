@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 import xarray as xr
 from IPython.core.interactiveshell import InteractiveShell
+from IPython.external.pickleshare import PickleShareDB
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
@@ -45,7 +46,7 @@ from erlab.interactive.imagetool._provenance._operations import (
 from erlab.interactive.imagetool.manager import fetch
 from erlab.interactive.imagetool.manager._console import ToolNamespace
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
-from erlab.interactive.imagetool.manager._dialogs import _ConcatDialog
+from erlab.interactive.imagetool.manager._dialogs import _ConcatDialog, _StoreDialog
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 
 from .helpers import (
@@ -80,6 +81,7 @@ def _record_reload_unavailable_dialog(monkeypatch: pytest.MonkeyPatch) -> list[s
 def test_manager_console(
     qtbot,
     accept_dialog,
+    tmp_path: pathlib.Path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -129,6 +131,7 @@ def test_manager_console(
             "lst = [1]\nalias = lst\nlst += [2]",
         )
         shell = manager.console._console_widget.kernel_manager.kernel.shell
+        shell.db = PickleShareDB(str(tmp_path / "ipython-store"))
         assert shell.user_ns["lst"] == [1, 2]
         assert shell.user_ns["alias"] is shell.user_ns["lst"]
 
@@ -146,7 +149,6 @@ def test_manager_console(
 
         # Test storing with ipython
         accept_dialog(manager.store_action.trigger)
-        manager.console._console_widget.execute(r"%store -d data_0 data_1")
 
         # Test setting data
         manager.console._console_widget.execute(
@@ -192,6 +194,158 @@ def test_manager_console(
         # Destroy console
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()
+
+
+def test_store_selected_supports_root_and_nested_child_imagetools(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    accept_dialog,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _StoreTreeTool(erlab.interactive.utils.ToolWindow):
+        tool_name = "dtool"
+
+    root_data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        name="signal",
+    )
+    child_data = (root_data + 10.0).rename("signal")
+
+    with manager_context() as manager:
+        manager.show()
+        root_tool = itool(root_data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_tool, show=False)
+        root_uid = manager._tool_graph.root_wrappers[0].uid
+
+        intermediate_uid = manager.add_childtool(_StoreTreeTool(), 0, show=False)
+        child_tool = itool(child_data, manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool, intermediate_uid, show=False
+        )
+
+        manager.tree_view.clearSelection()
+        manager._update_actions()
+        assert not manager.store_action.isEnabled()
+        initialize_calls: list[None] = []
+        with monkeypatch.context() as context:
+            context.setattr(
+                manager,
+                "ensure_console_initialized",
+                lambda: initialize_calls.append(None),
+            )
+            manager.store_selected()
+        assert initialize_calls == []
+
+        manager.ensure_console_initialized()
+        console_widget = manager.console._console_widget
+        console_widget.initialize_kernel()
+        shell = console_widget.kernel_manager.kernel.shell
+        shell.db = PickleShareDB(str(tmp_path / "ipython-store"))
+
+        select_child_tool(manager, child_uid)
+        manager._update_actions()
+        assert manager.store_action.isEnabled()
+
+        def _prepare_child_store(dialog: _StoreDialog) -> None:
+            assert dialog._target_uids == [child_uid]
+            assert dialog._var_name_lines[0].text() == "signal"
+            dialog._var_name_lines[0].setText("stored_nested_child")
+
+        accept_dialog(
+            manager.store_action.trigger,
+            pre_call=_prepare_child_store,
+        )
+        assert "stored_nested_child" not in shell.user_ns
+        console_widget.execute("%store -r stored_nested_child", hidden=True)
+        xr.testing.assert_identical(shell.user_ns["stored_nested_child"], child_data)
+
+        executed: list[str | None] = []
+        with monkeypatch.context() as context:
+            context.setattr(
+                console_widget,
+                "execute",
+                lambda source=None, **_kwargs: executed.append(source),
+            )
+            console_widget.store_data_as("missing", "missing_data")
+            console_widget.store_data_as(intermediate_uid, "tool_data")
+        assert executed == []
+
+        with pytest.raises(TypeError, match="not an ImageTool"):
+            _StoreDialog(manager, [intermediate_uid])
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [0])
+        select_child_tool(manager, child_uid)
+        manager._update_actions()
+        assert manager.store_action.isEnabled()
+
+        stored_names = {
+            root_uid: "stored_root",
+            child_uid: "stored_nested_child_mixed",
+        }
+
+        def _prepare_mixed_store(dialog: _StoreDialog) -> None:
+            assert dialog._target_uids == [root_uid, child_uid]
+            assert [line.text() for line in dialog._var_name_lines] == [
+                "signal",
+                "data_0_0_0",
+            ]
+            ok_button = dialog._button_box.button(
+                QtWidgets.QDialogButtonBox.StandardButton.Ok
+            )
+            assert ok_button is not None
+            dialog._var_name_lines[0].setText("duplicate_name")
+            dialog._var_name_lines[1].setText("duplicate_name")
+            assert not ok_button.isEnabled()
+            for uid, line in zip(
+                dialog._target_uids, dialog._var_name_lines, strict=True
+            ):
+                line.setText(stored_names[uid])
+            assert ok_button.isEnabled()
+
+        accept_dialog(
+            manager.store_action.trigger,
+            pre_call=_prepare_mixed_store,
+        )
+        console_widget.execute(
+            "%store -r stored_root stored_nested_child_mixed", hidden=True
+        )
+        xr.testing.assert_identical(shell.user_ns["stored_root"], root_data)
+        xr.testing.assert_identical(
+            shell.user_ns["stored_nested_child_mixed"], child_data
+        )
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_actions()
+        store_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            console_widget,
+            "store_data_as",
+            lambda uid, name: store_calls.append((uid, name)),
+        )
+
+        invalid_dialog = _StoreDialog(manager, [0, child_uid])
+        qtbot.addWidget(invalid_dialog)
+        for line in invalid_dialog._var_name_lines:
+            line.setText("duplicate_name")
+        invalid_dialog.accept()
+        assert store_calls == []
+
+        accept_dialog(
+            manager.store_action.trigger,
+            pre_call=lambda dialog: dialog._var_name_lines[0].setText(
+                "cancelled_store"
+            ),
+            accept_call=lambda dialog: dialog.reject(),
+        )
+        assert store_calls == []
 
 
 def test_manager_console_show_event_defers_kernel_initialization(

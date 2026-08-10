@@ -2142,11 +2142,22 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
             self.initialize_kernel()
         super().execute(source, hidden=hidden, interactive=interactive)
 
-    def store_data_as(self, tool_index: int, name: str) -> None:
+    def store_data_as(self, node_uid: str, name: str) -> None:
         """Store the data in an ImageTool with IPython to reuse in other scripts."""
         self.initialize_kernel()
+        tools = self._tools_namespace
+        if tools is None:  # pragma: no cover - manager consoles always inject tools
+            return
+        node = tools._manager._tool_graph.nodes.get(node_uid)
+        if node is None or not node.is_imagetool:
+            return
+        path = tools._node_path(node)
+        if not path:  # pragma: no cover - registered nodes always have tree paths
+            return
+        tool_expression = f"tools[{path[0]}]"
+        tool_expression += "".join(f".children[{child_row}]" for child_row in path[1:])
         store_commands = (
-            f"{name} = tools[{tool_index}].data",
+            f"{name} = {tool_expression}.data",
             f"get_ipython().run_line_magic('store', '{name}')",
             f"del {name}",
         )

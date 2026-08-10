@@ -583,7 +583,7 @@ class _RenameDialog(QtWidgets.QDialog):
 
         self._layout = QtWidgets.QGridLayout(self)
 
-        self._new_name_lines: dict[int, QtWidgets.QLineEdit] = {}
+        self._new_name_lines: dict[str, QtWidgets.QLineEdit] = {}
 
         # Persistent button box; we re-add it when (re)building rows
         self._button_box = QtWidgets.QDialogButtonBox(
@@ -594,7 +594,7 @@ class _RenameDialog(QtWidgets.QDialog):
         self._button_box.accepted.connect(self.accept)
         self._button_box.rejected.connect(self.reject)
 
-    def set_names(self, indices: list[int], original_names: list[str]) -> None:
+    def set_names(self, target_uids: list[str], original_names: list[str]) -> None:
         # Clear current rows but keep the button box object
         while self._layout.count():
             item = self._layout.takeAt(0)
@@ -608,8 +608,19 @@ class _RenameDialog(QtWidgets.QDialog):
             v.deleteLater()
 
         # Rebuild rows
-        for i, (tool_idx, name) in enumerate(zip(indices, original_names, strict=True)):
-            lbl_from = QtWidgets.QLabel(f"{tool_idx}: {name}")
+        manager = self._manager()
+        if manager is None:  # pragma: no cover - dialog cannot outlive its parent
+            return
+
+        for i, (uid, name) in enumerate(zip(target_uids, original_names, strict=True)):
+            node = manager._node_for_target(uid)
+            path = manager._tool_graph.node_path(node)
+            display_index = (
+                ".".join(str(index) for index in path)
+                if path is not None
+                else node.uid[:8]
+            )
+            lbl_from = QtWidgets.QLabel(f"{display_index}: {name}")
             lbl_arrow = QtWidgets.QLabel("→")
             line_new = QtWidgets.QLineEdit(name)
             line_new.setPlaceholderText("New name")
@@ -617,7 +628,7 @@ class _RenameDialog(QtWidgets.QDialog):
             self._layout.addWidget(lbl_from, i, 0)
             self._layout.addWidget(lbl_arrow, i, 1)
             self._layout.addWidget(line_new, i, 2)
-            self._new_name_lines[tool_idx] = line_new
+            self._new_name_lines[uid] = line_new
 
         # Resize inputs to longest current text
         if self._new_name_lines:  # pragma: no branch
@@ -632,66 +643,107 @@ class _RenameDialog(QtWidgets.QDialog):
         # Re-add button box at the last row
         self._layout.addWidget(self._button_box, len(original_names), 0, 1, 3)
 
-    def new_names(self) -> list[tuple[int, str]]:
-        return [(idx, w.text()) for idx, w in self._new_name_lines.items()]
+    def new_names(self) -> list[tuple[str, str]]:
+        return [(uid, line.text()) for uid, line in self._new_name_lines.items()]
 
     def accept(self) -> None:
         manager = self._manager()
         if manager is not None:  # pragma: no branch
-            for index, new_name in self.new_names():
-                manager.rename_imagetool(index, new_name)
+            model = manager.tree_view._model
+            for uid, new_name in self.new_names():
+                index = model._row_index(uid)
+                if index.isValid():
+                    model.setData(index, new_name)
         super().accept()
 
 
 class _StoreDialog(QtWidgets.QDialog):
-    def __init__(self, manager: ImageToolManager, target_indices: list[int]) -> None:
+    def __init__(self, manager: ImageToolManager, targets: list[int | str]) -> None:
         super().__init__(manager)
         self.setWindowTitle("Store with IPython")
         self._manager = weakref.ref(manager)
-        self._target_indices: list[int] = target_indices
+        self._target_uids: list[str] = []
 
         self._layout = QtWidgets.QFormLayout()
         self.setLayout(self._layout)
 
         self._var_name_lines: list[QtWidgets.QLineEdit] = []
+        used_names: set[str] = set()
 
         self._layout.addRow("Data to store", QtWidgets.QLabel("Stored name"))
 
-        for tool_idx in target_indices:
-            data = manager.get_imagetool(tool_idx).slicer_area.displayed_data
-            wrapper = manager._tool_graph.root_wrappers[tool_idx]
-            default_name = data.name
-            if not erlab.utils.misc._is_valid_identifier(default_name):
-                if erlab.utils.misc._is_valid_identifier(wrapper.name):
-                    default_name = wrapper.name
-                else:
-                    default_name = f"data_{tool_idx}"
+        for target in targets:
+            node = manager._node_for_target(target)
+            if not node.is_imagetool:
+                raise TypeError(f"Target {target!r} is not an ImageTool")
+            data = manager.get_imagetool(target).slicer_area.displayed_data
+            self._target_uids.append(node.uid)
+            path = manager._tool_graph.node_path(node)
+            if path is None:  # pragma: no cover - registered targets have paths
+                uid_name = "".join(char if char.isalnum() else "_" for char in node.uid)
+                path_name = f"data_{uid_name[:8]}"
+            else:
+                path_name = "data_" + "_".join(str(index) for index in path)
+
+            if erlab.utils.misc._is_valid_identifier(data.name):
+                default_name = str(data.name)
+            elif erlab.utils.misc._is_valid_identifier(node.name):
+                default_name = node.name
+            else:
+                default_name = path_name
+
+            if default_name in used_names:
+                default_name = path_name
+            name_stem = default_name
+            suffix = 2
+            while default_name in used_names:
+                default_name = f"{name_stem}_{suffix}"
+                suffix += 1
+            used_names.add(default_name)
 
             line_new = QtWidgets.QLineEdit(str(default_name))
             line_new.setPlaceholderText("Enter variable name")
             line_new.setValidator(erlab.interactive.utils.IdentifierValidator())
-            self._layout.addRow(wrapper.label_text, line_new)
+            self._layout.addRow(node.display_text, line_new)
             self._var_name_lines.append(line_new)
 
-        button_box = QtWidgets.QDialogButtonBox(
+        self._button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
             | QtWidgets.QDialogButtonBox.StandardButton.Cancel
         )
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-        self._layout.addRow(button_box)
+        self._button_box.accepted.connect(self.accept)
+        self._button_box.rejected.connect(self.reject)
+        self._layout.addRow(self._button_box)
+        for line in self._var_name_lines:
+            line.textChanged.connect(self._update_accept_enabled)
+        self._update_accept_enabled()
 
-    def var_name_map(self) -> dict[int, str]:
+    def var_name_map(self) -> dict[str, str]:
         return {
-            idx: w.text()
-            for idx, w in zip(self._target_indices, self._var_name_lines, strict=True)
+            uid: line.text()
+            for uid, line in zip(self._target_uids, self._var_name_lines, strict=True)
         }
 
+    def _store_names_are_valid(self) -> bool:
+        names = [line.text() for line in self._var_name_lines]
+        return (
+            bool(names)
+            and all(line.hasAcceptableInput() for line in self._var_name_lines)
+            and len(names) == len(set(names))
+        )
+
+    def _update_accept_enabled(self, *_args: object) -> None:
+        button = self._button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        if button is not None:  # pragma: no branch - the dialog always has this button
+            button.setEnabled(self._store_names_are_valid())
+
     def accept(self) -> None:
+        if not self._store_names_are_valid():
+            return
         manager = self._manager()
         if manager is not None:
-            for idx, var_name in self.var_name_map().items():
-                manager.console._console_widget.store_data_as(idx, var_name)
+            for uid, var_name in self.var_name_map().items():
+                manager.console._console_widget.store_data_as(uid, var_name)
         super().accept()
 
 

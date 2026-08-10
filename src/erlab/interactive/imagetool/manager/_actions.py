@@ -95,16 +95,16 @@ class _ActionsController:
             )
             return
 
-        if selected_tools or any(
-            not isinstance(target, int) for target in selected_images
-        ):
+        if selected_tools:
             return
 
+        selected_nodes = [
+            self._manager._node_for_target(target) for target in selected_images
+        ]
         dlg = self._rename_dialog
-        root_selected = typing.cast("list[int]", selected_images)
         dlg.set_names(
-            root_selected,
-            [self._manager._tool_graph.root_wrappers[i].name for i in root_selected],
+            [node.uid for node in selected_nodes],
+            [node.name for node in selected_nodes],
         )
         dlg.open()
 
@@ -850,15 +850,11 @@ class _ActionsController:
         return True
 
     def store_selected(self) -> None:
+        targets = self._manager._selected_imagetool_targets()
+        if not targets:
+            return
         self._manager.ensure_console_initialized()
-        dialog = _StoreDialog(
-            self._manager,
-            [
-                target
-                for target in self._manager._selected_imagetool_targets()
-                if isinstance(target, int)
-            ],
-        )
+        dialog = _StoreDialog(self._manager, targets)
         dialog.exec()
 
     def unwatch_selected(self) -> None:

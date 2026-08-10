@@ -5508,10 +5508,13 @@ def test_manager(
 
         # Batch renaming
         select_tools(manager, [1, 2])
+        selected_uids = {
+            index: manager._tool_graph.root_wrappers[index].uid for index in (1, 2)
+        }
 
         def _handle_renaming(dialog: _RenameDialog):
-            dialog._new_name_lines[1].setText("new_name_1")
-            dialog._new_name_lines[2].setText("new_name_2")
+            dialog._new_name_lines[selected_uids[1]].setText("new_name_1")
+            dialog._new_name_lines[selected_uids[2]].setText("new_name_2")
 
         accept_dialog(manager.rename_action.trigger, pre_call=_handle_renaming)
         assert manager._tool_graph.root_wrappers[1].name == "new_name_1"
