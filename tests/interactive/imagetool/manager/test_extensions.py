@@ -1217,6 +1217,47 @@ def test_unused_script_can_be_embedded_explicitly(
     assert kind == "extension-python-source-v1"
 
 
+def test_verified_catalog_source_replaces_corrupt_embedded_source(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "catalog_source.py"
+    source = _script(script_path)
+    workspace_path = tmp_path / "verified-source.itws"
+
+    with manager_context() as manager:
+        catalog, revision, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        catalog = _validate_and_enable(
+            manager._extensions.catalog.store,
+            "catalog_source",
+            expected_record_generation=(
+                catalog.extensions["catalog_source"].record_generation
+            ),
+        )
+        manager._extensions.catalog.store.update_record(
+            "catalog_source",
+            expected_record_generation=(
+                catalog.extensions["catalog_source"].record_generation
+            ),
+            embed_policy="always",
+        )
+        manager._extensions.catalog.refresh()
+        manager._extensions.set_workspace_requirements(
+            (), embedded_sources={("catalog_source", revision): b"corrupt"}
+        )
+
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+
+    attrs = workspace_arrays._read_workspace_root_attrs_h5py(workspace_path)
+    manifest = workspace_format._workspace_manifest_from_attrs(attrs)
+    object_id = manifest["extension_requirements"][0]["embedded_object_id"]
+    restored, kind = workspace_storage._read_workspace_blob(workspace_path, object_id)
+    assert restored == source
+    assert kind == "extension-python-source-v1"
+
+
 def test_missing_catalog_source_does_not_create_dangling_embedded_object(
     manager_context,
     tmp_path: pathlib.Path,
@@ -2278,6 +2319,10 @@ def test_workspace_import_preserves_unavailable_embedded_source(
             associate=False,
             mark_dirty=True,
             select=False,
+        )
+        assert (
+            manager._extensions.revision_source_bytes("imported-lab", revision)
+            == source
         )
         manager._workspace_controller.saving._save_workspace_document(saved_path)
 

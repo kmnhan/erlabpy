@@ -58,6 +58,10 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 
+class _ExtensionSourceHashMismatchError(FileNotFoundError):
+    """Report that available script bytes do not match the requested revision."""
+
+
 class _ExtensionController(QtCore.QObject):
     """Own catalog UI, revision approval, and execution for one manager.
 
@@ -994,16 +998,34 @@ class _ExtensionController(QtCore.QObject):
         return f"extension-{revision_hash}"
 
     def revision_source_bytes(self, extension_id: str, revision: str) -> bytes:
-        """Return exact catalog or unresolved workspace bytes for embedding."""
-        source = self._workspace_embedded_sources.get((extension_id, revision))
-        if source is not None:
-            return source
-        source = self.catalog.store.source_path(extension_id, revision).read_bytes()
-        if hashlib.sha256(source).hexdigest() != revision:
-            raise FileNotFoundError(
-                f"No verified source is available for {extension_id}:{revision}"
+        """Return verified workspace or catalog bytes for an exact revision."""
+        return self._verified_revision_source(extension_id, revision)
+
+    def _verified_revision_source(
+        self,
+        extension_id: str,
+        revision: str,
+        *,
+        include_catalog: bool = True,
+    ) -> bytes:
+        """Select the first source whose bytes match the requested revision."""
+        candidates: list[bytes] = []
+        embedded = self._workspace_embedded_sources.get((extension_id, revision))
+        if embedded is not None:
+            candidates.append(embedded)
+        if include_catalog:
+            with contextlib.suppress(KeyError, OSError):
+                candidates.append(
+                    self.catalog.store.source_path(extension_id, revision).read_bytes()
+                )
+        for source in candidates:
+            if hashlib.sha256(source).hexdigest() == revision:
+                return source
+        if candidates:
+            raise _ExtensionSourceHashMismatchError(
+                f"Available source does not match {extension_id}:{revision}"
             )
-        return source
+        raise FileNotFoundError(f"No source is available for {extension_id}:{revision}")
 
     def set_workspace_requirements(
         self,
@@ -1110,30 +1132,38 @@ class _ExtensionController(QtCore.QObject):
                 detail="The catalog extension uses a different source type",
             )
         if record is None or record.removed:
-            embedded = self._workspace_embedded_sources.get(
-                (requirement.extension_id, requirement.revision_hash)
-            )
-            if embedded is None:
-                return _ResolvedWorkspaceRequirement(
-                    requirement=requirement, state="missing"
+            try:
+                self._verified_revision_source(
+                    requirement.extension_id,
+                    requirement.revision_hash,
+                    include_catalog=False,
                 )
-            if hashlib.sha256(embedded).hexdigest() != requirement.revision_hash:
+            except _ExtensionSourceHashMismatchError:
                 return _ResolvedWorkspaceRequirement(
                     requirement=requirement, state="hash-mismatch"
+                )
+            except FileNotFoundError:
+                return _ResolvedWorkspaceRequirement(
+                    requirement=requirement, state="missing"
                 )
             return _ResolvedWorkspaceRequirement(
                 requirement=requirement, state="approval-required"
             )
         revision = record.revisions.get(requirement.revision_hash)
         if revision is None:
-            embedded = self._workspace_embedded_sources.get(
-                (requirement.extension_id, requirement.revision_hash)
-            )
-            if embedded is not None:
-                if hashlib.sha256(embedded).hexdigest() != requirement.revision_hash:
-                    return _ResolvedWorkspaceRequirement(
-                        requirement=requirement, state="hash-mismatch"
-                    )
+            try:
+                self._verified_revision_source(
+                    requirement.extension_id,
+                    requirement.revision_hash,
+                    include_catalog=False,
+                )
+            except _ExtensionSourceHashMismatchError:
+                return _ResolvedWorkspaceRequirement(
+                    requirement=requirement, state="hash-mismatch"
+                )
+            except FileNotFoundError:
+                pass
+            else:
                 return _ResolvedWorkspaceRequirement(
                     requirement=requirement, state="approval-required"
                 )
@@ -1144,20 +1174,18 @@ class _ExtensionController(QtCore.QObject):
             )
         if record.source_type == "script":
             try:
-                source = self.catalog.store.source_path(
-                    record.id, requirement.revision_hash
-                ).read_bytes()
-            except OSError:
-                return _ResolvedWorkspaceRequirement(
-                    requirement=requirement,
-                    state="missing",
-                    detail="The stored revision source is unavailable",
-                )
-            if hashlib.sha256(source).hexdigest() != requirement.revision_hash:
+                self._verified_revision_source(record.id, requirement.revision_hash)
+            except _ExtensionSourceHashMismatchError:
                 return _ResolvedWorkspaceRequirement(
                     requirement=requirement,
                     state="hash-mismatch",
                     detail="The stored revision source hash does not match",
+                )
+            except FileNotFoundError:
+                return _ResolvedWorkspaceRequirement(
+                    requirement=requirement,
+                    state="missing",
+                    detail="The stored revision source is unavailable",
                 )
         else:
             try:
