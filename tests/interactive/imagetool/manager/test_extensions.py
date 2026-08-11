@@ -939,39 +939,112 @@ def test_environment_loader_preserves_file_dialog_contract(
         assert loaded_call.revision == record.current_revision
 
 
-def test_editable_source_fingerprint_tracks_src_layout(
+def test_editable_source_fingerprint_tracks_custom_layout_and_sibling_modules(
     tmp_path: pathlib.Path,
 ) -> None:
-    source = tmp_path / "src" / "lab_package" / "plugin.py"
+    source = tmp_path / "python" / "packages" / "lab_package" / "plugin.py"
     source.parent.mkdir(parents=True)
     source.write_text("VALUE = 1\n")
-    helper = source.with_name("helper.py")
+    helper = tmp_path / "python" / "packages" / "shared" / "helper.py"
+    helper.parent.mkdir(parents=True)
     helper.write_text("HELPER = 1\n")
-
-    class _EntryPoint:
-        value = "lab_package.plugin:extension"
 
     direct_url = {
         "url": tmp_path.as_uri(),
         "dir_info": {"editable": True},
     }
-    first = _ExtensionCatalogStore._editable_source_fingerprint(
-        typing.cast("typing.Any", _EntryPoint()), direct_url
-    )
+    first = _ExtensionCatalogStore._editable_source_fingerprint(direct_url)
     source.write_text("VALUE = 2\n")
-    second = _ExtensionCatalogStore._editable_source_fingerprint(
-        typing.cast("typing.Any", _EntryPoint()), direct_url
-    )
+    second = _ExtensionCatalogStore._editable_source_fingerprint(direct_url)
     helper.write_text("HELPER = 2\n")
-    third = _ExtensionCatalogStore._editable_source_fingerprint(
-        typing.cast("typing.Any", _EntryPoint()), direct_url
-    )
+    third = _ExtensionCatalogStore._editable_source_fingerprint(direct_url)
 
-    assert first is not None
     assert second is not None
     assert first != second
-    assert third is not None
     assert second != third
+
+
+def test_editable_source_fingerprint_rejects_unknown_source(
+    tmp_path: pathlib.Path,
+) -> None:
+    direct_url = {
+        "url": tmp_path.as_uri(),
+        "dir_info": {"editable": True},
+    }
+
+    with pytest.raises(
+        extension_catalog._ExtensionCatalogError,
+        match="no fingerprintable source",
+    ):
+        _ExtensionCatalogStore._editable_source_fingerprint(direct_url)
+
+
+def test_editable_package_source_change_creates_unapproved_revision(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source = tmp_path / "custom" / "lab_package" / "plugin.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 1\n")
+    helper = tmp_path / "custom" / "shared" / "helper.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("HELPER = 1\n")
+
+    @erlab.extensions.routine()
+    def extension(data: xr.DataArray) -> xr.DataArray:
+        return data
+
+    class _Distribution:
+        metadata: typing.ClassVar[dict[str, str]] = {"Name": "lab-package"}
+        version = "1"
+
+        @staticmethod
+        def read_text(name: str) -> str | None:
+            if name != "direct_url.json":
+                return None
+            return json.dumps(
+                {
+                    "url": tmp_path.as_uri(),
+                    "dir_info": {"editable": True},
+                }
+            )
+
+    class _EntryPoint:
+        group = "erlab.extensions"
+        name = "editable"
+        value = "lab_package.plugin:extension"
+        dist = _Distribution()
+
+        @staticmethod
+        def load():
+            return extension
+
+    class _EntryPoints(tuple):
+        def select(self, *, group: str):
+            return tuple(entry for entry in self if entry.group == group)
+
+    monkeypatch.setattr(
+        extension_catalog.importlib.metadata,
+        "entry_points",
+        lambda: _EntryPoints((_EntryPoint(),)),
+    )
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    catalog = store.refresh_environment_packages()
+    extension_id = "environment.erlab.extensions.editable"
+    catalog = _validate_and_enable(
+        store,
+        extension_id,
+        expected_record_generation=catalog.extensions[extension_id].record_generation,
+    )
+    approved_revision = catalog.extensions[extension_id].current_revision
+
+    helper.write_text("HELPER = 2\n")
+    catalog = store.refresh_environment_packages()
+
+    record = catalog.extensions[extension_id]
+    assert record.current_revision != approved_revision
+    assert not record.enabled
+    assert not record.revisions[record.current_revision].approved
 
 
 def test_environment_refresh_does_not_restore_a_removed_extension(
