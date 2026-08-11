@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections.abc
 import contextlib
+import copy
 import dataclasses
 import hashlib
 import importlib.metadata
@@ -589,7 +590,7 @@ def _copied_xindexes(data: xr.DataArray) -> dict[typing.Hashable, xr.Index]:
 
 
 def _readonly_array(data: xr.DataArray) -> xr.DataArray:
-    """Return a shallow xarray copy backed by read-only NumPy views."""
+    """Return an isolated xarray wrapper backed by read-only NumPy views."""
     values = data.data
     if isinstance(values, np.ndarray):
         values = values.view()
@@ -603,19 +604,19 @@ def _readonly_array(data: xr.DataArray) -> xr.DataArray:
         coordinates[name] = xr.Variable(
             coordinate.dims,
             coordinate_data,
-            attrs=dict(coordinate.attrs),
-            encoding=dict(coordinate.encoding),
+            attrs=copy.deepcopy(coordinate.attrs),
+            encoding=copy.deepcopy(coordinate.encoding),
         )
     result = xr.DataArray(
         xr.Variable(
             data.dims,
             values,
-            attrs=dict(data.attrs),
-            encoding=dict(data.encoding),
+            attrs=copy.deepcopy(data.attrs),
         ),
         coords=xr.Coordinates(coordinates, indexes=_copied_xindexes(data)),
         name=data.name,
     )
+    result.encoding = copy.deepcopy(data.encoding)
     for coordinate in result.coords.values():
         if isinstance(coordinate.data, np.ndarray):
             coordinate.data.flags.writeable = False
@@ -658,16 +659,17 @@ def _detached_routine_output(
         )
     if not data_changed and not coordinates_changed:
         return output
-    return xr.DataArray(
+    result = xr.DataArray(
         xr.Variable(
             output.dims,
             values,
             attrs=dict(output.attrs),
-            encoding=dict(output.encoding),
         ),
         coords=xr.Coordinates(coordinates, indexes=_copied_xindexes(output)),
         name=output.name,
     )
+    result.encoding = dict(output.encoding)
+    return result
 
 
 def _require_loader_source(call: _ExtensionLoaderCall) -> pathlib.Path:

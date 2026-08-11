@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import typing
 
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtWidgets
 
 from erlab.extensions import (
     LoaderDescriptor,
@@ -160,29 +160,14 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
             editor.setChecked(bool(value))
             return editor
         if parameter.kind is ParameterKind.INTEGER:
-            if parameter.optional:
-                editor = QtWidgets.QLineEdit(self)
-                editor.setValidator(QtGui.QIntValidator(editor))
-                if value is not None:
-                    editor.setText(str(value))
-                return editor
-            editor = QtWidgets.QSpinBox(self)
-            editor.setRange(-(2**31), 2**31 - 1)
+            editor = QtWidgets.QLineEdit(self)
             if value is not None:
-                editor.setValue(int(value))
+                editor.setText(str(value))
             return editor
         if parameter.kind is ParameterKind.NUMBER:
-            if parameter.optional:
-                editor = QtWidgets.QLineEdit(self)
-                editor.setValidator(QtGui.QDoubleValidator(editor))
-                if value is not None:
-                    editor.setText(str(value))
-                return editor
-            editor = QtWidgets.QDoubleSpinBox(self)
-            editor.setRange(-1.0e300, 1.0e300)
-            editor.setDecimals(12)
+            editor = QtWidgets.QLineEdit(self)
             if value is not None:
-                editor.setValue(float(value))
+                editor.setText(str(value))
             return editor
         if parameter.kind in {ParameterKind.LITERAL, ParameterKind.ENUM}:
             editor = QtWidgets.QComboBox(self)

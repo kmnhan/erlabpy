@@ -205,6 +205,37 @@ def test_parameter_dialog_uses_initial_values(qtbot) -> None:
     assert dialog.parameters == {"scale": 3.5, "label": ""}
 
 
+def test_parameter_dialog_preserves_python_numeric_values(qtbot) -> None:
+    descriptor = erlab.extensions.RoutineDescriptor(
+        id="numeric-values",
+        name="Numeric values",
+        category="Lab",
+        summary="",
+        function_name="numeric_values",
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="large_integer",
+                kind=erlab.extensions.ParameterKind.INTEGER,
+                required=False,
+                default=10**12,
+            ),
+            erlab.extensions.ParameterDescriptor(
+                id="small_number",
+                kind=erlab.extensions.ParameterKind.NUMBER,
+                required=False,
+                default=1e-15,
+            ),
+        ),
+    )
+    dialog = _ExtensionParameterDialog(descriptor, None)
+    qtbot.addWidget(dialog)
+
+    assert dialog.parameters == {
+        "large_integer": 10**12,
+        "small_number": 1e-15,
+    }
+
+
 def test_manager_extension_loader_dialog_uses_recent_values(monkeypatch) -> None:
     descriptor = erlab.extensions.LoaderDescriptor(
         id="configured-loader",
@@ -4128,6 +4159,28 @@ def test_readonly_routine_view_does_not_lock_the_original() -> None:
     assert not readonly.coords["x"].values.flags.writeable
     with pytest.raises(ValueError, match="read-only"):
         readonly.values[0] = 10.0
+
+
+def test_readonly_routine_view_isolates_nested_metadata() -> None:
+    source = xr.DataArray(
+        np.arange(3.0),
+        dims="x",
+        coords={"x": xr.Variable("x", np.arange(3.0), attrs={"nested": [1]})},
+        attrs={"nested": {"value": 1}},
+    )
+    source.encoding["nested"] = {"value": 2}
+    source.coords["x"].encoding["nested"] = {"value": 3}
+
+    readonly = _readonly_array(source)
+    readonly.attrs["nested"]["value"] = 10
+    readonly.encoding["nested"]["value"] = 20
+    readonly.coords["x"].attrs["nested"].append(2)
+    readonly.coords["x"].encoding["nested"]["value"] = 30
+
+    assert source.attrs["nested"] == {"value": 1}
+    assert source.encoding["nested"] == {"value": 2}
+    assert source.coords["x"].attrs["nested"] == [1]
+    assert source.coords["x"].encoding["nested"] == {"value": 3}
 
 
 def test_routine_buffer_protection_preserves_xarray_indexes() -> None:
