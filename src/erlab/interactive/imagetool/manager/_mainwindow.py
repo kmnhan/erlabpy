@@ -22,6 +22,9 @@ from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
+from erlab.interactive.imagetool.manager._extensions._controller import (
+    _ExtensionController,
+)
 from erlab.interactive.imagetool.manager._figurecomposer._collection import (
     _FigureCollectionController,
 )
@@ -297,6 +300,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._interaction_gate = _ManagerInteractionGate(self)
         self._interaction_gate.register_window(self)
         self._workspace_controller = _WorkspaceController(self)
+        self._extensions = _ExtensionController(self)
         self._acquisition_context = _AcquisitionContextController(self)
         self._metadata_editor = _MetadataEditorController(self)
         self._details_refresh_queue = _ManagerDetailsRefreshQueue(
@@ -723,6 +727,8 @@ class ImageToolManager(_ImageToolManagerBase):
         self._apps_menu_action = self.apps_menu.menuAction()
         self.apps_menu.setObjectName("manager_apps_menu")
         self.apps_menu.addAction(self.ptable_action)
+
+        self.extensions_menu = self._extensions.create_menu(self.menu_bar)
 
         self._dask_menu = DaskMenu(self, "Dask")
         self.menu_bar.addMenu(self._dask_menu)
@@ -1155,6 +1161,9 @@ class ImageToolManager(_ImageToolManagerBase):
                         event.ignore()
                     self._sigCloseResolved.emit(False)
                     return
+
+            logger.debug("Waiting for extension code to finish...")
+            self._extensions.close()
 
             logger.debug("Stopping servers...")
             self._registry_heartbeat_timer.stop()

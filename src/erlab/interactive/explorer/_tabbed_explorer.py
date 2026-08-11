@@ -52,6 +52,8 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
     def __init__(self, parent: QtWidgets.QWidget | None = None, **kwargs) -> None:
         super().__init__(parent=parent)
         self._workspace_state_restoring = False
+        self._external_loaders = kwargs.pop("external_loaders", None)
+        self._excluded_loaders = kwargs.pop("excluded_loaders", None)
         self._setup_actions()
         self._setup_ui(**kwargs)
 
@@ -177,6 +179,13 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
                     kwargs_by_name=kwargs_by_name,
                     extensions_by_name=extensions_by_name,
                 )
+
+    def refresh_loader_choices(self) -> None:
+        """Refresh loaders in all tabs after a manager catalog change."""
+        for index in range(self.tab_widget.count()):
+            explorer = self.get_explorer(index)
+            if explorer is not None:
+                explorer.refresh_loader_choices()
 
     @QtCore.Slot(object, object)
     def _apply_loader_state_from_tab(
@@ -317,6 +326,8 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
             # Take current tab's directory and loader name as defaults
             kwargs.setdefault("root_path", self.current_explorer.current_directory)
             kwargs.setdefault("loader_name", self.current_explorer.loader_name)
+        kwargs.setdefault("external_loaders", self._external_loaders)
+        kwargs.setdefault("excluded_loaders", self._excluded_loaders)
 
         loader_kwargs = self.loader_kwargs_by_name()
         loader_extensions = self.loader_extensions_by_name()

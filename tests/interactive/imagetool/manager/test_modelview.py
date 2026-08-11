@@ -3756,6 +3756,7 @@ def test_open_multiple_files_preselects_default_loader_filter(
         _recent_loader_kwargs_by_filter={},
         _recent_loader_extensions_by_filter={},
         _recent_name_filter=None,
+        _available_file_loaders=lambda _paths=None: valid_loaders,
         _shared_loader_state=lambda: ({}, {}),
         effective_interactive_options=erlab.interactive.options.model,
     )
@@ -3826,6 +3827,9 @@ def test_manager_open_preselects_default_loader_filter(
 
         def _recent_or_default_directory(self) -> str | None:
             return self._recent_directory or default_directory
+
+        def _available_file_loaders(self, paths=None):
+            return erlab.interactive.utils.file_loaders(paths)
 
     manager = _FakeManager()
     manager._preferred_name_filter = types.MethodType(
@@ -4238,6 +4242,9 @@ def test_manager_open_loader_selection_branches(
         def _recent_or_default_directory(self) -> str | None:
             return self._recent_directory
 
+        def _available_file_loaders(self, paths=None):
+            return erlab.interactive.utils.file_loaders(paths)
+
     manager = _FakeManager()
     manager._preferred_name_filter = types.MethodType(
         ImageToolManager._preferred_name_filter, manager
@@ -4325,6 +4332,7 @@ def test_open_multiple_files_loader_selection_branches(
 
     manager = types.SimpleNamespace(
         _recent_name_filter=None,
+        _available_file_loaders=lambda _paths=None: valid_loaders,
         _select_loader_options=_select_loader_options,
     )
     ingress = manager_io._DataIngressController(manager)

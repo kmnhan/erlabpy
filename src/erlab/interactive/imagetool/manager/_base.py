@@ -38,6 +38,9 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._details_panel import (
         _DetailsPanelController,
     )
+    from erlab.interactive.imagetool.manager._extensions._controller import (
+        _ExtensionController,
+    )
     from erlab.interactive.imagetool.manager._figurecomposer._collection import (
         _FigureCollectionController,
     )
@@ -198,6 +201,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _file_handlers: set[_MultiFileHandler]
     _figure_collection: _FigureCollectionController
     _figure_workflows: _FigureComposerWorkflowController
+    _extensions: _ExtensionController
     _ignored_warning_messages: set[str]
     _kb_filter: erlab.interactive.utils.KeyboardEventFilter
     _link_registry: _ManagerLinkRegistry
@@ -321,6 +325,27 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         if default_directory:
             return os.path.expanduser(default_directory)
         return None
+
+    def _available_file_loaders(
+        self,
+        paths: str | os.PathLike[str] | Iterable[str | os.PathLike[str]] | None = None,
+    ) -> dict[str, tuple[Callable, dict[str, typing.Any]]]:
+        path_values = (
+            None
+            if paths is None
+            else (paths,)
+            if isinstance(paths, (str, os.PathLike))
+            else tuple(paths)
+        )
+        managed_names = self._extensions.environment_loader_names
+        builtins = {
+            name_filter: entry
+            for name_filter, entry in erlab.interactive.utils.file_loaders(
+                path_values
+            ).items()
+            if _loader_name_for_callable(entry[0]) not in managed_names
+        }
+        return builtins | self._extensions.file_loaders(path_values)
 
     def _node_for_target(
         self, target: int | str
@@ -476,6 +501,8 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         explorer = _TabbedExplorer(
             root_path=self._recent_or_default_directory(),
             loader_name=loader_name,
+            external_loaders=self._extensions.explorer_loaders,
+            excluded_loaders=self._extensions.environment_loader_names,
         )
         loader_kwargs, loader_extensions = (
             self._workspace_controller.loading._explorer_loader_state()
@@ -498,7 +525,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             str(name): dict(extensions)
             for name, extensions in state.explorer_loader_extensions_by_name.items()
         }
-        valid_loaders = erlab.interactive.utils.file_loaders()
+        valid_loaders = self._available_file_loaders()
         for name_filter, kwargs in self._recent_loader_kwargs_by_filter.items():
             loader_entry = valid_loaders.get(name_filter)
             if loader_entry is None:
@@ -538,7 +565,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
 
         recent_filter = self._recent_name_filter
         if recent_filter is not None:
-            loader_entry = erlab.interactive.utils.file_loaders().get(recent_filter)
+            loader_entry = self._available_file_loaders().get(recent_filter)
             if loader_entry is not None:
                 loader_name = _loader_name_for_callable(loader_entry[0])
                 if loader_name is not None and loader_name in shared_kwargs:
@@ -630,6 +657,42 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         *,
         sample_paths: Iterable[str | pathlib.Path] | None = None,
     ) -> tuple[str, Callable, dict[str, typing.Any]] | None:
+        from erlab.interactive.imagetool.manager._extensions._dialogs import (
+            _ExtensionParameterDialog,
+        )
+
+        def extension_parameters(
+            func: Callable,
+        ) -> dict[str, typing.Any] | None:
+            descriptor = getattr(func, "descriptor", None)
+            if not isinstance(descriptor, erlab.extensions.LoaderDescriptor):
+                return None
+            parameter_dialog = _ExtensionParameterDialog(descriptor, self)
+            if not parameter_dialog.exec():
+                return None
+            return parameter_dialog.parameters
+
+        if len(valid_loaders) == 1:
+            selected_filter, (selected_func, _defaults) = next(
+                iter(valid_loaders.items())
+            )
+            if isinstance(
+                getattr(selected_func, "descriptor", None),
+                erlab.extensions.LoaderDescriptor,
+            ) and not bool(
+                getattr(selected_func, "uses_standard_loader_options", False)
+            ):
+                selected_parameters = extension_parameters(selected_func)
+                if selected_parameters is None:
+                    return None
+                self._recent_name_filter = selected_filter
+                self._recent_loader_kwargs_by_filter[selected_filter] = dict(
+                    selected_parameters
+                )
+                self._recent_loader_extensions_by_filter[selected_filter] = {}
+                self._mark_workspace_layout_dirty()
+                return selected_filter, selected_func, selected_parameters
+
         shared_kwargs, shared_extensions = self._shared_loader_state()
         dialog_loaders: dict[str, tuple[Callable, dict[str, typing.Any]]] = {}
         dialog_extensions: dict[str, dict[str, typing.Any]] = {}
@@ -662,6 +725,13 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             return None
 
         selected_filter, func, kwargs = dialog.checked_filter()
+        if isinstance(
+            getattr(func, "descriptor", None), erlab.extensions.LoaderDescriptor
+        ) and not bool(getattr(func, "uses_standard_loader_options", False)):
+            selected_parameters = extension_parameters(func)
+            if selected_parameters is None:
+                return None
+            kwargs = selected_parameters
         self._recent_name_filter = selected_filter
         loader_extensions = kwargs.get("loader_extensions", {})
         selected_kwargs = kwargs.copy()

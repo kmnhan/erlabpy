@@ -311,7 +311,7 @@ class _DataExplorerModel(QtCore.QAbstractItemModel):
         if index.isValid():
             flags = QtCore.Qt.ItemFlag.ItemIsDragEnabled | default_flags
             ext: str = self.get_fs(index).path.suffix
-            loader = erlab.io.loaders[self.file_browser.loader_name]
+            loader = self.file_browser._loader(self.file_browser.loader_name)
             if (
                 loader.extensions is not None
                 and ext != ""
@@ -554,7 +554,11 @@ class _ReprFetcher(QtCore.QRunnable):
     """
 
     def __init__(
-        self, file_path: str | pathlib.Path, load_method, include_values: bool
+        self,
+        file_path: str | pathlib.Path,
+        load_method,
+        include_values: bool,
+        load_kwargs: dict[str, typing.Any] | None = None,
     ) -> None:
         super().__init__()
         # The explorer keeps Python references and sends the worker through queued
@@ -564,6 +568,7 @@ class _ReprFetcher(QtCore.QRunnable):
         self.file_path = pathlib.Path(file_path)
         self.load_method = load_method
         self.include_values = include_values
+        self.load_kwargs = dict(load_kwargs or {})
         self._aborted = threading.Event()
 
     def abort(self) -> None:
@@ -581,7 +586,10 @@ class _ReprFetcher(QtCore.QRunnable):
             dat = self.load_method(
                 file_path,
                 single=True,
-                load_kwargs={"without_values": not self.include_values},
+                load_kwargs={
+                    **self.load_kwargs,
+                    "without_values": not self.include_values,
+                },
             )
         except Exception:
             text = erlab.interactive.utils._format_traceback(traceback.format_exc())
@@ -604,8 +612,13 @@ class _ReprFetcher(QtCore.QRunnable):
 
 
 class _LoaderInfoModel(QtCore.QAbstractTableModel):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, file_browser: _DataExplorer) -> None:
+        super().__init__(file_browser)
+        self._file_browser = file_browser
+
+    def refresh(self) -> None:
+        self.beginResetModel()
+        self.endResetModel()
 
     def data(
         self, index: QtCore.QModelIndex, role: int = QtCore.Qt.ItemDataRole.DisplayRole
@@ -613,13 +626,13 @@ class _LoaderInfoModel(QtCore.QAbstractTableModel):
         if not index.isValid():
             return None
         if role == QtCore.Qt.ItemDataRole.DisplayRole:
-            loader_name: str = list(erlab.io.loaders.keys())[index.row()]
+            loader_name = self._file_browser._loader_names()[index.row()]
 
             match index.column():
                 case 0:
                     return loader_name
                 case 1:
-                    loader = erlab.io.loaders[loader_name]
+                    loader = self._file_browser._loader(loader_name)
                     return loader.description if hasattr(loader, "description") else ""
         return None
 
@@ -643,7 +656,7 @@ class _LoaderInfoModel(QtCore.QAbstractTableModel):
     def rowCount(self, parent: QtCore.QModelIndex | None = None) -> int:
         if parent is not None and parent.isValid():
             return 0
-        return len(erlab.io.loaders.keys())
+        return len(self._file_browser._loader_names())
 
     def columnCount(self, parent: QtCore.QModelIndex | None = None) -> int:
         if parent is not None and parent.isValid():
@@ -652,13 +665,15 @@ class _LoaderInfoModel(QtCore.QAbstractTableModel):
 
 
 class _LoaderWidget(QtWidgets.QComboBox):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, file_browser: _DataExplorer) -> None:
+        super().__init__(file_browser)
 
-        model = _LoaderInfoModel()
+        model = _LoaderInfoModel(file_browser)
         view = QtWidgets.QTableView()
         view.setCornerButtonEnabled(False)
-        view.verticalHeader().hide()
+        vertical_header = view.verticalHeader()
+        if vertical_header is not None:
+            vertical_header.hide()
         view.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -922,8 +937,16 @@ class _DataExplorer(QtWidgets.QMainWindow):
         parent: QtWidgets.QWidget | None = None,
         root_path: str | os.PathLike | None = None,
         loader_name: str | None = None,
+        external_loaders: dict[str, typing.Any] | None = None,
+        excluded_loaders: set[str] | None = None,
     ) -> None:
         super().__init__(parent)
+        self._external_loaders = (
+            external_loaders if external_loaders is not None else {}
+        )
+        self._excluded_loaders = (
+            excluded_loaders if excluded_loaders is not None else set()
+        )
         self.setAcceptDrops(True)
         self.setWindowTitle("Data Explorer")
         root_path = root_path or os.getcwd()
@@ -964,6 +987,24 @@ class _DataExplorer(QtWidgets.QMainWindow):
     def loader_name(self) -> str:
         """Name of the selected loader."""
         return self._loader_combo.currentText()
+
+    def _loader_names(self) -> tuple[str, ...]:
+        builtin_names = set(erlab.io.loaders.keys()) - self._excluded_loaders
+        return tuple(sorted({*builtin_names, *self._external_loaders}))
+
+    def _loader(self, name: str) -> typing.Any:
+        external = self._external_loaders.get(name)
+        return erlab.io.loaders[name] if external is None else external
+
+    def refresh_loader_choices(self) -> None:
+        """Refresh choices after the manager catalog generation changes."""
+        current = self.loader_name
+        model = typing.cast("_LoaderInfoModel", self._loader_combo.model())
+        model.refresh()
+        if current in self._loader_names():
+            self._loader_combo.setCurrentText(current)
+        elif self._loader_combo.count():
+            self._loader_combo.setCurrentIndex(0)
 
     @property
     def current_directory(self) -> pathlib.Path:
@@ -1021,7 +1062,10 @@ class _DataExplorer(QtWidgets.QMainWindow):
         state = DataExplorerTabState.model_validate(state)
         self._workspace_state_restoring = True
         try:
-            if state.loader_name is not None and state.loader_name in erlab.io.loaders:
+            if (
+                state.loader_name is not None
+                and state.loader_name in self._loader_names()
+            ):
                 self._loader_combo.setCurrentText(state.loader_name)
 
             self._preview_check.setChecked(state.preview)
@@ -1242,7 +1286,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         right_layout.addWidget(right_footer)
 
         right_footer_layout.addWidget(QtWidgets.QLabel("Loader"))
-        self._loader_combo = _LoaderWidget()
+        self._loader_combo = _LoaderWidget(self)
         self._loader_combo.currentIndexChanged.connect(self._on_selection_changed)
         self._loader_combo.currentIndexChanged.connect(self._loader_changed)
         self._loader_combo.currentIndexChanged.connect(
@@ -1402,16 +1446,37 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def _loader_changed(self) -> None:
-        always_single = erlab.io.loaders[self.loader_name].always_single
+        if not self.loader_name:
+            return
+        always_single = self._loader(self.loader_name).always_single
         self._to_manager_single_act.setDisabled(always_single)
         self._to_manager_single_act.setVisible(not always_single)
 
     @QtCore.Slot()
     def _open_loader_options(self) -> None:
         from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
+        from erlab.interactive.imagetool.manager._extensions._dialogs import (
+            _ExtensionParameterDialog,
+        )
 
         loader_name = self.loader_name
-        loader = erlab.io.loaders[loader_name]
+        loader = self._loader(loader_name)
+        descriptor = getattr(loader, "descriptor", None)
+        if isinstance(descriptor, erlab.extensions.LoaderDescriptor) and not bool(
+            getattr(loader, "uses_standard_loader_options", False)
+        ):
+            dialog = _ExtensionParameterDialog(descriptor, self)
+            if not dialog.exec():
+                return
+            self._loader_kwargs_by_name[loader_name] = dialog.parameters
+            self._loader_extensions_by_name[loader_name] = {}
+            self.sigLoaderStateChanged.emit(
+                self.loader_kwargs_by_name(),
+                self.loader_extensions_by_name(),
+            )
+            self._emit_workspace_state_changed()
+            self._on_selection_changed()
+            return
         kwargs = self._loader_kwargs_by_name.get(loader_name, {})
         extensions = self._loader_extensions_by_name.get(loader_name, {})
         dialog = _NameFilterDialog(
@@ -1468,8 +1533,9 @@ class _DataExplorer(QtWidgets.QMainWindow):
             )
             worker = _ReprFetcher(
                 selected_files[0],
-                load_method=erlab.io.loaders[self.loader_name].load,
+                load_method=self._loader(self.loader_name).load,
                 include_values=self._preview_check.isChecked(),
+                load_kwargs=self._loader_kwargs_by_name.get(self.loader_name),
             )
             worker.signals.fetched.connect(self._show_file_info)
             worker.signals.finished.connect(self._preview_worker_finished)

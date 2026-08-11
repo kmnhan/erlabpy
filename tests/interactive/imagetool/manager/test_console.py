@@ -3735,8 +3735,13 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
     assert right_spec is not None
     load_count = 0
 
-    def _load_shared_source(_load_source: typing.Any) -> xr.DataArray:
+    def _load_shared_source(
+        _load_source: typing.Any,
+        *,
+        extension_loader_executor: typing.Any = None,
+    ) -> xr.DataArray:
         nonlocal load_count
+        del extension_loader_executor
         load_count += 1
         return source
 

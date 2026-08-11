@@ -13,6 +13,7 @@ import erlab
 import erlab.interactive.utils
 from erlab.interactive.imagetool._load_source import (
     _deserialize_loader_kwargs,
+    _extension_loader_identity,
     _load_provenance_from_file_details,
     _loader_callable_text,
     _migrate_legacy_file_data_selection,
@@ -28,7 +29,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool.manager._dialogs import _LoaderOptionsWidget
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from erlab.interactive.imagetool.manager._wrapper import (
         _ImageToolWrapper,
@@ -152,6 +153,11 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         batch_peers: Sequence[_FileLoadBatchPeer] = (),
         batch_apply_default: bool = False,
         checked_batch_peer_ids: frozenset[str] | None = None,
+        file_loaders: Callable[
+            [pathlib.Path | Sequence[pathlib.Path] | None],
+            dict[str, tuple[Callable[..., typing.Any], dict[str, typing.Any]]],
+        ]
+        | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("managerProvenanceFileLoadEditDialog")
@@ -182,6 +188,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self._initial_loader_extensions = (
             dict(loader_extensions) if isinstance(loader_extensions, dict) else None
         )
+        self._file_loaders = file_loaders or erlab.interactive.utils.file_loaders
 
         layout = QtWidgets.QVBoxLayout(self)
         form_layout = QtWidgets.QFormLayout()
@@ -295,9 +302,9 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         *,
         preferred_filter: str | None = None,
     ) -> _LoaderOptionsWidget:
-        valid_loaders = erlab.interactive.utils.file_loaders(path)
+        valid_loaders = self._file_loaders(path)
         if not valid_loaders:
-            valid_loaders = erlab.interactive.utils.file_loaders()
+            valid_loaders = self._file_loaders(None)
 
         selected_filter = (
             preferred_filter if preferred_filter in valid_loaders else None
@@ -309,6 +316,19 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
                     matches = (
                         isinstance(loader, erlab.io.dataloader.LoaderBase)
                         and loader.name == self._replay_call.target
+                    )
+                elif self._replay_call.kind == "extension_loader":
+                    (
+                        extension_id,
+                        extension_revision,
+                        extension_capability_id,
+                        extension_method,
+                    ) = _extension_loader_identity(func)
+                    matches = (
+                        extension_id == self._replay_call.target
+                        and extension_revision == self._replay_call.revision
+                        and extension_capability_id == self._replay_call.capability_id
+                        and extension_method == self._replay_call.loader_method
                     )
                 else:
                     matches = _loader_callable_text(
@@ -372,9 +392,9 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
             else None
         )
         current_metadata = self.loader_options.spreadsheet_metadata_source()
-        valid_loaders = erlab.interactive.utils.file_loaders(path)
+        valid_loaders = self._file_loaders(path)
         if not valid_loaders:
-            valid_loaders = erlab.interactive.utils.file_loaders()
+            valid_loaders = self._file_loaders(None)
         if tuple(valid_loaders) == tuple(self.loader_options._valid_loaders):
             self.loader_options._sample_paths = (path,)
             return
@@ -576,6 +596,9 @@ def _same_replay_loader(
     return (
         left.kind == right.kind
         and left.target == right.target
+        and left.revision == right.revision
+        and left.capability_id == right.capability_id
+        and left.loader_method == right.loader_method
         and encode_provenance_value(left.kwargs)
         == encode_provenance_value(right.kwargs)
     )

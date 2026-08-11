@@ -2669,6 +2669,7 @@ def test_manager_provenance_missing_nested_source_uses_batch_relink_dialog(
             batch_peers: tuple[provenance_edit_files._FileLoadBatchPeer, ...],
             batch_apply_default: bool = False,
             checked_batch_peer_ids: frozenset[str] | None = None,
+            **_kwargs: typing.Any,
         ) -> None:
             checked_batch_peer_ids = checked_batch_peer_ids or frozenset()
             dialog_calls.append(
@@ -2790,6 +2791,7 @@ def test_manager_provenance_missing_nested_repair_relinks_nonmatching_inputs(
             batch_peers: tuple[provenance_edit_files._FileLoadBatchPeer, ...],
             batch_apply_default: bool = False,
             checked_batch_peer_ids: frozenset[str] | None = None,
+            **_kwargs: typing.Any,
         ) -> None:
             assert pathlib.Path(load_source.path) == old_a_path
             assert batch_apply_default is True
@@ -2940,6 +2942,7 @@ def test_manager_provenance_missing_nested_repair_partial_selection_fails(
             batch_peers: tuple[provenance_edit_files._FileLoadBatchPeer, ...],
             batch_apply_default: bool = False,
             checked_batch_peer_ids: frozenset[str] | None = None,
+            **_kwargs: typing.Any,
         ) -> None:
             assert pathlib.Path(load_source.path) == old_a_path
             assert batch_apply_default is True
@@ -3303,7 +3306,14 @@ def test_manager_provenance_file_replay_validation_captures_loader_warnings(
     controller = _fake_edit_controller(_fake_edit_node(full_data()))
     spec = _manager_provenance_file_spec(file_path)
 
-    def _warn_then_fail(_spec: ToolProvenanceSpec) -> xr.DataArray:
+    def _warn_then_fail(
+        _spec: ToolProvenanceSpec,
+        *,
+        extension_executor: typing.Any = None,
+        extension_loader_executor: typing.Any = None,
+    ) -> xr.DataArray:
+        assert extension_executor is not None
+        assert extension_loader_executor is not None
         warnings.warn(
             "Loading f_003_S001 with inferred index 3 resulted in an error.",
             UserWarning,

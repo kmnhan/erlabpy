@@ -6,12 +6,14 @@ from collections.abc import Callable
 
 import lmfit
 import numpy as np
+import pytest
 import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
+import erlab.interactive.utils
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._provenance._model import (
@@ -226,6 +228,17 @@ def _fake_edit_controller(
         _selected_imagetool_targets=lambda: (),
         _node_for_target=lambda target: graph_nodes[target],
         _parent_node=_parent_node,
+        _extensions=types.SimpleNamespace(
+            replay_loader=lambda *_args, **_kwargs: pytest.fail(
+                "built-in provenance must not use extension loader execution"
+            ),
+            execution=types.SimpleNamespace(
+                run_operation=lambda *_args, **_kwargs: pytest.fail(
+                    "built-in provenance must not use extension execution"
+                )
+            ),
+        ),
+        _available_file_loaders=erlab.interactive.utils.file_loaders,
         _script_input_can_reload=(
             script_input_can_reload
             if script_input_can_reload is not None

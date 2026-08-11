@@ -664,7 +664,12 @@ class _ActionsController:
             source_spec,
         ) in preflight_plan:
             try:
-                processed = source_spec.apply(slicer_area.data).rename(input_name)
+                processed = source_spec.apply(
+                    slicer_area.data,
+                    extension_executor=(
+                        self._manager._extensions.execution.run_operation
+                    ),
+                ).rename(input_name)
                 erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(
                     processed
                 )
@@ -1088,11 +1093,35 @@ class _ActionsController:
             self._manager._handle_dropped_files([pathlib.Path(p) for p in paths])
             return
 
+        extension_loader = self._manager._extensions.loader_by_name(loader_name)
+        if extension_loader is not None:
+            func, defaults = extension_loader
+            self._manager._data_ingress.add_from_multiple_files(
+                [],
+                [pathlib.Path(p) for p in paths],
+                [],
+                func=func,
+                kwargs=defaults | kwargs,
+                retry_callback=lambda _: self._manager._data_load(
+                    paths, loader_name, kwargs
+                ),
+            )
+            return
+
+        try:
+            loader = erlab.io.loaders[loader_name]
+        except erlab.io.dataloader.LoaderNotFoundError:
+            erlab.interactive.utils.MessageDialog.critical(
+                self._manager,
+                "Loader Unavailable",
+                "The requested loader is not available in this manager.",
+            )
+            return
         self._manager._data_ingress.add_from_multiple_files(
             [],
             [pathlib.Path(p) for p in paths],
             [],
-            func=erlab.io.loaders[loader_name].load,
+            func=loader.load,
             kwargs=kwargs,
             retry_callback=lambda _: self._manager._data_load(
                 paths, loader_name, kwargs

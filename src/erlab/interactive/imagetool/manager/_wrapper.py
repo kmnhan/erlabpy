@@ -2561,7 +2561,12 @@ class _ManagedWindowNode(QtCore.QObject):
                     return False
                 parent_data = self.parent_source_data()
                 source_spec = self._materialized_source_spec(parent_data)
-                resolved = source_spec.apply(parent_data)
+                resolved = source_spec.apply(
+                    parent_data,
+                    extension_executor=(
+                        self.manager._extensions.execution.run_operation
+                    ),
+                )
                 provenance_spec = compose_display_provenance(
                     self.manager._parent_node(self).displayed_provenance_spec,
                     source_spec,
@@ -2614,7 +2619,12 @@ class _ManagedWindowNode(QtCore.QObject):
                 if not self.has_source_binding:
                     return False
                 source_spec = self._materialized_source_spec(parent_data)
-                resolved = source_spec.apply(parent_data)
+                resolved = source_spec.apply(
+                    parent_data,
+                    extension_executor=(
+                        self.manager._extensions.execution.run_operation
+                    ),
+                )
                 provenance_spec = compose_display_provenance(
                     self.manager._parent_node(self).displayed_provenance_spec,
                     source_spec,

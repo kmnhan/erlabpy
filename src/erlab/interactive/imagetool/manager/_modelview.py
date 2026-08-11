@@ -1925,6 +1925,8 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         self._menu.addAction(manager.duplicate_action)
         self._menu.addAction(manager.promote_action)
         self._menu.addSeparator()
+        self._extensions_menu = manager._extensions.add_context_submenu(self._menu)
+        self._menu.addSeparator()
         self._menu.addAction(manager.show_action)
         self._menu.addAction(manager.hide_action)
         self._menu.addAction(manager.arrange_windows_action)

@@ -1169,12 +1169,7 @@ def test_manager_provenance_validation_rejects_highdim_reorder_result(
         active_name="derived",
     )
     reordered = original.model_copy(update={"steps": tuple(reversed(original.steps))})
-    manager = types.SimpleNamespace(
-        _ensure_script_provenance_trusted=lambda *_args, **_kwargs: None,
-    )
-    controller = provenance_edit_controller._ProvenanceEditController(
-        typing.cast("typing.Any", manager)
-    )
+    controller = _fake_edit_controller()
     node = types.SimpleNamespace(
         imagetool=None,
         resolved_replay_source_data=lambda: source,

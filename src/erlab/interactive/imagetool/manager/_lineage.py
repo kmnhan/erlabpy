@@ -595,6 +595,8 @@ class _LineageController:
                 spec,
                 live_input_resolver=_resolve_live_input,
                 trusted_user_code=trusted_user_code,
+                extension_executor=self._manager._extensions.execution.run_operation,
+                extension_loader_executor=self._manager._extensions.replay_loader,
             )
         except _TrustedScriptReplayCancelled:
             raise
@@ -619,6 +621,7 @@ class _LineageController:
         spec = node.provenance_spec
         return (
             node.is_imagetool
+            and self._manager._extensions.unavailable_reason_for_node(node.uid) is None
             and node.imagetool is not None
             and spec is not None
             and spec.kind == "script"
@@ -648,6 +651,11 @@ class _LineageController:
                 "This ImageTool window is not open. Show or reopen the data, "
                 "then try again."
             )
+        extension_reason = self._manager._extensions.unavailable_reason_for_node(
+            node.uid
+        )
+        if extension_reason is not None:
+            return extension_reason
         if (
             node.slicer_area._direct_reloadable()
             or node.slicer_area._provenance_reloadable()
@@ -758,6 +766,7 @@ class _LineageController:
         uid_map = self._manager._workspace_loaded_uid_map(loaded_targets_by_uid)
         if not uid_map:
             return
+        self._manager._extensions.rebase_workspace_requirement_nodes(uid_map)
 
         for target in loaded_targets_by_uid.values():
             try:

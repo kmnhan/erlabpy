@@ -1112,6 +1112,16 @@ def test_manager_selection_provenance_edit_restores_from_high_dimensional_source
     manager._selected_imagetool_targets = lambda: ()
     manager._node_for_target = lambda target: manager._tool_graph.nodes[target]
     manager._parent_node = lambda _node: pytest.fail("parent data should be detached")
+    manager._extensions = types.SimpleNamespace(
+        replay_loader=lambda *_args, **_kwargs: pytest.fail(
+            "built-in provenance must not use extension loader execution"
+        ),
+        execution=types.SimpleNamespace(
+            run_operation=lambda *_args, **_kwargs: pytest.fail(
+                "built-in provenance must not use extension execution"
+            )
+        ),
+    )
     manager._script_input_can_reload = lambda *_args, **_kwargs: True
     manager._rebuild_script_provenance = lambda *_args, **_kwargs: pytest.fail(
         "selection edit should not rebuild script provenance"
@@ -1493,6 +1503,17 @@ def test_manager_trust_required_script_can_reload_and_rebuilds_trusted(
     ensured: list[str] = []
     trusted_flags: list[bool] = []
     manager = types.SimpleNamespace(
+        _extensions=types.SimpleNamespace(
+            unavailable_reason_for_node=lambda _uid: None,
+            replay_loader=lambda *_args, **_kwargs: pytest.fail(
+                "built-in provenance must not use extension loader execution"
+            ),
+            execution=types.SimpleNamespace(
+                run_operation=lambda *_args, **_kwargs: pytest.fail(
+                    "built-in provenance must not use extension execution"
+                )
+            ),
+        ),
         _script_input_can_reload=lambda *_args, **_kwargs: True,
         _ensure_script_provenance_trusted=lambda _spec, *, reason: ensured.append(
             reason

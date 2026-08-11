@@ -58,7 +58,9 @@ _LoadFunc: typing.TypeAlias = tuple[
     dict[str, typing.Any],
     FileDataSelection,
 ]
-_LoadKind: typing.TypeAlias = typing.Literal["erlab_loader", "callable"]
+_LoadKind: typing.TypeAlias = typing.Literal[
+    "erlab_loader", "callable", "extension_loader"
+]
 
 
 def _file_path_stem(path: str | os.PathLike[str]) -> str:
@@ -245,6 +247,9 @@ class _ResolvedLoadFunc:
     kwargs: dict[str, typing.Any]
     selection: FileDataSelection
     cast_float64: bool
+    extension_revision: str | None = None
+    extension_capability_id: str | None = None
+    extension_method: str | None = None
 
     @property
     def kwargs_text(self) -> str:
@@ -265,6 +270,9 @@ class _ResolvedLoadFunc:
         return FileReplayCall(
             kind=self.kind,
             target=self.target,
+            revision=self.extension_revision,
+            capability_id=self.extension_capability_id,
+            loader_method=self.extension_method,
             kwargs=_serialize_loader_kwargs(self.kwargs),
             selection=self.selection,
             cast_float64=self.cast_float64,
@@ -277,6 +285,10 @@ class _ResolvedLoadFunc:
 
         imports = list(self.imports)
         call_args = self._call_args(file_path)
+        if self.kind == "extension_loader" and any(
+            "np." in argument for argument in call_args
+        ):
+            imports.append("import numpy as np")
         call_expr = f"{self.loader_expr}({', '.join(call_args)})"
 
         if self.selection.kind == "sequence_index":
@@ -294,6 +306,17 @@ class _ResolvedLoadFunc:
 
     def _call_args(self, file_path: Path) -> list[str]:
         """Return loader call arguments, using compact scan-number syntax when safe."""
+        if self.kind == "extension_loader":
+            call_args = [
+                repr(str(file_path)),
+                f"extension_id={self.target!r}",
+                f"revision={self.extension_revision!r}",
+                f"loader_id={self.extension_capability_id!r}",
+            ]
+            if self.extension_method is not None:
+                call_args.append(f"method={self.extension_method!r}")
+            call_args.append(f"parameters={_provenance_value_code(self.kwargs)}")
+            return call_args
         kwargs_str = _format_call_kwargs(self.kwargs)
         scan_call_args = (
             _scan_number_load_call_args(file_path, self.loader_name, self.kwargs)
@@ -472,6 +495,19 @@ def _import_for_callable(loader: Callable[..., typing.Any], target: str) -> str:
     return f"import {target.split('.', maxsplit=1)[0]}"
 
 
+def _extension_loader_identity(
+    loader: object,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Return extension identity from a call object or its bound adapter."""
+    owner = getattr(loader, "__self__", None)
+    source = owner if owner is not None else loader
+    values = tuple(
+        getattr(source, name, None)
+        for name in ("extension_id", "revision_hash", "loader_id", "loader_method")
+    )
+    return typing.cast("tuple[str | None, str | None, str | None, str | None]", values)
+
+
 def _resolve_load_func(
     load_func: _LoadFunc | None,
     *,
@@ -500,6 +536,30 @@ def _resolve_load_func(
             kwargs=kwargs,
             selection=selection,
             cast_float64=cast_float64,
+        )
+
+    extension_id, extension_revision, extension_capability_id, extension_method = (
+        _extension_loader_identity(loader)
+    )
+    if all(
+        isinstance(value, str) and value
+        for value in (extension_id, extension_revision, extension_capability_id)
+    ):
+        return _ResolvedLoadFunc(
+            kind="extension_loader",
+            target=typing.cast("str", extension_id),
+            loader_label="Extension Loader",
+            loader_text=f"{extension_id}: {extension_capability_id}",
+            loader_expr="erlab.extensions.run_loader",
+            imports=("import erlab",),
+            setup_lines=(),
+            loader_name=None,
+            kwargs=kwargs,
+            selection=selection,
+            cast_float64=cast_float64,
+            extension_revision=extension_revision,
+            extension_capability_id=extension_capability_id,
+            extension_method=extension_method,
         )
 
     func_instance = getattr(loader, "__self__", None)
@@ -703,5 +763,11 @@ def _migrate_legacy_file_data_selection(
         kwargs_text=resolved.kwargs_text,
         replay_call=resolved.replay_call(),
     )
-    loaded = _load_file_source_object(load_source)
+    if resolved.kind == "extension_loader":
+        loader, kwargs, _selection = load_func
+        if isinstance(loader, str):
+            raise TypeError("Extension loader replay requires a callable")
+        loaded = loader(file_path, **kwargs)
+    else:
+        loaded = _load_file_source_object(load_source)
     return _semantic_file_data_selection(loaded, resolved.selection)

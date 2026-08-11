@@ -18,6 +18,7 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool._load_source import _extension_loader_identity
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._model import FileDataSelection
 from erlab.interactive.imagetool.manager._acquisition_context import (
@@ -35,6 +36,13 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 
+def _is_extension_loader_func(func: object) -> bool:
+    return all(
+        isinstance(value, str) and value
+        for value in _extension_loader_identity(func)[:3]
+    )
+
+
 class _DataIngressController:
     """Open external data and construct manager-owned ImageTool windows."""
 
@@ -47,7 +55,7 @@ class _DataIngressController:
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
         dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFiles)
         valid_loaders: dict[str, tuple[Callable, dict[str, typing.Any]]] = (
-            erlab.interactive.utils.file_loaders()
+            self._manager._available_file_loaders()
         )
         dialog.setNameFilters(valid_loaders.keys())
         if not native:
@@ -66,7 +74,7 @@ class _DataIngressController:
         self._manager._recent_name_filter = dialog.selectedNameFilter()
         self._manager._recent_directory = os.path.dirname(file_names[0])
         func, kwargs = valid_loaders[self._manager._recent_name_filter]
-        if _is_loader_func(func):
+        if _is_loader_func(func) or _is_extension_loader_func(func):
             selected = self._manager._select_loader_options(
                 {self._manager._recent_name_filter: (func, kwargs)},
                 self._manager._recent_name_filter,
@@ -395,7 +403,7 @@ class _DataIngressController:
             return
 
         valid_loaders: dict[str, tuple[Callable, dict[str, typing.Any]]] = (
-            erlab.interactive.utils.file_loaders(paths)
+            self._manager._available_file_loaders(paths)
         )
         if not valid_loaders:
             if all(path.is_dir() for path in paths):
@@ -420,7 +428,7 @@ class _DataIngressController:
 
         if len(valid_loaders) == 1:
             name_filter, (func, kwargs) = next(iter(valid_loaders.items()))
-            if _is_loader_func(func):
+            if _is_loader_func(func) or _is_extension_loader_func(func):
                 selected = self._manager._select_loader_options(
                     valid_loaders, name_filter, sample_paths=paths
                 )
@@ -650,7 +658,9 @@ class _MultiFileHandler(QtCore.QObject):
     ) -> None:
         func: Callable | str = self._func
         func_instance = getattr(func, "__self__", None)
-        if isinstance(func_instance, erlab.io.dataloader.LoaderBase):
+        if isinstance(
+            func_instance, erlab.io.dataloader.LoaderBase
+        ) and not _is_extension_loader_func(func):
             func = func_instance.name
 
         self.manager._data_ingress.receive_data(

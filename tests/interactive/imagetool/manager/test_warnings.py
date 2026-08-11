@@ -902,7 +902,7 @@ def test_open_retry_preserves_non_native_dialog(
     monkeypatch.setattr(
         erlab.interactive.utils,
         "file_loaders",
-        lambda: {"Fake Loader (*.h5)": (lambda *_a, **_k: None, {})},
+        lambda *_args: {"Fake Loader (*.h5)": (lambda *_a, **_k: None, {})},
     )
 
     with manager_context() as manager:

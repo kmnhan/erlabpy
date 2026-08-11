@@ -43,6 +43,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool._provenance._operations import (
     AffineCoordOperation,
     DivideByCoordOperation,
+    ExtensionRoutineOperation,
     GaussianFilterOperation,
     NormalizeOperation,
     ScriptCodeOperation,
@@ -213,6 +214,11 @@ class _ProvenanceEditController:
         scope: typing.Literal["display", "source"],
         spec: ToolProvenanceSpec,
     ) -> str | None:
+        extension_reason = self._manager._extensions.unavailable_reason_for_node(
+            node.uid
+        )
+        if extension_reason is not None:
+            return extension_reason
         source_status = file_load_source_status(spec)
         if source_status not in {"no-file-load-source", "loadable"}:
             return {
@@ -618,9 +624,18 @@ class _ProvenanceEditController:
                         "derived": current_data,
                     },
                     trusted_user_code=trusted_user_code,
+                    extension_executor=(
+                        self._manager._extensions.execution.run_operation
+                    ),
+                    extension_loader_executor=(self._manager._extensions.replay_loader),
                 )
             else:
-                data = local.apply(current_data)
+                data = local.apply(
+                    current_data,
+                    extension_executor=(
+                        self._manager._extensions.execution.run_operation
+                    ),
+                )
             erlab.interactive.imagetool.slicer.ArraySlicer.preflight_array(data)
         except _TrustedScriptReplayCancelled:
             raise
@@ -1355,6 +1370,7 @@ class _ProvenanceEditController:
             batch_peers=batch_peers,
             batch_apply_default=batch_apply_default,
             checked_batch_peer_ids=checked_batch_peer_ids,
+            file_loaders=self._manager._available_file_loaders,
         )
         if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
             return
@@ -1842,7 +1858,10 @@ class _ProvenanceEditController:
             if node.imagetool is not None and callable(filter_result):
                 filter_result(data, operation)
                 return
-            operation.apply(data)
+            if isinstance(operation, ExtensionRoutineOperation):
+                self._manager._extensions.execution.run_operation(operation, data)
+            else:
+                operation.apply(data)
         except Exception as exc:
             raise _ProvenanceReplayFailure(
                 f"{where}: validating the active display filter",
@@ -1957,11 +1976,27 @@ class _ProvenanceEditController:
                 return self._replay_live_script_candidate(node, scope, spec), spec
             if scope == "source" and node.parent_uid is not None:
                 parent = self._manager._parent_node(node)
-                return spec.apply(parent.current_source_data()), spec
+                return (
+                    spec.apply(
+                        parent.current_source_data(),
+                        extension_executor=(
+                            self._manager._extensions.execution.run_operation
+                        ),
+                    ),
+                    spec,
+                )
             parent_data = node.resolved_replay_source_data()
             if parent_data is None:
                 raise RuntimeError("Live provenance needs a parent source to replay")
-            return spec.apply(parent_data), spec
+            return (
+                spec.apply(
+                    parent_data,
+                    extension_executor=(
+                        self._manager._extensions.execution.run_operation
+                    ),
+                ),
+                spec,
+            )
         if spec.kind == "script":
             external_input_names = self._script_replay_source_input_names(spec)
             if external_input_names:
@@ -1984,6 +2019,12 @@ class _ProvenanceEditController:
                         spec,
                         replay_inputs,
                         trusted_user_code=trusted_user_code,
+                        extension_executor=(
+                            self._manager._extensions.execution.run_operation
+                        ),
+                        extension_loader_executor=(
+                            self._manager._extensions.replay_loader
+                        ),
                     ),
                     spec,
                 )
@@ -2019,7 +2060,12 @@ class _ProvenanceEditController:
                 operation,
                 ScriptCodeOperation,
             ):
-                data = operation._apply_schema_v2(data, parent_data=parent_data)
+                if isinstance(operation, ExtensionRoutineOperation):
+                    data = self._manager._extensions.execution.run_operation(
+                        operation, data
+                    )
+                else:
+                    data = operation._apply_schema_v2(data, parent_data=parent_data)
                 continue
             step_spec = self._live_script_step_spec(operation)
             replay_inputs = {
@@ -2041,6 +2087,8 @@ class _ProvenanceEditController:
                 step_spec,
                 replay_inputs,
                 trusted_user_code=trusted_user_code,
+                extension_executor=(self._manager._extensions.execution.run_operation),
+                extension_loader_executor=self._manager._extensions.replay_loader,
             )
         return data
 
@@ -2067,7 +2115,13 @@ class _ProvenanceEditController:
         with warnings.catch_warnings(record=True) as replay_warnings:
             warnings.simplefilter("always")
             try:
-                return replay_file_provenance(spec)
+                return replay_file_provenance(
+                    spec,
+                    extension_executor=(
+                        self._manager._extensions.execution.run_operation
+                    ),
+                    extension_loader_executor=(self._manager._extensions.replay_loader),
+                )
             except Exception as exc:
                 if warning_details := _replay_warning_details(replay_warnings):
                     exc.add_note(

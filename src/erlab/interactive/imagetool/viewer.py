@@ -30,6 +30,7 @@ import erlab
 from erlab.interactive.imagetool import _history, _kspace_conversion
 from erlab.interactive.imagetool._load_source import (
     _deserialize_loader_kwargs,
+    _extension_loader_identity,
     _LoadFunc,
     _parse_serialized_file_data_selection,
     _serialize_loader_kwargs,
@@ -2491,7 +2492,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if not isinstance(selection, FileDataSelection):
                 raise TypeError("load_func selection must be a FileDataSelection")
             func_instance = getattr(func, "__self__", None)
-            if isinstance(func_instance, erlab.io.dataloader.LoaderBase):
+            extension_identity = _extension_loader_identity(func)
+            if isinstance(func_instance, erlab.io.dataloader.LoaderBase) and not all(
+                isinstance(value, str) and value for value in extension_identity[:3]
+            ):
                 func = func_instance.name
             self._load_func = (func, load_func[1], selection)
         else:

@@ -2096,9 +2096,11 @@ def test_manager_close_event_waits_for_busy_standalone_app(
         assert manager.isVisible()
         assert manager._standalone_app_windows["explorer"] is standalone
         assert standalone.close_event_count == 1
+        assert manager._extensions.execution._accepting
 
         manager.closeEvent(None)
         assert manager._standalone_app_windows["explorer"] is standalone
         assert standalone.close_event_count == 2
+        assert manager._extensions.execution._accepting
 
         standalone.refuse_close = False
