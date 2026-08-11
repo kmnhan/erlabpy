@@ -785,11 +785,14 @@ class _ExtensionCatalogStore:
         revision_hash: str,
         kind: str,
         capability_id: str,
+        source_type: str | None = None,
     ) -> _CapabilityStatus:
         """Resolve exact catalog state without importing extension code."""
         record = self.read().extensions.get(extension_id)
         if record is None or revision_hash not in record.revisions:
             raise KeyError(f"Unknown extension revision {extension_id}:{revision_hash}")
+        if source_type is not None and record.source_type != source_type:
+            return "missing-revision"
         revision = record.revisions[revision_hash]
         if record.removed:
             return "missing-revision"

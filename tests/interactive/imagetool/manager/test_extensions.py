@@ -860,6 +860,7 @@ def test_controller_replay_loader_rejects_incomplete_and_unapproved_calls(
             target="missing",
             revision="a" * 64,
             capability_id="load_data",
+            extension_source_type="script",
             selection=FileDataSelection(kind="dataarray"),
         )
         with pytest.raises(
@@ -898,8 +899,20 @@ def test_controller_replay_loader_rejects_incomplete_and_unapproved_calls(
             target="loader",
             revision=revision_hash,
             capability_id="load_data",
+            extension_source_type="script",
             selection=FileDataSelection(kind="dataarray"),
         )
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError,
+            match="revision is not available",
+        ):
+            controller.replay_loader(
+                load_source(
+                    script_call.model_copy(
+                        update={"extension_source_type": "environment-package"}
+                    )
+                )
+            )
         missing_descriptor = record.revisions[revision_hash].model_copy(
             update={"loaders": ()}
         )
@@ -966,6 +979,7 @@ def test_controller_replay_loader_rejects_incomplete_and_unapproved_calls(
             target="environment-loader",
             revision="b" * 64,
             capability_id="load_data",
+            extension_source_type="environment-package",
             loader_method="unapproved",
             selection=FileDataSelection(kind="dataarray"),
         )
@@ -990,6 +1004,16 @@ def test_controller_capability_status_prefers_session_ready_state(
         assert (
             controller.capability_status("missing", "a" * 64, "routine", "calculate")
             == "ready"
+        )
+        assert (
+            controller.capability_status(
+                "missing",
+                "a" * 64,
+                "routine",
+                "calculate",
+                "environment-package",
+            )
+            == "missing-revision"
         )
         monkeypatch.setattr(
             controller.execution,
@@ -2855,6 +2879,20 @@ def test_routine_job_rejects_unavailable_catalog_state(
             expected_record_generation=catalog.extensions["scale"].record_generation,
         )
         with pytest.raises(
+            erlab.extensions.ExtensionExecutionError,
+            match="different source type",
+        ):
+            execution._routine_job(
+                extension_id="scale",
+                revision_hash=revision_hash,
+                routine_id="scale",
+                source_type="environment-package",
+                parameters={},
+                input_data=data,
+                input_uid="uid",
+                input_snapshot="snapshot",
+            )
+        with pytest.raises(
             erlab.extensions.ExtensionExecutionError, match="revision is not available"
         ):
             execution._routine_job(
@@ -3646,19 +3684,28 @@ def test_extension_routine_reloadability_requires_ready_exact_revision() -> None
         active_name="derived",
         operations=(operation,),
     )
-    calls: list[tuple[str, str, str, str]] = []
+    calls: list[tuple[str, str, str, str, str | None]] = []
 
     def ready(
         extension_id: str,
         revision_hash: str,
         capability_kind: str,
         capability_id: str,
+        source_type: str | None,
     ) -> typing.Literal["ready"]:
-        calls.append((extension_id, revision_hash, capability_kind, capability_id))
+        calls.append(
+            (
+                extension_id,
+                revision_hash,
+                capability_kind,
+                capability_id,
+                source_type,
+            )
+        )
         return "ready"
 
     assert can_reload_without_trust(spec, extension_status_resolver=ready)
-    assert calls == [("lab", revision, "routine", "normalize")]
+    assert calls == [("lab", revision, "routine", "normalize", "script")]
     assert not can_reload_without_trust(
         spec,
         extension_status_resolver=lambda *_args: "disabled",
@@ -3726,6 +3773,7 @@ def test_persisted_extension_parameters_reject_nonfinite_values() -> None:
             target="scale",
             revision="a" * 64,
             capability_id="load_scale",
+            extension_source_type="script",
             kwargs={"scale": float("nan")},
             selection=FileDataSelection(kind="dataarray"),
         )
@@ -5411,6 +5459,7 @@ def load_data(path: Path) -> xr.DataArray:
                 target=requirement.extension_id,
                 revision=revision,
                 capability_id="load_data",
+                extension_source_type="script",
                 selection=FileDataSelection(kind="dataarray"),
             ),
         )
@@ -5532,6 +5581,7 @@ def load_data(path: Path) -> xr.DataArray:
                 target="shared",
                 revision=revision,
                 capability_id="load_data",
+                extension_source_type="script",
                 selection=FileDataSelection(kind="dataarray"),
             ),
         )
@@ -5837,6 +5887,7 @@ def source_loader(path: Path) -> xr.DataArray:
                     target="source_loader",
                     revision=revision,
                     capability_id="source_loader",
+                    extension_source_type="script",
                     selection=FileDataSelection(kind="dataarray"),
                 ),
             ),
@@ -5947,6 +5998,7 @@ def test_file_source_status_reports_extension_import_failure(
                     target="broken_loader",
                     revision=revision,
                     capability_id="broken_loader",
+                    extension_source_type="script",
                     selection=FileDataSelection(kind="dataarray"),
                 ),
             ),
@@ -6291,6 +6343,7 @@ def test_degraded_save_as_preserves_missing_environment_requirement(
                 target=extension_id,
                 revision=revision,
                 capability_id="missing",
+                extension_source_type="environment-package",
                 selection=FileDataSelection(kind="dataarray"),
             ),
         ),
@@ -6656,6 +6709,7 @@ def test_collecting_loader_requirements_keeps_workspace_source_identity(
                 target=extension_id,
                 revision=revision,
                 capability_id="workspace-loader",
+                extension_source_type="environment-package",
                 selection=FileDataSelection(kind="dataarray"),
             ),
         ),
@@ -6730,6 +6784,7 @@ def test_workspace_requirements_include_nested_script_inputs(
                 target="nested-loaders",
                 revision=revision,
                 capability_id="nested_loader",
+                extension_source_type="script",
                 selection=FileDataSelection(kind="dataarray"),
             ),
         ),
@@ -7508,7 +7563,9 @@ def counter_loader(path: Path, scale: float = 1.0) -> xr.DataArray:
         )
         resolved = _resolve_load_func((call, {}, FileDataSelection(kind="dataarray")))
         assert resolved is not None
-        assert resolved.replay_call().kind == "extension_loader"
+        replay_call = resolved.replay_call()
+        assert replay_call.kind == "extension_loader"
+        assert replay_call.extension_source_type == "script"
         code = resolved.load_code(value_path, assign="loaded")
         assert code is not None
         with pytest.raises(ValueError, match="must be finite"):
@@ -8935,6 +8992,7 @@ def test_embedded_approval_selects_the_script_requirement(
             embedded_sources={("mixed", revision): source},
         )
         manager._extensions._approve_embedded_script("mixed", revision)
+        requirements = manager._extensions.collect_workspace_requirements()
 
         assert (
             manager._extensions.execution.session_capability_status(
@@ -8942,6 +9000,14 @@ def test_embedded_approval_selects_the_script_requirement(
             )
             == "ready"
         )
+        assert {item.source_type for item in requirements} == {
+            "script",
+            "environment-package",
+        }
+        for requirement in requirements:
+            _WorkspaceExtensionRequirement.model_validate(
+                requirement.model_dump(mode="json")
+            )
 
 
 @pytest.mark.parametrize(

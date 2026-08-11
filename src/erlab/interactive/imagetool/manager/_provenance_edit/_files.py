@@ -598,6 +598,7 @@ def _same_replay_loader(
         and left.target == right.target
         and left.revision == right.revision
         and left.capability_id == right.capability_id
+        and left.extension_source_type == right.extension_source_type
         and left.loader_method == right.loader_method
         and encode_provenance_value(left.kwargs)
         == encode_provenance_value(right.kwargs)

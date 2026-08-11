@@ -1544,6 +1544,7 @@ class _ExtensionExecutionController(QtCore.QObject):
             extension_id=extension_id,
             revision_hash=None,
             routine_id=routine_id,
+            source_type=None,
             parameters=parameters,
             input_data=data,
             input_uid=node.uid,
@@ -1572,6 +1573,7 @@ class _ExtensionExecutionController(QtCore.QObject):
             extension_id=operation.extension_id,
             revision_hash=operation.revision_hash,
             routine_id=operation.routine_id,
+            source_type=operation.source_type,
             parameters=operation.parameters,
             input_data=data,
             input_uid="provenance-replay",
@@ -1601,6 +1603,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         extension_id: str,
         revision_hash: str | None,
         routine_id: str,
+        source_type: typing.Literal["script", "environment-package"] | None = None,
         parameters: Mapping[str, typing.Any],
         input_data: xr.DataArray,
         input_uid: str,
@@ -1628,18 +1631,21 @@ class _ExtensionExecutionController(QtCore.QObject):
                     revision_hash,
                     "routine",
                     routine_id,
+                    source_type,
                 )
         global_ready = (
             global_status == "ready"
             and record is not None
             and not record.removed
             and record.enabled
+            and (source_type is None or record.source_type == source_type)
             and revision is not None
             and revision.approved
         )
         if (
             revision_hash is not None
             and not global_ready
+            and source_type != "environment-package"
             and self.session_capability_status(
                 extension_id,
                 revision_hash,
@@ -1655,6 +1661,10 @@ class _ExtensionExecutionController(QtCore.QObject):
             pinned_revision = revision_hash
         if record is None or record.removed or not record.enabled:
             raise ExtensionExecutionError("The extension is not enabled")
+        if source_type is not None and record.source_type != source_type:
+            raise ExtensionExecutionError(
+                "The extension revision has a different source type"
+            )
         if pinned_revision is None or revision is None or not revision.approved:
             raise ExtensionExecutionError("The extension revision is not available")
         routine = next(

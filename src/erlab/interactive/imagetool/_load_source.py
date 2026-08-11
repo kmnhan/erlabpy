@@ -249,6 +249,7 @@ class _ResolvedLoadFunc:
     cast_float64: bool
     extension_revision: str | None = None
     extension_capability_id: str | None = None
+    extension_source_type: typing.Literal["script", "environment-package"] | None = None
     extension_method: str | None = None
 
     @property
@@ -272,6 +273,7 @@ class _ResolvedLoadFunc:
             target=self.target,
             revision=self.extension_revision,
             capability_id=self.extension_capability_id,
+            extension_source_type=self.extension_source_type,
             loader_method=self.extension_method,
             kwargs=_serialize_loader_kwargs(self.kwargs),
             selection=self.selection,
@@ -616,6 +618,10 @@ def _resolve_load_func(
             cast_float64=cast_float64,
             extension_revision=extension_revision,
             extension_capability_id=extension_capability_id,
+            extension_source_type=typing.cast(
+                'typing.Literal["script", "environment-package"]',
+                typing.cast("typing.Any", source).source_type,
+            ),
             extension_method=extension_method,
         )
 

@@ -329,6 +329,7 @@ class _ExtensionController(QtCore.QObject):
                 replay_call.revision,
                 "loader",
                 replay_call.capability_id,
+                replay_call.extension_source_type,
             )
         except KeyError:
             global_status = "missing-revision"
@@ -337,12 +338,14 @@ class _ExtensionController(QtCore.QObject):
             and record is not None
             and not record.removed
             and record.enabled
+            and record.source_type == replay_call.extension_source_type
             and revision is not None
             and revision.approved
         )
         if not global_ready:
             if (
-                self.execution.session_capability_status(
+                replay_call.extension_source_type != "script"
+                or self.execution.session_capability_status(
                     replay_call.target,
                     replay_call.revision,
                     "loader",
@@ -410,6 +413,7 @@ class _ExtensionController(QtCore.QObject):
         revision_hash: str,
         kind: str,
         capability_id: str,
+        source_type: str | None = None,
     ) -> _CapabilityStatus:
         """Resolve global state with this manager's session approvals."""
         try:
@@ -418,10 +422,13 @@ class _ExtensionController(QtCore.QObject):
                 revision_hash,
                 kind,
                 capability_id,
+                source_type,
             )
         except KeyError:
             global_status = "missing-revision"
         if global_status == "ready":
+            return global_status
+        if source_type == "environment-package":
             return global_status
         session_status = self.execution.session_capability_status(
             extension_id,
@@ -897,7 +904,7 @@ class _ExtensionController(QtCore.QObject):
         """
         loaded_node_uids = set(self._manager._tool_graph.nodes)
         persisted: dict[
-            tuple[str, str, str, str], list[_WorkspaceExtensionRequirement]
+            tuple[str, str, str, str, str], list[_WorkspaceExtensionRequirement]
         ] = defaultdict(list)
         for item in self._workspace_requirements:
             persisted[
@@ -906,11 +913,12 @@ class _ExtensionController(QtCore.QObject):
                     item.revision_hash,
                     item.capability_kind,
                     item.capability_id,
+                    item.source_type,
                 )
             ].append(item)
 
         def merged_persisted_requirement(
-            key: tuple[str, str, str, str],
+            key: tuple[str, str, str, str, str],
         ) -> _WorkspaceExtensionRequirement | None:
             """Merge per-node state for one immutable capability revision."""
             items = persisted.get(key)
@@ -937,10 +945,10 @@ class _ExtensionController(QtCore.QObject):
                 }
             )
 
-        references: dict[tuple[str, str, str], set[str]] = defaultdict(set)
-        operations: dict[tuple[str, str, str], typing.Any] = {}
-        loader_references: dict[tuple[str, str, str], set[str]] = defaultdict(set)
-        loader_files: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+        references: dict[tuple[str, str, str, str], set[str]] = defaultdict(set)
+        operations: dict[tuple[str, str, str, str], typing.Any] = {}
+        loader_references: dict[tuple[str, str, str, str], set[str]] = defaultdict(set)
+        loader_files: dict[tuple[str, str, str, str], set[str]] = defaultdict(set)
         for uid, node in self._manager._tool_graph.nodes.items():
             spec = node.passive_displayed_provenance_spec
             pending_specs = deque(() if spec is None else (spec,))
@@ -961,6 +969,7 @@ class _ExtensionController(QtCore.QObject):
                         extension_operation.extension_id,
                         extension_operation.revision_hash,
                         extension_operation.routine_id,
+                        extension_operation.source_type,
                     )
                     references[key].add(uid)
                     operations[key] = extension_operation
@@ -978,24 +987,31 @@ class _ExtensionController(QtCore.QObject):
                     replay_call.target,
                     replay_call.revision,
                     replay_call.capability_id,
+                    typing.cast("str", replay_call.extension_source_type),
                 )
                 loader_references[key].add(uid)
                 loader_files[key].add(current_spec.file_load_source.path)
         requirements: list[_WorkspaceExtensionRequirement] = []
         for key, node_uids in references.items():
-            extension_id, revision_hash, routine_id = key
+            extension_id, revision_hash, routine_id, source_type_value = key
+            source_type = typing.cast(
+                'typing.Literal["script", "environment-package"]', source_type_value
+            )
             record = self.catalog.model.extensions.get(extension_id)
             operation = typing.cast("ExtensionRoutineOperation", operations[key])
             previous = merged_persisted_requirement(
-                (extension_id, revision_hash, "routine", routine_id)
+                (
+                    extension_id,
+                    revision_hash,
+                    "routine",
+                    routine_id,
+                    source_type,
+                )
             )
             if previous is not None:
                 node_uids.update(
                     set(previous.referencing_nodes).difference(loaded_node_uids)
                 )
-            source_type: typing.Literal["script", "environment-package"] = (
-                operation.source_type if previous is None else previous.source_type
-            )
             metadata = {} if previous is None else dict(previous.metadata_snapshot)
             record_revision = (
                 None
@@ -1043,10 +1059,20 @@ class _ExtensionController(QtCore.QObject):
                 )
             )
         for key, node_uids in loader_references.items():
-            extension_id, revision_hash, loader_id = key
+            extension_id, revision_hash, loader_id, loader_source_type_value = key
+            loader_source_type = typing.cast(
+                'typing.Literal["script", "environment-package"]',
+                loader_source_type_value,
+            )
             record = self.catalog.model.extensions.get(extension_id)
             previous = merged_persisted_requirement(
-                (extension_id, revision_hash, "loader", loader_id)
+                (
+                    extension_id,
+                    revision_hash,
+                    "loader",
+                    loader_id,
+                    loader_source_type,
+                )
             )
             unresolved_node_uids: set[str] = set()
             if previous is not None:
@@ -1054,13 +1080,6 @@ class _ExtensionController(QtCore.QObject):
                     loaded_node_uids
                 )
                 node_uids.update(unresolved_node_uids)
-            loader_source_type: typing.Literal["script", "environment-package"] = (
-                previous.source_type
-                if previous is not None
-                else "script"
-                if record is None
-                else record.source_type
-            )
             loader_metadata = (
                 {} if previous is None else dict(previous.metadata_snapshot)
             )
@@ -1121,6 +1140,7 @@ class _ExtensionController(QtCore.QObject):
                 item.revision_hash,
                 item.capability_kind,
                 item.capability_id,
+                item.source_type,
             )
             for item in requirements
         }
@@ -1147,6 +1167,7 @@ class _ExtensionController(QtCore.QObject):
                 item.revision_hash,
                 item.capability_kind,
                 item.capability_id,
+                item.source_type,
             )
             for item in requirements
         )
@@ -1172,6 +1193,7 @@ class _ExtensionController(QtCore.QObject):
                         record.current_revision,
                         capability_kind,
                         descriptor.id,
+                        record.source_type,
                     )
                     if key in keys:
                         continue

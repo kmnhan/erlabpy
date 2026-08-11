@@ -5230,6 +5230,22 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
             target="lab-loader",
             revision="not-a-revision",
             capability_id="load_data",
+            extension_source_type="script",
+            selection=FileDataSelection(kind="dataarray"),
+        )
+    with pytest.raises(ValidationError, match="extension_source_type"):
+        FileReplayCall(
+            kind="extension_loader",
+            target="lab-loader",
+            revision="a" * 64,
+            capability_id="load_data",
+            selection=FileDataSelection(kind="dataarray"),
+        )
+    with pytest.raises(ValidationError, match="only valid"):
+        FileReplayCall(
+            kind="callable",
+            target="xarray.load_dataarray",
+            extension_source_type="script",
             selection=FileDataSelection(kind="dataarray"),
         )
 

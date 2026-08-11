@@ -492,6 +492,7 @@ def file_load_source_status(
             replay_call.revision,
             "loader",
             replay_call.capability_id,
+            replay_call.extension_source_type,
         )
         if capability_status == "disabled":
             return "extension-disabled"
@@ -553,6 +554,7 @@ def can_reload_without_trust(
                 extension_operation.revision_hash,
                 "routine",
                 extension_operation.routine_id,
+                extension_operation.source_type,
             )
             != "ready"
         ):

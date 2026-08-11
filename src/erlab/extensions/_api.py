@@ -54,7 +54,9 @@ _CapabilityStatus = typing.Literal[
     "unsupported-api",
     "import-failed",
 ]
-_CapabilityStatusResolver = Callable[[str, str, str, str], _CapabilityStatus]
+_CapabilityStatusResolver = Callable[
+    [str, str, str, str, str | None], _CapabilityStatus
+]
 _revision_resolvers: dict[str, _RevisionResolver] = {}
 _capability_resolvers: dict[str, _CapabilityResolver] = {}
 _capability_status_resolvers: dict[str, _CapabilityStatusResolver] = {}
@@ -785,13 +787,14 @@ def _capability_status(
     revision: str,
     kind: typing.Literal["routine", "loader"],
     capability_id: str,
+    source_type: str | None = None,
 ) -> _CapabilityStatus:
     """Return why a catalog can or cannot run a capability without importing it."""
     with _resolver_lock:
         resolvers = tuple(_capability_status_resolvers.values())
     for resolver in reversed(resolvers):
         try:
-            return resolver(extension_id, revision, kind, capability_id)
+            return resolver(extension_id, revision, kind, capability_id, source_type)
         except KeyError:
             continue
     return "missing-revision"

@@ -1990,6 +1990,7 @@ class FileReplayCall(pydantic.BaseModel):
     target: str
     revision: str | None = None
     capability_id: str | None = None
+    extension_source_type: typing.Literal["script", "environment-package"] | None = None
     loader_method: str | None = None
     kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     selection: FileDataSelection
@@ -2020,10 +2021,17 @@ class FileReplayCall(pydantic.BaseModel):
         if not self.target:
             raise ValueError("target must not be empty")
         if self.kind == "extension_loader" and (
-            not self.revision or not self.capability_id
+            not self.revision
+            or not self.capability_id
+            or self.extension_source_type is None
         ):
             raise ValueError(
-                "extension loader replay requires revision and capability_id"
+                "extension loader replay requires revision, capability_id, and "
+                "extension_source_type"
+            )
+        if self.kind != "extension_loader" and self.extension_source_type is not None:
+            raise ValueError(
+                "extension_source_type is only valid for extension loader replay"
             )
         if self.kind == "extension_loader":
             _validate_revision_hash(typing.cast("str", self.revision))
