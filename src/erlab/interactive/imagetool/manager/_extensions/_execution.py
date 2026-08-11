@@ -1620,15 +1620,33 @@ class _ExtensionExecutionController(QtCore.QObject):
             if record is None or pinned_revision is None
             else record.revisions.get(pinned_revision)
         )
+        global_status: _CapabilityStatus = "missing-revision"
+        if revision_hash is not None:
+            with contextlib.suppress(KeyError):
+                global_status = catalog_store.capability_status(
+                    extension_id,
+                    revision_hash,
+                    "routine",
+                    routine_id,
+                )
+        global_ready = (
+            global_status == "ready"
+            and record is not None
+            and not record.removed
+            and record.enabled
+            and revision is not None
+            and revision.approved
+        )
         if (
             revision_hash is not None
-            and (
-                record is None
-                or record.removed
-                or not record.enabled
-                or revision is None
-                or not revision.approved
+            and not global_ready
+            and self.session_capability_status(
+                extension_id,
+                revision_hash,
+                "routine",
+                routine_id,
             )
+            == "ready"
             and (selected := self._session_revision(extension_id, revision_hash))
             is not None
         ):

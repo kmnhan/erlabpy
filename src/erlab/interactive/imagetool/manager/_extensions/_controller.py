@@ -323,13 +323,24 @@ class _ExtensionController(QtCore.QObject):
         revision = (
             None if record is None else record.revisions.get(replay_call.revision)
         )
-        if (
-            record is None
-            or record.removed
-            or not record.enabled
-            or revision is None
-            or not revision.approved
-        ):
+        try:
+            global_status = self.catalog.store.capability_status(
+                replay_call.target,
+                replay_call.revision,
+                "loader",
+                replay_call.capability_id,
+            )
+        except KeyError:
+            global_status = "missing-revision"
+        global_ready = (
+            global_status == "ready"
+            and record is not None
+            and not record.removed
+            and record.enabled
+            and revision is not None
+            and revision.approved
+        )
+        if not global_ready:
             if (
                 self.execution.session_capability_status(
                     replay_call.target,
@@ -354,6 +365,10 @@ class _ExtensionController(QtCore.QObject):
             return call(
                 pathlib.Path(load_source.path),
                 **_deserialize_loader_kwargs(replay_call.kwargs),
+            )
+        if record is None or revision is None:
+            raise erlab.extensions.ExtensionExecutionError(
+                "The extension loader revision is not available"
             )
         descriptor = next(
             (item for item in revision.loaders if item.id == replay_call.capability_id),

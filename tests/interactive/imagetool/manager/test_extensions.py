@@ -956,6 +956,11 @@ def test_controller_replay_loader_rejects_incomplete_and_unapproved_calls(
         monkeypatch.setattr(
             controller.catalog.store, "read", lambda: environment_catalog
         )
+        monkeypatch.setattr(
+            controller.catalog.store,
+            "capability_status",
+            lambda *_args: "ready",
+        )
         environment_call = FileReplayCall(
             kind="extension_loader",
             target="environment-loader",
@@ -5408,6 +5413,88 @@ def load_data(path: Path) -> xr.DataArray:
         )
         assert manager._extensions.resolved_workspace_requirements()[0].state == (
             "approval-required"
+        )
+
+
+def test_embedded_revision_replaces_an_unusable_global_copy(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "shared.py"
+    source = b"""from pathlib import Path
+import xarray as xr
+from erlab.extensions import loader, routine
+
+@routine()
+def scale(data: xr.DataArray, factor: float = 2.0) -> xr.DataArray:
+    return data * factor
+
+@loader(extensions=(".txt",))
+def load_data(path: Path) -> xr.DataArray:
+    return xr.DataArray([float(path.read_text())])
+"""
+    script_path.write_bytes(source)
+    revision = hashlib.sha256(source).hexdigest()
+    data_path = tmp_path / "value.txt"
+    data_path.write_text("4")
+
+    with manager_context() as manager:
+        catalog, stored_revision, _created = (
+            manager._extensions.catalog.store.add_script(script_path)
+        )
+        assert stored_revision == revision
+        _validate_and_enable(
+            manager._extensions.catalog.store,
+            "shared",
+            expected_record_generation=(catalog.extensions["shared"].record_generation),
+        )
+        manager._extensions.catalog.refresh()
+        manager._extensions.execution.approve_session_script(
+            source,
+            extension_id="shared",
+            revision_hash=revision,
+            name="Shared",
+            metadata=_ExtensionMetadata(),
+            source_modified_at=None,
+        )
+        manager._extensions.catalog.store.source_path("shared", revision).write_bytes(
+            b"corrupt global source"
+        )
+
+        operation = ExtensionRoutineOperation(
+            extension_id="shared",
+            revision_hash=revision,
+            routine_id="scale",
+            extension_name="Shared",
+            routine_name="Scale",
+            source_type="script",
+            function_name="scale",
+            source_path=str(script_path),
+            entry_point_group=None,
+            entry_point_name=None,
+            parameters={"factor": 3.0},
+        )
+        xr.testing.assert_identical(
+            manager._extensions.execution.run_operation(
+                operation, xr.DataArray([1.0, 2.0])
+            ),
+            xr.DataArray([3.0, 6.0]),
+        )
+        load_source = FileLoadSource(
+            path=str(data_path),
+            loader_label="Shared loader",
+            loader_text="shared:load_data",
+            kwargs_text="",
+            replay_call=FileReplayCall(
+                kind="extension_loader",
+                target="shared",
+                revision=revision,
+                capability_id="load_data",
+                selection=FileDataSelection(kind="dataarray"),
+            ),
+        )
+        xr.testing.assert_identical(
+            manager._extensions.replay_loader(load_source), xr.DataArray([4.0])
         )
 
 
