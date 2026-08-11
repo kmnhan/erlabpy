@@ -821,15 +821,47 @@ class _ExtensionController(QtCore.QObject):
         remain unchanged so a degraded Save As does not discard them.
         """
         loaded_node_uids = set(self._manager._tool_graph.nodes)
-        persisted = {
-            (
-                item.extension_id,
-                item.revision_hash,
-                item.capability_kind,
-                item.capability_id,
-            ): item
-            for item in self._workspace_requirements
-        }
+        persisted: dict[
+            tuple[str, str, str, str], list[_WorkspaceExtensionRequirement]
+        ] = defaultdict(list)
+        for item in self._workspace_requirements:
+            persisted[
+                (
+                    item.extension_id,
+                    item.revision_hash,
+                    item.capability_kind,
+                    item.capability_id,
+                )
+            ].append(item)
+
+        def merged_persisted_requirement(
+            key: tuple[str, str, str, str],
+        ) -> _WorkspaceExtensionRequirement | None:
+            """Merge per-node state for one immutable capability revision."""
+            items = persisted.get(key)
+            if not items:
+                return None
+            primary = items[0]
+            metadata = dict(primary.metadata_snapshot)
+            referencing_nodes: set[str] = set()
+            file_sources: set[str] = set()
+            embedded_object_id = primary.embedded_object_id
+            for item in items:
+                referencing_nodes.update(item.referencing_nodes)
+                file_sources.update(item.file_sources)
+                if embedded_object_id is None:
+                    embedded_object_id = item.embedded_object_id
+                for name, value in item.metadata_snapshot.items():
+                    metadata.setdefault(name, value)
+            return primary.model_copy(
+                update={
+                    "metadata_snapshot": metadata,
+                    "embedded_object_id": embedded_object_id,
+                    "referencing_nodes": tuple(sorted(referencing_nodes)),
+                    "file_sources": tuple(sorted(file_sources)),
+                }
+            )
+
         references: dict[tuple[str, str, str], set[str]] = defaultdict(set)
         operations: dict[tuple[str, str, str], typing.Any] = {}
         loader_references: dict[tuple[str, str, str], set[str]] = defaultdict(set)
@@ -879,7 +911,7 @@ class _ExtensionController(QtCore.QObject):
             extension_id, revision_hash, routine_id = key
             record = self.catalog.model.extensions.get(extension_id)
             operation = typing.cast("ExtensionRoutineOperation", operations[key])
-            previous = persisted.get(
+            previous = merged_persisted_requirement(
                 (extension_id, revision_hash, "routine", routine_id)
             )
             if previous is not None:
@@ -938,7 +970,9 @@ class _ExtensionController(QtCore.QObject):
         for key, node_uids in loader_references.items():
             extension_id, revision_hash, loader_id = key
             record = self.catalog.model.extensions.get(extension_id)
-            previous = persisted.get((extension_id, revision_hash, "loader", loader_id))
+            previous = merged_persisted_requirement(
+                (extension_id, revision_hash, "loader", loader_id)
+            )
             unresolved_node_uids: set[str] = set()
             if previous is not None:
                 unresolved_node_uids = set(previous.referencing_nodes).difference(
@@ -1015,23 +1049,21 @@ class _ExtensionController(QtCore.QObject):
             )
             for item in requirements
         }
-        for item in self._workspace_requirements:
-            if (
-                item.extension_id,
-                item.revision_hash,
-                item.capability_kind,
-                item.capability_id,
-            ) in keys:
+        for key in persisted:
+            if key in keys:
                 continue
-            if not item.referencing_nodes:
-                requirements.append(item)
+            previous = merged_persisted_requirement(key)
+            if previous is None:
                 continue
+            explicit = any(not item.referencing_nodes for item in persisted[key])
             remaining_node_uids = tuple(
-                uid for uid in item.referencing_nodes if uid not in loaded_node_uids
+                uid for uid in previous.referencing_nodes if uid not in loaded_node_uids
             )
-            if remaining_node_uids:
+            if explicit or remaining_node_uids:
                 requirements.append(
-                    item.model_copy(update={"referencing_nodes": remaining_node_uids})
+                    previous.model_copy(
+                        update={"referencing_nodes": remaining_node_uids}
+                    )
                 )
         keys.update(
             (

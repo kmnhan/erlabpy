@@ -2958,6 +2958,109 @@ def test_collecting_requirements_reconciles_loaded_and_unresolved_nodes(
         assert manager._extensions.collect_workspace_requirements() == ()
 
 
+def test_collecting_requirements_merges_duplicate_loaded_capability(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    source = b"# embedded extension source\n"
+    revision = hashlib.sha256(source).hexdigest()
+    workspace_path = tmp_path / "merged-requirements.itws"
+    operation = ExtensionRoutineOperation(
+        extension_id="shared-routines",
+        revision_hash=revision,
+        routine_id="normalize",
+        extension_name="Shared Routines",
+        routine_name="Normalize",
+        source_type="script",
+        function_name="normalize",
+        source_path="shared_routines.py",
+        entry_point_group=None,
+        entry_point_name=None,
+        parameters={},
+    )
+
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
+            show=False,
+            provenance_spec=full_data(operation),
+        )
+        loaded_uid = manager._node_for_target(index).uid
+        base = _WorkspaceExtensionRequirement(
+            extension_id="shared-routines",
+            capability_id="normalize",
+            capability_kind="routine",
+            revision_hash=revision,
+            extension_api_version=1,
+            source_type="script",
+            metadata_snapshot={"author": "Existing Author"},
+            referencing_nodes=("unresolved-existing",),
+        )
+        incoming = base.model_copy(
+            update={
+                "metadata_snapshot": {"contact": "incoming@example.org"},
+                "embedded_object_id": f"extension-{revision}",
+                "referencing_nodes": (loaded_uid,),
+            }
+        )
+        manager._extensions.set_workspace_requirements(
+            (base, incoming),
+            embedded_sources={(base.extension_id, revision): source},
+        )
+
+        collected = manager._extensions.collect_workspace_requirements()
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+
+    assert len(collected) == 1
+    assert collected[0].referencing_nodes == (loaded_uid, "unresolved-existing")
+    assert collected[0].metadata_snapshot == {
+        "author": "Existing Author",
+        "contact": "incoming@example.org",
+    }
+    assert collected[0].embedded_object_id == f"extension-{revision}"
+    attrs = workspace_arrays._read_workspace_root_attrs_h5py(workspace_path)
+    manifest = workspace_format._workspace_manifest_from_attrs(attrs)
+    assert len(manifest["extension_requirements"]) == 1
+    assert manifest["extension_requirements"][0]["referencing_nodes"] == [
+        loaded_uid,
+        "unresolved-existing",
+    ]
+
+
+def test_collecting_requirements_merges_duplicate_unresolved_loaders(
+    manager_context,
+) -> None:
+    revision = "1" * 64
+    base = _WorkspaceExtensionRequirement(
+        extension_id="shared-loaders",
+        capability_id="load_data",
+        capability_kind="loader",
+        revision_hash=revision,
+        extension_api_version=1,
+        source_type="script",
+        referencing_nodes=("unresolved-first",),
+        file_sources=("first.dat",),
+    )
+    incoming = base.model_copy(
+        update={
+            "referencing_nodes": ("unresolved-second",),
+            "file_sources": ("second.dat",),
+        }
+    )
+
+    with manager_context() as manager:
+        manager._extensions.set_workspace_requirements((base, incoming))
+
+        collected = manager._extensions.collect_workspace_requirements()
+
+    assert len(collected) == 1
+    assert collected[0].referencing_nodes == (
+        "unresolved-first",
+        "unresolved-second",
+    )
+    assert collected[0].file_sources == ("first.dat", "second.dat")
+
+
 def test_collecting_requirements_keeps_workspace_source_identity(
     manager_context,
 ) -> None:
