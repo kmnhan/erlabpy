@@ -747,8 +747,7 @@ class _ExtensionCatalog(QtCore.QObject):
     """Observe one application catalog across active manager windows.
 
     Atomic replacement removes the file watch on some Qt backends. Each refresh
-    therefore restores both the file and directory watches. A generation poll is a
-    fallback for missed filesystem notifications.
+    therefore restores both the file and directory watches.
     """
 
     changed = QtCore.Signal(object)
@@ -771,10 +770,6 @@ class _ExtensionCatalog(QtCore.QObject):
         self._refresh_timer.setSingleShot(True)
         self._refresh_slot = self.refresh
         self._refresh_timer.timeout.connect(self._refresh_slot)
-        self._poll_timer = QtCore.QTimer(self)
-        self._poll_timer.setInterval(2_000)
-        self._poll_timer.timeout.connect(self._refresh_slot)
-        self._poll_timer.start()
         self._restore_watches()
         self._resolver_owner = uuid.uuid4().hex
         _set_revision_resolver(self._resolver_owner, self.store.source_path)
@@ -818,9 +813,7 @@ class _ExtensionCatalog(QtCore.QObject):
             return
         self._closed = True
         self._refresh_timer.stop()
-        self._poll_timer.stop()
         self._watcher.fileChanged.disconnect(self._schedule_refresh_slot)
         self._watcher.directoryChanged.disconnect(self._schedule_refresh_slot)
         self._refresh_timer.timeout.disconnect(self._refresh_slot)
-        self._poll_timer.timeout.disconnect(self._refresh_slot)
         _remove_resolvers(self._resolver_owner)

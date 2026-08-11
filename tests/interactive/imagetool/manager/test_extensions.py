@@ -618,8 +618,7 @@ def test_exact_revision_public_replay_survives_another_catalog_closing(
         xr.testing.assert_identical(operation.apply(data), data * 3.0)
     finally:
         first.close()
-        if second._poll_timer.isActive():
-            second.close()
+        second.close()
 
     namespace: dict[str, typing.Any] = {"data": data, "erlab": erlab}
     exec(f"result = {generated}", namespace)  # noqa: S102
@@ -662,7 +661,6 @@ def test_catalog_close_cancels_pending_refresh(
     qtbot.wait(1)
 
     assert not catalog._refresh_timer.isActive()
-    assert not catalog._poll_timer.isActive()
     assert not changed
     catalog.close()
 
@@ -709,29 +707,6 @@ def test_catalog_watcher_propagates_global_record_state(
             )
         assert second.model.extensions["scale"].removed
         assert not second.model.extensions["scale"].enabled
-    finally:
-        first.close()
-        second.close()
-
-
-def test_catalog_generation_poll_recovers_a_missed_notification(
-    tmp_path: pathlib.Path, qtbot: pytest.QtBot
-) -> None:
-    directory = tmp_path / "catalog"
-    first = _ExtensionCatalog(directory=directory)
-    second = _ExtensionCatalog(directory=directory)
-    script_path = tmp_path / "scale.py"
-    _script(script_path)
-    try:
-        watched_paths = (*second._watcher.files(), *second._watcher.directories())
-        if watched_paths:
-            second._watcher.removePaths(list(watched_paths))
-        first.store.add_script(script_path)
-
-        qtbot.wait_until(
-            lambda: "scale" in second.model.extensions,
-            timeout=3500,
-        )
     finally:
         first.close()
         second.close()
