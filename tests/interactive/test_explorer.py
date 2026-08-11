@@ -19,6 +19,9 @@ from erlab.interactive.explorer._tabbed_explorer import (
     _TabbedExplorer,
 )
 from erlab.interactive.imagetool.manager import _dialogs
+from erlab.interactive.imagetool.manager._extensions import (
+    _dialogs as extension_dialogs,
+)
 
 
 class _PreviewTrackingExplorer(QtWidgets.QWidget):
@@ -1174,3 +1177,52 @@ def test_explorer_loader_options_dialog_updates_kwargs(
     assert explorer._loader_extensions_by_name["example"] == {
         "additional_coords": {"gui_extra": 7.0}
     }
+
+
+def test_explorer_extension_loader_options_dialog_uses_saved_values(
+    qtbot,
+    monkeypatch,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="example",
+        name="Example",
+        category="Lab",
+        summary="",
+        function_name="load_data",
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="mode",
+                kind=erlab.extensions.ParameterKind.STRING,
+                required=False,
+                default="default",
+            ),
+        ),
+    )
+    explorer = _DataExplorer(root_path=example_data_dir, loader_name="example")
+    qtbot.addWidget(explorer)
+    explorer._loader_kwargs_by_name["example"] = {"mode": "saved"}
+    loader = type(
+        "ExtensionLoader",
+        (),
+        {"descriptor": descriptor, "uses_standard_loader_options": False},
+    )()
+    monkeypatch.setattr(explorer, "_loader", lambda _name: loader)
+
+    class _CancelParameterDialog:
+        def __init__(self, dialog_descriptor, parent, values) -> None:
+            assert dialog_descriptor is descriptor
+            assert parent is explorer
+            assert values == {"mode": "saved"}
+
+        def exec(self) -> bool:
+            return False
+
+    monkeypatch.setattr(
+        extension_dialogs, "_ExtensionParameterDialog", _CancelParameterDialog
+    )
+
+    explorer._open_loader_options()
+
+    assert explorer._loader_kwargs_by_name["example"] == {"mode": "saved"}

@@ -16,7 +16,9 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.extensions._entry_points as extension_entry_points
+import erlab.interactive.imagetool.manager._base as manager_base
 import erlab.interactive.imagetool.manager._extensions._catalog as extension_catalog
+import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dialogs
 from erlab.interactive.imagetool._load_source import _resolve_load_func
 from erlab.interactive.imagetool._provenance._execution import (
     file_load_source_status,
@@ -144,6 +146,95 @@ def test_parameter_dialog_preserves_none_and_empty_string(qtbot) -> None:
     )
     label_none.setChecked(False)
     assert dialog.parameters["label"] == ""
+
+
+def test_parameter_dialog_uses_initial_values(qtbot) -> None:
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="configured-loader",
+        name="Configured loader",
+        category="Lab",
+        summary="",
+        function_name="load_data",
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="scale",
+                kind=erlab.extensions.ParameterKind.NUMBER,
+                required=False,
+                optional=True,
+                default=2.0,
+            ),
+            erlab.extensions.ParameterDescriptor(
+                id="label",
+                kind=erlab.extensions.ParameterKind.STRING,
+                required=False,
+                optional=True,
+            ),
+        ),
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = _ExtensionParameterDialog(
+        descriptor, parent, values={"scale": 3.5, "label": ""}
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.parameters == {"scale": 3.5, "label": ""}
+
+
+def test_manager_extension_loader_dialog_uses_recent_values(monkeypatch) -> None:
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="configured-loader",
+        name="Configured loader",
+        category="Lab",
+        summary="",
+        function_name="load_data",
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="mode",
+                kind=erlab.extensions.ParameterKind.STRING,
+                required=False,
+                default="default",
+            ),
+        ),
+    )
+
+    def load_data(_path: pathlib.Path, *, mode: str = "default") -> xr.DataArray:
+        del mode
+        return xr.DataArray(0)
+
+    load_data.descriptor = descriptor  # type: ignore[attr-defined]
+    load_data.uses_standard_loader_options = False  # type: ignore[attr-defined]
+
+    class _AcceptParameterDialog:
+        def __init__(self, dialog_descriptor, parent, values) -> None:
+            assert dialog_descriptor is descriptor
+            assert parent is manager
+            assert values == {"mode": "recent"}
+
+        def exec(self) -> bool:
+            return True
+
+        @property
+        def parameters(self) -> dict[str, str]:
+            return {"mode": "recent"}
+
+    monkeypatch.setattr(
+        extension_dialogs, "_ExtensionParameterDialog", _AcceptParameterDialog
+    )
+    manager = types.SimpleNamespace(
+        _recent_loader_kwargs_by_filter={"Configured (*.dat)": {"mode": "recent"}},
+        _recent_loader_extensions_by_filter={},
+        _recent_name_filter=None,
+        _shared_loader_state=lambda: ({}, {}),
+        _mark_workspace_layout_dirty=lambda: None,
+    )
+
+    selected = manager_base._ImageToolManagerBase._select_loader_options(
+        manager,
+        {"Configured (*.dat)": (load_data, {"mode": "default"})},
+    )
+
+    assert selected == ("Configured (*.dat)", load_data, {"mode": "recent"})
 
 
 def test_catalog_reload_identity_metadata_and_conflict(tmp_path: pathlib.Path) -> None:

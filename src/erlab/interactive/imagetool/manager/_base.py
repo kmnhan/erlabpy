@@ -663,17 +663,21 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
 
         def extension_parameters(
             func: Callable,
+            values: Mapping[str, typing.Any],
         ) -> dict[str, typing.Any] | None:
             descriptor = getattr(func, "descriptor", None)
             if not isinstance(descriptor, erlab.extensions.LoaderDescriptor):
                 return None
-            parameter_dialog = _ExtensionParameterDialog(descriptor, self)
+            parameter_dialog = _ExtensionParameterDialog(
+                descriptor, self, values=values
+            )
             if not parameter_dialog.exec():
                 return None
             return parameter_dialog.parameters
 
+        shared_kwargs, shared_extensions = self._shared_loader_state()
         if len(valid_loaders) == 1:
-            selected_filter, (selected_func, _defaults) = next(
+            selected_filter, (selected_func, defaults) = next(
                 iter(valid_loaders.items())
             )
             if isinstance(
@@ -682,7 +686,17 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             ) and not bool(
                 getattr(selected_func, "uses_standard_loader_options", False)
             ):
-                selected_parameters = extension_parameters(selected_func)
+                initial_parameters = dict(defaults)
+                loader_name = _loader_name_for_callable(selected_func)
+                if loader_name is not None and loader_name in shared_kwargs:
+                    initial_parameters.update(shared_kwargs[loader_name])
+                else:
+                    initial_parameters.update(
+                        self._recent_loader_kwargs_by_filter.get(selected_filter, {})
+                    )
+                selected_parameters = extension_parameters(
+                    selected_func, initial_parameters
+                )
                 if selected_parameters is None:
                     return None
                 self._recent_name_filter = selected_filter
@@ -693,7 +707,6 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
                 self._mark_workspace_layout_dirty()
                 return selected_filter, selected_func, selected_parameters
 
-        shared_kwargs, shared_extensions = self._shared_loader_state()
         dialog_loaders: dict[str, tuple[Callable, dict[str, typing.Any]]] = {}
         dialog_extensions: dict[str, dict[str, typing.Any]] = {}
         for current_filter, (func, kwargs) in valid_loaders.items():
@@ -728,7 +741,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         if isinstance(
             getattr(func, "descriptor", None), erlab.extensions.LoaderDescriptor
         ) and not bool(getattr(func, "uses_standard_loader_options", False)):
-            selected_parameters = extension_parameters(func)
+            selected_parameters = extension_parameters(func, kwargs)
             if selected_parameters is None:
                 return None
             kwargs = selected_parameters

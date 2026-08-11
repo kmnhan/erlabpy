@@ -1465,7 +1465,11 @@ class _DataExplorer(QtWidgets.QMainWindow):
         if isinstance(descriptor, erlab.extensions.LoaderDescriptor) and not bool(
             getattr(loader, "uses_standard_loader_options", False)
         ):
-            dialog = _ExtensionParameterDialog(descriptor, self)
+            dialog = _ExtensionParameterDialog(
+                descriptor,
+                self,
+                values=self._loader_kwargs_by_name.get(loader_name, {}),
+            )
             if not dialog.exec():
                 return
             self._loader_kwargs_by_name[loader_name] = dialog.parameters

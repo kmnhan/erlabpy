@@ -21,6 +21,7 @@ from erlab.interactive.imagetool.manager._extensions._models import (
 
 if typing.TYPE_CHECKING:
     import pathlib
+    from collections.abc import Mapping
 
 
 class _SourceReviewDialog(QtWidgets.QDialog):
@@ -94,6 +95,7 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
         self,
         descriptor: RoutineDescriptor | LoaderDescriptor,
         parent: QtWidgets.QWidget,
+        values: Mapping[str, typing.Any] | None = None,
     ) -> None:
         super().__init__(parent)
         self.descriptor = descriptor
@@ -108,7 +110,12 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
         self._editors: dict[str, QtWidgets.QWidget] = {}
         self._none_controls: dict[str, QtWidgets.QCheckBox] = {}
         for parameter in descriptor.parameters:
-            editor = self._make_editor(parameter)
+            value = (
+                values[parameter.id]
+                if values is not None and parameter.id in values
+                else parameter.default
+            )
+            editor = self._make_editor(parameter, value)
             editor.setObjectName(f"manager_extension_parameter_{parameter.id}")
             self._editors[parameter.id] = editor
             field: QtWidgets.QWidget = editor
@@ -121,7 +128,7 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
                 none_control.setObjectName(
                     f"manager_extension_parameter_{parameter.id}_none"
                 )
-                none_control.setChecked(parameter.default is None)
+                none_control.setChecked(value is None)
                 editor.setDisabled(none_control.isChecked())
                 none_control.toggled.connect(editor.setDisabled)
                 field_layout.addWidget(none_control)
@@ -137,43 +144,45 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _make_editor(self, parameter: ParameterDescriptor) -> QtWidgets.QWidget:
+    def _make_editor(
+        self, parameter: ParameterDescriptor, value: typing.Any
+    ) -> QtWidgets.QWidget:
         if parameter.kind is ParameterKind.BOOLEAN:
             if parameter.optional:
                 editor = QtWidgets.QComboBox(self)
                 editor.addItem("None", None)
                 editor.addItem("True", True)
                 editor.addItem("False", False)
-                if parameter.default is not None:
-                    editor.setCurrentIndex(editor.findData(parameter.default))
+                if value is not None:
+                    editor.setCurrentIndex(editor.findData(value))
                 return editor
             editor = QtWidgets.QCheckBox(self)
-            editor.setChecked(bool(parameter.default))
+            editor.setChecked(bool(value))
             return editor
         if parameter.kind is ParameterKind.INTEGER:
             if parameter.optional:
                 editor = QtWidgets.QLineEdit(self)
                 editor.setValidator(QtGui.QIntValidator(editor))
-                if parameter.default is not None:
-                    editor.setText(str(parameter.default))
+                if value is not None:
+                    editor.setText(str(value))
                 return editor
             editor = QtWidgets.QSpinBox(self)
             editor.setRange(-(2**31), 2**31 - 1)
-            if parameter.default is not None:
-                editor.setValue(int(parameter.default))
+            if value is not None:
+                editor.setValue(int(value))
             return editor
         if parameter.kind is ParameterKind.NUMBER:
             if parameter.optional:
                 editor = QtWidgets.QLineEdit(self)
                 editor.setValidator(QtGui.QDoubleValidator(editor))
-                if parameter.default is not None:
-                    editor.setText(str(parameter.default))
+                if value is not None:
+                    editor.setText(str(value))
                 return editor
             editor = QtWidgets.QDoubleSpinBox(self)
             editor.setRange(-1.0e300, 1.0e300)
             editor.setDecimals(12)
-            if parameter.default is not None:
-                editor.setValue(float(parameter.default))
+            if value is not None:
+                editor.setValue(float(value))
             return editor
         if parameter.kind in {ParameterKind.LITERAL, ParameterKind.ENUM}:
             editor = QtWidgets.QComboBox(self)
@@ -181,14 +190,14 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
                 editor.addItem("None", None)
             for value in parameter.choices:
                 editor.addItem(str(value), value)
-            if parameter.default is not None:
-                index = editor.findData(parameter.default)
+            if value is not None:
+                index = editor.findData(value)
                 if index >= 0:
                     editor.setCurrentIndex(index)
             return editor
         editor = QtWidgets.QLineEdit(self)
-        if parameter.default is not None:
-            editor.setText(str(parameter.default))
+        if value is not None:
+            editor.setText(str(value))
         if parameter.kind is ParameterKind.PATH:
             editor.setPlaceholderText("Path")
         return editor
