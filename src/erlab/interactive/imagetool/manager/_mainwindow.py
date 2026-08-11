@@ -1298,7 +1298,10 @@ class ImageToolManager(_ImageToolManagerBase):
         return self._tool_graph.descendant_uids(uid)
 
     def _mark_removed_subtree_dirty(self, uid: str) -> None:
-        for node_uid in self._tool_graph.subtree_uids(uid):
+        subtree_uids = self._tool_graph.subtree_uids(uid)
+        if not self._workspace_state.closing_document:
+            self._extensions.remove_workspace_node_references(subtree_uids)
+        for node_uid in subtree_uids:
             node = self._tool_graph.nodes.get(node_uid)
             if node is not None:
                 self._set_node_window_modified(node_uid, False)

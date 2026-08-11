@@ -1970,6 +1970,39 @@ def test_degraded_save_as_preserves_missing_environment_requirement(
     assert saved_requirement["embedded_object_id"] is None
 
 
+def test_removing_node_discards_only_its_workspace_requirements(
+    manager_context,
+) -> None:
+    with manager_context() as manager:
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])), show=False
+        )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(xr.DataArray([2.0])), show=False
+        )
+        first_uid = manager._tool_graph.root_wrappers[0].uid
+        second_uid = manager._tool_graph.root_wrappers[1].uid
+        requirement = _WorkspaceExtensionRequirement(
+            extension_id="missing-extension",
+            capability_id="normalize",
+            capability_kind="routine",
+            revision_hash="a" * 64,
+            extension_api_version=1,
+            source_type="script",
+            referencing_nodes=(first_uid, second_uid),
+        )
+        manager._extensions.set_workspace_requirements((requirement,))
+
+        manager.remove_imagetool(0)
+
+        collected = manager._extensions.collect_workspace_requirements()
+        assert len(collected) == 1
+        assert collected[0].referencing_nodes == (second_uid,)
+
+        manager.remove_imagetool(1)
+        assert manager._extensions.collect_workspace_requirements() == ()
+
+
 def test_workspace_requirements_include_nested_script_inputs(
     manager_context,
     tmp_path: pathlib.Path,

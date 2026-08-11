@@ -1106,6 +1106,32 @@ class _ExtensionController(QtCore.QObject):
             for requirement in self._workspace_requirements
         )
 
+    def remove_workspace_node_references(self, node_uids: Iterable[str]) -> None:
+        """Remove dependencies for nodes that the user explicitly deleted.
+
+        Requirements for nodes that failed to load remain unchanged because those
+        nodes do not pass through this method.
+        """
+        removed = set(node_uids)
+        if not removed:
+            return
+        requirements: list[_WorkspaceExtensionRequirement] = []
+        for requirement in self._workspace_requirements:
+            if not requirement.referencing_nodes:
+                requirements.append(requirement)
+                continue
+            remaining = tuple(
+                uid for uid in requirement.referencing_nodes if uid not in removed
+            )
+            if not remaining:
+                continue
+            if remaining != requirement.referencing_nodes:
+                requirement = requirement.model_copy(
+                    update={"referencing_nodes": remaining}
+                )
+            requirements.append(requirement)
+        self._workspace_requirements = tuple(requirements)
+
     def _resolve_requirement(
         self, requirement: _WorkspaceExtensionRequirement
     ) -> _ResolvedWorkspaceRequirement:
