@@ -105,6 +105,12 @@ def load_data(path: Path) -> xr.DataArray:
     return source
 
 
+def _generated_external_loader(
+    path: pathlib.Path, *, scale: float = 1.0
+) -> xr.DataArray:
+    return xr.DataArray([float(path.read_text()) * scale])
+
+
 def _validate_and_enable(
     store: _ExtensionCatalogStore,
     extension_id: str,
@@ -1223,6 +1229,75 @@ def test_environment_loader_preserves_file_dialog_contract(
 
     namespace: dict[str, typing.Any] = {}
     exec(code, namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["loaded"], xr.DataArray([12.0]))
+
+
+def test_generated_external_loader_verifies_entry_point_revision(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    revision = "a" * 64
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="external",
+        name="External",
+        category="Environment",
+        summary="",
+        function_name="load",
+    )
+    call = _ExtensionLoaderCall(
+        manager_session_id="manager",
+        catalog_generation=1,
+        extension_id="environment.erlab.io.loaders.external",
+        extension_name="External",
+        revision_hash=revision,
+        loader_id="external",
+        descriptor=descriptor,
+        source_path=None,
+        source_type="environment-package",
+        executor=lambda *_args: xr.DataArray([0.0]),
+        entry_point_group="erlab.io.loaders",
+        entry_point_name="external",
+        loader_method=f"{__name__}._generated_external_loader",
+    )
+    resolved = _resolve_load_func(
+        (call, {"scale": 3.0}, FileDataSelection(kind="dataarray"))
+    )
+    if resolved is None:
+        raise RuntimeError("The extension loader did not resolve")
+    path = tmp_path / "value.txt"
+    path.write_text("4")
+    calls: list[tuple[str, str, str, str]] = []
+
+    class Loaded:
+        def __init__(self, group: str, name: str, expected_revision: str) -> None:
+            self.identity = (group, name, expected_revision)
+
+        def resolve_loader(self, method: str):
+            calls.append((*self.identity, method))
+            return _generated_external_loader
+
+    monkeypatch.setattr(
+        erlab.extensions,
+        "load_entry_point",
+        lambda group, name, *, expected_revision: Loaded(
+            group, name, expected_revision
+        ),
+    )
+    code = resolved.load_code(path, assign="loaded")
+    if code is None:
+        raise RuntimeError("The extension loader did not generate code")
+    namespace: dict[str, typing.Any] = {}
+
+    exec(code, namespace)  # noqa: S102
+
+    assert calls == [
+        (
+            "erlab.io.loaders",
+            "external",
+            revision,
+            f"{__name__}._generated_external_loader",
+        )
+    ]
     xr.testing.assert_identical(namespace["loaded"], xr.DataArray([12.0]))
 
 

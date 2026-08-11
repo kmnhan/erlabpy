@@ -292,6 +292,8 @@ class LoadedEntryPoint:
         instantiated so its loader methods are available directly.
     callables
         Validated extension callables keyed by their Python function names.
+    loader_methods
+        LoaderBase file-dialog callables keyed by their stable method references.
     """
 
     def __init__(
@@ -302,15 +304,56 @@ class LoadedEntryPoint:
         revision: str,
         value: typing.Any,
         callables: dict[str, Callable[..., typing.Any]],
+        loader_methods: dict[str | None, Callable[..., typing.Any]],
     ) -> None:
         self.group = group
         self.name = name
         self.revision = revision
         self.value = value
         self.callables = callables
+        self.loader_methods = loader_methods
 
     def __getattr__(self, name: str) -> typing.Any:
         """Return a public attribute or the entry-point callable itself."""
         if name in self.callables:
             return _extension_callable(self.callables[name])
         return getattr(self.value, name)
+
+    def resolve_loader(self, method: str | None = None) -> Callable[..., typing.Any]:
+        """Return one declared LoaderBase file-dialog callable.
+
+        Parameters
+        ----------
+        method
+            Stable method reference reported by the loader entry point. Use ``None``
+            for its normal ``load`` method.
+
+        Returns
+        -------
+        collections.abc.Callable
+            The exact callable declared by the verified entry point.
+
+        Raises
+        ------
+        ExtensionNotFoundError
+            If this entry point does not declare the requested loader method.
+
+        Examples
+        --------
+        >>> extension = load_entry_point(  # doctest: +SKIP
+        ...     "erlab.io.loaders",
+        ...     "my_lab",
+        ...     expected_revision="0a12...",
+        ... )
+        >>> load_preview = extension.resolve_loader(  # doctest: +SKIP
+        ...     "my_lab.preview.load"
+        ... )
+        >>> data = load_preview("scan.dat")  # doctest: +SKIP
+        """
+        try:
+            return self.loader_methods[method]
+        except KeyError as error:
+            raise ExtensionNotFoundError(
+                f"Loader method {method!r} is not declared by entry point "
+                f"{self.group}:{self.name}"
+            ) from error

@@ -36,6 +36,7 @@ from erlab.extensions._api import (
     _CAPABILITY_ATTRIBUTE,
     _coerce_call_parameters,
     _descriptor_for,
+    _loader_method_reference,
     _module_capabilities,
     _resolve_loader_method,
 )
@@ -869,24 +870,6 @@ def _environment_revision_matches(
     entry_point: importlib.metadata.EntryPoint, expected_revision: str
 ) -> bool:
     return _entry_point_revision(entry_point) == expected_revision
-
-
-def _loader_method_reference(loader: LoaderBase, method: Callable) -> str | None:
-    """Return a stable reference for one installed loader dialog callable."""
-    if getattr(method, "__self__", None) is loader:
-        name = getattr(method, "__name__", None)
-        if not isinstance(name, str) or not callable(getattr(loader, name, None)):
-            raise TypeError("Loader file-dialog methods must have a stable name")
-        return None if name == "load" else name
-    module = getattr(method, "__module__", None)
-    qualname = getattr(method, "__qualname__", None)
-    if (
-        not isinstance(module, str)
-        or not isinstance(qualname, str)
-        or "<locals>" in qualname
-    ):
-        raise TypeError("Loader file-dialog callables must be importable functions")
-    return f"{module}.{qualname}"
 
 
 def _environment_capabilities(

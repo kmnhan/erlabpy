@@ -532,19 +532,14 @@ def _extension_loader_expression(
     if not isinstance(entry_point_name, str) or not entry_point_name:
         raise ValueError("Extension loader entry-point name is unavailable")
     if method is not None and "." in method:
-        parts = method.split(".")
-        module_name: str | None = None
-        for index in range(len(parts) - 1, 0, -1):
-            candidate = ".".join(parts[:index])
-            try:
-                importlib.import_module(candidate)
-            except ModuleNotFoundError:
-                continue
-            module_name = candidate
-            break
-        if module_name is None:
-            raise ValueError(f"Extension loader method {method!r} is not importable")
-        return method, ("import pathlib", f"import {module_name}")
+        expression = (
+            "erlab.extensions.load_entry_point(\n"
+            f"    {entry_point_group!r},\n"
+            f"    {entry_point_name!r},\n"
+            f"    expected_revision={revision!r},\n"
+            f").resolve_loader({method!r})"
+        )
+        return expression, ("import pathlib", "import erlab")
     expression = (
         "erlab.extensions.load_entry_point(\n"
         f"    {entry_point_group!r},\n"

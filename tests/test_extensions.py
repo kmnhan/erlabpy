@@ -31,6 +31,12 @@ if typing.TYPE_CHECKING:
     import pathlib
 
 
+def _entry_point_preview_loader(
+    path: typing.Any, *, scale: float = 1.0
+) -> xr.DataArray:
+    return xr.DataArray([float(path.read_text()) * scale])
+
+
 def test_routine_decorator_preserves_normal_call_behavior() -> None:
     def normalize(data: xr.DataArray, scale: float = 2.0) -> xr.DataArray:
         return data / scale
@@ -262,6 +268,75 @@ def test_load_entry_point_exposes_a_pinned_package_routine(
         loaded.normalize(xr.DataArray([1.0, 2.0])), xr.DataArray([0.5, 1.0])
     )
     assert load_calls == [None]
+
+
+def test_load_entry_point_exposes_declared_external_loader_method(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    class PreviewLoader(erlab.io.dataloader.LoaderBase):
+        name = "preview"
+        extensions: typing.ClassVar[set[str]] = {".txt"}
+        skip_validate = True
+
+        @property
+        def file_dialog_methods(self):
+            return {
+                "Preview Data (*.txt)": (
+                    _entry_point_preview_loader,
+                    {"scale": 2.0},
+                )
+            }
+
+        def load_single(self, file_path, without_values=False):
+            del without_values
+            return xr.DataArray([float(file_path.read_text())])
+
+    class EntryPoint:
+        group = "erlab.io.loaders"
+        name = "preview"
+        value = "lab_package:PreviewLoader"
+        dist = None
+
+        @staticmethod
+        def load():
+            return PreviewLoader
+
+    class EntryPoints(tuple):
+        def select(self, **parameters):
+            return tuple(
+                entry
+                for entry in self
+                if all(
+                    getattr(entry, key, None) == value
+                    for key, value in parameters.items()
+                )
+            )
+
+    entry_point = EntryPoint()
+    monkeypatch.setattr(
+        extension_api.importlib.metadata,
+        "entry_points",
+        lambda: EntryPoints((entry_point,)),
+    )
+    revision = _entry_point_revision(entry_point)
+    path = tmp_path / "value.txt"
+    path.write_text("3")
+
+    loaded = load_entry_point("erlab.io.loaders", "preview", expected_revision=revision)
+    method = loaded.resolve_loader(f"{__name__}._entry_point_preview_loader")
+
+    xr.testing.assert_identical(method(path, scale=2.0), xr.DataArray([6.0]))
+    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="not declared"):
+        loaded.resolve_loader("lab_package.missing")
+    with pytest.raises(
+        erlab.extensions.ExtensionNotFoundError, match="does not match revision"
+    ):
+        load_entry_point(
+            "erlab.io.loaders",
+            "preview",
+            expected_revision="a" * 64,
+        )
 
 
 def test_load_entry_point_rejects_a_preloaded_editable_module(

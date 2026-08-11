@@ -658,6 +658,7 @@ def load_entry_point(
             raise ExtensionImportError(
                 f"Could not import extension entry point {group}:{name}: {error}"
             ) from error
+        loader_methods: dict[str | None, Callable[..., typing.Any]] = {}
         if group == "erlab.io.loaders":
             from erlab.io.dataloader import LoaderBase
 
@@ -668,6 +669,16 @@ def load_entry_point(
                     f"Extension entry point {group}:{name} does not provide LoaderBase"
                 )
             callables = {}
+            loader_methods[None] = value.load
+            for method, _defaults in value.file_dialog_methods.values():
+                reference = _loader_method_reference(value, method)
+                previous = loader_methods.get(reference)
+                if previous is not None and previous != method:
+                    raise ExtensionImportError(
+                        f"Extension entry point {group}:{name} declares multiple "
+                        f"loader methods as {reference!r}"
+                    )
+                loader_methods[reference] = method
         elif isinstance(value, types.ModuleType):
             routines, loaders = _module_capabilities(value)
             callables = {
@@ -688,6 +699,7 @@ def load_entry_point(
             revision=revision,
             value=value,
             callables=callables,
+            loader_methods=loader_methods,
         )
     raise ExtensionNotFoundError(
         f"Extension entry point {group}:{name} does not match revision "
@@ -771,6 +783,24 @@ def _resolved_revision(extension_id: str, revision: str) -> os.PathLike[str] | s
     raise ExtensionNotFoundError(
         f"Extension revision {extension_id}:{revision} was not found"
     )
+
+
+def _loader_method_reference(loader: object, method: Callable) -> str | None:
+    """Return the persisted reference for one LoaderBase dialog callable."""
+    if getattr(method, "__self__", None) is loader:
+        name = getattr(method, "__name__", None)
+        if not isinstance(name, str) or not callable(getattr(loader, name, None)):
+            raise TypeError("Loader file-dialog methods must have a stable name")
+        return None if name == "load" else name
+    module = getattr(method, "__module__", None)
+    qualname = getattr(method, "__qualname__", None)
+    if (
+        not isinstance(module, str)
+        or not isinstance(qualname, str)
+        or "<locals>" in qualname
+    ):
+        raise TypeError("Loader file-dialog callables must be importable functions")
+    return f"{module}.{qualname}"
 
 
 def _resolve_loader_method(
