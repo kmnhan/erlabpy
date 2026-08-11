@@ -837,6 +837,7 @@ class _ExtensionController(QtCore.QObject):
         for key, node_uids in references.items():
             extension_id, revision_hash, routine_id = key
             record = self.catalog.model.extensions.get(extension_id)
+            operation = typing.cast("ExtensionRoutineOperation", operations[key])
             previous = persisted.get(
                 (extension_id, revision_hash, "routine", routine_id)
             )
@@ -845,19 +846,29 @@ class _ExtensionController(QtCore.QObject):
                     set(previous.referencing_nodes).difference(loaded_node_uids)
                 )
             source_type: typing.Literal["script", "environment-package"] = (
-                "script" if previous is None else previous.source_type
+                operation.source_type if previous is None else previous.source_type
             )
             metadata = {} if previous is None else dict(previous.metadata_snapshot)
             if record is not None:
-                source_type = record.source_type
                 metadata = {
                     **metadata,
                     "extension_name": record.name,
-                    "routine_name": operations[key].routine_name,
+                    "routine_name": operation.routine_name,
                     **record.metadata.model_dump(),
                 }
             elif previous is not None:
-                metadata["routine_name"] = operations[key].routine_name
+                metadata["routine_name"] = operation.routine_name
+            record_revision = (
+                None
+                if record is None or record.source_type != source_type
+                else record.revisions.get(revision_hash)
+            )
+            if (
+                previous is None
+                and record_revision is not None
+                and record_revision.source_modified_at is not None
+            ):
+                metadata["source_modified_at"] = record_revision.source_modified_at
             requirements.append(
                 _WorkspaceExtensionRequirement(
                     extension_id=extension_id,
@@ -891,18 +902,34 @@ class _ExtensionController(QtCore.QObject):
                 )
                 node_uids.update(unresolved_node_uids)
             loader_source_type: typing.Literal["script", "environment-package"] = (
-                "script" if previous is None else previous.source_type
+                previous.source_type
+                if previous is not None
+                else "script"
+                if record is None
+                else record.source_type
             )
             loader_metadata = (
                 {} if previous is None else dict(previous.metadata_snapshot)
             )
             if record is not None:
-                loader_source_type = record.source_type
                 loader_metadata = {
                     **loader_metadata,
                     "extension_name": record.name,
                     **record.metadata.model_dump(),
                 }
+            loader_record_revision = (
+                None
+                if record is None or record.source_type != loader_source_type
+                else record.revisions.get(revision_hash)
+            )
+            if (
+                previous is None
+                and loader_record_revision is not None
+                and loader_record_revision.source_modified_at is not None
+            ):
+                loader_metadata["source_modified_at"] = (
+                    loader_record_revision.source_modified_at
+                )
             requirements.append(
                 _WorkspaceExtensionRequirement(
                     extension_id=extension_id,
@@ -1007,7 +1034,14 @@ class _ExtensionController(QtCore.QObject):
                             revision_hash=record.current_revision,
                             extension_api_version=EXTENSION_API_VERSION,
                             source_type="script",
-                            metadata_snapshot=metadata,
+                            metadata_snapshot=(
+                                metadata
+                                if revision.source_modified_at is None
+                                else {
+                                    **metadata,
+                                    "source_modified_at": revision.source_modified_at,
+                                }
+                            ),
                             embedded_object_id=self._embedded_script_object_id(
                                 record=record,
                                 revision_hash=record.current_revision,
@@ -1029,12 +1063,12 @@ class _ExtensionController(QtCore.QObject):
         """Name an embedded object only when its source can be preserved."""
         if source_type != "script":
             return None
-        if record is None:
-            return None if previous is None else previous.embedded_object_id
-        if record.embed_policy == "never":
-            return None
         if previous is not None and previous.embedded_object_id is not None:
             return previous.embedded_object_id
+        if record is None or record.source_type != "script":
+            return None
+        if record.embed_policy == "never":
+            return None
         try:
             self.revision_source_bytes(record.id, revision_hash)
         except (KeyError, OSError):
@@ -1380,6 +1414,12 @@ class _ExtensionController(QtCore.QObject):
                     requirement.metadata_snapshot.get("extension_name", extension_id)
                 ),
                 metadata=dialog.metadata,
+                source_modified_at=(
+                    str(requirement.metadata_snapshot["source_modified_at"])
+                    if requirement.metadata_snapshot.get("source_modified_at")
+                    is not None
+                    else None
+                ),
                 expected_record_generation=(
                     None if existing is None else existing.record_generation
                 ),

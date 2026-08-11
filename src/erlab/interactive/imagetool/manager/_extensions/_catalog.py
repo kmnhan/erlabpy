@@ -323,6 +323,7 @@ class _ExtensionCatalogStore:
         expected_revision: str,
         name: str,
         metadata: _ExtensionMetadata,
+        source_modified_at: str | None = None,
         expected_record_generation: int | None = None,
         check_record_generation: bool = False,
     ) -> _ExtensionCatalogModel:
@@ -346,6 +347,7 @@ class _ExtensionCatalogStore:
             revision = _ExtensionRevision(
                 source_hash=actual_revision,
                 object_name=object_name,
+                source_modified_at=source_modified_at,
                 created_at=now,
                 approved=False,
             )
@@ -360,7 +362,16 @@ class _ExtensionCatalogStore:
                 )
             else:
                 revisions = dict(existing.revisions)
-                revisions.setdefault(actual_revision, revision)
+                current_revision = revisions.get(actual_revision)
+                if current_revision is None:
+                    revisions[actual_revision] = revision
+                elif (
+                    current_revision.source_modified_at is None
+                    and source_modified_at is not None
+                ):
+                    revisions[actual_revision] = current_revision.model_copy(
+                        update={"source_modified_at": source_modified_at}
+                    )
                 records[extension_id] = existing.model_copy(
                     update={
                         "current_revision": actual_revision,

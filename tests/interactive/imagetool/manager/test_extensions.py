@@ -574,6 +574,30 @@ def test_embedded_source_review_updates_existing_metadata(
     assert tuple(updated.extensions["scale"].revisions) == (revision,)
 
 
+def test_embedded_source_preserves_workspace_modification_time(
+    tmp_path: pathlib.Path,
+) -> None:
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    script_path = tmp_path / "scale.py"
+    source = _script(script_path)
+    revision = hashlib.sha256(source).hexdigest()
+    source_modified_at = "2025-06-01T12:34:56+00:00"
+
+    catalog = store.add_embedded_script(
+        source,
+        extension_id="scale",
+        expected_revision=revision,
+        name="Scale",
+        metadata=_ExtensionMetadata(),
+        source_modified_at=source_modified_at,
+    )
+
+    assert (
+        catalog.extensions["scale"].revisions[revision].source_modified_at
+        == source_modified_at
+    )
+
+
 def test_catalog_preserves_import_failure_diagnostics(tmp_path: pathlib.Path) -> None:
     store = _ExtensionCatalogStore(tmp_path / "catalog")
     script_path = tmp_path / "broken.py"
@@ -1458,6 +1482,11 @@ def test_unused_script_can_be_embedded_explicitly(
             embed_policy="always",
         )
         manager._extensions.catalog.refresh()
+        source_modified_at = (
+            manager._extensions.catalog.model.extensions["scale"]
+            .revisions[revision]
+            .source_modified_at
+        )
 
         manager._workspace_controller.saving._save_workspace_document(workspace_path)
 
@@ -1466,6 +1495,9 @@ def test_unused_script_can_be_embedded_explicitly(
     requirements = manifest["extension_requirements"]
     assert len(requirements) == 1
     assert requirements[0]["revision_hash"] == revision
+    assert requirements[0]["metadata_snapshot"]["source_modified_at"] == (
+        source_modified_at
+    )
     object_id = requirements[0]["embedded_object_id"]
     restored, kind = workspace_storage._read_workspace_blob(workspace_path, object_id)
     assert restored == source
@@ -1550,6 +1582,89 @@ def test_missing_catalog_source_does_not_create_dangling_embedded_object(
     manifest = workspace_format._workspace_manifest_from_attrs(attrs)
     assert len(manifest["extension_requirements"]) == 1
     assert manifest["extension_requirements"][0]["embedded_object_id"] is None
+
+
+def test_save_as_preserves_an_existing_embedding_when_policy_is_never(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "preserved.py"
+    source = _script(script_path)
+    workspace_path = tmp_path / "preserved.itws"
+
+    with manager_context() as manager:
+        catalog, revision, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        catalog = _validate_and_enable(
+            manager._extensions.catalog.store,
+            "preserved",
+            expected_record_generation=(
+                catalog.extensions["preserved"].record_generation
+            ),
+        )
+        catalog = manager._extensions.catalog.store.update_record(
+            "preserved",
+            expected_record_generation=(
+                catalog.extensions["preserved"].record_generation
+            ),
+            embed_policy="never",
+        )
+        manager._extensions.catalog.refresh()
+        operation = ExtensionRoutineOperation(
+            extension_id="preserved",
+            revision_hash=revision,
+            routine_id="scale",
+            extension_name="Preserved",
+            routine_name="Scale",
+            source_type="script",
+            function_name="scale",
+            source_path=str(
+                manager._extensions.catalog.store.source_path("preserved", revision)
+            ),
+            entry_point_group=None,
+            entry_point_name=None,
+            parameters={},
+        )
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
+            show=False,
+            provenance_spec=full_data(operation),
+        )
+        node = manager._node_for_target(index)
+        object_id = f"extension-{revision}"
+        manager._extensions.set_workspace_requirements(
+            (
+                _WorkspaceExtensionRequirement(
+                    extension_id="preserved",
+                    capability_id="scale",
+                    capability_kind="routine",
+                    revision_hash=revision,
+                    extension_api_version=1,
+                    source_type="script",
+                    metadata_snapshot={
+                        "source_modified_at": (
+                            catalog.extensions["preserved"]
+                            .revisions[revision]
+                            .source_modified_at
+                        )
+                    },
+                    embedded_object_id=object_id,
+                    referencing_nodes=(node.uid,),
+                ),
+            ),
+            embedded_sources={("preserved", revision): source},
+        )
+        manager._extensions.catalog.store.source_path("preserved", revision).unlink()
+
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+
+    attrs = workspace_arrays._read_workspace_root_attrs_h5py(workspace_path)
+    manifest = workspace_format._workspace_manifest_from_attrs(attrs)
+    assert manifest["extension_requirements"][0]["embedded_object_id"] == object_id
+    restored, kind = workspace_storage._read_workspace_blob(workspace_path, object_id)
+    assert restored == source
+    assert kind == "extension-python-source-v1"
 
 
 def test_unavailable_script_revision_is_omitted_from_gui_discovery(
@@ -2474,6 +2589,82 @@ def test_collecting_requirements_reconciles_loaded_and_unresolved_nodes(
             (requirement.model_copy(update={"referencing_nodes": (node.uid,)}),)
         )
         assert manager._extensions.collect_workspace_requirements() == ()
+
+
+def test_collecting_requirements_keeps_workspace_source_identity(
+    manager_context,
+) -> None:
+    revision = "d" * 64
+    source_modified_at = "2025-06-01T12:34:56+00:00"
+    operation = ExtensionRoutineOperation(
+        extension_id="shared-extension",
+        revision_hash=revision,
+        routine_id="normalize",
+        extension_name="Shared Extension",
+        routine_name="Normalize",
+        source_type="script",
+        function_name="normalize",
+        source_path="shared_extension.py",
+        entry_point_group=None,
+        entry_point_name=None,
+        parameters={},
+    )
+    environment_record = _ExtensionRecord(
+        id="shared-extension",
+        name="Local Package",
+        source_type="environment-package",
+        current_revision=revision,
+        revisions={
+            revision: _ExtensionRevision(
+                source_hash=revision,
+                object_name="lab_package:extension",
+                created_at="2026-01-01T00:00:00+00:00",
+                entry_point_group="erlab.extensions",
+                entry_point_name="extension",
+                entry_point_value="lab_package:extension",
+            )
+        },
+    )
+
+    with manager_context() as manager:
+        manager._extensions.catalog.store.mutate(
+            None,
+            lambda catalog: catalog.model_copy(
+                update={"extensions": {environment_record.id: environment_record}}
+            ),
+        )
+        manager._extensions.catalog.refresh()
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
+            show=False,
+            provenance_spec=full_data(operation),
+        )
+        node = manager._node_for_target(index)
+        object_id = f"extension-{revision}"
+        manager._extensions.set_workspace_requirements(
+            (
+                _WorkspaceExtensionRequirement(
+                    extension_id="shared-extension",
+                    capability_id="normalize",
+                    capability_kind="routine",
+                    revision_hash=revision,
+                    extension_api_version=1,
+                    source_type="script",
+                    metadata_snapshot={"source_modified_at": source_modified_at},
+                    embedded_object_id=object_id,
+                    referencing_nodes=(node.uid,),
+                ),
+            )
+        )
+
+        collected = manager._extensions.collect_workspace_requirements()
+        resolved = manager._extensions.resolved_workspace_requirements()
+
+    assert collected[0].source_type == "script"
+    assert collected[0].metadata_snapshot["source_modified_at"] == source_modified_at
+    assert collected[0].embedded_object_id == object_id
+    assert resolved[0].state == "missing"
+    assert resolved[0].detail == "The catalog extension uses a different source type"
 
 
 def test_workspace_requirements_include_nested_script_inputs(
