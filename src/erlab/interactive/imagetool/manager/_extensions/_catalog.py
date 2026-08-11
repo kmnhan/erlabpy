@@ -490,10 +490,29 @@ class _ExtensionCatalogStore:
                     f"filters: {joined}"
                 )
             candidate_filters = set(name_filters)
+            candidate_loader_names = (
+                {descriptor.id for descriptor in validated_revision.loaders}
+                if validated_revision.entry_point_group == "erlab.io.loaders"
+                else set()
+            )
             for other in catalog.extensions.values():
                 if other.id == extension_id or other.removed or not other.enabled:
                     continue
                 other_revision = other.revisions[other.current_revision]
+                if other_revision.entry_point_group == "erlab.io.loaders":
+                    loader_name_conflicts = sorted(
+                        candidate_loader_names.intersection(
+                            descriptor.id for descriptor in other_revision.loaders
+                        )
+                    )
+                    if loader_name_conflicts:
+                        joined = ", ".join(
+                            repr(value) for value in loader_name_conflicts
+                        )
+                        raise _ExtensionCatalogConflictError(
+                            f"Extension {extension_id!r} conflicts with enabled "
+                            f"extension {other.id!r} for loader names: {joined}"
+                        )
                 conflicts = sorted(
                     candidate_filters.intersection(
                         _revision_loader_name_filters(other_revision)

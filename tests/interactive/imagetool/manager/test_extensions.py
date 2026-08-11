@@ -1231,6 +1231,96 @@ def test_environment_loader_entry_point_name_can_differ_from_loader_name(
     )
 
 
+def test_environment_loader_name_conflict_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    class _FirstLoader(erlab.io.dataloader.LoaderBase):
+        name = "shared_environment_loader"
+        extensions: typing.ClassVar[set[str]] = {".first-loader-test"}
+        skip_validate = True
+
+        @property
+        def file_dialog_methods(self):
+            return {"First Environment Data (*.first-loader-test)": (self.load, {})}
+
+        def load_single(self, file_path, without_values=False):
+            del file_path, without_values
+            return xr.DataArray([1.0])
+
+    class _SecondLoader(erlab.io.dataloader.LoaderBase):
+        name = "shared_environment_loader"
+        extensions: typing.ClassVar[set[str]] = {".second-loader-test"}
+        skip_validate = True
+
+        @property
+        def file_dialog_methods(self):
+            return {"Second Environment Data (*.second-loader-test)": (self.load, {})}
+
+        def load_single(self, file_path, without_values=False):
+            del file_path, without_values
+            return xr.DataArray([2.0])
+
+    class _EntryPoint:
+        group = "erlab.io.loaders"
+        dist = None
+
+        def __init__(self, name: str, loader_type: type) -> None:
+            self.name = name
+            self.value = f"lab_package:{loader_type.__name__}"
+            self._loader_type = loader_type
+
+        def load(self):
+            return self._loader_type
+
+    class _EntryPoints(tuple):
+        def select(self, **parameters):
+            return tuple(
+                entry
+                for entry in self
+                if all(
+                    getattr(entry, key, None) == value
+                    for key, value in parameters.items()
+                )
+            )
+
+    monkeypatch.setattr(
+        extension_catalog.importlib.metadata,
+        "entry_points",
+        lambda: _EntryPoints(
+            (
+                _EntryPoint("first_package", _FirstLoader),
+                _EntryPoint("second_package", _SecondLoader),
+            )
+        ),
+    )
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    catalog = store.refresh_environment_packages()
+    first_id = "environment.erlab.io.loaders.first_package"
+    second_id = "environment.erlab.io.loaders.second_package"
+
+    catalog = _validate_and_enable(
+        store,
+        first_id,
+        expected_record_generation=catalog.extensions[first_id].record_generation,
+    )
+    with pytest.raises(
+        _ExtensionCatalogConflictError,
+        match=r"conflicts with enabled extension .* for loader names",
+    ):
+        _validate_and_enable(
+            store,
+            second_id,
+            expected_record_generation=(
+                catalog.extensions[second_id].record_generation
+            ),
+        )
+
+    persisted = store.read()
+    assert persisted.extensions[first_id].enabled
+    assert not persisted.extensions[second_id].enabled
+
+
 def test_environment_refresh_does_not_replace_a_script_record(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
