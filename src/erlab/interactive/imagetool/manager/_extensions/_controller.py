@@ -1017,13 +1017,15 @@ class _ExtensionController(QtCore.QObject):
         extension_id: str,
         revision: str,
         *,
+        include_embedded: bool = True,
         include_catalog: bool = True,
     ) -> bytes:
         """Select the first source whose bytes match the requested revision."""
         candidates: list[bytes] = []
-        embedded = self._workspace_embedded_sources.get((extension_id, revision))
-        if embedded is not None:
-            candidates.append(embedded)
+        if include_embedded:
+            embedded = self._workspace_embedded_sources.get((extension_id, revision))
+            if embedded is not None:
+                candidates.append(embedded)
         if include_catalog:
             with contextlib.suppress(KeyError, OSError):
                 candidates.append(
@@ -1217,7 +1219,11 @@ class _ExtensionController(QtCore.QObject):
             )
         if record.source_type == "script":
             try:
-                self._verified_revision_source(record.id, requirement.revision_hash)
+                self._verified_revision_source(
+                    record.id,
+                    requirement.revision_hash,
+                    include_embedded=False,
+                )
             except _ExtensionSourceHashMismatchError:
                 return _ResolvedWorkspaceRequirement(
                     requirement=requirement,

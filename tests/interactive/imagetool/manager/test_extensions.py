@@ -2106,6 +2106,58 @@ def test_workspace_requirement_catalog_states(
         )
 
 
+@pytest.mark.parametrize(
+    ("stored_source", "expected_state"),
+    [(None, "missing"), (b"corrupt", "hash-mismatch")],
+)
+def test_embedded_source_does_not_mask_unusable_catalog_revision(
+    manager_context,
+    tmp_path: pathlib.Path,
+    stored_source: bytes | None,
+    expected_state: str,
+) -> None:
+    script_path = tmp_path / "catalog_source.py"
+    source = _script(script_path)
+
+    with manager_context() as manager:
+        catalog, revision, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        _validate_and_enable(
+            manager._extensions.catalog.store,
+            "catalog_source",
+            expected_record_generation=(
+                catalog.extensions["catalog_source"].record_generation
+            ),
+        )
+        catalog_source = manager._extensions.catalog.store.source_path(
+            "catalog_source", revision
+        )
+        if stored_source is None:
+            catalog_source.unlink()
+        else:
+            catalog_source.write_bytes(stored_source)
+        manager._extensions.catalog.refresh()
+        manager._extensions.set_workspace_requirements(
+            (
+                _WorkspaceExtensionRequirement(
+                    extension_id="catalog_source",
+                    capability_id="scale",
+                    capability_kind="routine",
+                    revision_hash=revision,
+                    extension_api_version=1,
+                    source_type="script",
+                    embedded_object_id=f"extension-{revision}",
+                ),
+            ),
+            embedded_sources={("catalog_source", revision): source},
+        )
+
+        assert manager._extensions.resolved_workspace_requirements()[0].state == (
+            expected_state
+        )
+
+
 def test_degraded_workspace_load_preserves_requirements_for_save_as(
     manager_context,
     monkeypatch: pytest.MonkeyPatch,
