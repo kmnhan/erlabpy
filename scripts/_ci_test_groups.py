@@ -87,6 +87,7 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/test_conftest.py",
         "tests/test_constants.py",
         "tests/test_lattice.py",
+        "tests/test_extensions.py",
     ),
     "cov-io": ("tests/io",),
     "cov-qt-imagetool": (
@@ -108,6 +109,7 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/interactive/imagetool/manager/test_mainwindow.py",
         "tests/interactive/imagetool/manager/test_modelview.py",
         "tests/interactive/imagetool/manager/test_wrapper.py",
+        "tests/interactive/imagetool/manager/test_extensions.py",
     ),
     "cov-qt-manager-workspace-a": (
         "tests/interactive/imagetool/manager/workspace/test_arrays.py",
