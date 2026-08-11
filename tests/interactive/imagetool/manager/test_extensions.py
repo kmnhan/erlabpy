@@ -1619,6 +1619,87 @@ def test_editable_package_source_change_creates_unapproved_revision(
         )
 
 
+def test_editable_package_availability_uses_refresh_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source = tmp_path / "src" / "lab_package" / "plugin.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 1\n")
+
+    class _Distribution:
+        metadata: typing.ClassVar[dict[str, str]] = {"Name": "lab-package"}
+        version = "1"
+
+        @staticmethod
+        def read_text(name: str) -> str | None:
+            if name != "direct_url.json":
+                return None
+            return json.dumps(
+                {
+                    "url": tmp_path.as_uri(),
+                    "dir_info": {"editable": True},
+                }
+            )
+
+    class _EntryPoint:
+        group = "erlab.extensions"
+        name = "cached_editable"
+        value = "lab_package.plugin:extension"
+        dist = _Distribution()
+
+    class _EntryPoints(tuple):
+        def select(self, *, group: str):
+            return tuple(entry for entry in self if entry.group == group)
+
+    monkeypatch.setattr(
+        extension_catalog.importlib.metadata,
+        "entry_points",
+        lambda: _EntryPoints((_EntryPoint(),)),
+    )
+    fingerprint_calls = 0
+    fingerprint = extension_entry_points._editable_source_fingerprint
+
+    def counted_fingerprint(direct_url):
+        nonlocal fingerprint_calls
+        fingerprint_calls += 1
+        return fingerprint(direct_url)
+
+    monkeypatch.setattr(
+        extension_entry_points,
+        "_editable_source_fingerprint",
+        counted_fingerprint,
+    )
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+
+    catalog = store.refresh_environment_packages()
+    extension_id = "environment.erlab.extensions.cached_editable"
+    record = catalog.extensions[extension_id]
+    revision_hash = record.current_revision
+    assert fingerprint_calls == 1
+
+    for _ in range(3):
+        assert store.revision_available(record, revision_hash)
+        assert (
+            store.capability_status(
+                extension_id,
+                revision_hash,
+                "routine",
+                "extension",
+            )
+            == "approval-required"
+        )
+    assert fingerprint_calls == 1
+
+    source.write_text("VALUE = 2\n")
+    catalog = store.refresh_environment_packages()
+    record = catalog.extensions[extension_id]
+    assert record.current_revision != revision_hash
+    assert fingerprint_calls == 2
+    assert store.revision_available(record, record.current_revision)
+    assert fingerprint_calls == 2
+
+
 def test_environment_refresh_skips_an_invalid_entry_point(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,

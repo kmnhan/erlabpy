@@ -9,6 +9,7 @@ import logging
 import os
 import pathlib
 import re
+import threading
 import types
 import typing
 import uuid
@@ -88,7 +89,16 @@ class _ExtensionCatalogStore:
     Every mutation re-reads the catalog while holding ``QLockFile``. A caller can
     merge an unrelated global change, but a changed ``record_generation`` rejects
     stale edits to the same extension.
+
+    Environment entry-point verification is shared by managers in this process.
+    Startup and explicit refresh replace the cache. Routine status checks use the
+    verified entries without scanning editable source trees again.
     """
+
+    _environment_entry_points: typing.ClassVar[
+        dict[tuple[str, str, str, str], importlib.metadata.EntryPoint]
+    ] = {}
+    _environment_entry_points_lock: typing.ClassVar[threading.RLock] = threading.RLock()
 
     def __init__(self, directory: os.PathLike[str] | str | None = None) -> None:
         self.directory = (
@@ -512,30 +522,50 @@ class _ExtensionCatalogStore:
             for group in ("erlab.extensions", "erlab.io.loaders")
             for entry in importlib.metadata.entry_points().select(group=group)
         )
-        discovered_ids: set[str] = set()
+        discovered_ids = {
+            _safe_extension_id(f"environment.{entry.group}.{entry.name}")
+            for entry in entries
+        }
+        inspected_entries: list[
+            tuple[importlib.metadata.EntryPoint, str, str, bool, str]
+        ] = []
+        for entry in entries:
+            try:
+                dist_name, dist_version, payload, editable = (
+                    _entry_point_revision_payload(entry)
+                )
+            except _EntryPointRevisionError:
+                logger.warning(
+                    "Could not inspect environment extension %s:%s",
+                    entry.group,
+                    entry.name,
+                    exc_info=True,
+                    extra={"suppress_ui_alert": True},
+                )
+                continue
+            inspected_entries.append(
+                (
+                    entry,
+                    dist_name,
+                    dist_version,
+                    editable,
+                    hashlib.sha256(payload.encode()).hexdigest(),
+                )
+            )
 
         def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
             records = dict(catalog.extensions)
             changed = False
-            for entry in entries:
+            for (
+                entry,
+                dist_name,
+                dist_version,
+                editable,
+                revision_hash,
+            ) in inspected_entries:
                 extension_id = _safe_extension_id(
                     f"environment.{entry.group}.{entry.name}"
                 )
-                discovered_ids.add(extension_id)
-                try:
-                    dist_name, dist_version, payload, editable = (
-                        _entry_point_revision_payload(entry)
-                    )
-                except _EntryPointRevisionError:
-                    logger.warning(
-                        "Could not inspect environment extension %s:%s",
-                        entry.group,
-                        entry.name,
-                        exc_info=True,
-                        extra={"suppress_ui_alert": True},
-                    )
-                    continue
-                revision_hash = hashlib.sha256(payload.encode()).hexdigest()
                 existing = records.get(extension_id)
                 if (
                     existing is not None
@@ -548,7 +578,7 @@ class _ExtensionCatalogStore:
                             update={
                                 "current_revision": revision_hash,
                                 "enabled": False,
-                                "record_generation": (existing.record_generation + 1),
+                                "record_generation": existing.record_generation + 1,
                             }
                         )
                         changed = True
@@ -606,25 +636,43 @@ class _ExtensionCatalogStore:
                 return catalog
             return catalog.model_copy(update={"extensions": records})
 
-        return self.mutate(None, update)
+        catalog = self.mutate(None, update)
+        verified_entries = {
+            (entry.group, entry.name, entry.value, revision_hash): entry
+            for (
+                entry,
+                _dist_name,
+                _dist_version,
+                _editable,
+                revision_hash,
+            ) in inspected_entries
+        }
+        with self._environment_entry_points_lock:
+            type(self)._environment_entry_points = verified_entries
+        return catalog
 
-    @staticmethod
     def _entry_point_for_revision(
-        revision: _ExtensionRevision,
+        self, revision: _ExtensionRevision
     ) -> importlib.metadata.EntryPoint:
-        for entry_point in importlib.metadata.entry_points().select(
-            group=revision.entry_point_group or ""
-        ):
-            if (
-                entry_point.name == revision.entry_point_name
-                and entry_point.value == revision.entry_point_value
-            ):
-                try:
-                    revision_hash = _entry_point_revision(entry_point)
-                except _EntryPointRevisionError:
-                    continue
-                if revision_hash == revision.source_hash:
-                    return entry_point
+        key = (
+            revision.entry_point_group or "",
+            revision.entry_point_name or "",
+            revision.entry_point_value or "",
+            revision.source_hash,
+        )
+        with self._environment_entry_points_lock:
+            cached = self._environment_entry_points.get(key)
+            if cached is not None:
+                return cached
+            for entry_point in importlib.metadata.entry_points().select(group=key[0]):
+                if entry_point.name == key[1] and entry_point.value == key[2]:
+                    try:
+                        revision_hash = _entry_point_revision(entry_point)
+                    except _EntryPointRevisionError:
+                        continue
+                    if revision_hash == revision.source_hash:
+                        self._environment_entry_points[key] = entry_point
+                        return entry_point
         raise ImportError("The exact environment package revision is unavailable")
 
     def resolve_capability(
