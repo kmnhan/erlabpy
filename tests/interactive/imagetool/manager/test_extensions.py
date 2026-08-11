@@ -172,6 +172,51 @@ def test_parameter_dialog_preserves_none_and_empty_string(qtbot) -> None:
     assert dialog.parameters["label"] == ""
 
 
+def test_parameter_dialog_accepts_a_required_empty_string(qtbot) -> None:
+    descriptor = erlab.extensions.RoutineDescriptor(
+        id="required-string",
+        name="Required string",
+        category="Lab",
+        summary="",
+        function_name="required_string",
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="label",
+                kind=erlab.extensions.ParameterKind.STRING,
+                required=True,
+            ),
+        ),
+    )
+    dialog = _ExtensionParameterDialog(descriptor, None)
+    qtbot.addWidget(dialog)
+
+    assert dialog.parameters == {"label": ""}
+
+
+def test_parameter_dialog_preserves_exact_literal_default_type(qtbot) -> None:
+    descriptor = erlab.extensions.RoutineDescriptor(
+        id="literal-types",
+        name="Literal types",
+        category="Lab",
+        summary="",
+        function_name="literal_types",
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="choice",
+                kind=erlab.extensions.ParameterKind.LITERAL,
+                required=False,
+                default=1,
+                choices=(True, 1),
+            ),
+        ),
+    )
+    dialog = _ExtensionParameterDialog(descriptor, None)
+    qtbot.addWidget(dialog)
+
+    assert dialog.parameters == {"choice": 1}
+    assert type(dialog.parameters["choice"]) is int
+
+
 def test_parameter_dialog_uses_initial_values(qtbot) -> None:
     descriptor = erlab.extensions.LoaderDescriptor(
         id="configured-loader",

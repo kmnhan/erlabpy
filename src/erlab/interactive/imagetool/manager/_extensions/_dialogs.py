@@ -187,12 +187,14 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
             editor = QtWidgets.QComboBox(self)
             if parameter.optional:
                 editor.addItem("None", None)
-            for value in parameter.choices:
-                editor.addItem(str(value), value)
+            for choice in parameter.choices:
+                editor.addItem(str(choice), choice)
             if value is not None:
-                index = editor.findData(value)
-                if index >= 0:
-                    editor.setCurrentIndex(index)
+                start = 1 if parameter.optional else 0
+                for index, choice in enumerate(parameter.choices, start=start):
+                    if type(value) is type(choice) and value == choice:
+                        editor.setCurrentIndex(index)
+                        break
             return editor
         editor = QtWidgets.QLineEdit(self)
         if value is not None:
@@ -225,7 +227,11 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
                     value = int(value)
                 elif parameter.kind is ParameterKind.NUMBER:
                     value = float(value)
-                elif parameter.required and not value:
+                elif (
+                    parameter.kind is ParameterKind.PATH
+                    and parameter.required
+                    and not value
+                ):
                     raise ValueError(f"{name!r} requires a value")
             values[name] = value
         _require_finite_parameter_values(values)
