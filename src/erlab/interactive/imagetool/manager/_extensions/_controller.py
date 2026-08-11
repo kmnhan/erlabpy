@@ -1577,7 +1577,7 @@ class _ExtensionController(QtCore.QObject):
             self.resolved_workspace_requirements(),
             self._manager,
             approvable={
-                (item.extension_id, item.revision_hash)
+                (item.extension_id, item.revision_hash, item.source_type)
                 for item in self._workspace_requirements
                 if item.source_type == "script"
                 and (item.extension_id, item.revision_hash)

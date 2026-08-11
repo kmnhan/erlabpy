@@ -515,10 +515,17 @@ def test_workspace_requirements_dialog_approves_only_eligible_selection(
         requirement=requirement,
         state="approval-required",
     )
+    environment_resolved = resolved.model_copy(
+        update={
+            "requirement": requirement.model_copy(
+                update={"source_type": "environment-package"}
+            )
+        }
+    )
     dialog = extension_dialogs._WorkspaceRequirementsDialog(
-        (resolved,),
+        (environment_resolved, resolved),
         parent,
-        approvable={("lab", "a" * 64)},
+        approvable={("lab", "a" * 64, "script")},
     )
     qtbot.addWidget(dialog)
     approvals: list[tuple[str, str]] = []
@@ -531,6 +538,11 @@ def test_workspace_requirements_dialog_approves_only_eligible_selection(
         dialog._approve_selected()
         assert approvals == []
         dialog.tree.setCurrentItem(dialog.tree.topLevelItem(0))
+        assert not dialog._approve_button.isEnabled()
+        dialog._approve_selected()
+        assert approvals == []
+        dialog.tree.setCurrentItem(dialog.tree.topLevelItem(1))
+        assert dialog._approve_button.isEnabled()
         dialog._approve_selected()
         assert approvals == [("lab", "a" * 64)]
 

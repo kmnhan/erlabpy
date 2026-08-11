@@ -22,7 +22,7 @@ from erlab.interactive.imagetool.manager._extensions._models import (
 
 if typing.TYPE_CHECKING:
     import pathlib
-    from collections.abc import Mapping
+    from collections.abc import Collection, Mapping
 
 
 class _SourceReviewDialog(QtWidgets.QDialog):
@@ -502,7 +502,7 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
         requirements: tuple[_ResolvedWorkspaceRequirement, ...],
         parent: QtWidgets.QWidget,
         *,
-        approvable: set[tuple[str, str]] | frozenset[tuple[str, str]] = frozenset(),
+        approvable: Collection[tuple[str, str, str]] = (),
     ) -> None:
         super().__init__(parent)
         self._approvable = frozenset(approvable)
@@ -553,7 +553,11 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
             item.setData(
                 0,
                 QtCore.Qt.ItemDataRole.UserRole,
-                (requirement.extension_id, requirement.revision_hash),
+                (
+                    requirement.extension_id,
+                    requirement.revision_hash,
+                    requirement.source_type,
+                ),
             )
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 1, resolved.state)
             self.tree.addTopLevelItem(item)
@@ -583,5 +587,5 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
         ):
             return
         key = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
-        if isinstance(key, tuple) and len(key) == 2:
+        if isinstance(key, tuple) and len(key) == 3 and key[2] == "script":
             self.approve_requested.emit(str(key[0]), str(key[1]))
