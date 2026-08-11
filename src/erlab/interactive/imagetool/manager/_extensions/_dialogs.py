@@ -106,11 +106,27 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
             layout.addWidget(summary)
         form = QtWidgets.QFormLayout()
         self._editors: dict[str, QtWidgets.QWidget] = {}
+        self._none_controls: dict[str, QtWidgets.QCheckBox] = {}
         for parameter in descriptor.parameters:
             editor = self._make_editor(parameter)
             editor.setObjectName(f"manager_extension_parameter_{parameter.id}")
             self._editors[parameter.id] = editor
-            form.addRow(parameter.id.replace("_", " ").title(), editor)
+            field: QtWidgets.QWidget = editor
+            if parameter.kind is ParameterKind.STRING and parameter.optional:
+                field = QtWidgets.QWidget(self)
+                field_layout = QtWidgets.QHBoxLayout(field)
+                field_layout.setContentsMargins(0, 0, 0, 0)
+                field_layout.addWidget(editor)
+                none_control = QtWidgets.QCheckBox("None", field)
+                none_control.setObjectName(
+                    f"manager_extension_parameter_{parameter.id}_none"
+                )
+                none_control.setChecked(parameter.default is None)
+                editor.setDisabled(none_control.isChecked())
+                none_control.toggled.connect(editor.setDisabled)
+                field_layout.addWidget(none_control)
+                self._none_controls[parameter.id] = none_control
+            form.addRow(parameter.id.replace("_", " ").title(), field)
         layout.addLayout(form)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Cancel
@@ -183,15 +199,19 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
         by_id = {item.id: item for item in self.descriptor.parameters}
         for name, editor in self._editors.items():
             parameter = by_id[name]
-            if isinstance(editor, QtWidgets.QCheckBox):
-                value: typing.Any = editor.isChecked()
+            none_control = self._none_controls.get(name)
+            value: typing.Any
+            if none_control is not None and none_control.isChecked():
+                value = None
+            elif isinstance(editor, QtWidgets.QCheckBox):
+                value = editor.isChecked()
             elif isinstance(editor, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
                 value = editor.value()
             elif isinstance(editor, QtWidgets.QComboBox):
                 value = editor.currentData()
             else:
                 value = typing.cast("QtWidgets.QLineEdit", editor).text()
-                if parameter.optional and not value:
+                if parameter.optional and not value and none_control is None:
                     value = None
                 elif parameter.kind is ParameterKind.INTEGER:
                     value = int(value)
@@ -199,8 +219,7 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
                     value = float(value)
                 elif parameter.required and not value:
                     raise ValueError(f"{name!r} requires a value")
-            if parameter.required or value is not None:
-                values[name] = value
+            values[name] = value
         return values
 
     def accept(self) -> None:

@@ -12,7 +12,7 @@ import typing
 import numpy as np
 import pytest
 import xarray as xr
-from qtpy import QtCore
+from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._extensions._catalog as extension_catalog
@@ -41,6 +41,9 @@ from erlab.interactive.imagetool.manager._extensions._catalog import (
     _ExtensionCatalog,
     _ExtensionCatalogConflictError,
     _ExtensionCatalogStore,
+)
+from erlab.interactive.imagetool.manager._extensions._dialogs import (
+    _ExtensionParameterDialog,
 )
 from erlab.interactive.imagetool.manager._extensions._execution import (
     _detached_routine_output,
@@ -96,6 +99,49 @@ def _validate_and_enable(
         manager_session_id="test-manager",
         script_modules={},
     )
+
+
+def test_parameter_dialog_preserves_none_and_empty_string(qtbot) -> None:
+    descriptor = erlab.extensions.RoutineDescriptor(
+        id="optional-values",
+        name="Optional values",
+        category="Lab",
+        summary="",
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="scale",
+                kind=erlab.extensions.ParameterKind.NUMBER,
+                required=False,
+                optional=True,
+                default=2.0,
+            ),
+            erlab.extensions.ParameterDescriptor(
+                id="label",
+                kind=erlab.extensions.ParameterKind.STRING,
+                required=False,
+                optional=True,
+            ),
+        ),
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = _ExtensionParameterDialog(descriptor, parent)
+    qtbot.addWidget(dialog)
+
+    assert dialog.parameters == {"scale": 2.0, "label": None}
+
+    scale_editor = typing.cast(
+        "QtWidgets.QLineEdit",
+        dialog.findChild(QtWidgets.QLineEdit, "manager_extension_parameter_scale"),
+    )
+    scale_editor.clear()
+    assert dialog.parameters["scale"] is None
+
+    label_none = dialog.findChild(
+        QtWidgets.QCheckBox, "manager_extension_parameter_label_none"
+    )
+    label_none.setChecked(False)
+    assert dialog.parameters["label"] == ""
 
 
 def test_catalog_reload_identity_metadata_and_conflict(tmp_path: pathlib.Path) -> None:
