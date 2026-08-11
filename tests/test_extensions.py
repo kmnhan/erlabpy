@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sys
 import typing
 
@@ -22,6 +23,7 @@ from erlab.extensions import (
 from erlab.extensions._api import _resolve_loader_method
 
 if typing.TYPE_CHECKING:
+    import importlib.machinery
     import pathlib
 
 
@@ -162,6 +164,41 @@ def scale(data: xr.DataArray) -> xr.DataArray:
         )
     finally:
         sys.modules.pop(module_name, None)
+
+
+def test_load_script_executes_verified_source_snapshot(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = tmp_path / "extension.py"
+    script.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def value(data: xr.DataArray) -> xr.DataArray:
+    return data + 1
+"""
+    )
+    revision = hashlib.sha256(script.read_bytes()).hexdigest()
+    spec_from_file_location = extension_api.importlib.util.spec_from_file_location
+
+    def replace_source_during_import(
+        name: str, location: pathlib.Path
+    ) -> importlib.machinery.ModuleSpec | None:
+        script.write_text(script.read_text().replace("data + 1", "data + 9"))
+        return spec_from_file_location(name, location)
+
+    monkeypatch.setattr(
+        extension_api.importlib.util,
+        "spec_from_file_location",
+        replace_source_during_import,
+    )
+
+    loaded = load_script(script, expected_revision=revision)
+
+    xr.testing.assert_identical(
+        loaded.routines["value"][1](xr.DataArray([1])), xr.DataArray([2])
+    )
 
 
 def test_load_script_rejects_unsupported_signature(tmp_path: pathlib.Path) -> None:

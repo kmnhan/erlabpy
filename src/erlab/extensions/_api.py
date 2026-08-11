@@ -546,7 +546,8 @@ def load_script(
     loaded = False
     try:
         try:
-            spec.loader.exec_module(module)
+            code = compile(source, os.fspath(source_path), "exec")
+            exec(code, module.__dict__)  # noqa: S102 - imports approved extension code
         except Exception as error:
             raise ExtensionImportError(
                 f"Could not import extension source {source_path}: {error}"
