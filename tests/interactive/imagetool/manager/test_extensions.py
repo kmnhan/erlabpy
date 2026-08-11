@@ -16,6 +16,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.extensions._entry_points as extension_entry_points
+import erlab.interactive.imagetool.manager as imagetool_manager
 import erlab.interactive.imagetool.manager._base as manager_base
 import erlab.interactive.imagetool.manager._extensions._catalog as extension_catalog
 import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dialogs
@@ -2145,6 +2146,7 @@ def test_environment_refresh_disables_an_unavailable_package_without_removing_it
 def test_packaged_manager_does_not_hide_bundled_loader_names(
     manager_context,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
 ) -> None:
     class _EntryPoint:
         group = "erlab.io.loaders"
@@ -2170,6 +2172,20 @@ def test_packaged_manager_does_not_hide_bundled_loader_names(
     )
     _ExtensionCatalogStore().refresh_environment_packages()
     monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", True)
+    updater_settings = QtCore.QSettings(
+        str(tmp_path / "updater.ini"), QtCore.QSettings.Format.IniFormat
+    )
+    updater_settings.setValue("version_before_update", erlab.__version__)
+    monkeypatch.setattr(
+        imagetool_manager, "_get_updater_settings", lambda: updater_settings
+    )
+
+    def unexpected_update_notice(*_args: object, **_kwargs: object) -> typing.Never:
+        raise AssertionError("The isolated updater state must suppress the notice")
+
+    monkeypatch.setattr(
+        imagetool_manager.ImageToolManager, "updated", unexpected_update_notice
+    )
 
     with manager_context() as manager:
         assert manager._extensions.environment_loader_names == set()
