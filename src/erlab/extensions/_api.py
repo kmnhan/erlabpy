@@ -5,6 +5,7 @@ from __future__ import annotations
 import enum
 import hashlib
 import importlib
+import importlib.metadata
 import importlib.util
 import inspect
 import os
@@ -18,12 +19,17 @@ from collections.abc import Callable, Mapping
 
 import xarray as xr
 
+from erlab.extensions._entry_points import (
+    _entry_point_revision,
+    _EntryPointRevisionError,
+)
 from erlab.extensions._models import (
     EXTENSION_API_VERSION,
     ExtensionExecutionError,
     ExtensionImportError,
     ExtensionNotFoundError,
     ExtensionSignatureError,
+    LoadedEntryPoint,
     LoadedScript,
     LoaderDescriptor,
     ParameterDescriptor,
@@ -426,6 +432,7 @@ def _descriptor_for(
         "name": metadata["name"] or func.__name__.replace("_", " ").title(),
         "category": metadata["category"],
         "summary": metadata["summary"],
+        "function_name": func.__name__,
         "parameters": descriptor_parameters,
     }
     if kind == "routine":
@@ -572,6 +579,98 @@ def load_script(
         module=module,
         routines=routines,
         loaders=loaders,
+    )
+
+
+def load_entry_point(
+    group: str,
+    name: str,
+    *,
+    expected_revision: str,
+) -> LoadedEntryPoint:
+    """Import one installed extension package at an exact revision.
+
+    Entry-point and distribution metadata are inspected before package code is
+    imported. Editable package revisions include a fingerprint of their Python
+    sources.
+
+    Parameters
+    ----------
+    group
+        Entry-point group, such as ``"erlab.extensions"``.
+    name
+        Entry-point name declared by the package.
+    expected_revision
+        Required package revision hash.
+
+    Returns
+    -------
+    LoadedEntryPoint
+        Imported entry-point object with direct access to its callables.
+
+    Raises
+    ------
+    ExtensionNotFoundError
+        If no matching entry point or revision is installed.
+    ExtensionImportError
+        If package metadata is invalid or package code cannot be imported.
+
+    Examples
+    --------
+    The returned object exposes functions from a module entry point directly.
+
+    >>> from erlab.extensions import load_entry_point
+    >>> extension = load_entry_point(  # doctest: +SKIP
+    ...     "erlab.extensions",
+    ...     "my_lab",
+    ...     expected_revision="0a12...",
+    ... )
+    >>> result = extension.normalize(data)  # doctest: +SKIP
+    """
+    matching = importlib.metadata.entry_points().select(group=group, name=name)
+    if not matching:
+        raise ExtensionNotFoundError(
+            f"Extension entry point {group}:{name} is not installed"
+        )
+    for entry_point in matching:
+        try:
+            revision = _entry_point_revision(entry_point)
+        except _EntryPointRevisionError as error:
+            raise ExtensionImportError(
+                f"Could not inspect extension entry point {group}:{name}: {error}"
+            ) from error
+        if revision != expected_revision:
+            continue
+        try:
+            value = entry_point.load()
+        except Exception as error:
+            raise ExtensionImportError(
+                f"Could not import extension entry point {group}:{name}: {error}"
+            ) from error
+        if isinstance(value, types.ModuleType):
+            routines, loaders = _module_capabilities(value)
+            callables = {
+                descriptor.function_name: func for descriptor, func in routines.values()
+            } | {
+                descriptor.function_name: func for descriptor, func in loaders.values()
+            }
+        elif (
+            callable(value) and getattr(value, _CAPABILITY_ATTRIBUTE, None) is not None
+        ):
+            descriptor = _descriptor_for(value, getattr(value, _CAPABILITY_ATTRIBUTE))
+            callables = {descriptor.function_name: value}
+        else:
+            callables = {}
+        return LoadedEntryPoint(
+            group=group,
+            name=name,
+            revision=revision,
+            value=value,
+            callables=callables,
+        )
+    raise ExtensionNotFoundError(
+        f"Extension entry point {group}:{name} does not match revision "
+        f"{expected_revision}"
     )
 
 

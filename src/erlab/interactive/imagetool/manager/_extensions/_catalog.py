@@ -5,13 +5,11 @@ from __future__ import annotations
 import datetime
 import hashlib
 import importlib.metadata
-import json
 import os
 import pathlib
 import re
 import types
 import typing
-import urllib.parse
 import uuid
 
 from qtpy import QtCore
@@ -31,6 +29,11 @@ from erlab.extensions._api import (
     _set_capability_resolver,
     _set_revision_resolver,
 )
+from erlab.extensions._entry_points import (
+    _entry_point_revision,
+    _entry_point_revision_payload,
+    _EntryPointRevisionError,
+)
 from erlab.interactive.imagetool.manager._extensions._models import (
     _EnvironmentLoaderMethod,
     _ExtensionCatalogModel,
@@ -40,7 +43,7 @@ from erlab.interactive.imagetool.manager._extensions._models import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable
 
 
 class _ExtensionCatalogError(RuntimeError):
@@ -441,120 +444,6 @@ class _ExtensionCatalogStore:
             expected_record_generation=expected_record_generation,
         )
 
-    @staticmethod
-    def _editable_source_fingerprint(
-        direct_url: Mapping[str, typing.Any],
-    ) -> str:
-        """Hash Python sources in an editable distribution project."""
-        url = direct_url.get("url")
-        if not isinstance(url, str):
-            raise _ExtensionCatalogError("Editable package URL is unavailable")
-        parsed = urllib.parse.urlparse(url)
-        if parsed.scheme not in ("", "file"):
-            raise _ExtensionCatalogError("Editable package URL is not a local path")
-        root = pathlib.Path(urllib.parse.unquote(parsed.path))
-        if not root.is_dir():
-            raise _ExtensionCatalogError(
-                f"Editable package directory is unavailable: {root}"
-            )
-        candidates: list[pathlib.Path] = []
-        ignored_directories = {
-            ".git",
-            ".hg",
-            ".mypy_cache",
-            ".nox",
-            ".pytest_cache",
-            ".ruff_cache",
-            ".svn",
-            ".tox",
-            ".venv",
-            "__pycache__",
-            "build",
-            "dist",
-            "venv",
-        }
-
-        def walk_error(error: OSError) -> typing.Never:
-            raise _ExtensionCatalogError(
-                f"Could not inspect editable package directory {root}: {error}"
-            ) from error
-
-        for directory, directory_names, file_names in os.walk(root, onerror=walk_error):
-            directory_names[:] = sorted(
-                name for name in directory_names if name not in ignored_directories
-            )
-            for file_name in sorted(file_names):
-                path = pathlib.Path(directory, file_name)
-                if path.suffix in {".py", ".pyi"} or path.name == "pyproject.toml":
-                    candidates.append(path)
-        if not candidates:
-            raise _ExtensionCatalogError(
-                f"Editable package contains no fingerprintable source: {root}"
-            )
-        digest = hashlib.sha256()
-        for path in candidates:
-            try:
-                source = path.read_bytes()
-            except OSError as error:
-                raise _ExtensionCatalogError(
-                    f"Could not fingerprint editable package source {path}: {error}"
-                ) from error
-            digest.update(path.relative_to(root).as_posix().encode())
-            digest.update(b"\0")
-            digest.update(len(source).to_bytes(8, "big"))
-            digest.update(source)
-        return digest.hexdigest()
-
-    @staticmethod
-    def _entry_point_revision_payload(
-        entry_point: importlib.metadata.EntryPoint,
-    ) -> tuple[str, str, str, bool]:
-        distribution = entry_point.dist
-        distribution_name = (
-            entry_point.name
-            if distribution is None
-            else str(distribution.metadata.get("Name", entry_point.name))
-        )
-        distribution_version = "" if distribution is None else distribution.version
-        editable = False
-        editable_fingerprint: str | None = None
-        if distribution is not None:
-            direct_url = distribution.read_text("direct_url.json")
-            if direct_url:
-                try:
-                    parsed = json.loads(direct_url)
-                except json.JSONDecodeError as error:
-                    raise _ExtensionCatalogError(
-                        "Editable package metadata is not valid JSON"
-                    ) from error
-                if not isinstance(parsed, dict):
-                    raise _ExtensionCatalogError(
-                        "Editable package metadata must be a JSON object"
-                    )
-                directory_info = parsed.get("dir_info", {})
-                if not isinstance(directory_info, dict):
-                    raise _ExtensionCatalogError(
-                        "Editable package directory metadata must be a JSON object"
-                    )
-                editable = bool(directory_info.get("editable", False))
-                if editable:
-                    editable_fingerprint = (
-                        _ExtensionCatalogStore._editable_source_fingerprint(parsed)
-                    )
-        payload = json.dumps(
-            {
-                "group": entry_point.group,
-                "name": entry_point.name,
-                "value": entry_point.value,
-                "distribution": distribution_name,
-                "version": distribution_version,
-                "editable": editable,
-                "editable_source": editable_fingerprint,
-            },
-            sort_keys=True,
-        )
-        return distribution_name, distribution_version, payload, editable
-
     def refresh_environment_packages(self) -> _ExtensionCatalogModel:
         """Refresh entry-point metadata without importing package code."""
         entries = tuple(
@@ -572,9 +461,12 @@ class _ExtensionCatalogStore:
                     f"environment.{entry.group}.{entry.name}"
                 )
                 discovered_ids.add(extension_id)
-                dist_name, dist_version, payload, editable = (
-                    self._entry_point_revision_payload(entry)
-                )
+                try:
+                    dist_name, dist_version, payload, editable = (
+                        _entry_point_revision_payload(entry)
+                    )
+                except _EntryPointRevisionError as error:
+                    raise _ExtensionCatalogError(str(error)) from error
                 revision_hash = hashlib.sha256(payload.encode()).hexdigest()
                 existing = records.get(extension_id)
                 if (
@@ -660,14 +552,10 @@ class _ExtensionCatalogStore:
                 and entry_point.value == revision.entry_point_value
             ):
                 try:
-                    _name, _version, payload, _editable = (
-                        _ExtensionCatalogStore._entry_point_revision_payload(
-                            entry_point
-                        )
-                    )
-                except _ExtensionCatalogError:
+                    revision_hash = _entry_point_revision(entry_point)
+                except _EntryPointRevisionError:
                     continue
-                if hashlib.sha256(payload.encode()).hexdigest() == revision.source_hash:
+                if revision_hash == revision.source_hash:
                     return entry_point
         raise ImportError("The exact environment package revision is unavailable")
 
@@ -702,11 +590,6 @@ class _ExtensionCatalogStore:
                     f"Unknown {kind} capability {capability_id!r}"
                 ) from error
         entry_point = self._entry_point_for_revision(revision)
-        _dist_name, _dist_version, payload, _editable = (
-            self._entry_point_revision_payload(entry_point)
-        )
-        if hashlib.sha256(payload.encode()).hexdigest() != revision_hash:
-            raise ImportError("The exact environment package revision is unavailable")
         value = entry_point.load()
         if entry_point.group == "erlab.io.loaders":
             if kind != "loader":

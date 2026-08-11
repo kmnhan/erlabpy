@@ -1215,23 +1215,12 @@ class _ExtensionController(QtCore.QObject):
                 )
         else:
             try:
-                entry_point = self.catalog.store._entry_point_for_revision(revision)
-                _name, _version, payload, _editable = (
-                    self.catalog.store._entry_point_revision_payload(entry_point)
-                )
+                self.catalog.store._entry_point_for_revision(revision)
             except Exception:
                 return _ResolvedWorkspaceRequirement(
                     requirement=requirement,
                     state="missing",
                     detail="The environment package entry point is unavailable",
-                )
-            if hashlib.sha256(payload.encode()).hexdigest() != (
-                requirement.revision_hash
-            ):
-                return _ResolvedWorkspaceRequirement(
-                    requirement=requirement,
-                    state="hash-mismatch",
-                    detail="The environment package revision does not match",
                 )
         if revision.import_error:
             return _ResolvedWorkspaceRequirement(

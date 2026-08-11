@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+import functools
 import typing
 
 import pydantic
@@ -118,6 +119,8 @@ class RoutineDescriptor(pydantic.BaseModel):
         Display category.
     summary
         Short user-facing description.
+    function_name
+        Python function name in the source module.
     parameters
         Parameters shown after the input array.
     extension_api_version
@@ -128,12 +131,13 @@ class RoutineDescriptor(pydantic.BaseModel):
     name: str
     category: str
     summary: str
+    function_name: str
     parameters: tuple[ParameterDescriptor, ...] = ()
     extension_api_version: typing.Literal[1] = EXTENSION_API_VERSION
 
     model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 
-    @pydantic.field_validator("id", "name", "category")
+    @pydantic.field_validator("id", "name", "category", "function_name")
     @classmethod
     def _nonempty_text(cls, value: str) -> str:
         value = value.strip()
@@ -155,6 +159,8 @@ class LoaderDescriptor(pydantic.BaseModel):
         Display category.
     summary
         Short description.
+    function_name
+        Python function name in the source module.
     parameters
         Parameters shown after the input path.
     extensions
@@ -167,13 +173,14 @@ class LoaderDescriptor(pydantic.BaseModel):
     name: str
     category: str
     summary: str
+    function_name: str
     parameters: tuple[ParameterDescriptor, ...] = ()
     extensions: tuple[str, ...] = ()
     extension_api_version: typing.Literal[1] = EXTENSION_API_VERSION
 
     model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 
-    @pydantic.field_validator("id", "name", "category")
+    @pydantic.field_validator("id", "name", "category", "function_name")
     @classmethod
     def _nonempty_text(cls, value: str) -> str:
         value = value.strip()
@@ -185,11 +192,23 @@ class LoaderDescriptor(pydantic.BaseModel):
 CapabilityDescriptor = RoutineDescriptor | LoaderDescriptor
 
 
+def _extension_callable(func: Callable[..., typing.Any]) -> Callable[..., typing.Any]:
+    """Restore descriptor-compatible values before a dynamically loaded call."""
+    from erlab.extensions._api import _coerce_call_parameters
+
+    @functools.wraps(func)
+    def call(input_value: typing.Any, **parameters: typing.Any) -> typing.Any:
+        return func(input_value, **_coerce_call_parameters(func, parameters))
+
+    return call
+
+
 class LoadedScript:
     """Imported extension script and its validated capabilities.
 
-    Instances are returned by :func:`erlab.extensions.load_script`. The normal
-    decorated functions are also available from :attr:`module`.
+    Instances are returned by :func:`erlab.extensions.load_script`. Attributes from
+    the imported module are available directly on the instance, so a loaded routine
+    can be called as ``extension.normalize(data)``.
 
     Parameters
     ----------
@@ -220,6 +239,16 @@ class LoadedScript:
         self.routines = routines
         self.loaders = loaders
 
+    def __getattr__(self, name: str) -> typing.Any:
+        """Return a public attribute from the imported script module."""
+        for descriptor, func in self.routines.values():
+            if descriptor.function_name == name:
+                return _extension_callable(func)
+        for descriptor, func in self.loaders.values():
+            if descriptor.function_name == name:
+                return _extension_callable(func)
+        return getattr(self.module, name)
+
     @property
     def capabilities(self) -> tuple[CapabilityDescriptor, ...]:
         """All validated capabilities in source definition order.
@@ -236,3 +265,42 @@ class LoadedScript:
             entry[0] for entry in self.loaders.values()
         ]
         return (*routines, *loaders)
+
+
+class LoadedEntryPoint:
+    """Imported package extension with direct access to its public callables.
+
+    Parameters
+    ----------
+    group
+        Python entry-point group.
+    name
+        Python entry-point name.
+    revision
+        Exact revision hash computed from package metadata and editable sources.
+    value
+        Object loaded from the entry point.
+    callables
+        Validated extension callables keyed by their Python function names.
+    """
+
+    def __init__(
+        self,
+        *,
+        group: str,
+        name: str,
+        revision: str,
+        value: typing.Any,
+        callables: dict[str, Callable[..., typing.Any]],
+    ) -> None:
+        self.group = group
+        self.name = name
+        self.revision = revision
+        self.value = value
+        self.callables = callables
+
+    def __getattr__(self, name: str) -> typing.Any:
+        """Return a public attribute or the entry-point callable itself."""
+        if name in self.callables:
+            return _extension_callable(self.callables[name])
+        return getattr(self.value, name)

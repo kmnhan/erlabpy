@@ -15,6 +15,7 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
+import erlab.extensions._entry_points as extension_entry_points
 import erlab.interactive.imagetool.manager._extensions._catalog as extension_catalog
 from erlab.interactive.imagetool._load_source import _resolve_load_func
 from erlab.interactive.imagetool._provenance._execution import (
@@ -107,6 +108,7 @@ def test_parameter_dialog_preserves_none_and_empty_string(qtbot) -> None:
         name="Optional values",
         category="Lab",
         summary="",
+        function_name="optional_values",
         parameters=(
             erlab.extensions.ParameterDescriptor(
                 id="scale",
@@ -485,14 +487,18 @@ def test_exact_revision_public_replay_survives_another_catalog_closing(
             routine_id="scale",
             extension_name="Scale",
             routine_name="Scale",
+            source_type="script",
+            function_name="scale",
+            source_path=str(first.store.source_path("scale", revision)),
+            entry_point_group=None,
+            entry_point_name=None,
             parameters={"scale": 3.0},
         )
         data = xr.DataArray([1.0, 2.0])
 
         xr.testing.assert_identical(operation.apply(data), data * 3.0)
-        namespace: dict[str, typing.Any] = {"data": data, "erlab": erlab}
-        exec(f"result = {operation.expression_code('data')}", namespace)  # noqa: S102
-        xr.testing.assert_identical(namespace["result"], data * 3.0)
+        generated = operation.expression_code("data")
+        assert "run_routine" not in generated
 
         second.close()
         xr.testing.assert_identical(operation.apply(data), data * 3.0)
@@ -500,6 +506,10 @@ def test_exact_revision_public_replay_survives_another_catalog_closing(
         first.close()
         if second._poll_timer.isActive():
             second.close()
+
+    namespace: dict[str, typing.Any] = {"data": data, "erlab": erlab}
+    exec(f"result = {generated}", namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["result"], data * 3.0)
 
 
 def test_catalog_watcher_recovers_after_atomic_replace(
@@ -953,11 +963,11 @@ def test_editable_source_fingerprint_tracks_custom_layout_and_sibling_modules(
         "url": tmp_path.as_uri(),
         "dir_info": {"editable": True},
     }
-    first = _ExtensionCatalogStore._editable_source_fingerprint(direct_url)
+    first = extension_entry_points._editable_source_fingerprint(direct_url)
     source.write_text("VALUE = 2\n")
-    second = _ExtensionCatalogStore._editable_source_fingerprint(direct_url)
+    second = extension_entry_points._editable_source_fingerprint(direct_url)
     helper.write_text("HELPER = 2\n")
-    third = _ExtensionCatalogStore._editable_source_fingerprint(direct_url)
+    third = extension_entry_points._editable_source_fingerprint(direct_url)
 
     assert second is not None
     assert first != second
@@ -973,10 +983,10 @@ def test_editable_source_fingerprint_rejects_unknown_source(
     }
 
     with pytest.raises(
-        extension_catalog._ExtensionCatalogError,
+        extension_entry_points._EntryPointRevisionError,
         match="no fingerprintable source",
     ):
-        _ExtensionCatalogStore._editable_source_fingerprint(direct_url)
+        extension_entry_points._editable_source_fingerprint(direct_url)
 
 
 def test_editable_package_source_change_creates_unapproved_revision(
@@ -2089,6 +2099,11 @@ def test_workspace_requirements_include_nested_script_inputs(
         routine_id="normalize",
         extension_name="Nested Routines",
         routine_name="Normalize",
+        source_type="script",
+        function_name="normalize",
+        source_path="nested_routines.py",
+        entry_point_group=None,
+        entry_point_name=None,
         parameters={},
     )
     nested = file_load(
@@ -2899,6 +2914,7 @@ def test_canceling_pending_loader_releases_qt_waiter(
             name="Load",
             category="Lab",
             summary="",
+            function_name="load",
         ),
         source_path=tmp_path / "missing.py",
         source_type="script",

@@ -39,6 +39,7 @@ from erlab.extensions._api import (
     _module_capabilities,
     _resolve_loader_method,
 )
+from erlab.extensions._entry_points import _entry_point_revision
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     compose_display_provenance,
@@ -828,10 +829,7 @@ def _environment_loader(
 def _environment_revision_matches(
     entry_point: importlib.metadata.EntryPoint, expected_revision: str
 ) -> bool:
-    _name, _version, payload, _editable = (
-        _ExtensionCatalogStore._entry_point_revision_payload(entry_point)
-    )
-    return hashlib.sha256(payload.encode()).hexdigest() == expected_revision
+    return _entry_point_revision(entry_point) == expected_revision
 
 
 def _loader_method_reference(loader: LoaderBase, method: Callable) -> str | None:
@@ -874,6 +872,7 @@ def _environment_capabilities(
             name=loader_instance.name.replace("_", " ").title(),
             category="Environment",
             summary=(inspect.getdoc(loader_type) or "").split("\n", maxsplit=1)[0],
+            function_name="load",
             extensions=tuple(sorted(loader_instance.extensions or ())),
         )
         dialog_methods = tuple(
@@ -1486,6 +1485,13 @@ class _ExtensionExecutionController(QtCore.QObject):
             routine_id=result.job.routine.id,
             extension_name=result.job.extension_name,
             routine_name=result.job.routine.name,
+            source_type=result.job.source_type,
+            function_name=result.job.routine.function_name,
+            source_path=(
+                None if result.job.source_path is None else str(result.job.source_path)
+            ),
+            entry_point_group=result.job.entry_point_group,
+            entry_point_name=result.job.entry_point_name,
             parameters=result.job.parameters,
         )
         provenance = compose_display_provenance(

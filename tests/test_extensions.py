@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
+import types
 import typing
 
 import numpy as np
@@ -14,6 +15,7 @@ from erlab.extensions import (
     ExtensionExecutionError,
     ExtensionSignatureError,
     ParameterKind,
+    load_entry_point,
     load_script,
     loader,
     routine,
@@ -21,6 +23,7 @@ from erlab.extensions import (
     run_routine,
 )
 from erlab.extensions._api import _resolve_loader_method
+from erlab.extensions._entry_points import _entry_point_revision
 
 if typing.TYPE_CHECKING:
     import importlib.machinery
@@ -84,12 +87,22 @@ def adjust(
     loaded = load_script(script)
     descriptor = loaded.routines["stable-adjust"][0]
 
+    assert descriptor.function_name == "adjust"
     assert tuple(parameter.kind for parameter in descriptor.parameters) == (
         ParameterKind.ENUM,
         ParameterKind.NUMBER,
         ParameterKind.STRING,
         ParameterKind.LITERAL,
         ParameterKind.PATH,
+    )
+    xr.testing.assert_identical(
+        loaded.adjust(
+            xr.DataArray([2.0]),
+            mode="multiply",
+            amount=3.0,
+            output="result.nc",
+        ),
+        xr.DataArray([6.0], attrs={"label": None, "choice": 1, "output": "result.nc"}),
     )
     result = run_routine(
         xr.DataArray([2.0]),
@@ -164,6 +177,56 @@ def scale(data: xr.DataArray) -> xr.DataArray:
         )
     finally:
         sys.modules.pop(module_name, None)
+
+
+def test_load_entry_point_exposes_a_pinned_package_routine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = types.ModuleType("lab_package")
+
+    @routine()
+    def normalize(data: xr.DataArray) -> xr.DataArray:
+        return data / data.max()
+
+    module.normalize = normalize
+    load_calls: list[None] = []
+
+    class EntryPoint:
+        group = "erlab.extensions"
+        name = "lab"
+        value = "lab_package"
+        dist = None
+
+        @staticmethod
+        def load():
+            load_calls.append(None)
+            return module
+
+    class EntryPoints(tuple):
+        def select(self, **parameters):
+            return tuple(
+                entry
+                for entry in self
+                if all(
+                    getattr(entry, key, None) == value
+                    for key, value in parameters.items()
+                )
+            )
+
+    entry_point = EntryPoint()
+    monkeypatch.setattr(
+        extension_api.importlib.metadata,
+        "entry_points",
+        lambda: EntryPoints((entry_point,)),
+    )
+    revision = _entry_point_revision(entry_point)
+
+    loaded = load_entry_point("erlab.extensions", "lab", expected_revision=revision)
+
+    xr.testing.assert_identical(
+        loaded.normalize(xr.DataArray([1.0, 2.0])), xr.DataArray([0.5, 1.0])
+    )
+    assert load_calls == [None]
 
 
 def test_load_script_executes_verified_source_snapshot(
