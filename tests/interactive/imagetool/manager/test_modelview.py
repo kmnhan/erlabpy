@@ -3570,6 +3570,9 @@ def test_select_loader_options_cancel_keeps_recent_filter(
         _recent_loader_kwargs_by_filter={},
         _recent_loader_extensions_by_filter={"Example Raw Data (*.h5)": {}},
         _recent_name_filter="Previous",
+        _manager_loader_name_for_callable=(
+            manager_base._builtin_loader_name_for_callable
+        ),
         _shared_loader_state=lambda: ({}, {}),
     )
 
@@ -3757,6 +3760,9 @@ def test_open_multiple_files_preselects_default_loader_filter(
         _recent_loader_extensions_by_filter={},
         _recent_name_filter=None,
         _available_file_loaders=lambda _paths=None: valid_loaders,
+        _manager_loader_name_for_callable=(
+            manager_base._builtin_loader_name_for_callable
+        ),
         _shared_loader_state=lambda: ({}, {}),
         effective_interactive_options=erlab.interactive.options.model,
     )
