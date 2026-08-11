@@ -328,7 +328,7 @@ class _ExtensionCatalogStore:
         expected_record_generation: int | None = None,
         check_record_generation: bool = False,
     ) -> _ExtensionCatalogModel:
-        """Copy approved workspace source into the application catalog."""
+        """Copy approved workspace source into this catalog."""
         actual_revision = hashlib.sha256(source).hexdigest()
         if actual_revision != expected_revision:
             raise ValueError(

@@ -33,6 +33,7 @@ class _SourceReviewDialog(QtWidgets.QDialog):
         parent: QtWidgets.QWidget,
         *,
         source_text: str | None = None,
+        choose_approval_scope: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("manager_extension_source_review_dialog")
@@ -68,6 +69,13 @@ class _SourceReviewDialog(QtWidgets.QDialog):
         form.addRow("Change summary", self.change_summary_edit)
         form.addRow("Changelog", self.changelog_edit)
         layout.addLayout(form)
+        self._remember_approval = QtWidgets.QCheckBox(
+            "Remember this extension in the application catalog", self
+        )
+        self._remember_approval.setObjectName("manager_extension_remember_approval")
+        self._remember_approval.setVisible(choose_approval_scope)
+        self._remember_approval.setChecked(not choose_approval_scope)
+        layout.addWidget(self._remember_approval)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Cancel
             | QtWidgets.QDialogButtonBox.StandardButton.Ok,
@@ -86,6 +94,11 @@ class _SourceReviewDialog(QtWidgets.QDialog):
             change_summary=self.change_summary_edit.text().strip(),
             changelog=self.changelog_edit.toPlainText().strip(),
         )
+
+    @property
+    def remember_approval(self) -> bool:
+        """Return whether approval must persist beyond this manager session."""
+        return self._remember_approval.isChecked()
 
 
 class _ExtensionParameterDialog(QtWidgets.QDialog):

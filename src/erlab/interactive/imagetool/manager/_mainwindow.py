@@ -2287,18 +2287,18 @@ class ImageToolManager(_ImageToolManagerBase):
     def _show_dependency_reload_dialog(self, target: int | str) -> None:
         self._lineage_controller._show_dependency_reload_dialog(target)
 
-    @staticmethod
     def _script_input_has_recorded_file(
+        self,
         script_input: ScriptInput,
     ) -> bool:
-        return _LineageController._script_input_has_recorded_file(script_input)
+        return self._lineage_controller._script_input_has_recorded_file(script_input)
 
-    @staticmethod
     def _dependency_ref_has_recorded_file(
+        self,
         spec: ToolProvenanceSpec | None,
         ref: ScriptInputDependencyRef,
     ) -> bool:
-        return _LineageController._dependency_ref_has_recorded_file(spec, ref)
+        return self._lineage_controller._dependency_ref_has_recorded_file(spec, ref)
 
     def _missing_dependencies_have_recorded_file(self, uid: str) -> bool:
         return self._lineage_controller._missing_dependencies_have_recorded_file(uid)

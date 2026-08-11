@@ -219,7 +219,10 @@ class _ProvenanceEditController:
         )
         if extension_reason is not None:
             return extension_reason
-        source_status = file_load_source_status(spec)
+        source_status = file_load_source_status(
+            spec,
+            extension_status_resolver=self._manager._extensions.capability_status,
+        )
         if source_status not in {"no-file-load-source", "loadable"}:
             return {
                 "missing-file": "The recorded source file is not available.",

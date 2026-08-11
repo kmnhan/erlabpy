@@ -2729,7 +2729,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _provenance_reloadable(self) -> bool:
         """Return whether replay provenance can rebuild the displayed data from file."""
-        return can_reload_without_trust(self.provenance_spec)
+        manager = self._manager_instance if self._in_manager else None
+        return can_reload_without_trust(
+            self.provenance_spec,
+            extension_status_resolver=(
+                None if manager is None else manager._extensions.capability_status
+            ),
+        )
 
     def _direct_reload_unavailable_reason(self) -> str | None:
         """Return why direct file metadata cannot reload, if it is relevant."""
@@ -2765,7 +2771,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         provenance_spec = self.provenance_spec
         if provenance_spec is None:
             return None
-        source_status = file_load_source_status(provenance_spec)
+        manager = self._manager_instance if self._in_manager else None
+        source_status = file_load_source_status(
+            provenance_spec,
+            extension_status_resolver=(
+                None if manager is None else manager._extensions.capability_status
+            ),
+        )
         if provenance_spec.kind == "file" or has_file_load_source(provenance_spec):
             load_source = provenance_spec.file_load_source
             if source_status == "no-file-load-source" or load_source is None:
@@ -2903,15 +2915,40 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if provenance_spec is None:
             raise RuntimeError("Data cannot be reloaded from provenance")
         load_source = provenance_spec.file_load_source
-        source_status = file_load_source_status(provenance_spec)
+        manager = self._manager_instance if self._in_manager else None
+        extension_status_resolver = (
+            None if manager is None else manager._extensions.capability_status
+        )
+        source_status = file_load_source_status(
+            provenance_spec,
+            extension_status_resolver=extension_status_resolver,
+        )
         if load_source is not None and source_status == "missing-file":
             raise FileNotFoundError(pathlib.Path(load_source.path))
-        if not can_reload_without_trust(provenance_spec):
+        if not can_reload_without_trust(
+            provenance_spec,
+            extension_status_resolver=extension_status_resolver,
+        ):
             raise RuntimeError("Data cannot be reloaded from provenance")
+        extension_executor = (
+            None if manager is None else manager._extensions.execution.run_operation
+        )
+        extension_loader_executor = (
+            None if manager is None else manager._extensions.replay_loader
+        )
         if provenance_spec.kind == "file":
-            return replay_file_provenance(provenance_spec)
+            return replay_file_provenance(
+                provenance_spec,
+                extension_executor=extension_executor,
+                extension_loader_executor=extension_loader_executor,
+            )
         if provenance_spec.kind == "script":
-            return replay_script_provenance(provenance_spec, {})
+            return replay_script_provenance(
+                provenance_spec,
+                {},
+                extension_executor=extension_executor,
+                extension_loader_executor=extension_loader_executor,
+            )
         raise RuntimeError("Data cannot be reloaded from provenance")
 
     def _fetch_reload_data(self) -> tuple[xr.DataArray, dict[str, typing.Any]]:

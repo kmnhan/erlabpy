@@ -42,6 +42,8 @@ from erlab.interactive.imagetool._provenance._model import (
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
+    from erlab.extensions._api import _CapabilityStatusResolver
+
 
 def _processed_replay_ndim(darr: xr.DataArray) -> int:
     if darr.ndim == 1:
@@ -445,8 +447,14 @@ def replay_file_provenance(
 
 def file_load_source_status(
     value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+    *,
+    extension_status_resolver: _CapabilityStatusResolver | None = None,
 ) -> FileLoadSourceStatus:
-    """Return the current availability of the recorded file-load source."""
+    """Return the current availability of the recorded file-load source.
+
+    A managed ImageTool can supply its own resolver so session-only extension
+    approvals do not affect other manager instances.
+    """
     spec = parse_tool_provenance_spec(value)
     if spec is None or spec.file_load_source is None:
         return "no-file-load-source"
@@ -471,7 +479,11 @@ def file_load_source_status(
             return "extension-missing-revision"
         if replay_call.capability_id is None:
             return "extension-missing-capability"
-        capability_status = _capability_status(
+        capability_status = (
+            _capability_status
+            if extension_status_resolver is None
+            else extension_status_resolver
+        )(
             replay_call.target,
             replay_call.revision,
             "loader",
@@ -496,22 +508,37 @@ def file_load_source_status(
 
 def can_reload_without_trust(
     value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+    *,
+    extension_status_resolver: _CapabilityStatusResolver | None = None,
 ) -> bool:
-    """Return whether recorded provenance can replay without trusted user code."""
+    """Return whether provenance can replay with the selected extension scope."""
     spec = parse_tool_provenance_spec(value)
     if spec is None:
         return False
     if spec.kind == "file":
-        return file_load_source_status(spec) == "loadable"
+        return (
+            file_load_source_status(
+                spec, extension_status_resolver=extension_status_resolver
+            )
+            == "loadable"
+        )
     if spec.kind != "script":
         return False
-    if has_file_load_source(spec) and file_load_source_status(spec) != "loadable":
+    if (
+        has_file_load_source(spec)
+        and file_load_source_status(
+            spec, extension_status_resolver=extension_status_resolver
+        )
+        != "loadable"
+    ):
         return False
     if not script_provenance_replayable(spec):
         return False
     for script_input in spec.script_inputs:
         input_spec = script_input.parsed_provenance_spec()
-        if not can_reload_without_trust(input_spec):
+        if not can_reload_without_trust(
+            input_spec, extension_status_resolver=extension_status_resolver
+        ):
             return False
     return True
 

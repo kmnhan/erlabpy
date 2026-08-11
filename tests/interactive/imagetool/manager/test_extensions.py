@@ -2126,6 +2126,14 @@ def test_workspace_requirement_states_do_not_import_embedded_code(
             "hash-mismatch"
         )
 
+        manager._extensions.set_workspace_requirements(
+            (requirement.model_copy(update={"source_type": "environment-package"}),),
+            embedded_sources={("workspace-only", revision): source},
+        )
+        assert manager._extensions.resolved_workspace_requirements()[0].state == (
+            "missing"
+        )
+
 
 def test_workspace_requirements_dialog_refreshes_after_approval(
     manager_context,
@@ -2179,6 +2187,231 @@ def test_workspace_requirements_dialog_refreshes_after_approval(
         item = dialog.tree.topLevelItem(0)
         assert item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) == "ready"
         assert not dialog._approve_button.isEnabled()
+
+
+def test_embedded_approval_is_local_to_one_manager_session(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source = b"""from pathlib import Path
+import xarray as xr
+from erlab.extensions import loader, routine
+
+@routine(name="Scale", category="Lab")
+def scale(data: xr.DataArray, scale: float = 2.0) -> xr.DataArray:
+    return data * scale
+
+@loader(name="Lab Data", extensions=(".txt",), category="Lab")
+def load_data(path: Path) -> xr.DataArray:
+    return xr.DataArray([float(path.read_text())])
+"""
+    revision = hashlib.sha256(source).hexdigest()
+    requirement = _WorkspaceExtensionRequirement(
+        extension_id="workspace-session",
+        capability_id="scale",
+        capability_kind="routine",
+        revision_hash=revision,
+        extension_api_version=1,
+        source_type="script",
+        metadata_snapshot={"extension_name": "Workspace Session"},
+        embedded_object_id=f"extension-{revision}",
+    )
+    monkeypatch.setattr(
+        extension_controller._SourceReviewDialog,
+        "exec",
+        lambda _dialog: QtWidgets.QDialog.DialogCode.Accepted,
+    )
+    data_path = tmp_path / "value.txt"
+    data_path.write_text("4")
+
+    with manager_context() as manager:
+        manager._extensions.set_workspace_requirements(
+            (requirement,),
+            embedded_sources={(requirement.extension_id, revision): source},
+        )
+        manager._extensions._approve_embedded_script(requirement.extension_id, revision)
+
+        assert requirement.extension_id not in (
+            manager._extensions.catalog.store.read().extensions
+        )
+        assert manager._extensions.resolved_workspace_requirements()[0].state == (
+            "ready"
+        )
+        operation = ExtensionRoutineOperation(
+            extension_id=requirement.extension_id,
+            revision_hash=revision,
+            routine_id="scale",
+            extension_name="Workspace Session",
+            routine_name="Scale",
+            source_type="script",
+            function_name="scale",
+            source_path="workspace_session.py",
+            entry_point_group=None,
+            entry_point_name=None,
+            parameters={"scale": 3.0},
+        )
+        xr.testing.assert_identical(
+            manager._extensions.execution.run_operation(
+                operation, xr.DataArray([1.0, 2.0])
+            ),
+            xr.DataArray([3.0, 6.0]),
+        )
+        load_source = FileLoadSource(
+            path=str(data_path),
+            loader_label="Lab Data",
+            loader_text="workspace-session:load_data",
+            kwargs_text="",
+            replay_call=FileReplayCall(
+                kind="extension_loader",
+                target=requirement.extension_id,
+                revision=revision,
+                capability_id="load_data",
+                selection=FileDataSelection(kind="dataarray"),
+            ),
+        )
+        xr.testing.assert_identical(
+            manager._extensions.replay_loader(load_source), xr.DataArray([4.0])
+        )
+        provenance_spec = file_load(
+            start_label="Load session data",
+            seed_code="derived = xr.DataArray([4.0])",
+            file_load_source=load_source,
+        )
+        assert (
+            file_load_source_status(
+                provenance_spec,
+                extension_status_resolver=manager._extensions.capability_status,
+            )
+            == "loadable"
+        )
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(xr.DataArray([4.0])),
+            show=False,
+            provenance_spec=provenance_spec,
+        )
+        slicer_area = manager.get_imagetool(index).slicer_area
+        data_path.write_text("5")
+        assert slicer_area._provenance_reloadable()
+        xr.testing.assert_identical(
+            slicer_area._fetch_for_provenance_reload(), xr.DataArray([5.0])
+        )
+        data_path.write_text("6")
+        assert slicer_area._reload()
+        xr.testing.assert_identical(slicer_area._data, xr.DataArray([6.0]))
+        session_directory = pathlib.Path(
+            manager._extensions.execution._session_directory.name
+        )
+
+    assert not session_directory.exists()
+    with manager_context() as manager:
+        manager._extensions.set_workspace_requirements(
+            (requirement,),
+            embedded_sources={(requirement.extension_id, revision): source},
+        )
+        assert manager._extensions.resolved_workspace_requirements()[0].state == (
+            "approval-required"
+        )
+
+
+def test_canceling_embedded_approval_keeps_source_unapproved(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "cancelled.py"
+    source = _script(script_path)
+    revision = hashlib.sha256(source).hexdigest()
+    requirement = _WorkspaceExtensionRequirement(
+        extension_id="cancelled",
+        capability_id="scale",
+        capability_kind="routine",
+        revision_hash=revision,
+        extension_api_version=1,
+        source_type="script",
+        embedded_object_id=f"extension-{revision}",
+    )
+    monkeypatch.setattr(
+        extension_controller._SourceReviewDialog,
+        "exec",
+        lambda _dialog: QtWidgets.QDialog.DialogCode.Rejected,
+    )
+
+    with manager_context() as manager:
+        manager._extensions.set_workspace_requirements(
+            (requirement,),
+            embedded_sources={(requirement.extension_id, revision): source},
+        )
+        manager._extensions._approve_embedded_script(requirement.extension_id, revision)
+
+        assert requirement.extension_id not in (
+            manager._extensions.catalog.store.read().extensions
+        )
+        assert (
+            manager._extensions.execution.session_capability_status(
+                requirement.extension_id,
+                revision,
+                "routine",
+                requirement.capability_id,
+            )
+            is None
+        )
+        assert manager._extensions.resolved_workspace_requirements()[0].state == (
+            "approval-required"
+        )
+
+
+def test_embedded_approval_can_be_remembered_globally(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "remembered.py"
+    source = _script(script_path)
+    revision = hashlib.sha256(source).hexdigest()
+    requirement = _WorkspaceExtensionRequirement(
+        extension_id="remembered",
+        capability_id="scale",
+        capability_kind="routine",
+        revision_hash=revision,
+        extension_api_version=1,
+        source_type="script",
+        embedded_object_id=f"extension-{revision}",
+    )
+
+    def remember(dialog) -> QtWidgets.QDialog.DialogCode:
+        control = dialog.findChild(
+            QtWidgets.QCheckBox, "manager_extension_remember_approval"
+        )
+        if control is None:
+            raise RuntimeError("The approval scope control is unavailable")
+        control.setChecked(True)
+        return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        extension_controller._SourceReviewDialog,
+        "exec",
+        remember,
+    )
+    with manager_context() as manager:
+        manager._extensions.set_workspace_requirements(
+            (requirement,),
+            embedded_sources={(requirement.extension_id, revision): source},
+        )
+        manager._extensions._approve_embedded_script(requirement.extension_id, revision)
+
+        record = manager._extensions.catalog.store.read().extensions["remembered"]
+        assert record.enabled
+        assert record.revisions[revision].approved
+
+    with manager_context() as manager:
+        manager._extensions.set_workspace_requirements(
+            (requirement,),
+            embedded_sources={(requirement.extension_id, revision): source},
+        )
+        assert manager._extensions.resolved_workspace_requirements()[0].state == (
+            "ready"
+        )
 
 
 @pytest.mark.parametrize("selected", [False, True])

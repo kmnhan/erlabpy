@@ -235,28 +235,33 @@ class _LineageController:
         elif msg_box.clickedButton() is cancel_button:
             return
 
-    @classmethod
     def _script_input_has_recorded_file(
-        cls,
+        self,
         script_input: ScriptInput,
     ) -> bool:
         spec = script_input.parsed_provenance_spec()
         if spec is None:
             return False
-        source_status = file_load_source_status(spec)
+        source_status = file_load_source_status(
+            spec,
+            extension_status_resolver=self._manager._extensions.capability_status,
+        )
         if source_status != "no-file-load-source":
             return source_status != "missing-file"
         for nested_input in spec.script_inputs:
-            if cls._script_input_has_recorded_file(nested_input):
+            if self._script_input_has_recorded_file(nested_input):
                 return True
         return False
 
-    @staticmethod
     def _file_load_source_unavailable_reason(
+        self,
         spec: ToolProvenanceSpec,
         label: str,
     ) -> str | None:
-        source_status = file_load_source_status(spec)
+        source_status = file_load_source_status(
+            spec,
+            extension_status_resolver=self._manager._extensions.capability_status,
+        )
         load_source = spec.file_load_source
         if source_status == "no-file-load-source" or load_source is None:
             return (
@@ -320,9 +325,8 @@ class _LineageController:
             )
         return None
 
-    @classmethod
     def _dependency_ref_has_recorded_file(
-        cls,
+        self,
         spec: ToolProvenanceSpec | None,
         ref: ScriptInputDependencyRef,
     ) -> bool:
@@ -334,10 +338,10 @@ class _LineageController:
                 and script_input.node_uid == ref.node_uid
                 and script_input.node_snapshot_token == ref.node_snapshot_token
                 and script_input.data_role == ref.data_role
-                and cls._script_input_has_recorded_file(script_input)
+                and self._script_input_has_recorded_file(script_input)
             ):
                 return True
-            if cls._dependency_ref_has_recorded_file(
+            if self._dependency_ref_has_recorded_file(
                 script_input.parsed_provenance_spec(), ref
             ):
                 return True
@@ -536,7 +540,10 @@ class _LineageController:
                 return True
         if spec is None:
             return False
-        source_status = file_load_source_status(spec)
+        source_status = file_load_source_status(
+            spec,
+            extension_status_resolver=self._manager._extensions.capability_status,
+        )
         if source_status != "no-file-load-source" and source_status != "loadable":
             return False
         if spec.kind == "file":
@@ -731,7 +738,10 @@ class _LineageController:
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> str | None:
         spec = node.provenance_spec
-        if spec is not None and can_reload_without_trust(spec):
+        if spec is not None and can_reload_without_trust(
+            spec,
+            extension_status_resolver=self._manager._extensions.capability_status,
+        ):
             return None
         if spec is not None and (spec.kind == "file" or has_file_load_source(spec)):
             reason = self._file_load_source_unavailable_reason(spec, "This result")
