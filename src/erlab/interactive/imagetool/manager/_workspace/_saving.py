@@ -1208,6 +1208,19 @@ class _WorkspaceSaver:
                     extra={"suppress_ui_alert": True},
                 )
                 continue
+            unresolved_object = (
+                self._manager._extensions._workspace_unresolved_embedded_objects.get(
+                    object_id
+                )
+            )
+            if unresolved_object is not None:
+                source, kind = unresolved_object
+                object_writes[object_id] = workspace_storage._WorkspaceObjectWrite(
+                    object_id,
+                    blob=source,
+                    blob_kind=kind,
+                )
+                continue
             if (
                 source_workspace_path is not None
                 and object_id in previous_extension_object_ids

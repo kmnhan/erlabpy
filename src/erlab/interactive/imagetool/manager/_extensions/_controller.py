@@ -93,6 +93,9 @@ class _ExtensionController(QtCore.QObject):
         self._recent: deque[tuple[str, str]] = deque(maxlen=8)
         self._workspace_requirements: tuple[_WorkspaceExtensionRequirement, ...] = ()
         self._workspace_embedded_sources: dict[tuple[str, str], bytes] = {}
+        self._workspace_unresolved_embedded_objects: dict[
+            str, tuple[bytes, str | None]
+        ] = {}
         self._explorer_loaders: dict[str, erlab.io.dataloader.LoaderBase] = {}
         self._environment_loader_names: set[str] = set()
         self._closed = False
@@ -1040,10 +1043,14 @@ class _ExtensionController(QtCore.QObject):
         requirements: Iterable[_WorkspaceExtensionRequirement],
         *,
         embedded_sources: dict[tuple[str, str], bytes] | None = None,
+        unresolved_embedded_objects: dict[str, tuple[bytes, str | None]] | None = None,
         unresolved_payloads: Iterable[typing.Any] = (),
     ) -> None:
         self._workspace_requirements = tuple(requirements)
         self._workspace_embedded_sources = dict(embedded_sources or {})
+        self._workspace_unresolved_embedded_objects = dict(
+            unresolved_embedded_objects or {}
+        )
         self._unresolved_workspace_requirement_payloads = tuple(
             copy.deepcopy(item) for item in unresolved_payloads
         )
@@ -1053,12 +1060,14 @@ class _ExtensionController(QtCore.QObject):
     ) -> tuple[
         tuple[_WorkspaceExtensionRequirement, ...],
         dict[tuple[str, str], bytes],
+        dict[str, tuple[bytes, str | None]],
         tuple[typing.Any, ...],
     ]:
         """Copy workspace-owned extension state for transactional rollback."""
         return (
             self._workspace_requirements,
             dict(self._workspace_embedded_sources),
+            dict(self._workspace_unresolved_embedded_objects),
             copy.deepcopy(self._unresolved_workspace_requirement_payloads),
         )
 

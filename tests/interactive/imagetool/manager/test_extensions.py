@@ -2057,7 +2057,8 @@ def test_failed_workspace_load_restores_extension_requirement_state(
         assert restored[1] == {
             (previous.extension_id, previous.revision_hash): previous_source
         }
-        assert restored[2] == unresolved
+        assert restored[2] == {}
+        assert restored[3] == unresolved
         assert manager._workspace_state.save_as_only
         assert manager._workspace_state.degraded_reasons == ("previous: missing",)
 
@@ -2521,6 +2522,109 @@ def test_workspace_import_preserves_unavailable_embedded_source(
     restored, kind = workspace_storage._read_workspace_blob(saved_path, object_id)
     assert restored == source
     assert kind == "extension-python-source-v1"
+
+
+def test_workspace_import_preserves_unparsed_embedded_source(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "future-extension.itws"
+    saved_path = tmp_path / "saved-after-import.itws"
+    source = b"raise RuntimeError('must remain unresolved')\n"
+    revision = hashlib.sha256(source).hexdigest()
+    object_id = f"extension-{revision}"
+    requirement = {
+        "extension_id": "future-lab",
+        "capability_id": "normalize",
+        "capability_kind": "routine",
+        "revision_hash": revision,
+        "extension_api_version": 1,
+        "source_type": "script",
+        "metadata_snapshot": {},
+        "embedded_object_id": object_id,
+        "referencing_nodes": [],
+        "file_sources": [],
+        "future_field": {"value": 1},
+    }
+    with workspace_store.WorkspaceStore(source_path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(
+                manifest={
+                    "schema_version": 6,
+                    "nodes": [],
+                    "root_order": [],
+                    "extension_requirements": [requirement],
+                },
+                objects=(
+                    workspace_storage._WorkspaceObjectWrite(
+                        object_id,
+                        blob=source,
+                        blob_kind="extension-python-source-v2",
+                    ),
+                ),
+            ),
+            compression_mode="none",
+        )
+
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            manager._extensions,
+            "notify_unavailable_workspace_requirements",
+            lambda: None,
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            source_path,
+            replace=False,
+            associate=False,
+            mark_dirty=True,
+            select=False,
+        )
+        manager._workspace_controller.saving._save_workspace_document(saved_path)
+
+    attrs = workspace_arrays._read_workspace_root_attrs_h5py(saved_path)
+    manifest = workspace_format._workspace_manifest_from_attrs(attrs)
+    assert manifest["extension_requirements"] == [requirement]
+    restored, kind = workspace_storage._read_workspace_blob(saved_path, object_id)
+    assert restored == source
+    assert kind == "extension-python-source-v2"
+
+
+def test_workspace_import_ignores_unselected_extension_requirements(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    requirement = _WorkspaceExtensionRequirement(
+        extension_id="omitted-extension",
+        capability_id="normalize",
+        capability_kind="routine",
+        revision_hash="a" * 64,
+        extension_api_version=1,
+        source_type="script",
+        referencing_nodes=("omitted-node",),
+    )
+    manifest = {
+        "schema_version": 6,
+        "nodes": [
+            {"path": "0", "uid": "selected-node", "kind": "imagetool"},
+            {"path": "1", "uid": "omitted-node", "kind": "imagetool"},
+        ],
+        "root_order": ["0", "1"],
+        "extension_requirements": [requirement.model_dump(mode="json")],
+    }
+
+    with manager_context() as manager:
+        manager._workspace_controller.loading._prepare_extension_requirements(
+            tmp_path / "selected.itws",
+            manifest,
+            replace=True,
+            selected_paths={"0"},
+        )
+
+        assert manager._extensions.collect_workspace_requirements() == ()
+        assert not manager._workspace_state.save_as_only
+        assert manager._workspace_state.degraded_reasons == ()
 
 
 def test_extensions_menu_is_before_dask(

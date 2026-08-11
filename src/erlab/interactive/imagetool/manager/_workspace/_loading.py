@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -2457,7 +2458,10 @@ class _WorkspaceLoader:
                             )
                             try:
                                 self._prepare_extension_requirements(
-                                    access.path, manifest, replace=replace
+                                    access.path,
+                                    manifest,
+                                    replace=replace,
+                                    selected_paths=selected_paths,
                                 )
                                 loaded = self._from_h5py_workspace_file(
                                     access.path,
@@ -2471,11 +2475,15 @@ class _WorkspaceLoader:
                                 (
                                     previous_requirements,
                                     previous_embedded_sources,
+                                    previous_unresolved_embedded_objects,
                                     previous_unresolved_payloads,
                                 ) = previous_extension_state
                                 self._manager._extensions.set_workspace_requirements(
                                     previous_requirements,
                                     embedded_sources=previous_embedded_sources,
+                                    unresolved_embedded_objects=(
+                                        previous_unresolved_embedded_objects
+                                    ),
                                     unresolved_payloads=previous_unresolved_payloads,
                                 )
                                 self._manager._workspace_state.save_as_only = (
@@ -2588,46 +2596,101 @@ class _WorkspaceLoader:
         manifest: Mapping[str, typing.Any],
         *,
         replace: bool,
+        selected_paths: set[str] | None,
     ) -> None:
         """Inspect exact workspace requirements without importing embedded code."""
+        selected_uids: set[str] | None = None
+        if selected_paths is not None:
+            selected_uids = {
+                str(uid)
+                for entry in workspace_format._iter_workspace_manifest_node_entries(
+                    manifest
+                )
+                if entry.get("path") in selected_paths
+                and isinstance((uid := entry.get("uid")), str)
+            }
         raw_requirements = manifest.get("extension_requirements", ())
         requirements: list[_WorkspaceExtensionRequirement] = []
         unresolved_payloads: list[typing.Any] = []
         embedded_sources: dict[tuple[str, str], bytes] = {}
+        unresolved_embedded_objects: dict[str, tuple[bytes, str | None]] = {}
         invalid_entries = 0
+
+        def read_embedded_object(object_id: str) -> tuple[bytes, str | None] | None:
+            try:
+                return workspace_storage._read_workspace_blob(workspace_path, object_id)
+            except Exception:
+                logger.warning(
+                    "Could not read embedded extension source %s",
+                    object_id,
+                    exc_info=True,
+                    extra={"suppress_ui_alert": True},
+                )
+                return None
+
         if isinstance(raw_requirements, list):
             for raw in raw_requirements:
+                if selected_uids is not None:
+                    raw_references = (
+                        raw.get("referencing_nodes") if isinstance(raw, dict) else None
+                    )
+                    if not isinstance(raw_references, (list, tuple)) or not any(
+                        isinstance(uid, str) and uid in selected_uids
+                        for uid in raw_references
+                    ):
+                        continue
                 try:
                     requirement = _WorkspaceExtensionRequirement.model_validate(raw)
                 except Exception:
                     invalid_entries += 1
                     unresolved_payloads.append(copy.deepcopy(raw))
+                    object_id = (
+                        raw.get("embedded_object_id") if isinstance(raw, dict) else None
+                    )
+                    if (
+                        isinstance(object_id, str)
+                        and (embedded_object := read_embedded_object(object_id))
+                        is not None
+                    ):
+                        unresolved_embedded_objects[object_id] = embedded_object
                     logger.warning(
                         "Preserving an invalid workspace extension requirement",
                         exc_info=True,
                         extra={"suppress_ui_alert": True},
                     )
                     continue
+                if selected_uids is not None:
+                    selected_references = tuple(
+                        uid
+                        for uid in requirement.referencing_nodes
+                        if uid in selected_uids
+                    )
+                    if not selected_references:
+                        continue
+                    requirement = requirement.model_copy(
+                        update={"referencing_nodes": selected_references}
+                    )
                 requirements.append(requirement)
                 if requirement.embedded_object_id is None:
                     continue
-                try:
-                    source, kind = workspace_storage._read_workspace_blob(
-                        workspace_path, requirement.embedded_object_id
-                    )
-                except Exception:
-                    logger.warning(
-                        "Could not read embedded extension source %s",
-                        requirement.embedded_object_id,
-                        exc_info=True,
-                        extra={"suppress_ui_alert": True},
-                    )
+                embedded_object = read_embedded_object(requirement.embedded_object_id)
+                if embedded_object is None:
                     continue
+                source, kind = embedded_object
                 if kind != "extension-python-source-v1":
+                    unresolved_embedded_objects[requirement.embedded_object_id] = (
+                        source,
+                        kind,
+                    )
                     continue
                 embedded_sources[
                     (requirement.extension_id, requirement.revision_hash)
                 ] = source
+                if hashlib.sha256(source).hexdigest() != requirement.revision_hash:
+                    unresolved_embedded_objects[requirement.embedded_object_id] = (
+                        source,
+                        kind,
+                    )
         elif "extension_requirements" in manifest:
             invalid_entries = 1
             unresolved_payloads.append(copy.deepcopy(raw_requirements))
@@ -2639,6 +2702,7 @@ class _WorkspaceLoader:
             self._manager._extensions.set_workspace_requirements(
                 requirements,
                 embedded_sources=embedded_sources,
+                unresolved_embedded_objects=unresolved_embedded_objects,
                 unresolved_payloads=unresolved_payloads,
             )
         else:
@@ -2650,6 +2714,10 @@ class _WorkspaceLoader:
                 embedded_sources={
                     **self._manager._extensions._workspace_embedded_sources,
                     **embedded_sources,
+                },
+                unresolved_embedded_objects={
+                    **self._manager._extensions._workspace_unresolved_embedded_objects,
+                    **unresolved_embedded_objects,
                 },
                 unresolved_payloads=(
                     *self._manager._extensions._unresolved_workspace_requirement_payloads,
