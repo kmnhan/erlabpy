@@ -1760,7 +1760,9 @@ def test_pending_workspace_reload_reason_branches(
     with manager_context() as manager:
         controller = manager._lineage_controller
         monkeypatch.setattr(
-            manager_lineage, "can_reload_without_trust", lambda _spec: False
+            manager_lineage,
+            "can_reload_without_trust",
+            lambda _spec, *, extension_status_resolver: False,
         )
         monkeypatch.setattr(
             manager_lineage, "has_file_load_source", lambda _spec: False

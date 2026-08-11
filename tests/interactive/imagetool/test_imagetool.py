@@ -4306,6 +4306,9 @@ def test_itool_reload_unavailable_reason_metadata_branches(
         target_from_slicer_area=lambda _area: "target",
         _reload_target_for_child=lambda _target: None,
         _reload_unavailable_reason_for_target=lambda _target: "manager reason",
+        _extensions=types.SimpleNamespace(
+            capability_status=lambda *_args: "ready",
+        ),
     )
     with monkeypatch.context() as patch:
         patch.setattr(win.slicer_area, "_in_manager", True)
