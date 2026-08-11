@@ -323,12 +323,15 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
                         extension_revision,
                         extension_capability_id,
                         extension_method,
+                        extension_source_type,
                     ) = _extension_loader_identity(func)
                     matches = (
                         extension_id == self._replay_call.target
                         and extension_revision == self._replay_call.revision
                         and extension_capability_id == self._replay_call.capability_id
                         and extension_method == self._replay_call.loader_method
+                        and extension_source_type
+                        == self._replay_call.extension_source_type
                     )
                 else:
                     matches = _loader_callable_text(

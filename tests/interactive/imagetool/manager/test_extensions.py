@@ -7595,6 +7595,7 @@ def counter_loader(path: Path, scale: float = 1.0) -> xr.DataArray:
 
 def test_direct_extension_loader_reload_rechecks_catalog_state(
     manager_context,
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
 ) -> None:
     script_path = tmp_path / "reload_loader.py"
@@ -7625,7 +7626,32 @@ def test_direct_extension_loader_reload_rechecks_catalog_state(
         )
         manager.add_imagetool(tool, show=False)
 
+        source_types: list[str | None] = []
+        original_status = manager._extensions.capability_status
+
+        def capability_status(
+            extension_id: str,
+            revision_hash: str,
+            kind: str,
+            capability_id: str,
+            source_type: str | None = None,
+        ) -> str:
+            source_types.append(source_type)
+            return original_status(
+                extension_id,
+                revision_hash,
+                kind,
+                capability_id,
+                source_type,
+            )
+
+        monkeypatch.setattr(
+            manager._extensions,
+            "capability_status",
+            capability_status,
+        )
         assert tool.slicer_area._direct_reloadable()
+        assert source_types == ["script"]
         assert tool.slicer_area._reload_unavailable_reason() is None
 
         current = manager._extensions.catalog.store.read().extensions["reload_loader"]
@@ -7643,6 +7669,53 @@ def test_direct_extension_loader_reload_rechecks_catalog_state(
         assert reason is not None
         with pytest.raises(RuntimeError, match="cannot be reloaded"):
             tool.slicer_area._fetch_reload_data()
+
+
+def test_file_load_edit_dialog_matches_extension_loader_source_type(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    class ExtensionCall:
+        __name__ = "load"
+        extension_id = "shared"
+        revision_hash = "a" * 64
+        loader_id = "load"
+        loader_method = None
+
+        def __init__(self, source_type: str) -> None:
+            self.source_type = source_type
+
+        def __call__(self, _path: pathlib.Path) -> xr.DataArray:
+            return xr.DataArray([1.0])
+
+    package_call = ExtensionCall("environment-package")
+    script_call = ExtensionCall("script")
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = _FileLoadEditDialog(
+        FileLoadSource(
+            path=str(tmp_path / "data.txt"),
+            loader_label="Extension Loader",
+            loader_text="shared: load",
+            kwargs_text="(none)",
+            replay_call=FileReplayCall(
+                kind="extension_loader",
+                target="shared",
+                revision="a" * 64,
+                capability_id="load",
+                extension_source_type="script",
+                selection=FileDataSelection(kind="dataarray"),
+            ),
+        ),
+        parent,
+        file_loaders=lambda _path: {
+            "Package": (package_call, {}),
+            "Script": (script_call, {}),
+        },
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog._checked_filter_name() == "Script"
 
 
 def test_extension_loader_filter_conflict_is_rejected(

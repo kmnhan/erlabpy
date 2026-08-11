@@ -495,15 +495,33 @@ def _import_for_callable(loader: Callable[..., typing.Any], target: str) -> str:
 
 def _extension_loader_identity(
     loader: object,
-) -> tuple[str | None, str | None, str | None, str | None]:
+) -> tuple[
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    typing.Literal["script", "environment-package"] | None,
+]:
     """Return extension identity from a call object or its bound adapter."""
     owner = getattr(loader, "__self__", None)
     source = owner if owner is not None else loader
-    values = tuple(
+    extension_id, revision_hash, loader_id, loader_method = (
         getattr(source, name, None)
-        for name in ("extension_id", "revision_hash", "loader_id", "loader_method")
+        for name in (
+            "extension_id",
+            "revision_hash",
+            "loader_id",
+            "loader_method",
+        )
     )
-    return typing.cast("tuple[str | None, str | None, str | None, str | None]", values)
+    source_type = getattr(source, "source_type", None)
+    return (
+        extension_id if isinstance(extension_id, str) else None,
+        revision_hash if isinstance(revision_hash, str) else None,
+        loader_id if isinstance(loader_id, str) else None,
+        loader_method if isinstance(loader_method, str) else None,
+        source_type if source_type in {"script", "environment-package"} else None,
+    )
 
 
 def _extension_loader_expression(
@@ -582,9 +600,13 @@ def _resolve_load_func(
             cast_float64=cast_float64,
         )
 
-    extension_id, extension_revision, extension_capability_id, extension_method = (
-        _extension_loader_identity(loader)
-    )
+    (
+        extension_id,
+        extension_revision,
+        extension_capability_id,
+        extension_method,
+        extension_source_type,
+    ) = _extension_loader_identity(loader)
     if all(
         isinstance(value, str) and value
         for value in (extension_id, extension_revision, extension_capability_id)
@@ -596,7 +618,7 @@ def _resolve_load_func(
         if not isinstance(descriptor, erlab.extensions.LoaderDescriptor):
             raise ValueError("Extension loader descriptor is unavailable")
         loader_expr, imports = _extension_loader_expression(
-            source_type=getattr(source, "source_type", None),
+            source_type=extension_source_type,
             source_path=getattr(source, "source_path", None),
             entry_point_group=getattr(source, "entry_point_group", None),
             entry_point_name=getattr(source, "entry_point_name", None),
@@ -618,10 +640,7 @@ def _resolve_load_func(
             cast_float64=cast_float64,
             extension_revision=extension_revision,
             extension_capability_id=extension_capability_id,
-            extension_source_type=typing.cast(
-                'typing.Literal["script", "environment-package"]',
-                typing.cast("typing.Any", source).source_type,
-            ),
+            extension_source_type=extension_source_type,
             extension_method=extension_method,
         )
 

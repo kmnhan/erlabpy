@@ -2745,7 +2745,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         if self._load_func is None:
             return None
-        extension_id, revision_hash, loader_id, _loader_method = (
+        extension_id, revision_hash, loader_id, _loader_method, source_type = (
             _extension_loader_identity(self._load_func[0])
         )
         if not (
@@ -2763,7 +2763,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if manager is None
             else manager._extensions.capability_status
         )
-        return resolver(extension_id, revision_hash, "loader", loader_id)
+        return resolver(
+            extension_id,
+            revision_hash,
+            "loader",
+            loader_id,
+            source_type,
+        )
 
     def _provenance_reloadable(self) -> bool:
         """Return whether replay provenance can rebuild the displayed data from file."""
