@@ -87,6 +87,24 @@ def scale(data: xr.DataArray, scale: float = 2.0) -> xr.DataArray:
     return source
 
 
+def _loader_script(
+    path: pathlib.Path,
+    *,
+    name: str,
+    extensions: tuple[str, ...],
+) -> bytes:
+    source = f"""from pathlib import Path
+import xarray as xr
+from erlab.extensions import loader
+
+@loader(name={name!r}, extensions={extensions!r})
+def load_data(path: Path) -> xr.DataArray:
+    return xr.DataArray([float(path.read_text())])
+""".encode()
+    path.write_bytes(source)
+    return source
+
+
 def _validate_and_enable(
     store: _ExtensionCatalogStore,
     extension_id: str,
@@ -3259,12 +3277,19 @@ def counter_loader(path: Path, scale: float = 1.0) -> xr.DataArray:
 
         loader_entries = manager._extensions.file_loaders((value_path,))
         assert len(loader_entries) == 1
-        call, _defaults = next(iter(loader_entries.values()))
+        name_filter, (call, _defaults) = next(iter(loader_entries.items()))
         first = call(value_path)
         second = call(value_path)
         xr.testing.assert_identical(first, xr.DataArray([1.0, 4.0]))
         xr.testing.assert_identical(second, xr.DataArray([2.0, 4.0]))
         assert "counter_loader:counter_loader" in (manager._extensions.explorer_loaders)
+        manager._recent_name_filter = name_filter
+        assert manager._recent_loader_name == "counter_loader:counter_loader"
+        manager.ensure_explorer_initialized()
+        assert (
+            manager.explorer.current_explorer.loader_name
+            == "counter_loader:counter_loader"
+        )
         resolved = _resolve_load_func((call, {}, FileDataSelection(kind="dataarray")))
         assert resolved is not None
         assert resolved.replay_call().kind == "extension_loader"
@@ -3288,6 +3313,67 @@ def counter_loader(path: Path, scale: float = 1.0) -> xr.DataArray:
         loader_entries = second_manager._extensions.file_loaders((value_path,))
         isolated_call, _defaults = next(iter(loader_entries.values()))
         xr.testing.assert_identical(isolated_call(value_path), xr.DataArray([1.0, 4.0]))
+
+
+def test_extension_loader_filter_conflict_is_rejected(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    first_path = tmp_path / "first.py"
+    second_path = tmp_path / "second.py"
+    _loader_script(first_path, name="Lab Data", extensions=(".txt",))
+    _loader_script(second_path, name="Lab Data", extensions=(".txt",))
+
+    with manager_context() as manager:
+        for script_path in (first_path, second_path):
+            catalog, _revision, _created = manager._extensions.catalog.store.add_script(
+                script_path
+            )
+            extension_id = script_path.stem
+            _validate_and_enable(
+                manager._extensions.catalog.store,
+                extension_id,
+                expected_record_generation=(
+                    catalog.extensions[extension_id].record_generation
+                ),
+            )
+        manager._extensions.catalog.refresh()
+
+        with pytest.raises(
+            ValueError, match="Conflicting extension file dialog filter"
+        ):
+            manager._extensions.file_loaders()
+
+
+def test_builtin_and_extension_loader_filter_conflict_is_rejected(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "netcdf.py"
+    _loader_script(
+        script_path,
+        name="NetCDF Files",
+        extensions=(".nc", ".nc4", ".cdf"),
+    )
+
+    with manager_context() as manager:
+        catalog, _revision, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        _validate_and_enable(
+            manager._extensions.catalog.store,
+            "netcdf",
+            expected_record_generation=catalog.extensions["netcdf"].record_generation,
+        )
+        manager._extensions.catalog.refresh()
+
+        with pytest.raises(
+            ValueError,
+            match=(
+                "Conflicting file dialog filters from built-in and extension loaders"
+            ),
+        ):
+            manager._available_file_loaders()
 
 
 def test_loader_shares_routine_queue_and_rechecks_enablement(

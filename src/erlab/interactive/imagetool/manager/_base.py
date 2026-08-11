@@ -345,7 +345,25 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             ).items()
             if _loader_name_for_callable(entry[0]) not in managed_names
         }
-        return builtins | self._extensions.file_loaders(path_values)
+        extensions = self._extensions.file_loaders(path_values)
+        conflicts = sorted(builtins.keys() & extensions.keys())
+        if conflicts:
+            filters = ", ".join(repr(value) for value in conflicts)
+            raise ValueError(
+                "Conflicting file dialog filters from built-in and extension "
+                f"loaders: {filters}"
+            )
+        return builtins | extensions
+
+    def _loader_name_for_name_filter(self, name_filter: str | None) -> str | None:
+        if name_filter is None:
+            return None
+        entry = self._available_file_loaders().get(name_filter)
+        if entry is None:
+            return None
+        return _loader_name_for_callable(
+            entry[0]
+        ) or self._extensions.loader_name_for_callable(entry[0])
 
     def _node_for_target(
         self, target: int | str
@@ -622,14 +640,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
 
     @property
     def _recent_loader_name(self) -> str | None:
-        if self._recent_name_filter is not None:
-            for key in erlab.io.loaders:
-                if (
-                    self._recent_name_filter
-                    in erlab.io.loaders[key].file_dialog_methods
-                ):
-                    return key
-        return None
+        return self._loader_name_for_name_filter(self._recent_name_filter)
 
     def _preferred_name_filter(
         self, valid_loaders: dict[str, tuple[Callable, dict]]

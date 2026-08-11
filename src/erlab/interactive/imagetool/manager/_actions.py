@@ -1414,14 +1414,9 @@ class _ActionsController:
     @property
     def _recent_loader_name(self) -> str | None:
         """Name of the most recently used loader."""
-        if self._manager._recent_name_filter is not None:  # pragma: no branch
-            for k in erlab.io.loaders:  # pragma: no branch
-                if (
-                    self._manager._recent_name_filter
-                    in erlab.io.loaders[k].file_dialog_methods
-                ):
-                    return k
-        return None
+        return self._manager._loader_name_for_name_filter(
+            self._manager._recent_name_filter
+        )
 
     def ensure_explorer_initialized(self) -> None:
         """Ensure that the data explorer window is initialized."""

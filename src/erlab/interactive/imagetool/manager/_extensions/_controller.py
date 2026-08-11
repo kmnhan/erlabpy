@@ -187,6 +187,7 @@ class _ExtensionController(QtCore.QObject):
             else tuple(pathlib.Path(path) for path in paths)
         )
         entries: dict[str, tuple[Callable[..., typing.Any], dict[str, typing.Any]]] = {}
+        owners: dict[str, str] = {}
         for record in self.catalog.model.extensions.values():
             if record.removed or not record.enabled:
                 continue
@@ -233,6 +234,12 @@ class _ExtensionController(QtCore.QObject):
                         for path in path_values
                     ):
                         continue
+                    previous_owner = owners.get(name_filter)
+                    if previous_owner is not None:
+                        raise ValueError(
+                            f"Conflicting extension file dialog filter {name_filter!r} "
+                            f"provided by {previous_owner!r} and {record.id!r}"
+                        )
                     call = self._loader_call(
                         record,
                         revision,
@@ -246,6 +253,7 @@ class _ExtensionController(QtCore.QObject):
                         entries[name_filter] = (call_adapter.load, defaults)
                     else:
                         entries[name_filter] = (call, defaults)
+                    owners[name_filter] = record.id
         return entries
 
     def _loader_call(
@@ -408,6 +416,15 @@ class _ExtensionController(QtCore.QObject):
     ) -> tuple[Callable[..., typing.Any], dict[str, typing.Any]] | None:
         adapter = self._explorer_loaders.get(name)
         return None if adapter is None else (adapter.load, {})
+
+    def loader_name_for_callable(self, call: Callable[..., typing.Any]) -> str | None:
+        """Return the Data Explorer name for one extension loader call."""
+        source = getattr(call, "__self__", call)
+        if isinstance(source, _DecoratedLoaderAdapter):
+            return source.name
+        if isinstance(source, _ExtensionLoaderCall):
+            return source.manager_loader_name
+        return None
 
     def _populate_menu(self) -> None:
         menu = self.menu
