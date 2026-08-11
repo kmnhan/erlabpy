@@ -15,6 +15,7 @@ __getattr__, __dir__, __all__ = _lazy.attach(
     submodules={
         "analysis",
         "constants",
+        "extensions",
         "interactive",
         "io",
         "lattice",
@@ -33,6 +34,7 @@ if typing.TYPE_CHECKING:
     from erlab import (  # noqa: F401
         analysis,
         constants,
+        extensions,
         interactive,
         io,
         lattice,
