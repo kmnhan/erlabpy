@@ -41,7 +41,9 @@ from erlab.extensions._models import (
 
 _CAPABILITY_ATTRIBUTE = "__erlab_extension_capability__"
 _RevisionResolver = Callable[[str, str], os.PathLike[str] | str]
-_CapabilityResolver = Callable[[str, str, str, str], Callable[..., typing.Any]]
+_CapabilityResolver = Callable[
+    [str, str, str, str, str | None], Callable[..., typing.Any]
+]
 _CapabilityStatus = typing.Literal[
     "ready",
     "disabled",
@@ -757,6 +759,7 @@ def _resolved_capability(
     revision: str,
     kind: typing.Literal["routine", "loader"],
     capability_id: str,
+    method: str | None = None,
 ) -> Callable[..., typing.Any] | None:
     with _resolver_lock:
         resolvers = tuple(_capability_resolvers.values())
@@ -764,7 +767,7 @@ def _resolved_capability(
         return None
     for resolver in reversed(resolvers):
         try:
-            return resolver(extension_id, revision, kind, capability_id)
+            return resolver(extension_id, revision, kind, capability_id, method)
         except KeyError:
             continue
     return None
@@ -1019,10 +1022,14 @@ def run_loader(
             raise ExtensionNotFoundError(
                 "script or both extension_id and revision are required"
             )
-        func = _resolved_capability(extension_id, revision, "loader", loader_id)
+        func = _resolved_capability(extension_id, revision, "loader", loader_id, method)
         if func is None:
             source = _resolved_revision(extension_id, revision)
     if func is None:
+        if method is not None:
+            raise ExtensionNotFoundError(
+                "Decorated extension loaders do not provide alternate methods"
+            )
         loaded = load_script(
             typing.cast("os.PathLike[str] | str", source), expected_revision=revision
         )
@@ -1030,7 +1037,6 @@ def run_loader(
         if entry is None:
             raise ExtensionNotFoundError(f"Loader {loader_id!r} was not found")
         func = entry[1]
-    func = _resolve_loader_method(func, method)
     decorated = getattr(func, _CAPABILITY_ATTRIBUTE, None) is not None
     try:
         values = (

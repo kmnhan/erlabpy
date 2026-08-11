@@ -1201,6 +1201,11 @@ def test_run_functions_validate_lookup_and_results(
         erlab.extensions.ExtensionNotFoundError, match="Loader 'missing'"
     ):
         run_loader("data.txt", script=source, loader_id="missing")
+    with pytest.raises(
+        erlab.extensions.ExtensionNotFoundError,
+        match="do not provide alternate methods",
+    ):
+        run_loader("data.txt", script=source, loader_id="load_data", method="os.remove")
     with pytest.raises(ExtensionExecutionError, match="expected an xarray object"):
         run_loader("data.txt", script=source, loader_id="load_data")
 
@@ -1213,11 +1218,14 @@ def test_capability_resolvers_run_direct_callables_and_report_absence() -> None:
         revision: str,
         kind: str,
         capability_id: str,
+        method: str | None,
     ) -> typing.Callable[..., typing.Any]:
         if (extension_id, revision, capability_id) != ("lab", "revision", "value"):
             raise KeyError
         if kind == "routine":
             return lambda data: data + 1
+        if method is not None:
+            raise erlab.extensions.ExtensionNotFoundError("method was not approved")
         return lambda path: [xr.DataArray([len(path.name)])]
 
     extension_api._set_capability_resolver(owner, resolve)
@@ -1239,6 +1247,16 @@ def test_capability_resolvers_run_direct_callables_and_report_absence() -> None:
         )
         assert isinstance(result, list)
         xr.testing.assert_identical(result[0], xr.DataArray([9]))
+        with pytest.raises(
+            erlab.extensions.ExtensionNotFoundError, match="not approved"
+        ):
+            run_loader(
+                "value.txt",
+                extension_id="lab",
+                revision="revision",
+                loader_id="value",
+                method="os.remove",
+            )
     finally:
         extension_api._remove_resolvers(owner)
 

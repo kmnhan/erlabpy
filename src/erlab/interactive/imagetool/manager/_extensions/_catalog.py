@@ -29,6 +29,7 @@ from erlab.extensions._api import (
     _descriptor_for,
     _module_capabilities,
     _remove_resolvers,
+    _resolve_loader_method,
     _set_capability_resolver,
     _set_capability_status_resolver,
     _set_revision_resolver,
@@ -707,8 +708,9 @@ class _ExtensionCatalogStore:
         revision_hash: str,
         kind: str,
         capability_id: str,
+        method: str | None = None,
     ) -> Callable[..., typing.Any]:
-        """Resolve a pinned capability for public replay calls."""
+        """Resolve a pinned capability and an approved loader method."""
         record = self.read().extensions.get(extension_id)
         if record is None or revision_hash not in record.revisions:
             raise KeyError(f"Unknown extension revision {extension_id}:{revision_hash}")
@@ -720,6 +722,10 @@ class _ExtensionCatalogStore:
                 f"Extension revision {extension_id}:{revision_hash} is not approved"
             )
         if record.source_type == "script":
+            if method is not None:
+                raise ExtensionNotFoundError(
+                    "Decorated extension loaders do not provide alternate methods"
+                )
             loaded = load_script(
                 self.source_path(extension_id, revision_hash),
                 expected_revision=revision_hash,
@@ -732,10 +738,23 @@ class _ExtensionCatalogStore:
                     f"Unknown {kind} capability {capability_id!r}"
                 ) from error
         entry_point = self._entry_point_for_revision(revision)
-        value = _load_entry_point_value(entry_point, revision_hash)
         if entry_point.group == "erlab.io.loaders":
             if kind != "loader":
                 raise KeyError(capability_id)
+            approved_methods = {
+                None,
+                *(item.method for item in revision.loader_dialog_methods),
+            }
+            if method not in approved_methods:
+                raise ExtensionNotFoundError(
+                    "The requested loader method was not approved for this revision"
+                )
+        elif method is not None:
+            raise ExtensionNotFoundError(
+                "Decorated extension loaders do not provide alternate methods"
+            )
+        value = _load_entry_point_value(entry_point, revision_hash)
+        if entry_point.group == "erlab.io.loaders":
             from erlab.io.dataloader import LoaderBase
 
             if isinstance(value, type) and issubclass(value, LoaderBase):
@@ -746,7 +765,7 @@ class _ExtensionCatalogStore:
                 raise TypeError("The entry point does not provide LoaderBase")
             if registered.name != capability_id:
                 raise KeyError(capability_id)
-            return registered.load
+            return _resolve_loader_method(registered.load, method)
         if isinstance(value, types.ModuleType):
             routines, loaders = _module_capabilities(value)
             entries = routines if kind == "routine" else loaders

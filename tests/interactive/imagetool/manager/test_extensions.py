@@ -2029,6 +2029,11 @@ def test_catalog_resolves_loaderbase_classes_and_instances(
         entry_point_group="erlab.io.loaders",
         entry_point_name="example",
         entry_point_value="lab_package:ExampleLoader",
+        loader_dialog_methods=(
+            extension_catalog._EnvironmentLoaderMethod(
+                name_filter="Example preview (*.txt)", method="preview"
+            ),
+        ),
     )
     record = _ExtensionRecord(
         id="lab-loader",
@@ -2047,16 +2052,49 @@ def test_catalog_resolves_loaderbase_classes_and_instances(
     entry_point = types.SimpleNamespace(group="erlab.io.loaders")
     monkeypatch.setattr(store, "_entry_point_for_revision", lambda _: entry_point)
 
+    def preview(self, path: pathlib.Path) -> xr.DataArray:
+        del self
+        return xr.DataArray([len(path.name)])
+
+    monkeypatch.setattr(
+        example_loader,
+        "preview",
+        preview,
+        raising=False,
+    )
+
     for value in (example_loader, example_loader()):
+        load_calls: list[str] = []
+
+        def load_entry_point_value(*_args, value=value, calls=load_calls):
+            calls.append("load")
+            return value
+
         monkeypatch.setattr(
             extension_catalog,
             "_load_entry_point_value",
-            lambda *_args, value=value: value,
+            load_entry_point_value,
         )
         resolved = store.resolve_capability(
             "lab-loader", revision_hash, "loader", "example"
         )
         assert getattr(resolved, "__self__", None).name == "example"
+
+        preview = store.resolve_capability(
+            "lab-loader", revision_hash, "loader", "example", "preview"
+        )
+        assert getattr(preview, "__self__", None).name == "example"
+        assert getattr(preview, "__name__", None) == "preview"
+
+        load_count = len(load_calls)
+        with pytest.raises(
+            erlab.extensions.ExtensionNotFoundError,
+            match="not approved for this revision",
+        ):
+            store.resolve_capability(
+                "lab-loader", revision_hash, "loader", "example", "os.remove"
+            )
+        assert len(load_calls) == load_count
 
     with pytest.raises(KeyError):
         store.resolve_capability("lab-loader", revision_hash, "routine", "example")
