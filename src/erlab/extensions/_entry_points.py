@@ -10,6 +10,7 @@ import sys
 import threading
 import typing
 import urllib.parse
+import urllib.request
 
 if typing.TYPE_CHECKING:
     import importlib.metadata
@@ -36,7 +37,11 @@ def _editable_source_fingerprint(direct_url: Mapping[str, typing.Any]) -> str:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("", "file"):
         raise _EntryPointRevisionError("Editable package URL is not a local path")
-    root = pathlib.Path(urllib.parse.unquote(parsed.path))
+    if parsed.scheme == "file":
+        uri_path = f"//{parsed.netloc}{parsed.path}" if parsed.netloc else parsed.path
+        root = pathlib.Path(urllib.request.url2pathname(uri_path))
+    else:
+        root = pathlib.Path(url)
     if not root.is_dir():
         raise _EntryPointRevisionError(
             f"Editable package directory is unavailable: {root}"

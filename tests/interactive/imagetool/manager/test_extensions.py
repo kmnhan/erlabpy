@@ -1675,6 +1675,39 @@ def test_editable_source_fingerprint_tracks_custom_layout_and_sibling_modules(
     assert second != third
 
 
+@pytest.mark.parametrize(
+    ("url", "uri_path"),
+    [
+        ("file:///C:/lab/project%20files", "/C:/lab/project%20files"),
+        (
+            "file://server/share/project%20files",
+            "//server/share/project%20files",
+        ),
+    ],
+)
+def test_editable_source_fingerprint_uses_platform_file_url_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    url: str,
+    uri_path: str,
+) -> None:
+    (tmp_path / "plugin.py").write_text("VALUE = 1\n")
+    converted: list[str] = []
+
+    def url2pathname(value: str) -> str:
+        converted.append(value)
+        return str(tmp_path)
+
+    monkeypatch.setattr(
+        extension_entry_points.urllib.request, "url2pathname", url2pathname
+    )
+
+    fingerprint = extension_entry_points._editable_source_fingerprint({"url": url})
+
+    assert fingerprint
+    assert converted == [uri_path]
+
+
 def test_editable_source_fingerprint_rejects_unknown_source(
     tmp_path: pathlib.Path,
 ) -> None:
