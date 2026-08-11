@@ -7192,6 +7192,45 @@ def test_save_as_only_routes_offload_and_compaction_to_new_file(
     assert callable(save_as_calls[1]["on_finished"])
 
 
+def test_save_as_only_rejects_the_original_workspace_path(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    workspace_path = tmp_path / "degraded.itws"
+    workspace_path.write_bytes(b"original")
+    errors: list[tuple[str, str]] = []
+    finished: list[bool] = []
+
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        manager._workspace_state.path = workspace_path.resolve()
+        manager._workspace_state.save_as_only = True
+        monkeypatch.setattr(
+            controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: workspace_path,
+        )
+        monkeypatch.setattr(
+            manager,
+            "_show_operation_error",
+            lambda title, text: errors.append((title, text)),
+        )
+        monkeypatch.setattr(
+            controller,
+            "save",
+            lambda **_kwargs: pytest.fail(
+                "a degraded workspace must not save to its original path"
+            ),
+        )
+
+        assert not controller.save_as(native=False, on_finished=finished.append)
+
+    assert len(errors) == 1
+    assert finished == [False]
+    assert workspace_path.read_bytes() == b"original"
+
+
 def test_workspace_import_preserves_unavailable_embedded_source(
     manager_context,
     monkeypatch: pytest.MonkeyPatch,

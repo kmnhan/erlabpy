@@ -2269,6 +2269,15 @@ class _WorkspaceController:
             self._manager._workspace_state.path is not None
             and pathlib.Path(fname).resolve() == self._manager._workspace_state.path
         ):
+            if self._manager._workspace_state.save_as_only:
+                self._manager._show_operation_error(
+                    "Select a different workspace file",
+                    "This workspace cannot overwrite the original file because "
+                    "some extension content is unavailable.",
+                )
+                if on_finished is not None:
+                    on_finished(False)
+                return False
             return self.save(
                 native=native,
                 on_finished=on_finished,
