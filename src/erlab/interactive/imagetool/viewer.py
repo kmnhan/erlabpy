@@ -27,6 +27,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.extensions._api import _capability_status
 from erlab.interactive.imagetool import _history, _kspace_conversion
 from erlab.interactive.imagetool._load_source import (
     _deserialize_loader_kwargs,
@@ -65,6 +66,7 @@ if typing.TYPE_CHECKING:
 
     import qtawesome
 
+    from erlab.extensions._api import _CapabilityStatus
     from erlab.interactive._options.schema import AppOptions
     from erlab.interactive.imagetool.plot_items import (
         ItoolGraphicsLayoutWidget,
@@ -2720,12 +2722,48 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _direct_reloadable(self) -> bool:
         """Return whether direct file metadata can reload the current source."""
-        return (
-            (self._file_path is not None)
-            and self._file_path.exists()
-            and self._load_func is not None
-            and (callable(self._load_func[0]) or self._load_func[0] in erlab.io.loaders)
+        if (
+            self._file_path is None
+            or not self._file_path.exists()
+            or self._load_func is None
+            or (
+                not callable(self._load_func[0])
+                and self._load_func[0] not in erlab.io.loaders
+            )
+        ):
+            return False
+        extension_status = self._direct_extension_loader_status()
+        return extension_status is None or extension_status == "ready"
+
+    def _direct_extension_loader_status(self) -> _CapabilityStatus | None:
+        """Return the current state of the pinned direct loader, if applicable.
+
+        A callable extension loader is not sufficient evidence that reload is safe.
+        Its immutable revision must still be available and enabled. Managed windows
+        use their manager's resolver so session-only approvals do not leak between
+        manager instances.
+        """
+        if self._load_func is None:
+            return None
+        extension_id, revision_hash, loader_id, _loader_method = (
+            _extension_loader_identity(self._load_func[0])
         )
+        if not (
+            isinstance(extension_id, str)
+            and extension_id
+            and isinstance(revision_hash, str)
+            and revision_hash
+            and isinstance(loader_id, str)
+            and loader_id
+        ):
+            return None
+        manager = self._manager_instance if self._in_manager else None
+        resolver = (
+            _capability_status
+            if manager is None
+            else manager._extensions.capability_status
+        )
+        return resolver(extension_id, revision_hash, "loader", loader_id)
 
     def _provenance_reloadable(self) -> bool:
         """Return whether replay provenance can rebuild the displayed data from file."""
@@ -2763,6 +2801,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return (
                 f"The saved loader {loader!r} is not available in this ImageTool "
                 "session. Reopen the data from its file with an available loader."
+            )
+        extension_status = self._direct_extension_loader_status()
+        if extension_status is not None and extension_status != "ready":
+            extension_id = _extension_loader_identity(loader)[0]
+            return (
+                f"The saved extension loader {extension_id!r} cannot run because "
+                f"its status is {extension_status!r}. Review the extension in "
+                "ImageTool Manager, then try again."
             )
         return None
 

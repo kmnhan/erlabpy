@@ -4374,6 +4374,58 @@ def counter_loader(path: Path, scale: float = 1.0) -> xr.DataArray:
         xr.testing.assert_identical(isolated_call(value_path), xr.DataArray([1.0, 4.0]))
 
 
+def test_direct_extension_loader_reload_rechecks_catalog_state(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "reload_loader.py"
+    _loader_script(script_path, name="Reload Data", extensions=("txt",))
+    value_path = tmp_path / "value.txt"
+    value_path.write_text("4")
+
+    with manager_context() as manager:
+        catalog, _revision, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        _validate_and_enable(
+            manager._extensions.catalog.store,
+            "reload_loader",
+            expected_record_generation=(
+                catalog.extensions["reload_loader"].record_generation
+            ),
+        )
+        manager._extensions.catalog.refresh()
+        call, defaults = next(
+            iter(manager._extensions.file_loaders((value_path,)).values())
+        )
+        tool = erlab.interactive.imagetool.ImageTool(
+            call(value_path, **defaults),
+            _in_manager=True,
+            file_path=value_path,
+            load_func=(call, defaults, FileDataSelection(kind="dataarray")),
+        )
+        manager.add_imagetool(tool, show=False)
+
+        assert tool.slicer_area._direct_reloadable()
+        assert tool.slicer_area._reload_unavailable_reason() is None
+
+        current = manager._extensions.catalog.store.read().extensions["reload_loader"]
+        manager._extensions.catalog.store.update_record(
+            "reload_loader",
+            expected_record_generation=current.record_generation,
+            enabled=False,
+        )
+        manager._extensions.catalog.refresh()
+
+        assert not tool.slicer_area._direct_reloadable()
+        assert tool.slicer_area._direct_extension_loader_status() == "disabled"
+        assert not tool.slicer_area.reloadable
+        reason = tool.slicer_area._reload_unavailable_reason()
+        assert reason is not None
+        with pytest.raises(RuntimeError, match="cannot be reloaded"):
+            tool.slicer_area._fetch_reload_data()
+
+
 def test_extension_loader_filter_conflict_is_rejected(
     manager_context,
     tmp_path: pathlib.Path,
