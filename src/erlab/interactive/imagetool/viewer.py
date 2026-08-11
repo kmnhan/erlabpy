@@ -2794,6 +2794,38 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     "in this ImageTool session. Reopen the data from its file "
                     "with an available loader."
                 )
+            if source_status == "extension-disabled":
+                return (
+                    f"The saved extension {replay_call.target!r} is disabled. "
+                    "Enable it in ImageTool Manager, then try again."
+                )
+            if source_status == "extension-approval-required":
+                return (
+                    "The saved extension revision is not approved. Review it in "
+                    "ImageTool Manager, then try again."
+                )
+            if source_status == "extension-missing-revision":
+                return (
+                    "The exact saved extension revision is not available. Restore it "
+                    "in ImageTool Manager, then try again."
+                )
+            if source_status == "extension-missing-capability":
+                return (
+                    "The saved extension revision does not provide loader "
+                    f"{replay_call.capability_id!r}."
+                )
+            if source_status == "extension-hash-mismatch":
+                return (
+                    "The stored extension source does not match its saved revision. "
+                    "Restore the exact source in ImageTool Manager, then try again."
+                )
+            if source_status == "extension-unsupported-api":
+                return "The saved loader uses an unsupported extension API version."
+            if source_status == "extension-import-failed":
+                return (
+                    "The saved extension loader could not be imported. Open Manage "
+                    "Extensions in ImageTool Manager for details."
+                )
             if provenance_spec.kind == "file":
                 return None
         if can_reload_without_trust(provenance_spec):

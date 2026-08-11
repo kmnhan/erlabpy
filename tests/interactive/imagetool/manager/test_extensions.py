@@ -1896,15 +1896,6 @@ def source_loader(path: Path) -> xr.DataArray:
         catalog, revision, _created = manager._extensions.catalog.store.add_script(
             script_path
         )
-        catalog = _validate_and_enable(
-            manager._extensions.catalog.store,
-            "source_loader",
-            expected_record_generation=(
-                catalog.extensions["source_loader"].record_generation
-            ),
-        )
-        manager._extensions.catalog.refresh()
-        marker.unlink()
         spec = file_load(
             start_label="Load extension data",
             seed_code="data = xr.DataArray([1.0])",
@@ -1923,8 +1914,117 @@ def source_loader(path: Path) -> xr.DataArray:
             ),
         )
 
+        assert file_load_source_status(spec) == "extension-approval-required"
+        assert not marker.exists()
+        catalog = _validate_and_enable(
+            manager._extensions.catalog.store,
+            "source_loader",
+            expected_record_generation=(
+                catalog.extensions["source_loader"].record_generation
+            ),
+        )
+        manager._extensions.catalog.refresh()
+        marker.unlink()
+
         assert file_load_source_status(spec) == "loadable"
         assert not marker.exists()
+
+        catalog = manager._extensions.catalog.store.update_record(
+            "source_loader",
+            expected_record_generation=(
+                catalog.extensions["source_loader"].record_generation
+            ),
+            enabled=False,
+        )
+        assert file_load_source_status(spec) == "extension-disabled"
+        catalog = manager._extensions.catalog.store.update_record(
+            "source_loader",
+            expected_record_generation=(
+                catalog.extensions["source_loader"].record_generation
+            ),
+            enabled=True,
+        )
+        assert file_load_source_status(spec) == "loadable"
+
+        load_source = spec.file_load_source
+        if load_source is None or load_source.replay_call is None:
+            raise RuntimeError("The test file provenance is incomplete")
+        missing_revision = spec.model_copy(
+            update={
+                "file_load_source": load_source.model_copy(
+                    update={
+                        "replay_call": load_source.replay_call.model_copy(
+                            update={"revision": "b" * 64}
+                        )
+                    }
+                )
+            }
+        )
+        assert file_load_source_status(missing_revision) == (
+            "extension-missing-revision"
+        )
+        missing_capability = spec.model_copy(
+            update={
+                "file_load_source": load_source.model_copy(
+                    update={
+                        "replay_call": load_source.replay_call.model_copy(
+                            update={"capability_id": "missing"}
+                        )
+                    }
+                )
+            }
+        )
+        assert file_load_source_status(missing_capability) == (
+            "extension-missing-capability"
+        )
+
+        manager._extensions.catalog.store.source_path(
+            "source_loader", revision
+        ).write_bytes(b"changed source")
+        assert file_load_source_status(spec) == "extension-hash-mismatch"
+        assert not marker.exists()
+
+
+def test_file_source_status_reports_extension_import_failure(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "broken_loader.py"
+    script_path.write_text("raise RuntimeError('missing dependency')\n")
+    data_path = tmp_path / "data.txt"
+    data_path.write_text("unused")
+
+    with manager_context() as manager:
+        catalog, revision, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        with pytest.raises(erlab.extensions.ExtensionImportError):
+            _validate_and_enable(
+                manager._extensions.catalog.store,
+                "broken_loader",
+                expected_record_generation=(
+                    catalog.extensions["broken_loader"].record_generation
+                ),
+            )
+        spec = file_load(
+            start_label="Load extension data",
+            seed_code="data = xr.DataArray([1.0])",
+            file_load_source=FileLoadSource(
+                path=str(data_path),
+                loader_label="Broken Loader",
+                loader_text="broken_loader",
+                kwargs_text="",
+                replay_call=FileReplayCall(
+                    kind="extension_loader",
+                    target="broken_loader",
+                    revision=revision,
+                    capability_id="broken_loader",
+                    selection=FileDataSelection(kind="dataarray"),
+                ),
+            ),
+        )
+
+        assert file_load_source_status(spec) == "extension-import-failed"
 
 
 def test_workspace_requirement_catalog_states(

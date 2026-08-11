@@ -41,10 +41,20 @@ from erlab.extensions._models import (
 _CAPABILITY_ATTRIBUTE = "__erlab_extension_capability__"
 _RevisionResolver = Callable[[str, str], os.PathLike[str] | str]
 _CapabilityResolver = Callable[[str, str, str, str], Callable[..., typing.Any]]
-_CapabilityAvailabilityResolver = Callable[[str, str, str, str], bool]
+_CapabilityStatus = typing.Literal[
+    "ready",
+    "disabled",
+    "approval-required",
+    "missing-revision",
+    "missing-capability",
+    "hash-mismatch",
+    "unsupported-api",
+    "import-failed",
+]
+_CapabilityStatusResolver = Callable[[str, str, str, str], _CapabilityStatus]
 _revision_resolvers: dict[str, _RevisionResolver] = {}
 _capability_resolvers: dict[str, _CapabilityResolver] = {}
-_capability_availability_resolvers: dict[str, _CapabilityAvailabilityResolver] = {}
+_capability_status_resolvers: dict[str, _CapabilityStatusResolver] = {}
 _resolver_lock = threading.RLock()
 
 
@@ -687,12 +697,12 @@ def _set_capability_resolver(owner: str, resolver: _CapabilityResolver) -> None:
         _capability_resolvers[owner] = resolver
 
 
-def _set_capability_availability_resolver(
-    owner: str, resolver: _CapabilityAvailabilityResolver
+def _set_capability_status_resolver(
+    owner: str, resolver: _CapabilityStatusResolver
 ) -> None:
-    """Register a metadata-only capability check for one live catalog."""
+    """Register a metadata-only capability state check for one live catalog."""
     with _resolver_lock:
-        _capability_availability_resolvers[owner] = resolver
+        _capability_status_resolvers[owner] = resolver
 
 
 def _remove_resolvers(owner: str) -> None:
@@ -700,7 +710,7 @@ def _remove_resolvers(owner: str) -> None:
     with _resolver_lock:
         _revision_resolvers.pop(owner, None)
         _capability_resolvers.pop(owner, None)
-        _capability_availability_resolvers.pop(owner, None)
+        _capability_status_resolvers.pop(owner, None)
 
 
 def _resolved_capability(
@@ -721,21 +731,21 @@ def _resolved_capability(
     return None
 
 
-def _capability_available(
+def _capability_status(
     extension_id: str,
     revision: str,
     kind: typing.Literal["routine", "loader"],
     capability_id: str,
-) -> bool:
-    """Return whether a catalog can run a capability without importing it."""
+) -> _CapabilityStatus:
+    """Return why a catalog can or cannot run a capability without importing it."""
     with _resolver_lock:
-        resolvers = tuple(_capability_availability_resolvers.values())
+        resolvers = tuple(_capability_status_resolvers.values())
     for resolver in reversed(resolvers):
         try:
             return resolver(extension_id, revision, kind, capability_id)
         except KeyError:
             continue
-    return False
+    return "missing-revision"
 
 
 def _resolved_revision(extension_id: str, revision: str) -> os.PathLike[str] | str:

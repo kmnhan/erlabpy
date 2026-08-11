@@ -14,7 +14,7 @@ import numpy as np
 import xarray as xr
 
 import erlab
-from erlab.extensions._api import _capability_available
+from erlab.extensions._api import _capability_status
 from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _code_uses_name_any_scope,
@@ -467,24 +467,30 @@ def file_load_source_status(
         except (AttributeError, ModuleNotFoundError, TypeError, ValueError):
             return "missing-loader"
     if replay_call.kind == "extension_loader":
-        try:
-            if replay_call.revision is None or replay_call.capability_id is None:
-                return "missing-loader"
-            if not _capability_available(
-                replay_call.target,
-                replay_call.revision,
-                "loader",
-                replay_call.capability_id,
-            ):
-                return "missing-loader"
-        except (
-            erlab.extensions.ExtensionError,
-            ImportError,
-            KeyError,
-            TypeError,
-            ValueError,
-        ):
-            return "missing-loader"
+        if replay_call.revision is None:
+            return "extension-missing-revision"
+        if replay_call.capability_id is None:
+            return "extension-missing-capability"
+        capability_status = _capability_status(
+            replay_call.target,
+            replay_call.revision,
+            "loader",
+            replay_call.capability_id,
+        )
+        if capability_status == "disabled":
+            return "extension-disabled"
+        if capability_status == "approval-required":
+            return "extension-approval-required"
+        if capability_status == "missing-revision":
+            return "extension-missing-revision"
+        if capability_status == "missing-capability":
+            return "extension-missing-capability"
+        if capability_status == "hash-mismatch":
+            return "extension-hash-mismatch"
+        if capability_status == "unsupported-api":
+            return "extension-unsupported-api"
+        if capability_status == "import-failed":
+            return "extension-import-failed"
     return "loadable"
 
 

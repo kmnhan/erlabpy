@@ -280,6 +280,41 @@ class _LineageController:
                 "available in this ImageTool session. Reopen the input from its "
                 "file with an available loader."
             )
+        if source_status == "extension-disabled":
+            return (
+                f"The saved extension {replay_call.target!r} for {label} is disabled. "
+                "Enable it in Manage Extensions, then try again."
+            )
+        if source_status == "extension-approval-required":
+            return (
+                f"The saved extension revision for {label} is not approved. "
+                "Review it in Workspace Requirements, then try again."
+            )
+        if source_status == "extension-missing-revision":
+            return (
+                f"The exact saved extension revision for {label} is not available. "
+                "Restore it from Workspace Requirements, then try again."
+            )
+        if source_status == "extension-missing-capability":
+            return (
+                f"The saved extension revision for {label} does not provide loader "
+                f"{replay_call.capability_id!r}."
+            )
+        if source_status == "extension-hash-mismatch":
+            return (
+                f"The stored extension source for {label} does not match its saved "
+                "revision. Restore the exact source, then try again."
+            )
+        if source_status == "extension-unsupported-api":
+            return (
+                f"The saved extension loader for {label} uses an unsupported "
+                "extension API version."
+            )
+        if source_status == "extension-import-failed":
+            return (
+                f"The saved extension loader for {label} could not be imported. "
+                "Open Manage Extensions for details."
+            )
         return None
 
     @classmethod

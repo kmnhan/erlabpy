@@ -227,6 +227,25 @@ class _ProvenanceEditController:
                     "The recorded source does not include replay loader information."
                 ),
                 "missing-loader": "The recorded source loader is not available.",
+                "extension-disabled": "The recorded extension is disabled.",
+                "extension-approval-required": (
+                    "The recorded extension revision needs approval."
+                ),
+                "extension-missing-revision": (
+                    "The recorded extension revision is not available."
+                ),
+                "extension-missing-capability": (
+                    "The recorded extension revision does not provide this loader."
+                ),
+                "extension-hash-mismatch": (
+                    "The recorded extension source has the wrong content hash."
+                ),
+                "extension-unsupported-api": (
+                    "The recorded extension uses an unsupported API version."
+                ),
+                "extension-import-failed": (
+                    "The recorded extension loader could not be imported."
+                ),
             }[source_status]
 
         if spec.kind == "file":

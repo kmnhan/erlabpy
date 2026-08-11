@@ -16,6 +16,7 @@ import uuid
 from qtpy import QtCore
 
 from erlab.extensions import (
+    EXTENSION_API_VERSION,
     ExtensionNotFoundError,
     LoaderDescriptor,
     RoutineDescriptor,
@@ -23,11 +24,12 @@ from erlab.extensions import (
 )
 from erlab.extensions._api import (
     _CAPABILITY_ATTRIBUTE,
+    _CapabilityStatus,
     _descriptor_for,
     _module_capabilities,
     _remove_resolvers,
-    _set_capability_availability_resolver,
     _set_capability_resolver,
+    _set_capability_status_resolver,
     _set_revision_resolver,
 )
 from erlab.extensions._entry_points import (
@@ -643,24 +645,47 @@ class _ExtensionCatalogStore:
             raise TypeError("The capability is not a loader")
         return value
 
-    def capability_available(
+    def capability_status(
         self,
         extension_id: str,
         revision_hash: str,
         kind: str,
         capability_id: str,
-    ) -> bool:
-        """Check exact catalog metadata without importing extension code."""
+    ) -> _CapabilityStatus:
+        """Resolve exact catalog state without importing extension code."""
         record = self.read().extensions.get(extension_id)
         if record is None or revision_hash not in record.revisions:
             raise KeyError(f"Unknown extension revision {extension_id}:{revision_hash}")
         revision = record.revisions[revision_hash]
-        if record.removed or not record.enabled or not revision.approved:
-            return False
+        if record.removed:
+            return "missing-revision"
+        if record.source_type == "environment-package":
+            try:
+                self._entry_point_for_revision(revision)
+            except ImportError:
+                return "missing-revision"
+        else:
+            try:
+                source = (self.objects_directory / revision.object_name).read_bytes()
+            except OSError:
+                return "missing-revision"
+            if hashlib.sha256(source).hexdigest() != revision_hash:
+                return "hash-mismatch"
+        if revision.import_error:
+            return "import-failed"
+        if not revision.approved:
+            return "approval-required"
         descriptors = revision.routines if kind == "routine" else revision.loaders
-        if not any(descriptor.id == capability_id for descriptor in descriptors):
-            return False
-        return self.revision_available(record, revision_hash)
+        descriptor = next(
+            (item for item in descriptors if item.id == capability_id), None
+        )
+        if descriptor is None:
+            return "missing-capability"
+        if descriptor.extension_api_version != EXTENSION_API_VERSION:
+            return "unsupported-api"
+        if not record.enabled:
+            return "disabled"
+        return "ready"
 
     def revision_available(self, record: _ExtensionRecord, revision_hash: str) -> bool:
         """Check an exact revision source without importing extension code."""
@@ -754,8 +779,8 @@ class _ExtensionCatalog(QtCore.QObject):
         self._resolver_owner = uuid.uuid4().hex
         _set_revision_resolver(self._resolver_owner, self.store.source_path)
         _set_capability_resolver(self._resolver_owner, self.store.resolve_capability)
-        _set_capability_availability_resolver(
-            self._resolver_owner, self.store.capability_available
+        _set_capability_status_resolver(
+            self._resolver_owner, self.store.capability_status
         )
 
     def _restore_watches(self) -> None:
