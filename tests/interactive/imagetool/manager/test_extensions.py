@@ -522,6 +522,588 @@ def test_catalog_reload_identity_metadata_and_conflict(tmp_path: pathlib.Path) -
         )
 
 
+def test_catalog_uses_override_directory_and_safe_generated_id(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory = tmp_path / "extension-catalog"
+    monkeypatch.setenv("ERLAB_EXTENSION_CATALOG", os.fspath(directory))
+
+    assert extension_catalog._default_catalog_directory() == directory.resolve()
+    assert extension_catalog._safe_extension_id(" Lab analysis! ") == "Lab-analysis"
+    assert extension_catalog._safe_extension_id("...").startswith("extension-")
+
+
+def test_catalog_reports_lock_failure(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailedLock:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+        def setStaleLockTime(self, timeout: int) -> None:
+            self.timeout = timeout
+
+        def tryLock(self, timeout: int) -> bool:
+            self.lock_timeout = timeout
+            return False
+
+        def error(self) -> str:
+            return "lock failed"
+
+    monkeypatch.setattr(extension_catalog.QtCore, "QLockFile", FailedLock)
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+
+    with pytest.raises(extension_catalog._ExtensionCatalogLockError, match="lock"):
+        store.mutate(None, lambda catalog: catalog)
+
+
+@pytest.mark.parametrize("failure", ["open", "write", "commit"])
+@pytest.mark.parametrize("target", ["catalog", "source"])
+def test_catalog_reports_atomic_write_failures(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    target: str,
+) -> None:
+    canceled: list[None] = []
+
+    class FailedSaveFile:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+        def open(self, _mode: typing.Any) -> bool:
+            return failure != "open"
+
+        def write(self, payload: bytes) -> int:
+            return len(payload) - 1 if failure == "write" else len(payload)
+
+        def cancelWriting(self) -> None:
+            canceled.append(None)
+
+        def commit(self) -> bool:
+            return failure != "commit"
+
+        def errorString(self) -> str:
+            return f"{failure} failed"
+
+    monkeypatch.setattr(extension_catalog.QtCore, "QSaveFile", FailedSaveFile)
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    source = b"source"
+
+    def operation() -> None:
+        if target == "catalog":
+            store._write_unlocked(_ExtensionCatalogModel())
+        else:
+            store._store_script_source(source, hashlib.sha256(source).hexdigest())
+
+    with pytest.raises(extension_catalog._ExtensionCatalogError, match=failure):
+        operation()
+
+    assert canceled == ([None] if failure == "write" else [])
+
+
+def test_catalog_source_lookup_and_integrity_failures(tmp_path: pathlib.Path) -> None:
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    script_path = tmp_path / "scale.py"
+    source = _script(script_path)
+    catalog, revision, _created = store.add_script(script_path)
+
+    with pytest.raises(KeyError, match="Unknown extension revision"):
+        store.source_path("missing", revision)
+    store.source_path("scale", revision).unlink()
+    with pytest.raises(FileNotFoundError):
+        store.source_path("scale", revision)
+    with pytest.raises(ValueError, match="does not match its revision hash"):
+        store._store_script_source(source, "0" * 64)
+    with pytest.raises(ValueError, match="does not match its manifest"):
+        store.add_embedded_script(
+            source,
+            extension_id="embedded",
+            expected_revision="0" * 64,
+            name="Embedded",
+            metadata=_ExtensionMetadata(),
+        )
+
+    assert store.read() == catalog
+
+
+@pytest.mark.parametrize(
+    ("record_update", "approved", "message"),
+    [
+        ({"source_type": "environment-package"}, False, "requires an entry point"),
+        ({"enabled": True}, False, "must be approved"),
+        ({"enabled": True, "removed": True}, True, "cannot be enabled"),
+    ],
+)
+def test_extension_record_rejects_invalid_enabled_and_package_states(
+    record_update: dict[str, typing.Any],
+    approved: bool,
+    message: str,
+) -> None:
+    revision = "a" * 64
+    record = _ExtensionRecord(
+        id="lab",
+        current_revision=revision,
+        name="Lab",
+        revisions={
+            revision: _ExtensionRevision(
+                source_hash=revision,
+                object_name="source.py",
+                created_at="2026-01-01T00:00:00+00:00",
+                approved=approved,
+            )
+        },
+    )
+
+    with pytest.raises(ValueError, match=message):
+        _ExtensionRecord.model_validate(
+            record.model_copy(update=record_update).model_dump(mode="python")
+        )
+
+
+def test_extension_models_reject_invalid_hash_and_nonfinite_loader_defaults() -> None:
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        _ExtensionRevision(
+            source_hash="A" * 64,
+            object_name="source.py",
+            created_at="2026-01-01T00:00:00+00:00",
+        )
+    with pytest.raises(ValueError, match="must be finite"):
+        extension_catalog._EnvironmentLoaderMethod(
+            name_filter="Data (*)", defaults={"scale": float("inf")}
+        )
+
+
+def test_catalog_validation_rejects_a_revision_changed_during_commit(
+    tmp_path: pathlib.Path,
+) -> None:
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+    catalog, old_revision, _created = store.add_script(script_path)
+    old_generation = catalog.extensions["scale"].record_generation
+    _script(script_path, "data + scale")
+    catalog, new_revision, _created = store.add_script(script_path)
+
+    with pytest.raises(_ExtensionCatalogConflictError, match="during validation"):
+        store.record_validation_failure(
+            "scale",
+            revision_hash=old_revision,
+            expected_record_generation=catalog.extensions["scale"].record_generation,
+            import_error="invalid",
+        )
+    with pytest.raises(_ExtensionCatalogConflictError, match="during validation"):
+        store.enable_validated_revision(
+            "scale",
+            revision_hash=old_revision,
+            expected_record_generation=catalog.extensions["scale"].record_generation,
+            routines=(),
+            loaders=(),
+            loader_always_single=None,
+            loader_dialog_methods=(),
+        )
+
+    current = store.read().extensions["scale"]
+    assert current.current_revision == new_revision
+    assert current.record_generation == old_generation + 1
+
+
+def test_catalog_reports_exact_script_capability_states(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+    catalog, revision_hash, _created = store.add_script(script_path)
+    catalog = _validate_and_enable(
+        store,
+        "scale",
+        expected_record_generation=catalog.extensions["scale"].record_generation,
+    )
+    ready_record = catalog.extensions["scale"]
+
+    def status_for(record: _ExtensionRecord, capability_id: str = "scale") -> str:
+        model = catalog.model_copy(update={"extensions": {"scale": record}})
+        monkeypatch.setattr(store, "read", lambda: model)
+        return store.capability_status("scale", revision_hash, "routine", capability_id)
+
+    assert status_for(ready_record) == "ready"
+    assert status_for(ready_record.model_copy(update={"removed": True})) == (
+        "missing-revision"
+    )
+    assert status_for(ready_record.model_copy(update={"enabled": False})) == "disabled"
+
+    ready_revision = ready_record.revisions[revision_hash]
+    assert (
+        status_for(
+            ready_record.model_copy(
+                update={
+                    "enabled": False,
+                    "revisions": {
+                        revision_hash: ready_revision.model_copy(
+                            update={"approved": False}
+                        )
+                    },
+                }
+            )
+        )
+        == "approval-required"
+    )
+    assert (
+        status_for(
+            ready_record.model_copy(
+                update={
+                    "revisions": {
+                        revision_hash: ready_revision.model_copy(
+                            update={"import_error": "broken"}
+                        )
+                    }
+                }
+            )
+        )
+        == "import-failed"
+    )
+    assert status_for(ready_record, "missing") == "missing-capability"
+
+    unsupported_descriptor = ready_revision.routines[0].model_copy(
+        update={"extension_api_version": 2}
+    )
+    assert (
+        status_for(
+            ready_record.model_copy(
+                update={
+                    "revisions": {
+                        revision_hash: ready_revision.model_copy(
+                            update={"routines": (unsupported_descriptor,)}
+                        )
+                    }
+                }
+            )
+        )
+        == "unsupported-api"
+    )
+
+    monkeypatch.undo()
+    object_path = store.objects_directory / ready_revision.object_name
+    object_path.write_bytes(b"corrupt")
+    assert (
+        store.capability_status("scale", revision_hash, "routine", "scale")
+        == "hash-mismatch"
+    )
+    object_path.unlink()
+    assert (
+        store.capability_status("scale", revision_hash, "routine", "scale")
+        == "missing-revision"
+    )
+
+
+def test_catalog_capability_status_reports_missing_package_revision(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revision_hash = "a" * 64
+    revision = _ExtensionRevision(
+        source_hash=revision_hash,
+        object_name="lab_package:calculate",
+        created_at="2026-01-01T00:00:00+00:00",
+        approved=True,
+        entry_point_group="erlab.extensions",
+        entry_point_name="lab",
+        entry_point_value="lab_package:calculate",
+        routines=(
+            erlab.extensions.RoutineDescriptor(
+                id="calculate",
+                name="Calculate",
+                category="Lab",
+                summary="",
+                function_name="calculate",
+            ),
+        ),
+    )
+    record = _ExtensionRecord(
+        id="lab",
+        name="Lab",
+        source_type="environment-package",
+        enabled=True,
+        current_revision=revision_hash,
+        revisions={revision_hash: revision},
+    )
+    model = _ExtensionCatalogModel(extensions={"lab": record})
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    monkeypatch.setattr(store, "read", lambda: model)
+    monkeypatch.setattr(
+        store,
+        "_entry_point_for_revision",
+        lambda _revision: (_ for _ in ()).throw(ImportError("missing")),
+    )
+
+    assert (
+        store.capability_status("lab", revision_hash, "routine", "calculate")
+        == "missing-revision"
+    )
+    assert not store.revision_available(record, revision_hash)
+
+
+def test_catalog_revision_availability_rejects_unknown_and_missing_sources(
+    tmp_path: pathlib.Path,
+) -> None:
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+    catalog, revision_hash, _created = store.add_script(script_path)
+    record = catalog.extensions["scale"]
+
+    assert not store.revision_available(record, "0" * 64)
+    store.source_path("scale", revision_hash).unlink()
+    assert not store.revision_available(record, revision_hash)
+
+
+def test_catalog_resolve_script_capability_rejects_unusable_state(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+    catalog, revision_hash, _created = store.add_script(script_path)
+
+    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="disabled"):
+        store.resolve_capability("scale", revision_hash, "routine", "scale")
+    unapproved = catalog.extensions["scale"].model_copy(update={"enabled": True})
+    monkeypatch.setattr(
+        store,
+        "read",
+        lambda: catalog.model_copy(update={"extensions": {"scale": unapproved}}),
+    )
+    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="not approved"):
+        store.resolve_capability("scale", revision_hash, "routine", "scale")
+    monkeypatch.undo()
+
+    catalog = _validate_and_enable(
+        store,
+        "scale",
+        expected_record_generation=catalog.extensions["scale"].record_generation,
+    )
+    catalog = store.update_record(
+        "scale",
+        expected_record_generation=catalog.extensions["scale"].record_generation,
+        enabled=False,
+    )
+    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="disabled"):
+        store.resolve_capability("scale", revision_hash, "routine", "scale")
+    catalog = store.update_record(
+        "scale",
+        expected_record_generation=catalog.extensions["scale"].record_generation,
+        enabled=True,
+    )
+    with pytest.raises(KeyError, match="Unknown routine capability"):
+        store.resolve_capability("scale", revision_hash, "routine", "missing")
+
+
+def test_catalog_watcher_removes_stale_paths_and_ignores_closed_refresh(
+    tmp_path: pathlib.Path,
+) -> None:
+    catalog = _ExtensionCatalog(directory=tmp_path / "catalog")
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    try:
+        assert catalog._watcher.addPath(os.fspath(stale))
+        catalog._restore_watches()
+        assert os.fspath(stale) not in catalog._watcher.directories()
+
+        catalog.close()
+        catalog.refresh()
+        assert catalog._closed
+    finally:
+        catalog.close()
+
+
+def test_catalog_finds_an_uncached_exact_environment_entry_point(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class EntryPoint:
+        group = "erlab.extensions"
+        name = "lab"
+        value = "lab_package:calculate"
+        dist = None
+
+    class EntryPoints(tuple):
+        def select(self, **parameters):
+            return tuple(
+                entry
+                for entry in self
+                if all(
+                    getattr(entry, key, None) == value
+                    for key, value in parameters.items()
+                )
+            )
+
+    invalid = EntryPoint()
+    valid = EntryPoint()
+    revision_hash = extension_entry_points._entry_point_revision(valid)
+    revision = _ExtensionRevision(
+        source_hash=revision_hash,
+        object_name=valid.value,
+        created_at="2026-01-01T00:00:00+00:00",
+        entry_point_group=valid.group,
+        entry_point_name=valid.name,
+        entry_point_value=valid.value,
+    )
+    calls: list[object] = []
+
+    def inspect(entry_point: object) -> str:
+        calls.append(entry_point)
+        if entry_point is invalid:
+            raise extension_entry_points._EntryPointRevisionError("invalid")
+        return revision_hash
+
+    monkeypatch.setattr(
+        extension_catalog.importlib.metadata,
+        "entry_points",
+        lambda: EntryPoints((invalid, valid)),
+    )
+    monkeypatch.setattr(extension_catalog, "_entry_point_revision", inspect)
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    type(store)._environment_entry_points = {}
+
+    assert store._entry_point_for_revision(revision) is valid
+    assert calls == [invalid, valid]
+    calls.clear()
+    assert store._entry_point_for_revision(revision) is valid
+    assert calls == []
+
+
+def test_catalog_resolves_environment_module_and_callable_capabilities(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @erlab.extensions.routine(id="calculate")
+    def calculate(data: xr.DataArray) -> xr.DataArray:
+        return data + 1
+
+    @erlab.extensions.loader(id="load_data")
+    def load_data(path: pathlib.Path) -> xr.DataArray:
+        return xr.DataArray([len(path.name)])
+
+    revision_hash = "a" * 64
+    revision = _ExtensionRevision(
+        source_hash=revision_hash,
+        object_name="lab_package:extension",
+        created_at="2026-01-01T00:00:00+00:00",
+        approved=True,
+        entry_point_group="erlab.extensions",
+        entry_point_name="lab",
+        entry_point_value="lab_package:extension",
+    )
+    record = _ExtensionRecord(
+        id="lab",
+        name="Lab",
+        source_type="environment-package",
+        enabled=True,
+        current_revision=revision_hash,
+        revisions={revision_hash: revision},
+    )
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    monkeypatch.setattr(
+        store,
+        "read",
+        lambda: _ExtensionCatalogModel(extensions={"lab": record}),
+    )
+    entry_point = types.SimpleNamespace(group="erlab.extensions")
+    monkeypatch.setattr(store, "_entry_point_for_revision", lambda _: entry_point)
+
+    module = types.ModuleType("lab_package.extension")
+    calculate.__module__ = module.__name__
+    load_data.__module__ = module.__name__
+    module.calculate = calculate
+    module.load_data = load_data
+    monkeypatch.setattr(
+        extension_catalog, "_load_entry_point_value", lambda *_args: module
+    )
+    assert (
+        store.resolve_capability("lab", revision_hash, "routine", "calculate")
+        is calculate
+    )
+    assert (
+        store.resolve_capability("lab", revision_hash, "loader", "load_data")
+        is load_data
+    )
+
+    monkeypatch.setattr(
+        extension_catalog, "_load_entry_point_value", lambda *_args: calculate
+    )
+    assert (
+        store.resolve_capability("lab", revision_hash, "routine", "calculate")
+        is calculate
+    )
+    with pytest.raises(KeyError):
+        store.resolve_capability("lab", revision_hash, "routine", "missing")
+
+    monkeypatch.setattr(
+        extension_catalog, "_load_entry_point_value", lambda *_args: load_data
+    )
+    with pytest.raises(TypeError, match="not a routine"):
+        store.resolve_capability("lab", revision_hash, "routine", "load_data")
+
+
+def test_catalog_resolves_loaderbase_classes_and_instances(
+    example_loader,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revision_hash = "a" * 64
+    revision = _ExtensionRevision(
+        source_hash=revision_hash,
+        object_name="lab_package:ExampleLoader",
+        created_at="2026-01-01T00:00:00+00:00",
+        approved=True,
+        entry_point_group="erlab.io.loaders",
+        entry_point_name="example",
+        entry_point_value="lab_package:ExampleLoader",
+    )
+    record = _ExtensionRecord(
+        id="lab-loader",
+        name="Lab loader",
+        source_type="environment-package",
+        enabled=True,
+        current_revision=revision_hash,
+        revisions={revision_hash: revision},
+    )
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    monkeypatch.setattr(
+        store,
+        "read",
+        lambda: _ExtensionCatalogModel(extensions={"lab-loader": record}),
+    )
+    entry_point = types.SimpleNamespace(group="erlab.io.loaders")
+    monkeypatch.setattr(store, "_entry_point_for_revision", lambda _: entry_point)
+
+    for value in (example_loader, example_loader()):
+        monkeypatch.setattr(
+            extension_catalog,
+            "_load_entry_point_value",
+            lambda *_args, value=value: value,
+        )
+        resolved = store.resolve_capability(
+            "lab-loader", revision_hash, "loader", "example"
+        )
+        assert getattr(resolved, "__self__", None).name == "example"
+
+    with pytest.raises(KeyError):
+        store.resolve_capability("lab-loader", revision_hash, "routine", "example")
+    with pytest.raises(KeyError):
+        store.resolve_capability("lab-loader", revision_hash, "loader", "different")
+    monkeypatch.setattr(
+        extension_catalog, "_load_entry_point_value", lambda *_args: object()
+    )
+    with pytest.raises(TypeError, match="does not provide LoaderBase"):
+        store.resolve_capability("lab-loader", revision_hash, "loader", "example")
+
+
 @pytest.mark.parametrize(
     "corruption", ["extension-key", "revision-key", "current", "source-type"]
 )
