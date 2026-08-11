@@ -207,6 +207,13 @@ Independent fits do not preserve band identity. When peaks cross or exchange int
 - stop a trace when the feature disappears;
 - show gaps in the overlay instead of connecting rejected points.
 
+Photon-energy sequences need an additional check. Bulk bands can disperse with
+out-of-plane momentum, and matrix elements can replace one visible peak with another.
+Do not treat all peaks or derivative ridges at different photon energies as one band.
+Track only a branch that remains identifiable from its dispersion and neighboring raw
+cuts. Show the selected points and rejected alternatives. Stop the trace when identity
+is not supported.
+
 Do not smooth fitted centers before validating the individual fits. If smoothing is a
 separate requested analysis, plot unsmoothed centers and residuals as well.
 

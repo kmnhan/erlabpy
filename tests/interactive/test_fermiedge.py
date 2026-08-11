@@ -146,6 +146,61 @@ def test_goldtool_can_save_and_load() -> None:
     assert GoldTool.can_save_and_load() is True
 
 
+def test_goldtool_adaptive_toggle_is_persisted_and_forwarded(
+    qtbot, gold, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+    adaptive_check = typing.cast(
+        "QtWidgets.QCheckBox", win.params_edge.widgets["Adaptive"]
+    )
+    assert not adaptive_check.isChecked()
+
+    adaptive_check.setChecked(True)
+    status = win.tool_status
+    assert status.edge_values.adaptive is True
+
+    adaptive_check.setChecked(False)
+    win.tool_status = status
+    assert adaptive_check.isChecked()
+
+    win._argnames["data"] = "gold"
+    provenance = win.current_provenance_spec()
+    assert provenance is not None
+    replay_kwargs: dict[str, typing.Any] = {}
+
+    def capture_poly(*_args: typing.Any, **kwargs: typing.Any) -> xr.Dataset:
+        replay_kwargs.update(kwargs)
+        return xr.Dataset()
+
+    monkeypatch.setattr(erlab.analysis.gold, "poly", capture_poly)
+    namespace = {"era": erlab.analysis, "gold": gold}
+    exec(  # noqa: S102
+        provenance.display_code(), {"__builtins__": {}}, namespace
+    )
+    assert replay_kwargs["adaptive"] is True
+
+    edge_kwargs: dict[str, typing.Any] = {}
+    edge_center = gold.mean("eV")
+    edge_stderr = xr.ones_like(edge_center)
+
+    def capture_edge(**kwargs: typing.Any):
+        edge_kwargs.update(kwargs)
+        return edge_center, edge_stderr
+
+    monkeypatch.setattr(erlab.analysis.gold, "edge", capture_edge)
+    typing.cast("QtWidgets.QSpinBox", win.params_edge.widgets["# CPU"]).setValue(1)
+    task = EdgeFitTask(
+        win.data,
+        win._along_dim,
+        *win.roi_limits_ordered,
+        dict(win.params_edge.values),
+    )
+    task.run()
+
+    assert edge_kwargs["adaptive"] is True
+
+
 def _seed_goldtool_poly_result(win: GoldTool, result: xr.Dataset) -> None:
     win.edge_center = result.modelfit_data.copy()
     win.edge_stderr = xr.ones_like(win.edge_center)
@@ -796,6 +851,7 @@ def test_edge_fit_task_aborted_before_run_skips_fit(gold, monkeypatch) -> None:
             "Linear": True,
             "Resolution": 0.01,
             "Fast": True,
+            "Adaptive": False,
             "Method": "leastsq",
             "Scale cov": True,
         },
@@ -833,6 +889,7 @@ def test_edge_fit_task_aborted_after_progress_skips_fit(gold, monkeypatch) -> No
             "Linear": True,
             "Resolution": 0.01,
             "Fast": True,
+            "Adaptive": False,
             "Method": "leastsq",
             "Scale cov": True,
         },
@@ -876,6 +933,7 @@ def test_edge_fit_task_aborted_during_parallel_setup_skips_fit(
             "Linear": True,
             "Resolution": 0.01,
             "Fast": True,
+            "Adaptive": False,
             "Method": "leastsq",
             "Scale cov": True,
         },
@@ -924,6 +982,7 @@ def test_edge_fit_task_aborted_after_fit_skips_finished_signal(
             "Linear": True,
             "Resolution": 0.01,
             "Fast": True,
+            "Adaptive": False,
             "Method": "leastsq",
             "Scale cov": True,
         },

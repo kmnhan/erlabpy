@@ -18,6 +18,10 @@ description: Conduct, teach, and automate reproducible ARPES analysis with ERLab
 - Put all input paths, physical parameters, fit choices, and calibration values in
   visible cells. Do not rely on hidden kernel or GUI state.
 - Use public ERLabPy and xarray-lmfit APIs in copied or generated code.
+- Treat a static normal-emission estimate as a candidate, regardless of agent
+  confidence. For publication or quantitative momentum conversion, require an approved
+  calibration. If none exists, open ImageTool or KTool for the user and wait for the
+  accepted values before momentum conversion.
 
 ## Coordinate compatible skills
 
@@ -64,6 +68,13 @@ analysis notebook executable when no optional Qt binding is installed.
 - Load files with `erlab.io.load` and an explicit `Path`. Select a loader explicitly
   when automatic loader selection is ambiguous.
 - Keep loader settings, scan identifiers, and concatenation choices in the notebook.
+- Build an alignment table before combining scans. Include the sample or cleavage,
+  acquisition order, motor coordinates, analyzer mode, photon energy, and log notes.
+  Put files in one alignment group only when the sample geometry did not change.
+- Use the user-specified experimental log as the authority when it conflicts with
+  embedded analyzer metadata. Compare scalar angle coordinates with raw attributes and
+  the log. Restore a missing or incorrect scalar coordinate before conversion and
+  record the source value.
 - Use a semantic raw variable such as `raw_data` or `gold_reference`. Do not overwrite it
   with corrected or converted data.
 - Stop and report missing files, unsupported layouts, or incomplete acquisition
@@ -75,7 +86,9 @@ analysis notebook executable when no optional Qt binding is installed.
 2. Record package versions, input paths, loader settings, and physical parameters.
 3. Load the data once and keep an unchanged raw-data variable.
 4. Inspect `dims`, `coords`, `attrs`, units, coordinate order, monotonicity, finite
-   values, and sampling. Plot representative raw slices.
+   values, and sampling. Plot representative raw slices. For weak or anisotropic data,
+   also prepare energy-averaged, coordinate-aware smoothed, normalized, and derivative
+   views. Keep the raw view beside them.
 5. Establish the Fermi level. Read
    [references/fermi-calibration.md](references/fermi-calibration.md) only when the
    energy zero is unverified, a reference must be fit, residual curvature must be
@@ -109,14 +122,54 @@ momentum axes are calibrated.
 - Execute once from a clean kernel. Repeat only when randomness, in-place mutation,
   calibration-file writes, or other rerun-sensitive behavior is present.
 
+### Reproducibility acceptance gate
+
+Treat the delivered `.ipynb` as the primary executable artifact, not as a report that
+points at a separate analysis. Before delivery, inspect its code cells and reject the
+notebook unless all of the following are true:
+
+- The notebook visibly loads the raw experimental files and authoritative metadata,
+  defines every physical calibration, performs every substantive transformation and
+  fit, constructs each final figure from explicit figure objects, and saves the stated
+  numerical products.
+- Paths, scan groups, accepted GUI-derived values, fit windows, smoothing widths,
+  normalization rules, masks, and uncertainty choices appear in executable cells.
+- `display(Image(...))`, saved PNG or PDF files, and cached NetCDF files are only
+  optional summaries or acceleration paths. They must not replace the code that
+  generates the displayed result from raw data.
+- Do not use `%run`, `runpy`, `exec(open(...))`, subprocess calls, or imports of local
+  build scripts as the primary analysis path. A helper script may generate notebook
+  cells, but its substantive source must be materialized in those cells.
+- A `REBUILD_FROM_RAW = False` switch does not make a report notebook reproducible.
+  The raw-to-result path must be present and runnable without changing hidden source
+  files or relying on outputs created by a previous kernel or external pipeline.
+- Execute the notebook top to bottom in a clean kernel with pre-existing derived
+  figures hidden or absent when practical. Confirm that the execution regenerates the
+  numerical products and inline figures, then inspect the rendered results.
+
+Fail the handoff rather than call a notebook reproducible when any substantive step is
+available only in an external script or pre-rendered artifact.
+
 ## Decision rules
 
 - Prefer an approved reference calibration over inference from sample data.
+- Reuse one `(alpha_normal, beta_normal)` pair for all photon energies in one unchanged
+  sample alignment. Do not fit independent normal-emission offsets by photon energy.
+- Do not transfer offsets across an alignment change, even when the sample name and
+  motor readbacks appear similar.
 - Treat implicit zero offsets as defaults, not measured normal-emission values.
 - Do not infer an angle-dependent Fermi correction from sample bands.
 - For `gold.poly`, use reliable `sample_temp` metadata. Use `fast=True` when that
   temperature is missing or unreliable, and supply a unit-checked resolution estimate.
 - Do not use symmetrized data to justify a normal-emission calibration.
+- Do not use intensity maxima or apparent brightness symmetry to locate normal
+  emission. Matrix elements can suppress one side of the same contour.
+- Exclude analyzer-acceptance boundaries and detector masks from derivatives,
+  correlations, and center estimates. The center of a circular acceptance mask is not
+  the sample normal-emission angle.
+- Compare photon energies only through identified corresponding features. Bulk bands
+  can change with out-of-plane momentum, and matrix elements can reveal different
+  bands. Do not align complete images or all detected ridges as if they were one band.
 - Do not interpret optimizer success alone as a valid physical fit.
 - Use Voigt spectral peaks by default. Tie their Gaussian sigma parameters to one
   instrumental-width parameter with expressions.
@@ -130,15 +183,19 @@ momentum axes are calibrated.
 
 ## Interactive tools
 
-- Use optional GUI tools only when they are available and visual interaction will
-  reduce uncertainty. Do not install Qt only to use a diagnostic GUI unless the user
-  requests it.
+- Use optional GUI tools when they are available and visual interaction will reduce
+  uncertainty. Do not install Qt only to use a diagnostic GUI unless the user requests
+  it.
 - Use ImageTool when exploration or region selection benefits from linked views.
 - Use `goldtool` when Fermi-edge windows or model choices need visual adjustment.
 - Use `ktool` when normal emission, geometry, or momentum-conversion candidates need
   interactive comparison.
 - Use `ftool` when 1D or sequence fits need visual initialization or propagation.
 - Use Figure Composer when visual figure construction is useful.
+- Make KTool or ImageTool a required user handoff for publication or quantitative
+  momentum conversion when no approved normal-emission calibration exists. Do this
+  even when the agent considers one static-image candidate obvious. Open the tool, tell
+  the user what to select, and wait for the displayed angles or copied code.
 - Reproduce every accepted GUI operation with explicit notebook code. Do not deliver a
   notebook that depends on an open GUI or clipboard state.
 

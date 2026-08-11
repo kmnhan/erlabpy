@@ -3,6 +3,7 @@
 __all__ = [
     "correct_with_edge",
     "edge",
+    "guess_edge_fit_range",
     "poly",
     "poly_from_edge",
     "quick_fit",
@@ -24,7 +25,7 @@ import matplotlib.pyplot as plt
 import matplotlib.transforms
 import numpy as np
 import numpy.typing as npt
-import scipy.interpolate
+import scipy
 import xarray as xr
 
 import erlab
@@ -35,6 +36,9 @@ else:
     import lazy_loader as _lazy
 
     joblib = _lazy.load("joblib")
+
+
+_FWHM_TO_SIGMA = 1 / np.sqrt(8 * np.log(2))
 
 
 def _eval_edge(modelresult: lmfit.model.ModelResult, *, evalute_at: npt.NDArray):
@@ -90,6 +94,575 @@ def _range_limits_for_coord(
     coord_sel = coord.sel({coord.dims[0]: _range_slice_for_coord(coord, value_range)})
     values = np.asarray(coord_sel.values, dtype=float)
     return float(np.min(values)), float(np.max(values))
+
+
+def _edge_sigma(*, temp: float, resolution: float, fast: bool) -> float:
+    if fast:
+        return float(
+            (resolution + 3.5255 * erlab.constants.kb_eV * temp) * _FWHM_TO_SIGMA
+        )
+    return float(
+        np.hypot(
+            resolution * _FWHM_TO_SIGMA,
+            np.pi * erlab.constants.kb_eV * temp / np.sqrt(3),
+        )
+    )
+
+
+def _edge_model_and_params(
+    *,
+    temp: float,
+    resolution: float,
+    vary_temp: bool,
+    bkg_slope: bool,
+    fast: bool,
+) -> tuple[lmfit.Model, lmfit.Parameters]:
+    if fast:
+        model = erlab.analysis.fit.models.StepEdgeModel()
+        params = lmfit.create_params(
+            sigma={
+                "value": _edge_sigma(temp=temp, resolution=resolution, fast=True),
+                "min": 0,
+            }
+        )
+    else:
+        model = erlab.analysis.fit.models.FermiEdgeModel()
+        params = lmfit.create_params(
+            temp={"value": temp, "vary": vary_temp, "min": 0},
+            resolution={"value": resolution, "min": 0},
+        )
+    if not bkg_slope:
+        params["back1"] = lmfit.Parameter("back1", value=0, vary=False)
+    return model, params
+
+
+def _estimate_local_noise(
+    y: npt.NDArray, *, sigma: float, dx: float
+) -> tuple[npt.NDArray, float]:
+    """Estimate local point noise with a rolling second-difference MAD."""
+    noise_residual = 2 * y[2:-2] - y[:-4] - y[4:]
+    noise_window_size = min(
+        max(2 * int(np.ceil(8 * sigma / dx)) + 1, 25),
+        noise_residual.size,
+    )
+    noise_floor = np.finfo(float).eps * max(float(np.max(np.abs(y))), 1.0)
+
+    noise_centers = np.clip(np.arange(y.size) - 2, 0, noise_residual.size - 1)
+    noise_starts, noise_window_indices = np.unique(
+        np.clip(
+            noise_centers - noise_window_size // 2,
+            0,
+            noise_residual.size - noise_window_size,
+        ),
+        return_inverse=True,
+    )
+    window_noise = np.empty(noise_starts.size)
+    for window_index, noise_start in enumerate(noise_starts):
+        local_residual = noise_residual[noise_start : noise_start + noise_window_size]
+        residual_median = float(np.median(local_residual))
+        window_noise[window_index] = (
+            1.4826 * np.median(np.abs(local_residual - residual_median)) / np.sqrt(6)
+        )
+    return window_noise[noise_window_indices], noise_floor
+
+
+def _find_falling_edge_candidates(
+    x: npt.NDArray,
+    y: npt.NDArray,
+    *,
+    sigma: float,
+    dx: float,
+    local_noise: npt.NDArray,
+    noise_floor: float,
+) -> list[tuple[float, float]]:
+    """Find falling-edge candidates with multiscale Gaussian derivatives."""
+    local_median = scipy.ndimage.median_filter(y, size=5, mode="nearest")
+    outliers = np.abs(y - local_median) > 6 * np.maximum(local_noise, noise_floor)
+    detection_y = y.copy()
+    detection_y[outliers] = local_median[outliers]
+
+    signal_span = float(np.percentile(detection_y, 98) - np.percentile(detection_y, 2))
+    candidates: list[tuple[float, float]] = []
+    for scale in (0.5, 1.0, 2.0, 4.0):
+        filter_sigma = max(scale * sigma / dx, 1.0)
+        margin = max(3, int(np.ceil(3 * filter_sigma)))
+
+        response = -scipy.ndimage.gaussian_filter1d(
+            detection_y, filter_sigma, order=1, mode="nearest"
+        )
+
+        impulse = np.zeros(2 * margin + 1)
+        impulse[margin] = 1.0
+        kernel = scipy.ndimage.gaussian_filter1d(
+            impulse, filter_sigma, order=1, mode="constant"
+        )
+        response_noise_factor = float(np.linalg.norm(kernel))
+
+        interior_response = response[3:-3]
+        left_neighbor = response[2:-4]
+        right_neighbor = response[4:-2]
+        # Select the right sample when adjacent response values are equal.
+        is_local_maximum = (interior_response >= left_neighbor) & (
+            interior_response > right_neighbor
+        )
+        peak_indices = np.flatnonzero(is_local_maximum) + 3
+
+        for candidate_index in peak_indices:
+            side_points = min(
+                max(round(2 * filter_sigma), 3),
+                candidate_index,
+                x.size - candidate_index - 1,
+            )
+            occupied = detection_y[candidate_index - side_points : candidate_index]
+            unoccupied = detection_y[
+                candidate_index + 1 : candidate_index + side_points + 1
+            ]
+            contrast = float(np.median(occupied) - np.median(unoccupied))
+            prominence = float(response[candidate_index])
+            point_noise = float(local_noise[candidate_index])
+            contrast_noise = point_noise * np.sqrt(np.pi / side_points)
+            # Keep a practical contrast floor so a noiseless background slope cannot
+            # qualify as an edge.
+            if prominence > max(
+                point_noise * response_noise_factor, noise_floor
+            ) and contrast > max(
+                3 * contrast_noise,
+                0.01 * signal_span,
+                noise_floor,
+            ):
+                denominator = (
+                    response[candidate_index - 1]
+                    - 2 * response[candidate_index]
+                    + response[candidate_index + 1]
+                )
+                offset = 0.0
+                if denominator != 0:
+                    offset = float(
+                        np.clip(
+                            0.5
+                            * (
+                                response[candidate_index - 1]
+                                - response[candidate_index + 1]
+                            )
+                            / denominator,
+                            -1.0,
+                            1.0,
+                        )
+                    )
+                candidates.append(
+                    (
+                        float(x[candidate_index] + offset * dx),
+                        point_noise,
+                    )
+                )
+    return candidates
+
+
+def _guess_edge_fit_range(
+    x: npt.NDArray,
+    y: npt.NDArray,
+    *,
+    temp: float,
+    resolution: float,
+    fast: bool,
+    bkg_slope: bool = True,
+) -> tuple[float, float]:
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    finite = np.isfinite(x) & np.isfinite(y)
+    x, y = x[finite], y[finite]
+    if x.size < 12:
+        raise ValueError("At least 12 finite points are required")
+
+    order = np.argsort(x)
+    x, y = x[order], y[order]
+    if np.any(np.diff(x) <= 0):
+        raise ValueError("Energy coordinates must be unique")
+
+    uniform_x = np.linspace(x[0], x[-1], x.size)
+    uniform_y = np.interp(uniform_x, x, y)
+    uniform_dx = float(uniform_x[1] - uniform_x[0])
+    sigma = max(_edge_sigma(temp=temp, resolution=resolution, fast=fast), uniform_dx)
+    local_noise, noise_floor = _estimate_local_noise(
+        uniform_y, sigma=sigma, dx=uniform_dx
+    )
+    candidates = _find_falling_edge_candidates(
+        uniform_x,
+        uniform_y,
+        sigma=sigma,
+        dx=uniform_dx,
+        local_noise=local_noise,
+        noise_floor=noise_floor,
+    )
+    if not candidates:
+        raise ValueError("No falling edge was detected")
+
+    # The Fermi edge is the terminal valid falling edge. Do not require agreement
+    # across scales because a broad edge can be visible only at a coarse scale.
+    center, point_noise = max(candidates, key=lambda item: item[0])
+
+    if not np.isfinite(center):
+        raise ValueError("No falling edge was detected")
+
+    trial_x_mean = float(np.mean(x))
+    trial_x_scale = float(np.std(x))
+
+    def fit_trial(lower_index: int) -> dict[str, float] | None:
+        fit_x = x[lower_index:]
+        fit_y = y[lower_index:]
+        normalized_x = (fit_x - trial_x_mean) / trial_x_scale
+
+        model = erlab.analysis.fit.models.StepEdgeModel()
+        center_value = (center - trial_x_mean) / trial_x_scale
+        sigma_value = sigma / trial_x_scale
+        step = erlab.analysis.fit.functions.step_broad(
+            normalized_x,
+            center=center_value,
+            sigma=sigma_value,
+            amplitude=1.0,
+        )
+        if bkg_slope:
+            linear_design = np.column_stack(
+                (
+                    1 - step,
+                    normalized_x * (1 - step),
+                    step,
+                    normalized_x * step,
+                )
+            )
+            parameter_names = ("back0", "back1", "dos0", "dos1")
+        else:
+            linear_design = np.column_stack((1 - step, step, normalized_x * step))
+            parameter_names = ("back0", "dos0", "dos1")
+        coefficients, _, rank, _ = np.linalg.lstsq(
+            linear_design,
+            fit_y,
+            rcond=None,
+        )
+        if rank == linear_design.shape[1]:
+            params = model.make_params(
+                center=center_value,
+                sigma=sigma_value,
+                **dict(zip(parameter_names, coefficients, strict=True)),
+            )
+        else:
+            params = model.guess(
+                fit_y,
+                x=normalized_x,
+                center=center_value,
+                sigma=sigma_value,
+            )
+        if not bkg_slope:
+            params["back1"].set(value=0.0, vary=False)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                fit_result = model.fit(
+                    fit_y,
+                    params,
+                    x=normalized_x,
+                    method="least_squares",
+                )
+        except (
+            FloatingPointError,
+            np.linalg.LinAlgError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):
+            return None
+
+        fit_center = float(
+            fit_result.best_values["center"] * trial_x_scale + trial_x_mean
+        )
+        fit_sigma = abs(float(fit_result.best_values["sigma"] * trial_x_scale))
+        if not fit_result.success or not np.isfinite(fit_center + fit_sigma):
+            return None
+
+        lower = float(x[lower_index])
+        if not (
+            lower <= fit_center <= x[-1]
+            and 0.05 * sigma <= fit_sigma <= 3 * sigma
+            and fit_center - lower >= 3 * fit_sigma
+            and x[-1] - fit_center >= 0.5 * fit_sigma
+        ):
+            return None
+        return {
+            "lower": lower,
+            "center": fit_center,
+            "sigma": fit_sigma,
+        }
+
+    def trials_are_stable(trials: list[dict[str, float]]) -> bool:
+        centers = [trial["center"] for trial in trials]
+        widths = [trial["sigma"] for trial in trials]
+        return bool(
+            max(centers) - min(centers) <= 0.5 * sigma
+            and max(widths) / min(widths) <= 3
+        )
+
+    trial_sequence: list[dict[str, float] | None] = []
+    previous_lower_index: int | None = None
+    for width in (4.0, 6.0, 8.0, 10.0, 12.0, 16.0, 20.0, 24.0, 32.0):
+        lower = max(float(x[0]), center - width * sigma)
+        lower_index = min(
+            int(np.searchsorted(x, lower, side="left")),
+            x.size - 12,
+        )
+        if lower_index == previous_lower_index:
+            continue
+        previous_lower_index = lower_index
+        trial_sequence.append(fit_trial(lower_index))
+
+        recent_trials = trial_sequence[-3:]
+        accepted_trials = [trial for trial in recent_trials if trial is not None]
+        if len(accepted_trials) == 3 and trials_are_stable(accepted_trials):
+            return accepted_trials[1]["lower"], float(x[-1])
+
+    # If three consecutive trials do not stabilize, use the longest shorter
+    # plateau. This keeps locally cropped EDCs usable. A complete rejection falls
+    # through to the previous single-fit range heuristic below.
+    best_score: tuple[int, int] | None = None
+    best_trial: dict[str, float] | None = None
+    for start in range(len(trial_sequence)):
+        accepted_trials = []
+        for trial in trial_sequence[start:]:
+            if trial is None:
+                break
+            accepted_trials.append(trial)
+            if not trials_are_stable(accepted_trials):
+                break
+            score = (len(accepted_trials), -start)
+            if best_score is None or score > best_score:
+                best_score = score
+                best_trial = accepted_trials[(len(accepted_trials) - 1) // 2]
+    if best_trial is not None:
+        return best_trial["lower"], float(x[-1])
+
+    # A balanced local range prevents occupied-side peaks from dominating the
+    # provisional step fit, including when little unoccupied data is available.
+    seed_lower = max(float(x[0]), 2 * center - float(x[-1]))
+    seed_start = int(np.searchsorted(x, seed_lower, side="left"))
+    if x.size - seed_start < 12:
+        return float(x[0]), float(x[-1])
+
+    occupied = y[seed_start : np.searchsorted(x, center, side="left")]
+    unoccupied = y[np.searchsorted(x, center, side="right") :]
+    contrast_points = min(occupied.size, unoccupied.size)
+    if contrast_points < 3:
+        return float(x[0]), float(x[-1])
+    terminal_contrast = float(
+        np.median(occupied[-contrast_points:]) - np.median(unoccupied[:contrast_points])
+    )
+    if terminal_contrast <= max(
+        3 * point_noise * np.sqrt(np.pi / contrast_points), noise_floor
+    ):
+        raise ValueError("No falling edge was detected")
+
+    fit_x = x[seed_start:]
+    fit_y = y[seed_start:]
+    x_mean = float(np.mean(fit_x))
+    x_scale = float(np.std(fit_x))
+    y_offset = float(np.percentile(fit_y, 2))
+    y_scale = max(float(np.percentile(fit_y, 98) - y_offset), np.finfo(float).eps)
+    normalized_x = (fit_x - x_mean) / x_scale
+    normalized_y = (fit_y - y_offset) / y_scale
+
+    model = erlab.analysis.fit.models.StepEdgeModel()
+    params = model.guess(normalized_y, x=normalized_x)
+    params["center"].set(
+        value=(center - x_mean) / x_scale,
+        min=float(normalized_x[0]),
+        max=float(normalized_x[-1]),
+    )
+    params["sigma"].set(
+        value=sigma / x_scale,
+        min=0.0,
+        max=0.5 * float(np.ptp(normalized_x)),
+    )
+    if not bkg_slope:
+        params["back1"].set(value=0.0, vary=False)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            fit_result = model.fit(
+                normalized_y,
+                params,
+                x=normalized_x,
+                method="least_squares",
+            )
+        fit_center = float(fit_result.best_values["center"] * x_scale + x_mean)
+        fit_sigma = float(fit_result.best_values["sigma"] * x_scale)
+    except (FloatingPointError, np.linalg.LinAlgError, TypeError, ValueError):
+        return float(x[0]), float(x[-1])
+
+    if not fit_result.success or not np.isfinite(fit_center + fit_sigma):
+        return float(x[0]), float(x[-1])
+
+    # Four fitted widths contain the transition. The nominal-width floor also keeps
+    # two nominal widths of occupied baseline when the provisional fit is too narrow.
+    lower = max(float(x[0]), min(center, fit_center) - max(4 * fit_sigma, 6 * sigma))
+    lower_index = min(int(np.searchsorted(x, lower, side="left")), x.size - 12)
+    return float(x[lower_index]), float(x[-1])
+
+
+def _guess_edge_fit_range_or_default(
+    x: npt.NDArray,
+    y: npt.NDArray,
+    *,
+    temp: float,
+    resolution: float,
+    fast: bool,
+    bkg_slope: bool = True,
+) -> tuple[float, float]:
+    x = np.asarray(x, dtype=float)
+    finite_x = x[np.isfinite(x)]
+    if finite_x.size == 0:
+        raise ValueError("Energy coordinates must contain finite values")
+    fallback = float(np.min(finite_x)), float(np.max(finite_x))
+    try:
+        return _guess_edge_fit_range(
+            x,
+            y,
+            temp=temp,
+            resolution=resolution,
+            fast=fast,
+            bkg_slope=bkg_slope,
+        )
+    except (FloatingPointError, np.linalg.LinAlgError, ValueError):
+        return fallback
+
+
+def guess_edge_fit_range(
+    edc: xr.DataArray,
+    *,
+    energy_dim: str = "eV",
+    temp: float | None = None,
+    resolution: float = 0.02,
+    bkg_slope: bool = True,
+    fast: bool = False,
+) -> tuple[float, float]:
+    r"""Estimate the energy range for fitting one Fermi edge.
+
+    The returned bounds are ordered from low to high energy and can be used as
+    ``edc.sel(eV=slice(*bounds))`` when the energy coordinate is increasing.
+
+    Parameters
+    ----------
+    edc
+        One energy distribution curve.
+    energy_dim
+        Name of the energy dimension.
+    temp
+        Sample temperature in kelvins. If `None`, infer it from `edc`. The fast model
+        uses 10 K when the temperature is not available.
+    resolution
+        Initial energy-resolution FWHM in electronvolts.
+    bkg_slope
+        If `True`, include a linear background above the Fermi level.
+    fast
+        If `True`, use the nominal width of a broadened step edge. Otherwise, use the
+        combined thermal and resolution width of a Fermi edge.
+
+    Returns
+    -------
+    lower, upper
+        Estimated energy bounds in the units of the energy coordinate.
+
+    Notes
+    -----
+    The estimator uses the following steps:
+
+    1. It calculates a nominal edge standard deviation. For a Fermi edge model, this is
+
+       .. math::
+
+           \sigma_0 = \max\left[\Delta x, \sqrt{\left(\frac{R}{\sqrt{8\ln 2}}\right)^2 +
+           \left(\frac{\pi k_\mathrm{B}T}{\sqrt{3}}\right)^2}\right].
+
+       For the step function, it uses
+
+       .. math::
+
+           \sigma_0 = \max\left[\Delta x, \frac{R + 3.5255 k_\mathrm{B}T}{\sqrt{8\ln
+           2}}\right].
+
+       Here, :math:`R` is the resolution FWHM and :math:`\Delta x` is the energy
+       spacing.
+
+    2. It estimates the local point noise from the second-difference residual
+
+       .. math::
+
+           r_i = 2y_i-y_{i-2}-y_{i+2}, \qquad \hat\sigma_{n,i} =
+           \frac{1.4826}{\sqrt{6}}\operatorname{MAD}(r).
+
+       The MAD uses a rolling window of approximately :math:`16\sigma_0`, with a
+       25-sample minimum when that many residual samples are available. The factors
+       1.4826 and :math:`\sqrt{6}` correct the MAD for Gaussian noise and the variance
+       of the second difference, respectively.
+
+    3. It replaces samples that differ from a five-sample median by more than six local
+       noise levels in the detection copy. This replacement does not modify the data
+       used for fits.
+
+    4. It performs a multiscale search for local maxima of negative Gaussian derivatives
+       with widths of :math:`\{0.5,1,2,4\}\sigma_0`. A candidate must have derivative
+       prominence above the propagated local noise. It must also have a falling-side
+       contrast above three contrast-noise levels and 1% of the robust signal span. A
+       quadratic interpolation refines its position. The highest-energy valid candidate
+       becomes the edge anchor.
+
+    5. It fits broadened step models with lower bounds at offsets of
+       :math:`\{4,6,8,10,12,16,20,24,32\}\sigma_0` below the anchor. The anchor and
+       nominal width initialize each fit. The linear coefficients are initialized
+       conditionally on the broadened step :math:`s(x)`:
+
+       .. math::
+
+           y(x) = [1-s(x)](b_0+b_1x) + s(x)(d_0+d_1x).
+
+       When ``bkg_slope=False``, the fit fixes :math:`b_1=0`.
+
+    6. A trial is accepted when the fitted center remains inside the fit domain and
+       the fitted width is between :math:`0.05\sigma_0` and :math:`3\sigma_0`. The
+       domain must contain at least three fitted widths below the center and half a
+       fitted width above it.
+
+    7. The estimator returns the middle lower bound of the first three consecutive
+       accepted fits whose centers span at most :math:`0.5\sigma_0` and whose widths
+       differ by at most a factor of three. If this plateau is unavailable, it uses the
+       longest shorter plateau, then a local single-step fallback. The fallback can
+       return the full input range when the available support is insufficient. The upper
+       bound is the highest input energy.
+
+    Raises
+    ------
+    ValueError
+        If the input is not one-dimensional, lacks required temperature metadata, has
+        insufficient data, or has no qualifying falling edge.
+    """
+    if edc.dims != (energy_dim,):
+        raise ValueError(f"Expected a 1D DataArray along {energy_dim!r}")
+
+    if temp is None:
+        temp = edc.qinfo.get_value("sample_temp")
+        if temp is None:
+            if fast:
+                temp = 10.0
+            else:
+                raise ValueError(
+                    "Temperature not found in data attributes, please provide manually"
+                )
+
+    return _guess_edge_fit_range(
+        np.asarray(edc[energy_dim]),
+        np.asarray(edc),
+        temp=float(temp),
+        resolution=float(resolution),
+        fast=fast,
+        bkg_slope=bkg_slope,
+    )
 
 
 def correct_with_edge(
@@ -245,6 +818,7 @@ def edge(
     along: str = "alpha",
     angle_range: tuple[float, float],
     eV_range: tuple[float, float],
+    adaptive: bool = False,
     bin_size: tuple[int, int] = (1, 1),
     temp: float | None = None,
     vary_temp: bool = False,
@@ -281,6 +855,10 @@ def edge(
         The range of values along the ``along`` dimension to consider.
     eV_range
         The range of eV values to consider.
+    adaptive
+        If `True`, estimate and use a separate energy range for each EDC within
+        `eV_range`. If no valid falling edge is detected in one EDC, that EDC uses the
+        complete `eV_range`. Defaults to `False`.
     bin_size
         The bin size for coarsening the gold data, by default (1, 1).
     temp
@@ -345,11 +923,6 @@ def edge(
         }
     )
 
-    if normalize:
-        # Normalize energy coordinates
-        avgx, stdx = gold_sel.eV.values.mean(), gold_sel.eV.values.std()
-        gold_sel = gold_sel.assign_coords(eV=(gold_sel.eV - avgx) / stdx)
-
     if temp is None:
         temp = gold.qinfo.get_value("sample_temp")
         if temp is None:
@@ -360,28 +933,31 @@ def edge(
                     "Temperature not found in data attributes, please provide manually"
                 )
 
-    if normalize and temp is not None:
-        temp = float(temp / stdx)
+    if adaptive and kwargs.get("skipna") is False:
+        raise ValueError("adaptive fitting requires skipna=True")
 
-    if fast:
-        params = lmfit.create_params(
-            sigma=(resolution + 3.53 * erlab.constants.kb_eV * temp)
-            / np.sqrt(8 * np.log(2))
-        )
-        model_cls: lmfit.Model = erlab.analysis.fit.models.StepEdgeModel
+    if normalize:
+        # Normalize energy coordinates
+        avgx, stdx = gold_sel.eV.values.mean(), gold_sel.eV.values.std()
+        gold_sel = gold_sel.assign_coords(eV=(gold_sel.eV - avgx) / stdx)
+
+    if normalize:
+        fit_temp = float(temp / stdx)
+        fit_resolution = float(resolution / stdx)
     else:
-        params = lmfit.create_params(
-            temp={"value": float(temp), "vary": vary_temp}, resolution=resolution
-        )
-        model_cls = erlab.analysis.fit.models.FermiEdgeModel
+        fit_temp = float(temp)
+        fit_resolution = float(resolution)
 
-    model = model_cls()
+    model, params = _edge_model_and_params(
+        temp=fit_temp,
+        resolution=fit_resolution,
+        vary_temp=vary_temp,
+        bkg_slope=bkg_slope,
+        fast=fast,
+    )
 
     if parallel_kw is None:
         parallel_kw = {}
-
-    if not bkg_slope:
-        params["back1"] = lmfit.Parameter("back1", value=0, vary=False)
 
     if fixed_center is not None:
         fixed_center_fit = (
@@ -415,6 +991,33 @@ def edge(
                     "Using UFloat objects with std_dev==0 may give unexpected results."
                 ),
             )
+            if adaptive:
+                range_kwargs = {
+                    "temp": fit_temp,
+                    "resolution": fit_resolution,
+                    "bkg_slope": bkg_slope,
+                    "fast": fast,
+                }
+                if data.dims == ("eV",):
+                    lower, upper = _guess_edge_fit_range_or_default(
+                        np.asarray(data["eV"]),
+                        np.asarray(data),
+                        **range_kwargs,
+                    )
+                else:
+                    lower, upper = xr.apply_ufunc(
+                        _guess_edge_fit_range_or_default,
+                        data["eV"],
+                        data,
+                        input_core_dims=[["eV"], ["eV"]],
+                        output_core_dims=[[], []],
+                        vectorize=True,
+                        dask="parallelized",
+                        output_dtypes=[float, float],
+                        kwargs=range_kwargs,
+                    )
+                energy = data["eV"]
+                data = data.where((energy >= lower) & (energy <= upper))
             return data.xlm.modelfit(
                 "eV",
                 model=model,
@@ -639,6 +1242,7 @@ def poly(
     along: str = "alpha",
     angle_range: tuple[float, float],
     eV_range: tuple[float, float],
+    adaptive: bool = False,
     bin_size: tuple[int, int] = (1, 1),
     temp: float | None = None,
     vary_temp: bool = False,
@@ -663,6 +1267,7 @@ def poly(
             along=along,
             angle_range=angle_range,
             eV_range=eV_range,
+            adaptive=adaptive,
             bin_size=bin_size,
             temp=temp,
             vary_temp=vary_temp,
@@ -708,6 +1313,7 @@ def spline(
     along: str = "alpha",
     angle_range: tuple[float, float],
     eV_range: tuple[float, float],
+    adaptive: bool = False,
     bin_size: tuple[int, int] = (1, 1),
     temp: float | None = None,
     vary_temp: bool = False,
@@ -730,6 +1336,7 @@ def spline(
             along=along,
             angle_range=angle_range,
             eV_range=eV_range,
+            adaptive=adaptive,
             bin_size=bin_size,
             temp=temp,
             vary_temp=vary_temp,
