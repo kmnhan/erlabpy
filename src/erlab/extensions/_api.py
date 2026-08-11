@@ -835,7 +835,9 @@ def _resolve_loader_method(
         try:
             module = importlib.import_module(module_name)
         except ModuleNotFoundError as error:
-            if error.name != module_name:
+            if error.name is None or not (
+                error.name == module_name or module_name.startswith(f"{error.name}.")
+            ):
                 raise
             continue
         attr_start = index

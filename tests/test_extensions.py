@@ -12,10 +12,14 @@ import xarray as xr
 
 import erlab
 import erlab.extensions._api as extension_api
+import erlab.extensions._entry_points as entry_point_api
 from erlab.extensions import (
     ExtensionExecutionError,
     ExtensionSignatureError,
+    LoaderDescriptor,
+    ParameterDescriptor,
     ParameterKind,
+    RoutineDescriptor,
     load_entry_point,
     load_script,
     loader,
@@ -23,7 +27,11 @@ from erlab.extensions import (
     run_loader,
     run_routine,
 )
-from erlab.extensions._api import _resolve_loader_method
+from erlab.extensions._api import (
+    _coerce_call_parameters,
+    _loader_method_reference,
+    _resolve_loader_method,
+)
 from erlab.extensions._entry_points import _entry_point_revision
 
 if typing.TYPE_CHECKING:
@@ -35,6 +43,17 @@ def _entry_point_preview_loader(
     path: typing.Any, *, scale: float = 1.0
 ) -> xr.DataArray:
     return xr.DataArray([float(path.read_text()) * scale])
+
+
+class _EntryPoints(tuple):
+    def select(self, **parameters):
+        return tuple(
+            entry
+            for entry in self
+            if all(
+                getattr(entry, key, None) == value for key, value in parameters.items()
+            )
+        )
 
 
 def test_routine_decorator_preserves_normal_call_behavior() -> None:
@@ -250,22 +269,11 @@ def test_load_entry_point_exposes_a_pinned_package_routine(
             load_calls.append(None)
             return module
 
-    class EntryPoints(tuple):
-        def select(self, **parameters):
-            return tuple(
-                entry
-                for entry in self
-                if all(
-                    getattr(entry, key, None) == value
-                    for key, value in parameters.items()
-                )
-            )
-
     entry_point = EntryPoint()
     monkeypatch.setattr(
         extension_api.importlib.metadata,
         "entry_points",
-        lambda: EntryPoints((entry_point,)),
+        lambda: _EntryPoints((entry_point,)),
     )
     revision = _entry_point_revision(entry_point)
 
@@ -309,22 +317,11 @@ def test_load_entry_point_exposes_declared_external_loader_method(
         def load():
             return PreviewLoader
 
-    class EntryPoints(tuple):
-        def select(self, **parameters):
-            return tuple(
-                entry
-                for entry in self
-                if all(
-                    getattr(entry, key, None) == value
-                    for key, value in parameters.items()
-                )
-            )
-
     entry_point = EntryPoint()
     monkeypatch.setattr(
         extension_api.importlib.metadata,
         "entry_points",
-        lambda: EntryPoints((entry_point,)),
+        lambda: _EntryPoints((entry_point,)),
     )
     revision = _entry_point_revision(entry_point)
     path = tmp_path / "value.txt"
@@ -380,22 +377,11 @@ def test_load_entry_point_rejects_a_preloaded_editable_module(
         def load():
             load_calls.append(None)
 
-    class EntryPoints(tuple):
-        def select(self, **parameters):
-            return tuple(
-                entry
-                for entry in self
-                if all(
-                    getattr(entry, key, None) == value
-                    for key, value in parameters.items()
-                )
-            )
-
     entry_point = EntryPoint()
     monkeypatch.setattr(
         extension_api.importlib.metadata,
         "entry_points",
-        lambda: EntryPoints((entry_point,)),
+        lambda: _EntryPoints((entry_point,)),
     )
     monkeypatch.setitem(sys.modules, "lab_package.plugin", types.ModuleType("plugin"))
 
@@ -407,6 +393,229 @@ def test_load_entry_point_rejects_a_preloaded_editable_module(
         )
 
     assert load_calls == []
+
+
+@pytest.mark.parametrize(
+    ("direct_url", "message"),
+    [
+        ({}, "URL is unavailable"),
+        ({"url": "https://example.test/package"}, "not a local path"),
+    ],
+)
+def test_editable_source_fingerprint_rejects_nonlocal_urls(
+    direct_url: dict[str, typing.Any], message: str
+) -> None:
+    with pytest.raises(entry_point_api._EntryPointRevisionError, match=message):
+        entry_point_api._editable_source_fingerprint(direct_url)
+
+
+def test_editable_source_fingerprint_validates_project_contents(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = tmp_path / "missing"
+    with pytest.raises(
+        entry_point_api._EntryPointRevisionError, match="directory is unavailable"
+    ):
+        entry_point_api._editable_source_fingerprint({"url": str(missing)})
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(
+        entry_point_api._EntryPointRevisionError, match="no fingerprintable source"
+    ):
+        entry_point_api._editable_source_fingerprint({"url": str(empty)})
+
+    source = tmp_path / "project"
+    source.mkdir()
+    module = source / "module.py"
+    module.write_text("VALUE = 1\n")
+    original_read_bytes = entry_point_api.pathlib.Path.read_bytes
+
+    def fail_for_module(path: pathlib.Path) -> bytes:
+        if path == module:
+            raise OSError("unreadable")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(entry_point_api.pathlib.Path, "read_bytes", fail_for_module)
+    with pytest.raises(
+        entry_point_api._EntryPointRevisionError, match="Could not fingerprint"
+    ):
+        entry_point_api._editable_source_fingerprint({"url": str(source)})
+
+
+def test_editable_source_fingerprint_reports_directory_walk_failure(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    def failed_walk(root, *, onerror):
+        del root
+        onerror(OSError("cannot walk"))
+        return []
+
+    monkeypatch.setattr(entry_point_api.os, "walk", failed_walk)
+    with pytest.raises(
+        entry_point_api._EntryPointRevisionError, match="Could not inspect"
+    ):
+        entry_point_api._editable_source_fingerprint({"url": str(project)})
+
+
+@pytest.mark.parametrize(
+    ("direct_url", "message"),
+    [
+        ("not json", "not valid JSON"),
+        ("[]", "must be a JSON object"),
+        ('{"dir_info": []}', "directory metadata must be a JSON object"),
+    ],
+)
+def test_entry_point_revision_rejects_invalid_direct_url_metadata(
+    direct_url: str,
+    message: str,
+) -> None:
+    class Distribution:
+        metadata: typing.ClassVar[dict[str, str]] = {"Name": "lab"}
+        version = "1"
+
+        @staticmethod
+        def read_text(name: str) -> str | None:
+            return direct_url if name == "direct_url.json" else None
+
+    class EntryPoint:
+        group = "erlab.extensions"
+        name = "lab"
+        value = "lab_package"
+        dist = Distribution()
+
+    with pytest.raises(entry_point_api._EntryPointRevisionError, match=message):
+        entry_point_api._entry_point_revision(EntryPoint())
+
+
+def test_load_entry_point_value_records_an_editable_revision(
+    tmp_path: pathlib.Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "plugin.py").write_text("VALUE = 1\n")
+    loaded_value = object()
+
+    class Distribution:
+        metadata: typing.ClassVar[dict[str, str]] = {"Name": "editable-lab"}
+        version = "1"
+
+        @staticmethod
+        def read_text(name: str) -> str | None:
+            if name != "direct_url.json":
+                return None
+            return json.dumps({"url": project.as_uri(), "dir_info": {"editable": True}})
+
+    class EntryPoint:
+        group = "erlab.extensions"
+        name = "editable"
+        value = "editable_lab_package"
+        dist = Distribution()
+
+        @staticmethod
+        def load():
+            return loaded_value
+
+    entry_point = EntryPoint()
+    revision = _entry_point_revision(entry_point)
+    entry_point_api._loaded_editable_distributions.pop("editable-lab", None)
+    try:
+        assert (
+            entry_point_api._load_entry_point_value(entry_point, revision)
+            is loaded_value
+        )
+        assert "editable-lab" in entry_point_api._loaded_editable_distributions
+        with pytest.raises(
+            entry_point_api._EntryPointRevisionError, match="does not match revision"
+        ):
+            entry_point_api._load_entry_point_value(entry_point, "0" * 64)
+    finally:
+        entry_point_api._loaded_editable_distributions.pop("editable-lab", None)
+
+
+def test_load_entry_point_reports_lookup_metadata_and_type_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        extension_api.importlib.metadata,
+        "entry_points",
+        lambda: _EntryPoints(),
+    )
+    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="not installed"):
+        load_entry_point("erlab.extensions", "missing", expected_revision="0" * 64)
+
+    class EntryPoint:
+        group = "erlab.io.loaders"
+        name = "invalid"
+        value = "lab_package:value"
+        dist = None
+
+        @staticmethod
+        def load():
+            return object()
+
+    entry_point = EntryPoint()
+    monkeypatch.setattr(
+        extension_api.importlib.metadata,
+        "entry_points",
+        lambda: _EntryPoints((entry_point,)),
+    )
+    revision = _entry_point_revision(entry_point)
+    monkeypatch.setattr(
+        extension_api,
+        "_entry_point_revision",
+        lambda _entry_point: (_ for _ in ()).throw(
+            entry_point_api._EntryPointRevisionError("bad metadata")
+        ),
+    )
+    with pytest.raises(erlab.extensions.ExtensionImportError, match="bad metadata"):
+        load_entry_point(
+            entry_point.group, entry_point.name, expected_revision=revision
+        )
+
+    monkeypatch.setattr(extension_api, "_entry_point_revision", lambda _: revision)
+    with pytest.raises(erlab.extensions.ExtensionImportError, match="LoaderBase"):
+        load_entry_point(
+            entry_point.group, entry_point.name, expected_revision=revision
+        )
+
+
+def test_load_entry_point_accepts_a_single_decorated_callable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @routine()
+    def calculate(data: xr.DataArray) -> xr.DataArray:
+        return data + 1
+
+    class EntryPoint:
+        group = "erlab.extensions"
+        name = "callable"
+        value = "lab_package:calculate"
+        dist = None
+
+        @staticmethod
+        def load():
+            return calculate
+
+    entry_point = EntryPoint()
+    monkeypatch.setattr(
+        extension_api.importlib.metadata,
+        "entry_points",
+        lambda: _EntryPoints((entry_point,)),
+    )
+    revision = _entry_point_revision(entry_point)
+
+    loaded = load_entry_point(
+        entry_point.group, entry_point.name, expected_revision=revision
+    )
+
+    xr.testing.assert_identical(loaded.calculate(xr.DataArray([1])), xr.DataArray([2]))
+    assert loaded.value is calculate
 
 
 def test_load_script_executes_verified_source_snapshot(
@@ -457,6 +666,176 @@ def bad(data: xr.DataArray, values: list[float]) -> xr.DataArray:
     )
     with pytest.raises(ExtensionSignatureError, match="unsupported annotation"):
         load_script(script)
+
+
+@pytest.mark.parametrize(
+    ("declaration", "message"),
+    [
+        (
+            "def bad() -> xr.DataArray:\n    return xr.DataArray()",
+            "must have an input parameter",
+        ),
+        (
+            "def bad(data: xr.DataArray, *values: float) -> xr.DataArray:\n"
+            "    return data",
+            "cannot use .*args",
+        ),
+        (
+            "def bad(data: xr.DataArray = xr.DataArray()) -> xr.DataArray:\n"
+            "    return data",
+            "must require its input",
+        ),
+        (
+            "def bad(data: xr.DataArray, value: float, /) -> xr.DataArray:\n"
+            "    return data",
+            "cannot use positional-only user parameters",
+        ),
+        (
+            "def bad(data: xr.Dataset) -> xr.DataArray:\n    return xr.DataArray()",
+            "first parameter as xarray.DataArray",
+        ),
+        (
+            "def bad(data: xr.DataArray) -> xr.Dataset:\n    return xr.Dataset()",
+            "must return xarray.DataArray",
+        ),
+        (
+            "def bad(data: 'MissingType') -> xr.DataArray:\n    return xr.DataArray()",
+            "Could not resolve annotations",
+        ),
+    ],
+)
+def test_load_script_rejects_invalid_routine_signatures(
+    tmp_path: pathlib.Path,
+    declaration: str,
+    message: str,
+) -> None:
+    script = tmp_path / "invalid_routine.py"
+    script.write_text(
+        "import xarray as xr\n"
+        "from erlab.extensions import routine\n\n"
+        "@routine()\n"
+        f"{declaration}\n"
+    )
+
+    with pytest.raises(ExtensionSignatureError, match=message):
+        load_script(script)
+
+
+@pytest.mark.parametrize(
+    ("supporting_code", "annotation", "default", "message"),
+    [
+        ("", "typing.Literal[()]", None, "Literal values"),
+        (
+            "class Mode(enum.Enum):\n    VALUE = object()\n",
+            "Mode",
+            None,
+            "Enum values",
+        ),
+        (
+            "class Mode(enum.Enum):\n    VALUE = 'value'\n",
+            "Mode",
+            "'value'",
+            "not a Mode member",
+        ),
+        ("", "pathlib.Path", "'value'", "pathlib.Path default"),
+        ("", "bool", "1", "bool default"),
+        ("", "float", "'value'", "numeric default"),
+        ("", "str", "1", "string default"),
+    ],
+)
+def test_load_script_rejects_other_invalid_parameter_defaults(
+    tmp_path: pathlib.Path,
+    supporting_code: str,
+    annotation: str,
+    default: str | None,
+    message: str,
+) -> None:
+    script = tmp_path / "invalid_parameter.py"
+    default_clause = "" if default is None else f" = {default}"
+    script.write_text(
+        "import enum\n"
+        "import pathlib\n"
+        "import typing\n"
+        "import xarray as xr\n"
+        "from erlab.extensions import routine\n\n"
+        f"{supporting_code}\n"
+        "@routine()\n"
+        "def invalid_parameter(\n"
+        "    data: xr.DataArray,\n"
+        f"    value: {annotation}{default_clause},\n"
+        ") -> xr.DataArray:\n"
+        "    return data\n"
+    )
+
+    with pytest.raises(ExtensionSignatureError, match=message):
+        load_script(script)
+
+
+def test_load_script_rejects_invalid_loader_input_and_duplicate_ids(
+    tmp_path: pathlib.Path,
+) -> None:
+    invalid_loader = tmp_path / "invalid_loader_input.py"
+    invalid_loader.write_text(
+        "import xarray as xr\n"
+        "from erlab.extensions import loader\n\n"
+        "@loader()\n"
+        "def invalid(path: str) -> xr.DataArray:\n"
+        "    return xr.DataArray()\n"
+    )
+    with pytest.raises(
+        ExtensionSignatureError, match=r"first parameter as pathlib\.Path"
+    ):
+        load_script(invalid_loader)
+
+    duplicate = tmp_path / "duplicate.py"
+    duplicate.write_text(
+        "import xarray as xr\n"
+        "from erlab.extensions import routine\n\n"
+        "@routine(id='same')\n"
+        "def first(data: xr.DataArray) -> xr.DataArray:\n"
+        "    return data\n\n"
+        "@routine(id='same')\n"
+        "def second(data: xr.DataArray) -> xr.DataArray:\n"
+        "    return data\n"
+    )
+    with pytest.raises(ExtensionSignatureError, match="defined more than once"):
+        load_script(duplicate)
+
+
+def test_load_script_reports_source_and_import_failures(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = tmp_path / "missing.py"
+    with pytest.raises(erlab.extensions.ExtensionImportError, match="Could not read"):
+        load_script(missing)
+
+    source = tmp_path / "empty.py"
+    source.write_text("VALUE = 1\n")
+    with pytest.raises(ExtensionSignatureError, match="no decorated capabilities"):
+        load_script(source)
+
+    monkeypatch.setattr(
+        extension_api.importlib.util, "spec_from_file_location", lambda *_: None
+    )
+    with pytest.raises(erlab.extensions.ExtensionImportError, match="import spec"):
+        load_script(source)
+
+
+def test_load_script_restores_a_previous_module_after_import_failure(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "broken.py"
+    source.write_text("raise RuntimeError('broken import')\n")
+    module_name = "_erlab_test_broken_extension"
+    previous = types.ModuleType(module_name)
+    monkeypatch.setitem(sys.modules, module_name, previous)
+
+    with pytest.raises(erlab.extensions.ExtensionImportError, match="broken import"):
+        load_script(source, module_name=module_name)
+
+    assert sys.modules[module_name] is previous
 
 
 @pytest.mark.parametrize(
@@ -594,3 +973,286 @@ def test_revision_resolver_lookup_survives_manager_removal(
     finally:
         extension_api._remove_resolvers("first")
         extension_api._remove_resolvers("closing")
+
+
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        ({"unknown": 1}, "Unknown extension parameters"),
+        (
+            {
+                "path": "value.txt",
+                "mode": "add",
+                "scale": 1.0,
+                "label": "value",
+                "note": None,
+            },
+            "Missing extension parameters: count",
+        ),
+        (
+            {
+                "count": None,
+                "path": "value.txt",
+                "mode": "add",
+                "scale": 1.0,
+                "label": "value",
+                "note": None,
+            },
+            "does not accept None",
+        ),
+        (
+            {
+                "count": 1,
+                "path": 3,
+                "mode": "add",
+                "scale": 1.0,
+                "label": "value",
+                "note": None,
+            },
+            "must be a path",
+        ),
+        (
+            {
+                "count": 1,
+                "path": "value.txt",
+                "mode": "missing",
+                "scale": 1.0,
+                "label": "value",
+                "note": None,
+            },
+            "not a valid Mode value",
+        ),
+        (
+            {
+                "count": True,
+                "path": "value.txt",
+                "mode": "add",
+                "scale": 1.0,
+                "label": "value",
+                "note": None,
+            },
+            "must be an int",
+        ),
+        (
+            {
+                "count": 1,
+                "path": "value.txt",
+                "mode": "add",
+                "scale": "one",
+                "label": "value",
+                "note": None,
+            },
+            "must be a number",
+        ),
+        (
+            {
+                "count": 1,
+                "path": "value.txt",
+                "mode": "add",
+                "scale": 1.0,
+                "label": 2,
+                "note": None,
+            },
+            "must be a string",
+        ),
+    ],
+)
+def test_run_routine_rejects_invalid_parameter_values(
+    tmp_path: pathlib.Path,
+    parameters: dict[str, typing.Any],
+    message: str,
+) -> None:
+    source = tmp_path / "parameters.py"
+    source.write_text(
+        "import enum\n"
+        "import pathlib\n"
+        "import xarray as xr\n"
+        "from erlab.extensions import routine\n\n"
+        "class Mode(enum.Enum):\n"
+        "    ADD = 'add'\n"
+        "    SUBTRACT = 'subtract'\n\n"
+        "@routine()\n"
+        "def calculate(\n"
+        "    data: xr.DataArray,\n"
+        "    count: int,\n"
+        "    path: pathlib.Path,\n"
+        "    mode: Mode,\n"
+        "    scale: float,\n"
+        "    label: str,\n"
+        "    note: str | None,\n"
+        ") -> xr.DataArray:\n"
+        "    return data\n"
+    )
+
+    with pytest.raises(ExtensionExecutionError, match=message):
+        run_routine(
+            xr.DataArray([1.0]),
+            script=source,
+            routine_id="calculate",
+            parameters=parameters,
+        )
+
+
+def test_coerce_call_parameters_rejects_an_unvalidated_annotation() -> None:
+    def invalid(data: xr.DataArray, values: list[int]) -> xr.DataArray:
+        return data
+
+    with pytest.raises(ExtensionSignatureError, match="unsupported annotation"):
+        _coerce_call_parameters(invalid, {"values": [1]})
+
+
+def test_public_models_validate_persisted_values() -> None:
+    with pytest.raises(ValueError, match="parameter ID cannot be empty"):
+        ParameterDescriptor(
+            id=" ", kind=ParameterKind.STRING, required=False, default="value"
+        )
+    with pytest.raises(ValueError, match=r"nested\.value"):
+        extension_api._require_finite_parameter_values(
+            {"nested": {"value": float("inf")}}
+        )
+    with pytest.raises(ValueError, match=r"nested\[1\]"):
+        extension_api._require_finite_parameter_values({"nested": [0.0, float("nan")]})
+
+    descriptor_arguments = {
+        "id": " ",
+        "name": "Name",
+        "category": "Other",
+        "summary": "",
+        "function_name": "function",
+    }
+    with pytest.raises(ValueError, match="descriptor text cannot be empty"):
+        RoutineDescriptor(**descriptor_arguments)
+    with pytest.raises(ValueError, match="descriptor text cannot be empty"):
+        LoaderDescriptor(**descriptor_arguments)
+
+
+def test_loaded_script_exposes_capabilities_and_module_attributes(
+    tmp_path: pathlib.Path,
+) -> None:
+    source = tmp_path / "mixed.py"
+    source.write_text(
+        "import pathlib\n"
+        "import xarray as xr\n"
+        "from erlab.extensions import loader, routine\n\n"
+        "VALUE = 3\n\n"
+        "@routine()\n"
+        "def calculate(data: xr.DataArray) -> xr.DataArray:\n"
+        "    return data\n\n"
+        "@loader()\n"
+        "def load_data(path: pathlib.Path) -> xr.Dataset:\n"
+        "    return xr.Dataset()\n"
+    )
+
+    loaded = load_script(source)
+
+    assert [descriptor.id for descriptor in loaded.capabilities] == [
+        "calculate",
+        "load_data",
+    ]
+    assert loaded.VALUE == 3
+
+
+def test_run_functions_validate_lookup_and_results(
+    tmp_path: pathlib.Path,
+) -> None:
+    source = tmp_path / "mixed.py"
+    source.write_text(
+        "import pathlib\n"
+        "import typing\n"
+        "import xarray as xr\n"
+        "from erlab.extensions import loader, routine\n\n"
+        "@routine()\n"
+        "def calculate(data: xr.DataArray) -> xr.DataArray:\n"
+        "    return data\n\n"
+        "@loader()\n"
+        "def load_data(path: pathlib.Path) -> xr.DataArray:\n"
+        "    return typing.cast(xr.DataArray, path.name)\n"
+    )
+
+    with pytest.raises(TypeError, match="data must be"):
+        run_routine(typing.cast("xr.DataArray", np.arange(2)), routine_id="calculate")
+    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="script or both"):
+        run_routine(xr.DataArray([1]), routine_id="calculate")
+    with pytest.raises(
+        erlab.extensions.ExtensionNotFoundError, match="Routine 'missing'"
+    ):
+        run_routine(xr.DataArray([1]), script=source, routine_id="missing")
+    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="script or both"):
+        run_loader("data.txt", loader_id="load_data")
+    with pytest.raises(
+        erlab.extensions.ExtensionNotFoundError, match="Loader 'missing'"
+    ):
+        run_loader("data.txt", script=source, loader_id="missing")
+    with pytest.raises(ExtensionExecutionError, match="expected an xarray object"):
+        run_loader("data.txt", script=source, loader_id="load_data")
+
+
+def test_capability_resolvers_run_direct_callables_and_report_absence() -> None:
+    owner = "test-public-capability-resolver"
+
+    def resolve(
+        extension_id: str,
+        revision: str,
+        kind: str,
+        capability_id: str,
+    ) -> typing.Callable[..., typing.Any]:
+        if (extension_id, revision, capability_id) != ("lab", "revision", "value"):
+            raise KeyError
+        if kind == "routine":
+            return lambda data: data + 1
+        return lambda path: [xr.DataArray([len(path.name)])]
+
+    extension_api._set_capability_resolver(owner, resolve)
+    try:
+        xr.testing.assert_identical(
+            run_routine(
+                xr.DataArray([1]),
+                extension_id="lab",
+                revision="revision",
+                routine_id="value",
+            ),
+            xr.DataArray([2]),
+        )
+        result = run_loader(
+            "value.txt",
+            extension_id="lab",
+            revision="revision",
+            loader_id="value",
+        )
+        assert isinstance(result, list)
+        xr.testing.assert_identical(result[0], xr.DataArray([9]))
+    finally:
+        extension_api._remove_resolvers(owner)
+
+    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="No extension"):
+        extension_api._resolved_revision("lab", "revision")
+
+
+def test_loader_method_helpers_validate_stable_references() -> None:
+    class Loader:
+        def load(self) -> None:
+            return None
+
+        def preview(self) -> None:
+            return None
+
+    loader_instance = Loader()
+    assert _loader_method_reference(loader_instance, loader_instance.load) is None
+    assert (
+        _loader_method_reference(loader_instance, loader_instance.preview) == "preview"
+    )
+    with pytest.raises(TypeError, match="stable name"):
+        _loader_method_reference(
+            loader_instance, types.MethodType(lambda self: None, loader_instance)
+        )
+    with pytest.raises(TypeError, match="importable functions"):
+        _loader_method_reference(loader_instance, lambda: None)
+
+    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="was not found"):
+        _resolve_loader_method(
+            loader_instance.load, "package_that_does_not_exist.method"
+        )
+    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="was not found"):
+        _resolve_loader_method(loader_instance.load, "json.missing")
+    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="not callable"):
+        _resolve_loader_method(loader_instance.load, "json.__name__")
