@@ -20,6 +20,7 @@ import erlab.interactive.imagetool.manager as imagetool_manager
 import erlab.interactive.imagetool.manager._base as manager_base
 import erlab.interactive.imagetool.manager._extensions._catalog as extension_catalog
 import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dialogs
+import erlab.interactive.imagetool.manager._extensions._execution as extension_execution
 from erlab.interactive.imagetool._load_source import _resolve_load_func
 from erlab.interactive.imagetool._provenance._execution import (
     can_reload_without_trust,
@@ -1102,6 +1103,489 @@ def test_catalog_resolves_loaderbase_classes_and_instances(
     )
     with pytest.raises(TypeError, match="does not provide LoaderBase"):
         store.resolve_capability("lab-loader", revision_hash, "loader", "example")
+
+
+def test_extension_execution_value_guards_and_log_fields(
+    tmp_path: pathlib.Path,
+) -> None:
+    error = ValueError("invalid")
+    assert extension_execution._extension_error(error, "call") is error
+    converted = extension_execution._extension_error(KeyboardInterrupt(), "call")
+    assert isinstance(converted, erlab.extensions.ExtensionExecutionError)
+    assert "KeyboardInterrupt" in str(converted)
+
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Load Data",
+        category="Lab",
+        summary="",
+        function_name="load_data",
+    )
+    call = _ExtensionLoaderCall(
+        manager_session_id="manager",
+        catalog_generation=1,
+        extension_id="lab",
+        extension_name="Lab",
+        revision_hash="a" * 64,
+        loader_id="load_data",
+        descriptor=descriptor,
+        source_path=None,
+        source_type="script",
+        executor=lambda *_args: xr.DataArray([1.0]),
+        loader_method="preview",
+    )
+    assert call.manager_loader_name == "lab:load_data"
+    assert not call.uses_standard_loader_options
+    assert call.__name__ == "preview"
+    with pytest.raises(
+        erlab.extensions.ExtensionExecutionError, match="source is missing"
+    ):
+        extension_execution._require_loader_source(call)
+    with pytest.raises(erlab.extensions.ExtensionExecutionError, match="missing"):
+        extension_execution._require_loader_entry(call, None)
+
+    array = xr.DataArray([1.0], dims="x")
+    dataset = xr.Dataset({"value": array})
+    tree = xr.DataTree.from_dict({"/": dataset})
+    assert extension_execution._require_loader_output(
+        [array, dataset, tree], allow_multiple=True
+    ) == [array, dataset, tree]
+    with pytest.raises(
+        erlab.extensions.ExtensionExecutionError, match="expected an xarray"
+    ):
+        extension_execution._require_loader_output([array], allow_multiple=False)
+    with pytest.raises(
+        erlab.extensions.ExtensionExecutionError,
+        match="list of xarray objects",
+    ):
+        extension_execution._require_loader_output([object()], allow_multiple=True)
+
+    assert extension_execution._xarray_log_fields(dataset) == {
+        "type": "Dataset",
+        "dimensions": ("x",),
+        "shape": (1,),
+        "dtype": ("float64",),
+    }
+    tree_fields = extension_execution._xarray_log_fields(tree)
+    assert tree_fields["type"] == "DataTree"
+    assert tree_fields["dimensions"] == ("x",)
+    assert tree_fields["shape"] == (1,)
+    list_fields = extension_execution._loader_output_log_fields([array, dataset])
+    assert list_fields["type"] == "list"
+    assert len(list_fields["items"]) == 2
+
+    with pytest.raises(
+        erlab.extensions.ExtensionExecutionError, match="expected DataArray"
+    ):
+        extension_execution._require_dataarray(dataset)
+    with pytest.raises(
+        erlab.extensions.ExtensionExecutionError, match="source is missing"
+    ):
+        extension_execution._require_script_source(
+            types.SimpleNamespace(source_path=None)
+        )
+
+    source = tmp_path / "loader.py"
+    source.write_text("source")
+    assert (
+        extension_execution._require_loader_source(
+            types.SimpleNamespace(source_path=source)
+        )
+        == source
+    )
+
+
+def test_decorated_loader_adapter_preserves_loader_contract(
+    tmp_path: pathlib.Path,
+) -> None:
+    calls: list[tuple[pathlib.Path, dict[str, typing.Any]]] = []
+
+    def execute(
+        _call: _ExtensionLoaderCall,
+        path: pathlib.Path,
+        parameters: dict[str, typing.Any],
+    ) -> xr.DataArray:
+        calls.append((path, parameters))
+        return xr.DataArray([float(path.read_text())])
+
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Load Data",
+        category="Lab",
+        summary="Load one data file.",
+        function_name="load_data",
+        extensions=(".dat",),
+    )
+    call = _ExtensionLoaderCall(
+        manager_session_id="manager",
+        catalog_generation=1,
+        extension_id="lab",
+        extension_name="Lab",
+        revision_hash="a" * 64,
+        loader_id="load_data",
+        descriptor=descriptor,
+        source_path=tmp_path / "loader.py",
+        source_type="script",
+        executor=execute,
+    )
+    adapter = extension_execution._DecoratedLoaderAdapter(call)
+    path = tmp_path / "value.dat"
+    path.write_text("3")
+
+    assert adapter.extension_id == "lab"
+    assert adapter.revision_hash == "a" * 64
+    assert adapter.loader_id == "load_data"
+    assert adapter.loader_method is None
+    assert adapter.source_path == tmp_path / "loader.py"
+    assert adapter.source_type == "script"
+    assert adapter.entry_point_group is None
+    assert adapter.entry_point_name is None
+    assert adapter.descriptor == descriptor
+    assert not adapter.uses_standard_loader_options
+    assert tuple(adapter.file_dialog_methods) == ("Load Data (*.dat)",)
+    loaded = adapter.load(path)
+    assert loaded.item() == 3.0
+    assert loaded.attrs["data_loader_name"] == "lab:load_data"
+    xr.testing.assert_identical(
+        adapter.load_single(path, scale=2.0), xr.DataArray([3.0])
+    )
+    assert calls == [(path, {}), (path, {"scale": 2.0})]
+
+    environment_call = _ExtensionLoaderCall(
+        manager_session_id="manager",
+        catalog_generation=1,
+        extension_id="environment.erlab.io.loaders.lab",
+        extension_name="Lab",
+        revision_hash="b" * 64,
+        loader_id="lab",
+        descriptor=descriptor,
+        source_path=None,
+        source_type="environment-package",
+        executor=execute,
+        entry_point_group="erlab.io.loaders",
+        entry_point_name="lab",
+    )
+    environment_adapter = extension_execution._DecoratedLoaderAdapter(environment_call)
+    assert environment_adapter.uses_standard_loader_options
+    assert environment_adapter.name == "lab"
+    with pytest.raises(TypeError, match="must use keywords"):
+        environment_adapter.load(path, 2.0)
+    xr.testing.assert_identical(
+        environment_adapter.load(path, scale=4.0), xr.DataArray([3.0])
+    )
+    with pytest.raises(ValueError, match="must be finite"):
+        environment_call(path, scale=float("inf"))
+
+
+def test_loader_and_validation_workers_ignore_repeated_cancellation(
+    tmp_path: pathlib.Path,
+) -> None:
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Load Data",
+        category="Lab",
+        summary="",
+        function_name="load_data",
+    )
+    call = _ExtensionLoaderCall(
+        manager_session_id="manager",
+        catalog_generation=1,
+        extension_id="lab",
+        extension_name="Lab",
+        revision_hash="a" * 64,
+        loader_id="load_data",
+        descriptor=descriptor,
+        source_path=tmp_path / "loader.py",
+        source_type="script",
+        executor=lambda *_args: xr.DataArray([1.0]),
+    )
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    loader_worker = _ExtensionLoaderWorker(call, tmp_path / "data", {}, store, {})
+    loader_worker.cancel_if_pending()
+    first_error = loader_worker.error
+    loader_worker.cancel_if_pending()
+    loader_worker.run()
+    assert loader_worker.error is first_error
+    assert not loader_worker._started
+
+    validation_worker = _ExtensionValidationWorker(
+        "lab",
+        "a" * 64,
+        1,
+        manager_session_id="manager",
+        catalog_store=store,
+        script_modules={},
+    )
+    validation_worker.cancel_if_pending()
+    validation_error = validation_worker.error
+    validation_worker.cancel_if_pending()
+    validation_worker.run()
+    assert validation_worker.error is validation_error
+    assert not validation_worker._started
+
+
+def test_loader_worker_contains_process_control_exceptions(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Load Data",
+        category="Lab",
+        summary="",
+        function_name="load_data",
+    )
+    call = _ExtensionLoaderCall(
+        manager_session_id="manager",
+        catalog_generation=1,
+        extension_id="lab",
+        extension_name="Lab",
+        revision_hash="a" * 64,
+        loader_id="load_data",
+        descriptor=descriptor,
+        source_path=tmp_path / "loader.py",
+        source_type="script",
+        executor=lambda *_args: xr.DataArray([1.0]),
+    )
+    record = types.SimpleNamespace(removed=False, enabled=True)
+    store = types.SimpleNamespace(
+        read=lambda: types.SimpleNamespace(extensions={"lab": record})
+    )
+    monkeypatch.setattr(
+        extension_execution._ExtensionLoaderCall,
+        "_invoke",
+        lambda *_args: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    worker = _ExtensionLoaderWorker(
+        call,
+        tmp_path / "data",
+        {},
+        typing.cast("_ExtensionCatalogStore", store),
+        {},
+    )
+
+    worker.run()
+
+    assert worker.done.is_set()
+    assert isinstance(worker.error, erlab.extensions.ExtensionExecutionError)
+    assert "KeyboardInterrupt" in str(worker.error)
+
+
+def test_environment_routine_resolves_callable_and_module_entry_points(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @erlab.extensions.routine(id="calculate")
+    def calculate(data: xr.DataArray) -> xr.DataArray:
+        return data + 1
+
+    class EntryPoint:
+        group = "erlab.extensions"
+        name = "lab"
+        value = "lab_package:extension"
+
+    class EntryPoints(tuple):
+        def select(self, **parameters):
+            return tuple(
+                entry
+                for entry in self
+                if all(
+                    getattr(entry, key, None) == value
+                    for key, value in parameters.items()
+                )
+            )
+
+    entry_point = EntryPoint()
+    monkeypatch.setattr(
+        extension_execution.importlib.metadata,
+        "entry_points",
+        lambda: EntryPoints((entry_point,)),
+    )
+    monkeypatch.setattr(
+        extension_execution, "_environment_revision_matches", lambda *_args: True
+    )
+    routine_descriptor = erlab.extensions.RoutineDescriptor(
+        id="calculate",
+        name="Calculate",
+        category="Lab",
+        summary="",
+        function_name="calculate",
+    )
+    job = types.SimpleNamespace(
+        entry_point_group=entry_point.group,
+        entry_point_name=entry_point.name,
+        entry_point_value=entry_point.value,
+        revision_hash="a" * 64,
+        routine=routine_descriptor,
+    )
+
+    monkeypatch.setattr(
+        extension_execution, "_load_entry_point_value", lambda *_args: calculate
+    )
+    resolved_routine = extension_execution._environment_routine(job)
+    assert resolved_routine[0].id == "calculate"
+    assert resolved_routine[1] is calculate
+
+    module = types.ModuleType("lab_package.extension")
+    calculate.__module__ = module.__name__
+    module.calculate = calculate
+    monkeypatch.setattr(
+        extension_execution, "_load_entry_point_value", lambda *_args: module
+    )
+    assert extension_execution._environment_routine(job)[1] is calculate
+
+    monkeypatch.setattr(
+        extension_execution, "_load_entry_point_value", lambda *_args: object()
+    )
+    with pytest.raises(
+        erlab.extensions.ExtensionExecutionError, match="no longer available"
+    ):
+        extension_execution._environment_routine(job)
+
+    monkeypatch.setattr(
+        extension_execution, "_environment_revision_matches", lambda *_args: False
+    )
+    with pytest.raises(
+        erlab.extensions.ExtensionExecutionError, match="no longer available"
+    ):
+        extension_execution._environment_routine(job)
+
+
+def test_environment_loader_resolves_supported_entry_point_shapes(
+    example_loader,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @erlab.extensions.loader(id="load_data")
+    def load_data(path: pathlib.Path) -> xr.DataArray:
+        return xr.DataArray([len(path.name)])
+
+    class EntryPoint:
+        group = "erlab.extensions"
+        name = "lab"
+        value = "lab_package:extension"
+
+    class EntryPoints(tuple):
+        def select(self, **parameters):
+            return tuple(
+                entry
+                for entry in self
+                if all(
+                    getattr(entry, key, None) == value
+                    for key, value in parameters.items()
+                )
+            )
+
+    entry_point = EntryPoint()
+    monkeypatch.setattr(
+        extension_execution.importlib.metadata,
+        "entry_points",
+        lambda: EntryPoints((entry_point,)),
+    )
+    monkeypatch.setattr(
+        extension_execution, "_environment_revision_matches", lambda *_args: True
+    )
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Load Data",
+        category="Lab",
+        summary="",
+        function_name="load_data",
+    )
+    call = types.SimpleNamespace(
+        entry_point_group=entry_point.group,
+        entry_point_name=entry_point.name,
+        entry_point_value=entry_point.value,
+        revision_hash="a" * 64,
+        loader_id="load_data",
+        descriptor=descriptor,
+        loader_method=None,
+    )
+
+    monkeypatch.setattr(
+        extension_execution, "_load_entry_point_value", lambda *_args: load_data
+    )
+    resolved_loader = extension_execution._environment_loader(call)
+    assert resolved_loader is not None
+    assert resolved_loader[0].id == "load_data"
+    assert resolved_loader[1] is load_data
+
+    module = types.ModuleType("lab_package.extension")
+    load_data.__module__ = module.__name__
+    module.load_data = load_data
+    monkeypatch.setattr(
+        extension_execution, "_load_entry_point_value", lambda *_args: module
+    )
+    assert extension_execution._environment_loader(call)[1] is load_data
+
+    entry_point.group = "erlab.io.loaders"
+    call.entry_point_group = entry_point.group
+    call.entry_point_name = "example"
+    entry_point.name = "example"
+    call.loader_id = "example"
+    for value in (example_loader, example_loader()):
+        monkeypatch.setattr(
+            extension_execution,
+            "_load_entry_point_value",
+            lambda *_args, value=value: value,
+        )
+        resolved = extension_execution._environment_loader(call)
+        assert resolved is not None
+        assert getattr(resolved[1], "__self__", None).name == "example"
+
+    call.loader_id = "different"
+    assert extension_execution._environment_loader(call) is None
+    call.loader_id = "example"
+    monkeypatch.setattr(
+        extension_execution, "_load_entry_point_value", lambda *_args: object()
+    )
+    assert extension_execution._environment_loader(call) is None
+
+    monkeypatch.setattr(
+        extension_execution, "_environment_revision_matches", lambda *_args: False
+    )
+    assert extension_execution._environment_loader(call) is None
+
+
+def test_environment_capability_validation_rejects_invalid_entry_points(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revision = _ExtensionRevision(
+        source_hash="a" * 64,
+        object_name="lab_package:extension",
+        created_at="2026-01-01T00:00:00+00:00",
+        entry_point_group="erlab.extensions",
+        entry_point_name="lab",
+        entry_point_value="lab_package:extension",
+    )
+    entry_point = types.SimpleNamespace(group="erlab.extensions")
+    store = types.SimpleNamespace(
+        _entry_point_for_revision=lambda _revision: entry_point
+    )
+
+    monkeypatch.setattr(
+        extension_execution, "_load_entry_point_value", lambda *_args: object()
+    )
+    with pytest.raises(TypeError, match="decorated function or module"):
+        extension_execution._environment_capabilities(
+            typing.cast("_ExtensionCatalogStore", store), revision
+        )
+
+    module = types.ModuleType("empty_extension")
+    monkeypatch.setattr(
+        extension_execution, "_load_entry_point_value", lambda *_args: module
+    )
+    with pytest.raises(TypeError, match="has no capabilities"):
+        extension_execution._environment_capabilities(
+            typing.cast("_ExtensionCatalogStore", store), revision
+        )
+
+    entry_point.group = "erlab.io.loaders"
+    monkeypatch.setattr(
+        extension_execution, "_load_entry_point_value", lambda *_args: object()
+    )
+    with pytest.raises(TypeError, match="must provide LoaderBase"):
+        extension_execution._environment_capabilities(
+            typing.cast("_ExtensionCatalogStore", store), revision
+        )
 
 
 @pytest.mark.parametrize(
