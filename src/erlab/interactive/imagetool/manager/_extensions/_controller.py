@@ -1112,9 +1112,10 @@ class _ExtensionController(QtCore.QObject):
         for key in persisted:
             if key in keys:
                 continue
-            previous = merged_persisted_requirement(key)
-            if previous is None:
-                continue
+            previous = typing.cast(
+                "_WorkspaceExtensionRequirement",
+                merged_persisted_requirement(key),
+            )
             explicit = any(not item.referencing_nodes for item in persisted[key])
             remaining_node_uids = tuple(
                 uid for uid in previous.referencing_nodes if uid not in loaded_node_uids
@@ -1573,18 +1574,13 @@ class _ExtensionController(QtCore.QObject):
             (
                 item
                 for item in self._workspace_requirements
-                if item.extension_id == extension_id and item.revision_hash == revision
+                if item.extension_id == extension_id
+                and item.revision_hash == revision
+                and item.source_type == "script"
             ),
             None,
         )
         if requirement is None:
-            return
-        if requirement.source_type != "script":
-            QtWidgets.QMessageBox.warning(
-                self._manager,
-                "Embedded Source Unavailable",
-                "Environment package requirements cannot use embedded source.",
-            )
             return
         try:
             source_text = source.decode("utf-8")
