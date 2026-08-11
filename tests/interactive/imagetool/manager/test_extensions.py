@@ -2380,12 +2380,29 @@ def test_degraded_save_as_preserves_missing_environment_requirement(
 def test_removing_node_discards_only_its_workspace_requirements(
     manager_context,
 ) -> None:
+    operation = ExtensionRoutineOperation(
+        extension_id="missing-extension",
+        revision_hash="a" * 64,
+        routine_id="normalize",
+        extension_name="Missing Extension",
+        routine_name="Normalize",
+        source_type="script",
+        function_name="normalize",
+        source_path="missing_extension.py",
+        entry_point_group=None,
+        entry_point_name=None,
+        parameters={},
+    )
     with manager_context() as manager:
         manager.add_imagetool(
-            erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])), show=False
+            erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
+            show=False,
+            provenance_spec=full_data(operation),
         )
         manager.add_imagetool(
-            erlab.interactive.imagetool.ImageTool(xr.DataArray([2.0])), show=False
+            erlab.interactive.imagetool.ImageTool(xr.DataArray([2.0])),
+            show=False,
+            provenance_spec=full_data(operation),
         )
         first_uid = manager._tool_graph.root_wrappers[0].uid
         second_uid = manager._tool_graph.root_wrappers[1].uid
@@ -2407,6 +2424,54 @@ def test_removing_node_discards_only_its_workspace_requirements(
         assert collected[0].referencing_nodes == (second_uid,)
 
         manager.remove_imagetool(1)
+        assert manager._extensions.collect_workspace_requirements() == ()
+
+
+def test_collecting_requirements_reconciles_loaded_and_unresolved_nodes(
+    manager_context,
+) -> None:
+    revision = "c" * 64
+    operation = ExtensionRoutineOperation(
+        extension_id="workspace-routines",
+        revision_hash=revision,
+        routine_id="normalize",
+        extension_name="Workspace Routines",
+        routine_name="Normalize",
+        source_type="script",
+        function_name="normalize",
+        source_path="workspace_routines.py",
+        entry_point_group=None,
+        entry_point_name=None,
+        parameters={},
+    )
+
+    with manager_context() as manager:
+        tool = erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0]))
+        index = manager.add_imagetool(
+            tool, show=False, provenance_spec=full_data(operation)
+        )
+        node = manager._node_for_target(index)
+        requirement = _WorkspaceExtensionRequirement(
+            extension_id="workspace-routines",
+            capability_id="normalize",
+            capability_kind="routine",
+            revision_hash=revision,
+            extension_api_version=1,
+            source_type="script",
+            referencing_nodes=(node.uid, "unresolved-node"),
+        )
+        manager._extensions.set_workspace_requirements((requirement,))
+
+        collected = manager._extensions.collect_workspace_requirements()
+        assert collected[0].referencing_nodes == (node.uid, "unresolved-node")
+
+        node.set_displayed_provenance(full_data())
+        collected = manager._extensions.collect_workspace_requirements()
+        assert collected[0].referencing_nodes == ("unresolved-node",)
+
+        manager._extensions.set_workspace_requirements(
+            (requirement.model_copy(update={"referencing_nodes": (node.uid,)}),)
+        )
         assert manager._extensions.collect_workspace_requirements() == ()
 
 

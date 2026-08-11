@@ -773,6 +773,13 @@ class _ExtensionController(QtCore.QObject):
     def collect_workspace_requirements(
         self,
     ) -> tuple[_WorkspaceExtensionRequirement, ...]:
+        """Rebuild loaded-node dependencies and retain unresolved references.
+
+        Current provenance is authoritative for nodes in the graph. References to
+        nodes that did not load and explicit requirements without node references
+        remain unchanged so a degraded Save As does not discard them.
+        """
+        loaded_node_uids = set(self._manager._tool_graph.nodes)
         persisted = {
             (
                 item.extension_id,
@@ -833,6 +840,10 @@ class _ExtensionController(QtCore.QObject):
             previous = persisted.get(
                 (extension_id, revision_hash, "routine", routine_id)
             )
+            if previous is not None:
+                node_uids.update(
+                    set(previous.referencing_nodes).difference(loaded_node_uids)
+                )
             source_type: typing.Literal["script", "environment-package"] = (
                 "script" if previous is None else previous.source_type
             )
@@ -873,6 +884,12 @@ class _ExtensionController(QtCore.QObject):
             extension_id, revision_hash, loader_id = key
             record = self.catalog.model.extensions.get(extension_id)
             previous = persisted.get((extension_id, revision_hash, "loader", loader_id))
+            unresolved_node_uids: set[str] = set()
+            if previous is not None:
+                unresolved_node_uids = set(previous.referencing_nodes).difference(
+                    loaded_node_uids
+                )
+                node_uids.update(unresolved_node_uids)
             loader_source_type: typing.Literal["script", "environment-package"] = (
                 "script" if previous is None else previous.source_type
             )
@@ -906,7 +923,16 @@ class _ExtensionController(QtCore.QObject):
                         previous=previous,
                     ),
                     referencing_nodes=tuple(sorted(node_uids)),
-                    file_sources=tuple(sorted(loader_files[key])),
+                    file_sources=tuple(
+                        sorted(
+                            loader_files[key]
+                            | (
+                                set(previous.file_sources)
+                                if previous is not None and unresolved_node_uids
+                                else set()
+                            )
+                        )
+                    ),
                 )
             )
         keys = {
@@ -918,17 +944,24 @@ class _ExtensionController(QtCore.QObject):
             )
             for item in requirements
         }
-        requirements.extend(
-            item
-            for item in self._workspace_requirements
+        for item in self._workspace_requirements:
             if (
                 item.extension_id,
                 item.revision_hash,
                 item.capability_kind,
                 item.capability_id,
+            ) in keys:
+                continue
+            if not item.referencing_nodes:
+                requirements.append(item)
+                continue
+            remaining_node_uids = tuple(
+                uid for uid in item.referencing_nodes if uid not in loaded_node_uids
             )
-            not in keys
-        )
+            if remaining_node_uids:
+                requirements.append(
+                    item.model_copy(update={"referencing_nodes": remaining_node_uids})
+                )
         keys.update(
             (
                 item.extension_id,
