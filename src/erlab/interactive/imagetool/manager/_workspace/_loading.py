@@ -1536,6 +1536,8 @@ class _WorkspaceLoader:
         mark_dirty: bool,
         selected_paths: set[str] | None = None,
         profiler: _WorkspaceLoadProfiler | None = None,
+        incoming_extension_requirements: Iterable[_WorkspaceExtensionRequirement]
+        | None = None,
     ) -> bool:
         if profiler is None:
             profiler = _WorkspaceLoadProfiler(fname)
@@ -1790,7 +1792,10 @@ class _WorkspaceLoader:
                     self._raise_no_workspace_windows_loaded()
                 with profiler.stage("link/layout restore"):
                     self._manager._rebase_loaded_workspace_dependency_refs(
-                        loaded_targets_by_uid
+                        loaded_targets_by_uid,
+                        incoming_extension_requirements=(
+                            incoming_extension_requirements
+                        ),
                     )
                     self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
                 if replace:
@@ -2457,11 +2462,13 @@ class _WorkspaceLoader:
                                 self._manager._workspace_state.degraded_reasons
                             )
                             try:
-                                self._prepare_extension_requirements(
-                                    access.path,
-                                    manifest,
-                                    replace=replace,
-                                    selected_paths=selected_paths,
+                                incoming_extension_requirements = (
+                                    self._prepare_extension_requirements(
+                                        access.path,
+                                        manifest,
+                                        replace=replace,
+                                        selected_paths=selected_paths,
+                                    )
                                 )
                                 loaded = self._from_h5py_workspace_file(
                                     access.path,
@@ -2470,6 +2477,9 @@ class _WorkspaceLoader:
                                     mark_dirty=mark_dirty,
                                     selected_paths=selected_paths,
                                     profiler=profiler,
+                                    incoming_extension_requirements=(
+                                        incoming_extension_requirements
+                                    ),
                                 )
                             except Exception:
                                 (
@@ -2597,7 +2607,7 @@ class _WorkspaceLoader:
         *,
         replace: bool,
         selected_paths: set[str] | None,
-    ) -> None:
+    ) -> tuple[_WorkspaceExtensionRequirement, ...]:
         """Inspect exact workspace requirements without importing embedded code."""
         selected_uids: set[str] | None = None
         if selected_paths is not None:
@@ -2751,3 +2761,4 @@ class _WorkspaceLoader:
             if invalid_entries:
                 reasons.append(f"{invalid_entries} invalid extension requirements")
             self._manager._workspace_state.degraded_reasons = tuple(reasons)
+        return tuple(requirements)

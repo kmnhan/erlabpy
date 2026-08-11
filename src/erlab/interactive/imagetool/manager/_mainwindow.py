@@ -111,6 +111,9 @@ if typing.TYPE_CHECKING:
         ImageToolSelectionSourceBinding,
     )
     from erlab.interactive.imagetool.manager._dependency import _DependencyStatus
+    from erlab.interactive.imagetool.manager._extensions._models import (
+        _WorkspaceExtensionRequirement,
+    )
     from erlab.interactive.imagetool.manager._server import (
         _ManagerServer,
         _WatcherServer,
@@ -2499,10 +2502,15 @@ class ImageToolManager(_ImageToolManagerBase):
         return self._lineage_controller._workspace_loaded_uid_map(loaded_targets_by_uid)
 
     def _rebase_loaded_workspace_dependency_refs(
-        self, loaded_targets_by_uid: Mapping[str, int | str]
+        self,
+        loaded_targets_by_uid: Mapping[str, int | str],
+        *,
+        incoming_extension_requirements: Iterable[_WorkspaceExtensionRequirement]
+        | None = None,
     ) -> None:
         self._lineage_controller._rebase_loaded_workspace_dependency_refs(
-            loaded_targets_by_uid
+            loaded_targets_by_uid,
+            incoming_extension_requirements=incoming_extension_requirements,
         )
 
     def _selected_reload_targets(

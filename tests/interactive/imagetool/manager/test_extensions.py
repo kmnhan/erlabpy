@@ -2823,6 +2823,16 @@ def test_collecting_requirements_keeps_workspace_source_identity(
 ) -> None:
     revision = "d" * 64
     source_modified_at = "2025-06-01T12:34:56+00:00"
+    metadata_snapshot = {
+        "extension_name": "Workspace Script",
+        "routine_name": "Normalize",
+        "author": "Workspace Author",
+        "contact": "workspace@example.org",
+        "project_url": "https://example.org/workspace",
+        "change_summary": "Workspace revision",
+        "changelog": "Workspace changelog",
+        "source_modified_at": source_modified_at,
+    }
     operation = ExtensionRoutineOperation(
         extension_id="shared-extension",
         revision_hash=revision,
@@ -2840,6 +2850,13 @@ def test_collecting_requirements_keeps_workspace_source_identity(
         id="shared-extension",
         name="Local Package",
         source_type="environment-package",
+        metadata=_ExtensionMetadata(
+            author="Local Author",
+            contact="local@example.org",
+            project_url="https://example.org/local",
+            change_summary="Local revision",
+            changelog="Local changelog",
+        ),
         current_revision=revision,
         revisions={
             revision: _ExtensionRevision(
@@ -2877,7 +2894,7 @@ def test_collecting_requirements_keeps_workspace_source_identity(
                     revision_hash=revision,
                     extension_api_version=1,
                     source_type="script",
-                    metadata_snapshot={"source_modified_at": source_modified_at},
+                    metadata_snapshot=metadata_snapshot,
                     embedded_object_id=object_id,
                     referencing_nodes=(node.uid,),
                 ),
@@ -2888,10 +2905,94 @@ def test_collecting_requirements_keeps_workspace_source_identity(
         resolved = manager._extensions.resolved_workspace_requirements()
 
     assert collected[0].source_type == "script"
-    assert collected[0].metadata_snapshot["source_modified_at"] == source_modified_at
+    assert collected[0].metadata_snapshot == metadata_snapshot
     assert collected[0].embedded_object_id == object_id
     assert resolved[0].state == "missing"
     assert resolved[0].detail == "The catalog extension uses a different source type"
+
+
+def test_collecting_loader_requirements_keeps_workspace_source_identity(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    revision = "e" * 64
+    extension_id = "shared-loader"
+    data_path = tmp_path / "data.txt"
+    data_path.write_text("unused")
+    metadata_snapshot = {
+        "extension_name": "Workspace Package",
+        "author": "Workspace Author",
+        "contact": "workspace@example.org",
+        "project_url": "https://example.org/workspace",
+        "change_summary": "Workspace revision",
+        "changelog": "Workspace changelog",
+    }
+    local_script = _ExtensionRecord(
+        id=extension_id,
+        name="Local Script",
+        source_type="script",
+        current_revision=revision,
+        metadata=_ExtensionMetadata(author="Local Author"),
+        revisions={
+            revision: _ExtensionRevision(
+                source_hash=revision,
+                object_name=f"{revision}.py",
+                created_at="2026-01-01T00:00:00+00:00",
+            )
+        },
+    )
+    spec = file_load(
+        start_label="Load workspace package data",
+        seed_code="data = xr.DataArray([1.0])",
+        file_load_source=FileLoadSource(
+            path=str(data_path),
+            loader_label="Workspace Package",
+            loader_text="workspace-loader",
+            kwargs_text="",
+            replay_call=FileReplayCall(
+                kind="extension_loader",
+                target=extension_id,
+                revision=revision,
+                capability_id="workspace-loader",
+                selection=FileDataSelection(kind="dataarray"),
+            ),
+        ),
+    )
+
+    with manager_context() as manager:
+        manager._extensions.catalog.store.mutate(
+            None,
+            lambda catalog: catalog.model_copy(
+                update={"extensions": {local_script.id: local_script}}
+            ),
+        )
+        manager._extensions.catalog.refresh()
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
+            show=False,
+            provenance_spec=spec,
+        )
+        node = manager._node_for_target(index)
+        manager._extensions.set_workspace_requirements(
+            (
+                _WorkspaceExtensionRequirement(
+                    extension_id=extension_id,
+                    capability_id="workspace-loader",
+                    capability_kind="loader",
+                    revision_hash=revision,
+                    extension_api_version=1,
+                    source_type="environment-package",
+                    metadata_snapshot=metadata_snapshot,
+                    referencing_nodes=(node.uid,),
+                    file_sources=(str(data_path),),
+                ),
+            )
+        )
+
+        collected = manager._extensions.collect_workspace_requirements()
+
+    assert collected[0].source_type == "environment-package"
+    assert collected[0].metadata_snapshot == metadata_snapshot
 
 
 def test_workspace_requirements_include_nested_script_inputs(
@@ -3330,6 +3431,86 @@ def test_workspace_import_preserves_unavailable_embedded_source(
     restored, kind = workspace_storage._read_workspace_blob(saved_path, object_id)
     assert restored == source
     assert kind == "extension-python-source-v1"
+
+
+def test_workspace_import_rebases_only_incoming_extension_requirements(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "imported.itws"
+    saved_path = tmp_path / "combined.itws"
+
+    def operation(extension_id: str, revision: str) -> ExtensionRoutineOperation:
+        return ExtensionRoutineOperation(
+            extension_id=extension_id,
+            revision_hash=revision,
+            routine_id="normalize",
+            extension_name=extension_id,
+            routine_name="Normalize",
+            source_type="script",
+            function_name="normalize",
+            source_path=f"{extension_id}.py",
+            entry_point_group=None,
+            entry_point_name=None,
+            parameters={},
+        )
+
+    imported_operation = operation("imported-extension", "a" * 64)
+    existing_operation = operation("existing-extension", "b" * 64)
+
+    with manager_context() as manager:
+        index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
+            show=False,
+            provenance_spec=full_data(imported_operation),
+        )
+        existing_node = manager._node_for_target(index)
+        shared_saved_uid = existing_node.uid
+        manager._workspace_controller.saving._save_workspace_document(source_path)
+
+        existing_node.set_displayed_provenance(full_data(existing_operation))
+        manager._extensions.set_workspace_requirements(
+            manager._extensions.collect_workspace_requirements()
+        )
+        monkeypatch.setattr(
+            manager._extensions,
+            "notify_unavailable_workspace_requirements",
+            lambda: None,
+        )
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            source_path,
+            replace=False,
+            associate=False,
+            mark_dirty=True,
+            select=False,
+        )
+        requirements = {
+            item.extension_id: item
+            for item in manager._extensions.collect_workspace_requirements()
+        }
+        imported_uid = manager._tool_graph.root_wrappers[1].uid
+
+        assert imported_uid != shared_saved_uid
+        assert requirements["existing-extension"].referencing_nodes == (
+            shared_saved_uid,
+        )
+        assert requirements["imported-extension"].referencing_nodes == (imported_uid,)
+
+        manager._workspace_controller.saving._save_workspace_document(saved_path)
+
+    attrs = workspace_arrays._read_workspace_root_attrs_h5py(saved_path)
+    manifest = workspace_format._workspace_manifest_from_attrs(attrs)
+    saved_requirements = {
+        item["extension_id"]: item for item in manifest["extension_requirements"]
+    }
+    assert saved_requirements["existing-extension"]["referencing_nodes"] == [
+        shared_saved_uid
+    ]
+    assert saved_requirements["imported-extension"]["referencing_nodes"] == [
+        imported_uid
+    ]
 
 
 def test_workspace_import_preserves_unparsed_embedded_source(

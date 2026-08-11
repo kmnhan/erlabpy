@@ -866,20 +866,23 @@ class _ExtensionController(QtCore.QObject):
                 operation.source_type if previous is None else previous.source_type
             )
             metadata = {} if previous is None else dict(previous.metadata_snapshot)
-            if record is not None:
+            record_revision = (
+                None
+                if record is None or record.source_type != source_type
+                else record.revisions.get(revision_hash)
+            )
+            if record is not None and record_revision is not None:
                 metadata = {
                     **metadata,
                     "extension_name": record.name,
                     "routine_name": operation.routine_name,
                     **record.metadata.model_dump(),
                 }
-            elif previous is not None:
-                metadata["routine_name"] = operation.routine_name
-            record_revision = (
-                None
-                if record is None or record.source_type != source_type
-                else record.revisions.get(revision_hash)
-            )
+            elif previous is None:
+                metadata = {
+                    "extension_name": operation.extension_name,
+                    "routine_name": operation.routine_name,
+                }
             if (
                 previous is None
                 and record_revision is not None
@@ -928,17 +931,17 @@ class _ExtensionController(QtCore.QObject):
             loader_metadata = (
                 {} if previous is None else dict(previous.metadata_snapshot)
             )
-            if record is not None:
-                loader_metadata = {
-                    **loader_metadata,
-                    "extension_name": record.name,
-                    **record.metadata.model_dump(),
-                }
             loader_record_revision = (
                 None
                 if record is None or record.source_type != loader_source_type
                 else record.revisions.get(revision_hash)
             )
+            if record is not None and loader_record_revision is not None:
+                loader_metadata = {
+                    **loader_metadata,
+                    "extension_name": record.name,
+                    **record.metadata.model_dump(),
+                }
             if (
                 previous is None
                 and loader_record_revision is not None
@@ -1194,10 +1197,21 @@ class _ExtensionController(QtCore.QObject):
                 )
         return None
 
-    def rebase_workspace_requirement_nodes(self, uid_map: dict[str, str]) -> None:
-        """Keep loaded requirement references aligned with rebased manager UIDs."""
+    def rebase_workspace_requirement_nodes(
+        self,
+        uid_map: dict[str, str],
+        *,
+        requirements: Iterable[_WorkspaceExtensionRequirement] | None = None,
+    ) -> None:
+        """Rebase only requirements owned by the workspace being loaded.
+
+        An imported workspace can use the same saved UID as an existing manager node.
+        The transient object-identity scope keeps that imported UID map from changing
+        requirements that belonged to the open document before the import.
+        """
         if not uid_map:
             return
+        selected = None if requirements is None else {id(item) for item in requirements}
         self._workspace_requirements = tuple(
             requirement.model_copy(
                 update={
@@ -1206,6 +1220,8 @@ class _ExtensionController(QtCore.QObject):
                     )
                 }
             )
+            if selected is None or id(requirement) in selected
+            else requirement
             for requirement in self._workspace_requirements
         )
 

@@ -50,6 +50,9 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive.imagetool.manager._dependency import _DependencyStatus
+    from erlab.interactive.imagetool.manager._extensions._models import (
+        _WorkspaceExtensionRequirement,
+    )
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 
@@ -796,12 +799,20 @@ class _LineageController:
         return uid_map
 
     def _rebase_loaded_workspace_dependency_refs(
-        self, loaded_targets_by_uid: Mapping[str, int | str]
+        self,
+        loaded_targets_by_uid: Mapping[str, int | str],
+        *,
+        incoming_extension_requirements: Iterable[_WorkspaceExtensionRequirement]
+        | None = None,
     ) -> None:
+        """Rebase loaded-node dependencies within the incoming workspace scope."""
         uid_map = self._manager._workspace_loaded_uid_map(loaded_targets_by_uid)
         if not uid_map:
             return
-        self._manager._extensions.rebase_workspace_requirement_nodes(uid_map)
+        self._manager._extensions.rebase_workspace_requirement_nodes(
+            uid_map,
+            requirements=incoming_extension_requirements,
+        )
 
         for target in loaded_targets_by_uid.values():
             try:
