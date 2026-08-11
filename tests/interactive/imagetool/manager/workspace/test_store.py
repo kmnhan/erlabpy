@@ -167,7 +167,7 @@ def test_workspace_store_value_validation_and_closed_state(
     path = tmp_path / "workspace.itws"
     with pytest.raises(ValueError, match="only when create is true"):
         workspace_store.WorkspaceStore(path, workspace_id="invalid")
-    for object_id in ("", "nested/object"):
+    for object_id in ("", ".", "..", "nested/object"):
         with pytest.raises(ValueError, match="one path component"):
             workspace_store.WorkspaceStore.object_path(object_id)
 
@@ -175,6 +175,17 @@ def test_workspace_store_value_validation_and_closed_state(
     assert workspace_store.WorkspaceStore.manifest_object_ids(
         {"nodes": [None, {}, {"payload_object_id": ""}, {"payload_object_id": "ok"}]}
     ) == {"ok"}
+    assert workspace_store.WorkspaceStore.manifest_extension_object_ids(
+        {
+            "extension_requirements": [
+                {"embedded_object_id": ""},
+                {"embedded_object_id": "."},
+                {"embedded_object_id": ".."},
+                {"embedded_object_id": "nested/object"},
+                {"embedded_object_id": "extension-valid"},
+            ]
+        }
+    ) == {"extension-valid"}
 
     store = workspace_store.WorkspaceStore(path, create=True)
     store.close()

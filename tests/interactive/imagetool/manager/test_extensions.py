@@ -4993,15 +4993,19 @@ def test_verified_catalog_source_replaces_corrupt_embedded_source(
             embed_policy="always",
         )
         manager._extensions.catalog.refresh()
+        object_id = f"extension-{revision}"
         manager._extensions.set_workspace_requirements(
-            (), embedded_sources={("catalog_source", revision): b"corrupt"}
+            (),
+            unresolved_embedded_objects={
+                object_id: (b"corrupt", "extension-python-source-v1")
+            },
         )
 
         manager._workspace_controller.saving._save_workspace_document(workspace_path)
 
     attrs = workspace_arrays._read_workspace_root_attrs_h5py(workspace_path)
     manifest = workspace_format._workspace_manifest_from_attrs(attrs)
-    object_id = manifest["extension_requirements"][0]["embedded_object_id"]
+    assert manifest["extension_requirements"][0]["embedded_object_id"] == object_id
     restored, kind = workspace_storage._read_workspace_blob(workspace_path, object_id)
     assert restored == source
     assert kind == "extension-python-source-v1"
@@ -6987,6 +6991,63 @@ def test_degraded_save_as_preserves_source_from_malformed_requirement_container(
     restored, kind = workspace_storage._read_workspace_blob(recovered_path, object_id)
     assert restored == source
     assert kind == "extension-python-source-v1"
+
+
+def test_degraded_save_as_preserves_an_invalid_embedded_object_reference(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "invalid-extension-object.itws"
+    recovered_path = tmp_path / "recovered.itws"
+    requirement = {
+        "extension_id": "future-lab",
+        "capability_id": "normalize",
+        "capability_kind": "routine",
+        "revision_hash": "a" * 64,
+        "extension_api_version": 1,
+        "source_type": "script",
+        "metadata_snapshot": {},
+        "embedded_object_id": "../future-object",
+        "referencing_nodes": [],
+        "file_sources": [],
+    }
+    with workspace_store.WorkspaceStore(source_path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(
+                manifest={
+                    "schema_version": 6,
+                    "nodes": [],
+                    "root_order": [],
+                    "extension_requirements": [requirement],
+                },
+                objects=(),
+            ),
+            compression_mode="none",
+        )
+
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            manager._extensions,
+            "notify_unavailable_workspace_requirements",
+            lambda: None,
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            source_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        assert manager._workspace_state.save_as_only
+        manager._workspace_controller.saving._save_workspace_document(recovered_path)
+
+    with workspace_store.WorkspaceStore(recovered_path) as store:
+        assert store.current_generation().manifest["extension_requirements"] == [
+            requirement
+        ]
+        workspace_storage._compact_workspace_store(store)
 
 
 def test_save_as_only_routes_offload_and_compaction_to_new_file(

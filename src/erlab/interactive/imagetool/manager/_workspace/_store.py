@@ -1118,7 +1118,7 @@ class WorkspaceStore:
 
     @staticmethod
     def object_path(object_id: str) -> str:
-        if not object_id or "/" in object_id:
+        if not object_id or "/" in object_id or object_id in {".", ".."}:
             raise ValueError("Workspace object ID must be one path component")
         return f"/{_WORKSPACE_OBJECTS_GROUP}/{object_id}"
 
@@ -1280,7 +1280,12 @@ class WorkspaceStore:
                 if not isinstance(requirement, dict):
                     continue
                 object_id = requirement.get("embedded_object_id")
-                if isinstance(object_id, str) and object_id:
+                if (
+                    isinstance(object_id, str)
+                    and object_id
+                    and "/" not in object_id
+                    and object_id not in {".", ".."}
+                ):
                     object_ids.add(object_id)
         return frozenset(object_ids)
 

@@ -1210,12 +1210,40 @@ class _WorkspaceSaver:
             object_id = raw_requirement.get("embedded_object_id")
             if not isinstance(object_id, str) or not object_id:
                 continue
+            try:
+                workspace_store.WorkspaceStore.object_path(object_id)
+            except ValueError:
+                logger.warning(
+                    "Preserving an extension requirement with an invalid object ID",
+                    extra={"suppress_ui_alert": True},
+                )
+                continue
             if object_id in node_object_ids:
                 logger.warning(
                     "Ignoring an extension object ID that conflicts with node data",
                     extra={"suppress_ui_alert": True},
                 )
                 continue
+            extension_id = raw_requirement.get("extension_id")
+            revision_hash = raw_requirement.get("revision_hash")
+            if (
+                isinstance(extension_id, str)
+                and isinstance(revision_hash, str)
+                and object_id == f"extension-{revision_hash}"
+            ):
+                try:
+                    source = self._manager._extensions.revision_source_bytes(
+                        extension_id, revision_hash
+                    )
+                except (FileNotFoundError, KeyError):
+                    pass
+                else:
+                    object_writes[object_id] = workspace_storage._WorkspaceObjectWrite(
+                        object_id,
+                        blob=source,
+                        blob_kind="extension-python-source-v1",
+                    )
+                    continue
             unresolved_object = (
                 self._manager._extensions._workspace_unresolved_embedded_objects.get(
                     object_id
@@ -1223,10 +1251,13 @@ class _WorkspaceSaver:
             )
             if unresolved_object is not None:
                 source, kind = unresolved_object
-                object_writes[object_id] = workspace_storage._WorkspaceObjectWrite(
+                object_writes.setdefault(
                     object_id,
-                    blob=source,
-                    blob_kind=kind,
+                    workspace_storage._WorkspaceObjectWrite(
+                        object_id,
+                        blob=source,
+                        blob_kind=kind,
+                    ),
                 )
                 continue
             if (
@@ -1243,21 +1274,6 @@ class _WorkspaceSaver:
                         ),
                     ),
                 )
-            extension_id = raw_requirement.get("extension_id")
-            revision_hash = raw_requirement.get("revision_hash")
-            if not isinstance(extension_id, str) or not isinstance(revision_hash, str):
-                continue
-            try:
-                source = self._manager._extensions.revision_source_bytes(
-                    extension_id, revision_hash
-                )
-            except (FileNotFoundError, KeyError):
-                continue
-            object_writes[object_id] = workspace_storage._WorkspaceObjectWrite(
-                object_id,
-                blob=source,
-                blob_kind="extension-python-source-v1",
-            )
         manifest["schema_version"] = (
             workspace_format._current_workspace_schema_version()
         )
