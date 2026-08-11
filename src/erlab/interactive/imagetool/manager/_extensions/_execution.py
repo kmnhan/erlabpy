@@ -556,12 +556,26 @@ class _ExtensionWorkerSignals(QtCore.QObject):
     finished = QtCore.Signal(object)
 
 
+def _copied_xindexes(data: xr.DataArray) -> dict[typing.Hashable, xr.Index]:
+    """Copy each unique xarray index without splitting shared index groups."""
+    copies: dict[int, xr.Index] = {}
+    indexes: dict[typing.Hashable, xr.Index] = {}
+    for name, index in data.xindexes.items():
+        index_key = id(index)
+        copied = copies.get(index_key)
+        if copied is None:
+            copied = index.copy(deep=True)
+            copies[index_key] = copied
+        indexes[name] = copied
+    return indexes
+
+
 def _readonly_array(data: xr.DataArray) -> xr.DataArray:
     """Return a shallow xarray copy backed by read-only NumPy views."""
-    if not isinstance(data.data, np.ndarray):
-        return data.copy(deep=False)
-    values = data.data.view()
-    values.flags.writeable = False
+    values = data.data
+    if isinstance(values, np.ndarray):
+        values = values.view()
+        values.flags.writeable = False
     coordinates: dict[typing.Hashable, xr.Variable] = {}
     for name, coordinate in data.coords.items():
         coordinate_data = coordinate.data
@@ -574,16 +588,20 @@ def _readonly_array(data: xr.DataArray) -> xr.DataArray:
             attrs=dict(coordinate.attrs),
             encoding=dict(coordinate.encoding),
         )
-    return xr.DataArray(
+    result = xr.DataArray(
         xr.Variable(
             data.dims,
             values,
             attrs=dict(data.attrs),
             encoding=dict(data.encoding),
         ),
-        coords=coordinates,
+        coords=xr.Coordinates(coordinates, indexes=_copied_xindexes(data)),
         name=data.name,
     )
+    for coordinate in result.coords.values():
+        if isinstance(coordinate.data, np.ndarray):
+            coordinate.data.flags.writeable = False
+    return result
 
 
 def _detached_routine_output(
@@ -629,7 +647,7 @@ def _detached_routine_output(
             attrs=dict(output.attrs),
             encoding=dict(output.encoding),
         ),
-        coords=coordinates,
+        coords=xr.Coordinates(coordinates, indexes=_copied_xindexes(output)),
         name=output.name,
     )
 

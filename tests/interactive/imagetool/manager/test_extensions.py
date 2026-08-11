@@ -3205,6 +3205,40 @@ def test_readonly_routine_view_does_not_lock_the_original() -> None:
         readonly.values[0] = 10.0
 
 
+def test_routine_buffer_protection_preserves_xarray_indexes() -> None:
+    source = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("letter", "number"),
+        coords={"letter": ["a", "b"], "number": [1, 2]},
+    ).stack(sample=("letter", "number"))
+    original_writeability = {
+        name: coordinate.values.flags.writeable
+        for name, coordinate in source.coords.items()
+    }
+
+    readonly = _readonly_array(source)
+
+    xr.testing.assert_identical(readonly, source)
+    assert type(readonly.xindexes["sample"]) is type(source.xindexes["sample"])
+    xr.testing.assert_identical(readonly.sel(letter="a"), source.sel(letter="a"))
+    assert all(
+        not coordinate.values.flags.writeable for coordinate in readonly.coords.values()
+    )
+    assert {
+        name: coordinate.values.flags.writeable
+        for name, coordinate in source.coords.items()
+    } == original_writeability
+
+    detached = _detached_routine_output(readonly, source)
+
+    xr.testing.assert_identical(detached, source)
+    assert type(detached.xindexes["sample"]) is type(source.xindexes["sample"])
+    for name in source.coords:
+        assert not np.shares_memory(
+            detached.coords[name].values, source.coords[name].values
+        )
+
+
 def test_manager_executes_routine_in_serial_extension_queue(
     manager_context,
     qtbot: pytest.QtBot,
