@@ -290,6 +290,252 @@ def test_parameter_dialog_preserves_python_numeric_values(qtbot) -> None:
         _parameters = dialog.parameters
 
 
+def test_source_review_dialog_reads_source_and_metadata(
+    qtbot: pytest.QtBot,
+    tmp_path: pathlib.Path,
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    with pytest.raises(ValueError, match="path or source_text"):
+        extension_dialogs._SourceReviewDialog(None, parent)
+
+    source = tmp_path / "extension.py"
+    source.write_text("VALUE = 1\n")
+    dialog = extension_dialogs._SourceReviewDialog(source, parent)
+    qtbot.addWidget(dialog)
+    source_editor = dialog.findChild(
+        QtWidgets.QPlainTextEdit, "manager_extension_source_review"
+    )
+    if source_editor is None:
+        raise RuntimeError("Source review editor was not created")
+    assert source_editor.toPlainText() == "VALUE = 1\n"
+    dialog.author_edit.setText("  Lab User  ")
+    dialog.contact_edit.setText(" lab@example.org ")
+    dialog.project_url_edit.setText(" https://example.org/lab ")
+    dialog.change_summary_edit.setText(" Initial revision ")
+    dialog.changelog_edit.setPlainText(" Added routine. ")
+    assert dialog.metadata == _ExtensionMetadata(
+        author="Lab User",
+        contact="lab@example.org",
+        project_url="https://example.org/lab",
+        change_summary="Initial revision",
+        changelog="Added routine.",
+    )
+    assert dialog.remember_approval
+
+    session_dialog = extension_dialogs._SourceReviewDialog(
+        None,
+        parent,
+        source_text="VALUE = 2\n",
+        choose_approval_scope=True,
+    )
+    qtbot.addWidget(session_dialog)
+    assert not session_dialog.remember_approval
+
+
+def test_parameter_dialog_builds_all_editor_types_and_validates_path(
+    qtbot: pytest.QtBot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    descriptor = erlab.extensions.RoutineDescriptor(
+        id="configure",
+        name="Configure",
+        category="Lab",
+        summary="Configure the routine.",
+        function_name="configure",
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="optional_flag",
+                kind=erlab.extensions.ParameterKind.BOOLEAN,
+                required=False,
+                optional=True,
+                default=True,
+            ),
+            erlab.extensions.ParameterDescriptor(
+                id="flag",
+                kind=erlab.extensions.ParameterKind.BOOLEAN,
+                required=False,
+                default=False,
+            ),
+            erlab.extensions.ParameterDescriptor(
+                id="choice",
+                kind=erlab.extensions.ParameterKind.LITERAL,
+                required=False,
+                optional=True,
+                default=None,
+                choices=("first", "second"),
+            ),
+            erlab.extensions.ParameterDescriptor(
+                id="path",
+                kind=erlab.extensions.ParameterKind.PATH,
+                required=True,
+            ),
+        ),
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = _ExtensionParameterDialog(descriptor, parent)
+    qtbot.addWidget(dialog)
+
+    assert dialog.findChild(QtWidgets.QLabel) is not None
+    optional_flag = dialog._editors["optional_flag"]
+    assert isinstance(optional_flag, QtWidgets.QComboBox)
+    assert optional_flag.currentData() is True
+    flag = dialog._editors["flag"]
+    assert isinstance(flag, QtWidgets.QCheckBox)
+    flag.setChecked(True)
+    choice = dialog._editors["choice"]
+    assert isinstance(choice, QtWidgets.QComboBox)
+    assert choice.currentData() is None
+    path = dialog._editors["path"]
+    assert isinstance(path, QtWidgets.QLineEdit)
+    assert path.placeholderText()
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda _parent, _title, text: warnings.append(text),
+    )
+    dialog.accept()
+    assert warnings == ["'path' requires a value"]
+    assert dialog.result() != QtWidgets.QDialog.DialogCode.Accepted
+
+    path.setText("data.txt")
+    assert dialog.parameters == {
+        "optional_flag": True,
+        "flag": True,
+        "choice": None,
+        "path": "data.txt",
+    }
+    dialog.accept()
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+
+
+def test_routine_selection_dialog_reports_current_selection(
+    qtbot: pytest.QtBot,
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    empty = extension_dialogs._RoutineSelectionDialog((), parent)
+    qtbot.addWidget(empty)
+    assert empty.selection is None
+
+    descriptor = erlab.extensions.RoutineDescriptor(
+        id="calculate",
+        name="Calculate",
+        category="Lab",
+        summary="",
+        function_name="calculate",
+    )
+    dialog = extension_dialogs._RoutineSelectionDialog(
+        (("lab", "Lab extension", descriptor),), parent
+    )
+    qtbot.addWidget(dialog)
+    assert dialog.selection == ("lab", "calculate")
+
+
+def test_manage_and_metadata_dialogs_preserve_selected_extension(
+    qtbot: pytest.QtBot,
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    revision_hash = "a" * 64
+    revision = _ExtensionRevision(
+        source_hash=revision_hash,
+        object_name="source.py",
+        source_path="source.py",
+        created_at="2026-01-01T00:00:00+00:00",
+        approved=True,
+    )
+    record = _ExtensionRecord(
+        id="lab",
+        name="Lab",
+        current_revision=revision_hash,
+        revisions={revision_hash: revision},
+        metadata=_ExtensionMetadata(author="Lab User"),
+    )
+    dialog = extension_dialogs._ManageExtensionsDialog(parent)
+    qtbot.addWidget(dialog)
+    dialog.set_catalog(_ExtensionCatalogModel(extensions={"lab": record}))
+    top = dialog.tree.topLevelItem(0)
+    revision_item = top.child(0)
+    dialog.tree.setCurrentItem(revision_item)
+    assert dialog.selected_extension_id == "lab"
+
+    actions: list[tuple[str, str]] = []
+
+    def action_slot(action: str, extension: str) -> None:
+        actions.append((action, extension))
+
+    dialog.action_requested.connect(action_slot)
+    try:
+        dialog._emit_action("metadata")
+        assert actions == [("metadata", "lab")]
+        dialog.tree.setCurrentItem(None)
+        dialog._emit_action("remove")
+        assert actions == [("metadata", "lab")]
+    finally:
+        dialog.action_requested.disconnect(action_slot)
+
+    metadata_dialog = extension_dialogs._MetadataDialog(record.metadata, parent)
+    qtbot.addWidget(metadata_dialog)
+    author = metadata_dialog._edits["author"]
+    if not isinstance(author, QtWidgets.QLineEdit):
+        raise TypeError("Author metadata editor must be a line edit")
+    author.setText(" Updated User ")
+    changelog = metadata_dialog._edits["changelog"]
+    if not isinstance(changelog, QtWidgets.QPlainTextEdit):
+        raise TypeError("Changelog metadata editor must be a plain-text edit")
+    changelog.setPlainText(" Updated notes. ")
+    assert metadata_dialog.metadata.author == "Updated User"
+    assert metadata_dialog.metadata.changelog == "Updated notes."
+
+
+def test_workspace_requirements_dialog_approves_only_eligible_selection(
+    qtbot: pytest.QtBot,
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    requirement = _WorkspaceExtensionRequirement(
+        extension_id="lab",
+        capability_id="calculate",
+        capability_kind="routine",
+        revision_hash="a" * 64,
+        extension_api_version=1,
+        source_type="script",
+    )
+    resolved = _ResolvedWorkspaceRequirement(
+        requirement=requirement,
+        state="approval-required",
+    )
+    dialog = extension_dialogs._WorkspaceRequirementsDialog(
+        (resolved,),
+        parent,
+        approvable={("lab", "a" * 64)},
+    )
+    qtbot.addWidget(dialog)
+    approvals: list[tuple[str, str]] = []
+
+    def approval_slot(extension: str, revision: str) -> None:
+        approvals.append((extension, revision))
+
+    dialog.approve_requested.connect(approval_slot)
+    try:
+        dialog._approve_selected()
+        assert approvals == []
+        dialog.tree.setCurrentItem(dialog.tree.topLevelItem(0))
+        dialog._approve_selected()
+        assert approvals == [("lab", "a" * 64)]
+
+        dialog.set_requirements((resolved.model_copy(update={"state": "ready"}),))
+        assert dialog.tree.currentItem() is dialog.tree.topLevelItem(0)
+        dialog._approve_selected()
+        assert approvals == [("lab", "a" * 64)]
+    finally:
+        dialog.approve_requested.disconnect(approval_slot)
+
+
 def test_manager_extension_loader_dialog_uses_recent_values(monkeypatch) -> None:
     descriptor = erlab.extensions.LoaderDescriptor(
         id="configured-loader",
@@ -1586,6 +1832,522 @@ def test_environment_capability_validation_rejects_invalid_entry_points(
         extension_execution._environment_capabilities(
             typing.cast("_ExtensionCatalogStore", store), revision
         )
+
+
+def test_extension_validation_rejects_an_unknown_record(
+    tmp_path: pathlib.Path,
+) -> None:
+    with pytest.raises(KeyError, match="missing"):
+        _validate_extension_revision(
+            _ExtensionCatalogStore(tmp_path / "catalog"),
+            "missing",
+            revision_hash="a" * 64,
+            expected_record_generation=0,
+            manager_session_id="manager",
+            script_modules={},
+        )
+
+
+def test_execution_controller_reports_admission_and_validation_failures(
+    manager_context,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+
+    with manager_context() as manager:
+        execution = manager._extensions.execution
+        with pytest.raises(KeyError, match="missing"):
+            execution.validate_and_enable("missing", expected_record_generation=0)
+
+        catalog, _revision, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        record = catalog.extensions["scale"]
+        with pytest.raises(_ExtensionCatalogConflictError, match="before validation"):
+            execution.validate_and_enable(
+                "scale", expected_record_generation=record.record_generation + 1
+            )
+
+        monkeypatch.setattr(
+            execution, "_run_blocking_task", lambda *_args, **_kwargs: None
+        )
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError,
+            match="validation returned no result",
+        ):
+            execution.validate_and_enable(
+                "scale", expected_record_generation=record.record_generation
+            )
+
+        descriptor = erlab.extensions.LoaderDescriptor(
+            id="load_data",
+            name="Load Data",
+            category="Lab",
+            summary="",
+            function_name="load_data",
+        )
+        call = _ExtensionLoaderCall(
+            manager_session_id="manager",
+            catalog_generation=1,
+            extension_id="lab",
+            extension_name="Lab",
+            revision_hash="a" * 64,
+            loader_id="load_data",
+            descriptor=descriptor,
+            source_path=tmp_path / "loader.py",
+            source_type="script",
+            executor=lambda *_args: xr.DataArray([1.0]),
+        )
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError,
+            match="loader returned no result",
+        ):
+            execution.run_loader(call, tmp_path / "data", {})
+        monkeypatch.undo()
+
+        execution._accepting = False
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError, match="shutting down"
+        ):
+            execution._run_blocking_task(
+                _ExtensionLoaderWorker(
+                    call,
+                    tmp_path / "data",
+                    {},
+                    manager._extensions.catalog.store,
+                    {},
+                )
+            )
+        with pytest.raises(RuntimeError, match="shutting down"):
+            execution.queue_routine(
+                extension_id="scale", routine_id="scale", parameters={}, target=0
+            )
+
+
+def test_execution_controller_removes_failed_pool_admission(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    class FailedPool:
+        @staticmethod
+        def start(_task: typing.Any) -> typing.Never:
+            raise RuntimeError("pool rejected task")
+
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Load Data",
+        category="Lab",
+        summary="",
+        function_name="load_data",
+    )
+    call = _ExtensionLoaderCall(
+        manager_session_id="manager",
+        catalog_generation=1,
+        extension_id="lab",
+        extension_name="Lab",
+        revision_hash="a" * 64,
+        loader_id="load_data",
+        descriptor=descriptor,
+        source_path=tmp_path / "loader.py",
+        source_type="script",
+        executor=lambda *_args: xr.DataArray([1.0]),
+    )
+
+    with manager_context() as manager:
+        execution = manager._extensions.execution
+        original_pool = execution._pool
+        execution._pool = typing.cast("QtCore.QThreadPool", FailedPool())
+        task = _ExtensionLoaderWorker(
+            call,
+            tmp_path / "data",
+            {},
+            manager._extensions.catalog.store,
+            {},
+        )
+        try:
+            with pytest.raises(RuntimeError, match="pool rejected"):
+                execution._run_blocking_task(task)
+            assert task not in execution._blocking_tasks
+        finally:
+            execution._pool = original_pool
+
+
+def test_session_extension_status_and_loader_errors(
+    manager_context,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "loader.py"
+    source = _loader_script(source_path, name="Load Data", extensions=(".dat",))
+    revision_hash = hashlib.sha256(source).hexdigest()
+
+    with manager_context() as manager:
+        execution = manager._extensions.execution
+        assert execution._session_revision("missing", revision_hash) is None
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError, match="not available"
+        ):
+            execution.session_loader_call("missing", revision_hash, "load_data")
+
+        catalog = execution._session_catalog_store.add_embedded_script(
+            source,
+            extension_id="loader",
+            expected_revision=revision_hash,
+            name="Loader",
+            metadata=_ExtensionMetadata(),
+        )
+        assert execution._session_revision("loader", "0" * 64) is None
+        assert (
+            execution.session_capability_status(
+                "loader", revision_hash, "loader", "load_data"
+            )
+            == "approval-required"
+        )
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError, match="not available"
+        ):
+            execution.session_loader_call("loader", revision_hash, "load_data")
+
+        record = catalog.extensions["loader"]
+        revision = record.revisions[revision_hash]
+
+        def status_for(
+            updated_record: _ExtensionRecord,
+            capability_id: str = "load_data",
+        ) -> str | None:
+            model = catalog.model_copy(
+                update={"extensions": {"loader": updated_record}}
+            )
+            monkeypatch.setattr(execution._session_catalog_store, "read", lambda: model)
+            return execution.session_capability_status(
+                "loader", revision_hash, "loader", capability_id
+            )
+
+        assert (
+            status_for(
+                record.model_copy(
+                    update={
+                        "revisions": {
+                            revision_hash: revision.model_copy(
+                                update={"import_error": "broken"}
+                            )
+                        }
+                    }
+                )
+            )
+            == "import-failed"
+        )
+        approved_revision = revision.model_copy(
+            update={"approved": True, "loaders": ()}
+        )
+        approved_record = record.model_copy(
+            update={
+                "revisions": {revision_hash: approved_revision},
+                "enabled": True,
+            }
+        )
+        assert status_for(approved_record) == "missing-capability"
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError, match="is not available"
+        ):
+            execution.session_loader_call("loader", revision_hash, "load_data")
+
+
+def test_routine_job_rejects_unavailable_catalog_state(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+    data = xr.DataArray([1.0])
+
+    with manager_context() as manager:
+        execution = manager._extensions.execution
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError, match="not enabled"
+        ):
+            execution._routine_job(
+                extension_id="missing",
+                revision_hash=None,
+                routine_id="scale",
+                parameters={},
+                input_data=data,
+                input_uid="uid",
+                input_snapshot="snapshot",
+            )
+
+        catalog, revision_hash, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError, match="not enabled"
+        ):
+            execution._routine_job(
+                extension_id="scale",
+                revision_hash=revision_hash,
+                routine_id="scale",
+                parameters={},
+                input_data=data,
+                input_uid="uid",
+                input_snapshot="snapshot",
+            )
+        catalog = _validate_and_enable(
+            manager._extensions.catalog.store,
+            "scale",
+            expected_record_generation=catalog.extensions["scale"].record_generation,
+        )
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError, match="revision is not available"
+        ):
+            execution._routine_job(
+                extension_id="scale",
+                revision_hash="0" * 64,
+                routine_id="scale",
+                parameters={},
+                input_data=data,
+                input_uid="uid",
+                input_snapshot="snapshot",
+            )
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError, match="Routine 'missing'"
+        ):
+            execution._routine_job(
+                extension_id="scale",
+                revision_hash=catalog.extensions["scale"].current_revision,
+                routine_id="missing",
+                parameters={},
+                input_data=data,
+                input_uid="uid",
+                input_snapshot="snapshot",
+            )
+
+
+def test_execution_controller_ignores_unknown_queue_callbacks(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+
+    with manager_context() as manager:
+        execution = manager._extensions.execution
+        catalog, revision_hash, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        catalog = _validate_and_enable(
+            manager._extensions.catalog.store,
+            "scale",
+            expected_record_generation=catalog.extensions["scale"].record_generation,
+        )
+        job = execution._routine_job(
+            extension_id="scale",
+            revision_hash=revision_hash,
+            routine_id="scale",
+            parameters={"scale": 2.0},
+            input_data=xr.DataArray([1.0]),
+            input_uid="uid",
+            input_snapshot="snapshot",
+        )
+
+        execution.remove_queued("missing")
+        assert execution.queued == ()
+        result = extension_execution._ExtensionRoutineResult(
+            job=job,
+            output=None,
+            duration=0.0,
+            status="discarded",
+        )
+        execution._finished(result)
+        assert execution.active is None
+
+
+def test_extension_progress_dialog_removes_only_a_selected_queued_job(
+    manager_context,
+    tmp_path: pathlib.Path,
+    qtbot: pytest.QtBot,
+) -> None:
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+
+    with manager_context() as manager:
+        execution = manager._extensions.execution
+        catalog, revision_hash, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        _validate_and_enable(
+            manager._extensions.catalog.store,
+            "scale",
+            expected_record_generation=catalog.extensions["scale"].record_generation,
+        )
+        job = execution._routine_job(
+            extension_id="scale",
+            revision_hash=revision_hash,
+            routine_id="scale",
+            parameters={"scale": 2.0},
+            input_data=xr.DataArray([1.0]),
+            input_uid="uid",
+            input_snapshot="snapshot",
+        )
+        dialog = execution._progress_dialog
+        removed: list[str] = []
+        remove_slot = removed.append
+        dialog.remove_requested.connect(remove_slot)
+        try:
+            dialog.set_jobs(job, (job,))
+            dialog._remove_selected()
+            dialog.list_widget.setCurrentRow(0)
+            dialog._remove_selected()
+            dialog.list_widget.setCurrentRow(1)
+            with qtbot.waitSignal(dialog.remove_requested, timeout=1000):
+                dialog._remove_selected()
+            assert removed == [job.job_id]
+
+            execution.show_progress()
+            assert dialog.isVisible()
+            dialog.hide()
+        finally:
+            dialog.remove_requested.disconnect(remove_slot)
+
+
+def test_extension_replay_reports_all_controller_result_states(
+    manager_context,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+    data = xr.DataArray([1.0])
+
+    with manager_context() as manager:
+        execution = manager._extensions.execution
+        catalog, revision_hash, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        catalog = _validate_and_enable(
+            manager._extensions.catalog.store,
+            "scale",
+            expected_record_generation=catalog.extensions["scale"].record_generation,
+        )
+        operation = ExtensionRoutineOperation(
+            extension_id="scale",
+            revision_hash=revision_hash,
+            routine_id="scale",
+            extension_name="Scale",
+            routine_name="Scale",
+            source_type="script",
+            function_name="scale",
+            source_path=os.fspath(script_path),
+            entry_point_group=None,
+            entry_point_name=None,
+            parameters={"scale": 2.0},
+        )
+
+        with pytest.raises(TypeError, match="Expected extension routine"):
+            execution.run_operation(typing.cast("typing.Any", object()), data)
+
+        thread_errors: list[Exception] = []
+
+        def run_from_thread() -> None:
+            try:
+                execution.run_operation(operation, data)
+            except Exception as error:
+                thread_errors.append(error)
+
+        thread = threading.Thread(target=run_from_thread)
+        thread.start()
+        thread.join()
+        assert len(thread_errors) == 1
+        assert "manager thread" in str(thread_errors[0])
+
+        execution._accepting = False
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError, match="shutting down"
+        ):
+            execution.run_operation(operation, data)
+        execution._accepting = True
+
+        execution._routine_waiters["existing"] = _ExtensionRoutineWaiter(
+            QtCore.QEventLoop()
+        )
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError, match="replay is in progress"
+        ):
+            execution.run_operation(operation, data)
+        execution._routine_waiters.clear()
+
+        class FakeEventLoop:
+            class ProcessEventsFlag:
+                ExcludeUserInputEvents = 0
+
+            def exec(self, _flags: typing.Any) -> None:
+                return None
+
+            def quit(self) -> None:
+                return None
+
+        def set_result(
+            status: typing.Literal["success", "failed", "discarded"] | None,
+        ) -> None:
+            job = execution._pending.pop()
+            if status is None:
+                return
+            waiter = execution._routine_waiters[job.job_id]
+            waiter.result = extension_execution._ExtensionRoutineResult(
+                job=job,
+                output=xr.DataArray([2.0]) if status == "success" else None,
+                duration=0.0,
+                status=status,
+            )
+
+        with monkeypatch.context() as patch_context:
+            patch_context.setattr(
+                extension_execution.QtCore, "QEventLoop", FakeEventLoop
+            )
+            patch_context.setattr(execution, "_start_next", lambda: set_result(None))
+            with pytest.raises(
+                erlab.extensions.ExtensionExecutionError, match="without a result"
+            ):
+                execution.run_operation(operation, data)
+
+            patch_context.setattr(
+                execution, "_start_next", lambda: set_result("discarded")
+            )
+            with pytest.raises(
+                erlab.extensions.ExtensionExecutionError, match="not enabled"
+            ):
+                execution.run_operation(operation, data)
+
+            patch_context.setattr(
+                execution, "_start_next", lambda: set_result("failed")
+            )
+            with pytest.raises(
+                erlab.extensions.ExtensionExecutionError, match="could not complete"
+            ):
+                execution.run_operation(operation, data)
+
+            patch_context.setattr(
+                execution, "_start_next", lambda: set_result("success")
+            )
+            xr.testing.assert_identical(
+                execution.run_operation(operation, data), xr.DataArray([2.0])
+            )
+
+
+def test_execution_refresh_and_shutdown_are_safe_after_qt_teardown(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with manager_context() as manager:
+        execution = manager._extensions.execution
+        monkeypatch.setattr(
+            erlab.interactive.utils, "qt_is_valid", lambda *_objects: False
+        )
+        execution._refresh_progress()
+        execution.shutdown()
+        execution.shutdown()
+        assert execution._shutdown_complete
 
 
 @pytest.mark.parametrize(

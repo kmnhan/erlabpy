@@ -355,10 +355,6 @@ class _ExtensionController(QtCore.QObject):
                 pathlib.Path(load_source.path),
                 **_deserialize_loader_kwargs(replay_call.kwargs),
             )
-        if revision is None:
-            raise erlab.extensions.ExtensionExecutionError(
-                "The extension loader revision is not available"
-            )
         descriptor = next(
             (item for item in revision.loaders if item.id == replay_call.capability_id),
             None,

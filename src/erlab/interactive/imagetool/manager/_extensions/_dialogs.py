@@ -215,8 +215,6 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
                 value = None
             elif isinstance(editor, QtWidgets.QCheckBox):
                 value = editor.isChecked()
-            elif isinstance(editor, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
-                value = editor.value()
             elif isinstance(editor, QtWidgets.QComboBox):
                 value = editor.currentData()
             else:
