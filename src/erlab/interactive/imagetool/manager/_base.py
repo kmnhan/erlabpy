@@ -704,6 +704,10 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
                     selected_parameters
                 )
                 self._recent_loader_extensions_by_filter[selected_filter] = {}
+                if loader_name is not None:
+                    self._set_shared_loader_options(
+                        loader_name, selected_parameters, {}
+                    )
                 self._mark_workspace_layout_dirty()
                 return selected_filter, selected_func, selected_parameters
 

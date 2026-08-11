@@ -198,12 +198,19 @@ def test_manager_extension_loader_dialog_uses_recent_values(monkeypatch) -> None
         ),
     )
 
-    def load_data(_path: pathlib.Path, *, mode: str = "default") -> xr.DataArray:
-        del mode
-        return xr.DataArray(0)
+    class _ConfiguredLoader(erlab.io.dataloader.LoaderBase):
+        name = "_configured_extension_test"
+        description = "Test extension loader."
+        extensions: typing.ClassVar[set[str]] = {".dat"}
 
-    load_data.descriptor = descriptor  # type: ignore[attr-defined]
-    load_data.uses_standard_loader_options = False  # type: ignore[attr-defined]
+        def load(self, _path: pathlib.Path, *, mode: str = "default") -> xr.DataArray:
+            del mode
+            return xr.DataArray(0)
+
+    _ConfiguredLoader.load.descriptor = descriptor  # type: ignore[attr-defined]
+    _ConfiguredLoader.load.uses_standard_loader_options = False  # type: ignore[attr-defined]
+    load_data = _ConfiguredLoader().load
+    shared_updates: list[tuple[str, dict[str, str], dict[str, typing.Any]]] = []
 
     class _AcceptParameterDialog:
         def __init__(self, dialog_descriptor, parent, values) -> None:
@@ -226,6 +233,9 @@ def test_manager_extension_loader_dialog_uses_recent_values(monkeypatch) -> None
         _recent_loader_extensions_by_filter={},
         _recent_name_filter=None,
         _shared_loader_state=lambda: ({}, {}),
+        _set_shared_loader_options=lambda name, kwargs, extensions: (
+            shared_updates.append((name, dict(kwargs), dict(extensions)))
+        ),
         _mark_workspace_layout_dirty=lambda: None,
     )
 
@@ -235,6 +245,7 @@ def test_manager_extension_loader_dialog_uses_recent_values(monkeypatch) -> None
     )
 
     assert selected == ("Configured (*.dat)", load_data, {"mode": "recent"})
+    assert shared_updates == [("_configured_extension_test", {"mode": "recent"}, {})]
 
 
 def test_catalog_reload_identity_metadata_and_conflict(tmp_path: pathlib.Path) -> None:
