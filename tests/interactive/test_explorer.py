@@ -489,6 +489,40 @@ def test_explorer_loader_extensions_apply_only_to_manager_loads(
     assert preview_calls == [{"single": True, "load_kwargs": {"without_values": True}}]
 
 
+def test_explorer_loader_refresh_keeps_selection_atomic(
+    qtbot,
+    monkeypatch,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    external_loaders = {"lab": erlab.io.loaders["example"]}
+    explorer = _DataExplorer(
+        root_path=example_data_dir,
+        loader_name="lab",
+        external_loaders=external_loaders,
+    )
+    qtbot.addWidget(explorer)
+    explorer._loader_combo.setCurrentText("lab")
+    assert explorer.loader_name == "lab"
+    index_changes: list[str] = []
+    selection_refreshes: list[str] = []
+    explorer._loader_combo.currentIndexChanged.connect(
+        lambda _index: index_changes.append(explorer.loader_name)
+    )
+    monkeypatch.setattr(
+        explorer,
+        "_on_selection_changed",
+        lambda: selection_refreshes.append(explorer.loader_name),
+    )
+
+    external_loaders["another_lab"] = erlab.io.loaders["example"]
+    explorer.refresh_loader_choices()
+
+    assert explorer.loader_name == "lab"
+    assert index_changes == []
+    assert selection_refreshes == ["lab"]
+
+
 def test_repr_fetcher_keeps_coordinate_values_without_preview(
     tmp_path: pathlib.Path,
 ) -> None:

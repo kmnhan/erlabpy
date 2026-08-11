@@ -963,6 +963,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._slider_value: int | None = None
         self._loader_kwargs_by_name: dict[str, dict[str, typing.Any]] = {}
         self._loader_extensions_by_name: dict[str, dict[str, typing.Any]] = {}
+        self._selected_loader_name: str | None = None
         self._workspace_state_restoring = False
         self._preview_threadpool = QtCore.QThreadPool(self)
         self._preview_threadpool.setExpiryTimeout(0)
@@ -998,13 +999,19 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
     def refresh_loader_choices(self) -> None:
         """Refresh choices after the manager catalog generation changes."""
-        current = self.loader_name
+        current = self._selected_loader_name or self.loader_name
         model = typing.cast("_LoaderInfoModel", self._loader_combo.model())
-        model.refresh()
-        if current in self._loader_names():
-            self._loader_combo.setCurrentText(current)
-        elif self._loader_combo.count():
-            self._loader_combo.setCurrentIndex(0)
+        with QtCore.QSignalBlocker(self._loader_combo):
+            model.refresh()
+            loader_names = self._loader_names()
+            if current in loader_names:
+                self._loader_combo.setCurrentIndex(loader_names.index(current))
+            elif self._loader_combo.count():
+                self._loader_combo.setCurrentIndex(0)
+        self._loader_changed()
+        self._on_selection_changed()
+        if self.loader_name != current:
+            self._emit_workspace_state_changed()
 
     @property
     def current_directory(self) -> pathlib.Path:
@@ -1446,9 +1453,11 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def _loader_changed(self) -> None:
-        if not self.loader_name:
+        loader_name = self.loader_name
+        self._selected_loader_name = loader_name or None
+        if not loader_name:
             return
-        always_single = self._loader(self.loader_name).always_single
+        always_single = self._loader(loader_name).always_single
         self._to_manager_single_act.setDisabled(always_single)
         self._to_manager_single_act.setVisible(not always_single)
 
