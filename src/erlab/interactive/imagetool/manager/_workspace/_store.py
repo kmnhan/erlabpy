@@ -1273,6 +1273,8 @@ class WorkspaceStore:
         """Return embedded extension object IDs referenced by a manifest."""
         object_ids: set[str] = set()
         requirements = manifest.get("extension_requirements", ())
+        if isinstance(requirements, dict):
+            requirements = [requirements]
         if isinstance(requirements, list):
             for requirement in requirements:
                 if not isinstance(requirement, dict):

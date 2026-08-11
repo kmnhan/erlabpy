@@ -2694,6 +2694,16 @@ class _WorkspaceLoader:
         elif "extension_requirements" in manifest:
             invalid_entries = 1
             unresolved_payloads.append(copy.deepcopy(raw_requirements))
+            object_id = (
+                raw_requirements.get("embedded_object_id")
+                if isinstance(raw_requirements, dict)
+                else None
+            )
+            if (
+                isinstance(object_id, str)
+                and (embedded_object := read_embedded_object(object_id)) is not None
+            ):
+                unresolved_embedded_objects[object_id] = embedded_object
             logger.warning(
                 "Preserving a malformed workspace extension requirement container",
                 extra={"suppress_ui_alert": True},

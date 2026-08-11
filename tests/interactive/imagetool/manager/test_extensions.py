@@ -2737,6 +2737,78 @@ def test_degraded_save_as_preserves_unparsed_requirement_payloads(
     assert manifest["extension_requirements"] == expected
 
 
+def test_degraded_save_as_preserves_source_from_malformed_requirement_container(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "malformed-requirements.itws"
+    recovered_path = tmp_path / "recovered.itws"
+    source = b"raise RuntimeError('must remain unresolved')\n"
+    revision = hashlib.sha256(source).hexdigest()
+    object_id = f"extension-{revision}"
+    requirement = {
+        "extension_id": "future-lab",
+        "capability_id": "normalize",
+        "capability_kind": "routine",
+        "revision_hash": revision,
+        "extension_api_version": 1,
+        "source_type": "script",
+        "metadata_snapshot": {},
+        "embedded_object_id": object_id,
+        "referencing_nodes": [],
+        "file_sources": [],
+    }
+    with workspace_store.WorkspaceStore(source_path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(
+                manifest={
+                    "schema_version": 6,
+                    "nodes": [],
+                    "root_order": [],
+                    "extension_requirements": requirement,
+                },
+                objects=(
+                    workspace_storage._WorkspaceObjectWrite(
+                        object_id,
+                        blob=source,
+                        blob_kind="extension-python-source-v1",
+                    ),
+                ),
+            ),
+            compression_mode="none",
+        )
+        workspace_storage._compact_workspace_store(store)
+
+    restored, kind = workspace_storage._read_workspace_blob(source_path, object_id)
+    assert restored == source
+    assert kind == "extension-python-source-v1"
+
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            manager._extensions,
+            "notify_unavailable_workspace_requirements",
+            lambda: None,
+        )
+        assert manager._workspace_controller.loading._load_workspace_file(
+            source_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        assert manager._workspace_state.save_as_only
+        manager._workspace_controller.saving._save_workspace_document(recovered_path)
+
+    attrs = workspace_arrays._read_workspace_root_attrs_h5py(recovered_path)
+    manifest = workspace_format._workspace_manifest_from_attrs(attrs)
+    assert manifest["extension_requirements"] == [requirement]
+    restored, kind = workspace_storage._read_workspace_blob(recovered_path, object_id)
+    assert restored == source
+    assert kind == "extension-python-source-v1"
+
+
 def test_save_as_only_routes_offload_and_compaction_to_new_file(
     manager_context,
     monkeypatch: pytest.MonkeyPatch,
