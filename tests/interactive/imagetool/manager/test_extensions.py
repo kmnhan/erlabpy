@@ -21,6 +21,7 @@ import erlab.interactive.imagetool.manager._extensions._catalog as extension_cat
 import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dialogs
 from erlab.interactive.imagetool._load_source import _resolve_load_func
 from erlab.interactive.imagetool._provenance._execution import (
+    can_reload_without_trust,
     file_load_source_status,
     replay_file_provenance,
     replay_script_provenance,
@@ -1033,6 +1034,47 @@ def test_exact_revision_public_replay_survives_another_catalog_closing(
     namespace: dict[str, typing.Any] = {"data": data, "erlab": erlab}
     exec(f"result = {generated}", namespace)  # noqa: S102
     xr.testing.assert_identical(namespace["result"], data * 3.0)
+
+
+def test_extension_routine_reloadability_requires_ready_exact_revision() -> None:
+    revision = "a" * 64
+    operation = ExtensionRoutineOperation(
+        extension_id="lab",
+        revision_hash=revision,
+        routine_id="normalize",
+        extension_name="Lab",
+        routine_name="Normalize",
+        source_type="script",
+        function_name="normalize",
+        source_path="extension.py",
+        entry_point_group=None,
+        entry_point_name=None,
+        parameters={},
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Create data",
+        seed_code="derived = xr.DataArray([1.0])",
+        active_name="derived",
+        operations=(operation,),
+    )
+    calls: list[tuple[str, str, str, str]] = []
+
+    def ready(
+        extension_id: str,
+        revision_hash: str,
+        capability_kind: str,
+        capability_id: str,
+    ) -> typing.Literal["ready"]:
+        calls.append((extension_id, revision_hash, capability_kind, capability_id))
+        return "ready"
+
+    assert can_reload_without_trust(spec, extension_status_resolver=ready)
+    assert calls == [("lab", revision, "routine", "normalize")]
+    assert not can_reload_without_trust(
+        spec,
+        extension_status_resolver=lambda *_args: "disabled",
+    )
 
 
 def test_persisted_extension_parameters_reject_nonfinite_values() -> None:

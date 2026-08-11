@@ -36,6 +36,7 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     _script_input_reference_text,
     has_file_load_source,
+    iter_operation_refs,
     parse_tool_provenance_spec,
 )
 
@@ -43,6 +44,9 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from erlab.extensions._api import _CapabilityStatusResolver
+    from erlab.interactive.imagetool._provenance._operations import (
+        ExtensionRoutineOperation,
+    )
 
 
 def _processed_replay_ndim(darr: xr.DataArray) -> int:
@@ -534,6 +538,25 @@ def can_reload_without_trust(
         return False
     if not script_provenance_replayable(spec):
         return False
+    capability_status = (
+        _capability_status
+        if extension_status_resolver is None
+        else extension_status_resolver
+    )
+    for _ref, operation in iter_operation_refs(spec):
+        if getattr(operation, "op", None) != "extension_routine":
+            continue
+        extension_operation = typing.cast("ExtensionRoutineOperation", operation)
+        if (
+            capability_status(
+                extension_operation.extension_id,
+                extension_operation.revision_hash,
+                "routine",
+                extension_operation.routine_id,
+            )
+            != "ready"
+        ):
+            return False
     for script_input in spec.script_inputs:
         input_spec = script_input.parsed_provenance_spec()
         if not can_reload_without_trust(
