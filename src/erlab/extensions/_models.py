@@ -288,7 +288,8 @@ class LoadedEntryPoint:
     revision
         Exact revision hash computed from package metadata and editable sources.
     value
-        Object loaded from the entry point.
+        Object loaded from the entry point. A ``LoaderBase`` class entry point is
+        instantiated so its loader methods are available directly.
     callables
         Validated extension callables keyed by their Python function names.
     """

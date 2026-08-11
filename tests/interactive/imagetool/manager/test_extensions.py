@@ -998,11 +998,8 @@ def test_environment_loader_preserves_file_dialog_contract(
         ):
             manager._extensions.replay_loader(malicious_source)
         assert system_calls == []
-        namespace: dict[str, typing.Any] = {"erlab": erlab}
         code = resolved.load_code(value_path, assign="loaded")
         assert code is not None
-        exec(code, namespace)  # noqa: S102
-        xr.testing.assert_identical(namespace["loaded"], xr.DataArray([12.0]))
 
         dialog = _FileLoadEditDialog(
             FileLoadSource(
@@ -1047,6 +1044,10 @@ def test_environment_loader_preserves_file_dialog_contract(
         assert loaded_call.kind == "extension_loader"
         assert loaded_call.target == extension_id
         assert loaded_call.revision == record.current_revision
+
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["loaded"], xr.DataArray([12.0]))
 
 
 def test_editable_source_fingerprint_tracks_custom_layout_and_sibling_modules(
@@ -3078,19 +3079,19 @@ def counter_loader(path: Path, scale: float = 1.0) -> xr.DataArray:
         assert resolved.replay_call().kind == "extension_loader"
         code = resolved.load_code(value_path, assign="loaded")
         assert code is not None
-        namespace: dict[str, typing.Any] = {"erlab": erlab}
-        exec(code, namespace)  # noqa: S102
-        xr.testing.assert_identical(namespace["loaded"], xr.DataArray([1.0, 4.0]))
-
         nonfinite = _resolve_load_func(
             (call, {"scale": np.nan}, FileDataSelection(kind="dataarray"))
         )
         assert nonfinite is not None
         nonfinite_code = nonfinite.load_code(value_path, assign="nonfinite")
         assert nonfinite_code is not None
-        exec(nonfinite_code, namespace)  # noqa: S102
-        assert namespace["nonfinite"][0].item() == 1.0
-        assert np.isnan(namespace["nonfinite"][1].item())
+
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["loaded"], xr.DataArray([1.0, 4.0]))
+    exec(nonfinite_code, namespace)  # noqa: S102
+    assert namespace["nonfinite"][0].item() == 1.0
+    assert np.isnan(namespace["nonfinite"][1].item())
 
     with manager_context() as second_manager:
         loader_entries = second_manager._extensions.file_loaders((value_path,))

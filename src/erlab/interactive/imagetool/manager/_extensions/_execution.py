@@ -518,6 +518,22 @@ class _DecoratedLoaderAdapter(LoaderBase):
         return self._extension_call.loader_method
 
     @property
+    def source_path(self) -> pathlib.Path | None:
+        return self._extension_call.source_path
+
+    @property
+    def source_type(self) -> typing.Literal["script", "environment-package"]:
+        return self._extension_call.source_type
+
+    @property
+    def entry_point_group(self) -> str | None:
+        return self._extension_call.entry_point_group
+
+    @property
+    def entry_point_name(self) -> str | None:
+        return self._extension_call.entry_point_name
+
+    @property
     def file_dialog_methods(
         self,
     ) -> dict[str, tuple[Callable[..., typing.Any], dict[str, typing.Any]]]:

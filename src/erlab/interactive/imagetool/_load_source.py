@@ -307,15 +307,11 @@ class _ResolvedLoadFunc:
     def _call_args(self, file_path: Path) -> list[str]:
         """Return loader call arguments, using compact scan-number syntax when safe."""
         if self.kind == "extension_loader":
-            call_args = [
-                repr(str(file_path)),
-                f"extension_id={self.target!r}",
-                f"revision={self.extension_revision!r}",
-                f"loader_id={self.extension_capability_id!r}",
-            ]
-            if self.extension_method is not None:
-                call_args.append(f"method={self.extension_method!r}")
-            call_args.append(f"parameters={_provenance_value_code(self.kwargs)}")
+            call_args = [f"pathlib.Path({str(file_path)!r})"]
+            call_args.extend(
+                f"{name}={_provenance_value_code(value)}"
+                for name, value in _loader_kwargs_for_code(self.kwargs).items()
+            )
             return call_args
         kwargs_str = _format_call_kwargs(self.kwargs)
         scan_call_args = (
@@ -508,6 +504,57 @@ def _extension_loader_identity(
     return typing.cast("tuple[str | None, str | None, str | None, str | None]", values)
 
 
+def _extension_loader_expression(
+    *,
+    source_type: object,
+    source_path: object,
+    entry_point_group: object,
+    entry_point_name: object,
+    revision: str,
+    function_name: str,
+    method: str | None,
+) -> tuple[str, tuple[str, ...]]:
+    """Return a direct public expression for one pinned extension loader."""
+    if source_type == "script":
+        if not isinstance(source_path, (str, pathlib.Path)):
+            raise ValueError("Script extension loader source path is unavailable")
+        expression = (
+            "erlab.extensions.load_script(\n"
+            f"    {str(source_path)!r},\n"
+            f"    expected_revision={revision!r},\n"
+            f").{function_name}"
+        )
+        return expression, ("import pathlib", "import erlab")
+    if source_type != "environment-package":
+        raise ValueError("Extension loader source type is unavailable")
+    if not isinstance(entry_point_group, str) or not entry_point_group:
+        raise ValueError("Extension loader entry-point group is unavailable")
+    if not isinstance(entry_point_name, str) or not entry_point_name:
+        raise ValueError("Extension loader entry-point name is unavailable")
+    if method is not None and "." in method:
+        parts = method.split(".")
+        module_name: str | None = None
+        for index in range(len(parts) - 1, 0, -1):
+            candidate = ".".join(parts[:index])
+            try:
+                importlib.import_module(candidate)
+            except ModuleNotFoundError:
+                continue
+            module_name = candidate
+            break
+        if module_name is None:
+            raise ValueError(f"Extension loader method {method!r} is not importable")
+        return method, ("import pathlib", f"import {module_name}")
+    expression = (
+        "erlab.extensions.load_entry_point(\n"
+        f"    {entry_point_group!r},\n"
+        f"    {entry_point_name!r},\n"
+        f"    expected_revision={revision!r},\n"
+        f").{method or function_name}"
+    )
+    return expression, ("import pathlib", "import erlab")
+
+
 def _resolve_load_func(
     load_func: _LoadFunc | None,
     *,
@@ -545,13 +592,28 @@ def _resolve_load_func(
         isinstance(value, str) and value
         for value in (extension_id, extension_revision, extension_capability_id)
     ):
+        source = getattr(loader, "__self__", None)
+        if source is None:
+            source = loader
+        descriptor = getattr(source, "descriptor", None)
+        if not isinstance(descriptor, erlab.extensions.LoaderDescriptor):
+            raise ValueError("Extension loader descriptor is unavailable")
+        loader_expr, imports = _extension_loader_expression(
+            source_type=getattr(source, "source_type", None),
+            source_path=getattr(source, "source_path", None),
+            entry_point_group=getattr(source, "entry_point_group", None),
+            entry_point_name=getattr(source, "entry_point_name", None),
+            revision=typing.cast("str", extension_revision),
+            function_name=descriptor.function_name,
+            method=extension_method,
+        )
         return _ResolvedLoadFunc(
             kind="extension_loader",
             target=typing.cast("str", extension_id),
             loader_label="Extension Loader",
             loader_text=f"{extension_id}: {extension_capability_id}",
-            loader_expr="erlab.extensions.run_loader",
-            imports=("import erlab",),
+            loader_expr=loader_expr,
+            imports=imports,
             setup_lines=(),
             loader_name=None,
             kwargs=kwargs,

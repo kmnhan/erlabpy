@@ -658,7 +658,17 @@ def load_entry_point(
             raise ExtensionImportError(
                 f"Could not import extension entry point {group}:{name}: {error}"
             ) from error
-        if isinstance(value, types.ModuleType):
+        if group == "erlab.io.loaders":
+            from erlab.io.dataloader import LoaderBase
+
+            if isinstance(value, type) and issubclass(value, LoaderBase):
+                value = value()
+            if not isinstance(value, LoaderBase):
+                raise ExtensionImportError(
+                    f"Extension entry point {group}:{name} does not provide LoaderBase"
+                )
+            callables = {}
+        elif isinstance(value, types.ModuleType):
             routines, loaders = _module_capabilities(value)
             callables = {
                 descriptor.function_name: func for descriptor, func in routines.values()
