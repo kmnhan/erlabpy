@@ -7,6 +7,7 @@ import typing
 import pydantic
 
 from erlab.extensions import LoaderDescriptor, RoutineDescriptor  # noqa: TC001
+from erlab.extensions._models import _require_finite_parameter_values
 
 
 def _validate_sha256(value: str) -> str:
@@ -36,6 +37,14 @@ class _EnvironmentLoaderMethod(pydantic.BaseModel):
     defaults: dict[str, pydantic.JsonValue] = pydantic.Field(default_factory=dict)
 
     model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
+
+    @pydantic.field_validator("defaults")
+    @classmethod
+    def _finite_defaults(
+        cls, value: dict[str, pydantic.JsonValue]
+    ) -> dict[str, pydantic.JsonValue]:
+        _require_finite_parameter_values(value)
+        return value
 
 
 class _ExtensionRevision(pydantic.BaseModel):

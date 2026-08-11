@@ -36,6 +36,7 @@ from erlab.extensions._models import (
     ParameterDescriptor,
     ParameterKind,
     RoutineDescriptor,
+    _require_finite_parameter_values,
 )
 
 _CAPABILITY_ATTRIBUTE = "__erlab_extension_capability__"
@@ -294,6 +295,18 @@ def _parameter_descriptor(
                 f"Parameter {parameter.name!r} must use a string default"
             )
         default = raw_default
+    try:
+        _require_finite_parameter_values(
+            {
+                parameter.name: default,
+                **{
+                    f"{parameter.name} choice {index}": value
+                    for index, value in enumerate(choices)
+                },
+            }
+        )
+    except ValueError as error:
+        raise ExtensionSignatureError(str(error)) from error
     return ParameterDescriptor(
         id=parameter.name,
         kind=kind,
@@ -370,6 +383,7 @@ def _coerce_call_parameters(
         elif annotation is float:
             if type(value) not in (int, float):
                 raise TypeError(f"Parameter {name!r} must be a number")
+            _require_finite_parameter_values({name: value})
             values[name] = value
         elif annotation is str:
             if not isinstance(value, str):

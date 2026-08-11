@@ -5,7 +5,9 @@ from __future__ import annotations
 import enum
 import functools
 import inspect
+import math
 import typing
+from collections.abc import Mapping
 
 import pydantic
 
@@ -14,6 +16,23 @@ if typing.TYPE_CHECKING:
     from pathlib import Path
 
 EXTENSION_API_VERSION: typing.Literal[1] = 1
+
+
+def _require_finite_parameter_values(values: Mapping[str, typing.Any]) -> None:
+    """Reject non-finite floats before extension values cross persistence boundaries."""
+
+    def check(value: typing.Any, path: str) -> None:
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(f"Extension parameter {path!r} must be finite")
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                check(item, f"{path}.{key}")
+        elif isinstance(value, (list, tuple)):
+            for index, item in enumerate(value):
+                check(item, f"{path}[{index}]")
+
+    for name, value in values.items():
+        check(value, name)
 
 
 class ExtensionError(RuntimeError):
@@ -105,6 +124,19 @@ class ParameterDescriptor(pydantic.BaseModel):
         if not value:
             raise ValueError("parameter ID cannot be empty")
         return value
+
+    @pydantic.model_validator(mode="after")
+    def _finite_numeric_values(self) -> typing.Self:
+        _require_finite_parameter_values(
+            {
+                self.id: self.default,
+                **{
+                    f"{self.id} choice {index}": value
+                    for index, value in enumerate(self.choices)
+                },
+            }
+        )
+        return self
 
 
 class RoutineDescriptor(pydantic.BaseModel):

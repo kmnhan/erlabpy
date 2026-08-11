@@ -48,6 +48,7 @@ from erlab.extensions._entry_points import (
     _entry_point_revision,
     _load_entry_point_value,
 )
+from erlab.extensions._models import _require_finite_parameter_values
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     compose_display_provenance,
@@ -212,6 +213,7 @@ class _ExtensionLoaderCall:
         return self.entry_point_group == "erlab.io.loaders"
 
     def __call__(self, path: pathlib.Path, **parameters: typing.Any) -> typing.Any:
+        _require_finite_parameter_values(parameters)
         return self.executor(self, pathlib.Path(path), dict(parameters))
 
     @property
@@ -1615,6 +1617,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         input_snapshot: str,
     ) -> _ExtensionRoutineJob:
         """Pin catalog state and input identity before queue admission."""
+        _require_finite_parameter_values(parameters)
         catalog_store = self._catalog.store
         catalog = catalog_store.read()
         record = catalog.extensions.get(extension_id)

@@ -2026,6 +2026,10 @@ class FileReplayCall(pydantic.BaseModel):
             )
         if any(not isinstance(key, str) for key in self.kwargs):
             raise TypeError("file replay kwargs must use string keys")
+        if self.kind == "extension_loader":
+            from erlab.extensions._models import _require_finite_parameter_values
+
+            _require_finite_parameter_values(self.kwargs)
         return self
 
 

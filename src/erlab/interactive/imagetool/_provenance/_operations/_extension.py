@@ -5,7 +5,10 @@ from __future__ import annotations
 import os
 import typing
 
+import pydantic
+
 import erlab
+from erlab.extensions._models import _require_finite_parameter_values
 from erlab.interactive.imagetool._provenance._code import _provenance_value_code
 from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
 
@@ -28,6 +31,14 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
     entry_point_group: str | None
     entry_point_name: str | None
     parameters: dict[str, bool | int | float | str | None]
+
+    @pydantic.field_validator("parameters")
+    @classmethod
+    def _validate_parameters(
+        cls, value: dict[str, bool | int | float | str | None]
+    ) -> dict[str, bool | int | float | str | None]:
+        _require_finite_parameter_values(value)
+        return value
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.extensions.run_routine(

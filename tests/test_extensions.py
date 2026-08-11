@@ -151,6 +151,13 @@ def choose(data: xr.DataArray, enabled: bool) -> xr.DataArray:
             routine_id="choose",
             parameters={"enabled": 1},
         )
+    with pytest.raises(ExtensionExecutionError, match="must be finite"):
+        run_routine(
+            xr.DataArray([2.0]),
+            script=script,
+            routine_id="stable-adjust",
+            parameters={"amount": float("nan")},
+        )
 
     script.write_text(script.read_text() + "\n# changed\n")
     with pytest.raises(erlab.extensions.ExtensionImportError, match="does not match"):
@@ -457,6 +464,7 @@ def bad(data: xr.DataArray, values: list[float]) -> xr.DataArray:
     [
         ("int", "'two'", "int default"),
         ("int", "None", "not optional"),
+        ("float", "float('nan')", "must be finite"),
         ("typing.Literal['a', 'b']", "'c'", "outside its Literal choices"),
     ],
 )

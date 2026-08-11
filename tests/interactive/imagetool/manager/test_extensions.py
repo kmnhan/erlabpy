@@ -235,6 +235,12 @@ def test_parameter_dialog_preserves_python_numeric_values(qtbot) -> None:
         "small_number": 1e-15,
     }
 
+    number_editor = dialog._editors["small_number"]
+    assert isinstance(number_editor, QtWidgets.QLineEdit)
+    number_editor.setText("nan")
+    with pytest.raises(ValueError, match="must be finite"):
+        _parameters = dialog.parameters
+
 
 def test_manager_extension_loader_dialog_uses_recent_values(monkeypatch) -> None:
     descriptor = erlab.extensions.LoaderDescriptor(
@@ -956,6 +962,33 @@ def test_exact_revision_public_replay_survives_another_catalog_closing(
     namespace: dict[str, typing.Any] = {"data": data, "erlab": erlab}
     exec(f"result = {generated}", namespace)  # noqa: S102
     xr.testing.assert_identical(namespace["result"], data * 3.0)
+
+
+def test_persisted_extension_parameters_reject_nonfinite_values() -> None:
+    with pytest.raises(ValueError, match="must be finite"):
+        ExtensionRoutineOperation(
+            extension_id="scale",
+            revision_hash="a" * 64,
+            routine_id="scale",
+            extension_name="Scale",
+            routine_name="Scale",
+            source_type="script",
+            function_name="scale",
+            source_path="scale.py",
+            entry_point_group=None,
+            entry_point_name=None,
+            parameters={"scale": float("inf")},
+        )
+
+    with pytest.raises(ValueError, match="must be finite"):
+        FileReplayCall(
+            kind="extension_loader",
+            target="scale",
+            revision="a" * 64,
+            capability_id="load_scale",
+            kwargs={"scale": float("nan")},
+            selection=FileDataSelection(kind="dataarray"),
+        )
 
 
 def test_catalog_watcher_recovers_after_atomic_replace(
@@ -4302,19 +4335,12 @@ def counter_loader(path: Path, scale: float = 1.0) -> xr.DataArray:
         assert resolved.replay_call().kind == "extension_loader"
         code = resolved.load_code(value_path, assign="loaded")
         assert code is not None
-        nonfinite = _resolve_load_func(
-            (call, {"scale": np.nan}, FileDataSelection(kind="dataarray"))
-        )
-        assert nonfinite is not None
-        nonfinite_code = nonfinite.load_code(value_path, assign="nonfinite")
-        assert nonfinite_code is not None
+        with pytest.raises(ValueError, match="must be finite"):
+            call(value_path, scale=np.nan)
 
     namespace: dict[str, typing.Any] = {}
     exec(code, namespace)  # noqa: S102
     xr.testing.assert_identical(namespace["loaded"], xr.DataArray([1.0, 4.0]))
-    exec(nonfinite_code, namespace)  # noqa: S102
-    assert namespace["nonfinite"][0].item() == 1.0
-    assert np.isnan(namespace["nonfinite"][1].item())
 
     with manager_context() as second_manager:
         loader_entries = second_manager._extensions.file_loaders((value_path,))

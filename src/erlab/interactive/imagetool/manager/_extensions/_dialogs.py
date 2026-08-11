@@ -12,6 +12,7 @@ from erlab.extensions import (
     ParameterKind,
     RoutineDescriptor,
 )
+from erlab.extensions._models import _require_finite_parameter_values
 from erlab.interactive.imagetool.manager._extensions._models import (
     _ExtensionCatalogModel,
     _ExtensionMetadata,
@@ -227,6 +228,7 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
                 elif parameter.required and not value:
                     raise ValueError(f"{name!r} requires a value")
             values[name] = value
+        _require_finite_parameter_values(values)
         return values
 
     def accept(self) -> None:
