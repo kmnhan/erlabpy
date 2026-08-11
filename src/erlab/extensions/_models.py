@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import functools
+import inspect
 import typing
 
 import pydantic
@@ -196,9 +197,17 @@ def _extension_callable(func: Callable[..., typing.Any]) -> Callable[..., typing
     """Restore descriptor-compatible values before a dynamically loaded call."""
     from erlab.extensions._api import _coerce_call_parameters
 
+    signature = inspect.signature(func)
+    input_name = next(iter(signature.parameters))
+
     @functools.wraps(func)
-    def call(input_value: typing.Any, **parameters: typing.Any) -> typing.Any:
-        return func(input_value, **_coerce_call_parameters(func, parameters))
+    def call(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+        bound = signature.bind(*args, **kwargs)
+        parameters = {
+            name: value for name, value in bound.arguments.items() if name != input_name
+        }
+        bound.arguments.update(_coerce_call_parameters(func, parameters))
+        return func(*bound.args, **bound.kwargs)
 
     return call
 

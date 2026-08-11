@@ -151,6 +151,40 @@ def choose(data: xr.DataArray, enabled: bool) -> xr.DataArray:
         load_script(script, expected_revision=loaded.revision)
 
 
+def test_loaded_script_preserves_natural_function_call_forms(
+    tmp_path: pathlib.Path,
+) -> None:
+    script = tmp_path / "natural_calls.py"
+    script.write_text(
+        """import enum
+import xarray as xr
+from erlab.extensions import routine
+
+class Mode(enum.Enum):
+    ADD = "add"
+    MULTIPLY = "multiply"
+
+@routine()
+def adjust(
+    data: xr.DataArray,
+    amount: float = 1.0,
+    mode: Mode = Mode.ADD,
+) -> xr.DataArray:
+    return data + amount if mode is Mode.ADD else data * amount
+"""
+    )
+    loaded = load_script(script)
+    data = xr.DataArray([2.0])
+
+    xr.testing.assert_identical(
+        loaded.adjust(data, 3.0, "multiply"), xr.DataArray([6.0])
+    )
+    xr.testing.assert_identical(
+        loaded.adjust(data=data, amount=3.0, mode="multiply"),
+        xr.DataArray([6.0]),
+    )
+
+
 def test_load_script_registers_module_during_import(tmp_path: pathlib.Path) -> None:
     script = tmp_path / "dataclass_extension.py"
     script.write_text(
