@@ -8,6 +8,7 @@ import sys
 import threading
 import types
 import typing
+import uuid
 
 import numpy as np
 import pytest
@@ -122,14 +123,18 @@ def _validate_and_enable(
     expected_record_generation: int,
 ) -> _ExtensionCatalogModel:
     record = store.read().extensions[extension_id]
-    return _validate_extension_revision(
-        store,
-        extension_id,
-        revision_hash=record.current_revision,
-        expected_record_generation=expected_record_generation,
-        manager_session_id="test-manager",
-        script_modules={},
-    )
+    manager_session_id = f"test-manager-{uuid.uuid4().hex}"
+    try:
+        return _validate_extension_revision(
+            store,
+            extension_id,
+            revision_hash=record.current_revision,
+            expected_record_generation=expected_record_generation,
+            manager_session_id=manager_session_id,
+            script_modules={},
+        )
+    finally:
+        extension_execution._remove_manager_modules(manager_session_id)
 
 
 def test_parameter_dialog_preserves_none_and_empty_string(qtbot) -> None:

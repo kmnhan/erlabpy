@@ -529,7 +529,8 @@ def load_script(
     path
         Python source file.
     module_name
-        Import name. Graphical clients use a name that identifies their session.
+        Import name. The name must not already exist in ``sys.modules``. Graphical
+        clients use a name that identifies their session.
     expected_revision
         Required SHA-256 source hash. A mismatch stops the import.
 
@@ -541,7 +542,8 @@ def load_script(
     Raises
     ------
     ExtensionImportError
-        If the source cannot be read or imported.
+        If the source cannot be read or imported, or if ``module_name`` is already
+        in use.
     ExtensionSignatureError
         If a decorated function has an unsupported signature.
 
@@ -567,13 +569,19 @@ def load_script(
             f"Extension source hash {revision} does not match expected revision "
             f"{expected_revision}"
         )
-    import_name = module_name or f"_erlab_extension_{revision[:12]}_{uuid.uuid4().hex}"
+    import_name = (
+        module_name
+        if module_name is not None
+        else f"_erlab_extension_{revision[:12]}_{uuid.uuid4().hex}"
+    )
+    if import_name in sys.modules:
+        raise ExtensionImportError(
+            f"Extension module name {import_name!r} is already in use"
+        )
     spec = importlib.util.spec_from_file_location(import_name, source_path)
     if spec is None or spec.loader is None:
         raise ExtensionImportError(f"Could not create an import spec for {source_path}")
     module = importlib.util.module_from_spec(spec)
-    had_previous_module = import_name in sys.modules
-    previous_module = sys.modules.get(import_name)
     sys.modules[import_name] = module
     loaded = False
     try:
@@ -592,12 +600,7 @@ def load_script(
         loaded = True
     finally:
         if not loaded and sys.modules.get(import_name) is module:
-            if had_previous_module:
-                sys.modules[import_name] = typing.cast(
-                    "types.ModuleType", previous_module
-                )
-            else:
-                sys.modules.pop(import_name, None)
+            sys.modules.pop(import_name, None)
     return LoadedScript(
         path=source_path,
         revision=revision,

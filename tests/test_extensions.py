@@ -822,20 +822,38 @@ def test_load_script_reports_source_and_import_failures(
         load_script(source)
 
 
-def test_load_script_restores_a_previous_module_after_import_failure(
+def test_load_script_rejects_an_existing_module_name(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "extension.py"
+    source.write_text(
+        "from erlab.extensions import routine\n"
+        "@routine()\n"
+        "def identity(data):\n"
+        "    return data\n"
+    )
+    module_name = "_erlab_test_existing_extension"
+    previous = types.ModuleType(module_name)
+    monkeypatch.setitem(sys.modules, module_name, previous)
+
+    with pytest.raises(erlab.extensions.ExtensionImportError, match="already in use"):
+        load_script(source, module_name=module_name)
+
+    assert sys.modules[module_name] is previous
+
+
+def test_load_script_removes_a_new_module_after_import_failure(
+    tmp_path: pathlib.Path,
 ) -> None:
     source = tmp_path / "broken.py"
     source.write_text("raise RuntimeError('broken import')\n")
     module_name = "_erlab_test_broken_extension"
-    previous = types.ModuleType(module_name)
-    monkeypatch.setitem(sys.modules, module_name, previous)
 
     with pytest.raises(erlab.extensions.ExtensionImportError, match="broken import"):
         load_script(source, module_name=module_name)
 
-    assert sys.modules[module_name] is previous
+    assert module_name not in sys.modules
 
 
 @pytest.mark.parametrize(
