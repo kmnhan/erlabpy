@@ -235,20 +235,18 @@ def _find_falling_edge_candidates(
                     - 2 * response[candidate_index]
                     + response[candidate_index + 1]
                 )
-                offset = 0.0
-                if denominator != 0:
-                    offset = float(
-                        np.clip(
-                            0.5
-                            * (
-                                response[candidate_index - 1]
-                                - response[candidate_index + 1]
-                            )
-                            / denominator,
-                            -1.0,
-                            1.0,
+                offset = float(
+                    np.clip(
+                        0.5
+                        * (
+                            response[candidate_index - 1]
+                            - response[candidate_index + 1]
                         )
+                        / denominator,
+                        -1.0,
+                        1.0,
                     )
+                )
                 candidates.append(
                     (
                         float(x[candidate_index] + offset * dx),
@@ -300,9 +298,6 @@ def _guess_edge_fit_range(
     # The Fermi edge is the terminal valid falling edge. Do not require agreement
     # across scales because a broad edge can be visible only at a coarse scale.
     center, point_noise = max(candidates, key=lambda item: item[0])
-
-    if not np.isfinite(center):
-        raise ValueError("No falling edge was detected")
 
     trial_x_mean = float(np.mean(x))
     trial_x_scale = float(np.std(x))
