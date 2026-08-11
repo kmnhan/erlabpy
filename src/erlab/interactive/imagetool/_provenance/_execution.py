@@ -14,6 +14,7 @@ import numpy as np
 import xarray as xr
 
 import erlab
+from erlab.extensions._api import _capability_available
 from erlab.interactive.imagetool._provenance._code import (
     _SCRIPT_REPLAY_ALLOWED_BUILTINS,
     _code_uses_name_any_scope,
@@ -228,7 +229,11 @@ def _resolve_importable_callable(target: str) -> Callable[..., typing.Any]:
     return typing.cast("Callable[..., typing.Any]", obj)
 
 
-def _load_file_source_object(load_source: FileLoadSource) -> typing.Any:
+def _load_file_source_object(
+    load_source: FileLoadSource,
+    *,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
+) -> typing.Any:
     from erlab.interactive.imagetool._load_source import _deserialize_loader_kwargs
 
     call = load_source.replay_call
@@ -237,17 +242,37 @@ def _load_file_source_object(load_source: FileLoadSource) -> typing.Any:
     file_path = pathlib.Path(load_source.path)
     if call.kind == "erlab_loader":
         func = erlab.io.loaders[call.target].load
+    elif call.kind == "extension_loader":
+        if call.revision is None or call.capability_id is None:
+            raise ValueError("Extension loader replay metadata is incomplete")
+        if extension_loader_executor is not None:
+            return extension_loader_executor(load_source)
+        return erlab.extensions.run_loader(
+            file_path,
+            extension_id=call.target,
+            revision=call.revision,
+            loader_id=call.capability_id,
+            method=call.loader_method,
+            parameters=_deserialize_loader_kwargs(call.kwargs),
+        )
     else:
         func = _resolve_importable_callable(call.target)
 
     return func(file_path, **_deserialize_loader_kwargs(call.kwargs))
 
 
-def _load_file_source_data(load_source: FileLoadSource) -> xr.DataArray:
+def _load_file_source_data(
+    load_source: FileLoadSource,
+    *,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
+) -> xr.DataArray:
     call = load_source.replay_call
     if call is None:
         raise ValueError("File load source does not define replay metadata")
-    loaded = _load_file_source_object(load_source)
+    loaded = _load_file_source_object(
+        load_source,
+        extension_loader_executor=extension_loader_executor,
+    )
     data = _select_replay_input(loaded, call.selection)
     if call.cast_float64:
         data = data.astype(np.float64)
@@ -265,17 +290,28 @@ def execute_replay_graph(
     graph: ReplayGraph,
     *,
     cache: dict[str, xr.DataArray] | None = None,
+    extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
+    | None = None,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
 ) -> xr.DataArray:
     # Replay runs from manager actions; avoid optional native reduction accelerators
     # that can crash PySide6/Python 3.14 while Qt threads are alive.
     with xr.set_options(use_numbagg=False):
-        return _execute_replay_graph(graph, cache=cache)
+        return _execute_replay_graph(
+            graph,
+            cache=cache,
+            extension_executor=extension_executor,
+            extension_loader_executor=extension_loader_executor,
+        )
 
 
 def _execute_replay_graph(
     graph: ReplayGraph,
     *,
     cache: dict[str, xr.DataArray] | None = None,
+    extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
+    | None = None,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
 ) -> xr.DataArray:
     replay_cache = {} if cache is None else cache
     values: dict[str, xr.DataArray] = {}
@@ -286,7 +322,10 @@ def _execute_replay_graph(
             continue
 
         if node.kind == "file_load":
-            data = _load_file_source_data(node.payload["load_source"])
+            data = _load_file_source_data(
+                node.payload["load_source"],
+                extension_loader_executor=extension_loader_executor,
+            )
         elif node.kind == "setup":
             continue
         elif node.kind == "live_input":
@@ -301,7 +340,9 @@ def _execute_replay_graph(
             )
         elif node.kind == "operation":
             operation = node.payload["operation"]
-            if node.payload.get("legacy_parent_context", False):
+            if extension_executor is not None and operation.op == "extension_routine":
+                data = extension_executor(operation, values[node.parents[0]])
+            elif node.payload.get("legacy_parent_context", False):
                 data = operation._apply_schema_v2(
                     values[node.parents[0]],
                     parent_data=values[node.parents[1]],
@@ -385,11 +426,19 @@ def replay_file_provenance(
     spec: typing.Any,
     *,
     cache: dict[str, xr.DataArray] | None = None,
+    extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
+    | None = None,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
 ) -> xr.DataArray:
     """Replay structured file provenance without executing generated Python."""
     try:
         graph = compile_replay_graph(spec)
-        return execute_replay_graph(graph, cache=cache)
+        return execute_replay_graph(
+            graph,
+            cache=cache,
+            extension_executor=extension_executor,
+            extension_loader_executor=extension_loader_executor,
+        )
     except ReplayGraphError as exc:
         raise TypeError("Expected structured file provenance") from exc
 
@@ -416,6 +465,25 @@ def file_load_source_status(
         try:
             _resolve_importable_callable(replay_call.target)
         except (AttributeError, ModuleNotFoundError, TypeError, ValueError):
+            return "missing-loader"
+    if replay_call.kind == "extension_loader":
+        try:
+            if replay_call.revision is None or replay_call.capability_id is None:
+                return "missing-loader"
+            if not _capability_available(
+                replay_call.target,
+                replay_call.revision,
+                "loader",
+                replay_call.capability_id,
+            ):
+                return "missing-loader"
+        except (
+            erlab.extensions.ExtensionError,
+            ImportError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
             return "missing-loader"
     return "loadable"
 
@@ -551,6 +619,9 @@ def replay_script_provenance(
     inputs: Mapping[str, xr.DataArray],
     *,
     trusted_user_code: bool = False,
+    extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
+    | None = None,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
 ) -> xr.DataArray:
     """Execute script provenance from already resolved input arrays."""
     try:
@@ -559,7 +630,11 @@ def replay_script_provenance(
             external_inputs=inputs,
             trusted_user_code=trusted_user_code,
         )
-        return execute_replay_graph(graph)
+        return execute_replay_graph(
+            graph,
+            extension_executor=extension_executor,
+            extension_loader_executor=extension_loader_executor,
+        )
     except ReplayGraphError as exc:
         if "non-replayable" in str(exc):
             raise ValueError(str(exc)) from exc
@@ -573,6 +648,9 @@ def rebuild_script_provenance(
     cache: dict[str, xr.DataArray] | None = None,
     depth: int = 0,
     trusted_user_code: bool = False,
+    extension_executor: Callable[[typing.Any, xr.DataArray], xr.DataArray]
+    | None = None,
+    extension_loader_executor: Callable[[FileLoadSource], typing.Any] | None = None,
 ) -> tuple[xr.DataArray, typing.Any]:
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None or parsed.kind != "script":
@@ -682,4 +760,12 @@ def rebuild_script_provenance(
         live_input_resolver=resolve_live,
         trusted_user_code=trusted_user_code,
     )
-    return execute_replay_graph(graph, cache=cache), rebuilt_spec
+    return (
+        execute_replay_graph(
+            graph,
+            cache=cache,
+            extension_executor=extension_executor,
+            extension_loader_executor=extension_loader_executor,
+        ),
+        rebuilt_spec,
+    )

@@ -1978,8 +1978,11 @@ class FileDataSelection(pydantic.BaseModel):
 class FileReplayCall(pydantic.BaseModel):
     """Serializable call information used to reload file-backed provenance."""
 
-    kind: typing.Literal["erlab_loader", "callable"]
+    kind: typing.Literal["erlab_loader", "callable", "extension_loader"]
     target: str
+    revision: str | None = None
+    capability_id: str | None = None
+    loader_method: str | None = None
     kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     selection: FileDataSelection
     cast_float64: bool = False
@@ -2008,6 +2011,12 @@ class FileReplayCall(pydantic.BaseModel):
     def _validate_replay_call(self) -> typing.Self:
         if not self.target:
             raise ValueError("target must not be empty")
+        if self.kind == "extension_loader" and (
+            not self.revision or not self.capability_id
+        ):
+            raise ValueError(
+                "extension loader replay requires revision and capability_id"
+            )
         if any(not isinstance(key, str) for key in self.kwargs):
             raise TypeError("file replay kwargs must use string keys")
         return self
@@ -3379,7 +3388,16 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             steps=ReplayStep.from_source_spec(self),
         )
 
-    def apply(self, parent_data: xr.DataArray) -> xr.DataArray:
+    def apply(
+        self,
+        parent_data: xr.DataArray,
+        *,
+        extension_executor: Callable[
+            [ToolProvenanceOperation, xr.DataArray], xr.DataArray
+        ]
+        | None = None,
+    ) -> xr.DataArray:
+        """Apply live operations, with an optional manager extension executor."""
         require_live_source_spec(self)
         data = self._starting_data_for_kind(
             typing.cast(
@@ -3389,7 +3407,13 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             parent_data,
         )
         for operation in self.operations:
-            data = operation._apply_schema_v2(data, parent_data=parent_data)
+            if (
+                extension_executor is not None
+                and getattr(operation, "op", None) == "extension_routine"
+            ):
+                data = extension_executor(operation, data)
+            else:
+                data = operation._apply_schema_v2(data, parent_data=parent_data)
         if self.kind == "selection":
             # Coordinate dictionary order is presentation state, not a replay step.
             # Normalize it once at the live selection boundary so it cannot split or
