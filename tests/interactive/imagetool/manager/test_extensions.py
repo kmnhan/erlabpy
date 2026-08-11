@@ -642,6 +642,115 @@ def test_source_changed_during_review_is_not_added(
     assert shown == [None]
 
 
+def test_add_script_rejects_a_different_same_stem_source(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    first_path = tmp_path / "first" / "analysis.py"
+    second_path = tmp_path / "second" / "analysis.py"
+    first_path.parent.mkdir()
+    second_path.parent.mkdir()
+    _script(first_path)
+    _script(second_path, "data + scale")
+    review_calls: list[None] = []
+    dialogs: list[None] = []
+
+    with manager_context() as manager:
+        before, _revision, _created = manager._extensions.catalog.store.add_script(
+            first_path,
+            metadata=_ExtensionMetadata(author="First Author"),
+        )
+        manager._extensions.catalog.refresh()
+        monkeypatch.setattr(
+            extension_controller._SourceReviewDialog,
+            "exec",
+            lambda _dialog: review_calls.append(None) or 1,
+        )
+        monkeypatch.setattr(
+            erlab.interactive.utils.MessageDialog,
+            "critical",
+            lambda *_args, **_kwargs: dialogs.append(None),
+        )
+
+        assert not manager._extensions._review_and_add(second_path)
+        after = manager._extensions.catalog.store.read()
+
+    assert review_calls == []
+    assert dialogs == [None]
+    assert after == before
+
+
+def test_unchanged_add_script_preserves_existing_metadata(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "analysis.py"
+    _script(script_path)
+    metadata = _ExtensionMetadata(
+        author="Lab Author",
+        contact="lab@example.org",
+        project_url="https://example.org/lab",
+        change_summary="Initial revision",
+        changelog="Initial changelog",
+    )
+
+    with manager_context() as manager:
+        before, revision, _created = manager._extensions.catalog.store.add_script(
+            script_path,
+            metadata=metadata,
+        )
+        manager._extensions.catalog.refresh()
+        monkeypatch.setattr(
+            extension_controller._SourceReviewDialog,
+            "exec",
+            lambda _dialog: 1,
+        )
+
+        assert manager._extensions._review_and_add(script_path)
+        after = manager._extensions.catalog.store.read()
+
+    record = after.extensions["analysis"]
+    assert record.metadata == metadata
+    assert tuple(record.revisions) == (revision,)
+    assert record.record_generation == before.extensions["analysis"].record_generation
+
+
+def test_identical_same_stem_source_can_relocate_an_extension(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    first_path = tmp_path / "first" / "analysis.py"
+    second_path = tmp_path / "second" / "analysis.py"
+    first_path.parent.mkdir()
+    second_path.parent.mkdir()
+    source = _script(first_path)
+    second_path.write_bytes(source)
+    metadata = _ExtensionMetadata(author="Lab Author")
+
+    with manager_context() as manager:
+        _before, revision, _created = manager._extensions.catalog.store.add_script(
+            first_path,
+            metadata=metadata,
+        )
+        manager._extensions.catalog.refresh()
+        monkeypatch.setattr(
+            extension_controller._SourceReviewDialog,
+            "exec",
+            lambda _dialog: 1,
+        )
+
+        assert manager._extensions._review_and_add(second_path)
+        record = manager._extensions.catalog.store.read().extensions["analysis"]
+
+    assert record.current_revision == revision
+    assert tuple(record.revisions) == (revision,)
+    assert record.revisions[revision].source_path == os.fspath(second_path.resolve())
+    assert record.metadata == metadata
+
+
 def test_catalog_reload_rejects_a_stale_same_extension_edit(
     tmp_path: pathlib.Path,
 ) -> None:

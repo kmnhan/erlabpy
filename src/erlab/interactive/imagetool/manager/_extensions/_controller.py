@@ -566,10 +566,38 @@ class _ExtensionController(QtCore.QObject):
         try:
             reviewed_source = path.read_bytes()
             reviewed_revision = hashlib.sha256(reviewed_source).hexdigest()
+            source_text = reviewed_source.decode("utf-8")
+            catalog_extension_id = _safe_extension_id(extension_id or path.stem)
+            existing = self.catalog.model.extensions.get(catalog_extension_id)
+            if extension_id is None and existing is not None:
+                current_revision = existing.revisions[existing.current_revision]
+                same_source = (
+                    existing.source_type == "script"
+                    and current_revision.source_path is not None
+                    and pathlib.Path(current_revision.source_path)
+                    .expanduser()
+                    .resolve()
+                    == path.expanduser().resolve()
+                )
+                same_content = (
+                    existing.source_type == "script"
+                    and existing.current_revision == reviewed_revision
+                )
+                if not same_source and not same_content:
+                    erlab.interactive.utils.MessageDialog.critical(
+                        self._manager,
+                        "Extension ID Already Exists",
+                        (
+                            f"A different extension already uses ID "
+                            f"{catalog_extension_id!r}. Rename this script file or "
+                            "use Reload for the existing extension."
+                        ),
+                    )
+                    return False
             dialog = _SourceReviewDialog(
                 None,
                 self._manager,
-                source_text=reviewed_source.decode("utf-8"),
+                source_text=source_text,
             )
         except (OSError, UnicodeError):
             erlab.interactive.utils.MessageDialog.critical(
@@ -579,19 +607,15 @@ class _ExtensionController(QtCore.QObject):
                 detailed_text=traceback.format_exc(),
             )
             return False
-        if extension_id is not None:
-            existing = self.catalog.model.extensions.get(extension_id)
-            if existing is not None:
-                dialog.author_edit.setText(existing.metadata.author)
-                dialog.contact_edit.setText(existing.metadata.contact)
-                dialog.project_url_edit.setText(existing.metadata.project_url)
-                dialog.change_summary_edit.setText(existing.metadata.change_summary)
-                dialog.changelog_edit.setPlainText(existing.metadata.changelog)
+        if existing is not None:
+            dialog.author_edit.setText(existing.metadata.author)
+            dialog.contact_edit.setText(existing.metadata.contact)
+            dialog.project_url_edit.setText(existing.metadata.project_url)
+            dialog.change_summary_edit.setText(existing.metadata.change_summary)
+            dialog.changelog_edit.setPlainText(existing.metadata.changelog)
         if not dialog.exec():
             return False
         try:
-            catalog_extension_id = _safe_extension_id(extension_id or path.stem)
-            existing = self.catalog.model.extensions.get(catalog_extension_id)
             _catalog, _revision, created = self.catalog.store.add_script(
                 path,
                 extension_id=extension_id,
