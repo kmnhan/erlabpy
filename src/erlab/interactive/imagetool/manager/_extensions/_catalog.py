@@ -238,10 +238,24 @@ class _ExtensionCatalogStore:
                     f"Extension {extension_id!r} is an environment package"
                 )
             if existing is not None and revision_hash == existing.current_revision:
-                if metadata is not None and metadata != existing.metadata:
+                current = existing.revisions[revision_hash]
+                updated_revision = current.model_copy(
+                    update={
+                        "source_path": os.fspath(source_path),
+                        "source_modified_at": modified_at,
+                    }
+                )
+                if updated_revision != current or (
+                    metadata is not None and metadata != existing.metadata
+                ):
+                    revisions = dict(existing.revisions)
+                    revisions[revision_hash] = updated_revision
                     records[extension_id] = existing.model_copy(
                         update={
-                            "metadata": metadata,
+                            "metadata": (
+                                existing.metadata if metadata is None else metadata
+                            ),
+                            "revisions": revisions,
                             "record_generation": existing.record_generation + 1,
                         }
                     )
