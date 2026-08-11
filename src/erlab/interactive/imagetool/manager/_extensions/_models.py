@@ -123,11 +123,25 @@ class _ExtensionRecord(pydantic.BaseModel):
                 value is not None for value in entry_point_values
             ):
                 raise ValueError("a script revision cannot contain an entry point")
+            if (
+                self.source_type == "script"
+                and revision.object_name != f"{revision_hash}.py"
+            ):
+                raise ValueError(
+                    "a script revision object name must match its source hash"
+                )
             if self.source_type == "environment-package" and not all(
                 isinstance(value, str) and value for value in entry_point_values
             ):
                 raise ValueError(
                     "an environment package revision requires an entry point"
+                )
+            if (
+                self.source_type == "environment-package"
+                and revision.object_name != revision.entry_point_value
+            ):
+                raise ValueError(
+                    "an environment package object name must match its entry point"
                 )
         if self.enabled and not self.revisions[self.current_revision].approved:
             raise ValueError("an enabled extension revision must be approved")
@@ -177,6 +191,12 @@ class _WorkspaceExtensionRequirement(pydantic.BaseModel):
 
     @pydantic.model_validator(mode="after")
     def _validate_embedded_object_id(self) -> typing.Self:
+        if self.source_type == "environment-package":
+            if self.embedded_object_id is not None:
+                raise ValueError(
+                    "an environment package requirement cannot embed source"
+                )
+            return self
         if (
             self.embedded_object_id is not None
             and self.embedded_object_id != f"extension-{self.revision_hash}"

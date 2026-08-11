@@ -21,6 +21,7 @@ import erlab.interactive.imagetool.manager._base as manager_base
 import erlab.interactive.imagetool.manager._extensions._catalog as extension_catalog
 import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dialogs
 import erlab.interactive.imagetool.manager._extensions._execution as extension_execution
+import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive.imagetool._load_source import _resolve_load_func
 from erlab.interactive.imagetool._provenance._execution import (
     can_reload_without_trust,
@@ -443,7 +444,7 @@ def test_manage_and_metadata_dialogs_preserve_selected_extension(
     revision_hash = "a" * 64
     revision = _ExtensionRevision(
         source_hash=revision_hash,
-        object_name="source.py",
+        object_name=f"{revision_hash}.py",
         source_path="source.py",
         created_at="2026-01-01T00:00:00+00:00",
         approved=True,
@@ -650,6 +651,7 @@ def test_controller_filters_loader_paths_and_rejects_duplicate_filters(
 
         environment_revision = revision.model_copy(
             update={
+                "object_name": "lab_package:Loader",
                 "entry_point_group": "erlab.io.loaders",
                 "entry_point_name": "lab",
                 "entry_point_value": "lab_package:Loader",
@@ -1001,15 +1003,15 @@ def test_catalog_source_states_distinguish_all_script_source_failures(
         original: bytes | None,
         unreadable: typing.Literal["stored", "original"] | None = None,
     ) -> None:
-        source = b"source"
+        source = f"source:{extension_id}".encode()
         revision_hash = hashlib.sha256(source).hexdigest()
-        object_path = object_directory / f"{extension_id}.py"
+        object_path = object_directory / f"{revision_hash}.py"
         if stored is not None:
-            object_path.write_bytes(stored)
+            object_path.write_bytes(source if stored == b"source" else stored)
         original_path = tmp_path / "original" / f"{extension_id}.py"
         if original is not None:
             original_path.parent.mkdir(exist_ok=True)
-            original_path.write_bytes(original)
+            original_path.write_bytes(source if original == b"source" else original)
         revision = _ExtensionRevision(
             source_hash=revision_hash,
             object_name=object_path.name,
@@ -1596,7 +1598,7 @@ def test_extension_record_rejects_invalid_enabled_and_package_states(
         revisions={
             revision: _ExtensionRevision(
                 source_hash=revision,
-                object_name="source.py",
+                object_name=f"{revision}.py",
                 created_at="2026-01-01T00:00:00+00:00",
                 approved=approved,
             )
@@ -3050,7 +3052,8 @@ def test_execution_refresh_and_shutdown_are_safe_after_qt_teardown(
 
 
 @pytest.mark.parametrize(
-    "corruption", ["extension-key", "revision-key", "current", "source-type"]
+    "corruption",
+    ["extension-key", "revision-key", "current", "source-type", "object-name"],
 )
 def test_catalog_rejects_inconsistent_persisted_identity(
     tmp_path: pathlib.Path,
@@ -3068,6 +3071,8 @@ def test_catalog_rejects_inconsistent_persisted_identity(
         record["revisions"][revision]["source_hash"] = "0" * 64
     elif corruption == "source-type":
         record["revisions"][revision]["entry_point_group"] = "erlab.extensions"
+    elif corruption == "object-name":
+        record["revisions"][revision]["object_name"] = "../outside.py"
     else:
         record["current_revision"] = "0" * 64
     store.path.write_text(json.dumps(payload))
@@ -3603,6 +3608,45 @@ def test_extension_routine_reloadability_requires_ready_exact_revision() -> None
         spec,
         extension_status_resolver=lambda *_args: "disabled",
     )
+
+
+def test_managed_reload_reason_uses_the_manager_extension_state(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revision = "a" * 64
+    operation = ExtensionRoutineOperation(
+        extension_id="lab",
+        revision_hash=revision,
+        routine_id="normalize",
+        extension_name="Lab",
+        routine_name="Normalize",
+        source_type="script",
+        function_name="normalize",
+        source_path="extension.py",
+        entry_point_group=None,
+        entry_point_name=None,
+        parameters={},
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Create data",
+        seed_code="derived = xr.DataArray([1.0])",
+        active_name="derived",
+        operations=(operation,),
+    )
+    monkeypatch.setattr(imagetool_viewer, "_capability_status", lambda *_args: "ready")
+
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            manager._extensions, "capability_status", lambda *_args: "disabled"
+        )
+        tool = erlab.interactive.imagetool.ImageTool(
+            xr.DataArray([1.0]), _in_manager=True
+        )
+        manager.add_imagetool(tool, show=False, provenance_spec=spec)
+
+        assert tool.slicer_area._provenance_reload_unavailable_reason() is not None
 
 
 def test_persisted_extension_parameters_reject_nonfinite_values() -> None:
@@ -4791,6 +4835,19 @@ def test_workspace_requirement_rejects_a_mismatched_embedded_object_id() -> None
         )
 
 
+def test_workspace_requirement_rejects_embedded_environment_package() -> None:
+    with pytest.raises(ValueError, match="cannot embed source"):
+        _WorkspaceExtensionRequirement(
+            extension_id="lab",
+            capability_id="routine",
+            capability_kind="routine",
+            revision_hash="a" * 64,
+            extension_api_version=1,
+            source_type="environment-package",
+            embedded_object_id=f"extension-{'a' * 64}",
+        )
+
+
 def test_extension_object_write_cannot_replace_node_data(
     manager_context,
     monkeypatch: pytest.MonkeyPatch,
@@ -4833,9 +4890,18 @@ def test_extension_object_write_cannot_replace_node_data(
         manager._workspace_controller.saving._save_workspace_document(workspace_path)
 
     with workspace_store.WorkspaceStore(workspace_path) as store:
-        group = store.h5_file[workspace_store.WorkspaceStore.object_path(object_id)]
-        assert group.attrs.get("erlab_object_kind") != "extension-python-source-v1"
-        assert "source" not in group
+        manifest = store.current_generation().manifest
+        node_object_id = manifest["nodes"][0]["payload_object_id"]
+        assert node_object_id != object_id
+        node_group = store.h5_file[
+            workspace_store.WorkspaceStore.object_path(node_object_id)
+        ]
+        assert node_group.attrs.get("erlab_object_kind") != (
+            "extension-python-source-v1"
+        )
+    restored, kind = workspace_storage._read_workspace_blob(workspace_path, object_id)
+    assert restored == source
+    assert kind == "extension-python-source-v1"
 
 
 def test_unused_script_can_be_embedded_explicitly(
@@ -5139,7 +5205,14 @@ def test_workspace_requirement_states_do_not_import_embedded_code(
         )
 
         manager._extensions.set_workspace_requirements(
-            (requirement.model_copy(update={"source_type": "environment-package"}),),
+            (
+                requirement.model_copy(
+                    update={
+                        "source_type": "environment-package",
+                        "embedded_object_id": None,
+                    }
+                ),
+            ),
             embedded_sources={("workspace-only", revision): source},
         )
         assert manager._extensions.resolved_workspace_requirements()[0].state == (
@@ -8556,7 +8629,15 @@ def test_embedded_approval_selects_the_script_requirement(
 
     with manager_context() as manager:
         manager._extensions.set_workspace_requirements(
-            (base.model_copy(update={"source_type": "environment-package"}), base),
+            (
+                base.model_copy(
+                    update={
+                        "source_type": "environment-package",
+                        "embedded_object_id": None,
+                    }
+                ),
+                base,
+            ),
             embedded_sources={("mixed", revision): source},
         )
         manager._extensions._approve_embedded_script("mixed", revision)
@@ -8861,7 +8942,7 @@ def test_session_capability_status_reports_api_and_enablement(
     )
     revision = _ExtensionRevision(
         source_hash="a" * 64,
-        object_name="source.py",
+        object_name=f"{'a' * 64}.py",
         created_at="2026-01-01T00:00:00+00:00",
         approved=True,
         routines=(descriptor,),

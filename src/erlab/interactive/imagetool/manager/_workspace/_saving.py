@@ -1061,6 +1061,13 @@ class _WorkspaceSaver:
         object_writes: dict[str, workspace_storage._WorkspaceObjectWrite] = {}
         final_entries: list[dict[str, typing.Any]] = []
         serialized_datasets: list[xr.Dataset] = []
+        extension_object_ids = {
+            object_id
+            for requirement in manifest.get("extension_requirements", ())
+            if isinstance(requirement, dict)
+            and isinstance(object_id := requirement.get("embedded_object_id"), str)
+            and object_id
+        }
 
         def _serialize(uid: str) -> xr.Dataset | None:
             node = self._manager._tool_graph.nodes.get(uid)
@@ -1088,6 +1095,7 @@ class _WorkspaceSaver:
             can_reuse_object = (
                 isinstance(previous_object_id, str)
                 and bool(previous_object_id)
+                and previous_object_id not in extension_object_ids
                 and uid not in dirty_data
             )
 
@@ -1136,7 +1144,7 @@ class _WorkspaceSaver:
                 if dataset is not None:
                     dataset.close()
             else:
-                object_id = uuid.uuid4().hex
+                object_id = f"node-{uuid.uuid4().hex}"
                 pending_payload = node.pending_workspace_payload
                 pending_kind = node.pending_workspace_payload_kind
                 use_pending = (

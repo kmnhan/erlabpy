@@ -2818,11 +2818,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if provenance_spec is None:
             return None
         manager = self._manager_instance if self._in_manager else None
+        extension_status_resolver = (
+            None if manager is None else manager._extensions.capability_status
+        )
         source_status = file_load_source_status(
             provenance_spec,
-            extension_status_resolver=(
-                None if manager is None else manager._extensions.capability_status
-            ),
+            extension_status_resolver=extension_status_resolver,
         )
         if provenance_spec.kind == "file" or has_file_load_source(provenance_spec):
             load_source = provenance_spec.file_load_source
@@ -2886,7 +2887,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 )
             if provenance_spec.kind == "file":
                 return None
-        if can_reload_without_trust(provenance_spec):
+        if can_reload_without_trust(
+            provenance_spec,
+            extension_status_resolver=extension_status_resolver,
+        ):
             return None
         if provenance_spec.kind == "script":
             if script_provenance_requires_trust(provenance_spec):
