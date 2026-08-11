@@ -275,11 +275,19 @@ class _ExtensionCatalogStore:
                     return catalog.model_copy(update={"extensions": records})
                 return catalog
             if existing is not None and revision_hash in existing.revisions:
+                revisions = dict(existing.revisions)
+                revisions[revision_hash] = revisions[revision_hash].model_copy(
+                    update={
+                        "source_path": os.fspath(source_path),
+                        "source_modified_at": modified_at,
+                    }
+                )
                 records[extension_id] = existing.model_copy(
                     update={
                         "current_revision": revision_hash,
                         "enabled": False,
                         "metadata": metadata or existing.metadata,
+                        "revisions": revisions,
                         "record_generation": existing.record_generation + 1,
                     }
                 )

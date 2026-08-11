@@ -856,6 +856,32 @@ def test_unchanged_reload_updates_script_source_location(
     assert record.record_generation == initial_generation + 1
 
 
+def test_restored_revision_updates_script_source_location(
+    tmp_path: pathlib.Path,
+) -> None:
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    original_path = tmp_path / "original" / "scale.py"
+    original_path.parent.mkdir()
+    first_source = _script(original_path)
+    _catalog, first_revision, _created = store.add_script(original_path)
+
+    _script(original_path, "data + scale")
+    store.add_script(original_path)
+
+    relocated_path = tmp_path / "relocated" / "scale.py"
+    relocated_path.parent.mkdir()
+    relocated_path.write_bytes(first_source)
+    restored, restored_revision, created = store.add_script(relocated_path)
+
+    record = restored.extensions["scale"]
+    assert created
+    assert restored_revision == first_revision
+    assert record.current_revision == first_revision
+    assert record.revisions[first_revision].source_path == os.fspath(
+        relocated_path.resolve()
+    )
+
+
 def test_embedded_source_review_updates_existing_metadata(
     tmp_path: pathlib.Path,
 ) -> None:
