@@ -59,6 +59,7 @@ from erlab.interactive.imagetool.manager._extensions._models import (
     _EnvironmentLoaderMethod,
     _ExtensionCatalogModel,
     _ExtensionRevision,
+    _revision_loader_name_filters,
 )
 from erlab.io.dataloader import LoaderBase
 
@@ -954,6 +955,50 @@ def _environment_capabilities(
     )
 
 
+def _reject_builtin_loader_filter_conflicts(
+    catalog: _ExtensionCatalogModel,
+    extension_id: str,
+    revision: _ExtensionRevision,
+) -> None:
+    """Reject filters that would hide a built-in file loader."""
+    candidate_filters = set(_revision_loader_name_filters(revision))
+    if not candidate_filters:
+        return
+    managed_names = {
+        descriptor.id
+        for record in catalog.extensions.values()
+        if record.source_type == "environment-package"
+        for current_revision in record.revisions.values()
+        if current_revision.entry_point_group == "erlab.io.loaders"
+        for descriptor in current_revision.loaders
+    }
+    managed_names.update(
+        current_revision.entry_point_name
+        for record in catalog.extensions.values()
+        if record.source_type == "environment-package"
+        for current_revision in record.revisions.values()
+        if current_revision.entry_point_group == "erlab.io.loaders"
+        and current_revision.entry_point_name is not None
+    )
+    builtin_filters = {
+        name_filter
+        for name_filter, (func, _defaults) in (
+            erlab.interactive.utils.file_loaders().items()
+        )
+        if not (
+            isinstance((owner := getattr(func, "__self__", None)), LoaderBase)
+            and owner.name in managed_names
+        )
+    }
+    conflicts = sorted(candidate_filters.intersection(builtin_filters))
+    if conflicts:
+        joined = ", ".join(repr(value) for value in conflicts)
+        raise _ExtensionCatalogConflictError(
+            f"Extension {extension_id!r} conflicts with built-in file dialog "
+            f"filters: {joined}"
+        )
+
+
 def _validate_extension_revision(
     catalog_store: _ExtensionCatalogStore,
     extension_id: str,
@@ -999,6 +1044,26 @@ def _validate_extension_revision(
             ) = _environment_capabilities(
                 catalog_store, record.revisions[revision_hash]
             )
+        validated_revision = record.revisions[revision_hash].model_copy(
+            update={
+                "routines": routines,
+                "loaders": loaders,
+                "loader_always_single": loader_always_single,
+                "loader_dialog_methods": loader_dialog_methods,
+            }
+        )
+        _reject_builtin_loader_filter_conflicts(
+            catalog, extension_id, validated_revision
+        )
+        return catalog_store.enable_validated_revision(
+            extension_id,
+            revision_hash=revision_hash,
+            expected_record_generation=expected_record_generation,
+            routines=routines,
+            loaders=loaders,
+            loader_always_single=loader_always_single,
+            loader_dialog_methods=loader_dialog_methods,
+        )
     except BaseException:
         with contextlib.suppress(_ExtensionCatalogConflictError):
             catalog_store.record_validation_failure(
@@ -1008,15 +1073,6 @@ def _validate_extension_revision(
                 import_error=traceback.format_exc(),
             )
         raise
-    return catalog_store.enable_validated_revision(
-        extension_id,
-        revision_hash=revision_hash,
-        expected_record_generation=expected_record_generation,
-        routines=routines,
-        loaders=loaders,
-        loader_always_single=loader_always_single,
-        loader_dialog_methods=loader_dialog_methods,
-    )
 
 
 class _ExtensionRoutineWorker(QtCore.QRunnable):

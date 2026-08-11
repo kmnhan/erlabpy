@@ -1108,6 +1108,14 @@ class _ActionsController:
             )
             return
 
+        if loader_name in self._manager._extensions.environment_loader_names:
+            erlab.interactive.utils.MessageDialog.critical(
+                self._manager,
+                "Loader Unavailable",
+                "The requested loader is not available in this manager.",
+            )
+            return
+
         try:
             loader = erlab.io.loaders[loader_name]
         except erlab.io.dataloader.LoaderNotFoundError:

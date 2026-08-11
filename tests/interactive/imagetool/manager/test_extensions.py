@@ -250,6 +250,9 @@ def test_manager_extension_loader_dialog_uses_recent_values(monkeypatch) -> None
         _recent_loader_kwargs_by_filter={"Configured (*.dat)": {"mode": "recent"}},
         _recent_loader_extensions_by_filter={},
         _recent_name_filter=None,
+        _manager_loader_name_for_callable=(
+            manager_base._builtin_loader_name_for_callable
+        ),
         _shared_loader_state=lambda: ({}, {}),
         _set_shared_loader_options=lambda name, kwargs, extensions: (
             shared_updates.append((name, dict(kwargs), dict(extensions)))
@@ -264,6 +267,137 @@ def test_manager_extension_loader_dialog_uses_recent_values(monkeypatch) -> None
 
     assert selected == ("Configured (*.dat)", load_data, {"mode": "recent"})
     assert shared_updates == [("_configured_extension_test", {"mode": "recent"}, {})]
+
+
+def test_direct_extension_loader_uses_shared_loader_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Load Data",
+        category="Lab",
+        summary="",
+        function_name="load_data",
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="scale",
+                kind=erlab.extensions.ParameterKind.NUMBER,
+                required=False,
+                default=1.0,
+            ),
+        ),
+    )
+    call = _ExtensionLoaderCall(
+        manager_session_id="manager",
+        catalog_generation=1,
+        extension_id="lab",
+        extension_name="Lab",
+        revision_hash="a" * 64,
+        loader_id="load_data",
+        descriptor=descriptor,
+        source_path=pathlib.Path("lab.py"),
+        source_type="script",
+        executor=lambda *_args: xr.DataArray([1.0]),
+    )
+    state = types.SimpleNamespace(
+        explorer_loader_kwargs_by_name={},
+        explorer_loader_extensions_by_name={},
+    )
+    manager = types.SimpleNamespace(
+        _extensions=types.SimpleNamespace(
+            loader_name_for_callable=lambda func: (
+                func.manager_loader_name
+                if isinstance(func, _ExtensionLoaderCall)
+                else None
+            )
+        ),
+        _workspace_controller=types.SimpleNamespace(_loader_state=state),
+        _available_file_loaders=lambda: {"Lab Data (*.dat)": (call, {})},
+        _recent_loader_kwargs_by_filter={"Lab Data (*.dat)": {"scale": 4.0}},
+        _recent_loader_extensions_by_filter={},
+        _recent_name_filter="Lab Data (*.dat)",
+        _set_shared_loader_options=lambda *_args: None,
+        _mark_workspace_layout_dirty=lambda: None,
+    )
+    manager._manager_loader_name_for_callable = types.MethodType(
+        manager_base._ImageToolManagerBase._manager_loader_name_for_callable,
+        manager,
+    )
+
+    shared_kwargs, shared_extensions = (
+        manager_base._ImageToolManagerBase._shared_loader_state(manager)
+    )
+
+    assert shared_kwargs == {"lab:load_data": {"scale": 4.0}}
+    assert shared_extensions == {}
+
+    manager_base._ImageToolManagerBase._sync_shared_loader_state(
+        manager,
+        {"lab:load_data": {"scale": 7.0}},
+        {},
+        apply_explorer=False,
+    )
+    assert manager._recent_loader_kwargs_by_filter == {
+        "Lab Data (*.dat)": {"scale": 7.0}
+    }
+
+    class _AcceptParameterDialog:
+        def __init__(self, dialog_descriptor, parent, values) -> None:
+            assert dialog_descriptor is descriptor
+            assert parent is manager
+            assert values == {"scale": 7.0}
+
+        def exec(self) -> bool:
+            return True
+
+        @property
+        def parameters(self) -> dict[str, float]:
+            return {"scale": 7.0}
+
+    monkeypatch.setattr(
+        extension_dialogs, "_ExtensionParameterDialog", _AcceptParameterDialog
+    )
+    manager._shared_loader_state = types.MethodType(
+        manager_base._ImageToolManagerBase._shared_loader_state,
+        manager,
+    )
+    selected = manager_base._ImageToolManagerBase._select_loader_options(
+        manager,
+        {"Lab Data (*.dat)": (call, {"scale": 1.0})},
+    )
+    assert selected == ("Lab Data (*.dat)", call, {"scale": 7.0})
+
+
+def test_disabled_environment_loader_does_not_use_global_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ingress_calls: list[dict[str, typing.Any]] = []
+    dialogs: list[None] = []
+    builtin_loader = types.SimpleNamespace(load=lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(erlab.io, "loaders", {"reserved": builtin_loader})
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda *_args, **_kwargs: dialogs.append(None),
+    )
+    manager = types.SimpleNamespace(
+        _extensions=types.SimpleNamespace(
+            environment_loader_names={"reserved"},
+            loader_by_name=lambda _name: None,
+        ),
+        _data_ingress=types.SimpleNamespace(
+            add_from_multiple_files=lambda *_args, **kwargs: ingress_calls.append(
+                kwargs
+            )
+        ),
+    )
+
+    from erlab.interactive.imagetool.manager._actions import _ActionsController
+
+    _ActionsController(manager)._data_load(["data.txt"], "reserved", {})
+
+    assert ingress_calls == []
+    assert dialogs == [None]
 
 
 def test_catalog_reload_identity_metadata_and_conflict(tmp_path: pathlib.Path) -> None:
@@ -3325,24 +3459,33 @@ def test_extension_loader_filter_conflict_is_rejected(
     _loader_script(second_path, name="Lab Data", extensions=(".txt",))
 
     with manager_context() as manager:
-        for script_path in (first_path, second_path):
-            catalog, _revision, _created = manager._extensions.catalog.store.add_script(
-                script_path
-            )
-            extension_id = script_path.stem
+        first, _revision, _created = manager._extensions.catalog.store.add_script(
+            first_path
+        )
+        _validate_and_enable(
+            manager._extensions.catalog.store,
+            "first",
+            expected_record_generation=first.extensions["first"].record_generation,
+        )
+        second, _revision, _created = manager._extensions.catalog.store.add_script(
+            second_path
+        )
+        with pytest.raises(
+            _ExtensionCatalogConflictError,
+            match="conflicts with enabled extension 'first'",
+        ):
             _validate_and_enable(
                 manager._extensions.catalog.store,
-                extension_id,
+                "second",
                 expected_record_generation=(
-                    catalog.extensions[extension_id].record_generation
+                    second.extensions["second"].record_generation
                 ),
             )
         manager._extensions.catalog.refresh()
 
-        with pytest.raises(
-            ValueError, match="Conflicting extension file dialog filter"
-        ):
-            manager._extensions.file_loaders()
+        loaders = manager._extensions.file_loaders()
+        assert tuple(loaders) == ("Lab Data (*.txt)",)
+        assert not manager._extensions.catalog.model.extensions["second"].enabled
 
 
 def test_builtin_and_extension_loader_filter_conflict_is_rejected(
@@ -3360,20 +3503,22 @@ def test_builtin_and_extension_loader_filter_conflict_is_rejected(
         catalog, _revision, _created = manager._extensions.catalog.store.add_script(
             script_path
         )
-        _validate_and_enable(
-            manager._extensions.catalog.store,
-            "netcdf",
-            expected_record_generation=catalog.extensions["netcdf"].record_generation,
-        )
+        with pytest.raises(
+            _ExtensionCatalogConflictError,
+            match="conflicts with built-in file dialog filters",
+        ):
+            _validate_and_enable(
+                manager._extensions.catalog.store,
+                "netcdf",
+                expected_record_generation=(
+                    catalog.extensions["netcdf"].record_generation
+                ),
+            )
         manager._extensions.catalog.refresh()
 
-        with pytest.raises(
-            ValueError,
-            match=(
-                "Conflicting file dialog filters from built-in and extension loaders"
-            ),
-        ):
-            manager._available_file_loaders()
+        loaders = manager._available_file_loaders()
+        assert "NetCDF Files (*.nc *.nc4 *.cdf)" in loaders
+        assert not manager._extensions.catalog.model.extensions["netcdf"].enabled
 
 
 def test_loader_shares_routine_queue_and_rechecks_enablement(

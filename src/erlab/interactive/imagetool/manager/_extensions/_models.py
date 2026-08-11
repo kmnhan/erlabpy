@@ -67,6 +67,19 @@ class _ExtensionRevision(pydantic.BaseModel):
         return _validate_sha256(value)
 
 
+def _revision_loader_name_filters(revision: _ExtensionRevision) -> tuple[str, ...]:
+    """Return the file-dialog filters owned by one validated revision."""
+    if revision.loader_dialog_methods:
+        return tuple(item.name_filter for item in revision.loader_dialog_methods)
+    if revision.entry_point_group == "erlab.io.loaders":
+        return ()
+    name_filters: list[str] = []
+    for descriptor in revision.loaders:
+        patterns = " ".join(f"*{suffix}" for suffix in descriptor.extensions) or "*"
+        name_filters.append(f"{descriptor.name} ({patterns})")
+    return tuple(name_filters)
+
+
 class _ExtensionRecord(pydantic.BaseModel):
     """Application-wide extension state and immutable revision history."""
 

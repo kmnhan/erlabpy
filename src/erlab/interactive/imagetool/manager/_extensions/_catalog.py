@@ -44,6 +44,7 @@ from erlab.interactive.imagetool.manager._extensions._models import (
     _ExtensionMetadata,
     _ExtensionRecord,
     _ExtensionRevision,
+    _revision_loader_name_filters,
 )
 
 if typing.TYPE_CHECKING:
@@ -448,7 +449,7 @@ class _ExtensionCatalogStore:
                 )
             revisions = dict(current.revisions)
             revision = revisions[revision_hash]
-            revisions[revision_hash] = revision.model_copy(
+            validated_revision = revision.model_copy(
                 update={
                     "approved": True,
                     "routines": routines,
@@ -458,6 +459,35 @@ class _ExtensionCatalogStore:
                     "loader_dialog_methods": loader_dialog_methods,
                 }
             )
+            name_filters = _revision_loader_name_filters(validated_revision)
+            duplicate_filters = sorted(
+                name_filter
+                for name_filter in set(name_filters)
+                if name_filters.count(name_filter) > 1
+            )
+            if duplicate_filters:
+                joined = ", ".join(repr(value) for value in duplicate_filters)
+                raise _ExtensionCatalogConflictError(
+                    f"Extension {extension_id!r} provides duplicate file dialog "
+                    f"filters: {joined}"
+                )
+            candidate_filters = set(name_filters)
+            for other in catalog.extensions.values():
+                if other.id == extension_id or other.removed or not other.enabled:
+                    continue
+                other_revision = other.revisions[other.current_revision]
+                conflicts = sorted(
+                    candidate_filters.intersection(
+                        _revision_loader_name_filters(other_revision)
+                    )
+                )
+                if conflicts:
+                    joined = ", ".join(repr(value) for value in conflicts)
+                    raise _ExtensionCatalogConflictError(
+                        f"Extension {extension_id!r} conflicts with enabled extension "
+                        f"{other.id!r} for file dialog filters: {joined}"
+                    )
+            revisions[revision_hash] = validated_revision
             records = dict(catalog.extensions)
             records[extension_id] = current.model_copy(
                 update={
