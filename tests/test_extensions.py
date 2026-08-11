@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 import types
 import typing
@@ -227,6 +228,69 @@ def test_load_entry_point_exposes_a_pinned_package_routine(
         loaded.normalize(xr.DataArray([1.0, 2.0])), xr.DataArray([0.5, 1.0])
     )
     assert load_calls == [None]
+
+
+def test_load_entry_point_rejects_a_preloaded_editable_module(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    package_path = tmp_path / "lab_package"
+    package_path.mkdir()
+    (package_path / "plugin.py").write_text("VALUE = 1\n")
+    load_calls: list[None] = []
+
+    class Distribution:
+        metadata: typing.ClassVar[dict[str, str]] = {"Name": "preloaded-lab"}
+        version = "1"
+
+        @staticmethod
+        def read_text(name: str) -> str | None:
+            if name != "direct_url.json":
+                return None
+            return json.dumps(
+                {
+                    "url": tmp_path.as_uri(),
+                    "dir_info": {"editable": True},
+                }
+            )
+
+    class EntryPoint:
+        group = "erlab.extensions"
+        name = "preloaded"
+        value = "lab_package.plugin:normalize"
+        dist = Distribution()
+
+        @staticmethod
+        def load():
+            load_calls.append(None)
+
+    class EntryPoints(tuple):
+        def select(self, **parameters):
+            return tuple(
+                entry
+                for entry in self
+                if all(
+                    getattr(entry, key, None) == value
+                    for key, value in parameters.items()
+                )
+            )
+
+    entry_point = EntryPoint()
+    monkeypatch.setattr(
+        extension_api.importlib.metadata,
+        "entry_points",
+        lambda: EntryPoints((entry_point,)),
+    )
+    monkeypatch.setitem(sys.modules, "lab_package.plugin", types.ModuleType("plugin"))
+
+    with pytest.raises(erlab.extensions.ExtensionImportError, match="Restart Python"):
+        load_entry_point(
+            entry_point.group,
+            entry_point.name,
+            expected_revision=_entry_point_revision(entry_point),
+        )
+
+    assert load_calls == []
 
 
 def test_load_script_executes_verified_source_snapshot(

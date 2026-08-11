@@ -7,6 +7,7 @@ import copy
 import fnmatch
 import functools
 import hashlib
+import logging
 import os
 import pathlib
 import traceback
@@ -57,6 +58,8 @@ if typing.TYPE_CHECKING:
     )
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
+logger = logging.getLogger(__name__)
+
 
 class _ExtensionSourceHashMismatchError(FileNotFoundError):
     """Report that available script bytes do not match the requested revision."""
@@ -75,9 +78,14 @@ class _ExtensionController(QtCore.QObject):
         self._manager = manager
         self.catalog = _ExtensionCatalog(parent=self)
         if not erlab.utils.misc._IS_PACKAGED:
-            with contextlib.suppress(Exception):
+            try:
                 self.catalog.store.refresh_environment_packages()
                 self.catalog.refresh()
+            except Exception:
+                logger.exception(
+                    "Could not refresh environment extensions during manager startup",
+                    extra={"suppress_ui_alert": True},
+                )
         self.execution = _ExtensionExecutionController(manager, self.catalog)
         self._catalog_changed_slot = self._catalog_changed
         self._manage_action_slot = self._manage_action

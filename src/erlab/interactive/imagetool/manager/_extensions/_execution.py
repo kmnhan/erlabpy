@@ -39,7 +39,10 @@ from erlab.extensions._api import (
     _module_capabilities,
     _resolve_loader_method,
 )
-from erlab.extensions._entry_points import _entry_point_revision
+from erlab.extensions._entry_points import (
+    _entry_point_revision,
+    _load_entry_point_value,
+)
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     compose_display_provenance,
@@ -762,7 +765,7 @@ def _environment_routine(
             continue
         if not _environment_revision_matches(entry_point, job.revision_hash):
             continue
-        value = entry_point.load()
+        value = _load_entry_point_value(entry_point, job.revision_hash)
         if isinstance(value, types.ModuleType):
             routines, _loaders = _module_capabilities(value)
             entry = routines.get(job.routine.id)
@@ -799,7 +802,7 @@ def _environment_loader(
             continue
         if not _environment_revision_matches(entry_point, call.revision_hash):
             continue
-        value = entry_point.load()
+        value = _load_entry_point_value(entry_point, call.revision_hash)
         if entry_point.group == "erlab.io.loaders":
             if isinstance(value, type) and issubclass(value, LoaderBase):
                 loader_instance = value()
@@ -861,7 +864,7 @@ def _environment_capabilities(
 ]:
     """Import and validate capabilities from one exact installed entry point."""
     entry_point = catalog_store._entry_point_for_revision(revision)
-    value = entry_point.load()
+    value = _load_entry_point_value(entry_point, revision.source_hash)
     if entry_point.group == "erlab.io.loaders":
         loader_type = value if isinstance(value, type) else type(value)
         if not issubclass(loader_type, LoaderBase):

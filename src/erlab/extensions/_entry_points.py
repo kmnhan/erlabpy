@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import pathlib
+import sys
+import threading
 import typing
 import urllib.parse
 
@@ -16,6 +18,14 @@ if typing.TYPE_CHECKING:
 
 class _EntryPointRevisionError(ValueError):
     """An installed entry point does not have usable revision metadata."""
+
+
+class _EntryPointReloadRequiredError(_EntryPointRevisionError):
+    """An editable entry point changed after its module was imported."""
+
+
+_loaded_editable_distributions: dict[str, str] = {}
+_loaded_entry_point_lock = threading.RLock()
 
 
 def _editable_source_fingerprint(direct_url: Mapping[str, typing.Any]) -> str:
@@ -133,3 +143,45 @@ def _entry_point_revision(entry_point: importlib.metadata.EntryPoint) -> str:
     """Return the exact revision hash for one entry point without importing it."""
     _name, _version, payload, _editable = _entry_point_revision_payload(entry_point)
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _load_entry_point_value(
+    entry_point: importlib.metadata.EntryPoint,
+    expected_revision: str,
+) -> typing.Any:
+    """Load one exact package revision without reusing stale editable code.
+
+    Python cannot safely replace an imported package while active calls can retain
+    references to its module globals. A changed editable package is therefore rejected
+    until the interpreter restarts.
+    """
+    distribution_name, _version, payload, editable = _entry_point_revision_payload(
+        entry_point
+    )
+    revision = hashlib.sha256(payload.encode()).hexdigest()
+    if revision != expected_revision:
+        raise _EntryPointRevisionError(
+            f"Entry point {entry_point.group}:{entry_point.name} does not match "
+            f"revision {expected_revision}"
+        )
+    payload_values = json.loads(payload)
+    editable_source = payload_values.get("editable_source")
+    if editable and not isinstance(editable_source, str):
+        raise _EntryPointRevisionError(
+            f"Editable extension {entry_point.name!r} has no source fingerprint"
+        )
+    module_name = entry_point.value.partition(":")[0]
+    with _loaded_entry_point_lock:
+        loaded_source = _loaded_editable_distributions.get(distribution_name)
+        if editable and (
+            (loaded_source is not None and loaded_source != editable_source)
+            or (loaded_source is None and module_name in sys.modules)
+        ):
+            raise _EntryPointReloadRequiredError(
+                f"Editable extension {entry_point.name!r} changed after its module "
+                "was imported. Restart Python before enabling this revision."
+            )
+        value = entry_point.load()
+        if editable:
+            _loaded_editable_distributions[distribution_name] = editable_source
+        return value

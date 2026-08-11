@@ -22,6 +22,7 @@ import xarray as xr
 from erlab.extensions._entry_points import (
     _entry_point_revision,
     _EntryPointRevisionError,
+    _load_entry_point_value,
 )
 from erlab.extensions._models import (
     EXTENSION_API_VERSION,
@@ -642,7 +643,7 @@ def load_entry_point(
         if revision != expected_revision:
             continue
         try:
-            value = entry_point.load()
+            value = _load_entry_point_value(entry_point, expected_revision)
         except Exception as error:
             raise ExtensionImportError(
                 f"Could not import extension entry point {group}:{name}: {error}"

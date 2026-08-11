@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import importlib.metadata
+import logging
 import os
 import pathlib
 import re
@@ -33,6 +34,7 @@ from erlab.extensions._entry_points import (
     _entry_point_revision,
     _entry_point_revision_payload,
     _EntryPointRevisionError,
+    _load_entry_point_value,
 )
 from erlab.interactive.imagetool.manager._extensions._models import (
     _EnvironmentLoaderMethod,
@@ -44,6 +46,8 @@ from erlab.interactive.imagetool.manager._extensions._models import (
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
+
+logger = logging.getLogger(__name__)
 
 
 class _ExtensionCatalogError(RuntimeError):
@@ -465,8 +469,15 @@ class _ExtensionCatalogStore:
                     dist_name, dist_version, payload, editable = (
                         _entry_point_revision_payload(entry)
                     )
-                except _EntryPointRevisionError as error:
-                    raise _ExtensionCatalogError(str(error)) from error
+                except _EntryPointRevisionError:
+                    logger.warning(
+                        "Could not inspect environment extension %s:%s",
+                        entry.group,
+                        entry.name,
+                        exc_info=True,
+                        extra={"suppress_ui_alert": True},
+                    )
+                    continue
                 revision_hash = hashlib.sha256(payload.encode()).hexdigest()
                 existing = records.get(extension_id)
                 if (
@@ -590,7 +601,7 @@ class _ExtensionCatalogStore:
                     f"Unknown {kind} capability {capability_id!r}"
                 ) from error
         entry_point = self._entry_point_for_revision(revision)
-        value = entry_point.load()
+        value = _load_entry_point_value(entry_point, revision_hash)
         if entry_point.group == "erlab.io.loaders":
             if kind != "loader":
                 raise KeyError(capability_id)

@@ -1056,6 +1056,77 @@ def test_editable_package_source_change_creates_unapproved_revision(
     assert not record.enabled
     assert not record.revisions[record.current_revision].approved
 
+    with pytest.raises(
+        extension_entry_points._EntryPointReloadRequiredError,
+        match="Restart Python",
+    ):
+        _validate_and_enable(
+            store,
+            extension_id,
+            expected_record_generation=record.record_generation,
+        )
+
+
+def test_environment_refresh_skips_an_invalid_entry_point(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class BrokenDistribution:
+        metadata: typing.ClassVar[dict[str, str]] = {"Name": "broken-package"}
+        version = "1"
+
+        @staticmethod
+        def read_text(name: str) -> str | None:
+            if name != "direct_url.json":
+                return None
+            return json.dumps(
+                {
+                    "url": (tmp_path / "missing").as_uri(),
+                    "dir_info": {"editable": True},
+                }
+            )
+
+    broken = types.SimpleNamespace(
+        group="erlab.extensions",
+        name="broken",
+        value="broken_package",
+        dist=BrokenDistribution(),
+    )
+    valid = types.SimpleNamespace(
+        group="erlab.extensions",
+        name="valid",
+        value="valid_package",
+        dist=None,
+    )
+
+    class EntryPoints(tuple):
+        def select(self, **parameters):
+            return tuple(
+                entry
+                for entry in self
+                if all(
+                    getattr(entry, key, None) == value
+                    for key, value in parameters.items()
+                )
+            )
+
+    monkeypatch.setattr(
+        extension_catalog.importlib.metadata,
+        "entry_points",
+        lambda: EntryPoints((broken, valid)),
+    )
+
+    catalog = _ExtensionCatalogStore(
+        tmp_path / "catalog"
+    ).refresh_environment_packages()
+
+    assert "environment.erlab.extensions.valid" in catalog.extensions
+    assert "environment.erlab.extensions.broken" not in catalog.extensions
+    assert "Could not inspect environment extension erlab.extensions:broken" in (
+        caplog.text
+    )
+
 
 def test_environment_refresh_does_not_restore_a_removed_extension(
     monkeypatch: pytest.MonkeyPatch,
