@@ -725,11 +725,14 @@ class _ExtensionController(QtCore.QObject):
             for revision_hash, revision in record.revisions.items():
                 key = (record.id, revision_hash)
                 if record.source_type == "environment-package":
-                    states[key] = (
-                        "Editable environment package"
-                        if revision.editable
-                        else "Environment package"
-                    )
+                    if self.catalog.store.revision_available(record, revision_hash):
+                        states[key] = (
+                            "Editable environment package"
+                            if revision.editable
+                            else "Environment package"
+                        )
+                    else:
+                        states[key] = "Environment package unavailable"
                     continue
                 try:
                     stored_path = self.catalog.store.source_path(

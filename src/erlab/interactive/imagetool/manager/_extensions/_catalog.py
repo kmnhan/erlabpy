@@ -549,10 +549,6 @@ class _ExtensionCatalogStore:
             for group in ("erlab.extensions", "erlab.io.loaders")
             for entry in importlib.metadata.entry_points().select(group=group)
         )
-        discovered_ids = {
-            _safe_extension_id(f"environment.{entry.group}.{entry.name}")
-            for entry in entries
-        }
         inspected_entries: list[
             tuple[importlib.metadata.EntryPoint, str, str, bool, str]
         ] = []
@@ -579,6 +575,10 @@ class _ExtensionCatalogStore:
                     hashlib.sha256(payload.encode()).hexdigest(),
                 )
             )
+        available_ids = {
+            _safe_extension_id(f"environment.{entry.group}.{entry.name}")
+            for entry, _name, _version, _editable, _revision in inspected_entries
+        }
 
         def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
             records = dict(catalog.extensions)
@@ -648,13 +648,12 @@ class _ExtensionCatalogStore:
             for extension_id, record in tuple(records.items()):
                 if (
                     record.source_type == "environment-package"
-                    and extension_id not in discovered_ids
-                    and not record.removed
+                    and extension_id not in available_ids
+                    and record.enabled
                 ):
                     records[extension_id] = record.model_copy(
                         update={
                             "enabled": False,
-                            "removed": True,
                             "record_generation": record.record_generation + 1,
                         }
                     )

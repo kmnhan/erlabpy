@@ -2041,6 +2041,65 @@ def test_environment_refresh_does_not_restore_a_removed_extension(
     assert len(record.revisions) == 2
 
 
+def test_environment_refresh_disables_an_unavailable_package_without_removing_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    class _EntryPoint:
+        group = "erlab.extensions"
+        name = "temporarily_unavailable"
+        value = "lab_package:extension"
+        dist = None
+
+    class _EntryPoints(tuple):
+        def select(self, *, group: str):
+            return tuple(entry for entry in self if entry.group == group)
+
+    entry_point = _EntryPoint()
+    available = True
+    monkeypatch.setattr(
+        extension_catalog.importlib.metadata,
+        "entry_points",
+        lambda: _EntryPoints((entry_point,)) if available else _EntryPoints(),
+    )
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    catalog = store.refresh_environment_packages()
+    extension_id = "environment.erlab.extensions.temporarily_unavailable"
+    record = catalog.extensions[extension_id]
+    revision = record.current_revision
+    descriptor = erlab.extensions.RoutineDescriptor(
+        id="extension",
+        name="Extension",
+        category="Lab",
+        summary="",
+        function_name="extension",
+    )
+    catalog = store.enable_validated_revision(
+        extension_id,
+        revision_hash=revision,
+        expected_record_generation=record.record_generation,
+        routines=(descriptor,),
+        loaders=(),
+        loader_always_single=None,
+        loader_dialog_methods=(),
+    )
+
+    available = False
+    catalog = store.refresh_environment_packages()
+    record = catalog.extensions[extension_id]
+    assert not record.enabled
+    assert not record.removed
+    assert record.current_revision == revision
+
+    available = True
+    catalog = store.refresh_environment_packages()
+    record = catalog.extensions[extension_id]
+    assert not record.enabled
+    assert not record.removed
+    assert record.current_revision == revision
+    assert store.revision_available(record, revision)
+
+
 def test_packaged_manager_does_not_hide_bundled_loader_names(
     manager_context,
     monkeypatch: pytest.MonkeyPatch,
