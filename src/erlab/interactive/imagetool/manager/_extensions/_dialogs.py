@@ -509,7 +509,6 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
         self.tree.setObjectName("manager_workspace_extension_requirements")
         self.tree.setHeaderLabels(("Extension", "Capability", "State", "Details"))
         layout.addWidget(self.tree)
-        self.set_requirements(requirements)
         self._approve_button = QtWidgets.QPushButton(
             "Review and Add Embedded Script…", self
         )
@@ -518,7 +517,7 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
         )
         self._approve_button.clicked.connect(self._approve_selected)
         self.tree.currentItemChanged.connect(self._update_approve_button)
-        self._update_approve_button()
+        self.set_requirements(requirements)
         layout.addWidget(self._approve_button)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Close, parent=self
@@ -556,8 +555,6 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
             self.tree.addTopLevelItem(item)
             if item.data(0, QtCore.Qt.ItemDataRole.UserRole) == selected_key:
                 self.tree.setCurrentItem(item)
-        if not hasattr(self, "_approve_button"):
-            return
         self._update_approve_button()
 
     @QtCore.Slot()
