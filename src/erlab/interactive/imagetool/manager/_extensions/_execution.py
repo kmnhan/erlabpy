@@ -1438,25 +1438,15 @@ class _ExtensionExecutionController(QtCore.QObject):
         capability_id: str,
     ) -> _CapabilityStatus | None:
         """Return manager-local capability state, or `None` when it is unknown."""
-        selected = self._session_revision(extension_id, revision_hash)
-        if selected is None:
+        try:
+            return self._session_catalog_store.capability_status(
+                extension_id,
+                revision_hash,
+                kind,
+                capability_id,
+            )
+        except KeyError:
             return None
-        _catalog, record, revision = selected
-        if revision.import_error:
-            return "import-failed"
-        if not revision.approved:
-            return "approval-required"
-        descriptors = revision.routines if kind == "routine" else revision.loaders
-        descriptor = next(
-            (item for item in descriptors if item.id == capability_id), None
-        )
-        if descriptor is None:
-            return "missing-capability"
-        if descriptor.extension_api_version != erlab.extensions.EXTENSION_API_VERSION:
-            return "unsupported-api"
-        if not record.enabled:
-            return "disabled"
-        return "ready"
 
     def session_loader_call(
         self,

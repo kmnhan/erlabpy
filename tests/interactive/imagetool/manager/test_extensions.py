@@ -529,10 +529,17 @@ def test_workspace_requirements_dialog_approves_only_eligible_selection(
         dialog._approve_selected()
         assert approvals == [("lab", "a" * 64)]
 
+        for state in ("missing", "hash-mismatch", "import-failed"):
+            dialog.set_requirements((resolved.model_copy(update={"state": state}),))
+            assert dialog._approve_button.isEnabled()
+            dialog._approve_selected()
+
+        assert approvals == [("lab", "a" * 64)] * 4
         dialog.set_requirements((resolved.model_copy(update={"state": "ready"}),))
         assert dialog.tree.currentItem() is dialog.tree.topLevelItem(0)
+        assert not dialog._approve_button.isEnabled()
         dialog._approve_selected()
-        assert approvals == [("lab", "a" * 64)]
+        assert approvals == [("lab", "a" * 64)] * 4
     finally:
         dialog.approve_requested.disconnect(approval_slot)
 
@@ -6994,6 +7001,73 @@ def test_workspace_import_preserves_unavailable_embedded_source(
     assert kind == "extension-python-source-v1"
 
 
+def test_workspace_import_keeps_valid_source_over_conflicting_object(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    imported_path = tmp_path / "conflicting-extension.itws"
+    saved_path = tmp_path / "saved-after-conflict.itws"
+    valid_source = b"# valid embedded source\n"
+    conflicting_source = b"# source with the wrong revision\n"
+    revision = hashlib.sha256(valid_source).hexdigest()
+    object_id = f"extension-{revision}"
+    requirement = _WorkspaceExtensionRequirement(
+        extension_id="shared-lab",
+        capability_id="normalize",
+        capability_kind="routine",
+        revision_hash=revision,
+        extension_api_version=1,
+        source_type="script",
+        embedded_object_id=object_id,
+    )
+    manifest = {
+        "schema_version": 6,
+        "nodes": [],
+        "root_order": [],
+        "extension_requirements": [requirement.model_dump(mode="json")],
+    }
+    with workspace_store.WorkspaceStore(imported_path, create=True) as store:
+        workspace_storage._write_workspace_generation(
+            store,
+            workspace_storage._WorkspaceGenerationPlan(
+                manifest=manifest,
+                objects=(
+                    workspace_storage._WorkspaceObjectWrite(
+                        object_id,
+                        blob=conflicting_source,
+                        blob_kind="extension-python-source-v1",
+                    ),
+                ),
+            ),
+            compression_mode="none",
+        )
+
+    with manager_context() as manager:
+        manager._extensions.set_workspace_requirements(
+            (requirement,),
+            embedded_sources={("shared-lab", revision): valid_source},
+        )
+        manager._workspace_controller.loading._prepare_extension_requirements(
+            imported_path,
+            manifest,
+            replace=False,
+            selected_paths=None,
+        )
+
+        assert (
+            manager._extensions.revision_source_bytes("shared-lab", revision)
+            == valid_source
+        )
+        assert object_id not in (
+            manager._extensions._workspace_unresolved_embedded_objects
+        )
+        manager._workspace_controller.saving._save_workspace_document(saved_path)
+
+    restored, kind = workspace_storage._read_workspace_blob(saved_path, object_id)
+    assert restored == valid_source
+    assert kind == "extension-python-source-v1"
+
+
 def test_workspace_import_rebases_only_incoming_extension_requirements(
     manager_context,
     monkeypatch: pytest.MonkeyPatch,
@@ -8378,6 +8452,35 @@ def test_workspace_resolution_uses_session_revision_state(
         )
 
 
+def test_session_capability_status_detects_corrupt_source(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    source = _script(tmp_path / "session.py")
+    revision = hashlib.sha256(source).hexdigest()
+
+    with manager_context() as manager:
+        manager._extensions.execution.approve_session_script(
+            source,
+            extension_id="session",
+            revision_hash=revision,
+            name="Session",
+            metadata=_ExtensionMetadata(),
+            source_modified_at=None,
+        )
+        source_path = manager._extensions.execution._session_catalog_store.source_path(
+            "session", revision
+        )
+        source_path.write_bytes(b"corrupt")
+
+        assert (
+            manager._extensions.execution.session_capability_status(
+                "session", revision, "routine", "scale"
+            )
+            == "hash-mismatch"
+        )
+
+
 def test_workspace_resolution_distinguishes_missing_exact_revisions(
     manager_context,
     monkeypatch: pytest.MonkeyPatch,
@@ -8933,62 +9036,32 @@ def test_session_capability_status_reports_api_and_enablement(
     manager_context,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    descriptor = erlab.extensions.RoutineDescriptor(
-        id="calculate",
-        name="Calculate",
-        category="Lab",
-        summary="",
-        function_name="calculate",
-    )
-    revision = _ExtensionRevision(
-        source_hash="a" * 64,
-        object_name=f"{'a' * 64}.py",
-        created_at="2026-01-01T00:00:00+00:00",
-        approved=True,
-        routines=(descriptor,),
-    )
-    record = _ExtensionRecord(
-        id="lab",
-        name="Lab",
-        enabled=True,
-        current_revision=revision.source_hash,
-        revisions={revision.source_hash: revision},
-    )
-
     with manager_context() as manager:
         execution = manager._extensions.execution
-        unsupported = descriptor.model_copy(update={"extension_api_version": 2})
-        monkeypatch.setattr(
-            execution,
-            "_session_revision",
-            lambda *_args: (
-                _ExtensionCatalogModel(),
-                record,
-                revision.model_copy(update={"routines": (unsupported,)}),
-            ),
-        )
-        assert (
-            execution.session_capability_status(
-                "lab", revision.source_hash, "routine", "calculate"
-            )
-            == "unsupported-api"
-        )
+        statuses = iter(("unsupported-api", "disabled"))
+        calls: list[tuple[str, str, str, str]] = []
+
+        def capability_status(*args: str) -> str:
+            calls.append(typing.cast("tuple[str, str, str, str]", args))
+            return next(statuses)
 
         monkeypatch.setattr(
-            execution,
-            "_session_revision",
-            lambda *_args: (
-                _ExtensionCatalogModel(),
-                record.model_copy(update={"enabled": False}),
-                revision,
-            ),
+            execution._session_catalog_store,
+            "capability_status",
+            capability_status,
         )
         assert (
-            execution.session_capability_status(
-                "lab", revision.source_hash, "routine", "calculate"
-            )
+            execution.session_capability_status("lab", "a" * 64, "routine", "calculate")
+            == "unsupported-api"
+        )
+        assert (
+            execution.session_capability_status("lab", "a" * 64, "routine", "calculate")
             == "disabled"
         )
+        assert calls == [
+            ("lab", "a" * 64, "routine", "calculate"),
+            ("lab", "a" * 64, "routine", "calculate"),
+        ]
 
 
 def test_remove_queued_without_replay_waiter_discards_job(

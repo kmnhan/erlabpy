@@ -2726,19 +2726,39 @@ class _WorkspaceLoader:
                 unresolved_payloads=unresolved_payloads,
             )
         else:
+            # One revision hash names one source object across the combined document.
+            # Prefer bytes that satisfy that identity. If neither copy does, retain
+            # the open document's bytes so an import cannot replace unresolved state.
+            merged_embedded_sources = dict(
+                self._manager._extensions._workspace_embedded_sources
+            )
+            for key, source in embedded_sources.items():
+                existing_source = merged_embedded_sources.get(key)
+                if (
+                    existing_source is None
+                    or hashlib.sha256(source).hexdigest() == key[1]
+                ):
+                    merged_embedded_sources[key] = source
+
+            merged_unresolved_objects = dict(
+                self._manager._extensions._workspace_unresolved_embedded_objects
+            )
+            for object_id, unresolved_object in unresolved_embedded_objects.items():
+                merged_unresolved_objects.setdefault(object_id, unresolved_object)
+            for (
+                _extension_id,
+                revision_hash,
+            ), source in merged_embedded_sources.items():
+                if hashlib.sha256(source).hexdigest() == revision_hash:
+                    merged_unresolved_objects.pop(f"extension-{revision_hash}", None)
+
             self._manager._extensions.set_workspace_requirements(
                 (
                     *self._manager._extensions.collect_workspace_requirements(),
                     *requirements,
                 ),
-                embedded_sources={
-                    **self._manager._extensions._workspace_embedded_sources,
-                    **embedded_sources,
-                },
-                unresolved_embedded_objects={
-                    **self._manager._extensions._workspace_unresolved_embedded_objects,
-                    **unresolved_embedded_objects,
-                },
+                embedded_sources=merged_embedded_sources,
+                unresolved_embedded_objects=merged_unresolved_objects,
                 unresolved_payloads=(
                     *self._manager._extensions._unresolved_workspace_requirement_payloads,
                     *unresolved_payloads,

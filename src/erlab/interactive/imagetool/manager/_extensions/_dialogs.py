@@ -568,7 +568,8 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
         self._approve_button.setEnabled(
             item is not None
             and key in self._approvable
-            and item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) == "approval-required"
+            and item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1)
+            in {"approval-required", "missing", "hash-mismatch", "import-failed"}
         )
 
     @QtCore.Slot()
@@ -577,7 +578,8 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
         if (
             item is None
             or item.data(0, QtCore.Qt.ItemDataRole.UserRole) not in self._approvable
-            or item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) != "approval-required"
+            or item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1)
+            not in {"approval-required", "missing", "hash-mismatch", "import-failed"}
         ):
             return
         key = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
