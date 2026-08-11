@@ -552,6 +552,7 @@ class _DecoratedLoaderAdapter(LoaderBase):
 
 
 class _ExtensionWorkerSignals(QtCore.QObject):
+    started = QtCore.Signal()
     finished = QtCore.Signal(object)
 
 
@@ -1002,6 +1003,23 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
         self.script_modules = script_modules
         self.signals = _ExtensionWorkerSignals()
         self.result: _ExtensionRoutineResult | None = None
+        self._started = threading.Event()
+
+    @property
+    def started(self) -> bool:
+        """Return whether this job passed its queued-state enablement check."""
+        return self._started.is_set()
+
+    def discard_pending(self) -> None:
+        """Finish a job that the thread pool removed before execution."""
+        result = _ExtensionRoutineResult(
+            job=self.job,
+            output=None,
+            duration=0.0,
+            status="discarded",
+        )
+        self.result = result
+        self.signals.finished.emit(result)
 
     def run(self) -> None:
         started = time.perf_counter()
@@ -1026,7 +1044,8 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
         }
         try:
             record = self.catalog_store.read().extensions.get(self.job.extension_id)
-            if record is None or record.removed or not record.enabled:
+            enabled = record is not None and not record.removed and record.enabled
+            if not enabled:
                 status = "discarded"
                 logger.info(
                     "Discarding disabled queued extension routine",
@@ -1036,6 +1055,8 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
                     },
                 )
                 return
+            self._started.set()
+            self.signals.started.emit()
             logger.info("Importing extension revision", extra=fields)
             if self.job.source_type == "script":
                 source_path = _require_script_source(self.job)
@@ -1174,17 +1195,23 @@ class _ExtensionExecutionController(QtCore.QObject):
         self._progress_dialog = _ExtensionProgressDialog(manager)
         self._remove_queued_slot = self.remove_queued
         self._finished_slot = self._finished
+        self._started_slot = self._routine_started
         self._refresh_progress_slot = self._refresh_progress
         self._progress_dialog.remove_requested.connect(self._remove_queued_slot)
         self.queue_changed.connect(self._refresh_progress_slot)
 
     @property
     def active(self) -> _ExtensionRoutineJob | None:
-        return None if self._active is None else self._active[0]
+        active = self._active
+        if active is None or not active[1].started:
+            return None
+        return active[0]
 
     @property
     def queued(self) -> tuple[_ExtensionRoutineJob, ...]:
-        return tuple(self._pending)
+        active = self._active
+        dispatched = () if active is None or active[1].started else (active[0],)
+        return (*dispatched, *self._pending)
 
     def show_progress(self) -> None:
         self._refresh_progress()
@@ -1406,6 +1433,14 @@ class _ExtensionExecutionController(QtCore.QObject):
 
     @QtCore.Slot(str)
     def remove_queued(self, job_id: str) -> None:
+        active = self._active
+        if (
+            active is not None
+            and active[0].job_id == job_id
+            and self._pool.tryTake(active[1])
+        ):
+            active[1].discard_pending()
+            return
         removed = tuple(job for job in self._pending if job.job_id == job_id)
         kept = deque(job for job in self._pending if job.job_id != job_id)
         if len(kept) == len(self._pending):
@@ -1436,6 +1471,7 @@ class _ExtensionExecutionController(QtCore.QObject):
                 script_modules=self._script_modules,
             )
             worker.signals.finished.connect(self._finished_slot)
+            worker.signals.started.connect(self._started_slot)
             self._active = (job, worker)
             self.queue_changed.emit()
             self._pool.start(worker)
@@ -1448,6 +1484,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         if active is None or active[0].job_id != result.job.job_id:
             return
         active[1].signals.finished.disconnect(self._finished_slot)
+        active[1].signals.started.disconnect(self._started_slot)
         self._active = None
         waiter = self._routine_waiters.pop(result.job.job_id, None)
         if waiter is not None:
@@ -1465,6 +1502,10 @@ class _ExtensionExecutionController(QtCore.QObject):
                 self._insert_if_current(result)
         self.queue_changed.emit()
         self._start_next()
+
+    @QtCore.Slot()
+    def _routine_started(self) -> None:
+        self.queue_changed.emit()
 
     def _insert_if_current(self, result: _ExtensionRoutineResult) -> None:
         node = self._manager._tool_graph.nodes.get(result.job.input_uid)
@@ -1551,6 +1592,8 @@ class _ExtensionExecutionController(QtCore.QObject):
             if active is not None:
                 with contextlib.suppress(TypeError, RuntimeError):
                     active[1].signals.finished.disconnect(self._finished_slot)
+                with contextlib.suppress(TypeError, RuntimeError):
+                    active[1].signals.started.disconnect(self._started_slot)
                 waiter = self._routine_waiters.pop(active[0].job_id, None)
                 if waiter is not None:
                     waiter.result = active[1].result or _ExtensionRoutineResult(

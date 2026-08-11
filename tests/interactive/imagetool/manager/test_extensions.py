@@ -3062,10 +3062,8 @@ def must_not_run(data: xr.DataArray) -> xr.DataArray:
             parameters={},
             target=0,
         )
-        qtbot.wait_until(
-            lambda: manager._extensions.execution.active is not None,
-            timeout=2000,
-        )
+        assert manager._extensions.execution.active is None
+        assert len(manager._extensions.execution.queued) == 1
         current = manager._extensions.catalog.store.read().extensions["loader_first"]
         manager._extensions.catalog.store.update_record(
             "loader_first",
@@ -3082,6 +3080,65 @@ def must_not_run(data: xr.DataArray) -> xr.DataArray:
         )
         assert loader_failures == []
         assert manager.ntools == 1
+
+
+def test_dispatched_routine_can_be_removed_before_worker_start(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    class _BlockingTask(QtCore.QRunnable):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def run(self) -> None:
+            self.started.set()
+            self.release.wait()
+
+    script_path = tmp_path / "queued.py"
+    _script(script_path)
+
+    with manager_context() as manager:
+        catalog, _revision, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        _validate_and_enable(
+            manager._extensions.catalog.store,
+            "queued",
+            expected_record_generation=catalog.extensions["queued"].record_generation,
+        )
+        manager._extensions.catalog.refresh()
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(
+                xr.DataArray([1.0], dims="x"), _in_manager=True
+            ),
+            show=False,
+        )
+        blocking_task = _BlockingTask()
+        manager._extensions.execution._pool.start(blocking_task)
+        if not blocking_task.started.wait(timeout=2.0):
+            blocking_task.release.set()
+            pytest.fail("The blocking extension task did not start")
+        try:
+            job_id = manager._extensions.execution.queue_routine(
+                extension_id="queued",
+                routine_id="scale",
+                parameters={"scale": 2.0},
+                target=0,
+            )
+
+            assert manager._extensions.execution.active is None
+            assert [job.job_id for job in manager._extensions.execution.queued] == [
+                job_id
+            ]
+
+            manager._extensions.execution.remove_queued(job_id)
+
+            assert manager._extensions.execution.queued == ()
+            assert manager.ntools == 1
+        finally:
+            blocking_task.release.set()
 
 
 def test_readonly_routine_view_does_not_lock_the_original() -> None:
