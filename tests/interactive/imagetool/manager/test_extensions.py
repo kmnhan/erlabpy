@@ -536,6 +536,705 @@ def test_workspace_requirements_dialog_approves_only_eligible_selection(
         dialog.approve_requested.disconnect(approval_slot)
 
 
+def test_packaged_controller_hides_environment_capabilities(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revision_hash = "a" * 64
+    revision = _ExtensionRevision(
+        source_hash=revision_hash,
+        object_name="lab_package:extension",
+        created_at="2026-01-01T00:00:00+00:00",
+        approved=True,
+        routines=(
+            erlab.extensions.RoutineDescriptor(
+                id="calculate",
+                name="Calculate",
+                category="Lab",
+                summary="",
+                function_name="calculate",
+            ),
+        ),
+        loaders=(
+            erlab.extensions.LoaderDescriptor(
+                id="load_data",
+                name="Load Data",
+                category="Lab",
+                summary="",
+                function_name="load_data",
+            ),
+        ),
+        entry_point_group="erlab.extensions",
+        entry_point_name="lab",
+        entry_point_value="lab_package:extension",
+    )
+    record = _ExtensionRecord(
+        id="lab",
+        name="Lab",
+        source_type="environment-package",
+        enabled=True,
+        current_revision=revision_hash,
+        revisions={revision_hash: revision},
+    )
+
+    with manager_context() as manager:
+        controller = manager._extensions
+        controller.catalog.model = _ExtensionCatalogModel(extensions={"lab": record})
+        monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", True)
+        assert controller._enabled_routines() == ()
+        assert controller.file_loaders() == {}
+        controller._sync_explorer_loaders()
+        assert controller.explorer_loaders == {}
+
+
+def test_controller_filters_loader_paths_and_rejects_duplicate_filters(
+    manager_context,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "loader.py"
+    _loader_script(source_path, name="Lab Data", extensions=(".dat",))
+    source_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Lab Data",
+        category="Lab",
+        summary="",
+        function_name="load_data",
+        extensions=(".dat",),
+    )
+    revision = _ExtensionRevision(
+        source_hash=source_hash,
+        object_name=f"{source_hash}.py",
+        source_path=os.fspath(source_path),
+        created_at="2026-01-01T00:00:00+00:00",
+        approved=True,
+        loaders=(descriptor,),
+    )
+    records = {
+        extension_id: _ExtensionRecord(
+            id=extension_id,
+            name=extension_id.title(),
+            enabled=True,
+            current_revision=source_hash,
+            revisions={source_hash: revision},
+        )
+        for extension_id in ("first", "second")
+    }
+
+    with manager_context() as manager:
+        controller = manager._extensions
+        controller.catalog.model = _ExtensionCatalogModel(
+            extensions={"first": records["first"]}
+        )
+        monkeypatch.setattr(
+            controller.catalog.store,
+            "revision_available",
+            lambda *_args: True,
+        )
+        monkeypatch.setattr(
+            controller.catalog.store,
+            "source_path",
+            lambda *_args: source_path,
+        )
+        assert controller.file_loaders(tmp_path / "value.txt") == {}
+        assert tuple(controller.file_loaders(tmp_path / "value.dat")) == (
+            "Lab Data (*.dat)",
+        )
+
+        controller.catalog.model = _ExtensionCatalogModel(extensions=records)
+        with pytest.raises(
+            ValueError, match="Conflicting extension file dialog filter"
+        ):
+            controller.file_loaders()
+
+        environment_revision = revision.model_copy(
+            update={
+                "entry_point_group": "erlab.io.loaders",
+                "entry_point_name": "lab",
+                "entry_point_value": "lab_package:Loader",
+                "loader_dialog_methods": (),
+            }
+        )
+        environment_record = records["first"].model_copy(
+            update={
+                "source_type": "environment-package",
+                "revisions": {source_hash: environment_revision},
+            }
+        )
+        controller.catalog.model = _ExtensionCatalogModel(
+            extensions={"first": environment_record}
+        )
+        assert controller.file_loaders() == {}
+
+
+def test_controller_menu_selection_and_routine_queue_paths(
+    manager_context,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+    information_calls: list[None] = []
+    critical_calls: list[None] = []
+
+    with manager_context() as manager:
+        controller = manager._extensions
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "information",
+            lambda *_args, **_kwargs: information_calls.append(None),
+        )
+        controller.select_routine()
+        assert information_calls == [None]
+
+        catalog, _revision_hash, _created = controller.catalog.store.add_script(
+            script_path
+        )
+        catalog = _validate_and_enable(
+            controller.catalog.store,
+            "scale",
+            expected_record_generation=catalog.extensions["scale"].record_generation,
+        )
+        catalog = controller.catalog.store.update_record(
+            "scale",
+            expected_record_generation=catalog.extensions["scale"].record_generation,
+            favorite=True,
+        )
+        controller.catalog.refresh()
+        controller._recent.append(("scale", "scale"))
+        controller._populate_menu()
+        action_data = {
+            action.data()
+            for action in controller.menu.actions()
+            if action.data() is not None
+        }
+        for action in controller.menu.actions():
+            submenu = action.menu()
+            if submenu is not None:
+                action_data.update(
+                    child.data()
+                    for child in submenu.actions()
+                    if child.data() is not None
+                )
+        assert ("scale", "scale") in action_data
+
+        selected: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            controller,
+            "run_routine",
+            lambda extension_id, routine_id: selected.append(
+                (extension_id, routine_id)
+            ),
+        )
+
+        class AcceptedSelectionDialog:
+            selection = ("scale", "scale")
+
+            def __init__(self, *_args, **_kwargs) -> None:
+                return None
+
+            @staticmethod
+            def exec() -> int:
+                return 1
+
+        monkeypatch.setattr(
+            extension_controller,
+            "_RoutineSelectionDialog",
+            AcceptedSelectionDialog,
+        )
+        controller.select_routine()
+        assert selected == [("scale", "scale")]
+
+        monkeypatch.undo()
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "information",
+            lambda *_args, **_kwargs: information_calls.append(None),
+        )
+        monkeypatch.setattr(
+            erlab.interactive.utils.MessageDialog,
+            "critical",
+            lambda *_args, **_kwargs: critical_calls.append(None),
+        )
+        monkeypatch.setattr(manager, "_selected_imagetool_targets", lambda: ())
+        controller.run_routine("scale", "scale")
+        assert len(information_calls) == 2
+
+        monkeypatch.setattr(manager, "_selected_imagetool_targets", lambda: (0,))
+        controller.run_routine("missing", "scale")
+        controller.run_routine("scale", "missing")
+
+        class RejectedParameterDialog:
+            def __init__(self, *_args, **_kwargs) -> None:
+                return None
+
+            @staticmethod
+            def exec() -> int:
+                return 0
+
+        monkeypatch.setattr(
+            extension_controller,
+            "_ExtensionParameterDialog",
+            RejectedParameterDialog,
+        )
+        controller.run_routine("scale", "scale")
+
+        class AcceptedParameterDialog(RejectedParameterDialog):
+            parameters: typing.ClassVar[dict[str, float]] = {"scale": 3.0}
+
+            @staticmethod
+            def exec() -> int:
+                return 1
+
+        monkeypatch.setattr(
+            extension_controller,
+            "_ExtensionParameterDialog",
+            AcceptedParameterDialog,
+        )
+        monkeypatch.setattr(
+            controller.execution,
+            "queue_routine",
+            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("queue failed")),
+        )
+        controller.run_routine("scale", "scale")
+        assert critical_calls == [None]
+
+        queued: list[dict[str, typing.Any]] = []
+        monkeypatch.setattr(
+            controller.execution,
+            "queue_routine",
+            lambda **kwargs: queued.append(kwargs) or "job",
+        )
+        controller.run_routine("scale", "scale")
+        controller.run_routine("scale", "scale")
+        assert len(queued) == 2
+        assert tuple(controller._recent).count(("scale", "scale")) == 1
+
+        assert controller.loader_by_name("missing") is None
+        controller.show_manager()
+        assert controller._manage_dialog.isVisible()
+        controller._manage_dialog.hide()
+
+
+def test_controller_replay_loader_rejects_incomplete_and_unapproved_calls(
+    manager_context,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_path = tmp_path / "data.dat"
+    data_path.write_text("1")
+
+    def load_source(replay_call: FileReplayCall | None) -> FileLoadSource:
+        return FileLoadSource(
+            path=os.fspath(data_path),
+            loader_label="Lab Data",
+            loader_text="lab:load_data",
+            kwargs_text="",
+            replay_call=replay_call,
+        )
+
+    with manager_context() as manager:
+        controller = manager._extensions
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError, match="metadata is incomplete"
+        ):
+            controller.replay_loader(load_source(None))
+
+        missing_call = FileReplayCall(
+            kind="extension_loader",
+            target="missing",
+            revision="a" * 64,
+            capability_id="load_data",
+            selection=FileDataSelection(kind="dataarray"),
+        )
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError, match="revision is not available"
+        ):
+            controller.replay_loader(load_source(missing_call))
+
+        monkeypatch.setattr(
+            controller.execution,
+            "session_capability_status",
+            lambda *_args: "ready",
+        )
+        alternate_session_call = missing_call.model_copy(
+            update={"loader_method": "preview"}
+        )
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError,
+            match="do not provide alternate methods",
+        ):
+            controller.replay_loader(load_source(alternate_session_call))
+        monkeypatch.undo()
+
+        script_path = tmp_path / "loader.py"
+        _loader_script(script_path, name="Lab Data", extensions=(".dat",))
+        catalog, revision_hash, _created = controller.catalog.store.add_script(
+            script_path
+        )
+        catalog = _validate_and_enable(
+            controller.catalog.store,
+            "loader",
+            expected_record_generation=catalog.extensions["loader"].record_generation,
+        )
+        record = catalog.extensions["loader"]
+        script_call = FileReplayCall(
+            kind="extension_loader",
+            target="loader",
+            revision=revision_hash,
+            capability_id="load_data",
+            selection=FileDataSelection(kind="dataarray"),
+        )
+        missing_descriptor = record.revisions[revision_hash].model_copy(
+            update={"loaders": ()}
+        )
+        missing_descriptor_record = record.model_copy(
+            update={"revisions": {revision_hash: missing_descriptor}}
+        )
+        monkeypatch.setattr(
+            controller.catalog.store,
+            "read",
+            lambda: catalog.model_copy(
+                update={"extensions": {"loader": missing_descriptor_record}}
+            ),
+        )
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError, match="is not available"
+        ):
+            controller.replay_loader(load_source(script_call))
+        monkeypatch.undo()
+
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError,
+            match="do not provide alternate methods",
+        ):
+            controller.replay_loader(
+                load_source(script_call.model_copy(update={"loader_method": "preview"}))
+            )
+
+        environment_revision = _ExtensionRevision(
+            source_hash="b" * 64,
+            object_name="lab_package:Loader",
+            created_at="2026-01-01T00:00:00+00:00",
+            approved=True,
+            loaders=(record.revisions[revision_hash].loaders[0],),
+            entry_point_group="erlab.io.loaders",
+            entry_point_name="lab",
+            entry_point_value="lab_package:Loader",
+            loader_dialog_methods=(
+                extension_catalog._EnvironmentLoaderMethod(
+                    name_filter="Lab Data (*.dat)", method=None
+                ),
+            ),
+        )
+        environment_record = _ExtensionRecord(
+            id="environment-loader",
+            name="Environment loader",
+            source_type="environment-package",
+            enabled=True,
+            current_revision="b" * 64,
+            revisions={"b" * 64: environment_revision},
+        )
+        environment_catalog = _ExtensionCatalogModel(
+            extensions={"environment-loader": environment_record}
+        )
+        monkeypatch.setattr(
+            controller.catalog.store, "read", lambda: environment_catalog
+        )
+        environment_call = FileReplayCall(
+            kind="extension_loader",
+            target="environment-loader",
+            revision="b" * 64,
+            capability_id="load_data",
+            loader_method="unapproved",
+            selection=FileDataSelection(kind="dataarray"),
+        )
+        with pytest.raises(
+            erlab.extensions.ExtensionExecutionError,
+            match="was not approved",
+        ):
+            controller.replay_loader(load_source(environment_call))
+
+
+def test_controller_capability_status_prefers_session_ready_state(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with manager_context() as manager:
+        controller = manager._extensions
+        monkeypatch.setattr(
+            controller.execution,
+            "session_capability_status",
+            lambda *_args: "ready",
+        )
+        assert (
+            controller.capability_status("missing", "a" * 64, "routine", "calculate")
+            == "ready"
+        )
+        monkeypatch.setattr(
+            controller.execution,
+            "session_capability_status",
+            lambda *_args: None,
+        )
+        assert (
+            controller.capability_status("missing", "a" * 64, "routine", "calculate")
+            == "missing-revision"
+        )
+
+
+def test_catalog_source_states_distinguish_all_script_source_failures(
+    manager_context,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    object_directory = tmp_path / "objects"
+    object_directory.mkdir()
+    paths: dict[str, pathlib.Path] = {}
+    records: dict[str, _ExtensionRecord] = {}
+    unreadable_paths: set[pathlib.Path] = set()
+
+    def add_script_record(
+        extension_id: str,
+        *,
+        stored: bytes | None,
+        original: bytes | None,
+        unreadable: typing.Literal["stored", "original"] | None = None,
+    ) -> None:
+        source = b"source"
+        revision_hash = hashlib.sha256(source).hexdigest()
+        object_path = object_directory / f"{extension_id}.py"
+        if stored is not None:
+            object_path.write_bytes(stored)
+        original_path = tmp_path / "original" / f"{extension_id}.py"
+        if original is not None:
+            original_path.parent.mkdir(exist_ok=True)
+            original_path.write_bytes(original)
+        revision = _ExtensionRevision(
+            source_hash=revision_hash,
+            object_name=object_path.name,
+            source_path=(
+                None if extension_id == "embedded" else os.fspath(original_path)
+            ),
+            created_at="2026-01-01T00:00:00+00:00",
+        )
+        records[extension_id] = _ExtensionRecord(
+            id=extension_id,
+            name=extension_id.title(),
+            current_revision=revision_hash,
+            revisions={revision_hash: revision},
+        )
+        paths[extension_id] = object_path
+        if unreadable is not None:
+            unreadable_paths.add(
+                object_path if unreadable == "stored" else original_path
+            )
+
+    add_script_record("missing-stored", stored=None, original=b"source")
+    add_script_record(
+        "unreadable-stored",
+        stored=b"source",
+        original=b"source",
+        unreadable="stored",
+    )
+    add_script_record("mismatch", stored=b"different", original=b"source")
+    add_script_record("embedded", stored=b"source", original=None)
+    add_script_record("missing-original", stored=b"source", original=None)
+    add_script_record(
+        "unreadable-original",
+        stored=b"source",
+        original=b"source",
+        unreadable="original",
+    )
+    add_script_record("unchanged", stored=b"source", original=b"source")
+    add_script_record("changed", stored=b"source", original=b"changed")
+
+    environment_revision = _ExtensionRevision(
+        source_hash="a" * 64,
+        object_name="lab_package:extension",
+        created_at="2026-01-01T00:00:00+00:00",
+        entry_point_group="erlab.extensions",
+        entry_point_name="lab",
+        entry_point_value="lab_package:extension",
+        editable=True,
+    )
+    for extension_id in ("environment-ready", "environment-missing"):
+        records[extension_id] = _ExtensionRecord(
+            id=extension_id,
+            name=extension_id.title(),
+            source_type="environment-package",
+            current_revision="a" * 64,
+            revisions={"a" * 64: environment_revision},
+        )
+
+    original_read_bytes = pathlib.Path.read_bytes
+
+    def read_bytes(path: pathlib.Path) -> bytes:
+        if path in unreadable_paths:
+            raise OSError("unreadable")
+        return original_read_bytes(path)
+
+    with manager_context() as manager:
+        controller = manager._extensions
+        controller.catalog.model = _ExtensionCatalogModel(extensions=records)
+
+        def source_path(extension_id: str, _revision: str) -> pathlib.Path:
+            path = paths.get(extension_id)
+            if path is None or not path.exists():
+                raise FileNotFoundError(extension_id)
+            return path
+
+        monkeypatch.setattr(controller.catalog.store, "source_path", source_path)
+        monkeypatch.setattr(
+            controller.catalog.store,
+            "revision_available",
+            lambda record, _revision: record.id == "environment-ready",
+        )
+        monkeypatch.setattr(pathlib.Path, "read_bytes", read_bytes)
+        states = controller._catalog_source_states()
+
+    state_by_extension = {
+        extension_id: state for (extension_id, _revision), state in states.items()
+    }
+    assert state_by_extension == {
+        "missing-stored": "Stored source missing",
+        "unreadable-stored": "Stored source unreadable",
+        "mismatch": "Stored source hash mismatch",
+        "embedded": "Stored embedded source",
+        "missing-original": "Stored source; original missing",
+        "unreadable-original": "Stored source; original unreadable",
+        "unchanged": "Stored source; original unchanged",
+        "changed": "Stored source; original changed",
+        "environment-ready": "Editable environment package",
+        "environment-missing": "Environment package unavailable",
+    }
+
+
+def test_manage_actions_dispatch_updates_and_report_failures(
+    manager_context,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+    updates: list[dict[str, typing.Any]] = []
+    validations: list[tuple[str, int]] = []
+    warnings: list[None] = []
+    critical: list[None] = []
+
+    with manager_context() as manager:
+        controller = manager._extensions
+        catalog, revision_hash, _created = controller.catalog.store.add_script(
+            script_path
+        )
+        catalog = _validate_and_enable(
+            controller.catalog.store,
+            "scale",
+            expected_record_generation=catalog.extensions["scale"].record_generation,
+        )
+        controller.catalog.refresh()
+        enabled_record = controller.catalog.model.extensions["scale"]
+
+        def update_record(
+            extension_id: str, **values: typing.Any
+        ) -> _ExtensionCatalogModel:
+            updates.append({"extension_id": extension_id, **values})
+            return controller.catalog.model
+
+        monkeypatch.setattr(controller.catalog.store, "update_record", update_record)
+        monkeypatch.setattr(
+            controller.execution,
+            "validate_and_enable",
+            lambda extension_id, *, expected_record_generation: validations.append(
+                (extension_id, expected_record_generation)
+            ),
+        )
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "warning",
+            lambda *_args, **_kwargs: warnings.append(None),
+        )
+        monkeypatch.setattr(
+            erlab.interactive.utils.MessageDialog,
+            "critical",
+            lambda *_args, **_kwargs: critical.append(None),
+        )
+
+        controller._manage_action("toggle", "scale")
+        controller._manage_action("favorite", "scale")
+        controller._manage_action("remove", "scale")
+        assert updates[0]["enabled"] is False
+        assert updates[1]["favorite"] is True
+        assert updates[2]["removed"] is True
+
+        disabled_record = enabled_record.model_copy(update={"enabled": False})
+        controller.catalog.model = catalog.model_copy(
+            update={"extensions": {"scale": disabled_record}}
+        )
+        controller._manage_action("toggle", "scale")
+        assert validations == [("scale", disabled_record.record_generation)]
+
+        monkeypatch.setattr(
+            QtWidgets.QInputDialog,
+            "getItem",
+            lambda *_args, **_kwargs: ("Always include", False),
+        )
+        before = len(updates)
+        controller._manage_action("embedding", "scale")
+        assert len(updates) == before
+        monkeypatch.setattr(
+            QtWidgets.QInputDialog,
+            "getItem",
+            lambda *_args, **_kwargs: ("Always include", True),
+        )
+        controller._manage_action("embedding", "scale")
+        assert updates[-1]["embed_policy"] == "always"
+
+        class MetadataDialog:
+            metadata = _ExtensionMetadata(author="Updated")
+            accepted = False
+
+            def __init__(self, *_args, **_kwargs) -> None:
+                return None
+
+            def exec(self) -> bool:
+                return self.accepted
+
+        monkeypatch.setattr(extension_controller, "_MetadataDialog", MetadataDialog)
+        before = len(updates)
+        controller._manage_action("metadata", "scale")
+        assert len(updates) == before
+        MetadataDialog.accepted = True
+        controller._manage_action("metadata", "scale")
+        assert updates[-1]["metadata"].author == "Updated"
+
+        embedded_revision = enabled_record.revisions[revision_hash].model_copy(
+            update={"source_path": None}
+        )
+        controller.catalog.model = catalog.model_copy(
+            update={
+                "extensions": {
+                    "scale": enabled_record.model_copy(
+                        update={"revisions": {revision_hash: embedded_revision}}
+                    )
+                }
+            }
+        )
+        controller._manage_action("reload", "scale")
+        assert critical == [None]
+
+        controller.catalog.model = catalog
+        monkeypatch.setattr(
+            controller.catalog.store,
+            "update_record",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                _ExtensionCatalogConflictError("changed")
+            ),
+        )
+        controller._manage_action("favorite", "scale")
+        assert warnings == [None]
+
+
 def test_manager_extension_loader_dialog_uses_recent_values(monkeypatch) -> None:
     descriptor = erlab.extensions.LoaderDescriptor(
         id="configured-loader",
