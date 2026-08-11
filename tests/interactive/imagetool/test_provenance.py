@@ -5224,6 +5224,14 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
         )
     with pytest.raises(ValidationError, match="target"):
         FileReplayCall(kind="callable", target="", selected_index=0)
+    with pytest.raises(ValidationError, match="lowercase SHA-256"):
+        FileReplayCall(
+            kind="extension_loader",
+            target="lab-loader",
+            revision="not-a-revision",
+            capability_id="load_data",
+            selection=FileDataSelection(kind="dataarray"),
+        )
 
     bad_kwargs_call = FileReplayCall.model_construct(
         kind="callable",
@@ -5305,6 +5313,23 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
         )
     with pytest.raises(TypeError, match="Replay steps can only"):
         full_data().append_replay_stage(full_data())
+
+
+def test_extension_routine_rejects_invalid_revision_identity() -> None:
+    with pytest.raises(ValidationError, match="lowercase SHA-256"):
+        ExtensionRoutineOperation(
+            extension_id="lab-routines",
+            revision_hash="not-a-revision",
+            routine_id="normalize",
+            extension_name="Lab Routines",
+            routine_name="Normalize",
+            source_type="script",
+            function_name="normalize",
+            source_path="lab_routines.py",
+            entry_point_group=None,
+            entry_point_name=None,
+            parameters={},
+        )
 
 
 def test_file_provenance_display_entries_keep_steps_after_stage_failure() -> None:

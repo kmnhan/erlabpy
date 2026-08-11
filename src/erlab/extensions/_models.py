@@ -18,6 +18,15 @@ if typing.TYPE_CHECKING:
 EXTENSION_API_VERSION: typing.Literal[1] = 1
 
 
+def _validate_revision_hash(value: str) -> str:
+    """Validate one lowercase SHA-256 digest used as immutable identity."""
+    if len(value) != 64 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        raise ValueError("revision hash must be a lowercase SHA-256 digest")
+    return value
+
+
 def _require_finite_parameter_values(values: Mapping[str, typing.Any]) -> None:
     """Reject non-finite floats before extension values cross persistence boundaries."""
 
@@ -220,6 +229,17 @@ class LoaderDescriptor(pydantic.BaseModel):
         if not value:
             raise ValueError("extension descriptor text cannot be empty")
         return value
+
+    @pydantic.field_validator("extensions")
+    @classmethod
+    def _valid_extensions(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not value.startswith(".") or value == "." for value in values):
+            raise ValueError(
+                "loader filename extensions must start with a dot and contain a suffix"
+            )
+        if len(values) != len(set(values)):
+            raise ValueError("loader filename extensions must be unique")
+        return values
 
 
 CapabilityDescriptor = RoutineDescriptor | LoaderDescriptor

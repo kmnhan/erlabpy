@@ -81,6 +81,31 @@ def test_loader_decorator_preserves_normal_call_behavior(
     xr.testing.assert_identical(load_text(path), xr.DataArray([1.0, 2.0, 3.0]))
 
 
+def test_loader_decorator_accepts_one_extension_as_a_string(
+    tmp_path: pathlib.Path,
+) -> None:
+    source = tmp_path / "loader_extension.py"
+    source.write_text(
+        "from pathlib import Path\n"
+        "import xarray as xr\n"
+        "from erlab.extensions import loader\n\n"
+        "@loader(extensions='txt')\n"
+        "def load_text(path: Path) -> xr.DataArray:\n"
+        "    return xr.DataArray([1.0])\n"
+    )
+
+    descriptor = load_script(source).loaders["load_text"][0]
+
+    assert descriptor.extensions == (".txt",)
+
+
+def test_loader_decorator_rejects_invalid_extensions() -> None:
+    with pytest.raises(ValueError, match="must contain a suffix"):
+        loader(extensions="")
+    with pytest.raises(TypeError, match="must be strings"):
+        loader(extensions=typing.cast("typing.Any", (1,)))
+
+
 def test_load_script_validates_parameters_and_exact_revision(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1142,6 +1167,14 @@ def test_public_models_validate_persisted_values() -> None:
         RoutineDescriptor(**descriptor_arguments)
     with pytest.raises(ValueError, match="descriptor text cannot be empty"):
         LoaderDescriptor(**descriptor_arguments)
+    valid_loader_arguments = {
+        **descriptor_arguments,
+        "id": "loader",
+    }
+    with pytest.raises(ValueError, match="contain a suffix"):
+        LoaderDescriptor(**valid_loader_arguments, extensions=(".",))
+    with pytest.raises(ValueError, match="must be unique"):
+        LoaderDescriptor(**valid_loader_arguments, extensions=(".txt", ".txt"))
 
 
 def test_loaded_script_exposes_capabilities_and_module_attributes(

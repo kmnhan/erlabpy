@@ -15,7 +15,7 @@ import threading
 import types
 import typing
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 
 import xarray as xr
 
@@ -143,7 +143,7 @@ def loader(
     id: str | None = None,  # noqa: A002
     category: str = "Other",
     summary: str = "",
-    extensions: tuple[str, ...] = (),
+    extensions: str | Iterable[str] = (),
 ) -> Callable[[Callable[..., typing.Any]], Callable[..., typing.Any]]:
     """Mark a normal Python function as an external data loader.
 
@@ -161,7 +161,8 @@ def loader(
     summary
         Short user-facing description.
     extensions
-        Filename extensions accepted by the loader. Include the leading dot.
+        One filename extension or an iterable of extensions accepted by the loader.
+        The leading dot is optional.
 
     Returns
     -------
@@ -177,9 +178,15 @@ def loader(
     ... def load_text(path: Path) -> xr.DataArray:
     ...     return xr.DataArray([float(path.read_text())])
     """
-    normalized_extensions = tuple(
-        value if value.startswith(".") else f".{value}" for value in extensions
-    )
+    extension_values = (extensions,) if isinstance(extensions, str) else extensions
+    normalized_extensions: list[str] = []
+    for value in extension_values:
+        if not isinstance(value, str):
+            raise TypeError("loader filename extensions must be strings")
+        value = value.strip()
+        if not value or value == ".":
+            raise ValueError("a loader filename extension must contain a suffix")
+        normalized_extensions.append(value if value.startswith(".") else f".{value}")
 
     def decorate(func: Callable[..., typing.Any]) -> Callable[..., typing.Any]:
         setattr(
@@ -191,7 +198,7 @@ def loader(
                 id=id,
                 category=category,
                 summary=summary,
-                extensions=normalized_extensions,
+                extensions=tuple(normalized_extensions),
             ),
         )
         return func

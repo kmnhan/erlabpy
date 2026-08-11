@@ -7,16 +7,10 @@ import typing
 import pydantic
 
 from erlab.extensions import LoaderDescriptor, RoutineDescriptor  # noqa: TC001
-from erlab.extensions._models import _require_finite_parameter_values
-
-
-def _validate_sha256(value: str) -> str:
-    """Validate one lowercase SHA-256 digest used as immutable identity."""
-    if len(value) != 64 or any(
-        character not in "0123456789abcdef" for character in value
-    ):
-        raise ValueError("revision hash must be a lowercase SHA-256 digest")
-    return value
+from erlab.extensions._models import (
+    _require_finite_parameter_values,
+    _validate_revision_hash,
+)
 
 
 class _ExtensionMetadata(pydantic.BaseModel):
@@ -73,7 +67,7 @@ class _ExtensionRevision(pydantic.BaseModel):
     @pydantic.field_validator("source_hash")
     @classmethod
     def _valid_source_hash(cls, value: str) -> str:
-        return _validate_sha256(value)
+        return _validate_revision_hash(value)
 
 
 def _revision_loader_name_filters(revision: _ExtensionRevision) -> tuple[str, ...]:
@@ -187,7 +181,7 @@ class _WorkspaceExtensionRequirement(pydantic.BaseModel):
     @pydantic.field_validator("revision_hash")
     @classmethod
     def _valid_revision_hash(cls, value: str) -> str:
-        return _validate_sha256(value)
+        return _validate_revision_hash(value)
 
     @pydantic.model_validator(mode="after")
     def _validate_embedded_object_id(self) -> typing.Self:

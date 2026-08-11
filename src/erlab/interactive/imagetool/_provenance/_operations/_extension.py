@@ -8,7 +8,10 @@ import typing
 import pydantic
 
 import erlab
-from erlab.extensions._models import _require_finite_parameter_values
+from erlab.extensions._models import (
+    _require_finite_parameter_values,
+    _validate_revision_hash,
+)
 from erlab.interactive.imagetool._provenance._code import _provenance_value_code
 from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
 
@@ -31,6 +34,11 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
     entry_point_group: str | None
     entry_point_name: str | None
     parameters: dict[str, bool | int | float | str | None]
+
+    @pydantic.field_validator("revision_hash")
+    @classmethod
+    def _valid_revision_hash(cls, value: str) -> str:
+        return _validate_revision_hash(value)
 
     @pydantic.field_validator("parameters")
     @classmethod
