@@ -1112,6 +1112,66 @@ def test_environment_loader_entry_point_is_inspected_before_import(
     assert getattr(resolved, "__self__", None).name == "example"
 
 
+def test_environment_loader_entry_point_name_can_differ_from_loader_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    class _AliasedLoader(erlab.io.dataloader.LoaderBase):
+        name = "extension_loader_actual_name"
+        extensions: typing.ClassVar[set[str]] = {".alias-test"}
+        skip_validate = True
+
+        @property
+        def file_dialog_methods(self):
+            return {"Aliased Extension Data (*.alias-test)": (self.load, {})}
+
+        def load_single(self, file_path, without_values=False):
+            del file_path, without_values
+            return xr.DataArray([1.0])
+
+    class _EntryPoint:
+        group = "erlab.io.loaders"
+        name = "package_alias"
+        value = "lab_package:AliasedLoader"
+        dist = None
+
+        @staticmethod
+        def load():
+            return _AliasedLoader
+
+    class _EntryPoints(tuple):
+        def select(self, **parameters):
+            return tuple(
+                entry
+                for entry in self
+                if all(
+                    getattr(entry, key, None) == value
+                    for key, value in parameters.items()
+                )
+            )
+
+    monkeypatch.setattr(
+        extension_catalog.importlib.metadata,
+        "entry_points",
+        lambda: _EntryPoints((_EntryPoint(),)),
+    )
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    catalog = store.refresh_environment_packages()
+    extension_id = "environment.erlab.io.loaders.package_alias"
+
+    catalog = _validate_and_enable(
+        store,
+        extension_id,
+        expected_record_generation=catalog.extensions[extension_id].record_generation,
+    )
+
+    record = catalog.extensions[extension_id]
+    assert record.enabled
+    assert record.revisions[record.current_revision].loaders[0].id == (
+        "extension_loader_actual_name"
+    )
+
+
 def test_environment_refresh_does_not_replace_a_script_record(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,

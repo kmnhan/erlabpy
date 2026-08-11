@@ -974,6 +974,8 @@ def _reject_builtin_loader_filter_conflicts(
         if current_revision.entry_point_group == "erlab.io.loaders"
         and current_revision.entry_point_name is not None
     )
+    if revision.entry_point_group == "erlab.io.loaders":
+        managed_names.update(descriptor.id for descriptor in revision.loaders)
     builtin_filters = {
         name_filter
         for name_filter, (func, _defaults) in (
