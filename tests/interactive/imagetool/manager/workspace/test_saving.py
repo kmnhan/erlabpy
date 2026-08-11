@@ -2422,9 +2422,9 @@ def test_manager_workspace_generation_save_open_replaces_and_binds_path(
         assert not manager.is_workspace_modified
 
         attrs = workspace_arrays._read_workspace_root_attrs_h5py(fname)
-        assert attrs["imagetool_workspace_schema_version"] == 5
+        assert attrs["imagetool_workspace_schema_version"] == 6
         manifest = workspace_format._workspace_manifest_from_attrs(attrs)
-        assert manifest["schema_version"] == 5
+        assert manifest["schema_version"] == 6
         assert {node["uid"] for node in manifest["nodes"]} >= {
             manager._tool_graph.root_wrappers[0].uid,
             child_uid,
@@ -2444,6 +2444,44 @@ def test_manager_workspace_generation_save_open_replaces_and_binds_path(
         assert manager._tool_graph.root_wrappers[0]._childtool_indices == [child_uid]
         assert manager.get_imagetool(0).slicer_area._data.chunks is None
         assert _compute_first_value(manager.get_imagetool(0).slicer_area._data) == 0
+
+
+def test_manager_opens_schema_5_immutable_generation_workspace(
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    fname = tmp_path / "schema-5.itws"
+    data = xr.DataArray(np.arange(9).reshape(3, 3), dims=("x", "y"))
+
+    with manager_context() as manager:
+        tool = itool(data, manager=False, execute=False)
+        assert isinstance(tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(tool, show=False)
+        manager._workspace_controller.saving._save_workspace_document(fname)
+
+        with h5py.File(fname, "r+") as h5_file:
+            h5_file.attrs["imagetool_workspace_schema_version"] = 5
+            generation_root = h5_file[workspace_store._WORKSPACE_GENERATIONS_GROUP]
+            for generation in generation_root.values():
+                manifest = workspace_store.WorkspaceStore._read_manifest(generation)
+                manifest["schema_version"] = 5
+                del generation[workspace_store._WORKSPACE_MANIFEST_DATASET]
+                workspace_store.WorkspaceStore._write_manifest(generation, manifest)
+
+        extra = itool(data + 1, manager=False, execute=False)
+        assert isinstance(extra, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(extra, show=False)
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        assert manager.ntools == 1
+        xr.testing.assert_identical(
+            manager._get_imagetool_data(0),
+            data.assign_coords(x=np.arange(3), y=np.arange(3)),
+        )
 
 
 def test_manager_workspace_import_ignored_while_save_in_progress(

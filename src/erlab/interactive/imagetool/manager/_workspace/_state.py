@@ -59,6 +59,8 @@ class _WorkspaceStateSnapshot(typing.TypedDict):
     dirty_generation: int
     dirty_events: tuple[_WorkspaceDirtyEvent, ...]
     schema_version: int
+    save_as_only: bool
+    degraded_reasons: tuple[str, ...]
 
 
 class _ManagerWorkspaceState:
@@ -88,6 +90,8 @@ class _ManagerWorkspaceState:
         self.schema_version: int = _current_workspace_schema_version()
         self.lock: QtCore.QLockFile | None = None
         self.closing_document: bool = False
+        self.save_as_only: bool = False
+        self.degraded_reasons: tuple[str, ...] = ()
 
     def is_modified(self, *, has_nodes: bool) -> bool:
         if self.path is None and not has_nodes and not self.context_modified:
@@ -223,6 +227,8 @@ class _ManagerWorkspaceState:
             "dirty_generation": self.dirty_generation,
             "dirty_events": tuple(self.dirty_events),
             "schema_version": self.schema_version,
+            "save_as_only": self.save_as_only,
+            "degraded_reasons": self.degraded_reasons,
         }
 
     def restore(self, snapshot: _WorkspaceStateSnapshot) -> set[str]:
@@ -244,4 +250,6 @@ class _ManagerWorkspaceState:
         self.dirty_generation = snapshot["dirty_generation"]
         self.dirty_events = list(snapshot["dirty_events"])
         self.schema_version = snapshot["schema_version"]
+        self.save_as_only = snapshot["save_as_only"]
+        self.degraded_reasons = snapshot["degraded_reasons"]
         return self.dirty_added | self.dirty_data | self.dirty_state

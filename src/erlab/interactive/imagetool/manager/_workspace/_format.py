@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import collections.abc
 import contextlib
+import copy
 import json
 import logging
 import math
@@ -29,7 +30,7 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_WORKSPACE_SCHEMA_VERSION = 5
+_WORKSPACE_SCHEMA_VERSION = 6
 _WORKSPACE_MANIFEST_SCHEMA_VERSION = 4
 _WORKSPACE_LEGACY_SCHEMA_VERSION = 3
 _WORKSPACE_MANIFEST_ATTR = "imagetool_workspace_manifest"
@@ -167,6 +168,11 @@ def _current_workspace_schema_version() -> int:
     return _WORKSPACE_SCHEMA_VERSION
 
 
+def _workspace_schema_uses_immutable_generations(schema_version: int) -> bool:
+    """Return whether a readable schema uses immutable generation storage."""
+    return 5 <= schema_version <= _WORKSPACE_SCHEMA_VERSION
+
+
 def _workspace_path_is_itws(
     fname: str | os.PathLike[str],
 ) -> bool:
@@ -199,6 +205,7 @@ def _workspace_manifest_payload(
     standalone_apps: Mapping[str, typing.Any] | None = None,
     option_overrides: Mapping[str, typing.Any] | None = None,
     acquisition_context: Mapping[str, typing.Any] | None = None,
+    extension_requirements: Iterable[typing.Any] | None = None,
 ) -> dict[str, typing.Any]:
     manifest: dict[str, typing.Any] = {
         "schema_version": _WORKSPACE_SCHEMA_VERSION,
@@ -226,6 +233,9 @@ def _workspace_manifest_payload(
     if acquisition_context is not None:
         # Context defaults are workspace-scoped and independent of loader choices.
         manifest["acquisition_context"] = dict(acquisition_context)
+    if extension_requirements is not None:
+        # Requirements describe exact code without importing it during inspection.
+        manifest["extension_requirements"] = copy.deepcopy(list(extension_requirements))
     return manifest
 
 

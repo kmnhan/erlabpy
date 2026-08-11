@@ -18,6 +18,10 @@ from dataclasses import dataclass
 from typing import Self
 
 import erlab
+from erlab.interactive.imagetool.manager._workspace._format import (
+    _current_workspace_schema_version,
+    _workspace_schema_uses_immutable_generations,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -524,7 +528,9 @@ class WorkspaceStore:
                 fs_persist=True,
             )
             self._workspace_id = self._ensure_workspace_id(h5_file, workspace_id)
-            h5_file.attrs["imagetool_workspace_schema_version"] = 5
+            h5_file.attrs["imagetool_workspace_schema_version"] = (
+                _current_workspace_schema_version()
+            )
             h5_file.attrs["erlab_version"] = str(erlab.__version__)
             h5_file.require_group(_WORKSPACE_OBJECTS_GROUP)
             h5_file.require_group(_WORKSPACE_STAGING_GROUP)
@@ -1151,7 +1157,9 @@ class WorkspaceStore:
         manifest = json.loads(raw)
         if not isinstance(manifest, dict):
             raise TypeError("Workspace generation manifest is not an object")
-        if int(manifest.get("schema_version", 0)) != 5:
+        if not _workspace_schema_uses_immutable_generations(
+            int(manifest.get("schema_version", 0))
+        ):
             raise ValueError("Workspace generation has an unsupported schema")
         nodes = manifest.get("nodes")
         if not isinstance(nodes, list):
@@ -1208,7 +1216,7 @@ class WorkspaceStore:
             staging_name = uuid.uuid4().hex
             staging = staging_root.create_group(staging_name)
             generation_manifest = dict(manifest)
-            generation_manifest["schema_version"] = 5
+            generation_manifest["schema_version"] = _current_workspace_schema_version()
             generation_manifest.pop("generation", None)
             try:
                 self._write_manifest(staging, generation_manifest)
@@ -1225,7 +1233,9 @@ class WorkspaceStore:
                 f"/{_WORKSPACE_STAGING_GROUP}/{staging_name}",
                 f"/{_WORKSPACE_GENERATIONS_GROUP}/{generation_name}",
             )
-            self.h5_file.attrs["imagetool_workspace_schema_version"] = 5
+            self.h5_file.attrs["imagetool_workspace_schema_version"] = (
+                _current_workspace_schema_version()
+            )
             self.h5_file.attrs["erlab_version"] = str(erlab.__version__)
             self.flush(durable=True)
             return _WorkspaceGeneration(sequence, generation_manifest)
@@ -1242,8 +1252,8 @@ class WorkspaceStore:
             os.fsync(int(handle))
 
     @staticmethod
-    def manifest_object_ids(manifest: Mapping[str, typing.Any]) -> frozenset[str]:
-        """Return payload object IDs referenced by a manifest."""
+    def manifest_node_object_ids(manifest: Mapping[str, typing.Any]) -> frozenset[str]:
+        """Return data object IDs referenced by workspace nodes."""
         object_ids: set[str] = set()
         nodes = manifest.get("nodes", ())
         if not isinstance(nodes, list):
@@ -1255,6 +1265,29 @@ class WorkspaceStore:
             if isinstance(object_id, str) and object_id:
                 object_ids.add(object_id)
         return frozenset(object_ids)
+
+    @staticmethod
+    def manifest_extension_object_ids(
+        manifest: Mapping[str, typing.Any],
+    ) -> frozenset[str]:
+        """Return embedded extension object IDs referenced by a manifest."""
+        object_ids: set[str] = set()
+        requirements = manifest.get("extension_requirements", ())
+        if isinstance(requirements, list):
+            for requirement in requirements:
+                if not isinstance(requirement, dict):
+                    continue
+                object_id = requirement.get("embedded_object_id")
+                if isinstance(object_id, str) and object_id:
+                    object_ids.add(object_id)
+        return frozenset(object_ids)
+
+    @classmethod
+    def manifest_object_ids(cls, manifest: Mapping[str, typing.Any]) -> frozenset[str]:
+        """Return all immutable object IDs referenced by a manifest."""
+        return cls.manifest_node_object_ids(
+            manifest
+        ) | cls.manifest_extension_object_ids(manifest)
 
     def collect_garbage(
         self,

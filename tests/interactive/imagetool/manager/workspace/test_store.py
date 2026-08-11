@@ -23,7 +23,7 @@ if typing.TYPE_CHECKING:
 
 def _manifest(*object_ids: str) -> dict[str, object]:
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "nodes": [
             {
                 "uid": f"node-{index}",

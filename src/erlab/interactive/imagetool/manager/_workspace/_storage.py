@@ -14,6 +14,7 @@ import typing
 import uuid
 from dataclasses import dataclass
 
+import numpy as np
 from qtpy import QtCore
 
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
@@ -27,7 +28,7 @@ from erlab.interactive.imagetool.manager._workspace._format import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping
+    from collections.abc import Callable, Iterable, Iterator, Mapping
 
     import h5py
     import xarray as xr
@@ -47,6 +48,8 @@ class _WorkspaceObjectWrite:
     dataset: xr.Dataset | None = None
     source_file: str | None = None
     source_path: str | None = None
+    blob: bytes | None = None
+    blob_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,27 @@ def _workspace_generation_copy_source(
     workspace_arrays.ensure_workspace_hdf5_filters_registered()
     with workspace_arrays._workspace_file_lock(path), h5py.File(path, "r") as h5_file:
         yield h5_file
+
+
+def _existing_workspace_object_ids(
+    path: str | os.PathLike[str], object_ids: Iterable[str]
+) -> frozenset[str]:
+    """Return only immutable objects that can be copied from a workspace.
+
+    A degraded document can retain a manifest reference whose object was already
+    missing. Save As must preserve that unresolved reference without attempting a
+    copy that would abort the complete save.
+    """
+    candidates = frozenset(object_ids)
+    if not candidates:
+        return frozenset()
+    with _workspace_generation_copy_source(path) as h5_file:
+        return frozenset(
+            object_id
+            for object_id in candidates
+            if workspace_store.WorkspaceStore.object_path(object_id).strip("/")
+            in h5_file
+        )
 
 
 def _copy_workspace_group(
@@ -168,6 +192,15 @@ def _write_workspace_generation(
                             compression_mode=compression_mode,
                         )
                     continue
+                if item.blob is not None:
+                    with target_store.lock:
+                        group = target_store.h5_file.require_group(target_path)
+                        group.attrs["erlab_object_kind"] = item.blob_kind or "blob"
+                        group.create_dataset(
+                            "source",
+                            data=np.frombuffer(item.blob, dtype=np.uint8),
+                        )
+                    continue
                 source_file, source_path = _workspace_object_copy_source(item)
                 _copy_workspace_group(
                     target_store,
@@ -193,6 +226,20 @@ def _write_workspace_generation(
             raise
 
 
+def _read_workspace_blob(
+    path: str | os.PathLike[str], object_id: str
+) -> tuple[bytes, str | None]:
+    """Read one immutable binary object without executing its contents."""
+    object_path = workspace_store.WorkspaceStore.object_path(object_id)
+    with _workspace_generation_copy_source(path) as h5_file:
+        group = h5_file[object_path]
+        raw = group["source"][()]
+        kind = group.attrs.get("erlab_object_kind")
+        if isinstance(kind, bytes):
+            kind = kind.decode()
+        return bytes(raw), kind if isinstance(kind, str) else None
+
+
 def _compact_workspace_store(
     store: workspace_store.WorkspaceStore,
     *,
@@ -214,6 +261,10 @@ def _compact_workspace_store(
             baseline_manifest.pop("replacement_delta_count", None)
             baseline_manifest.pop("repack_estimate_known", None)
             object_ids = set(store.manifest_object_ids(baseline_manifest))
+            node_object_ids = set(store.manifest_node_object_ids(baseline_manifest))
+            extension_object_ids = set(
+                store.manifest_extension_object_ids(baseline_manifest)
+            )
             object_ids.update(store.leased_object_ids)
             serialized_pins = store.serialized_reader_pin_snapshot()
             discarded_pins = (
@@ -224,6 +275,11 @@ def _compact_workspace_store(
                 object_id
                 for object_id, version in serialized_pins.object_versions.items()
                 if version > discarded_pins.object_versions.get(object_id, -1)
+            )
+            optional_missing_extension_ids = (
+                extension_object_ids
+                - node_object_ids
+                - set(serialized_pins.object_versions)
             )
             legacy_group_paths = store.leased_legacy_group_paths | {
                 group_path
@@ -263,6 +319,8 @@ def _compact_workspace_store(
                             None,
                         )
                         if not copied:
+                            if object_id in optional_missing_extension_ids:
+                                continue
                             raise KeyError(f"Workspace object {object_id!r} is missing")
                 compacted.publish(baseline_manifest)
                 compacted.publish(baseline_manifest)
@@ -276,7 +334,7 @@ def _compact_workspace_store(
                     )
                 if any(
                     compacted.object_path(object_id).strip("/") not in compacted.h5_file
-                    for object_id in object_ids
+                    for object_id in object_ids - optional_missing_extension_ids
                 ):
                     raise RuntimeError(
                         "Compacted workspace is missing a payload object"
@@ -654,6 +712,34 @@ def _recover_workspace_transactions(fname: str | os.PathLike[str]) -> None:
         if not _workspace_path_is_itws(fname):
             return
         active_store = workspace_store.WorkspaceStore.active(fname)
+        read_context = (
+            active_store.read_session()
+            if active_store is not None
+            else h5py.File(fname, "r")
+        )
+        with read_context as h5_file:
+            if not _workspace_file_is_workspace(h5_file):
+                return
+            transaction_names = {
+                name
+                for name in h5_file
+                if name.startswith(_WORKSPACE_TRANSACTION_GROUP_PREFIX)
+            }
+            transaction_roots: set[str] = set()
+            for name in transaction_names:
+                pending_root, backup_root = _workspace_transaction_roots(h5_file[name])
+                transaction_roots.update(
+                    root for root in (pending_root, backup_root) if root is not None
+                )
+            has_orphan = any(
+                name.startswith(
+                    (_WORKSPACE_PENDING_GROUP_PREFIX, _WORKSPACE_BACKUP_GROUP_PREFIX)
+                )
+                and name not in transaction_roots
+                for name in h5_file
+            )
+        if not transaction_names and not has_orphan:
+            return
         file_context = (
             active_store.write_session()
             if active_store is not None

@@ -44,6 +44,9 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
     _ChooseFromWorkspaceManifestDialog,
 )
+from erlab.interactive.imagetool.manager._extensions._models import (
+    _WorkspaceExtensionRequirement,
+)
 from erlab.interactive.imagetool.manager._widgets import (
     _WORKSPACE_REBIND_KEEP_CHUNKS,
     _strip_workspace_modified_placeholder,
@@ -823,7 +826,9 @@ class _WorkspaceLoader:
             )
             return False
         return (
-            schema_version == workspace_format._current_workspace_schema_version()
+            workspace_format._workspace_schema_uses_immutable_generations(
+                schema_version
+            )
             and manifest is not None
         )
 
@@ -1834,7 +1839,9 @@ class _WorkspaceLoader:
                 workspace_format._workspace_file_metadata_from_attrs(root_attrs)
             )
             if (
-                schema_version == workspace_format._current_workspace_schema_version()
+                workspace_format._workspace_schema_uses_immutable_generations(
+                    schema_version
+                )
                 and manifest is not None
             ):
                 self._from_h5py_workspace_file(
@@ -2411,8 +2418,9 @@ class _WorkspaceLoader:
                             )
                         )
                     if (
-                        schema_version
-                        == workspace_format._current_workspace_schema_version()
+                        workspace_format._workspace_schema_uses_immutable_generations(
+                            schema_version
+                        )
                         and manifest is not None
                     ):
                         load_store = None
@@ -2438,14 +2446,45 @@ class _WorkspaceLoader:
                                 ):
                                     return self._finish_workspace_file_load(False)
                                 selected_paths = dialog.selected_paths()
-                            loaded = self._from_h5py_workspace_file(
-                                access.path,
-                                manifest,
-                                replace=replace,
-                                mark_dirty=mark_dirty,
-                                selected_paths=selected_paths,
-                                profiler=profiler,
+                            previous_extension_state = (
+                                self._manager._extensions.workspace_requirement_state()
                             )
+                            previous_save_as_only = (
+                                self._manager._workspace_state.save_as_only
+                            )
+                            previous_degraded_reasons = (
+                                self._manager._workspace_state.degraded_reasons
+                            )
+                            try:
+                                self._prepare_extension_requirements(
+                                    access.path, manifest, replace=replace
+                                )
+                                loaded = self._from_h5py_workspace_file(
+                                    access.path,
+                                    manifest,
+                                    replace=replace,
+                                    mark_dirty=mark_dirty,
+                                    selected_paths=selected_paths,
+                                    profiler=profiler,
+                                )
+                            except Exception:
+                                (
+                                    previous_requirements,
+                                    previous_embedded_sources,
+                                    previous_unresolved_payloads,
+                                ) = previous_extension_state
+                                self._manager._extensions.set_workspace_requirements(
+                                    previous_requirements,
+                                    embedded_sources=previous_embedded_sources,
+                                    unresolved_payloads=previous_unresolved_payloads,
+                                )
+                                self._manager._workspace_state.save_as_only = (
+                                    previous_save_as_only
+                                )
+                                self._manager._workspace_state.degraded_reasons = (
+                                    previous_degraded_reasons
+                                )
+                                raise
                             if loaded and associate:
                                 self._controller._associate_loaded_workspace_file(
                                     access.path,
@@ -2462,6 +2501,8 @@ class _WorkspaceLoader:
                                     self._restore_workspace_loader_state(
                                         manifest, apply_explorer=False
                                     )
+                            if loaded:
+                                self._manager._extensions.notify_unavailable_workspace_requirements()
                             return _retain_imported_source(access, loaded)
                         finally:
                             if (
@@ -2471,9 +2512,8 @@ class _WorkspaceLoader:
                             ):
                                 load_store.close()
                 except Exception:
-                    if (
+                    if workspace_format._workspace_schema_uses_immutable_generations(
                         schema_version
-                        == workspace_format._current_workspace_schema_version()
                     ):
                         raise
                     logger.debug(
@@ -2510,6 +2550,10 @@ class _WorkspaceLoader:
                         workspace_file_path=access.path,
                         profiler=profiler,
                     )
+                    if replace:
+                        self._manager._extensions.set_workspace_requirements(())
+                        self._manager._workspace_state.save_as_only = False
+                        self._manager._workspace_state.degraded_reasons = ()
                     if loaded and associate:
                         self._controller._associate_loaded_workspace_file(
                             access.path,
@@ -2537,3 +2581,95 @@ class _WorkspaceLoader:
             self._controller._release_unused_imported_workspace_accesses()
             self._missing_workspace_colormaps = previous_missing_colormaps
             self._skipped_workspace_nodes = previous_skipped_nodes
+
+    def _prepare_extension_requirements(
+        self,
+        workspace_path: pathlib.Path,
+        manifest: Mapping[str, typing.Any],
+        *,
+        replace: bool,
+    ) -> None:
+        """Inspect exact workspace requirements without importing embedded code."""
+        raw_requirements = manifest.get("extension_requirements", ())
+        requirements: list[_WorkspaceExtensionRequirement] = []
+        unresolved_payloads: list[typing.Any] = []
+        embedded_sources: dict[tuple[str, str], bytes] = {}
+        invalid_entries = 0
+        if isinstance(raw_requirements, list):
+            for raw in raw_requirements:
+                try:
+                    requirement = _WorkspaceExtensionRequirement.model_validate(raw)
+                except Exception:
+                    invalid_entries += 1
+                    unresolved_payloads.append(copy.deepcopy(raw))
+                    logger.warning(
+                        "Preserving an invalid workspace extension requirement",
+                        exc_info=True,
+                        extra={"suppress_ui_alert": True},
+                    )
+                    continue
+                requirements.append(requirement)
+                if requirement.embedded_object_id is None:
+                    continue
+                try:
+                    source, kind = workspace_storage._read_workspace_blob(
+                        workspace_path, requirement.embedded_object_id
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not read embedded extension source %s",
+                        requirement.embedded_object_id,
+                        exc_info=True,
+                        extra={"suppress_ui_alert": True},
+                    )
+                    continue
+                if kind != "extension-python-source-v1":
+                    continue
+                embedded_sources[
+                    (requirement.extension_id, requirement.revision_hash)
+                ] = source
+        elif "extension_requirements" in manifest:
+            invalid_entries = 1
+            unresolved_payloads.append(copy.deepcopy(raw_requirements))
+            logger.warning(
+                "Preserving a malformed workspace extension requirement container",
+                extra={"suppress_ui_alert": True},
+            )
+        if replace:
+            self._manager._extensions.set_workspace_requirements(
+                requirements,
+                embedded_sources=embedded_sources,
+                unresolved_payloads=unresolved_payloads,
+            )
+        else:
+            self._manager._extensions.set_workspace_requirements(
+                (
+                    *self._manager._extensions.collect_workspace_requirements(),
+                    *requirements,
+                ),
+                embedded_sources={
+                    **self._manager._extensions._workspace_embedded_sources,
+                    **embedded_sources,
+                },
+                unresolved_payloads=(
+                    *self._manager._extensions._unresolved_workspace_requirement_payloads,
+                    *unresolved_payloads,
+                ),
+            )
+        unavailable = [
+            item
+            for item in self._manager._extensions.resolved_workspace_requirements(
+                include_current=False
+            )
+            if item.state != "ready"
+        ]
+        if replace:
+            self._manager._workspace_state.save_as_only = bool(
+                unavailable or invalid_entries
+            )
+            reasons = [
+                f"{item.requirement.extension_id}: {item.state}" for item in unavailable
+            ]
+            if invalid_entries:
+                reasons.append(f"{invalid_entries} invalid extension requirements")
+            self._manager._workspace_state.degraded_reasons = tuple(reasons)

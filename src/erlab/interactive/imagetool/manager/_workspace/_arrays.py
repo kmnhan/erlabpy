@@ -39,6 +39,7 @@ from erlab.interactive.imagetool.manager._workspace._format import (
     _restore_workspace_serialized_attrs,
     _sanitize_workspace_attr_names,
     _workspace_file_is_workspace,
+    _workspace_schema_uses_immutable_generations,
     _workspace_serializable_attrs,
 )
 
@@ -848,7 +849,9 @@ def _read_workspace_root_attrs_h5py(
     if active_store is not None:
         with active_store.read_session() as h5_file:
             attrs = _h5py_attrs_to_dict(h5_file.attrs)
-            if int(attrs.get("imagetool_workspace_schema_version", 1)) == 5:
+            if _workspace_schema_uses_immutable_generations(
+                int(attrs.get("imagetool_workspace_schema_version", 1))
+            ):
                 attrs[_WORKSPACE_MANIFEST_ATTR] = json.dumps(
                     active_store.current_generation().manifest
                 )
@@ -858,7 +861,9 @@ def _read_workspace_root_attrs_h5py(
         if not _workspace_file_is_workspace(h5_file):
             raise ValueError("Not a valid workspace file")
         attrs = _h5py_attrs_to_dict(h5_file.attrs)
-        if int(attrs.get("imagetool_workspace_schema_version", 1)) == 5:
+        if _workspace_schema_uses_immutable_generations(
+            int(attrs.get("imagetool_workspace_schema_version", 1))
+        ):
             generation_root = h5_file.get(workspace_store._WORKSPACE_GENERATIONS_GROUP)
             if generation_root is None:
                 raise ValueError("Workspace has no committed generation")

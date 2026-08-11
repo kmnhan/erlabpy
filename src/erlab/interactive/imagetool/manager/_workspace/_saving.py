@@ -559,6 +559,9 @@ class _WorkspaceSaver:
             standalone_apps=self._workspace_standalone_apps_snapshot(),
             option_overrides=self._workspace_option_overrides_snapshot(),
             acquisition_context=(self._manager._acquisition_context.state_payload()),
+            extension_requirements=(
+                self._manager._extensions.workspace_requirement_payloads()
+            ),
         )
 
     def _workspace_compression_mode(self) -> WorkspaceCompressionMode:
@@ -1020,9 +1023,8 @@ class _WorkspaceSaver:
                 schema_version, manifest = (
                     workspace_format._workspace_file_metadata_from_attrs(root_attrs)
                 )
-                if (
+                if workspace_format._workspace_schema_uses_immutable_generations(
                     schema_version
-                    == workspace_format._current_workspace_schema_version()
                 ):
                     current_manifest = manifest
 
@@ -1178,6 +1180,63 @@ class _WorkspaceSaver:
             final_entries.append(entry)
 
         manifest["nodes"] = final_entries
+        node_object_ids = {
+            str(entry["payload_object_id"])
+            for entry in final_entries
+            if entry.get("payload_object_id")
+        }
+        previous_extension_object_ids: frozenset[str] = frozenset()
+        if current_manifest is not None and source_workspace_path is not None:
+            with contextlib.suppress(OSError, KeyError):
+                previous_extension_object_ids = (
+                    workspace_storage._existing_workspace_object_ids(
+                        source_workspace_path,
+                        workspace_store.WorkspaceStore.manifest_object_ids(
+                            current_manifest
+                        ),
+                    )
+                )
+        for raw_requirement in manifest.get("extension_requirements", ()):
+            if not isinstance(raw_requirement, dict):
+                continue
+            object_id = raw_requirement.get("embedded_object_id")
+            if not isinstance(object_id, str) or not object_id:
+                continue
+            if object_id in node_object_ids:
+                logger.warning(
+                    "Ignoring an extension object ID that conflicts with node data",
+                    extra={"suppress_ui_alert": True},
+                )
+                continue
+            if (
+                source_workspace_path is not None
+                and object_id in previous_extension_object_ids
+            ):
+                object_writes.setdefault(
+                    object_id,
+                    workspace_storage._WorkspaceObjectWrite(
+                        object_id,
+                        source_file=str(source_workspace_path),
+                        source_path=workspace_store.WorkspaceStore.object_path(
+                            object_id
+                        ),
+                    ),
+                )
+            extension_id = raw_requirement.get("extension_id")
+            revision_hash = raw_requirement.get("revision_hash")
+            if not isinstance(extension_id, str) or not isinstance(revision_hash, str):
+                continue
+            try:
+                source = self._manager._extensions.revision_source_bytes(
+                    extension_id, revision_hash
+                )
+            except (FileNotFoundError, KeyError):
+                continue
+            object_writes[object_id] = workspace_storage._WorkspaceObjectWrite(
+                object_id,
+                blob=source,
+                blob_kind="extension-python-source-v1",
+            )
         manifest["schema_version"] = (
             workspace_format._current_workspace_schema_version()
         )
