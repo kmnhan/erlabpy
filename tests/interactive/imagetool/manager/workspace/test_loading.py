@@ -733,6 +733,44 @@ def test_pending_tool_reference_reads_owner_workspace(
         assert workspace_paths == [imported_path]
 
 
+def test_saved_workspace_reference_rejects_mismatched_payload(
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        loader = manager._workspace_controller.loading
+        monkeypatch.setattr(
+            loader,
+            "_workspace_payload_path_for_uid",
+            lambda *_args, **_kwargs: "payload",
+        )
+        monkeypatch.setattr(
+            loader,
+            "_workspace_imagetool_reference_dataset_at",
+            lambda *_args, **_kwargs: xr.Dataset(
+                attrs={
+                    "manager_node_uid": "different-source",
+                    "manager_node_kind": "imagetool",
+                }
+            ),
+        )
+
+        assert (
+            loader._saved_workspace_reference_source_data_for_uid(
+                "expected-source",
+                snapshot_token=None,
+                data_role="displayed",
+                owner_node=None,
+                reference_datasets=None,
+                workspace_path=tmp_path / "workspace.itws",
+            )
+            is None
+        )
+
+
 def test_manager_workspace_roundtrip_restores_loader_and_standalone_apps(
     qtbot,
     tmp_path: pathlib.Path,

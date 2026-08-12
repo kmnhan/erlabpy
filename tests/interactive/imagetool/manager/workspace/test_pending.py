@@ -2173,10 +2173,32 @@ def test_pending_workspace_1d_roles_match_materialized_provenance_input(
             assert ".squeeze()" not in code
             namespace = _exec_generated_code(code, {"watched_1d": data.copy(deep=True)})
             xr.testing.assert_identical(namespace["derived"], data)
-
         manager.get_imagetool(0)
         for role in ("source", "displayed"):
             xr.testing.assert_identical(wrapper.data_for_role(role), pending[role])
+
+
+def test_detached_pending_workspace_source_preserves_promoted_1d_marker(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="source")
+    opened = xr.Dataset({_ITOOL_DATA_NAME: data})
+
+    with manager_context() as manager:
+        pending = manager._workspace_controller.loading.pending
+        for data_role in ("source", "displayed"):
+            restored = pending._workspace_imagetool_source_data_from_payload(
+                opened,
+                attrs={},
+                data_role=data_role,
+                name="restored",
+                source_input_ndim=1,
+            )
+
+            assert restored.name == "restored"
+            assert restored.attrs["_erlab_promoted_from_1d_source"] is True
 
 
 def test_pending_workspace_filter_validation(monkeypatch) -> None:
