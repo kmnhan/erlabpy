@@ -1,5 +1,6 @@
 __all__ = ["meshtool"]
 
+import contextlib
 import enum
 import importlib.resources
 import os
@@ -94,18 +95,36 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
     @tool_status.setter
     def tool_status(self, status: StateModel) -> None:
         self.data_name = status.data_name
-        self.p0_spin0.setValue(int(status.first_order_peaks[1][0]))
-        self.p0_spin1.setValue(int(status.first_order_peaks[1][1]))
-        self.p1_spin0.setValue(int(status.first_order_peaks[2][0]))
-        self.p1_spin1.setValue(int(status.first_order_peaks[2][1]))
+        with contextlib.ExitStack() as stack:
+            if self._dataset_restore_in_progress:
+                for widget in (
+                    self.p0_spin0,
+                    self.p0_spin1,
+                    self.p1_spin0,
+                    self.p1_spin1,
+                    self.order_spin,
+                    self.n_pad_spin,
+                    self.roi_hw_spin,
+                    self.k_spin,
+                    self.feather_spin,
+                    self.undo_edge_correction_check,
+                    self.method_combo,
+                ):
+                    stack.enter_context(QtCore.QSignalBlocker(widget))
+            self.p0_spin0.setValue(int(status.first_order_peaks[1][0]))
+            self.p0_spin1.setValue(int(status.first_order_peaks[1][1]))
+            self.p1_spin0.setValue(int(status.first_order_peaks[2][0]))
+            self.p1_spin1.setValue(int(status.first_order_peaks[2][1]))
 
-        self.order_spin.setValue(status.order)
-        self.n_pad_spin.setValue(status.n_pad)
-        self.roi_hw_spin.setValue(status.roi_hw)
-        self.k_spin.setValue(status.k)
-        self.feather_spin.setValue(status.feather)
-        self.undo_edge_correction_check.setChecked(status.undo_edge_correction)
-        self.method_combo.setCurrentText(status.method)
+            self.order_spin.setValue(status.order)
+            self.n_pad_spin.setValue(status.n_pad)
+            self.roi_hw_spin.setValue(status.roi_hw)
+            self.k_spin.setValue(status.k)
+            self.feather_spin.setValue(status.feather)
+            self.undo_edge_correction_check.setChecked(status.undo_edge_correction)
+            self.method_combo.setCurrentText(status.method)
+        if self._dataset_restore_in_progress:
+            self._update_target_pos()
 
     @property
     def tool_data(self) -> xr.DataArray:
@@ -370,6 +389,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
 
     def _restore_initial_preview(self) -> None:
         self.set_data_beforecalc(initial=True)
+        self._update_target_pos()
 
     @QtCore.Slot()
     def _update_target_pos(self) -> None:
@@ -400,6 +420,10 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
 
     @QtCore.Slot()
     def _update_higher_order_targets(self) -> None:
+        image = self.main_fft_image.image
+        if image is None:
+            return
+
         status = self.tool_status
         order: int = status.order
         first_order: list[list[int]] = status.first_order_peaks
@@ -407,7 +431,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
         higher_order = erlab.analysis.mesh.higher_order_peaks(
             first_order,
             order=order,
-            shape=self.main_fft_image.image.shape,
+            shape=image.shape,
             include_center=False,
             only_upper=False,
         )[2:]
