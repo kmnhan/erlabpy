@@ -387,7 +387,18 @@ class _WorkspaceSaver:
                 node.pending_workspace_payload is not None
                 and not node.materialize_pending_workspace_payload()
             ):
-                raise ValueError("Could not read this saved tool from the workspace.")
+                message = "Could not read this saved tool from the workspace"
+                if node.display_text:
+                    message += f": {node.display_text!r}"
+                message += f" ({node.uid})"
+                unavailable_uids = (
+                    self._pending_workspace_tool_unavailable_reference_uids(node)
+                )
+                if unavailable_uids:
+                    message += ". Unavailable manager-node references: " + ", ".join(
+                        unavailable_uids
+                    )
+                raise ValueError(f"{message}.")
             tool = typing.cast("erlab.interactive.utils.ToolWindow", node.tool_window)
             if not tool.can_save_and_load():
                 return
@@ -933,6 +944,50 @@ class _WorkspaceSaver:
             ):
                 return False
         return True
+
+    def _pending_workspace_tool_unavailable_reference_uids(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> tuple[str, ...]:
+        attrs = node.pending_workspace_payload_attrs
+        if attrs is None:
+            return ()
+        payload = attrs.get(erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR)
+        if isinstance(payload, bytes):
+            with contextlib.suppress(UnicodeDecodeError):
+                payload = payload.decode()
+        if not isinstance(payload, str):
+            return ()
+        try:
+            references = json.loads(payload)
+        except Exception:
+            return ()
+        if not isinstance(references, dict):
+            return ()
+        unavailable_uids: set[str] = set()
+        for reference in references.values():
+            if not isinstance(reference, dict):
+                continue
+            kind = reference.get("kind")
+            if kind == "parent_source":
+                parent_uid = node.parent_uid
+                if (
+                    isinstance(parent_uid, str)
+                    and parent_uid not in self._manager._tool_graph.nodes
+                ):
+                    unavailable_uids.add(parent_uid)
+                continue
+            if kind != "manager_node":
+                continue
+            node_uid = reference.get("node_uid")
+            if (
+                isinstance(node_uid, str)
+                and node_uid
+                and not self._controller._tool_data_reference_matches_current_snapshot(
+                    reference
+                )
+            ):
+                unavailable_uids.add(node_uid)
+        return tuple(sorted(unavailable_uids))
 
     def _workspace_save_snapshot(
         self, fname: str | os.PathLike[str]

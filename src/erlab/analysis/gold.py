@@ -669,9 +669,6 @@ def guess_edge_fit_range(
         If the input is not one-dimensional, lacks required temperature metadata, has
         insufficient data, or has no qualifying falling edge.
 
-    .. versionchanged:: 3.27.0
-
-        Added `use_step_edge`. The old ``fast`` argument is deprecated.
     """
     use_step_edge = _parse_deprecated_fast(use_step_edge, kwargs)
     _raise_unexpected_kwargs("guess_edge_fit_range", kwargs)
