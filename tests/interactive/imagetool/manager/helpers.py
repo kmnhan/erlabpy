@@ -306,7 +306,7 @@ def configure_goldtool_child(
                 "Bin x": 2,
                 "Bin y": 3,
                 "Resolution": 0.015,
-                "Fast": False,
+                "Step edge": False,
                 "Linear": False,
                 "Method": "cg",
                 "Scale cov": False,
@@ -337,7 +337,7 @@ def configure_goldtool_child(
 
     tool.params_roi.modify_roi(x0=-8.0, x1=8.0, y0=-0.2, y1=0.1)
     tool.refit_on_source_update_check.setChecked(True)
-    tool._toggle_fast()
+    tool._toggle_step_edge()
     tool._sync_spline_lambda_enabled()
 
     if fitted:
