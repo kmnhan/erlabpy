@@ -349,6 +349,128 @@ def test_colorbar_handle_drag_updates_large_data_levels(qtbot):
     assert image.getLevels() == pytest.approx((lower, upper))
 
 
+def test_trackable_linear_region_preserves_drag_behavior(qtbot):
+    class DragEvent:
+        def __init__(
+            self,
+            x: float,
+            *,
+            start: bool = False,
+            finish: bool = False,
+            button: QtCore.Qt.MouseButton = QtCore.Qt.MouseButton.LeftButton,
+        ) -> None:
+            self._pos = QtCore.QPointF(x, 0.0)
+            self._start = start
+            self._finish = finish
+            self._button = button
+            self.accepted = False
+
+        def button(self) -> QtCore.Qt.MouseButton:
+            return self._button
+
+        def isStart(self) -> bool:
+            return self._start
+
+        def isFinish(self) -> bool:
+            return self._finish
+
+        def buttonDownPos(self) -> QtCore.QPointF:
+            return QtCore.QPointF()
+
+        def pos(self) -> QtCore.QPointF:
+            return self._pos
+
+        def accept(self) -> None:
+            self.accepted = True
+
+    widget = pg.PlotWidget()
+    qtbot.addWidget(widget)
+    region = erlab.interactive.colors.TrackableLinearRegionItem((1.0, 2.0))
+    widget.addItem(region)
+
+    events: list[str] = []
+    positions: list[tuple[float, float]] = []
+    moving: list[bool] = []
+    accepted: list[bool] = []
+    start_states: list[
+        tuple[
+            bool,
+            list[tuple[float, float]],
+            list[tuple[float, float]],
+            bool,
+        ]
+    ] = []
+    active_event: DragEvent | None = None
+
+    def record_start(item) -> None:
+        if active_event is None:
+            raise RuntimeError("Missing active drag event")
+        start_states.append(
+            (
+                item.moving,
+                [(point.x(), point.y()) for point in item.cursorOffsets],
+                [(point.x(), point.y()) for point in item.startPositions],
+                active_event.accepted,
+            )
+        )
+        events.append("started")
+
+    region.sigRegionChangeStarted.connect(record_start)
+    region.sigRegionChanged.connect(lambda _: events.append("changed"))
+    region.sigRegionChangeFinished.connect(lambda _: events.append("finished"))
+
+    for active_event in (
+        DragEvent(1.0, start=True),
+        DragEvent(2.0),
+        DragEvent(3.0, finish=True),
+    ):
+        region.mouseDragEvent(active_event)
+        positions.append(region.getRegion())
+        moving.append(region.moving)
+        accepted.append(active_event.accepted)
+
+    assert events == ["started", "changed", "changed", "finished"]
+    assert positions == [(2.0, 3.0), (3.0, 4.0), (4.0, 5.0)]
+    assert moving == [True, True, False]
+    assert accepted == [True, True, True]
+    assert start_states == [
+        (True, [(1.0, 0.0), (2.0, 0.0)], [(1.0, 0.0), (2.0, 0.0)], True)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("movable", "button"),
+    [
+        (False, QtCore.Qt.MouseButton.LeftButton),
+        (True, QtCore.Qt.MouseButton.RightButton),
+    ],
+)
+def test_trackable_linear_region_ignores_invalid_drag_start(
+    qtbot, movable: bool, button: QtCore.Qt.MouseButton
+) -> None:
+    region = erlab.interactive.colors.TrackableLinearRegionItem(movable=movable)
+    started: list[object] = []
+    region.sigRegionChangeStarted.connect(started.append)
+
+    class DragStartEvent:
+        accepted = False
+
+        def button(self) -> QtCore.Qt.MouseButton:
+            return button
+
+        def isStart(self) -> bool:
+            return True
+
+        def accept(self) -> None:
+            self.accepted = True
+
+    event = DragStartEvent()
+    region.mouseDragEvent(event)
+
+    assert not event.accepted
+    assert started == []
+
+
 def test_colorbar_image_maps_to_large_data_limits(qtbot):
     mn, mx = 1e11, 1e15
     image = BetterImageItem(np.array([[mn, mx]], dtype=float))

@@ -2251,6 +2251,126 @@ def test_better_axis_item_paint_reraises_unexpected_error(qtbot, monkeypatch) ->
         axis.paint(None, None, None)
 
 
+@pytest.mark.parametrize(
+    ("axis_max", "scale", "prefix"),
+    [
+        (1e-6, 1e6, "µ"),
+        (1e-3, 1.0, ""),
+        (1.0, 1.0, ""),
+        (1e3, 1.0, ""),
+        (1e6, 1e-6, "M"),
+        (1e9, 1e-9, "G"),
+    ],
+)
+def test_better_axis_item_preserves_unitless_si_prefix_behavior(
+    qtbot, axis_max: float, scale: float, prefix: str
+) -> None:
+    axis = erlab.interactive.utils.BetterAxisItem("bottom")
+    axis.setLabel("Intensity", units="")
+    axis.setRange(0.0, axis_max)
+
+    assert axis.autoSIPrefixScale == pytest.approx(scale)
+    assert axis.labelUnitPrefix == prefix
+
+
+def test_better_axis_item_preserves_tick_and_empty_label_behavior(qtbot) -> None:
+    axis = erlab.interactive.utils.BetterAxisItem("bottom")
+
+    assert axis.tickStrings([-1.0, 0.0, 1.0], 1.0, 1.0) == ["−1", "0", "1"]
+
+    axis.logMode = True
+    values = [-3.0, 0.0, 3.0]
+    assert axis.tickStrings(values, 1.0, 1.0) == axis.logTickStrings(values, 1.0, 1.0)
+
+    axis.setLabel("", "")
+    assert axis.label.isVisible()
+    axis.setLabel(None, None)
+    assert not axis.label.isVisible()
+
+
+def test_better_axis_item_forwards_current_axis_label_options(qtbot) -> None:
+    axis = erlab.interactive.utils.BetterAxisItem("bottom")
+    si_prefix_ranges = ((0.0, float("inf")),)
+
+    axis.setLabel(
+        "Area",
+        units="m²",
+        unitPower=2,
+        siPrefixEnableRanges=si_prefix_ranges,
+        color="red",
+    )
+    axis.setRange(0.0, 1e-6)
+
+    assert axis.unitPower == 2
+    assert axis.getSIPrefixEnableRanges() == si_prefix_ranges
+    assert axis.labelStyle == {"color": "red"}
+    assert axis.autoSIPrefixScale == pytest.approx(1e6)
+    assert axis.labelUnitPrefix == "m"
+
+
+def test_better_axis_item_explicit_unitless_si_prefix_ranges_take_precedence(
+    qtbot,
+) -> None:
+    axis = erlab.interactive.utils.BetterAxisItem("bottom")
+    axis.setLabel(
+        "Counts",
+        units="",
+        siPrefixEnableRanges=((1e3, 1e3),),
+    )
+    axis.setRange(0.0, 1e3)
+
+    assert axis.autoSIPrefixScale == pytest.approx(1e-3)
+    assert axis.labelUnitPrefix == "k"
+
+    axis.setSIPrefixEnableRanges(None)
+    axis.setRange(0.0, 2e3)
+
+    assert axis.autoSIPrefixScale == pytest.approx(1.0)
+    assert axis.labelUnitPrefix == ""
+
+
+@pytest.mark.parametrize(
+    ("axis_max", "scale", "prefix"),
+    [
+        (1e-6, 1e6, "m"),
+        (1e-3, 1.0, ""),
+        (1e6, 1e-6, "k"),
+    ],
+)
+def test_better_axis_item_applies_unitless_thresholds_with_unit_power(
+    qtbot, axis_max: float, scale: float, prefix: str
+) -> None:
+    axis = erlab.interactive.utils.BetterAxisItem("bottom")
+    axis.setLabel("Area", units="", unitPower=2)
+    axis.setRange(0.0, axis_max)
+
+    assert axis.autoSIPrefixScale == pytest.approx(scale)
+    assert axis.labelUnitPrefix == prefix
+
+
+def test_better_axis_item_preserves_negative_axis_scale_si_prefix(qtbot) -> None:
+    axis = erlab.interactive.utils.BetterAxisItem("bottom")
+    axis.setLabel("Energy", units="eV")
+    axis.setScale(-1.0)
+    axis.setRange(0.0, 1e-3)
+
+    assert axis.autoSIPrefixScale == pytest.approx(1e3)
+    assert axis.labelUnitPrefix == "m"
+    values = [0.0, 5e-4, 1e-3]
+    scale = axis.autoSIPrefixScale * axis.scale
+    spacing = 5e-4
+    upstream_strings = pg.AxisItem.tickStrings(
+        axis,
+        [-value for value in values],
+        -scale,
+        spacing,
+    )
+
+    assert axis.tickStrings(values, scale, spacing) == [
+        string.replace("-", "−") for string in upstream_strings
+    ]
+
+
 def test_tool_window_reload_refresh_ignores_deleted_file_menu(qtbot) -> None:
     tool = erlab.interactive.utils.ToolWindow()
     qtbot.addWidget(tool)

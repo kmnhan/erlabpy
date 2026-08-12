@@ -2168,8 +2168,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
 
 class BetterAxisItem(pg.AxisItem):
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+    """Axis item with ERLab label formatting and Qt lifetime guards."""
 
     def paint(self, painter, option, widget=None):
         if not qt_is_valid(self):
@@ -2182,17 +2181,33 @@ class BetterAxisItem(pg.AxisItem):
             raise
 
     def updateAutoSIPrefix(self) -> None:
+        has_explicit_ranges = getattr(
+            self, "_erlab_has_explicit_si_prefix_ranges", False
+        )
+        if self.scale >= 0.0 and (self.labelUnits != "" or has_explicit_ranges):
+            super().updateAutoSIPrefix()
+            return
+
         if self.label.isVisible():
             range_ = 10 ** np.array(self.range) if self.logMode else self.range
-            (scale, prefix) = pg.siScale(
-                max(abs(range_[0] * self.scale), abs(range_[1] * self.scale))
+            scaling_value = max(
+                abs(range_[0] * self.scale), abs(range_[1] * self.scale)
             )
-            if self.labelUnits == "" and prefix in [
-                "k",
-                "m",
-            ]:  # If we are not showing units, wait until 1e6 before scaling.
-                scale = 1.0
-                prefix = ""
+            if has_explicit_ranges:
+                scaling_enabled = any(
+                    low <= scaling_value <= high
+                    for low, high in self.getSIPrefixEnableRanges()
+                )
+            elif self.labelUnits == "":
+                # Keep ERLab's unitless scaling thresholds independently of the
+                # prefix selected for unitPower.
+                scaling_enabled = scaling_value < 1e-3 or scaling_value >= 1e6
+            else:
+                scaling_enabled = True
+            if scaling_enabled:
+                scale, prefix = pg.siScale(scaling_value, power=self.unitPower)
+            else:
+                scale, prefix = 1.0, ""
             self.autoSIPrefixScale = scale
             self.labelUnitPrefix = prefix
         else:
@@ -2201,19 +2216,20 @@ class BetterAxisItem(pg.AxisItem):
         self._updateLabel()
 
     def tickStrings(self, values, scale, spacing):
+        if scale < 0.0 and not self.logMode:
+            # Pyqtgraph rejects negative scales when it calculates the number of
+            # decimal places. Format the equivalent signed values with its current
+            # positive-scale implementation.
+            values = [-value for value in values]
+            scale = -scale
+        strings = super().tickStrings(values, scale, spacing)
         if self.logMode:
-            return self.logTickStrings(values, scale, spacing)
+            return strings
+        return [string.replace("-", "−") for string in strings]
 
-        places = max(0, np.ceil(-np.log10(spacing * scale)))
-        strings = []
-        for v in values:
-            vs = v * scale
-            if abs(vs) < 0.001 or abs(vs) >= 10000:
-                vstr = f"{vs:g}"
-            else:
-                vstr = f"{vs:.{places:.0f}f}"
-            strings.append(vstr.replace("-", "−"))
-        return strings
+    def setSIPrefixEnableRanges(self, ranges=None) -> None:
+        super().setSIPrefixEnableRanges(ranges)
+        self._erlab_has_explicit_si_prefix_ranges = ranges is not None
 
     def labelString(self) -> str:
         if self.labelUnits == "":
@@ -2251,19 +2267,16 @@ class BetterAxisItem(pg.AxisItem):
 
         return f"<span style='{style}'>{s}</span>"
 
-    def setLabel(self, text=None, units=None, unitPrefix=None, **args) -> None:
-        # `None` input is kept for backward compatibility!
-        self.labelText = text or ""
-        self.labelUnits = units or ""
-        self.labelUnitPrefix = unitPrefix or ""
-        if len(args) > 0:
-            self.labelStyle: dict = args
-        # Account empty string and `None` for units and text
-        visible = bool(text or units)
-        if text == units == "":
-            visible = True
-        self.showLabel(visible)
-        self._updateLabel()
+    def setLabel(self, text=None, units=None, unitPrefix=None, **kwargs) -> None:
+        keep_empty_label_visible = text == units == ""
+        super().setLabel(
+            text=text,
+            units=units,
+            unitPrefix=unitPrefix,
+            **kwargs,
+        )
+        if keep_empty_label_visible:
+            self.showLabel(True)
 
 
 class FittingParameterWidget(QtWidgets.QWidget):

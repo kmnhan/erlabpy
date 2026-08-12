@@ -105,25 +105,50 @@ class _CircleROIControlWidget(QtWidgets.QWidget):
 class _MovableCircleROI(pg.CircleROI):
     """Circle ROI with a menu to control position and radius."""
 
-    def __init__(self, pos, size=None, radius=None, **args):
+    removable: bool
+
+    def __init__(self, pos, size=None, radius=None, **args) -> None:
         args.setdefault("removable", True)
         super().__init__(pos, size, radius, **args)
+        self._remove_action: QtGui.QAction | None = None
+        self._pos_menu: QtWidgets.QMenu | None = None
+        self._pos_action: QtWidgets.QWidgetAction | None = None
+        self._pos_widget: _CircleROIControlWidget | None = None
 
-    def getMenu(self):
-        if self.menu is None:
-            self.menu = QtWidgets.QMenu()
-            self.menu.setTitle("ROI")
-            if self.removable:
-                remAct = QtGui.QAction("Remove Circle", self.menu)
-                remAct.triggered.connect(self.removeClicked)
-                self.menu.addAction(remAct)
-                self.menu.remAct = remAct
-            self._pos_menu = self.menu.addMenu("Edit Circle")
-            ctrlAct = QtWidgets.QWidgetAction(self._pos_menu)
-            ctrlAct.setDefaultWidget(_CircleROIControlWidget(self))
-            self._pos_menu.addAction(ctrlAct)
+    def getMenu(self) -> QtWidgets.QMenu:
+        menu_created = self.menu is None
+        add_remove_action = menu_created and self.removable
+        if add_remove_action:
+            self.removable = False
+        try:
+            menu = super().getMenu()
+        finally:
+            if add_remove_action:
+                self.removable = True
 
-        return self.menu
+        if add_remove_action:
+            self._remove_action = QtGui.QAction("Remove Circle", menu)
+            self._remove_action.triggered.connect(self._remove_clicked)
+            menu.addAction(self._remove_action)
+
+        if self._pos_menu is None:
+            self._pos_menu = menu.addMenu("Edit Circle")
+            self._pos_widget = _CircleROIControlWidget(self)
+            self._pos_action = QtWidgets.QWidgetAction(self._pos_menu)
+            self._pos_action.setDefaultWidget(self._pos_widget)
+            self._pos_menu.addAction(self._pos_action)
+
+        return menu
+
+    @QtCore.Slot()
+    def _remove_clicked(self) -> None:
+        QtCore.QTimer.singleShot(0, self._emit_remove_request)
+
+    @QtCore.Slot()
+    def _emit_remove_request(self) -> None:
+        if not erlab.interactive.utils.qt_is_valid(self):
+            return
+        self.sigRemoveRequested.emit(self)
 
     def radius(self) -> float:
         """Radius of the circle."""
