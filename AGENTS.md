@@ -27,11 +27,8 @@ Define the term when the reader might not know it.
 ## Documentation Workflow
 
 Sources live in `docs/source/` (MyST + Sphinx). Install extras using `uv sync --all-extras --dev --group docs`, then render locally via `uv run --directory docs make html`. Put tutorials in `docs/source/user-guide/`, guides in `docs/source/contributing.md`, and images in `docs/source/images/`. Run `make linkcheck` before pushing large doc edits to guard cross-references. The `sphinxext-rediraffe` extension is used for maintaining redirects. Add to the `rediraffe_redirects` dict in `docs/source/conf.py` when moving or renaming pages.
-When changing public API behavior, add a `.. versionchanged::` note in the relevant docstring or user-guide page so it shows up in the generated docs. The version should refer to the next release (likely a minor bump under semver), so double-check the planned version before finalizing the note.
-Use `.. versionadded::` sparingly, for user-facing features or APIs where running the same code on older versions would be confusing or yield ambiguous errors.
 
-When changing docs content or URLs, verify that `skills/arpes-analysis/SKILL.md` still matches current docs/links and update it if needed.
-Write documentation in concrete user-facing terms. Prefer naming the visible object or action ("watched variables", "data loaded from files", "copied code contains...") over abstract implementation phrasing such as "workflows copy code rooted at...". Avoid vague category labels and compressed prose that sound precise but do not say what the user will see.
+When changing docs content or URLs, verify that `skills/arpes-analysis/SKILL.md` still matches current docs/links and update it if needed. Write documentation in concrete user-facing terms. Prefer naming the visible object or action over abstract implementation phrasing. Avoid vague category labels and compressed prose that only sounds precise and does not reflect what the user will see.
 
 ## Coding Style & Naming Conventions
 

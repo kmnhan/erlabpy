@@ -384,35 +384,36 @@ class BetterImageItem(pg.ImageItem):
         self.sigColorChanged.emit()
 
 
+class _DragContinuationEvent:
+    """Forward a drag event after its start state was handled."""
+
+    def __init__(self, event) -> None:
+        self._event = event
+
+    def isStart(self) -> bool:
+        return False
+
+    def __getattr__(self, name: str) -> typing.Any:
+        return getattr(self._event, name)
+
+
 class TrackableLinearRegionItem(pg.LinearRegionItem):
     sigRegionChangeStarted = QtCore.Signal(object)  #: :meta private:
 
     def mouseDragEvent(self, ev) -> None:
-        if not self.movable or ev.button() != QtCore.Qt.MouseButton.LeftButton:
-            return
-        ev.accept()
-
-        if ev.isStart():
-            bdp = ev.buttonDownPos()
-            self.cursorOffsets = [ln.pos() - bdp for ln in self.lines]
-            self.startPositions = [ln.pos() for ln in self.lines]
+        if (
+            self.movable
+            and ev.button() == QtCore.Qt.MouseButton.LeftButton
+            and ev.isStart()
+        ):
+            ev.accept()
+            button_down_pos = ev.buttonDownPos()
+            self.cursorOffsets = [line.pos() - button_down_pos for line in self.lines]
+            self.startPositions = [line.pos() for line in self.lines]
             self.moving = True
             self.sigRegionChangeStarted.emit(self)
-
-        if not self.moving:
-            return
-
-        self.lines[0].blockSignals(True)  # only want to update once
-        for i, ln in enumerate(self.lines):
-            ln.setPos(self.cursorOffsets[i] + ev.pos())
-        self.lines[0].blockSignals(False)
-        self.prepareGeometryChange()
-
-        if ev.isFinish():
-            self.moving = False
-            self.sigRegionChangeFinished.emit(self)
-        else:
-            self.sigRegionChanged.emit(self)
+            ev = _DragContinuationEvent(ev)
+        super().mouseDragEvent(ev)
 
 
 class _ColorBarLimitWidget(QtWidgets.QWidget):

@@ -1,8 +1,10 @@
+import gc
 import tempfile
 import warnings
 from types import SimpleNamespace
 
 import numpy as np
+import pyqtgraph as pg
 import pytest
 import scipy.optimize
 import xarray as xr
@@ -1291,6 +1293,68 @@ def test_kspace_conversion_console_group_stamping_focuses_rows() -> None:
     assert (
         KspaceConversionDialog.operation_group_for_edit(unrelated_attribute, 0) is None
     )
+
+
+@pytest.mark.parametrize("removable", [False, True])
+def test_movable_circle_roi_extends_upstream_menu(
+    qtbot, monkeypatch, removable: bool
+) -> None:
+    upstream_get_menu = pg.CircleROI.getMenu
+    upstream_calls: list[tuple[object, bool]] = []
+
+    def tracked_get_menu(roi):
+        upstream_calls.append((roi, roi.removable))
+        return upstream_get_menu(roi)
+
+    monkeypatch.setattr(pg.CircleROI, "getMenu", tracked_get_menu)
+    roi = erlab.interactive.kspace._MovableCircleROI(
+        (0.0, 0.0), radius=1.0, removable=removable
+    )
+
+    menu = roi.getMenu()
+    assert roi.getMenu() is menu
+    assert upstream_calls == [(roi, False), (roi, removable)]
+    assert roi.removable is removable
+    assert roi._pos_menu.menuAction() in menu.actions()
+    assert roi._pos_action in roi._pos_menu.actions()
+    assert roi._pos_action.defaultWidget() is roi._pos_widget
+
+    gc.collect()
+
+    assert erlab.interactive.utils.qt_is_valid(
+        menu,
+        roi._pos_menu,
+        roi._pos_action,
+        roi._pos_widget,
+    )
+    assert roi._pos_action.defaultWidget() is roi._pos_widget
+
+    if removable:
+        removed: list[object] = []
+        roi.sigRemoveRequested.connect(removed.append)
+        assert roi._remove_action in menu.actions()
+        assert menu.actions() == [roi._remove_action, roi._pos_menu.menuAction()]
+        roi._remove_action.trigger()
+        qtbot.wait_until(lambda: removed == [roi])
+    else:
+        assert roi._remove_action is None
+        assert menu.actions() == [roi._pos_menu.menuAction()]
+
+
+def test_movable_circle_roi_deferred_remove_ignores_deleted_roi(qtbot) -> None:
+    roi = erlab.interactive.kspace._MovableCircleROI((0.0, 0.0), radius=1.0)
+    removed: list[object] = []
+    roi.sigRemoveRequested.connect(removed.append)
+
+    roi._remove_clicked()
+    roi.deleteLater()
+    QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    assert not erlab.interactive.utils.qt_is_valid(roi)
+
+    roi._emit_remove_request()
+    QtCore.QCoreApplication.processEvents()
+
+    assert removed == []
 
 
 @pytest.mark.parametrize("wf", ["wf_auto", "wf_manual"])
