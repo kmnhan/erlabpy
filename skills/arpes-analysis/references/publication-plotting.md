@@ -17,9 +17,9 @@ figure code in the notebook and save from explicit figure objects.
 - Show derivative, curvature, normalized, or symmetrized data as processed data. Label
   the operation and keep a raw comparison nearby.
 - Average a documented physical energy or momentum window before differentiation when
-  one-pixel slices are noisy. Apply coordinate-aware smoothing before curvature or
-  derivative processing. Do not publish a processed panel that is visibly dominated by
-  pixel noise.
+  one-pixel slices are noisy. The window sizes used must be explitly provided to the
+  user. Apply coordinate-aware smoothing before curvature or derivative processing. Do
+  not publish a processed panel that is visibly dominated by pixel noise.
 - Use normalization to reduce broad detector gain or matrix-element modulation only
   when the selected normalization region is visible and documented. Do not interpret a
   normalized intensity change as spectral-weight transfer without separate evidence.

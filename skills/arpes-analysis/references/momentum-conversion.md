@@ -8,7 +8,6 @@ geometry values in visible notebook cells.
 - [Check prerequisites](#check-prerequisites)
 - [Group scans by sample alignment](#group-scans-by-sample-alignment)
 - [Use an existing calibration](#use-an-existing-calibration)
-- [Prepare visual diagnostics](#prepare-visual-diagnostics)
 - [Compare photon energies safely](#compare-photon-energies-safely)
 - [Infer normal emission visually](#infer-normal-emission-visually)
 - [Recognize underdetermined data](#recognize-underdetermined-data)
@@ -108,45 +107,6 @@ data_for_conversion.kspace.set_normal(
 ```
 
 Use `set_normal`. Do not derive offset signs by hand.
-
-## Prepare visual diagnostics
-
-Matrix elements can make one side of a band much brighter than the other. Determine
-the center from band positions and contour geometry, not from intensity maxima.
-
-Prepare all of these views before proposing a center:
-
-1. Keep a raw, unsymmetrized angle-space view.
-2. Average a finite energy window that is wide enough for the count rate and energy
-   resolution. Record the full width.
-3. Apply coordinate-aware smoothing in physical angle and energy units. Do not apply a
-   derivative to a visibly noisy image.
-4. Add a normalized or local-contrast view to reduce broad matrix-element modulation.
-5. Add a derivative, minimum-gradient, or curvature view only after averaging and
-   smoothing.
-6. Show the raw and processed views together. A processed view cannot be the only
-   evidence.
-
-Use coordinate-aware ERLabPy smoothing:
-
-```python
-diagnostic_map = energy_corrected_data.qsel(
-    eV=diagnostic_energy,
-    eV_width=diagnostic_energy_width,
-)
-smoothed_map = era.image.gaussian_filter(
-    diagnostic_map,
-    sigma={"alpha": alpha_smoothing, "beta": beta_smoothing},
-)
-```
-
-Choose smoothing widths from the coordinate steps and feature widths. Do not copy one
-numeric width between instruments without inspection.
-
-Find the analyzer acceptance mask before normalization or differentiation. Crop the
-boundary or erode the valid-data mask by more than the smoothing kernel radius. Do not
-use a circular detector or deflector boundary as a symmetry feature. Its center is set
-by analyzer acceptance and is unrelated to sample normal emission.
 
 ## Compare photon energies safely
 
@@ -324,9 +284,8 @@ Tell the user to:
 
 1. inspect several energy slices and integration widths;
 2. adjust `alpha` and `beta` normal emission;
-3. ignore the circular analyzer-acceptance boundary;
-4. use a Brillouin-zone overlay only with verified lattice vectors and orientation;
-5. report the displayed angles or use **Copy to clipboard** and return the generated
+3. use a Brillouin-zone overlay only with verified lattice vectors and orientation;
+4. report the displayed angles or use **Copy to clipboard** and return the generated
    code.
 
 Keep the tool open and wait for the user. Do not continue to final momentum conversion
