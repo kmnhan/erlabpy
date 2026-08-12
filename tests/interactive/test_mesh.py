@@ -384,6 +384,12 @@ def test_meshtool_deferred_restore_queues_initial_preview(
 ) -> None:
     win: MeshTool = meshtool(meshy_data, data_name="mesh_input", execute=False)
     qtbot.addWidget(win)
+    win.p0_spin0.setValue(15)
+    win.p0_spin1.setValue(20)
+    win.p1_spin0.setValue(17)
+    win.p1_spin1.setValue(12)
+    win.order_spin.setValue(2)
+    win.undo_edge_correction_check.setChecked(True)
     win.cbar_fft.set_colormap("plasma", 0.7, reverse=True)
     win.cbar_fft.setSpanRegion((-1.0, 1.0))
     saved = win.to_dataset()
@@ -414,10 +420,24 @@ def test_meshtool_deferred_restore_queues_initial_preview(
     qtbot.addWidget(restored)
     assert isinstance(restored, MeshTool)
     assert calls == []
+    assert restored.main_fft_image.image is None
+    assert restored.tool_status == win.tool_status
 
     restored.show()
 
     qtbot.wait_until(lambda: calls == [(restored, True)], timeout=5000)
+    expected_higher = erlab.analysis.mesh.higher_order_peaks(
+        restored.tool_status.first_order_peaks,
+        order=restored.tool_status.order,
+        shape=restored.main_fft_image.image.shape,
+        include_center=False,
+        only_upper=False,
+    )[2:]
+    assert len(restored.higher_order_targets) == len(expected_higher)
+    for target, expected in zip(
+        restored.higher_order_targets, expected_higher, strict=True
+    ):
+        assert (target.pos().y(), target.pos().x()) == pytest.approx(expected)
     qtbot.wait_until(
         lambda: restored.cbar_fft.spanRegion() == pytest.approx((-1.0, 1.0))
     )
