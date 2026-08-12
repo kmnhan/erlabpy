@@ -2177,16 +2177,17 @@ def test_manager_application_quit_filter_routes_quit_to_manager(
 ) -> None:
     with manager_context() as manager:
         calls: list[str] = []
-        monkeypatch.setattr(
-            manager,
-            "close",
-            lambda: calls.append("close") or False,
-        )
+        with monkeypatch.context() as context:
+            context.setattr(
+                manager,
+                "close",
+                lambda: calls.append("close") or False,
+            )
 
-        event = QtCore.QEvent(QtCore.QEvent.Type.Quit)
-        assert manager._application_quit_filter is not None
-        assert manager._application_quit_filter.eventFilter(None, event)
-        assert calls == ["close"]
+            event = QtCore.QEvent(QtCore.QEvent.Type.Quit)
+            assert manager._application_quit_filter is not None
+            assert manager._application_quit_filter.eventFilter(None, event)
+            assert calls == ["close"]
 
 
 def test_manager_update_info_accepts_selected_root_uid(
