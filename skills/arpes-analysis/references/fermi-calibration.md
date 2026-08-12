@@ -41,6 +41,11 @@ Check:
 - whether a reference and sample used compatible analyzer geometry, slit or lens mode,
   pass energy, detector region, and acquisition correction.
 
+Compare the embedded photon energy, temperature, and fixed-angle metadata with the
+authoritative experimental log before fitting. Use the source that the user specifies.
+Record every overwritten value. Photon energy affects both the expected kinetic Fermi
+level and momentum conversion, so do not postpone this check.
+
 Choose the first fit window carefully. A poorly conditioned first fit can contaminate
 the polynomial fit even when later angle bins contain a clear edge.
 
@@ -220,6 +225,10 @@ If a nominally flat edge is curved or slanted, do not derive an angular correcti
 sample bands. Matrix elements, gaps, dispersing states, and the density of states can
 produce a false edge trajectory.
 
+Exclude detector and analyzer-acceptance boundaries from edge diagnostics. A circular
+deflector-map mask is an analyzer boundary. Its shape and center do not measure sample
+normal emission or Fermi-edge curvature.
+
 Retain the angle-energy diagnostic and request a compatible reference spectrum. You may
 report a scalar fit to an integrated EDC as an approximate global energy offset, but:
 
@@ -227,6 +236,13 @@ report a scalar fit to an integrated EDC as an approximate global energy offset,
 - do not remove the observed angle dependence;
 - state that the remaining curvature can bias near-Fermi analysis;
 - do not use the approximate result for a publication claim without approval.
+
+If the user explicitly requests a feasibility test without a reference, keep it as a
+separate sample-derived diagnostic. Require the same smooth response in multiple
+independent maps, exclude visible bands and acceptance boundaries, and validate the
+model on a held-out map. Show raw and scalar-aligned data beside the diagnostic result.
+Label it `sample-derived`, not `reference-calibrated`. Do not apply it to quantitative
+publication figures without user approval.
 
 ## Handle photon-energy scans
 
@@ -237,6 +253,14 @@ energy.
 For a flat edge, create one integrated EDC per photon energy and fit each EDC. Preserve
 the `hv` coordinate when collecting centers and standard errors. Plot both against
 photon energy before applying a correction.
+
+Plot the fitted center uncertainty and the residual from the expected kinetic-energy
+trend. Treat an isolated point as an outlier candidate even when the optimizer reports
+success. Inspect its raw EDC, fit, residual, acquisition window, and neighboring photon
+energies. Do not connect or smooth through the point without marking it. Decide whether
+the point is a failed edge fit, an analyzer-energy offset, or a photon-energy anomaly.
+Keep it missing when the edge cannot be identified. When a clear local edge is present,
+distinguish the per-slice energy correction from the separate trend anomaly.
 
 Apply a photon-energy-dependent shift only where fits are successful, uncertainties are
 finite, and the edge is visible. `correct_with_edge` accepts a center `DataArray` that

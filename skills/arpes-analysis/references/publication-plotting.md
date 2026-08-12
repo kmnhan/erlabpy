@@ -16,6 +16,13 @@ figure code in the notebook and save from explicit figure objects.
 - Show raw or minimally processed intensity for primary evidence.
 - Show derivative, curvature, normalized, or symmetrized data as processed data. Label
   the operation and keep a raw comparison nearby.
+- Average a documented physical energy or momentum window before differentiation when
+  one-pixel slices are noisy. The window sizes used must be explitly provided to the
+  user. Apply coordinate-aware smoothing before curvature or derivative processing. Do
+  not publish a processed panel that is visibly dominated by pixel noise.
+- Use normalization to reduce broad detector gain or matrix-element modulation only
+  when the selected normalization region is visible and documented. Do not interpret a
+  normalized intensity change as spectral-weight transfer without separate evidence.
 - Use a sequential colormap for intensity and a diverging colormap centered at zero for
   signed differences or residuals.
 - Use identical color limits when panels are compared quantitatively.
@@ -23,6 +30,14 @@ figure code in the notebook and save from explicit figure objects.
   evidence. Record any nonlinear normalization in code.
 - Preserve physical axis directions and units. Mark the Fermi level and high-symmetry
   points explicitly.
+- Crop or mask detector gaps and analyzer-acceptance boundaries before derivatives and
+  contour extraction. Keep a raw panel that shows the excluded region.
+
+When comparing samples, doping, terminations, or photon energies, separate band-position
+comparisons from intensity comparisons. Match photon energy, polarization, analyzer
+mode, integration widths, smoothing widths, and color normalization before comparing
+intensity. If these conditions differ, use normalized panels only for band geometry and
+state that matrix elements prevent a quantitative intensity comparison.
 
 ## Plot cuts and constant-energy maps
 

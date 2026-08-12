@@ -6,6 +6,7 @@ import pytest
 import xarray as xr
 from numpy.testing import assert_allclose
 
+import erlab
 import erlab.analysis.gold as gold_mod
 from erlab.analysis.gold import correct_with_edge, edge, poly, quick_fit, spline
 
@@ -87,6 +88,486 @@ def test_range_slice_for_coord_nonmonotonic_raises() -> None:
 
     with pytest.raises(ValueError, match=r"Coordinate `x` is not monotonic"):
         _ = gold_mod._range_slice_for_coord(coord, (-1.0, 1.0))
+
+
+@pytest.mark.parametrize("fast", [True, False], ids=["fast", "regular"])
+def test_guess_edge_fit_range(gold: xr.DataArray, fast: bool) -> None:
+    edc = gold.sel(eV=slice(-0.2, 0.2)).sel(alpha=0.0)
+
+    lower, upper = gold_mod.guess_edge_fit_range(edc, temp=100.0, fast=fast)
+    selected = edc.sel(eV=slice(lower, upper))
+
+    assert lower < 0.04 < upper
+    assert 0 < selected.sizes["eV"] <= edc.sizes["eV"]
+
+
+def test_edge_model_params_fix_background_slope() -> None:
+    _, params = gold_mod._edge_model_and_params(
+        temp=10.0,
+        resolution=0.02,
+        vary_temp=False,
+        bkg_slope=False,
+        fast=True,
+    )
+
+    assert params["back1"].value == 0.0
+    assert params["back1"].vary is False
+
+
+@pytest.mark.parametrize(
+    ("eV", "message"),
+    [
+        (np.linspace(-0.1, 0.1, 11), "At least 12 finite points are required"),
+        (
+            np.array(
+                [
+                    -0.1,
+                    -0.08,
+                    -0.06,
+                    -0.04,
+                    -0.02,
+                    0.0,
+                    0.0,
+                    0.02,
+                    0.04,
+                    0.06,
+                    0.08,
+                    0.1,
+                ]
+            ),
+            "Energy coordinates must be unique",
+        ),
+    ],
+)
+def test_guess_edge_fit_range_validates_energy_coordinate(
+    eV: np.ndarray, message: str
+) -> None:
+    edc = xr.DataArray(np.ones(eV.size), coords={"eV": eV}, dims="eV")
+
+    with pytest.raises(ValueError, match=message):
+        gold_mod.guess_edge_fit_range(edc, temp=10.0, fast=True)
+
+
+def test_guess_edge_fit_range_uses_temperature_metadata() -> None:
+    eV = np.linspace(-0.2, 0.1, 151)
+    model = erlab.analysis.fit.models.StepEdgeModel()
+    values = model.func(eV, 0.0, 0.01, 0.1, 0.0, 1.0, 0.0)
+    edc = xr.DataArray(
+        values,
+        coords={"eV": eV},
+        dims="eV",
+        attrs={"sample_temp": 20.0},
+    )
+
+    lower, upper = gold_mod.guess_edge_fit_range(edc, fast=False)
+
+    assert lower < 0.0 < upper
+
+
+def test_guess_edge_fit_range_temperature_fallback_and_validation() -> None:
+    eV = np.linspace(-0.2, 0.1, 151)
+    model = erlab.analysis.fit.models.StepEdgeModel()
+    values = model.func(eV, 0.0, 0.01, 0.1, 0.0, 1.0, 0.0)
+    edc = xr.DataArray(values, coords={"eV": eV}, dims="eV")
+
+    lower, upper = gold_mod.guess_edge_fit_range(edc, fast=True)
+    assert lower < 0.0 < upper
+
+    with pytest.raises(ValueError, match="Temperature not found"):
+        gold_mod.guess_edge_fit_range(edc, fast=False)
+
+
+def test_guess_edge_fit_range_requires_one_edc() -> None:
+    data = xr.DataArray(
+        np.ones((2, 12)),
+        coords={"alpha": [0.0, 1.0], "eV": np.linspace(-0.1, 0.1, 12)},
+        dims=("alpha", "eV"),
+    )
+
+    with pytest.raises(ValueError, match="Expected a 1D DataArray"):
+        gold_mod.guess_edge_fit_range(data, temp=10.0, fast=True)
+
+
+def test_guess_edge_fit_range_uses_model_guess_for_rank_deficient_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    eV = np.linspace(-0.3, 0.15, 301)
+    model = erlab.analysis.fit.models.StepEdgeModel()
+    values = model.func(eV, 0.0, 0.012, 0.15, 0.08, 1.2, -0.12)
+    edc = xr.DataArray(values, coords={"eV": eV}, dims="eV")
+    original_lstsq = np.linalg.lstsq
+    forced_rank_deficiency = False
+
+    def rank_deficient_once(*args: typing.Any, **kwargs: typing.Any):
+        nonlocal forced_rank_deficiency
+        result = original_lstsq(*args, **kwargs)
+        if not forced_rank_deficiency:
+            forced_rank_deficiency = True
+            coefficients, residuals, rank, singular_values = result
+            return coefficients, residuals, rank - 1, singular_values
+        return result
+
+    monkeypatch.setattr(np.linalg, "lstsq", rank_deficient_once)
+
+    lower, upper = gold_mod.guess_edge_fit_range(
+        edc,
+        temp=0.0,
+        resolution=2.355 * 0.012,
+        fast=True,
+    )
+
+    assert forced_rank_deficiency
+    assert lower < 0.0 < upper
+
+
+def test_guess_edge_fit_range_finds_edge_outside_initial_tail() -> None:
+    eV = np.linspace(-0.4, 0.2, 401)
+    center = -0.12
+    model = erlab.analysis.fit.models.StepEdgeModel()
+    values = model.func(eV, center, 0.006, 0.15, 0.08, 1.2, -0.12)
+    edc = xr.DataArray(values, coords={"eV": eV}, dims="eV")
+
+    lower, upper = gold_mod.guess_edge_fit_range(
+        edc,
+        temp=0.0,
+        resolution=2.355 * 0.006,
+        fast=True,
+    )
+
+    assert lower < center < upper
+    assert lower == pytest.approx(center - 6 * 0.006, abs=2 * (eV[1] - eV[0]))
+    assert upper == eV[-1]
+
+
+def test_guess_edge_fit_range_falls_back_when_seed_fit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    eV = np.linspace(-0.3, 0.15, 301)
+    model_class = erlab.analysis.fit.models.StepEdgeModel
+    values = model_class().func(eV, 0.0, 0.012, 0.15, 0.08, 1.2, -0.12)
+    edc = xr.DataArray(values, coords={"eV": eV}, dims="eV")
+    kwargs = {"temp": 0.0, "resolution": 2.355 * 0.012, "fast": True}
+
+    def fail_fit(*_args: typing.Any, **_kwargs: typing.Any) -> typing.NoReturn:
+        raise ValueError("synthetic seed fit failure")
+
+    monkeypatch.setattr(model_class, "fit", fail_fit)
+
+    bounds = gold_mod.guess_edge_fit_range(edc, **kwargs)
+
+    assert bounds == pytest.approx((eV[0], eV[-1]))
+
+
+def test_guess_edge_fit_range_falls_back_for_unsuccessful_fits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    eV = np.linspace(-0.3, 0.15, 301)
+    model_class = erlab.analysis.fit.models.StepEdgeModel
+    values = model_class().func(eV, 0.0, 0.012, 0.15, 0.08, 1.2, -0.12)
+    edc = xr.DataArray(values, coords={"eV": eV}, dims="eV")
+
+    class FailedResult:
+        def __init__(self) -> None:
+            self.success = False
+            self.best_values = {"center": 0.0, "sigma": 0.01}
+
+    monkeypatch.setattr(model_class, "fit", lambda *_args, **_kwargs: FailedResult())
+
+    bounds = gold_mod.guess_edge_fit_range(
+        edc,
+        temp=0.0,
+        resolution=2.355 * 0.012,
+        bkg_slope=False,
+        fast=True,
+    )
+
+    assert bounds == pytest.approx((eV[0], eV[-1]))
+
+
+@pytest.mark.parametrize("candidate_index", [1, -2])
+def test_guess_edge_fit_range_uses_full_range_without_candidate_support(
+    monkeypatch: pytest.MonkeyPatch,
+    candidate_index: int,
+) -> None:
+    eV = np.linspace(-0.1, 0.1, 41)
+    values = np.where(eV <= 0.0, 1.0, 0.0)
+    monkeypatch.setattr(
+        gold_mod,
+        "_find_falling_edge_candidates",
+        lambda *_args, **_kwargs: [(float(eV[candidate_index]), 0.0)],
+    )
+
+    def fail_fit(*_args: typing.Any, **_kwargs: typing.Any) -> typing.NoReturn:
+        raise ValueError("synthetic trial fit failure")
+
+    monkeypatch.setattr(erlab.analysis.fit.models.StepEdgeModel, "fit", fail_fit)
+
+    bounds = gold_mod._guess_edge_fit_range(
+        eV,
+        values,
+        temp=0.0,
+        resolution=0.01,
+        fast=True,
+    )
+
+    assert bounds == pytest.approx((eV[0], eV[-1]))
+
+
+def test_guess_edge_fit_range_rejects_candidate_without_terminal_contrast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    eV = np.linspace(-0.1, 0.1, 41)
+    values = np.ones(eV.size)
+    monkeypatch.setattr(
+        gold_mod,
+        "_find_falling_edge_candidates",
+        lambda *_args, **_kwargs: [(0.0, 0.0)],
+    )
+
+    def fail_fit(*_args: typing.Any, **_kwargs: typing.Any) -> typing.NoReturn:
+        raise ValueError("synthetic trial fit failure")
+
+    monkeypatch.setattr(erlab.analysis.fit.models.StepEdgeModel, "fit", fail_fit)
+
+    with pytest.raises(ValueError, match="No falling edge was detected"):
+        gold_mod._guess_edge_fit_range(
+            eV,
+            values,
+            temp=0.0,
+            resolution=0.01,
+            fast=True,
+        )
+
+
+def test_guess_edge_fit_range_default_requires_finite_energy() -> None:
+    with pytest.raises(ValueError, match="Energy coordinates must contain finite"):
+        gold_mod._guess_edge_fit_range_or_default(
+            np.full(12, np.nan),
+            np.ones(12),
+            temp=10.0,
+            resolution=0.02,
+            fast=True,
+        )
+
+
+def test_guess_edge_fit_range_rejects_rising_edge() -> None:
+    eV = np.linspace(-0.3, 0.15, 301)
+    model = erlab.analysis.fit.models.StepEdgeModel()
+    values = -model.func(eV, 0.0, 0.012, 0.15, 0.08, 1.2, -0.12)
+    edc = xr.DataArray(values, coords={"eV": eV}, dims="eV")
+
+    with pytest.raises(ValueError, match="No falling edge was detected"):
+        gold_mod.guess_edge_fit_range(
+            edc,
+            temp=0.0,
+            resolution=2.355 * 0.012,
+            fast=True,
+        )
+
+
+def test_guess_edge_fit_range_uses_terminal_edge_after_occupied_peak() -> None:
+    eV = np.linspace(-0.4, 0.15, 551)
+    model = erlab.analysis.fit.models.StepEdgeModel()
+    values = model.func(eV, 0.0, 0.012, 0.1, 0.0, 1.0, 0.0)
+    values += 5 * 0.01**2 / ((eV + 0.18) ** 2 + 0.01**2)
+    edc = xr.DataArray(values, coords={"eV": eV}, dims="eV")
+
+    lower, upper = gold_mod.guess_edge_fit_range(
+        edc,
+        temp=0.0,
+        resolution=2.355 * 0.01,
+        fast=True,
+    )
+
+    assert -0.18 < lower < 0.0 < upper
+
+
+def test_guess_edge_fit_range_uses_multiscale_terminal_edge() -> None:
+    rng = np.random.default_rng(13)
+    eV = np.linspace(-0.5, 0.15, 501)
+    model = erlab.analysis.fit.models.StepEdgeModel()
+    values = model.func(eV, 0.0, 0.013, 0.05, 0.0, 0.12, 0.0)
+    values += 0.5 * 0.03**2 / ((eV + 0.24) ** 2 + 0.03**2)
+    values += rng.normal(0.0, 0.03, eV.size)
+    edc = xr.DataArray(values, coords={"eV": eV}, dims="eV")
+
+    lower, upper = gold_mod.guess_edge_fit_range(
+        edc,
+        temp=0.0,
+        resolution=2.355 * 0.013,
+        fast=True,
+    )
+
+    assert -0.15 < lower < 0.0 < upper
+
+
+def test_guess_edge_fit_range_estimates_width_from_broad_edge() -> None:
+    eV = np.linspace(-0.35, 0.2, 551)
+    model = erlab.analysis.fit.models.StepEdgeModel()
+    values = model.func(eV, 0.0, 0.05, 0.1, 0.0, 1.0, 0.0)
+    edc = xr.DataArray(values, coords={"eV": eV}, dims="eV")
+
+    lower, upper = gold_mod.guess_edge_fit_range(
+        edc,
+        temp=0.0,
+        resolution=2.355 * 0.005,
+        fast=True,
+    )
+
+    assert lower == pytest.approx(-0.2, abs=2 * (eV[1] - eV[0]))
+    assert upper == eV[-1]
+
+
+def test_guess_edge_fit_range_supports_edge_near_upper_bound() -> None:
+    eV = np.linspace(-0.2, 0.035, 96)
+    model = erlab.analysis.fit.models.StepEdgeModel()
+    values = model.func(eV, 0.0, 0.012, 0.1, 0.0, 1.0, 0.0)
+    edc = xr.DataArray(values, coords={"eV": eV}, dims="eV")
+
+    lower, upper = gold_mod.guess_edge_fit_range(
+        edc,
+        temp=0.0,
+        resolution=2.355 * 0.01,
+        fast=True,
+    )
+
+    assert lower < 0.0 < upper
+    assert upper == eV[-1]
+
+
+def test_guess_edge_fit_range_uses_full_range_with_short_occupied_side() -> None:
+    eV = np.linspace(-0.02, 0.2, 221)
+    model = erlab.analysis.fit.models.StepEdgeModel()
+    values = model.func(eV, 0.0, 0.006, 0.15, 0.08, 1.2, -0.12)
+    edc = xr.DataArray(values, coords={"eV": eV}, dims="eV")
+
+    bounds = gold_mod.guess_edge_fit_range(
+        edc,
+        temp=0.0,
+        resolution=2.355 * 0.006,
+        fast=True,
+    )
+
+    assert bounds == pytest.approx((eV[0], eV[-1]))
+
+
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+@pytest.mark.parametrize("normalize", [False, True], ids=["raw", "normalized"])
+def test_edge_adaptive_uses_per_edc_ranges(
+    gold: xr.DataArray, use_dask: bool, normalize: bool
+) -> None:
+    if use_dask:
+        gold = gold.chunk(alpha=1)
+
+    result = edge(
+        gold,
+        angle_range=(-15, 15),
+        eV_range=(-0.2, 0.2),
+        adaptive=True,
+        temp=100.0,
+        fast=True,
+        normalize=normalize,
+        progress=False,
+        return_full=True,
+        parallel_kw={"backend": "threading", "n_jobs": 1, "return_as": "list"},
+    )
+    if use_dask:
+        result = result.compute()
+
+    point_counts = result.modelfit_data.count("eV")
+    assert np.unique(point_counts).size > 1
+    assert point_counts.max() <= gold.sel(eV=slice(-0.2, 0.2)).sizes["eV"]
+    assert point_counts.min() < point_counts.max()
+
+
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_edge_adaptive_falls_back_for_one_edc(
+    gold: xr.DataArray,
+    monkeypatch: pytest.MonkeyPatch,
+    use_dask: bool,
+) -> None:
+    original = gold_mod._guess_edge_fit_range
+    target_alpha = 0.0
+    target_values = np.asarray(gold.sel(alpha=target_alpha).sel(eV=slice(-0.2, 0.2)))
+
+    def fail_target_range(
+        x: np.ndarray, y: np.ndarray, **kwargs: typing.Any
+    ) -> tuple[float, float]:
+        if np.array_equal(y, target_values):
+            raise ValueError("synthetic range failure")
+        return original(x, y, **kwargs)
+
+    monkeypatch.setattr(gold_mod, "_guess_edge_fit_range", fail_target_range)
+    if use_dask:
+        gold = gold.chunk(alpha=1)
+
+    result = edge(
+        gold,
+        angle_range=(-15, 15),
+        eV_range=(-0.2, 0.2),
+        adaptive=True,
+        temp=100.0,
+        fast=True,
+        normalize=False,
+        progress=False,
+        return_full=True,
+        parallel_kw={"backend": "threading", "n_jobs": 1, "return_as": "list"},
+    )
+    if use_dask:
+        result = result.compute()
+
+    point_counts = result.modelfit_data.count("eV")
+    full_count = gold.sel(eV=slice(-0.2, 0.2)).sizes["eV"]
+    assert point_counts.sel(alpha=target_alpha) == full_count
+    assert point_counts.min() < full_count
+
+
+def test_edge_adaptive_requires_skipna(gold: xr.DataArray) -> None:
+    with pytest.raises(ValueError, match="adaptive fitting requires skipna=True"):
+        edge(
+            gold,
+            angle_range=(-15, 15),
+            eV_range=(-0.2, 0.2),
+            adaptive=True,
+            temp=100.0,
+            fast=True,
+            progress=False,
+            skipna=False,
+        )
+
+
+@pytest.mark.parametrize("wrapper", [gold_mod.poly, gold_mod.spline])
+def test_edge_model_wrapper_forwards_adaptive(
+    monkeypatch: pytest.MonkeyPatch,
+    wrapper: typing.Callable[..., typing.Any],
+) -> None:
+    beta = np.linspace(0.0, 10.0, 11)
+    eV = np.linspace(-0.2, 0.2, 51)
+    data = xr.DataArray(
+        np.ones((beta.size, eV.size)),
+        dims=("beta", "eV"),
+        coords={"beta": beta, "eV": eV},
+    )
+    center = xr.DataArray(np.linspace(0.0, 0.1, beta.size), coords={"beta": beta})
+    stderr = xr.ones_like(center)
+    received: dict[str, typing.Any] = {}
+
+    def stub_edge(*_args: typing.Any, **kwargs: typing.Any):
+        received.update(kwargs)
+        return center, stderr
+
+    monkeypatch.setattr(gold_mod, "edge", stub_edge)
+
+    wrapper(
+        data,
+        along="beta",
+        angle_range=(0.0, 10.0),
+        eV_range=(-0.2, 0.2),
+        adaptive=True,
+        plot=False,
+    )
+
+    assert received["adaptive"] is True
 
 
 @pytest.mark.parametrize(
@@ -326,6 +807,73 @@ def test_edge_fixed_center_with_normalize_returns_physical_center(gold) -> None:
     finite = np.isfinite(vals.values)
     assert finite.any()
     assert_allclose(vals.values[finite], 0.04, atol=1e-12)
+
+
+def test_edge_normalize_scales_energy_parameters(
+    gold: xr.DataArray, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    angle_range = (-15, 15)
+    eV_range = (-0.2, 0.2)
+    temp = 100.0
+    resolution = 0.02
+    gold_sel = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
+    stdx = float(gold_sel.eV.values.std())
+    received: dict[str, float] = {}
+    original = gold_mod._edge_model_and_params
+
+    def capture_energy_parameters(**kwargs: typing.Any):
+        received["temp"] = kwargs["temp"]
+        received["resolution"] = kwargs["resolution"]
+        return original(**kwargs)
+
+    monkeypatch.setattr(gold_mod, "_edge_model_and_params", capture_energy_parameters)
+
+    edge(
+        gold,
+        angle_range=angle_range,
+        eV_range=eV_range,
+        temp=temp,
+        resolution=resolution,
+        normalize=True,
+        progress=False,
+        parallel_kw={"backend": "threading", "n_jobs": 1, "return_as": "list"},
+    )
+
+    assert received["temp"] == pytest.approx(temp / stdx)
+    assert received["resolution"] == pytest.approx(resolution / stdx)
+
+
+@pytest.mark.parametrize("adaptive", [False, True], ids=["fixed", "adaptive"])
+def test_edge_is_invariant_to_energy_offset(gold: xr.DataArray, adaptive: bool) -> None:
+    offset = 71.0
+    kinetic = gold.assign_coords(eV=gold.eV + offset)
+    shifted = kinetic.assign_coords(eV=kinetic.eV - offset)
+    kwargs = {
+        "angle_range": (-15, 15),
+        "adaptive": adaptive,
+        "temp": 100.0,
+        "resolution": 0.02,
+        "fast": True,
+        "normalize": True,
+        "progress": False,
+        "parallel_kw": {
+            "backend": "threading",
+            "n_jobs": 1,
+            "return_as": "list",
+        },
+    }
+
+    kinetic_center, kinetic_stderr = typing.cast(
+        "tuple[xr.DataArray, xr.DataArray]",
+        edge(kinetic, eV_range=(70.8, 71.2), **kwargs),
+    )
+    shifted_center, shifted_stderr = typing.cast(
+        "tuple[xr.DataArray, xr.DataArray]",
+        edge(shifted, eV_range=(-0.2, 0.2), **kwargs),
+    )
+
+    assert_allclose(kinetic_center - offset, shifted_center, atol=1e-8)
+    assert_allclose(kinetic_stderr, shifted_stderr, atol=1e-8)
 
 
 def test_edge_range_selection_follows_descending_coordinate_order(gold) -> None:

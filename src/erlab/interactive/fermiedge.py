@@ -161,6 +161,7 @@ class EdgeFitTask(QtCore.QRunnable):
                         bkg_slope=self.params["Linear"],
                         resolution=self.params["Resolution"],
                         fast=self.params["Fast"],
+                        adaptive=self.params["Adaptive"],
                         method=self.params["Method"],
                         scale_covar=self.params["Scale cov"],
                         progress=False,
@@ -210,6 +211,7 @@ class _GoldEdgeState(_GoldStateBase):
     bin_y: int = pydantic.Field(default=1, alias="Bin y")
     resolution: float = pydantic.Field(default=0.02, alias="Resolution")
     fast: bool = pydantic.Field(default=False, alias="Fast")
+    adaptive: bool = pydantic.Field(default=False, alias="Adaptive")
     linear: bool = pydantic.Field(default=True, alias="Linear")
     method: str = pydantic.Field(default="least_squares", alias="Method")
     scale_cov: bool = pydantic.Field(default=True, alias="Scale cov")
@@ -423,6 +425,11 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     "checked": False,
                     "toolTip": "If checked, fit with a broadened step function "
                     "instead of Fermi-Dirac",
+                },
+                "Adaptive": {
+                    "qwtype": "chkbox",
+                    "checked": False,
+                    "toolTip": "Estimate a separate energy range for each EDC.",
                 },
                 "Linear": {
                     "qwtype": "chkbox",
@@ -757,6 +764,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             ("Bin x / y", f"{edge['Bin x']} / {edge['Bin y']}"),
             ("Resolution", f"{edge['Resolution']} eV"),
             ("Fast", self._bool_text(bool(edge["Fast"]))),
+            ("Adaptive", self._bool_text(bool(edge["Adaptive"]))),
             (
                 "Background above EF",
                 "Linear" if bool(edge["Linear"]) else "Constant",
@@ -1120,9 +1128,6 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         return data
 
     def _toggle_fast(self) -> None:
-        self.params_edge.widgets["T (K)"].setDisabled(
-            bool(self.params_edge.values["Fast"])
-        )
         self.params_edge.widgets["Fix T"].setDisabled(
             bool(self.params_edge.values["Fast"])
         )
@@ -1418,6 +1423,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             "bkg_slope": p0["Linear"],
             "resolution": p0["Resolution"],
             "fast": p0["Fast"],
+            "adaptive": p0["Adaptive"],
             "method": p0["Method"],
             "scale_covar_edge": p0["Scale cov"],
         }
@@ -1432,9 +1438,6 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     arg_dict["lam"] = None
                 else:
                     arg_dict["lam"] = p1["lambda"]
-
-        if p0["Fast"]:
-            del arg_dict["temp"]
 
         if mode == "poly" and not p1["Scale cov"]:
             arg_dict["scale_covar"] = False
