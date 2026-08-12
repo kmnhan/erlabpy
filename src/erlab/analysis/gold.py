@@ -96,8 +96,32 @@ def _range_limits_for_coord(
     return float(np.min(values)), float(np.max(values))
 
 
-def _edge_sigma(*, temp: float, resolution: float, fast: bool) -> float:
-    if fast:
+def _parse_deprecated_fast(use_step_edge: bool, kwargs: dict[str, typing.Any]) -> bool:
+    if "fast" not in kwargs:
+        return use_step_edge
+
+    fast = bool(kwargs.pop("fast"))
+    warnings.warn(
+        "The `fast` argument is deprecated and will be removed in a future version. "
+        "Use `use_step_edge` instead.",
+        FutureWarning,
+        stacklevel=3,
+    )
+    if use_step_edge and not fast:
+        raise TypeError("`use_step_edge` and deprecated `fast` have conflicting values")
+    return use_step_edge or fast
+
+
+def _raise_unexpected_kwargs(function_name: str, kwargs: dict[str, typing.Any]) -> None:
+    if kwargs:
+        argument = next(iter(kwargs))
+        raise TypeError(
+            f"{function_name}() got an unexpected keyword argument {argument!r}"
+        )
+
+
+def _edge_sigma(*, temp: float, resolution: float, use_step_edge: bool) -> float:
+    if use_step_edge:
         return float(
             (resolution + 3.5255 * erlab.constants.kb_eV * temp) * _FWHM_TO_SIGMA
         )
@@ -115,13 +139,15 @@ def _edge_model_and_params(
     resolution: float,
     vary_temp: bool,
     bkg_slope: bool,
-    fast: bool,
+    use_step_edge: bool,
 ) -> tuple[lmfit.Model, lmfit.Parameters]:
-    if fast:
+    if use_step_edge:
         model = erlab.analysis.fit.models.StepEdgeModel()
         params = lmfit.create_params(
             sigma={
-                "value": _edge_sigma(temp=temp, resolution=resolution, fast=True),
+                "value": _edge_sigma(
+                    temp=temp, resolution=resolution, use_step_edge=True
+                ),
                 "min": 0,
             }
         )
@@ -262,7 +288,7 @@ def _guess_edge_fit_range(
     *,
     temp: float,
     resolution: float,
-    fast: bool,
+    use_step_edge: bool,
     bkg_slope: bool = True,
 ) -> tuple[float, float]:
     x = np.asarray(x, dtype=float)
@@ -280,7 +306,10 @@ def _guess_edge_fit_range(
     uniform_x = np.linspace(x[0], x[-1], x.size)
     uniform_y = np.interp(uniform_x, x, y)
     uniform_dx = float(uniform_x[1] - uniform_x[0])
-    sigma = max(_edge_sigma(temp=temp, resolution=resolution, fast=fast), uniform_dx)
+    sigma = max(
+        _edge_sigma(temp=temp, resolution=resolution, use_step_edge=use_step_edge),
+        uniform_dx,
+    )
     local_noise, noise_floor = _estimate_local_noise(
         uniform_y, sigma=sigma, dx=uniform_dx
     )
@@ -507,7 +536,7 @@ def _guess_edge_fit_range_or_default(
     *,
     temp: float,
     resolution: float,
-    fast: bool,
+    use_step_edge: bool,
     bkg_slope: bool = True,
 ) -> tuple[float, float]:
     x = np.asarray(x, dtype=float)
@@ -521,7 +550,7 @@ def _guess_edge_fit_range_or_default(
             y,
             temp=temp,
             resolution=resolution,
-            fast=fast,
+            use_step_edge=use_step_edge,
             bkg_slope=bkg_slope,
         )
     except (FloatingPointError, np.linalg.LinAlgError, ValueError):
@@ -535,7 +564,8 @@ def guess_edge_fit_range(
     temp: float | None = None,
     resolution: float = 0.02,
     bkg_slope: bool = True,
-    fast: bool = False,
+    use_step_edge: bool = False,
+    **kwargs,
 ) -> tuple[float, float]:
     r"""Estimate the energy range for fitting one Fermi edge.
 
@@ -549,15 +579,17 @@ def guess_edge_fit_range(
     energy_dim
         Name of the energy dimension.
     temp
-        Sample temperature in kelvins. If `None`, infer it from `edc`. The fast model
-        uses 10 K when the temperature is not available.
+        Sample temperature in kelvins. If `None`, infer it from `edc`. The broadened
+        step model uses 10 K when the temperature is not available.
     resolution
         Initial energy-resolution FWHM in electronvolts.
     bkg_slope
         If `True`, include a linear background above the Fermi level.
-    fast
-        If `True`, use the nominal width of a broadened step edge. Otherwise, use the
-        combined thermal and resolution width of a Fermi edge.
+    use_step_edge
+        If `True`, use the nominal width of a broadened step edge. If `False`, use the
+        combined thermal and resolution width of a Fermi edge. Defaults to `False`.
+    **kwargs
+        Deprecated arguments. Use `use_step_edge` instead of ``fast``.
 
     Returns
     -------
@@ -636,14 +668,21 @@ def guess_edge_fit_range(
     ValueError
         If the input is not one-dimensional, lacks required temperature metadata, has
         insufficient data, or has no qualifying falling edge.
+
+    .. versionchanged:: 3.27.0
+
+        Added `use_step_edge`. The old ``fast`` argument is deprecated.
     """
+    use_step_edge = _parse_deprecated_fast(use_step_edge, kwargs)
+    _raise_unexpected_kwargs("guess_edge_fit_range", kwargs)
+
     if edc.dims != (energy_dim,):
         raise ValueError(f"Expected a 1D DataArray along {energy_dim!r}")
 
     if temp is None:
         temp = edc.qinfo.get_value("sample_temp")
         if temp is None:
-            if fast:
+            if use_step_edge:
                 temp = 10.0
             else:
                 raise ValueError(
@@ -655,7 +694,7 @@ def guess_edge_fit_range(
         np.asarray(edc),
         temp=float(temp),
         resolution=float(resolution),
-        fast=fast,
+        use_step_edge=use_step_edge,
         bkg_slope=bkg_slope,
     )
 
@@ -819,7 +858,7 @@ def edge(
     vary_temp: bool = False,
     bkg_slope: bool = True,
     resolution: float = 0.02,
-    fast: bool = False,
+    use_step_edge: bool = False,
     method: str = "least_squares",
     scale_covar: bool = True,
     normalize: bool = True,
@@ -866,8 +905,8 @@ def edge(
         background above the Fermi level is fit with a constant. Defaults to `True`.
     resolution
         The initial resolution value to use for fitting, by default `0.02`.
-    fast
-        Whether to use the Gaussian-broadeded step function to fit the edge, by default
+    use_step_edge
+        Whether to use the Gaussian-broadened step function to fit the edge, by default
         `False`.
     method
         The fitting method to use, by default ``"least_squares"``.
@@ -893,7 +932,8 @@ def edge(
         because dropping NaNs requires computing all fit results. If ``return_full`` is
         `True`, this option is ignored.
     **kwargs
-        Additional keyword arguments to fitting.
+        Additional keyword arguments to fitting. The old ``fast`` argument is accepted
+        with a deprecation warning. Use `use_step_edge` instead.
 
     Returns
     -------
@@ -904,7 +944,13 @@ def edge(
         A dataset containing the full fit results, returned when `return_full` is
         `True`.
 
+    .. versionchanged:: 3.27.0
+
+        Added `use_step_edge`. The old ``fast`` argument is deprecated.
+
     """
+    use_step_edge = _parse_deprecated_fast(use_step_edge, kwargs)
+
     if any(b != 1 for b in bin_size):
         gold_binned = gold.coarsen(
             {along: bin_size[0], "eV": bin_size[1]}, boundary="trim"
@@ -921,7 +967,7 @@ def edge(
     if temp is None:
         temp = gold.qinfo.get_value("sample_temp")
         if temp is None:
-            if fast:
+            if use_step_edge:
                 temp = 10.0
             else:
                 raise ValueError(
@@ -948,7 +994,7 @@ def edge(
         resolution=fit_resolution,
         vary_temp=vary_temp,
         bkg_slope=bkg_slope,
-        fast=fast,
+        use_step_edge=use_step_edge,
     )
 
     if parallel_kw is None:
@@ -991,7 +1037,7 @@ def edge(
                     "temp": fit_temp,
                     "resolution": fit_resolution,
                     "bkg_slope": bkg_slope,
-                    "fast": fast,
+                    "use_step_edge": use_step_edge,
                 }
                 if data.dims == ("eV",):
                     lower, upper = _guess_edge_fit_range_or_default(
@@ -1243,7 +1289,7 @@ def poly(
     vary_temp: bool = False,
     bkg_slope: bool = True,
     resolution: float = 0.02,
-    fast: bool = False,
+    use_step_edge: bool = False,
     method: str = "least_squares",
     normalize: bool = True,
     degree: int = 4,
@@ -1254,7 +1300,11 @@ def poly(
     fig: matplotlib.figure.Figure | None = None,
     scale_covar: bool = True,
     scale_covar_edge: bool = True,
+    **kwargs,
 ) -> xr.Dataset | tuple[xr.Dataset, xr.DataArray]:
+    use_step_edge = _parse_deprecated_fast(use_step_edge, kwargs)
+    _raise_unexpected_kwargs("poly", kwargs)
+
     center_arr, center_stderr = typing.cast(
         "tuple[xr.DataArray, xr.DataArray]",
         edge(
@@ -1268,7 +1318,7 @@ def poly(
             vary_temp=vary_temp,
             bkg_slope=bkg_slope,
             resolution=resolution,
-            fast=fast,
+            use_step_edge=use_step_edge,
             method=method,
             normalize=normalize,
             parallel_kw=parallel_kw,
@@ -1314,7 +1364,7 @@ def spline(
     vary_temp: bool = False,
     bkg_slope: bool = True,
     resolution: float = 0.02,
-    fast: bool = False,
+    use_step_edge: bool = False,
     method: str = "least_squares",
     lam: float | None = None,
     correct: bool = False,
@@ -1323,7 +1373,11 @@ def spline(
     plot: bool = True,
     fig: matplotlib.figure.Figure | None = None,
     scale_covar_edge: bool = True,
+    **kwargs,
 ) -> scipy.interpolate.BSpline | tuple[scipy.interpolate.BSpline, xr.DataArray]:
+    use_step_edge = _parse_deprecated_fast(use_step_edge, kwargs)
+    _raise_unexpected_kwargs("spline", kwargs)
+
     center_arr, center_stderr = typing.cast(
         "tuple[xr.DataArray, xr.DataArray]",
         edge(
@@ -1337,7 +1391,7 @@ def spline(
             vary_temp=vary_temp,
             bkg_slope=bkg_slope,
             resolution=resolution,
-            fast=fast,
+            use_step_edge=use_step_edge,
             method=method,
             parallel_kw=parallel_kw,
             scale_covar=scale_covar_edge,
@@ -1666,11 +1720,12 @@ def resolution(
     eV_range_fit: tuple[float, float] | None = None,
     bin_size: tuple[int, int] = (1, 1),
     degree: int = 4,
-    fast: bool = False,
+    use_step_edge: bool = False,
     method: str = "leastsq",
     plot: bool = True,
     parallel_kw: dict | None = None,
     scale_covar: bool = True,
+    **kwargs,
 ) -> lmfit.model.ModelResult:  # pragma: no cover
     """Fit a Fermi edge and obtain the resolution from the corrected data.
 
@@ -1685,6 +1740,8 @@ def resolution(
         FutureWarning,
         stacklevel=1,
     )
+    use_step_edge = _parse_deprecated_fast(use_step_edge, kwargs)
+    _raise_unexpected_kwargs("resolution", kwargs)
 
     pol, gold_corr = typing.cast(
         "tuple[xr.Dataset, xr.DataArray]",
@@ -1695,7 +1752,7 @@ def resolution(
             bin_size=bin_size,
             degree=degree,
             correct=True,
-            fast=fast,
+            use_step_edge=use_step_edge,
             method=method,
             plot=plot,
             parallel_kw=parallel_kw,

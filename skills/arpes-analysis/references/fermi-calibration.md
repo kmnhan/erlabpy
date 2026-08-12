@@ -67,8 +67,8 @@ Do not increase the degree only to reduce residuals.
 
 Read the temperature from `sample_temp` metadata. Use the full Fermi-Dirac model only
 when this value is present, finite, physically credible, and consistent with the
-experimental record. If it is missing or unreliable, use `fast=True` so the edge fits
-use the Gaussian-broadened step model.
+experimental record. If it is missing or unreliable, use `use_step_edge=True` so the
+edge fits use the Gaussian-broadened step model.
 
 Supply a realistic initial energy resolution in electronvolts. This can improve
 convergence. Confirm the units before passing a metadata value; do not assume that an
@@ -91,7 +91,7 @@ temperature_is_reliable = (
 )
 
 edge_fit_kwargs = {
-    "fast": not temperature_is_reliable,
+    "use_step_edge": not temperature_is_reliable,
     "resolution": initial_energy_resolution,
 }
 if temperature_is_reliable:

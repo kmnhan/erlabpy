@@ -448,7 +448,7 @@ def gold_fit_res(gold) -> xr.Dataset:
         gold,
         angle_range=(-13.5, 13.5),
         eV_range=(-0.204, 0.276),
-        fast=True,
+        use_step_edge=True,
         parallel_kw={"backend": "threading"},
     )
 
@@ -459,7 +459,7 @@ def gold_fit_res_fd(gold) -> xr.Dataset:
         gold,
         angle_range=(-13.5, 13.5),
         eV_range=(-0.204, 0.276),
-        fast=False,
+        use_step_edge=False,
         parallel_kw={"backend": "threading"},
     )
 
