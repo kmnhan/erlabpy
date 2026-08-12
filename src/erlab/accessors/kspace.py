@@ -1556,11 +1556,19 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             [typing.cast("tuple[str, ...]", target_dict[d].dims) for d in input_dims]
         )
 
-        out = xr.apply_ufunc(
-            _wrap_interpn,
+        ufunc_args = (
             self._data_ensure_binding(),
             *tuple(self._coord_for_conversion(dim) for dim in input_dims),
             *tuple(target_dict[dim] for dim in input_dims),
+        )
+        ufunc_args = tuple(
+            arg.chunk(dict.fromkeys(core_dims, -1)) if arg.chunks is not None else arg
+            for arg, core_dims in zip(ufunc_args, input_core_dims, strict=True)
+        )
+
+        out = xr.apply_ufunc(
+            _wrap_interpn,
+            *ufunc_args,
             vectorize=True,
             dask="parallelized",
             input_core_dims=input_core_dims,

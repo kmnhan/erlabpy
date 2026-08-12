@@ -960,6 +960,8 @@ def edge(
             "eV": _range_slice_for_coord(gold["eV"], eV_range),
         }
     )
+    if gold_sel.chunks is not None:
+        gold_sel = gold_sel.chunk({"eV": -1})
 
     if temp is None:
         temp = gold.qinfo.get_value("sample_temp")
