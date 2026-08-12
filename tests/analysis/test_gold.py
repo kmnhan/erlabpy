@@ -1,3 +1,4 @@
+import inspect
 import typing
 
 import matplotlib.pyplot as plt
@@ -90,11 +91,45 @@ def test_range_slice_for_coord_nonmonotonic_raises() -> None:
         _ = gold_mod._range_slice_for_coord(coord, (-1.0, 1.0))
 
 
-@pytest.mark.parametrize("fast", [True, False], ids=["fast", "regular"])
-def test_guess_edge_fit_range(gold: xr.DataArray, fast: bool) -> None:
+@pytest.mark.parametrize(
+    "func",
+    [
+        gold_mod.guess_edge_fit_range,
+        gold_mod.edge,
+        gold_mod.poly,
+        gold_mod.spline,
+        gold_mod.resolution,
+    ],
+)
+def test_gold_fit_api_exposes_use_step_edge(func: typing.Callable) -> None:
+    parameters = inspect.signature(func).parameters
+
+    assert "use_step_edge" in parameters
+    assert "fast" not in parameters
+
+
+@pytest.mark.parametrize("fast", [False, True])
+def test_guess_edge_fit_range_warns_for_deprecated_fast(
+    gold: xr.DataArray, fast: bool
+) -> None:
     edc = gold.sel(eV=slice(-0.2, 0.2)).sel(alpha=0.0)
 
-    lower, upper = gold_mod.guess_edge_fit_range(edc, temp=100.0, fast=fast)
+    with pytest.warns(FutureWarning, match="Use `use_step_edge` instead"):
+        legacy_bounds = gold_mod.guess_edge_fit_range(edc, temp=100.0, fast=fast)
+    current_bounds = gold_mod.guess_edge_fit_range(edc, temp=100.0, use_step_edge=fast)
+
+    assert legacy_bounds == current_bounds
+
+
+@pytest.mark.parametrize(
+    "use_step_edge", [True, False], ids=["use_step_edge", "regular"]
+)
+def test_guess_edge_fit_range(gold: xr.DataArray, use_step_edge: bool) -> None:
+    edc = gold.sel(eV=slice(-0.2, 0.2)).sel(alpha=0.0)
+
+    lower, upper = gold_mod.guess_edge_fit_range(
+        edc, temp=100.0, use_step_edge=use_step_edge
+    )
     selected = edc.sel(eV=slice(lower, upper))
 
     assert lower < 0.04 < upper
@@ -107,7 +142,7 @@ def test_edge_model_params_fix_background_slope() -> None:
         resolution=0.02,
         vary_temp=False,
         bkg_slope=False,
-        fast=True,
+        use_step_edge=True,
     )
 
     assert params["back1"].value == 0.0
@@ -145,7 +180,7 @@ def test_guess_edge_fit_range_validates_energy_coordinate(
     edc = xr.DataArray(np.ones(eV.size), coords={"eV": eV}, dims="eV")
 
     with pytest.raises(ValueError, match=message):
-        gold_mod.guess_edge_fit_range(edc, temp=10.0, fast=True)
+        gold_mod.guess_edge_fit_range(edc, temp=10.0, use_step_edge=True)
 
 
 def test_guess_edge_fit_range_uses_temperature_metadata() -> None:
@@ -159,7 +194,7 @@ def test_guess_edge_fit_range_uses_temperature_metadata() -> None:
         attrs={"sample_temp": 20.0},
     )
 
-    lower, upper = gold_mod.guess_edge_fit_range(edc, fast=False)
+    lower, upper = gold_mod.guess_edge_fit_range(edc, use_step_edge=False)
 
     assert lower < 0.0 < upper
 
@@ -170,11 +205,11 @@ def test_guess_edge_fit_range_temperature_fallback_and_validation() -> None:
     values = model.func(eV, 0.0, 0.01, 0.1, 0.0, 1.0, 0.0)
     edc = xr.DataArray(values, coords={"eV": eV}, dims="eV")
 
-    lower, upper = gold_mod.guess_edge_fit_range(edc, fast=True)
+    lower, upper = gold_mod.guess_edge_fit_range(edc, use_step_edge=True)
     assert lower < 0.0 < upper
 
     with pytest.raises(ValueError, match="Temperature not found"):
-        gold_mod.guess_edge_fit_range(edc, fast=False)
+        gold_mod.guess_edge_fit_range(edc, use_step_edge=False)
 
 
 def test_guess_edge_fit_range_requires_one_edc() -> None:
@@ -185,7 +220,7 @@ def test_guess_edge_fit_range_requires_one_edc() -> None:
     )
 
     with pytest.raises(ValueError, match="Expected a 1D DataArray"):
-        gold_mod.guess_edge_fit_range(data, temp=10.0, fast=True)
+        gold_mod.guess_edge_fit_range(data, temp=10.0, use_step_edge=True)
 
 
 def test_guess_edge_fit_range_uses_model_guess_for_rank_deficient_initialization(
@@ -213,7 +248,7 @@ def test_guess_edge_fit_range_uses_model_guess_for_rank_deficient_initialization
         edc,
         temp=0.0,
         resolution=2.355 * 0.012,
-        fast=True,
+        use_step_edge=True,
     )
 
     assert forced_rank_deficiency
@@ -231,7 +266,7 @@ def test_guess_edge_fit_range_finds_edge_outside_initial_tail() -> None:
         edc,
         temp=0.0,
         resolution=2.355 * 0.006,
-        fast=True,
+        use_step_edge=True,
     )
 
     assert lower < center < upper
@@ -246,7 +281,7 @@ def test_guess_edge_fit_range_falls_back_when_seed_fit_fails(
     model_class = erlab.analysis.fit.models.StepEdgeModel
     values = model_class().func(eV, 0.0, 0.012, 0.15, 0.08, 1.2, -0.12)
     edc = xr.DataArray(values, coords={"eV": eV}, dims="eV")
-    kwargs = {"temp": 0.0, "resolution": 2.355 * 0.012, "fast": True}
+    kwargs = {"temp": 0.0, "resolution": 2.355 * 0.012, "use_step_edge": True}
 
     def fail_fit(*_args: typing.Any, **_kwargs: typing.Any) -> typing.NoReturn:
         raise ValueError("synthetic seed fit failure")
@@ -278,7 +313,7 @@ def test_guess_edge_fit_range_falls_back_for_unsuccessful_fits(
         temp=0.0,
         resolution=2.355 * 0.012,
         bkg_slope=False,
-        fast=True,
+        use_step_edge=True,
     )
 
     assert bounds == pytest.approx((eV[0], eV[-1]))
@@ -307,7 +342,7 @@ def test_guess_edge_fit_range_uses_full_range_without_candidate_support(
         values,
         temp=0.0,
         resolution=0.01,
-        fast=True,
+        use_step_edge=True,
     )
 
     assert bounds == pytest.approx((eV[0], eV[-1]))
@@ -335,7 +370,7 @@ def test_guess_edge_fit_range_rejects_candidate_without_terminal_contrast(
             values,
             temp=0.0,
             resolution=0.01,
-            fast=True,
+            use_step_edge=True,
         )
 
 
@@ -346,7 +381,7 @@ def test_guess_edge_fit_range_default_requires_finite_energy() -> None:
             np.ones(12),
             temp=10.0,
             resolution=0.02,
-            fast=True,
+            use_step_edge=True,
         )
 
 
@@ -361,7 +396,7 @@ def test_guess_edge_fit_range_rejects_rising_edge() -> None:
             edc,
             temp=0.0,
             resolution=2.355 * 0.012,
-            fast=True,
+            use_step_edge=True,
         )
 
 
@@ -376,7 +411,7 @@ def test_guess_edge_fit_range_uses_terminal_edge_after_occupied_peak() -> None:
         edc,
         temp=0.0,
         resolution=2.355 * 0.01,
-        fast=True,
+        use_step_edge=True,
     )
 
     assert -0.18 < lower < 0.0 < upper
@@ -395,7 +430,7 @@ def test_guess_edge_fit_range_uses_multiscale_terminal_edge() -> None:
         edc,
         temp=0.0,
         resolution=2.355 * 0.013,
-        fast=True,
+        use_step_edge=True,
     )
 
     assert -0.15 < lower < 0.0 < upper
@@ -411,7 +446,7 @@ def test_guess_edge_fit_range_estimates_width_from_broad_edge() -> None:
         edc,
         temp=0.0,
         resolution=2.355 * 0.005,
-        fast=True,
+        use_step_edge=True,
     )
 
     assert lower == pytest.approx(-0.2, abs=2 * (eV[1] - eV[0]))
@@ -428,7 +463,7 @@ def test_guess_edge_fit_range_supports_edge_near_upper_bound() -> None:
         edc,
         temp=0.0,
         resolution=2.355 * 0.01,
-        fast=True,
+        use_step_edge=True,
     )
 
     assert lower < 0.0 < upper
@@ -445,7 +480,7 @@ def test_guess_edge_fit_range_uses_full_range_with_short_occupied_side() -> None
         edc,
         temp=0.0,
         resolution=2.355 * 0.006,
-        fast=True,
+        use_step_edge=True,
     )
 
     assert bounds == pytest.approx((eV[0], eV[-1]))
@@ -465,7 +500,7 @@ def test_edge_adaptive_uses_per_edc_ranges(
         eV_range=(-0.2, 0.2),
         adaptive=True,
         temp=100.0,
-        fast=True,
+        use_step_edge=True,
         normalize=normalize,
         progress=False,
         return_full=True,
@@ -507,7 +542,7 @@ def test_edge_adaptive_falls_back_for_one_edc(
         eV_range=(-0.2, 0.2),
         adaptive=True,
         temp=100.0,
-        fast=True,
+        use_step_edge=True,
         normalize=False,
         progress=False,
         return_full=True,
@@ -523,7 +558,10 @@ def test_edge_adaptive_falls_back_for_one_edc(
 
 
 def test_edge_adaptive_requires_skipna(gold: xr.DataArray) -> None:
-    with pytest.raises(ValueError, match="adaptive fitting requires skipna=True"):
+    with (
+        pytest.warns(FutureWarning, match="Use `use_step_edge` instead"),
+        pytest.raises(ValueError, match="adaptive fitting requires skipna=True"),
+    ):
         edge(
             gold,
             angle_range=(-15, 15),
@@ -537,7 +575,7 @@ def test_edge_adaptive_requires_skipna(gold: xr.DataArray) -> None:
 
 
 @pytest.mark.parametrize("wrapper", [gold_mod.poly, gold_mod.spline])
-def test_edge_model_wrapper_forwards_adaptive(
+def test_edge_model_wrapper_forwards_options(
     monkeypatch: pytest.MonkeyPatch,
     wrapper: typing.Callable[..., typing.Any],
 ) -> None:
@@ -558,24 +596,29 @@ def test_edge_model_wrapper_forwards_adaptive(
 
     monkeypatch.setattr(gold_mod, "edge", stub_edge)
 
-    wrapper(
-        data,
-        along="beta",
-        angle_range=(0.0, 10.0),
-        eV_range=(-0.2, 0.2),
-        adaptive=True,
-        plot=False,
-    )
+    with pytest.warns(FutureWarning, match="Use `use_step_edge` instead"):
+        wrapper(
+            data,
+            along="beta",
+            angle_range=(0.0, 10.0),
+            eV_range=(-0.2, 0.2),
+            adaptive=True,
+            fast=True,
+            plot=False,
+        )
 
     assert received["adaptive"] is True
+    assert received["use_step_edge"] is True
 
 
 @pytest.mark.parametrize(
     "parallel_kw", [None, {"return_as": "list"}], ids=["generator", "list"]
 )
-@pytest.mark.parametrize("fast", [True, False], ids=["fast", "regular"])
+@pytest.mark.parametrize(
+    "use_step_edge", [True, False], ids=["use_step_edge", "regular"]
+)
 @pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
-def test_poly(gold, parallel_kw: dict, fast: bool, use_dask: bool) -> None:
+def test_poly(gold, parallel_kw: dict, use_step_edge: bool, use_dask: bool) -> None:
     if use_dask:
         gold = gold.chunk(alpha=1)
     if parallel_kw:
@@ -587,7 +630,7 @@ def test_poly(gold, parallel_kw: dict, fast: bool, use_dask: bool) -> None:
         angle_range=(-15, 15),
         eV_range=(-0.2, 0.2),
         temp=100.0,
-        fast=fast,
+        use_step_edge=use_step_edge,
         vary_temp=False,
         degree=2,
         plot=True,
@@ -622,9 +665,11 @@ def test_poly(gold, parallel_kw: dict, fast: bool, use_dask: bool) -> None:
 @pytest.mark.parametrize(
     "parallel_kw", [None, {"return_as": "list"}], ids=["generator", "list"]
 )
-@pytest.mark.parametrize("fast", [True, False], ids=["fast", "regular"])
+@pytest.mark.parametrize(
+    "use_step_edge", [True, False], ids=["use_step_edge", "regular"]
+)
 @pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
-def test_poly_nd(gold, parallel_kw: dict, fast: bool, use_dask: bool) -> None:
+def test_poly_nd(gold, parallel_kw: dict, use_step_edge: bool, use_dask: bool) -> None:
     gold_nd = gold.expand_dims(
         {"beta": np.array([-1.0, 0.0, 1.0]), "hv": np.array([20.0, 21.0])}
     )
@@ -639,7 +684,7 @@ def test_poly_nd(gold, parallel_kw: dict, fast: bool, use_dask: bool) -> None:
         angle_range=(-15, 15),
         eV_range=(-0.2, 0.2),
         temp=100.0,
-        fast=fast,
+        use_step_edge=use_step_edge,
         vary_temp=False,
         degree=2,
         parallel_kw=parallel_kw,
@@ -673,7 +718,7 @@ def test_spline(gold) -> None:
         eV_range=(-0.2, 0.2),
         temp=100.0,
         vary_temp=False,
-        fast=True,
+        use_step_edge=True,
         lam=None,
         plot=True,
         parallel_kw={"backend": "threading"},
@@ -693,7 +738,7 @@ def test_poly_crop_correct_uses_range_slice(gold) -> None:
         angle_range=(10.0, -10.0),
         eV_range=(0.2, -0.2),
         temp=100.0,
-        fast=True,
+        use_step_edge=True,
         vary_temp=False,
         degree=2,
         plot=False,
@@ -714,7 +759,7 @@ def test_spline_crop_correct_uses_range_slice(gold) -> None:
         angle_range=(10.0, -10.0),
         eV_range=(0.2, -0.2),
         temp=100.0,
-        fast=True,
+        use_step_edge=True,
         vary_temp=False,
         plot=False,
         correct=True,
@@ -853,7 +898,7 @@ def test_edge_is_invariant_to_energy_offset(gold: xr.DataArray, adaptive: bool) 
         "adaptive": adaptive,
         "temp": 100.0,
         "resolution": 0.02,
-        "fast": True,
+        "use_step_edge": True,
         "normalize": True,
         "progress": False,
         "parallel_kw": {
@@ -914,7 +959,7 @@ def test_poly_plot_supports_open_bounds(gold) -> None:
         temp=100.0,
         vary_temp=False,
         degree=2,
-        fast=True,
+        use_step_edge=True,
         plot=True,
         fig=fig,
         parallel_kw={"backend": "threading", "n_jobs": 1, "return_as": "list"},

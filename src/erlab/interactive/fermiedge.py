@@ -61,7 +61,7 @@ LMFIT_METHODS = [
 
 logger = logging.getLogger(__name__)
 
-_GOLDTOOL_STATE_SCHEMA_VERSION = 2
+_GOLDTOOL_STATE_SCHEMA_VERSION = 3
 
 
 def _disconnect_signal(signal: typing.Any) -> None:
@@ -160,7 +160,7 @@ class EdgeFitTask(QtCore.QRunnable):
                         vary_temp=not self.params["Fix T"],
                         bkg_slope=self.params["Linear"],
                         resolution=self.params["Resolution"],
-                        fast=self.params["Fast"],
+                        use_step_edge=self.params["Step edge"],
                         adaptive=self.params["Adaptive"],
                         method=self.params["Method"],
                         scale_covar=self.params["Scale cov"],
@@ -210,7 +210,11 @@ class _GoldEdgeState(_GoldStateBase):
     bin_x: int = pydantic.Field(default=1, alias="Bin x")
     bin_y: int = pydantic.Field(default=1, alias="Bin y")
     resolution: float = pydantic.Field(default=0.02, alias="Resolution")
-    fast: bool = pydantic.Field(default=False, alias="Fast")
+    use_step_edge: bool = pydantic.Field(
+        default=False,
+        validation_alias=pydantic.AliasChoices("Step edge", "Fast"),
+        serialization_alias="Step edge",
+    )
     adaptive: bool = pydantic.Field(default=False, alias="Adaptive")
     linear: bool = pydantic.Field(default=True, alias="Linear")
     method: str = pydantic.Field(default="least_squares", alias="Method")
@@ -420,7 +424,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     "singleStep": 0.001,
                     "decimals": 5,
                 },
-                "Fast": {
+                "Step edge": {
                     "qwtype": "chkbox",
                     "checked": False,
                     "toolTip": "If checked, fit with a broadened step function "
@@ -459,8 +463,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         ).setCurrentIndex(1)
 
         typing.cast(
-            "QtWidgets.QCheckBox", self.params_edge.widgets["Fast"]
-        ).stateChanged.connect(self._toggle_fast)
+            "QtWidgets.QCheckBox", self.params_edge.widgets["Step edge"]
+        ).stateChanged.connect(self._toggle_step_edge)
 
         self.params_poly = erlab.interactive.utils.ParameterGroup(
             {
@@ -696,7 +700,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
         self.params_roi.modify_roi(*self._clamp_roi_limits_to_bounds(status.roi_limits))
         self.params_roi.update_pos()
-        self._toggle_fast()
+        self._toggle_step_edge()
         self._sync_spline_lambda_enabled()
 
         if status.fit_snapshot is not None:
@@ -763,7 +767,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             ),
             ("Bin x / y", f"{edge['Bin x']} / {edge['Bin y']}"),
             ("Resolution", f"{edge['Resolution']} eV"),
-            ("Fast", self._bool_text(bool(edge["Fast"]))),
+            ("Step edge", self._bool_text(bool(edge["Step edge"]))),
             ("Adaptive", self._bool_text(bool(edge["Adaptive"]))),
             (
                 "Background above EF",
@@ -1085,7 +1089,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     self.params_spl, request.spline_values.model_dump(by_alias=True)
                 )
                 self.params_tab.setCurrentIndex(request.tab_index)
-            self._toggle_fast()
+            self._toggle_step_edge()
             self._sync_spline_lambda_enabled()
         self._reset_history_stack()
 
@@ -1127,9 +1131,9 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             data = data.copy().T
         return data
 
-    def _toggle_fast(self) -> None:
+    def _toggle_step_edge(self) -> None:
         self.params_edge.widgets["Fix T"].setDisabled(
-            bool(self.params_edge.values["Fast"])
+            bool(self.params_edge.values["Step edge"])
         )
 
     def iterated(self, n: int, *, task: EdgeFitTask | None = None) -> None:
@@ -1422,7 +1426,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             "vary_temp": not p0["Fix T"],
             "bkg_slope": p0["Linear"],
             "resolution": p0["Resolution"],
-            "fast": p0["Fast"],
+            "use_step_edge": p0["Step edge"],
             "adaptive": p0["Adaptive"],
             "method": p0["Method"],
             "scale_covar_edge": p0["Scale cov"],

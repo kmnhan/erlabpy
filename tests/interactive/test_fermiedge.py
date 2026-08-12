@@ -74,7 +74,7 @@ def _configure_goldtool_state(
                 "Bin x": 2,
                 "Bin y": 3,
                 "Resolution": 0.015,
-                "Fast": False,
+                "Step edge": False,
                 "Linear": False,
                 "Method": "cg",
                 "Scale cov": False,
@@ -105,7 +105,7 @@ def _configure_goldtool_state(
 
     win.params_roi.modify_roi(x0=-8.0, x1=8.0, y0=-0.2, y1=0.1)
     win.refit_on_source_update_check.setChecked(True)
-    win._toggle_fast()
+    win._toggle_step_edge()
     win._sync_spline_lambda_enabled()
 
     if fitted:
@@ -154,15 +154,23 @@ def test_goldtool_adaptive_toggle_is_persisted_and_forwarded(
     adaptive_check = typing.cast(
         "QtWidgets.QCheckBox", win.params_edge.widgets["Adaptive"]
     )
+    step_edge_check = typing.cast(
+        "QtWidgets.QCheckBox", win.params_edge.widgets["Step edge"]
+    )
     assert not adaptive_check.isChecked()
+    assert not step_edge_check.isChecked()
 
     adaptive_check.setChecked(True)
+    step_edge_check.setChecked(True)
     status = win.tool_status
     assert status.edge_values.adaptive is True
+    assert status.edge_values.use_step_edge is True
 
     adaptive_check.setChecked(False)
+    step_edge_check.setChecked(False)
     win.tool_status = status
     assert adaptive_check.isChecked()
+    assert step_edge_check.isChecked()
 
     win._argnames["data"] = "gold"
     provenance = win.current_provenance_spec()
@@ -179,6 +187,7 @@ def test_goldtool_adaptive_toggle_is_persisted_and_forwarded(
         provenance.display_code(), {"__builtins__": {}}, namespace
     )
     assert replay_kwargs["adaptive"] is True
+    assert replay_kwargs["use_step_edge"] is True
 
     edge_kwargs: dict[str, typing.Any] = {}
     edge_center = gold.mean("eV")
@@ -199,6 +208,7 @@ def test_goldtool_adaptive_toggle_is_persisted_and_forwarded(
     task.run()
 
     assert edge_kwargs["adaptive"] is True
+    assert edge_kwargs["use_step_edge"] is True
 
 
 def _seed_goldtool_poly_result(win: GoldTool, result: xr.Dataset) -> None:
@@ -210,16 +220,16 @@ def _seed_goldtool_poly_result(win: GoldTool, result: xr.Dataset) -> None:
     win.params_tab.setDisabled(False)
 
 
-@pytest.mark.parametrize("fast", [True, False], ids=["StepB", "FD"])
+@pytest.mark.parametrize("use_step_edge", [True, False], ids=["StepB", "FD"])
 def test_goldtool(
-    qtbot, gold, fast, gold_fit_res, gold_fit_res_fd, accept_dialog
+    qtbot, gold, use_step_edge, gold_fit_res, gold_fit_res_fd, accept_dialog
 ) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
-    win.params_edge.widgets["Fast"].setChecked(fast)
+    win.params_edge.widgets["Step edge"].setChecked(use_step_edge)
     win.params_edge.widgets["# CPU"].setValue(1)
 
-    expected = gold_fit_res if fast else gold_fit_res_fd
+    expected = gold_fit_res if use_step_edge else gold_fit_res_fd
     _seed_goldtool_poly_result(win, expected)
 
     def check_generated_code(w: GoldTool) -> None:
@@ -371,8 +381,10 @@ def test_goldtool_roundtrip_fitted(qtbot, gold) -> None:
 
         with xr.load_dataset(filename, engine="h5netcdf") as saved:
             saved_state = json.loads(saved.attrs["tool_state"])
-            assert saved_state["schema_version"] == 2
+            assert saved_state["schema_version"] == 3
             assert "fit_snapshot" not in saved_state
+            assert saved_state["edge_values"]["Step edge"] is False
+            assert "Fast" not in saved_state["edge_values"]
             assert "go" not in saved_state["edge_values"]
             assert "copy" not in saved_state["poly_values"]
             assert "itool" not in saved_state["poly_values"]
@@ -392,9 +404,7 @@ def test_goldtool_roundtrip_fitted(qtbot, gold) -> None:
         assert str(win_restored.info_text) == str(win.info_text)
 
 
-def test_goldtool_loads_legacy_state_with_raw_dicts_and_fit_snapshot(
-    qtbot, gold
-) -> None:
+def test_goldtool_loads_legacy_state_with_fast_and_fit_snapshot(qtbot, gold) -> None:
     win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
     qtbot.addWidget(win)
     _configure_goldtool_state(win, fitted=True, spline=True)
@@ -403,14 +413,17 @@ def test_goldtool_loads_legacy_state_with_raw_dicts_and_fit_snapshot(
 
     saved = _drop_goldtool_fit_payload(win.to_dataset())
     legacy_state = json.loads(saved.attrs["tool_state"])
-    legacy_state.pop("schema_version", None)
-    legacy_state["edge_values"] = {
+    legacy_state["schema_version"] = 2
+    legacy_edge_values = {
         **dict(win.params_edge.values),
         "go": True,
         "unknown": "ignored",
         "Method": "unsupported-method",
         "# CPU": 0,
     }
+    legacy_edge_values["Fast"] = True
+    legacy_edge_values.pop("Step edge")
+    legacy_state["edge_values"] = legacy_edge_values
     legacy_state["poly_values"] = {
         **dict(win.params_poly.values),
         "itool": True,
@@ -433,9 +446,13 @@ def test_goldtool_loads_legacy_state_with_raw_dicts_and_fit_snapshot(
     assert isinstance(restored, GoldTool)
 
     assert restored.params_tab.currentIndex() == 0
+    assert restored.params_edge.values["Step edge"] is True
     assert restored.params_edge.values["Method"] == "least_squares"
     assert restored.params_edge.values["# CPU"] == 1
-    assert "go" not in restored.tool_status.edge_values.model_dump(by_alias=True)
+    restored_edge_values = restored.tool_status.edge_values.model_dump(by_alias=True)
+    assert restored_edge_values["Step edge"] is True
+    assert "Fast" not in restored_edge_values
+    assert "go" not in restored_edge_values
     assert "copy" not in restored.tool_status.poly_values.model_dump(by_alias=True)
     xr.testing.assert_equal(restored.edge_center, win.edge_center)
     xr.testing.assert_equal(restored.edge_stderr, win.edge_stderr)
@@ -850,7 +867,7 @@ def test_edge_fit_task_aborted_before_run_skips_fit(gold, monkeypatch) -> None:
             "Fix T": False,
             "Linear": True,
             "Resolution": 0.01,
-            "Fast": True,
+            "Step edge": True,
             "Adaptive": False,
             "Method": "leastsq",
             "Scale cov": True,
@@ -888,7 +905,7 @@ def test_edge_fit_task_aborted_after_progress_skips_fit(gold, monkeypatch) -> No
             "Fix T": False,
             "Linear": True,
             "Resolution": 0.01,
-            "Fast": True,
+            "Step edge": True,
             "Adaptive": False,
             "Method": "leastsq",
             "Scale cov": True,
@@ -932,7 +949,7 @@ def test_edge_fit_task_aborted_during_parallel_setup_skips_fit(
             "Fix T": False,
             "Linear": True,
             "Resolution": 0.01,
-            "Fast": True,
+            "Step edge": True,
             "Adaptive": False,
             "Method": "leastsq",
             "Scale cov": True,
@@ -981,7 +998,7 @@ def test_edge_fit_task_aborted_after_fit_skips_finished_signal(
             "Fix T": False,
             "Linear": True,
             "Resolution": 0.01,
-            "Fast": True,
+            "Step edge": True,
             "Adaptive": False,
             "Method": "leastsq",
             "Scale cov": True,

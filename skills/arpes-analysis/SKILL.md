@@ -159,8 +159,9 @@ available only in an external script or pre-rendered artifact.
   motor readbacks appear similar.
 - Treat implicit zero offsets as defaults, not measured normal-emission values.
 - Do not infer an angle-dependent Fermi correction from sample bands.
-- For `gold.poly`, use reliable `sample_temp` metadata. Use `fast=True` when that
-  temperature is missing or unreliable, and supply a unit-checked resolution estimate.
+- For `gold.poly`, use reliable `sample_temp` metadata. Use
+  `use_step_edge=True` when that temperature is missing or unreliable, and supply a
+  unit-checked resolution estimate.
 - Do not use symmetrized data to justify a normal-emission calibration.
 - Do not use intensity maxima or apparent brightness symmetry to locate normal
   emission. Matrix elements can suppress one side of the same contour.
