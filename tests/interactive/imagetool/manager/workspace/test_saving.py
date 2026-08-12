@@ -1463,9 +1463,26 @@ def test_serialize_workspace_node_rejects_invalid_pending_tool() -> None:
     pending = types.SimpleNamespace(
         is_imagetool=False,
         pending_workspace_payload=("workspace.itws", "/tool"),
+        pending_workspace_payload_attrs={
+            erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                {
+                    "data": {
+                        "kind": "manager_node",
+                        "node_uid": "missing-source",
+                    }
+                }
+            )
+        },
+        display_text="Saved figure",
+        parent_uid=None,
+        uid="figure-uid",
         materialize_pending_workspace_payload=lambda: False,
     )
-    with pytest.raises(ValueError, match="Could not read this saved tool"):
+    saver._manager = types.SimpleNamespace(_tool_graph=types.SimpleNamespace(nodes={}))
+    saver._controller = types.SimpleNamespace(
+        _tool_data_reference_matches_current_snapshot=lambda _reference: False
+    )
+    with pytest.raises(ValueError, match=r"Saved figure.*missing-source"):
         saver._serialize_workspace_node({}, pending, "0", include_children=False)
 
     unsavable = types.SimpleNamespace(

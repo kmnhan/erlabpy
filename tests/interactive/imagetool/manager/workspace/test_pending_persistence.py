@@ -1234,6 +1234,105 @@ def test_generation_save_copies_pending_tools_without_construction(
             )
 
 
+def test_generation_save_embeds_pending_tool_data_after_source_removal(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=("x", "y"),
+            coords={"x": np.arange(5), "y": np.arange(5)},
+            name="source",
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        root_uid = manager._tool_graph.root_wrappers[0].uid
+
+        figure_uid = manager.add_figuretool(
+            _WorkspaceManagerReferenceFigureTool(
+                data.rename("figure"), reference_uid=root_uid
+            ),
+            show=False,
+        )
+        fname = tmp_path / "removed-pending-reference.itws"
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+
+        figure_node = manager._child_node(figure_uid)
+        assert figure_node.pending_workspace_tool_payload is not None
+        manager.remove_imagetool(0)
+
+        assert _request_workspace_save_and_wait(qtbot, manager)
+        assert figure_node.pending_workspace_tool_payload is None
+        figure = manager.get_childtool(figure_uid)
+        xr.testing.assert_identical(figure.tool_data, data.rename("figure"))
+
+        with h5py.File(fname, "r") as h5_file:
+            payload = h5_file[
+                _current_workspace_payload_path(fname, f"figures/{figure_uid}")
+            ]
+            assert erlab.interactive.utils._SAVED_TOOL_DATA_NAME in payload
+            assert (
+                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR not in payload.attrs
+            )
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        restored = manager.get_childtool(figure_uid)
+        xr.testing.assert_identical(restored.tool_data, data.rename("figure"))
+
+
+def test_generation_save_detaches_pending_figure_composer_from_removed_source(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=("x", "y"),
+            coords={"x": np.arange(5), "y": np.arange(5)},
+            name="source",
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+
+        fname = tmp_path / "removed-figure-composer-source.itws"
+        manager._workspace_controller.saving._save_workspace_document(fname)
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+
+        figure_node = manager._child_node(figure_uid)
+        assert figure_node.pending_workspace_tool_payload is not None
+        manager.remove_imagetool(0)
+
+        assert _request_workspace_save_and_wait(qtbot, manager)
+        figure = manager.get_childtool(figure_uid)
+        xr.testing.assert_identical(figure.tool_data, data)
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        restored = manager.get_childtool(figure_uid)
+        xr.testing.assert_identical(restored.tool_data, data)
+        assert all(source.node_uid is None for source in restored.tool_status.sources)
+
+
 def test_hidden_toolwindow_with_missing_saved_class_is_skipped(
     qtbot,
     monkeypatch,

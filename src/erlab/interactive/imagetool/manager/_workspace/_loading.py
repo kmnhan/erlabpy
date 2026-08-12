@@ -464,17 +464,39 @@ class _WorkspaceLoader:
     ) -> xr.DataArray | None:
         if not node.is_imagetool:
             return None
+        return self._saved_workspace_reference_source_data_for_uid(
+            node.uid,
+            snapshot_token=snapshot_token,
+            data_role=data_role,
+            owner_node=owner_node,
+            reference_datasets=reference_datasets,
+            source_node=node,
+        )
+
+    def _saved_workspace_reference_source_data_for_uid(
+        self,
+        node_uid: str,
+        *,
+        snapshot_token: str | None,
+        data_role: ScriptInputDataRole,
+        owner_node: _ImageToolWrapper | _ManagedWindowNode | None,
+        reference_datasets: dict[tuple[pathlib.Path, str], xr.Dataset] | None,
+        source_node: _ImageToolWrapper | _ManagedWindowNode | None = None,
+        workspace_path: str | os.PathLike[str] | None = None,
+    ) -> xr.DataArray | None:
+        """Read a referenced ImageTool snapshot after its node was removed."""
         pending_owner = (
             None if owner_node is None else owner_node.pending_workspace_tool_payload
         )
-        workspace_path = (
-            pending_owner[0]
-            if pending_owner is not None
-            else self._manager._workspace_state.path
-        )
+        if workspace_path is None:
+            workspace_path = (
+                pending_owner[0]
+                if pending_owner is not None
+                else self._manager._workspace_state.path
+            )
         if workspace_path is None:
             return None
-        payload_path = self._workspace_payload_path_for_uid(workspace_path, node.uid)
+        payload_path = self._workspace_payload_path_for_uid(workspace_path, node_uid)
         opened = self._workspace_imagetool_reference_dataset_at(
             workspace_path,
             payload_path,
@@ -482,18 +504,39 @@ class _WorkspaceLoader:
             reference_datasets=reference_datasets,
         )
         ds = workspace_format._restore_workspace_dataset_attrs(opened.copy(deep=False))
+        saved_uid = workspace_format._decode_workspace_attr_text(
+            ds.attrs.get("manager_node_uid")
+        )
+        saved_kind = workspace_format._decode_workspace_attr_text(
+            ds.attrs.get("manager_node_kind")
+        )
+        if saved_uid != node_uid or saved_kind != "imagetool":
+            return None
         saved_token = workspace_format._decode_workspace_attr_text(
             ds.attrs.get("manager_node_snapshot_token")
             if data_role == "displayed"
             else ds.attrs.get("manager_node_source_snapshot_token")
         )
-        if saved_token != snapshot_token:
+        if snapshot_token is not None and saved_token != snapshot_token:
             return None
-        return self.pending._workspace_imagetool_source_data(
-            node,
+        if source_node is not None:
+            return self.pending._workspace_imagetool_source_data(
+                source_node,
+                opened,
+                attrs=None,
+                data_role=data_role,
+            )
+        saved_name = workspace_format._decode_workspace_attr_text(
+            ds.attrs.get("itool_name")
+        )
+        return self.pending._workspace_imagetool_source_data_from_payload(
             opened,
-            attrs=None,
+            attrs=ds.attrs,
             data_role=data_role,
+            name=saved_name or None,
+            source_input_ndim=typing.cast(
+                "int | None", ds.attrs.get("manager_node_source_input_ndim")
+            ),
         )
 
     @staticmethod
@@ -568,17 +611,35 @@ class _WorkspaceLoader:
             if not isinstance(node_uid, str) or not node_uid:
                 return None
             target: int | str = node_uid
-            if loaded_targets_by_uid is None:
-                if node_uid not in self._manager._tool_graph.nodes:
-                    return None
-            else:
+            if loaded_targets_by_uid is not None:
                 target = loaded_targets_by_uid.get(node_uid, node_uid)
             data_role = payload.get("data_role", "displayed")
             if data_role not in {"source", "displayed"}:
                 return None
             try:
-                source_node = self._manager._node_for_target(target)
                 snapshot_token = payload.get("node_snapshot_token")
+                try:
+                    source_node = self._manager._node_for_target(target)
+                except resolver_error_types:
+                    pending_owner = (
+                        None
+                        if owner_node is None
+                        else owner_node.pending_workspace_tool_payload
+                    )
+                    if pending_owner is None:
+                        return None
+                    return self._saved_workspace_reference_source_data_for_uid(
+                        node_uid,
+                        snapshot_token=(
+                            snapshot_token
+                            if isinstance(snapshot_token, str) and snapshot_token
+                            else None
+                        ),
+                        data_role=typing.cast("ScriptInputDataRole", data_role),
+                        owner_node=owner_node,
+                        reference_datasets=reference_datasets,
+                        workspace_path=pending_owner[0],
+                    )
                 if (
                     isinstance(snapshot_token, str)
                     and snapshot_token

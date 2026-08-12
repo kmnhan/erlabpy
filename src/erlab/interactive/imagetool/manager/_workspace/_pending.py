@@ -27,6 +27,7 @@ from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     ScriptInputDataRole,
     ToolProvenanceSpec,
+    mark_promoted_1d_source,
     parse_tool_provenance_operation,
     parse_tool_provenance_spec,
     require_live_source_spec,
@@ -267,9 +268,26 @@ class _PendingWorkspacePayloads:
         attrs: Mapping[typing.Any, typing.Any] | None,
         data_role: ScriptInputDataRole,
     ) -> xr.DataArray:
+        data = self._workspace_imagetool_source_data_from_payload(
+            opened,
+            attrs=attrs,
+            data_role=data_role,
+            name=None if node.name == "" else node.name,
+        )
+        return node._finalize_script_input_data(data)
+
+    def _workspace_imagetool_source_data_from_payload(
+        self,
+        opened: xr.Dataset,
+        *,
+        attrs: Mapping[typing.Any, typing.Any] | None,
+        data_role: ScriptInputDataRole,
+        name: str | None,
+        source_input_ndim: int | None = None,
+    ) -> xr.DataArray:
+        """Restore script-input data without requiring a live manager node."""
         ds = workspace_format._restore_workspace_dataset_attrs(opened.copy(deep=False))
         ds = _serialization.restore_private_coords(ds, _ITOOL_DATA_NAME)
-        name = None if node.name == "" else node.name
         data = self._loader._workspace_imagetool_payload_data(ds).rename(name)
         if attrs is None:
             attrs = ds.attrs
@@ -292,7 +310,9 @@ class _PendingWorkspacePayloads:
                         data = self._apply_pending_workspace_filter(
                             data, state.get("filter_operation")
                         )
-        return node._finalize_script_input_data(data)
+        if source_input_ndim == 1:
+            data = mark_promoted_1d_source(data)
+        return data.copy(deep=False)
 
     @staticmethod
     def _pending_workspace_data_with_loaded_coords(data: xr.DataArray) -> xr.DataArray:

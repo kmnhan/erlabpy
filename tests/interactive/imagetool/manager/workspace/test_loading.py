@@ -2,6 +2,7 @@ import datetime
 import json
 import logging
 import pathlib
+import types
 import typing
 import weakref
 from collections.abc import Callable, Mapping
@@ -648,6 +649,88 @@ def test_manager_workspace_import_does_not_restore_manager_layout(
             manager._workspace_controller.saving._workspace_layout_snapshot()
             == current_layout
         )
+
+
+def test_eager_tool_reference_does_not_read_associated_workspace(
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        loader = manager._workspace_controller.loading
+        manager._workspace_state.path = tmp_path / "associated.itws"
+        reference = {"kind": "manager_node", "node_uid": "missing-source"}
+        ds = xr.Dataset(
+            attrs={
+                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                    {"data": reference}
+                )
+            }
+        )
+        monkeypatch.setattr(
+            loader,
+            "_saved_workspace_reference_source_data_for_uid",
+            lambda *_args, **_kwargs: pytest.fail(
+                "an eager import must not read the associated workspace"
+            ),
+        )
+
+        _parent_data, resolver = loader._workspace_tool_restore_references(
+            ds,
+            parent_target=None,
+            loaded_targets_by_uid={},
+        )
+
+        assert resolver(reference) is None
+
+
+def test_pending_tool_reference_reads_owner_workspace(
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        loader = manager._workspace_controller.loading
+        manager._workspace_state.path = tmp_path / "associated.itws"
+        imported_path = tmp_path / "imported.itws"
+        reference = {"kind": "manager_node", "node_uid": "removed-source"}
+        ds = xr.Dataset(
+            attrs={
+                erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                    {"data": reference}
+                )
+            }
+        )
+        resolved = xr.DataArray([1.0], dims=("x",))
+        workspace_paths: list[pathlib.Path] = []
+
+        def _saved_source(*_args, workspace_path, **_kwargs):
+            workspace_paths.append(pathlib.Path(workspace_path))
+            return resolved
+
+        monkeypatch.setattr(
+            loader, "_saved_workspace_reference_source_data_for_uid", _saved_source
+        )
+        owner_node = typing.cast(
+            "typing.Any",
+            types.SimpleNamespace(
+                pending_workspace_tool_payload=(imported_path, "figures/tool")
+            ),
+        )
+
+        _parent_data, resolver = loader._workspace_tool_restore_references(
+            ds,
+            parent_target=None,
+            loaded_targets_by_uid={},
+            owner_node=owner_node,
+        )
+
+        assert resolver(reference) is resolved
+        assert workspace_paths == [imported_path]
 
 
 def test_manager_workspace_roundtrip_restores_loader_and_standalone_apps(
