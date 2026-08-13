@@ -1280,6 +1280,7 @@ class _WorkspaceSaver:
         manifest["storage_model"] = "immutable-generations-v1"
         manifest.pop("transaction_protocol", None)
         preserved_groups: tuple[workspace_storage._WorkspaceGroupCopy, ...] = ()
+        legacy_object_links: tuple[tuple[str, str], ...] = ()
         legacy_reader_rebindings: tuple[tuple[str, str], ...] = ()
         leased_legacy_group_paths: frozenset[str] = frozenset()
         if source_store is not None and not source_store.closed:
@@ -1298,6 +1299,8 @@ class _WorkspaceSaver:
                 if legacy_path in leased_legacy_group_paths:
                     safe_rebindings.append((legacy_path, object_id))
             legacy_reader_rebindings = tuple(sorted(safe_rebindings))
+            if pathlib.Path(fname).resolve() == source_store.path:
+                legacy_object_links = legacy_reader_rebindings
         if (
             source_store is not None
             and pathlib.Path(fname).resolve() != source_store.path
@@ -1326,6 +1329,7 @@ class _WorkspaceSaver:
                 manifest=manifest,
                 objects=tuple(object_writes.values()),
                 preserved_groups=preserved_groups,
+                legacy_object_links=legacy_object_links,
                 legacy_reader_rebindings=legacy_reader_rebindings,
             ),
             compression_mode=self._workspace_compression_mode(),

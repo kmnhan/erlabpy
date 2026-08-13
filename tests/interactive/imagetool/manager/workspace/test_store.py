@@ -1151,6 +1151,42 @@ def test_workspace_generation_removes_legacy_link_after_publish_error(
         assert store.generations() == ()
 
 
+def test_workspace_generation_removes_in_place_object_link_after_publish_error(
+    monkeypatch, tmp_path: pathlib.Path
+) -> None:
+    path = tmp_path / "workspace.itws"
+    plan = workspace_storage._WorkspaceGenerationPlan(
+        manifest=_manifest("written"),
+        objects=(
+            workspace_storage._WorkspaceObjectWrite(
+                "written",
+                source_file=str(path),
+                source_path="/legacy",
+            ),
+        ),
+        legacy_object_links=(("/legacy", "written"),),
+    )
+
+    with workspace_store.WorkspaceStore(path, create=True) as store:
+        with store.write_session() as h5_file:
+            h5_file.create_group("legacy").create_dataset("data", data=np.arange(3))
+        legacy_address = h5py.h5o.get_info(store.h5_file["/legacy"].id).addr
+
+        def _fail_publish(_manifest) -> None:
+            raise RuntimeError("publish failed")
+
+        monkeypatch.setattr(store, "publish", _fail_publish)
+        with pytest.raises(RuntimeError, match="publish failed"):
+            workspace_storage._write_workspace_generation(
+                store, plan, compression_mode="none"
+            )
+
+        assert "legacy" in store.h5_file
+        assert h5py.h5o.get_info(store.h5_file["/legacy"].id).addr == legacy_address
+        assert store.object_path("written").strip("/") not in store.h5_file
+        assert store.generations() == ()
+
+
 def test_workspace_generation_keeps_objects_referenced_by_committed_generation(
     monkeypatch, tmp_path: pathlib.Path
 ) -> None:

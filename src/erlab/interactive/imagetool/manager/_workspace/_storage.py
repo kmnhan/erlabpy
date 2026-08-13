@@ -66,6 +66,8 @@ class _WorkspaceGroupCopy:
 class _WorkspaceGenerationPlan:
     """A complete manifest and the new objects that it references.
 
+    ``legacy_object_links`` identifies unchanged legacy payloads that can become
+    immutable objects through a hard link during an in-place format upgrade.
     ``legacy_reader_rebindings`` contains only legacy paths whose array values
     match the target object. Save As can hard-link these paths and retarget their
     live readers after publication without changing a Dask graph's result.
@@ -74,6 +76,7 @@ class _WorkspaceGenerationPlan:
     manifest: dict[str, typing.Any]
     objects: tuple[_WorkspaceObjectWrite, ...]
     preserved_groups: tuple[_WorkspaceGroupCopy, ...] = ()
+    legacy_object_links: tuple[tuple[str, str], ...] = ()
     legacy_reader_rebindings: tuple[tuple[str, str], ...] = ()
 
 
@@ -187,6 +190,10 @@ def _write_workspace_generation(
         try:
             with target_store.lock:
                 target_store.require_current_path()
+            legacy_object_links = {
+                object_id: legacy_path
+                for legacy_path, object_id in plan.legacy_object_links
+            }
             legacy_reader_rebindings = dict(plan.legacy_reader_rebindings)
             for item in plan.preserved_groups:
                 if item.target_path in legacy_reader_rebindings:
@@ -205,6 +212,15 @@ def _write_workspace_generation(
                 with target_store.lock:
                     if target_path.strip("/") in target_store.h5_file:
                         continue
+                legacy_path = legacy_object_links.get(item.object_id)
+                if legacy_path is not None:
+                    if _link_workspace_group(
+                        target_store,
+                        source_path=legacy_path,
+                        target_path=target_path,
+                    ):
+                        created_object_ids.append(item.object_id)
+                    continue
                 created_object_ids.append(item.object_id)
                 if item.dataset is not None:
                     if workspace_arrays._workspace_dataset_can_write_h5py(item.dataset):
@@ -517,7 +533,7 @@ def _compact_workspace_store(
                 prepared_path.unlink()
 
 
-_WorkspacePublicationState: typing.TypeAlias = tuple[bool, int, int, int, int, int]
+_WorkspacePublicationState: typing.TypeAlias = tuple[bool, int, int, int, int]
 
 
 class _WorkspaceBackingFileNotFoundError(FileNotFoundError):
@@ -546,18 +562,22 @@ class _WorkspacePublicationConflictError(workspace_store.WorkspaceStoreConflictE
 def _workspace_publication_state(
     path: str | os.PathLike[str],
 ) -> _WorkspacePublicationState:
-    """Return the state used to detect an external document replacement."""
+    """Return content-sensitive state used to detect an external file change.
+
+    The state excludes ``ctime`` because cloud clients can change it when they
+    update extended attributes without changing the workspace. File identity,
+    size, and modification time still reject replacement and content changes.
+    """
     try:
         stat_result = os.stat(path)
     except FileNotFoundError:
-        return False, 0, 0, 0, 0, 0
+        return False, 0, 0, 0, 0
     return (
         True,
         stat_result.st_dev,
         stat_result.st_ino,
         stat_result.st_size,
         stat_result.st_mtime_ns,
-        stat_result.st_ctime_ns,
     )
 
 

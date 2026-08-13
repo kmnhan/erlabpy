@@ -1,5 +1,6 @@
 import errno
 import json
+import os
 import pathlib
 import types
 import typing
@@ -157,6 +158,54 @@ def test_replace_workspace_file_preserves_permission_error_after_retries(
     assert synced_parents == []
     assert source.read_bytes() == b"new"
     assert destination.read_bytes() == b"old"
+
+
+def test_replace_workspace_file_ignores_metadata_only_ctime_changes(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "prepared.itws"
+    destination = tmp_path / "workspace.itws"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+    expected_state = workspace_storage._workspace_publication_state(destination)
+    real_state = workspace_storage.os.stat(destination)
+    ctime_ns = real_state.st_ctime_ns
+
+    def _stat_with_new_ctime(_path):
+        nonlocal ctime_ns
+        ctime_ns += 1
+        return types.SimpleNamespace(
+            st_dev=real_state.st_dev,
+            st_ino=real_state.st_ino,
+            st_size=real_state.st_size,
+            st_mtime_ns=real_state.st_mtime_ns,
+            st_ctime_ns=ctime_ns,
+        )
+
+    monkeypatch.setattr(workspace_storage.os, "stat", _stat_with_new_ctime)
+
+    workspace_storage._replace_workspace_file(
+        source, destination, expected_state=expected_state
+    )
+
+    assert destination.read_bytes() == b"new"
+
+
+def test_workspace_publication_state_detects_same_size_content_changes(
+    tmp_path,
+) -> None:
+    path = tmp_path / "workspace.itws"
+    path.write_bytes(b"before")
+    expected = workspace_storage._workspace_publication_state(path)
+    previous_mtime_ns = path.stat().st_mtime_ns
+    path.write_bytes(b"after!")
+    os.utime(
+        path,
+        ns=(previous_mtime_ns + 1_000_000_000, previous_mtime_ns + 1_000_000_000),
+    )
+
+    with pytest.raises(workspace_storage._WorkspacePublicationConflictError):
+        workspace_storage._require_workspace_publication_state(path, expected)
 
 
 def test_workspace_file_access_retry_filter_is_specific() -> None:
