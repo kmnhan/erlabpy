@@ -258,6 +258,10 @@ and right-click context menus:
   Combine selected data with {func}`xarray.concat` and open the result in a new
   ImageTool window.
 
+- {guilabel}`New Empty Figure`
+
+  Create a Figure Composer window without data sources or recipe steps.
+
 - {guilabel}`Add to Figure…`
 
   Create a new {ref}`Figure Composer <figure-composer>` figure from the selected rows.
@@ -339,6 +343,10 @@ file metadata. Use {guilabel}`Revert Assignment` to restore its earlier value.
 (imagetool-manager-figure-composer)=
 
 ## Creating Matplotlib figures
+
+Choose {menuselection}`File --> New Empty Figure` to create a Figure Composer window
+without data sources or recipe steps. Use {guilabel}`Add…` in the new window or drag
+ImageTool rows into it when you are ready to add data.
 
 Use {guilabel}`Add to Figure…` from the right-click context menu of one or more
 ImageTool rows to send their data to {ref}`Figure Composer <figure-composer>`. When no

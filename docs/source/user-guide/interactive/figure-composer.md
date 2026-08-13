@@ -14,8 +14,11 @@ steps that each correspond to a plotting operation.
 
 ## Opening Figure Composer
 
-Open data in ImageTool Manager, then use one of these entry points:
+Use one of these entry points:
 
+- From ImageTool Manager, choose {menuselection}`File --> New Empty Figure` to create
+  a figure without data sources. Add sources later with {guilabel}`Add…` or by dragging
+  ImageTool rows into the figure.
 - From ImageTool, right-click an image or line plot and choose {guilabel}`New Figure`.
   - If multiple cursors exist, a figure with multiple axes is created. This is useful
     for quickly generating comparison figures with several slices of the same data.
@@ -87,8 +90,9 @@ arguments of the plotting or styling calls it generates.
 
 The step table shows each operation, its target, and its current status. For steps that
 act on axes, the {guilabel}`Target` column highlights the affected axes in a miniature
-of the current subplot or GridSpec layout. The {guilabel}`Status` reports missing sources, invalid targets or inputs, and rendering errors
-when they occur. Hover over a reported problem for details.
+of the current subplot or GridSpec layout. The {guilabel}`Status` reports missing
+sources, invalid targets or inputs, and rendering errors when they occur. Hover over a
+reported problem for details.
 
 There are several step types:
 

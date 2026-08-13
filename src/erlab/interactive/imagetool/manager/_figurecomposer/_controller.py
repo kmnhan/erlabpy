@@ -729,6 +729,17 @@ class _FigureComposerWorkflowController(QtCore.QObject):
         self._collection.select_uid(uid)
         return uid
 
+    def create_empty_figure(self, *, show: bool = True) -> str:
+        """Create a manager-owned figure without data sources or recipe steps."""
+        from erlab.interactive._figurecomposer import FigureComposerTool
+        from erlab.interactive._figurecomposer._defaults import figure_options_context
+
+        with figure_options_context(self._host.effective_interactive_options):
+            tool = FigureComposerTool.empty()
+        uid = self._host.add_figuretool(tool, show=show)
+        self._collection.select_uid(uid)
+        return uid
+
     @QtCore.Slot()
     def create_figure_from_selection(self) -> None:
         from erlab.interactive.imagetool.manager._figurecomposer import _dialogs

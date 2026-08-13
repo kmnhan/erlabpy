@@ -573,6 +573,14 @@ class ImageToolManager(_ImageToolManagerBase):
         )
         self.create_figure_action.setIcon(QtGui.QIcon.fromTheme("insert-image"))
 
+        self.new_figure_action = QtWidgets.QAction("New Empty Figure", self)
+        self.new_figure_action.setObjectName("manager_new_figure_action")
+        self.new_figure_action.triggered.connect(self._create_empty_figure_from_action)
+        self.new_figure_action.setToolTip(
+            "Create an editable Matplotlib figure without data sources"
+        )
+        self.new_figure_action.setIcon(QtGui.QIcon.fromTheme("document-new"))
+
         self.reload_action = QtWidgets.QAction("Reload Data", self)
         self.reload_action.setObjectName("manager_reload_data_action")
         self.reload_action.triggered.connect(self.reload_selected)
@@ -660,6 +668,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.file_menu.addAction(self.explorer_action)
         self.file_menu.addAction(self.acquisition_context_action)
         self.file_menu.addSeparator()
+        self.file_menu.addAction(self.new_figure_action)
         self.file_menu.addAction(self.new_manager_action)
         self.file_menu.addSeparator()
         self.file_menu.addAction(self.store_action)
@@ -1388,6 +1397,13 @@ class ImageToolManager(_ImageToolManagerBase):
             title=title,
             show=show,
         )
+
+    def create_empty_figure(self, *, show: bool = True) -> str:
+        return self._figure_workflows.create_empty_figure(show=show)
+
+    @QtCore.Slot()
+    def _create_empty_figure_from_action(self) -> None:
+        self.create_empty_figure()
 
     def _choose_figure_append_target(
         self, operation: FigureOperationState | None
