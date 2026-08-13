@@ -138,6 +138,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     concat_action: QtGui.QAction
     compact_workspace_action: QtGui.QAction
     create_figure_action: QtGui.QAction
+    new_figure_action: QtGui.QAction
     duplicate_action: QtGui.QAction
     edit_note_action: QtGui.QAction
     copy_note_action: QtGui.QAction

@@ -1493,8 +1493,11 @@ class FigureDocument:
         )
         if not result:
             return result
+        recipe_updates: dict[str, typing.Any] = {"sources": tuple(existing.values())}
+        if not self.recipe.sources:
+            recipe_updates["primary_source"] = next(iter(existing))
         self.replace_recipe_and_source_payloads(
-            self.recipe.model_copy(update={"sources": tuple(existing.values())}),
+            self.recipe.model_copy(update=recipe_updates),
             candidate_data,
             candidate_bases,
         )

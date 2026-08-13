@@ -43,6 +43,7 @@ from matplotlib.figure import Figure
 
 import numpy as np
 import pydantic
+import xarray as xr
 
 import erlab
 import erlab.interactive._figurecomposer._codegen
@@ -189,7 +190,6 @@ if typing.TYPE_CHECKING:
         Sequence,
     )
 
-    import xarray as xr
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 
     from erlab.interactive._options import OptionDialog
@@ -210,6 +210,7 @@ _PERSISTED_PREVIEW_CACHE_MAX_BYTES = 384_000
 _RESTORE_OPERATION_EDITOR_KEY = "figure_composer_operation_editor"
 _RESTORE_REDRAW_KEY = "figure_composer_restored_redraw"
 _INITIAL_SIZE_HINT_EXTRA_HEIGHT = 80
+_SOURCE_FREE_DATA_DIM = "_figure_composer_source_free"
 _STEPS_CLIPBOARD_MIME = "application/x-erlab-figure-composer-steps+json"
 _STEPS_CLIPBOARD_PAYLOAD_TYPE = "erlab.figure_composer.steps"
 _STEPS_CLIPBOARD_PAYLOAD_VERSION = 1
@@ -222,6 +223,14 @@ _OPERATION_STATUS_LABELS = {
     "invalid_input": "Invalid input",
     "render_error": "Render error",
 }
+
+
+def _source_free_tool_data() -> xr.DataArray:
+    """Return the private data carrier required by ``ToolWindow`` persistence."""
+    return xr.DataArray(
+        np.empty((0,), dtype=np.uint8),
+        dims=(_SOURCE_FREE_DATA_DIM,),
+    )
 
 
 class _FigureComposerStepMimeData(QtCore.QMimeData):
@@ -425,7 +434,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if recipe is not None
             else self._default_recipe(data)
         )
-        initial_source_data = dict(source_data or {})
+        initial_source_data = {} if source_data is None else dict(source_data)
         if source_data is None:
             if initial_recipe.primary_source in {
                 source.name for source in initial_recipe.sources
@@ -434,8 +443,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             else:
                 source_name = _source_name(data)
             initial_source_data[source_name] = data
-        if initial_recipe.primary_source not in initial_source_data:
+        if initial_recipe.primary_source not in initial_source_data and (
+            source_data is None or initial_recipe.sources
+        ):
             initial_source_data[initial_recipe.primary_source] = data
+        self._source_free_data = _source_free_tool_data()
         self._document = FigureDocument(
             initial_recipe,
             source_data=initial_source_data,
@@ -567,6 +579,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             primary_source=primary,
         )
         return cls(source_data[primary], recipe=recipe, source_data=source_data)
+
+    @classmethod
+    def empty(cls) -> FigureComposerTool:
+        """Create a source-free figure with the default layout."""
+        return cls(
+            _source_free_tool_data(),
+            recipe=FigureRecipeState(),
+            source_data={},
+        )
 
     @property
     def figure_window(self) -> _FigureComposerDisplayWindow:
@@ -4343,10 +4364,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @property
     def tool_data(self) -> xr.DataArray:
-        """Return the live primary source; call ``touch_source_data`` after edits."""
+        """Return the primary source or the private source-free data carrier."""
         if self._document.recipe.primary_source in self._document.source_data:
             return self._document.source_data[self._document.recipe.primary_source]
-        return next(iter(self._document.source_data.values()))
+        return next(iter(self._document.source_data.values()), self._source_free_data)
 
     @property
     def tool_status(self) -> FigureRecipeState:
@@ -4366,7 +4387,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._document.replace_recipe(
                 status.model_copy(update={"sources": sources, "operations": operations})
             )
-            self._ensure_primary_source_data()
+            if sources:
+                self._ensure_primary_source_data()
+            else:
+                self._document.replace_source_payloads({}, {})
             self._normalize_operation_source_selections()
             self._apply_recipe_to_controls()
         source_data_changed = self._document.source_revision != previous_source_revision
@@ -5317,7 +5341,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         script_inputs, skip_source_selection_names, source_name_map = (
             self._display_code_source_plan()
         )
-        if not script_inputs:
+        if not script_inputs and self._document.recipe.sources:
             return None
         return script(
             erlab.interactive._figurecomposer._provenance._figure_build_operation(

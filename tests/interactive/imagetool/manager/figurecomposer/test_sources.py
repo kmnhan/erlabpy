@@ -82,6 +82,28 @@ from ._common import (
 )
 
 
+def test_figure_composer_empty_figure_promotes_first_added_source(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(3.0),
+        dims=("x",),
+        coords={"x": np.arange(3.0)},
+        name="line",
+    )
+    tool = FigureComposerTool.empty()
+    qtbot.addWidget(tool)
+
+    result = tool.add_sources(
+        (FigureSourceState(name="line", node_uid="node-line"),),
+        {"line": data},
+    )
+
+    assert result.added == (("line", "line"),)
+    assert tool.tool_status.primary_source == "line"
+    assert tuple(source.name for source in tool.tool_status.sources) == ("line",)
+    xr.testing.assert_identical(tool.source_data()["line"], data)
+    xr.testing.assert_identical(tool.tool_data, data)
+
+
 def _source_context_action(
     tool: FigureComposerTool, object_name: str
 ) -> tuple[QtWidgets.QMenu, QtGui.QAction]:

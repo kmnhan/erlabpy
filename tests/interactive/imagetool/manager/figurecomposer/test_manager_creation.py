@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import xarray as xr
+from matplotlib.figure import Figure
 from qtpy import QtCore, QtWidgets
 
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
@@ -28,12 +29,96 @@ from erlab.interactive.imagetool._figurecomposer_adapter import (
     build_figure_composer_operation,
 )
 from erlab.interactive.imagetool.manager._figurecomposer import _dialogs
-from tests.interactive.imagetool.manager.helpers import select_tools
+from tests.interactive.imagetool.manager.helpers import (
+    _exec_generated_code,
+    select_tools,
+)
 
 from ._common import (
+    _assert_figure_composer_provenance_replayable,
     _set_unsupported_plot_slices_cursor_state,
     _unsupported_plot_slices_data,
 )
+
+
+def test_manager_new_empty_figure_action_creates_source_free_figure(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        assert manager.new_figure_action.isEnabled()
+        assert manager.new_figure_action.objectName() == "manager_new_figure_action"
+        assert manager.new_figure_action in manager.file_menu.actions()
+        assert manager.new_figure_action not in manager.edit_menu.actions()
+        assert manager.new_figure_action not in manager.tree_view._menu.actions()
+
+        manager.new_figure_action.trigger()
+
+        [figure_uid] = manager._tool_graph.figure_uids
+        figure_tool = manager._child_node(figure_uid).tool_window
+        assert isinstance(figure_tool, FigureComposerTool)
+        assert figure_tool.tool_status.sources == ()
+        assert figure_tool.tool_status.operations == ()
+        assert figure_tool.source_data() == {}
+        assert figure_tool._persistence_reference_node_uids() == frozenset()
+        assert figure_tool.source_panel.source_list.topLevelItemCount() == 0
+
+        namespace = _exec_generated_code(figure_tool.generated_code(), {})
+        assert isinstance(namespace["fig"], Figure)
+        assert len(namespace["fig"].axes) == 1
+        replay_code = _assert_figure_composer_provenance_replayable(
+            figure_tool,
+            case_label="source-free figure",
+        )
+        replay_namespace = _exec_generated_code(replay_code, {})
+        assert isinstance(replay_namespace["fig"], Figure)
+
+
+def test_manager_empty_figure_workspace_roundtrip(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    workspace_path = tmp_path / "source-free-figure.itws"
+    with manager_context() as manager:
+        figure_uid = manager.create_empty_figure(show=False)
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+
+        assert manager._workspace_controller.loading._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        loaded_node = manager._child_node(figure_uid)
+        assert loaded_node.tool_window is None
+        assert loaded_node.pending_workspace_tool_payload is not None
+        assert loaded_node.materialize_pending_workspace_payload()
+        loaded_tool = loaded_node.tool_window
+        assert isinstance(loaded_tool, FigureComposerTool)
+        assert loaded_tool.tool_status.sources == ()
+        assert loaded_tool.tool_status.operations == ()
+        assert loaded_tool.source_data() == {}
+        assert loaded_tool._persistence_reference_node_uids() == frozenset()
+
+        manager._figure_collection.select_uid(figure_uid)
+        manager.duplicate_selected()
+        qtbot.wait_until(
+            lambda: len(manager._tool_graph.figure_uids) == 2,
+            timeout=5000,
+        )
+        duplicate_uid = next(
+            uid for uid in manager._tool_graph.figure_uids if uid != figure_uid
+        )
+        duplicate_tool = manager._child_node(duplicate_uid).tool_window
+        assert isinstance(duplicate_tool, FigureComposerTool)
+        assert duplicate_tool.tool_status.sources == ()
+        assert duplicate_tool.tool_status.operations == ()
+        assert duplicate_tool.source_data() == {}
 
 
 def test_imagetool_plot_with_matplotlib_warns_for_uneditable_selection(
