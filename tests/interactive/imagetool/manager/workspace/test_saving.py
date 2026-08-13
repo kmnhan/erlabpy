@@ -4026,6 +4026,175 @@ def test_manager_workspace_compact_drops_history_and_keeps_store(
         assert generations[0].manifest == generations[1].manifest == current_manifest
 
 
+def test_manager_workspace_save_as_and_compact_deduplicates_legacy_payload(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    old_path = tmp_path / "schema-4.itws"
+    new_path = tmp_path / "converted.itws"
+    data = xr.DataArray(
+        np.arange(400, dtype=np.float64).reshape((20, 20)),
+        dims=("x", "y"),
+    )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tool = itool(data, manager=False, execute=False)
+        if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+            raise TypeError("Expected an ImageTool")
+        manager.add_imagetool(tool, show=False)
+
+        tree = manager._workspace_controller.saving._to_datatree()
+        manifest = manager._workspace_controller.saving._workspace_manifest()
+        manifest["schema_version"] = 4
+        tree.attrs["imagetool_workspace_schema_version"] = 4
+        tree.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(manifest)
+        tree.to_netcdf(old_path, engine="h5netcdf", invalid_netcdf=True)
+        tree.close()
+
+        manager.remove_all_tools()
+        assert manager._workspace_controller.loading._load_workspace_file(
+            old_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: str(new_path),
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+
+        store = manager._workspace_controller._workspace_store
+        if store is None:
+            raise RuntimeError("Expected an associated workspace store")
+        manifest = store.current_generation().manifest
+        entry = next(workspace_format._iter_workspace_manifest_node_entries(manifest))
+        object_path = str(entry["payload_path"])
+        legacy_path = "/0/imagetool"
+        assert legacy_path in store.h5_file
+        assert not store.leased_legacy_group_paths
+        assert (
+            h5py.h5o.get_info(store.h5_file[legacy_path].id).addr
+            == h5py.h5o.get_info(store.h5_file[object_path].id).addr
+        )
+        np.testing.assert_array_equal(manager._get_imagetool_data(0), data)
+
+        with store.write_session() as h5_file:
+            del h5_file[legacy_path]
+            h5_file.copy(object_path, legacy_path)
+        assert (
+            h5py.h5o.get_info(store.h5_file[legacy_path].id).addr
+            != h5py.h5o.get_info(store.h5_file[object_path].id).addr
+        )
+        stale_legacy = workspace_arrays.open_workspace_dataset(
+            new_path, legacy_path, chunks=None
+        )
+        assert store.leased_legacy_group_paths == {legacy_path}
+        assert manager._workspace_controller.loading._load_workspace_file(
+            new_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        assert store.leased_legacy_group_paths == {legacy_path}
+
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "wait_dialog",
+            lambda *args, **kwargs: contextlib.nullcontext(),
+        )
+        assert manager.compact_workspace()
+        assert legacy_path not in store.h5_file
+        np.testing.assert_array_equal(manager._get_imagetool_data(0), data)
+        np.testing.assert_array_equal(stale_legacy[_ITOOL_DATA_NAME], data)
+        stale_legacy.close()
+
+
+def test_manager_workspace_save_as_preserves_legacy_dependency_for_dirty_data(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    old_path = tmp_path / "schema-4.itws"
+    new_path = tmp_path / "converted.itws"
+    data = xr.DataArray(
+        np.arange(400, dtype=np.float64).reshape((20, 20)),
+        dims=("x", "y"),
+    )
+
+    with manager_context() as manager:
+        tool = itool(data, manager=False, execute=False)
+        if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+            raise TypeError("Expected an ImageTool")
+        manager.add_imagetool(tool, show=False)
+        tree = manager._workspace_controller.saving._to_datatree()
+        manifest = manager._workspace_controller.saving._workspace_manifest()
+        manifest["schema_version"] = 4
+        manifest["nodes"][0]["data_backing"] = "dask"
+        tree.attrs["imagetool_workspace_schema_version"] = 4
+        tree.attrs[workspace_format._WORKSPACE_MANIFEST_ATTR] = json.dumps(manifest)
+        tree.to_netcdf(old_path, engine="h5netcdf", invalid_netcdf=True)
+        tree.close()
+
+        manager.remove_all_tools()
+        assert manager._workspace_controller.loading._load_workspace_file(
+            old_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        expected = data + 1.0
+        manager.get_imagetool(0).slicer_area.replace_source_data(
+            manager._get_imagetool_data(0) + 1.0,
+            auto_compute=False,
+            emit_edited=True,
+        )
+        monkeypatch.setattr(
+            manager._workspace_controller,
+            "_workspace_save_dialog",
+            lambda **_kwargs: str(new_path),
+        )
+        assert _request_workspace_save_as_and_wait(qtbot, manager, native=False)
+
+        store = manager._workspace_controller._workspace_store
+        if store is None:
+            raise RuntimeError("Expected an associated workspace store")
+        entry = next(
+            workspace_format._iter_workspace_manifest_node_entries(
+                store.current_generation().manifest
+            )
+        )
+        object_path = str(entry["payload_path"])
+        legacy_path = "/0/imagetool"
+        assert store.leased_legacy_group_paths == {legacy_path}
+        assert (
+            h5py.h5o.get_info(store.h5_file[legacy_path].id).addr
+            != h5py.h5o.get_info(store.h5_file[object_path].id).addr
+        )
+        np.testing.assert_array_equal(manager._get_imagetool_data(0), expected)
+
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "wait_dialog",
+            lambda *args, **kwargs: contextlib.nullcontext(),
+        )
+        assert manager.compact_workspace()
+        assert legacy_path in store.h5_file
+        np.testing.assert_array_equal(manager._get_imagetool_data(0), expected)
+
+
 def test_manager_workspace_upgrade_repoints_pending_payload_before_compaction(
     qtbot,
     tmp_path,

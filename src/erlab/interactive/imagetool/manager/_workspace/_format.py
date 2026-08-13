@@ -145,6 +145,25 @@ def _workspace_manifest_payload_path(
     return None
 
 
+def _workspace_manifest_legacy_reader_rebindings(
+    manifest: Mapping[str, typing.Any] | None,
+) -> dict[str, str]:
+    """Map old node payload paths to their current immutable objects."""
+    mappings: dict[str, str] = {}
+    for entry in _iter_workspace_manifest_node_entries(manifest):
+        node_path = entry.get("path")
+        kind = entry.get("kind")
+        object_id = entry.get("payload_object_id")
+        if (
+            isinstance(node_path, str)
+            and kind in {"imagetool", "tool"}
+            and isinstance(object_id, str)
+            and object_id
+        ):
+            mappings[f"/{node_path.strip('/')}/{kind}"] = object_id
+    return mappings
+
+
 def _decode_workspace_attr_text(value: object) -> str | None:
     if isinstance(value, bytes):
         with contextlib.suppress(UnicodeDecodeError):

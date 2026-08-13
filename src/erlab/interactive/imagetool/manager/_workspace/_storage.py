@@ -18,6 +18,7 @@ import numpy as np
 from qtpy import QtCore
 
 import erlab.interactive.imagetool.manager._workspace._arrays as workspace_arrays
+import erlab.interactive.imagetool.manager._workspace._format as workspace_format
 import erlab.interactive.imagetool.manager._workspace._store as workspace_store
 from erlab.interactive.imagetool.manager._workspace._format import (
     _WORKSPACE_BACKUP_GROUP_PREFIX,
@@ -63,11 +64,17 @@ class _WorkspaceGroupCopy:
 
 @dataclass(frozen=True)
 class _WorkspaceGenerationPlan:
-    """A complete manifest and the new objects that it references."""
+    """A complete manifest and the new objects that it references.
+
+    ``legacy_reader_rebindings`` contains only legacy paths whose array values
+    match the target object. Save As can hard-link these paths and retarget their
+    live readers after publication without changing a Dask graph's result.
+    """
 
     manifest: dict[str, typing.Any]
     objects: tuple[_WorkspaceObjectWrite, ...]
     preserved_groups: tuple[_WorkspaceGroupCopy, ...] = ()
+    legacy_reader_rebindings: tuple[tuple[str, str], ...] = ()
 
 
 def _workspace_object_copy_source(item: _WorkspaceObjectWrite) -> tuple[str, str]:
@@ -146,6 +153,26 @@ def _copy_workspace_group(
         )
 
 
+def _link_workspace_group(
+    target_store: workspace_store.WorkspaceStore,
+    *,
+    source_path: str,
+    target_path: str,
+) -> bool:
+    """Create one HDF5 hard link and return whether it was created."""
+    with target_store.lock:
+        if target_path.strip("/") in target_store.h5_file:
+            return False
+        if source_path.strip("/") not in target_store.h5_file:
+            raise KeyError(f"Workspace payload group {source_path!r} is missing")
+        parent = workspace_arrays._ensure_h5_parent_group(
+            target_store.h5_file, target_path
+        )
+        name = target_path.rstrip("/").rsplit("/", maxsplit=1)[-1]
+        parent[name] = target_store.h5_file[source_path]
+        return True
+
+
 def _write_workspace_generation(
     target_store: workspace_store.WorkspaceStore,
     plan: _WorkspaceGenerationPlan,
@@ -156,10 +183,14 @@ def _write_workspace_generation(
     """Write new immutable objects and publish one generation."""
     with target_store.write_session(on_contention=on_contention):
         created_object_ids: list[str] = []
+        created_legacy_links: list[str] = []
         try:
             with target_store.lock:
                 target_store.require_current_path()
+            legacy_reader_rebindings = dict(plan.legacy_reader_rebindings)
             for item in plan.preserved_groups:
+                if item.target_path in legacy_reader_rebindings:
+                    continue
                 with target_store.lock:
                     if item.target_path.strip("/") in target_store.h5_file:
                         continue
@@ -208,9 +239,25 @@ def _write_workspace_generation(
                     source_path=source_path,
                     target_path=target_path,
                 )
+            for item in plan.preserved_groups:
+                object_id = legacy_reader_rebindings.get(item.target_path)
+                if object_id is None:
+                    continue
+                object_path = target_store.object_path(object_id)
+                if _link_workspace_group(
+                    target_store,
+                    source_path=object_path,
+                    target_path=item.target_path,
+                ):
+                    created_legacy_links.append(item.target_path)
             return target_store.publish(plan.manifest)
         except Exception:
             with contextlib.suppress(Exception), target_store.lock:
+                for group_path in created_legacy_links:
+                    workspace_arrays._delete_h5_path(
+                        target_store.h5_file,
+                        group_path,
+                    )
                 referenced_object_ids: set[str] = set()
                 for generation in target_store.generations():
                     referenced_object_ids.update(
@@ -238,6 +285,108 @@ def _read_workspace_blob(
         if isinstance(kind, bytes):
             kind = kind.decode()
         return bytes(raw), kind if isinstance(kind, str) else None
+
+
+def _workspace_dataset_values_equal(
+    left: typing.Any,
+    right: typing.Any,
+) -> bool:
+    if left.shape != right.shape or left.dtype != right.dtype:
+        return False
+
+    def _values_equal(left_values: np.ndarray, right_values: np.ndarray) -> bool:
+        try:
+            return bool(np.array_equal(left_values, right_values, equal_nan=True))
+        except TypeError:
+            return bool(np.array_equal(left_values, right_values))
+
+    if not left.shape:
+        return _values_equal(left[()], right[()])
+    if any(size == 0 for size in left.shape):
+        return True
+    remaining_items = max(1, (16 * 1024 * 1024) // max(1, left.dtype.itemsize))
+    reversed_block_shape: list[int] = []
+    for size in reversed(left.shape):
+        block_size = min(int(size), remaining_items)
+        reversed_block_shape.append(block_size)
+        remaining_items = max(1, remaining_items // block_size)
+    block_shape = tuple(reversed(reversed_block_shape))
+    block_counts = tuple(
+        (int(size) + block_size - 1) // block_size
+        for size, block_size in zip(left.shape, block_shape, strict=True)
+    )
+    for block_index in np.ndindex(block_counts):
+        selection = tuple(
+            slice(
+                index * block_size,
+                min((index + 1) * block_size, int(size)),
+            )
+            for index, block_size, size in zip(
+                block_index, block_shape, left.shape, strict=True
+            )
+        )
+        if not _values_equal(left[selection], right[selection]):
+            return False
+    return True
+
+
+def _workspace_groups_have_equal_datasets(
+    left: typing.Any,
+    right: typing.Any,
+) -> bool:
+    if left.id == right.id:
+        return True
+    left_datasets: dict[str, typing.Any] = {}
+    right_datasets: dict[str, typing.Any] = {}
+
+    def _collect_dataset(
+        datasets: dict[str, typing.Any], name: str, item: typing.Any
+    ) -> None:
+        if isinstance(item, h5py.Dataset):
+            datasets[name] = item
+
+    left.visititems(lambda name, item: _collect_dataset(left_datasets, name, item))
+    right.visititems(lambda name, item: _collect_dataset(right_datasets, name, item))
+    if left_datasets.keys() != right_datasets.keys():
+        return False
+    return all(
+        _workspace_dataset_values_equal(left_datasets[name], right_datasets[name])
+        for name in left_datasets
+    )
+
+
+def _rebind_equivalent_legacy_readers(
+    store: workspace_store.WorkspaceStore,
+    manifest: Mapping[str, typing.Any],
+) -> None:
+    """Move live readers to equal immutable objects before compaction.
+
+    Schema conversion temporarily preserves old payload paths for live xarray
+    readers. Content comparison prevents a derived Dask graph from being retargeted
+    to a different saved result.
+    """
+    legacy_reader_rebindings = (
+        workspace_format._workspace_manifest_legacy_reader_rebindings(manifest)
+    )
+    legacy_paths = store.leased_legacy_group_paths
+    if not legacy_reader_rebindings or not legacy_paths:
+        return
+    equivalent: dict[str, str] = {}
+    with store.write_lock, store.lock, store.read_session() as h5_file:
+        for legacy_path in legacy_paths:
+            object_id = legacy_reader_rebindings.get(legacy_path)
+            if object_id is None:
+                continue
+            object_path = store.object_path(object_id)
+            if (
+                legacy_path.strip("/") in h5_file
+                and object_path.strip("/") in h5_file
+                and _workspace_groups_have_equal_datasets(
+                    h5_file[legacy_path], h5_file[object_path]
+                )
+            ):
+                equivalent[legacy_path] = object_id
+        store.rebind_legacy_readers(equivalent)
 
 
 def _compact_workspace_store(

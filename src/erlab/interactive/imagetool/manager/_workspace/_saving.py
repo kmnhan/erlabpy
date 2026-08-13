@@ -1280,6 +1280,24 @@ class _WorkspaceSaver:
         manifest["storage_model"] = "immutable-generations-v1"
         manifest.pop("transaction_protocol", None)
         preserved_groups: tuple[workspace_storage._WorkspaceGroupCopy, ...] = ()
+        legacy_reader_rebindings: tuple[tuple[str, str], ...] = ()
+        leased_legacy_group_paths: frozenset[str] = frozenset()
+        if source_store is not None and not source_store.closed:
+            leased_legacy_group_paths = source_store.leased_legacy_group_paths
+            safe_rebindings: list[tuple[str, str]] = []
+            for entry in final_entries:
+                uid = entry.get("uid")
+                object_id = entry.get("payload_object_id")
+                if (
+                    not isinstance(uid, str)
+                    or uid in dirty_data
+                    or not isinstance(object_id, str)
+                ):
+                    continue
+                legacy_path = f"/{self._workspace_payload_path(uid).strip('/')}"
+                if legacy_path in leased_legacy_group_paths:
+                    safe_rebindings.append((legacy_path, object_id))
+            legacy_reader_rebindings = tuple(sorted(safe_rebindings))
         if (
             source_store is not None
             and pathlib.Path(fname).resolve() != source_store.path
@@ -1300,7 +1318,7 @@ class _WorkspaceSaver:
                     source_path=group_path,
                     target_path=group_path,
                 )
-                for group_path in sorted(source_store.leased_legacy_group_paths)
+                for group_path in sorted(leased_legacy_group_paths)
             )
         return _WorkspaceSaveSnapshot(
             generation=generation,
@@ -1308,6 +1326,7 @@ class _WorkspaceSaver:
                 manifest=manifest,
                 objects=tuple(object_writes.values()),
                 preserved_groups=preserved_groups,
+                legacy_reader_rebindings=legacy_reader_rebindings,
             ),
             compression_mode=self._workspace_compression_mode(),
             serialized_tool_data_references=(

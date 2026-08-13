@@ -430,6 +430,22 @@ class WorkspaceFileManager(CachingFileManager):
             return None
         return self._group_path
 
+    def _rebind_legacy_group_to_object(self, object_id: str) -> None:
+        """Retarget an unchanged legacy reader to its immutable payload object."""
+        store = self._store
+        if store is None:
+            raise RuntimeError("Workspace reader is not attached to a store")
+        if self._object_id is not None:
+            if self._object_id == object_id:
+                return
+            raise RuntimeError("Workspace reader already uses another object")
+        with self.lock:
+            self._close_store_wrapper()
+            store.acquire_object(object_id)
+            self._object_id = object_id
+            self._group_path = store.object_path(object_id)
+            self._store_lease_released = False
+
     def _active_netcdf_file(self) -> h5netcdf.File:
         store = self._store
         if store is None:
@@ -694,6 +710,12 @@ class _WorkspaceBackendArray(BackendArray):
 
 class _WorkspaceH5NetCDFStore(H5NetCDFStore):
     """Build workspace arrays with a process-safe read boundary."""
+
+    def _acquire(self, needs_lock: bool = True) -> typing.Any:
+        manager = self._manager
+        if isinstance(manager, WorkspaceFileManager):
+            self._group = manager._group_path
+        return super()._acquire(needs_lock)
 
     def __dask_tokenize__(
         self,

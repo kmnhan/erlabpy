@@ -755,6 +755,11 @@ class _WorkspaceController:
     ) -> None:
         """Apply one committed generation to live manager references."""
         self._commit_saved_tool_data_references(snapshot)
+        store = self._workspace_store
+        if store is not None and not store.closed:
+            store.rebind_legacy_readers(
+                dict(snapshot.generation_plan.legacy_reader_rebindings)
+            )
         self._repoint_saved_pending_workspace_payloads(
             workspace_path,
             manifest=manifest,
@@ -2585,6 +2590,11 @@ class _WorkspaceController:
                     self.saving._save_workspace_document(
                         workspace_path,
                         mark_clean=False,
+                    )
+                if store.leased_legacy_group_paths:
+                    workspace_storage._rebind_equivalent_legacy_readers(
+                        store,
+                        store.current_generation().manifest,
                     )
                 workspace_storage._compact_workspace_store(
                     store,

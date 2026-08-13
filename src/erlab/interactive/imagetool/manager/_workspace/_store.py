@@ -950,6 +950,39 @@ class WorkspaceStore:
         with self._lock:
             self._readers.add(reader)
 
+    def rebind_legacy_readers(
+        self,
+        legacy_reader_rebindings: Mapping[str, str],
+    ) -> None:
+        """Retarget unchanged legacy readers to immutable payload objects.
+
+        The caller must supply only mappings whose object contains the same array
+        values as the legacy group. Retargeting keeps existing xarray and Dask
+        graphs usable without retaining a second physical payload copy.
+        """
+        if not legacy_reader_rebindings:
+            return
+        with self._write_lock, self._lock:
+            readers = tuple(self._readers)
+            rebindings = tuple(
+                (reader, legacy_reader_rebindings.get(reader.legacy_group_path))
+                for reader in readers
+            )
+            object_ids = {
+                object_id for _reader, object_id in rebindings if object_id is not None
+            }
+            with self.read_session() as h5_file:
+                missing = [
+                    object_id
+                    for object_id in object_ids
+                    if self.object_path(object_id).strip("/") not in h5_file
+                ]
+            if missing:
+                raise KeyError(f"Workspace object {missing[0]!r} is missing")
+            for reader, object_id in rebindings:
+                if object_id is not None:
+                    reader._rebind_legacy_group_to_object(object_id)
+
     def pin_serialized_reader_reference(
         self,
         *,
