@@ -26,6 +26,7 @@ from erlab.interactive._figurecomposer._model._axes import (
 from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_region_valid,
+    _gridspec_shared_axes_targets,
     _gridspec_valid_axes_ids,
 )
 from erlab.interactive._figurecomposer._model._sources import (
@@ -186,6 +187,8 @@ def _make_gridspec_axes(
 ) -> dict[str, matplotlib.axes.Axes]:
     setup = tool._document.recipe.setup
     axes_by_id: dict[str, matplotlib.axes.Axes] = {}
+    sharex_targets = _gridspec_shared_axes_targets(setup, "x")
+    sharey_targets = _gridspec_shared_axes_targets(setup, "y")
 
     def gridspec_kwargs(grid: FigureGridSpecGridState) -> dict[str, typing.Any]:
         kwargs: dict[str, typing.Any] = {
@@ -205,11 +208,17 @@ def _make_gridspec_axes(
     def build_grid(grid: FigureGridSpecGridState, spec: typing.Any) -> None:
         for axis_state in grid.axes:
             if _gridspec_region_valid(grid, axis_state.span):
+                subplot_kwargs: dict[str, typing.Any] = {}
+                if target := sharex_targets.get(axis_state.axes_id):
+                    subplot_kwargs["sharex"] = axes_by_id[target]
+                if target := sharey_targets.get(axis_state.axes_id):
+                    subplot_kwargs["sharey"] = axes_by_id[target]
                 axes_by_id[axis_state.axes_id] = figure.add_subplot(
                     spec[
                         axis_state.span.row_start : axis_state.span.row_stop,
                         axis_state.span.col_start : axis_state.span.col_stop,
-                    ]
+                    ],
+                    **subplot_kwargs,
                 )
         for child in grid.child_grids:
             if child.span is None or not _gridspec_region_valid(grid, child.span):

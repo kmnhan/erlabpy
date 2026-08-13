@@ -95,8 +95,26 @@ class FigureGridSpecLayoutState(pydantic.BaseModel):
     root: FigureGridSpecGridState = pydantic.Field(
         default_factory=lambda: FigureGridSpecGridState(grid_id="root", label="Root")
     )
+    shared_x_axes: tuple[tuple[str, ...], ...] = ()
+    shared_y_axes: tuple[tuple[str, ...], ...] = ()
 
     model_config = pydantic.ConfigDict(extra="forbid")
+
+    @pydantic.field_validator("shared_x_axes", "shared_y_axes")
+    @classmethod
+    def _validate_shared_axes(
+        cls, value: tuple[tuple[str, ...], ...]
+    ) -> tuple[tuple[str, ...], ...]:
+        used: set[str] = set()
+        for group in value:
+            if len(group) < 2:
+                raise ValueError("shared-axis groups must contain at least two axes")
+            if len(set(group)) != len(group):
+                raise ValueError("shared-axis groups cannot contain duplicate axes")
+            if used.intersection(group):
+                raise ValueError("an axis cannot belong to multiple shared-axis groups")
+            used.update(group)
+        return value
 
 
 _SLICE_MARKER_KEY = "__erlab_figure_composer_slice__"

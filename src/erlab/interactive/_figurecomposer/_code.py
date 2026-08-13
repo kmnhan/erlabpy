@@ -15,6 +15,7 @@ from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_axis_code_tuple,
     _gridspec_has_invalid_regions,
     _gridspec_invalid_axes_ids,
+    _gridspec_shared_axes_targets,
     _gridspec_span_code,
     _gridspec_valid_axes_ids,
 )
@@ -26,7 +27,11 @@ from erlab.interactive._figurecomposer._rendering import (
     _setup_kwargs,
     _setup_layout_value,
 )
-from erlab.interactive._figurecomposer._text import _code_kwargs, _format_axes_tuple
+from erlab.interactive._figurecomposer._text import (
+    _code_kwargs,
+    _format_axes_tuple,
+    _RawCode,
+)
 
 if typing.TYPE_CHECKING:
     import xarray as xr
@@ -176,6 +181,8 @@ def _gridspec_setup_code_lines(context: FigureRecipeContext) -> list[str]:
     code_names = _gridspec_axis_code_names(
         setup, reserved_names=_reserved_code_names(context)
     )
+    sharex_targets = _gridspec_shared_axes_targets(setup, "x")
+    sharey_targets = _gridspec_shared_axes_targets(setup, "y")
 
     def grid_kwargs(grid: FigureGridSpecGridState) -> dict[str, typing.Any]:
         grid_kwargs: dict[str, typing.Any] = {
@@ -199,11 +206,19 @@ def _gridspec_setup_code_lines(context: FigureRecipeContext) -> list[str]:
             lines.append(
                 f"{grid_var} = fig.add_gridspec({_code_kwargs(grid_kwargs(grid))})"
             )
-        lines.extend(
-            f"{code_names[axis.axes_id]} = fig.add_subplot("
-            f"{grid_var}{_gridspec_span_code(axis.span, grid)})"
-            for axis in grid.axes
-        )
+        for axis in grid.axes:
+            subplot_kwargs: dict[str, typing.Any] = {}
+            if target := sharex_targets.get(axis.axes_id):
+                subplot_kwargs["sharex"] = _RawCode(code_names[target])
+            if target := sharey_targets.get(axis.axes_id):
+                subplot_kwargs["sharey"] = _RawCode(code_names[target])
+            kwargs_code = _code_kwargs(subplot_kwargs)
+            if kwargs_code:
+                kwargs_code = f", {kwargs_code}"
+            lines.append(
+                f"{code_names[axis.axes_id]} = fig.add_subplot("
+                f"{grid_var}{_gridspec_span_code(axis.span, grid)}{kwargs_code})"
+            )
         for child_index, child in enumerate(grid.child_grids):
             child_var = f"{grid_var}_{child_index}"
             if child.span is None:

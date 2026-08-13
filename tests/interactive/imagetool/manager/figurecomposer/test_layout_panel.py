@@ -1,4 +1,5 @@
 import pytest
+from qtpy import QtWidgets
 
 from erlab.interactive._figurecomposer import (
     FigureGridSpecAxesState,
@@ -7,7 +8,10 @@ from erlab.interactive._figurecomposer import (
     FigureGridSpecSpanState,
     FigureSubplotsState,
 )
-from erlab.interactive._figurecomposer._ui._layout_panel import FigureLayoutPanel
+from erlab.interactive._figurecomposer._ui._layout_panel import (
+    FigureLayoutPanel,
+    _GridSpecShareAxesDialog,
+)
 
 
 def _grid_setup(*, child: FigureGridSpecGridState | None = None) -> FigureSubplotsState:
@@ -32,6 +36,41 @@ def _grid_setup(*, child: FigureGridSpecGridState | None = None) -> FigureSubplo
                     ),
                 ),
                 child_grids=() if child is None else (child,),
+            )
+        ),
+    )
+
+
+def _two_axis_grid_setup() -> FigureSubplotsState:
+    return FigureSubplotsState(
+        layout_mode="gridspec",
+        gridspec=FigureGridSpecLayoutState(
+            root=FigureGridSpecGridState(
+                grid_id="root",
+                nrows=1,
+                ncols=2,
+                axes=(
+                    FigureGridSpecAxesState(
+                        axes_id="left",
+                        label="left_axis",
+                        span=FigureGridSpecSpanState(
+                            row_start=0,
+                            row_stop=1,
+                            col_start=0,
+                            col_stop=1,
+                        ),
+                    ),
+                    FigureGridSpecAxesState(
+                        axes_id="right",
+                        label="right_axis",
+                        span=FigureGridSpecSpanState(
+                            row_start=0,
+                            row_stop=1,
+                            col_start=1,
+                            col_stop=2,
+                        ),
+                    ),
+                ),
             )
         ),
     )
@@ -88,6 +127,8 @@ def test_layout_panel_emits_validated_setup_and_mode_requests(qtbot) -> None:
     panel.setup_requested.connect(requests.append)
     panel.layout_mode_requested.connect(modes.append)
     panel.set_setup(FigureSubplotsState())
+    panel._edit_gridspec_shared_axes("x")
+    assert requests == []
 
     panel.nrows_spin.setValue(3)
     assert requests[-1].nrows == 3
@@ -108,6 +149,53 @@ def test_layout_panel_emits_validated_setup_and_mode_requests(qtbot) -> None:
     panel.layout_mode_combo.setCurrentText("gridspec")
     assert modes == ["gridspec"]
     assert requests[-1].layout_mode == "subplots"
+
+
+def test_layout_panel_edits_gridspec_shared_axes_with_accept_and_cancel(
+    qtbot, accept_dialog
+) -> None:
+    panel = FigureLayoutPanel()
+    qtbot.addWidget(panel)
+    requests: list[FigureSubplotsState] = []
+    panel.setup_requested.connect(requests.append)
+    panel.set_setup(_two_axis_grid_setup())
+    panel._edit_gridspec_shared_axes("x")
+    assert requests == []
+    panel.gridspec_layout_widget.set_selected_region("left")
+    panel.gridspec_layout_widget.sigRegionSelected.emit("left", "axes")
+
+    assert panel.sharex_control.currentWidget() is panel.gridspec_sharex_button
+    assert panel.sharey_control.currentWidget() is panel.gridspec_sharey_button
+    assert panel.gridspec_sharex_button.isEnabled()
+    assert panel.gridspec_sharey_button.isEnabled()
+
+    def select_shared_axes(dialog: QtWidgets.QDialog) -> None:
+        assert isinstance(dialog, _GridSpecShareAxesDialog)
+        dialog.axes_selector.set_selected_axes_ids(("left", "right"), emit=True)
+
+    accept_dialog(
+        panel.gridspec_sharex_button.click,
+        pre_call=select_shared_axes,
+    )
+    assert requests[-1].gridspec.shared_x_axes == (("left", "right"),)
+    panel.set_setup(requests.pop())
+
+    accept_dialog(
+        panel.gridspec_sharey_button.click,
+        accept_call=lambda dialog: dialog.reject(),
+    )
+    assert requests == []
+
+
+def test_gridspec_share_dialog_keeps_current_axes_selected(qtbot) -> None:
+    dialog = _GridSpecShareAxesDialog(
+        _two_axis_grid_setup(), "left", "x", reserved_names=("data",)
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.axes_selector.set_selected_axes_ids(("right",), emit=True)
+
+    assert dialog.selected_axes_ids() == ("left", "right")
 
 
 def test_layout_panel_validates_gridspec_gestures_and_preserves_selection(

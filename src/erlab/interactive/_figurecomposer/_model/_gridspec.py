@@ -27,6 +27,110 @@ def _gridspec_all_axes_ids(setup: FigureSubplotsState) -> tuple[str, ...]:
     return tuple(axis.axes_id for axis in _gridspec_all_axes(setup))
 
 
+def _gridspec_shared_axes_group(
+    setup: FigureSubplotsState,
+    axes_id: str,
+    dimension: typing.Literal["x", "y"],
+) -> tuple[str, ...]:
+    """Return the ordered shared-axis group that contains *axes_id*."""
+    if axes_id not in _gridspec_axes_by_id(setup):
+        return ()
+    groups = _gridspec_shared_axes_groups(setup, dimension)
+    group = next((group for group in groups if axes_id in group), (axes_id,))
+    group_ids = set(group)
+    return tuple(item for item in _gridspec_all_axes_ids(setup) if item in group_ids)
+
+
+def _gridspec_shared_axes_targets(
+    setup: FigureSubplotsState,
+    dimension: typing.Literal["x", "y"],
+) -> dict[str, str]:
+    """Map each valid non-anchor axes to its stable shared-axis anchor."""
+    valid_axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
+    targets: dict[str, str] = {}
+    for group in _gridspec_shared_axes_groups(setup, dimension):
+        members = tuple(axes_id for axes_id in valid_axes_ids if axes_id in group)
+        if len(members) < 2:
+            continue
+        anchor = members[0]
+        targets.update(dict.fromkeys(members[1:], anchor))
+    return targets
+
+
+def _gridspec_set_shared_axes_group(
+    setup: FigureSubplotsState,
+    axes_id: str,
+    dimension: typing.Literal["x", "y"],
+    shared_axes_ids: Iterable[str],
+) -> FigureSubplotsState:
+    """Replace the shared-axis group that contains *axes_id*."""
+    all_axes_ids = _gridspec_all_axes_ids(setup)
+    if axes_id not in all_axes_ids:
+        return setup
+    requested = {axes_id, *shared_axes_ids}
+    selected = tuple(item for item in all_axes_ids if item in requested)
+    selected_set = set(selected)
+    updated_groups: list[tuple[str, ...]] = []
+    for group in _gridspec_shared_axes_groups(setup, dimension):
+        remaining = tuple(item for item in group if item not in selected_set)
+        if len(remaining) >= 2:
+            updated_groups.append(remaining)
+    if len(selected) >= 2:
+        updated_groups.append(selected)
+    return _gridspec_replace_shared_axes_groups(
+        setup,
+        dimension,
+        _gridspec_order_shared_axes_groups(setup, updated_groups),
+    )
+
+
+def _gridspec_shared_axes_groups(
+    setup: FigureSubplotsState, dimension: typing.Literal["x", "y"]
+) -> tuple[tuple[str, ...], ...]:
+    if dimension == "x":
+        return setup.gridspec.shared_x_axes
+    if dimension == "y":
+        return setup.gridspec.shared_y_axes
+    raise ValueError(f"unknown shared-axis dimension {dimension!r}")
+
+
+def _gridspec_replace_shared_axes_groups(
+    setup: FigureSubplotsState,
+    dimension: typing.Literal["x", "y"],
+    groups: tuple[tuple[str, ...], ...],
+) -> FigureSubplotsState:
+    field = "shared_x_axes" if dimension == "x" else "shared_y_axes"
+    if groups == _gridspec_shared_axes_groups(setup, dimension):
+        return setup
+    return setup.model_copy(
+        update={
+            "gridspec": setup.gridspec.model_copy(update={field: groups}),
+        }
+    )
+
+
+def _gridspec_order_shared_axes_groups(
+    setup: FigureSubplotsState, groups: Iterable[tuple[str, ...]]
+) -> tuple[tuple[str, ...], ...]:
+    axis_order = {
+        axes_id: index for index, axes_id in enumerate(_gridspec_all_axes_ids(setup))
+    }
+    fallback = len(axis_order)
+    ordered_groups = [
+        tuple(sorted(group, key=lambda item: axis_order.get(item, fallback)))
+        for group in groups
+    ]
+    return tuple(
+        sorted(
+            ordered_groups,
+            key=lambda group: min(
+                (axis_order.get(item, fallback) for item in group),
+                default=fallback,
+            ),
+        )
+    )
+
+
 def _gridspec_valid_axes_ids(
     setup: FigureSubplotsState, axes_ids: Iterable[str]
 ) -> tuple[str, ...]:
@@ -184,12 +288,43 @@ def _gridspec_root_from_subplots(setup: FigureSubplotsState) -> FigureGridSpecGr
     )
 
 
+def _subplots_shared_axes_groups(
+    setup: FigureSubplotsState,
+    axes_ids: tuple[str, ...],
+    share: bool | typing.Literal["none", "all", "row", "col"],
+) -> tuple[tuple[str, ...], ...]:
+    if share is False or share == "none":
+        return ()
+    if share is True or share == "all":
+        return (axes_ids,) if len(axes_ids) >= 2 else ()
+    if share == "row":
+        groups = tuple(
+            axes_ids[row * setup.ncols : (row + 1) * setup.ncols]
+            for row in range(setup.nrows)
+        )
+    else:
+        groups = tuple(
+            tuple(axes_ids[row * setup.ncols + col] for row in range(setup.nrows))
+            for col in range(setup.ncols)
+        )
+    return tuple(group for group in groups if len(group) >= 2)
+
+
 def _gridspec_setup_from_subplots(setup: FigureSubplotsState) -> FigureSubplotsState:
     root = _gridspec_root_from_subplots(setup)
+    axes_ids = tuple(axis.axes_id for axis in root.axes)
     return setup.model_copy(
         update={
             "layout_mode": "gridspec",
-            "gridspec": FigureGridSpecLayoutState(root=root),
+            "gridspec": FigureGridSpecLayoutState(
+                root=root,
+                shared_x_axes=_subplots_shared_axes_groups(
+                    setup, axes_ids, setup.sharex
+                ),
+                shared_y_axes=_subplots_shared_axes_groups(
+                    setup, axes_ids, setup.sharey
+                ),
+            ),
         }
     )
 
@@ -443,6 +578,18 @@ def _gridspec_axes_root_targets(
 def _gridspec_remove_region(
     setup: FigureSubplotsState, grid_id: str, region_id: str
 ) -> FigureSubplotsState:
+    grid = _gridspec_grid_by_id(setup, grid_id)
+    if grid is None:
+        return setup
+    removed_axes_ids = {axis.axes_id for axis in grid.axes if axis.axes_id == region_id}
+    for child in grid.child_grids:
+        if child.grid_id == region_id:
+            removed_axes_ids.update(axis.axes_id for axis in _iter_axes(child))
+    if not removed_axes_ids and not any(
+        child.grid_id == region_id for child in grid.child_grids
+    ):
+        return setup
+
     def updater(grid: FigureGridSpecGridState) -> FigureGridSpecGridState:
         return grid.model_copy(
             update={
@@ -453,7 +600,21 @@ def _gridspec_remove_region(
             }
         )
 
-    return _gridspec_replace_grid(setup, grid_id, updater)
+    updated = _gridspec_replace_grid(setup, grid_id, updater)
+    for dimension in ("x", "y"):
+        remaining_groups: list[tuple[str, ...]] = []
+        for group in _gridspec_shared_axes_groups(updated, dimension):
+            remaining = tuple(
+                axes_id for axes_id in group if axes_id not in removed_axes_ids
+            )
+            if len(remaining) >= 2:
+                remaining_groups.append(remaining)
+        updated = _gridspec_replace_shared_axes_groups(
+            updated,
+            dimension,
+            tuple(remaining_groups),
+        )
+    return updated
 
 
 def _gridspec_nearest_axes_after_region_delete(
