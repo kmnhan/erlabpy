@@ -180,9 +180,11 @@ def assign_kspace_configuration(
 
 def initial_normal_emission_from_slicer_area(
     slicer_area: ImageSlicerArea,
+    *,
+    configuration: AxesConfiguration | int | None = None,
 ) -> tuple[tuple[float, float] | None, float | None]:
     """Return ktool-compatible normal-emission seed values from an ImageTool."""
-    data = slicer_area.data
+    data = erlab.utils.array._restore_nonuniform_dims(slicer_area.data)
     dim_values = {
         str(dim): float(value)
         for dim, value in zip(data.dims, slicer_area.current_values, strict=True)
@@ -212,11 +214,18 @@ def initial_normal_emission_from_slicer_area(
         ):
             dim = str(data.dims[axis])
             if axis in slicer_area.array_slicer._nonuniform_axes_set:
+                uniform_value = float(value)
+                uniform_coord = np.asarray(
+                    slicer_area.array_slicer.coords_uniform[axis], dtype=float
+                )
+                physical_coord = np.asarray(
+                    slicer_area.array_slicer.coords[axis], dtype=float
+                )
                 value = float(
                     np.interp(
-                        value,
-                        slicer_area.array_slicer.coords_uniform[axis],
-                        slicer_area.array_slicer.coords[axis],
+                        uniform_value,
+                        uniform_coord,
+                        physical_coord,
                     )
                 )
             guideline_values[dim] = float(value)
@@ -224,7 +233,16 @@ def initial_normal_emission_from_slicer_area(
             guideline_values["alpha"],
             guideline_values["beta"],
         )
-        initial_delta = -slicer_area.main_image._guideline_angle
+        if configuration is None:
+            configuration = kspace_configuration(data)
+        elif not isinstance(configuration, AxesConfiguration):
+            configuration = AxesConfiguration(int(configuration))
+        delta_sign = -1.0
+        if configuration == AxesConfiguration.Type2:
+            delta_sign *= -1
+        if guideline_dims == ("beta", "alpha"):
+            delta_sign *= -1
+        initial_delta = delta_sign * slicer_area.main_image._guideline_angle
 
     return initial_normal_emission, initial_delta
 

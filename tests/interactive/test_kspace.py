@@ -411,6 +411,72 @@ def test_ktool_assigns_missing_configuration(
         KspaceTool(data)
 
 
+@pytest.mark.parametrize(
+    ("configuration", "guideline_derived", "expected_delta"),
+    [
+        (AxesConfiguration.Type1, True, -12.0),
+        (AxesConfiguration.Type2, True, 12.0),
+        (AxesConfiguration.Type2, False, -12.0),
+    ],
+)
+def test_ktool_resolves_guideline_delta_after_missing_configuration(
+    qtbot,
+    anglemap,
+    accept_dialog,
+    configuration: AxesConfiguration,
+    guideline_derived: bool,
+    expected_delta: float,
+) -> None:
+    data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    del data.attrs["configuration"]
+    holder: dict[str, KspaceTool | None] = {}
+    normal_emission = (float(data.alpha[4]), float(data.beta[4]))
+
+    accept_dialog(
+        lambda: holder.update(
+            win=ktool(
+                data,
+                initial_normal_emission=normal_emission,
+                initial_delta=-12.0,
+                execute=False,
+                _initial_delta_from_guideline=guideline_derived,
+            )
+        ),
+        pre_call=lambda dialog: _select_input_configuration(dialog, configuration),
+    )
+    win = holder["win"]
+    assert isinstance(win, KspaceTool)
+    _add_hidden_tool(qtbot, win)
+
+    assert win._offset_spins["delta"].value() == pytest.approx(expected_delta)
+    assert "configuration" not in data.attrs
+
+
+def test_ktool_guideline_delta_missing_configuration_cancel(
+    anglemap,
+    accept_dialog,
+) -> None:
+    data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    del data.attrs["configuration"]
+    holder: dict[str, KspaceTool | None] = {}
+
+    accept_dialog(
+        lambda: holder.update(
+            win=ktool(
+                data,
+                initial_normal_emission=(float(data.alpha[4]), float(data.beta[4])),
+                initial_delta=-12.0,
+                execute=False,
+                _initial_delta_from_guideline=True,
+            )
+        ),
+        accept_call=lambda dialog: dialog.reject(),
+    )
+
+    assert holder["win"] is None
+    assert "configuration" not in data.attrs
+
+
 def test_ktool_missing_coordinate_persistence_preserves_copy_operations(
     qtbot,
     anglemap,
@@ -590,6 +656,34 @@ def test_kspace_conversion_dialog_assigns_missing_configuration(
     restored.restore_transform_operations(operations)
     assert restored.current_configuration == AxesConfiguration.Type1
     assert restored._input_coordinates_widget.is_complete
+
+
+def test_kspace_conversion_dialog_resolves_guideline_delta_after_configuration(
+    qtbot,
+    anglemap,
+    accept_dialog,
+) -> None:
+    data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    del data.attrs["configuration"]
+    win = erlab.interactive.itool(data, execute=False)
+    _add_hidden_tool(qtbot, win)
+    plot_item = win.slicer_area.main_image
+    plot_item.set_guidelines(3)
+    plot_item._guidelines_items[0].setAngle(60.0)
+    holder: dict[str, KspaceConversionDialog] = {}
+
+    accept_dialog(
+        lambda: holder.update(
+            dialog=_add_kspace_conversion_dialog(qtbot, win.slicer_area)
+        ),
+        pre_call=lambda coordinate_dialog: _select_input_configuration(
+            coordinate_dialog,
+            AxesConfiguration.Type2,
+        ),
+    )
+
+    assert holder["dialog"]._normal_delta == pytest.approx(-30.0)
+    assert "configuration" not in data.attrs
 
 
 def test_kspace_conversion_dialog_missing_hv_preflight_accept_and_cancel(
@@ -778,8 +872,13 @@ def test_kspace_conversion_dialog_missing_configuration_cancel(
 def test_kspace_conversion_seed_helpers_cover_nonuniform_guidelines() -> None:
     data = xr.DataArray(
         np.zeros((3, 3)),
-        dims=("alpha", "beta"),
-        coords={"alpha": [-1.0, 0.0, 1.0], "beta": [10.0, 20.0, 40.0]},
+        dims=("alpha", "beta_idx"),
+        coords={
+            "alpha": [-1.0, 0.0, 1.0],
+            "beta_idx": [0.0, 1.0, 2.0],
+            "beta": ("beta_idx", [10.0, 20.0, 40.0]),
+        },
+        attrs={"configuration": int(AxesConfiguration.Type1)},
     )
     slicer_area = SimpleNamespace(
         data=data,
@@ -803,6 +902,119 @@ def test_kspace_conversion_seed_helpers_cover_nonuniform_guidelines() -> None:
 
     assert normal_emission == pytest.approx((0.5, 30.0))
     assert delta == pytest.approx(-12.0)
+
+
+@pytest.mark.parametrize(
+    ("configuration", "standard_sign"),
+    [
+        (AxesConfiguration.Type1, -1.0),
+        (AxesConfiguration.Type2, 1.0),
+        (AxesConfiguration.Type1DA, -1.0),
+        (AxesConfiguration.Type2DA, -1.0),
+    ],
+)
+@pytest.mark.parametrize(
+    ("dims", "order_sign"),
+    [
+        (("alpha", "beta"), 1.0),
+        (("beta", "alpha"), -1.0),
+    ],
+)
+def test_kspace_conversion_seed_infers_delta_from_configuration_and_axis_order(
+    configuration: AxesConfiguration,
+    standard_sign: float,
+    dims: tuple[str, str],
+    order_sign: float,
+) -> None:
+    data = xr.DataArray(
+        np.zeros((3, 3)),
+        dims=dims,
+        coords={dim: [-1.0, 0.0, 1.0] for dim in dims},
+        attrs={"configuration": int(configuration)},
+    )
+    slicer_area = SimpleNamespace(
+        data=data,
+        current_values=(0.0, 0.0),
+        main_image=SimpleNamespace(
+            display_axis=(0, 1),
+            is_guidelines_visible=True,
+            _guideline_offset=(0.0, 0.0),
+            _guideline_angle=12.0,
+        ),
+        array_slicer=SimpleNamespace(_nonuniform_axes_set=set()),
+    )
+
+    normal_emission, delta = (
+        _kspace_conversion.initial_normal_emission_from_slicer_area(slicer_area)
+    )
+
+    assert normal_emission == pytest.approx((0.0, 0.0))
+    assert delta == pytest.approx(12.0 * standard_sign * order_sign)
+
+
+def test_kspace_conversion_seed_uses_base_sign_without_configuration() -> None:
+    data = xr.DataArray(
+        np.zeros((3, 3)),
+        dims=("alpha", "beta"),
+        coords={"alpha": [-1.0, 0.0, 1.0], "beta": [-1.0, 0.0, 1.0]},
+    )
+    slicer_area = SimpleNamespace(
+        data=data,
+        current_values=(0.0, 0.0),
+        main_image=SimpleNamespace(
+            display_axis=(0, 1),
+            is_guidelines_visible=True,
+            _guideline_offset=(0.0, 0.0),
+            _guideline_angle=12.0,
+        ),
+        array_slicer=SimpleNamespace(_nonuniform_axes_set=set()),
+    )
+
+    normal_emission, delta = (
+        _kspace_conversion.initial_normal_emission_from_slicer_area(slicer_area)
+    )
+
+    assert normal_emission == pytest.approx((0.0, 0.0))
+    assert delta == pytest.approx(-12.0)
+
+    _, delta = _kspace_conversion.initial_normal_emission_from_slicer_area(
+        slicer_area,
+        configuration=AxesConfiguration.Type2,
+    )
+    assert delta == pytest.approx(12.0)
+
+
+def test_kspace_conversion_seed_ignores_guidelines_outside_first_two_angle_axes() -> (
+    None
+):
+    data = xr.DataArray(
+        np.zeros((3, 3, 3)),
+        dims=("eV", "alpha", "beta"),
+        coords={
+            "eV": [-1.0, 0.0, 1.0],
+            "alpha": [-1.0, 0.0, 1.0],
+            "beta": [-1.0, 0.0, 1.0],
+        },
+        attrs={"configuration": int(AxesConfiguration.Type1)},
+    )
+    slicer_area = SimpleNamespace(
+        data=data,
+        current_values=(0.0, 0.0, 0.0),
+        main_image=SimpleNamespace(
+            display_axis=(0, 1),
+            is_guidelines_visible=True,
+            _guideline_offset=(0.0, 0.0),
+            _guideline_angle=12.0,
+        ),
+        array_slicer=SimpleNamespace(_nonuniform_axes_set=set()),
+    )
+
+    normal_emission, delta = (
+        _kspace_conversion.initial_normal_emission_from_slicer_area(slicer_area)
+    )
+
+    assert normal_emission == pytest.approx((0.0, 0.0))
+    assert delta is None
 
 
 def test_kspace_normal_emission_reports_missing_required_coords() -> None:

@@ -2265,6 +2265,7 @@ def ktool(
     initial_delta: float | None = None,
     options_model: AppOptions | None = None,
     execute: bool | None = None,
+    _initial_delta_from_guideline: bool = False,
 ) -> KspaceTool | None:
     """Interactive momentum conversion tool.
 
@@ -2316,6 +2317,13 @@ def ktool(
         if resolved_input_coordinates is None:
             return None
         configuration, input_coordinates, edited_names = resolved_input_coordinates
+        if (
+            _initial_delta_from_guideline
+            and initial_delta is not None
+            and _kspace_conversion.kspace_configuration(data) is None
+            and configuration == AxesConfiguration.Type2
+        ):
+            initial_delta *= -1
         win = KspaceTool(
             data,
             avec=avec,
