@@ -394,7 +394,7 @@ def _add_spinbox_row(
     spinbox_factory: Callable[..., QtWidgets.QDoubleSpinBox] | None = None,
     suffix: str = "",
     update: Callable[[float], None] | None = None,
-) -> None:
+) -> QtWidgets.QWidget:
     mixed = editor.batch_is_mixed(operation, lambda target: getattr(target, field))
     if spinbox_factory is None:
         spinbox = _spinbox(float(getattr(operation, field)), parent=parent)
@@ -411,12 +411,14 @@ def _add_spinbox_row(
         if update is not None
         else lambda value: editor.request_update(**{field: value}),
     )
+    field_widget = editor.mixed_value_widget(spinbox, mixed=mixed, parent=parent)
     editor.add_form_row(
         layout,
         label,
-        editor.mixed_value_widget(spinbox, mixed=mixed, parent=parent),
+        field_widget,
         tooltip,
     )
+    return field_widget
 
 
 def _build_kz_row(
@@ -424,7 +426,7 @@ def _build_kz_row(
     operation: FigureOperationState,
     page: QtWidgets.QWidget,
     layout: QtWidgets.QFormLayout,
-) -> None:
+) -> QtWidgets.QWidget:
     kz_pi_mixed = editor.batch_is_mixed(
         operation, lambda target: target.bz_kz_pi_over_c
     )
@@ -462,6 +464,7 @@ def _build_kz_row(
     )
 
     row = QtWidgets.QWidget(page)
+    row.setObjectName("figureComposerBZKzRow")
     row_layout = QtWidgets.QHBoxLayout(row)
     row_layout.setContentsMargins(0, 0, 0, 0)
     row_layout.setSpacing(6)
@@ -481,6 +484,17 @@ def _build_kz_row(
         row,
         "Fixed out-of-plane momentum for in-plane slices.",
     )
+    return row
+
+
+def _set_slice_momentum_row_visibility(
+    layout: QtWidgets.QFormLayout,
+    kz_row: QtWidgets.QWidget,
+    k_parallel_row: QtWidgets.QWidget,
+    mode: typing.Literal["in_plane", "out_of_plane"] | None,
+) -> None:
+    layout.setRowVisible(kz_row, mode != "out_of_plane")
+    layout.setRowVisible(k_parallel_row, mode != "in_plane")
 
 
 def _build_slice_editor(
@@ -490,10 +504,21 @@ def _build_slice_editor(
     layout: QtWidgets.QFormLayout,
 ) -> None:
     mode_mixed = editor.batch_is_mixed(operation, lambda target: target.bz_mode)
+
+    def update_mode(text: str) -> None:
+        mode = _mode_from_text(text)
+        _set_slice_momentum_row_visibility(
+            layout,
+            kz_row,
+            k_parallel_row,
+            mode,
+        )
+        editor.request_update(bz_mode=mode)
+
     mode_combo = editor.combo(
         tuple(_MODE_LABELS.values()),
         None if mode_mixed else _mode_text(operation.bz_mode),
-        lambda text: editor.request_update(bz_mode=_mode_from_text(text)),
+        update_mode,
         parent=page,
         mixed=mode_mixed,
     )
@@ -516,8 +541,8 @@ def _build_slice_editor(
         parent=page,
         suffix="°",
     )
-    _build_kz_row(editor, operation, page, layout)
-    _add_spinbox_row(
+    kz_row = _build_kz_row(editor, operation, page, layout)
+    k_parallel_row = _add_spinbox_row(
         editor,
         operation,
         layout,
@@ -527,6 +552,12 @@ def _build_slice_editor(
         tooltip="Fixed in-plane momentum component for out-of-plane slices.",
         parent=page,
         suffix=" Å⁻¹",
+    )
+    _set_slice_momentum_row_visibility(
+        layout,
+        kz_row,
+        k_parallel_row,
+        None if mode_mixed else operation.bz_mode,
     )
 
     bounds_text, bounds_mixed = editor.batch_text(

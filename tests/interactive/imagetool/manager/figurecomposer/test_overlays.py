@@ -81,8 +81,16 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
     assert kz_spin.suffix() == " π/c"
     assert kz_absolute_spin.suffix() == " Å⁻¹"
     assert k_parallel_spin.suffix() == " Å⁻¹"
+    slice_layout = page.layout()
+    assert isinstance(slice_layout, QtWidgets.QFormLayout)
+    kz_row = page.findChild(QtWidgets.QWidget, "figureComposerBZKzRow")
+    assert kz_row is not None
+    assert slice_layout.isRowVisible(kz_row)
+    assert not slice_layout.isRowVisible(k_parallel_spin)
 
     _activate_combo_text(mode_combo, "Out-of-plane")
+    assert not slice_layout.isRowVisible(kz_row)
+    assert slice_layout.isRowVisible(k_parallel_spin)
     angle_spin.setValue(30.0)
     kz_spin.setValue(0.5)
     assert np.isclose(kz_absolute_spin.value(), np.pi / 2.0)
@@ -167,6 +175,41 @@ def test_figure_composer_bz_overlay_editor_updates_state(qtbot) -> None:
         "linestyle": "-.",
         "linewidth": 1.5,
     }
+
+
+@pytest.mark.parametrize(
+    ("mode", "kz_visible", "k_parallel_visible"),
+    [("in_plane", True, False), ("out_of_plane", False, True)],
+)
+def test_figure_composer_bz_overlay_restores_mode_control_visibility(
+    qtbot, mode: str, kz_visible: bool, k_parallel_visible: bool
+) -> None:
+    operation = FigureOperationState.bz_overlay(
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        mode=mode,
+    )
+    tool = _bz_tool(operation)
+    qtbot.addWidget(tool)
+    tool.operation_panel.operation_list.setCurrentItem(
+        tool.operation_panel.operation_list.topLevelItem(0)
+    )
+
+    tool.operation_editor.select_section("slice")
+    page = tool.operation_editor.stack.currentWidget()
+    assert page is not None
+    layout = page.layout()
+    assert isinstance(layout, QtWidgets.QFormLayout)
+    kz_spin = page.findChild(QtWidgets.QDoubleSpinBox, "figureComposerBZKzSpin")
+    k_parallel_spin = page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerBZKParallelSpin"
+    )
+    assert kz_spin is not None
+    assert k_parallel_spin is not None
+    kz_row = page.findChild(QtWidgets.QWidget, "figureComposerBZKzRow")
+    assert kz_row is not None
+
+    assert layout.isRowVisible(kz_row) is kz_visible
+    assert layout.isRowVisible(k_parallel_spin) is k_parallel_visible
 
 
 def test_figure_composer_bz_overlay_state_round_trip() -> None:
