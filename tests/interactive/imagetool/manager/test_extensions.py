@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import pathlib
@@ -13,7 +14,7 @@ import uuid
 import numpy as np
 import pytest
 import xarray as xr
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.extensions._entry_points as extension_entry_points
@@ -22,6 +23,7 @@ import erlab.interactive.imagetool.manager._base as manager_base
 import erlab.interactive.imagetool.manager._extensions._catalog as extension_catalog
 import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dialogs
 import erlab.interactive.imagetool.manager._extensions._execution as extension_execution
+import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive.imagetool._load_source import _resolve_load_func
 from erlab.interactive.imagetool._provenance._execution import (
@@ -64,7 +66,6 @@ from erlab.interactive.imagetool.manager._extensions._execution import (
 )
 from erlab.interactive.imagetool.manager._extensions._models import (
     _ExtensionCatalogModel,
-    _ExtensionMetadata,
     _ExtensionRecord,
     _ExtensionRevision,
     _ResolvedWorkspaceRequirement,
@@ -296,7 +297,7 @@ def test_parameter_dialog_preserves_python_numeric_values(qtbot) -> None:
         _parameters = dialog.parameters
 
 
-def test_source_review_dialog_reads_source_and_metadata(
+def test_source_review_dialog_reads_source_and_revision_summary(
     qtbot: pytest.QtBot,
     tmp_path: pathlib.Path,
 ) -> None:
@@ -310,23 +311,19 @@ def test_source_review_dialog_reads_source_and_metadata(
     dialog = extension_dialogs._SourceReviewDialog(source, parent)
     qtbot.addWidget(dialog)
     source_editor = dialog.findChild(
-        QtWidgets.QPlainTextEdit, "manager_extension_source_review"
+        erlab.interactive.utils.PythonCodeEditor,
+        "manager_extension_source_review",
     )
     if source_editor is None:
         raise RuntimeError("Source review editor was not created")
     assert source_editor.toPlainText() == "VALUE = 1\n"
-    dialog.author_edit.setText("  Lab User  ")
-    dialog.contact_edit.setText(" lab@example.org ")
-    dialog.project_url_edit.setText(" https://example.org/lab ")
-    dialog.change_summary_edit.setText(" Initial revision ")
-    dialog.changelog_edit.setPlainText(" Added routine. ")
-    assert dialog.metadata == _ExtensionMetadata(
-        author="Lab User",
-        contact="lab@example.org",
-        project_url="https://example.org/lab",
-        change_summary="Initial revision",
-        changelog="Added routine.",
+    assert source_editor.isReadOnly()
+    assert source_editor.lineWrapMode() is QtWidgets.QTextEdit.LineWrapMode.NoWrap
+    assert isinstance(
+        source_editor.highlighter, erlab.interactive.utils.PythonHighlighter
     )
+    dialog.change_summary_edit.setText(" Initial revision ")
+    assert dialog.change_summary == "Initial revision"
     assert dialog.remember_approval
 
     session_dialog = extension_dialogs._SourceReviewDialog(
@@ -439,9 +436,20 @@ def test_routine_selection_dialog_reports_current_selection(
     )
     qtbot.addWidget(dialog)
     assert dialog.selection == ("lab", "calculate")
+    changes: list[tuple[str, str, bool]] = []
+    dialog.favorite_requested.connect(
+        lambda extension_id, routine_id, favorite: changes.append(
+            (extension_id, routine_id, favorite)
+        )
+    )
+    dialog.favorite_button.click()
+    assert changes == [("lab", "calculate", True)]
+    assert dialog.favorite_button.property("favoriteState") is True
+    dialog.favorite_button.click()
+    assert changes[-1] == ("lab", "calculate", False)
 
 
-def test_manage_and_metadata_dialogs_preserve_selected_extension(
+def test_manage_dialog_preserves_selected_extension(
     qtbot: pytest.QtBot,
 ) -> None:
     parent = QtWidgets.QWidget()
@@ -450,6 +458,7 @@ def test_manage_and_metadata_dialogs_preserve_selected_extension(
     revision = _ExtensionRevision(
         source_hash=revision_hash,
         object_name=f"{revision_hash}.py",
+        change_summary="Initial revision",
         source_path="source.py",
         created_at="2026-01-01T00:00:00+00:00",
         approved=True,
@@ -459,14 +468,14 @@ def test_manage_and_metadata_dialogs_preserve_selected_extension(
         name="Lab",
         current_revision=revision_hash,
         revisions={revision_hash: revision},
-        metadata=_ExtensionMetadata(author="Lab User"),
     )
     dialog = extension_dialogs._ManageExtensionsDialog(parent)
     qtbot.addWidget(dialog)
     dialog.set_catalog(_ExtensionCatalogModel(extensions={"lab": record}))
     top = dialog.tree.topLevelItem(0)
-    revision_item = top.child(0)
-    dialog.tree.setCurrentItem(revision_item)
+    assert top.childCount() == 0
+    assert dialog._detail_labels["change_summary"].text() == "Initial revision"
+    dialog.tree.setCurrentItem(top)
     assert dialog.selected_extension_id == "lab"
 
     actions: list[tuple[str, str]] = []
@@ -476,26 +485,16 @@ def test_manage_and_metadata_dialogs_preserve_selected_extension(
 
     dialog.action_requested.connect(action_slot)
     try:
-        dialog._emit_action("metadata")
-        assert actions == [("metadata", "lab")]
+        assert "metadata" not in dialog._buttons
         dialog.tree.setCurrentItem(None)
+        original_source_label = dialog._detail_labels["original_source"]
+        if not isinstance(original_source_label, manager_widgets._ElidedValueLabel):
+            raise TypeError("The source path must use an elided value label")
+        assert original_source_label.full_text == ""
         dialog._emit_action("remove")
-        assert actions == [("metadata", "lab")]
+        assert actions == []
     finally:
         dialog.action_requested.disconnect(action_slot)
-
-    metadata_dialog = extension_dialogs._MetadataDialog(record.metadata, parent)
-    qtbot.addWidget(metadata_dialog)
-    author = metadata_dialog._edits["author"]
-    if not isinstance(author, QtWidgets.QLineEdit):
-        raise TypeError("Author metadata editor must be a line edit")
-    author.setText(" Updated User ")
-    changelog = metadata_dialog._edits["changelog"]
-    if not isinstance(changelog, QtWidgets.QPlainTextEdit):
-        raise TypeError("Changelog metadata editor must be a plain-text edit")
-    changelog.setPlainText(" Updated notes. ")
-    assert metadata_dialog.metadata.author == "Updated User"
-    assert metadata_dialog.metadata.changelog == "Updated notes."
 
 
 def test_workspace_requirements_dialog_approves_only_eligible_selection(
@@ -722,10 +721,8 @@ def test_controller_menu_selection_and_routine_queue_paths(
             "scale",
             expected_record_generation=catalog.extensions["scale"].record_generation,
         )
-        catalog = controller.catalog.store.update_record(
-            "scale",
-            expected_record_generation=catalog.extensions["scale"].record_generation,
-            favorite=True,
+        catalog = controller.catalog.store.set_routine_favorite(
+            "scale", "scale", favorite=True
         )
         controller.catalog.refresh()
         controller._recent.append(("scale", "scale"))
@@ -754,11 +751,12 @@ def test_controller_menu_selection_and_routine_queue_paths(
             ),
         )
 
-        class AcceptedSelectionDialog:
+        class AcceptedSelectionDialog(QtCore.QObject):
+            favorite_requested = QtCore.Signal(str, str, bool)
             selection = ("scale", "scale")
 
             def __init__(self, *_args, **_kwargs) -> None:
-                return None
+                super().__init__()
 
             @staticmethod
             def exec() -> int:
@@ -1216,11 +1214,7 @@ def test_manage_actions_dispatch_updates_and_report_failures(
         )
 
         controller._manage_action("toggle", "scale")
-        controller._manage_action("favorite", "scale")
-        controller._manage_action("remove", "scale")
         assert updates[0]["enabled"] is False
-        assert updates[1]["favorite"] is True
-        assert updates[2]["removed"] is True
 
         disabled_record = enabled_record.model_copy(update={"enabled": False})
         controller.catalog.model = catalog.model_copy(
@@ -1229,39 +1223,11 @@ def test_manage_actions_dispatch_updates_and_report_failures(
         controller._manage_action("toggle", "scale")
         assert validations == [("scale", disabled_record.record_generation)]
 
-        monkeypatch.setattr(
-            QtWidgets.QInputDialog,
-            "getItem",
-            lambda *_args, **_kwargs: ("Always include", False),
-        )
         before = len(updates)
-        controller._manage_action("embedding", "scale")
+        controller._manage_action("embedding:invalid", "scale")
         assert len(updates) == before
-        monkeypatch.setattr(
-            QtWidgets.QInputDialog,
-            "getItem",
-            lambda *_args, **_kwargs: ("Always include", True),
-        )
-        controller._manage_action("embedding", "scale")
+        controller._manage_action("embedding:always", "scale")
         assert updates[-1]["embed_policy"] == "always"
-
-        class MetadataDialog:
-            metadata = _ExtensionMetadata(author="Updated")
-            accepted = False
-
-            def __init__(self, *_args, **_kwargs) -> None:
-                return None
-
-            def exec(self) -> bool:
-                return self.accepted
-
-        monkeypatch.setattr(extension_controller, "_MetadataDialog", MetadataDialog)
-        before = len(updates)
-        controller._manage_action("metadata", "scale")
-        assert len(updates) == before
-        MetadataDialog.accepted = True
-        controller._manage_action("metadata", "scale")
-        assert updates[-1]["metadata"].author == "Updated"
 
         embedded_revision = enabled_record.revisions[revision_hash].model_copy(
             update={"source_path": None}
@@ -1286,7 +1252,7 @@ def test_manage_actions_dispatch_updates_and_report_failures(
                 _ExtensionCatalogConflictError("changed")
             ),
         )
-        controller._manage_action("favorite", "scale")
+        controller._manage_action("toggle", "scale")
         assert warnings == [None]
 
 
@@ -1491,13 +1457,17 @@ def test_disabled_environment_loader_does_not_use_global_registry(
     assert dialogs == [None]
 
 
-def test_catalog_reload_identity_metadata_and_conflict(tmp_path: pathlib.Path) -> None:
+def test_catalog_reload_identity_revision_note_and_conflict(
+    tmp_path: pathlib.Path,
+) -> None:
     store = _ExtensionCatalogStore(tmp_path / "catalog")
     script_path = tmp_path / "scale.py"
     source = _script(script_path)
 
     catalog, revision, created = store.add_script(script_path)
     assert created
+    assert catalog.schema_version == 1
+    assert json.loads(store.path.read_text(encoding="utf-8"))["schema_version"] == 1
     assert revision == hashlib.sha256(source).hexdigest()
     first = catalog.extensions["scale"]
 
@@ -1506,20 +1476,19 @@ def test_catalog_reload_identity_metadata_and_conflict(tmp_path: pathlib.Path) -
     assert unchanged_revision == revision
     assert len(catalog.extensions["scale"].revisions) == 1
 
-    metadata = _ExtensionMetadata(author="A. User", change_summary="Reviewed")
-    catalog = store.update_record(
-        "scale",
-        expected_record_generation=first.record_generation,
-        metadata=metadata,
+    catalog, unchanged_revision, created = store.add_script(
+        script_path,
+        change_summary="Reviewed",
     )
-    assert catalog.extensions["scale"].metadata == metadata
-    assert catalog.extensions["scale"].current_revision == revision
+    assert not created
+    assert unchanged_revision == revision
+    assert catalog.extensions["scale"].revisions[revision].change_summary == "Reviewed"
 
     with pytest.raises(_ExtensionCatalogConflictError, match="another manager"):
         store.update_record(
             "scale",
             expected_record_generation=first.record_generation,
-            favorite=True,
+            embed_policy="always",
         )
 
 
@@ -1624,7 +1593,6 @@ def test_catalog_source_lookup_and_integrity_failures(tmp_path: pathlib.Path) ->
             extension_id="embedded",
             expected_revision="0" * 64,
             name="Embedded",
-            metadata=_ExtensionMetadata(),
         )
 
     assert store.read() == catalog
@@ -1635,7 +1603,6 @@ def test_catalog_source_lookup_and_integrity_failures(tmp_path: pathlib.Path) ->
     [
         ({"source_type": "environment-package"}, False, "requires an entry point"),
         ({"enabled": True}, False, "must be approved"),
-        ({"enabled": True, "removed": True}, True, "cannot be enabled"),
     ],
 )
 def test_extension_record_rejects_invalid_enabled_and_package_states(
@@ -1732,9 +1699,6 @@ def test_catalog_reports_exact_script_capability_states(
         return store.capability_status("scale", revision_hash, "routine", capability_id)
 
     assert status_for(ready_record) == "ready"
-    assert status_for(ready_record.model_copy(update={"removed": True})) == (
-        "missing-revision"
-    )
     assert status_for(ready_record.model_copy(update={"enabled": False})) == "disabled"
 
     ready_revision = ready_record.revisions[revision_hash]
@@ -2385,7 +2349,7 @@ def test_loader_worker_contains_process_control_exceptions(
         source_type="script",
         executor=lambda *_args: xr.DataArray([1.0]),
     )
-    record = types.SimpleNamespace(removed=False, enabled=True)
+    record = types.SimpleNamespace(enabled=True)
     store = types.SimpleNamespace(
         read=lambda: types.SimpleNamespace(extensions={"lab": record})
     )
@@ -2788,7 +2752,6 @@ def test_session_extension_status_and_loader_errors(
             extension_id="loader",
             expected_revision=revision_hash,
             name="Loader",
-            metadata=_ExtensionMetadata(),
         )
         assert execution._session_revision("loader", "0" * 64) is None
         assert (
@@ -2969,54 +2932,6 @@ def test_execution_controller_ignores_unknown_queue_callbacks(
         assert execution.active is None
 
 
-def test_extension_progress_dialog_removes_only_a_selected_queued_job(
-    manager_context,
-    tmp_path: pathlib.Path,
-    qtbot: pytest.QtBot,
-) -> None:
-    script_path = tmp_path / "scale.py"
-    _script(script_path)
-
-    with manager_context() as manager:
-        execution = manager._extensions.execution
-        catalog, revision_hash, _created = manager._extensions.catalog.store.add_script(
-            script_path
-        )
-        _validate_and_enable(
-            manager._extensions.catalog.store,
-            "scale",
-            expected_record_generation=catalog.extensions["scale"].record_generation,
-        )
-        job = execution._routine_job(
-            extension_id="scale",
-            revision_hash=revision_hash,
-            routine_id="scale",
-            parameters={"scale": 2.0},
-            input_data=xr.DataArray([1.0]),
-            input_uid="uid",
-            input_snapshot="snapshot",
-        )
-        dialog = execution._progress_dialog
-        removed: list[str] = []
-        remove_slot = removed.append
-        dialog.remove_requested.connect(remove_slot)
-        try:
-            dialog.set_jobs(job, (job,))
-            dialog._remove_selected()
-            dialog.list_widget.setCurrentRow(0)
-            dialog._remove_selected()
-            dialog.list_widget.setCurrentRow(1)
-            with qtbot.waitSignal(dialog.remove_requested, timeout=1000):
-                dialog._remove_selected()
-            assert removed == [job.job_id]
-
-            execution.show_progress()
-            assert dialog.isVisible()
-            dialog.hide()
-        finally:
-            dialog.remove_requested.disconnect(remove_slot)
-
-
 def test_extension_replay_reports_all_controller_result_states(
     manager_context,
     tmp_path: pathlib.Path,
@@ -3141,7 +3056,7 @@ def test_extension_replay_reports_all_controller_result_states(
             )
 
 
-def test_execution_refresh_and_shutdown_are_safe_after_qt_teardown(
+def test_execution_shutdown_is_safe_after_qt_teardown(
     manager_context,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3150,7 +3065,6 @@ def test_execution_refresh_and_shutdown_are_safe_after_qt_teardown(
         monkeypatch.setattr(
             erlab.interactive.utils, "qt_is_valid", lambda *_objects: False
         )
-        execution._refresh_progress()
         execution.shutdown()
         execution.shutdown()
         assert execution._shutdown_complete
@@ -3225,7 +3139,6 @@ def test_catalog_rejects_script_and_environment_source_type_collisions(
             extension_id=extension_id,
             expected_revision=hashlib.sha256(source).hexdigest(),
             name="Shared",
-            metadata=_ExtensionMetadata(),
         )
 
     assert store.read() == catalog
@@ -3260,7 +3173,10 @@ def test_catalog_changed_reload_requires_approval(tmp_path: pathlib.Path) -> Non
     store = _ExtensionCatalogStore(tmp_path / "catalog")
     script_path = tmp_path / "scale.py"
     _script(script_path)
-    catalog, old_revision, _created = store.add_script(script_path)
+    catalog, old_revision, _created = store.add_script(
+        script_path,
+        change_summary="Initial revision",
+    )
     record = catalog.extensions["scale"]
     catalog = _validate_and_enable(
         store, "scale", expected_record_generation=record.record_generation
@@ -3268,11 +3184,22 @@ def test_catalog_changed_reload_requires_approval(tmp_path: pathlib.Path) -> Non
     assert catalog.extensions["scale"].enabled
 
     _script(script_path, "data + scale")
-    catalog, new_revision, created = store.add_script(script_path)
+    catalog, new_revision, created = store.add_script(
+        script_path,
+        change_summary="Change scaling behavior",
+    )
     assert created
     assert new_revision != old_revision
     assert not catalog.extensions["scale"].enabled
     assert not catalog.extensions["scale"].revisions[new_revision].approved
+    assert (
+        catalog.extensions["scale"].revisions[old_revision].change_summary
+        == "Initial revision"
+    )
+    assert (
+        catalog.extensions["scale"].revisions[new_revision].change_summary
+        == "Change scaling behavior"
+    )
 
     _script(script_path)
     catalog, restored_revision, changed = store.add_script(script_path)
@@ -3380,7 +3307,6 @@ def test_add_script_rejects_a_different_same_stem_source(
     with manager_context() as manager:
         before, _revision, _created = manager._extensions.catalog.store.add_script(
             first_path,
-            metadata=_ExtensionMetadata(author="First Author"),
         )
         manager._extensions.catalog.refresh()
         monkeypatch.setattr(
@@ -3402,25 +3328,17 @@ def test_add_script_rejects_a_different_same_stem_source(
     assert after == before
 
 
-def test_unchanged_add_script_preserves_existing_metadata(
+def test_unchanged_add_script_preserves_existing_revision_summary(
     manager_context,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
 ) -> None:
     script_path = tmp_path / "analysis.py"
     _script(script_path)
-    metadata = _ExtensionMetadata(
-        author="Lab Author",
-        contact="lab@example.org",
-        project_url="https://example.org/lab",
-        change_summary="Initial revision",
-        changelog="Initial changelog",
-    )
-
     with manager_context() as manager:
         before, revision, _created = manager._extensions.catalog.store.add_script(
             script_path,
-            metadata=metadata,
+            change_summary="Initial revision",
         )
         manager._extensions.catalog.refresh()
         monkeypatch.setattr(
@@ -3433,7 +3351,7 @@ def test_unchanged_add_script_preserves_existing_metadata(
         after = manager._extensions.catalog.store.read()
 
     record = after.extensions["analysis"]
-    assert record.metadata == metadata
+    assert record.revisions[revision].change_summary == "Initial revision"
     assert tuple(record.revisions) == (revision,)
     assert record.record_generation == before.extensions["analysis"].record_generation
 
@@ -3449,12 +3367,10 @@ def test_identical_same_stem_source_can_relocate_an_extension(
     second_path.parent.mkdir()
     source = _script(first_path)
     second_path.write_bytes(source)
-    metadata = _ExtensionMetadata(author="Lab Author")
 
     with manager_context() as manager:
         _before, revision, _created = manager._extensions.catalog.store.add_script(
             first_path,
-            metadata=metadata,
         )
         manager._extensions.catalog.refresh()
         monkeypatch.setattr(
@@ -3469,7 +3385,6 @@ def test_identical_same_stem_source_can_relocate_an_extension(
     assert record.current_revision == revision
     assert tuple(record.revisions) == (revision,)
     assert record.revisions[revision].source_path == os.fspath(second_path.resolve())
-    assert record.metadata == metadata
 
 
 def test_catalog_reload_rejects_a_stale_same_extension_edit(
@@ -3483,7 +3398,7 @@ def test_catalog_reload_rejects_a_stale_same_extension_edit(
     store.update_record(
         "scale",
         expected_record_generation=stale_generation,
-        favorite=True,
+        embed_policy="always",
     )
     _script(script_path, "data + scale")
 
@@ -3566,25 +3481,24 @@ def test_restored_revision_updates_script_source_location(
     )
 
 
-def test_embedded_source_review_updates_existing_metadata(
+def test_embedded_source_review_updates_existing_revision_summary(
     tmp_path: pathlib.Path,
 ) -> None:
     store = _ExtensionCatalogStore(tmp_path / "catalog")
     script_path = tmp_path / "scale.py"
     source = _script(script_path)
     catalog, revision, _created = store.add_script(script_path)
-    metadata = _ExtensionMetadata(author="A. User", changelog="Reviewed source")
-
     updated = store.add_embedded_script(
         source,
         extension_id="scale",
         expected_revision=revision,
         name="Scale",
-        metadata=metadata,
+        change_summary="Reviewed source",
         expected_record_generation=catalog.extensions["scale"].record_generation,
     )
-
-    assert updated.extensions["scale"].metadata == metadata
+    assert updated.extensions["scale"].revisions[revision].change_summary == (
+        "Reviewed source"
+    )
     assert tuple(updated.extensions["scale"].revisions) == (revision,)
 
 
@@ -3602,7 +3516,6 @@ def test_embedded_source_preserves_workspace_modification_time(
         extension_id="scale",
         expected_revision=revision,
         name="Scale",
-        metadata=_ExtensionMetadata(),
         source_modified_at=source_modified_at,
     )
 
@@ -3858,21 +3771,21 @@ def test_catalog_watcher_propagates_global_record_state(
                 expected_record_generation=(
                     catalog.extensions["scale"].record_generation
                 ),
-                favorite=True,
-                metadata=_ExtensionMetadata(author="Lab User"),
+                embed_policy="always",
             )
         propagated = second.model.extensions["scale"]
-        assert propagated.favorite
-        assert propagated.metadata.author == "Lab User"
+        assert propagated.embed_policy == "always"
 
         with qtbot.waitSignal(second.changed, timeout=3000):
-            first.store.update_record(
-                "scale",
-                expected_record_generation=propagated.record_generation,
-                removed=True,
+            first.store.set_routine_favorite("scale", "scale", favorite=True)
+        assert second.model.routine_favorites == (("scale", "scale"),)
+
+        with qtbot.waitSignal(second.changed, timeout=3000):
+            first.store.remove_script(
+                "scale", expected_record_generation=propagated.record_generation
             )
-        assert second.model.extensions["scale"].removed
-        assert not second.model.extensions["scale"].enabled
+        assert "scale" not in second.model.extensions
+        assert second.model.routine_favorites == ()
     finally:
         first.close()
         second.close()
@@ -4711,13 +4624,15 @@ def test_environment_refresh_skips_an_invalid_entry_point(
     ).refresh_environment_packages()
 
     assert "environment.erlab.extensions.valid" in catalog.extensions
-    assert "environment.erlab.extensions.broken" not in catalog.extensions
+    broken_record = catalog.extensions["environment.erlab.extensions.broken"]
+    assert not broken_record.enabled
+    assert broken_record.revisions[broken_record.current_revision].import_error
     assert "Could not inspect environment extension erlab.extensions:broken" in (
         caplog.text
     )
 
 
-def test_environment_refresh_does_not_restore_a_removed_extension(
+def test_environment_refresh_tracks_changed_package_revision(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
 ) -> None:
@@ -4742,35 +4657,23 @@ def test_environment_refresh_does_not_restore_a_removed_extension(
 
     catalog = store.refresh_environment_packages()
     extension_id = "environment.erlab.extensions.removed"
-    record = catalog.extensions[extension_id]
-    catalog = store.update_record(
-        extension_id,
-        expected_record_generation=record.record_generation,
-        removed=True,
-    )
-    removed_revision = catalog.extensions[extension_id].current_revision
-
-    catalog = store.refresh_environment_packages()
-    assert catalog.extensions[extension_id].removed
-    assert catalog.extensions[extension_id].current_revision == removed_revision
+    original_revision = catalog.extensions[extension_id].current_revision
 
     entry_point.value = "lab_package:changed_extension"
     catalog = store.refresh_environment_packages()
     record = catalog.extensions[extension_id]
-    assert record.removed
     assert not record.enabled
-    assert record.current_revision != removed_revision
+    assert record.current_revision != original_revision
 
     entry_point.value = "lab_package:extension"
     catalog = store.refresh_environment_packages()
     record = catalog.extensions[extension_id]
-    assert record.removed
     assert not record.enabled
-    assert record.current_revision == removed_revision
+    assert record.current_revision == original_revision
     assert len(record.revisions) == 2
 
 
-def test_environment_refresh_disables_an_unavailable_package_without_removing_it(
+def test_environment_refresh_removes_and_rediscovers_an_unavailable_package(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
 ) -> None:
@@ -4812,19 +4715,18 @@ def test_environment_refresh_disables_an_unavailable_package_without_removing_it
         loader_always_single=None,
         loader_dialog_methods=(),
     )
+    catalog = store.set_routine_favorite(extension_id, "extension", favorite=True)
+    assert catalog.routine_favorites == ((extension_id, "extension"),)
 
     available = False
     catalog = store.refresh_environment_packages()
-    record = catalog.extensions[extension_id]
-    assert not record.enabled
-    assert not record.removed
-    assert record.current_revision == revision
+    assert extension_id not in catalog.extensions
+    assert catalog.routine_favorites == ()
 
     available = True
     catalog = store.refresh_environment_packages()
     record = catalog.extensions[extension_id]
     assert not record.enabled
-    assert not record.removed
     assert record.current_revision == revision
     assert store.revision_available(record, revision)
 
@@ -5557,7 +5459,6 @@ def load_data(path: Path) -> xr.DataArray:
             extension_id="shared",
             revision_hash=revision,
             name="Shared",
-            metadata=_ExtensionMetadata(),
             source_modified_at=None,
         )
         manager._extensions.catalog.store.source_path("shared", revision).write_bytes(
@@ -5812,7 +5713,19 @@ def test_manage_dialog_enables_only_applicable_actions(
                     script_record.id: script_record,
                     environment_record.id: environment_record,
                 }
-            )
+            ),
+            {
+                ("script", script_record.current_revision): (
+                    "Stored source; original unchanged"
+                )
+            },
+            managed_paths={
+                ("script", script_record.current_revision): os.fspath(
+                    manager._extensions.catalog.store.source_path(
+                        "script", script_record.current_revision
+                    )
+                )
+            },
         )
 
         def select(extension_id: str) -> None:
@@ -5825,23 +5738,26 @@ def test_manage_dialog_enables_only_applicable_actions(
 
         select("script")
         assert dialog._buttons["reload"].isEnabled()
-        assert dialog._buttons["embedding"].isEnabled()
+        assert dialog.embedding_combo.isEnabled()
+        assert dialog._buttons["view_source"].isEnabled()
 
         select("environment")
         assert not dialog._buttons["reload"].isEnabled()
-        assert not dialog._buttons["embedding"].isEnabled()
+        assert not dialog.embedding_combo.isVisible()
         assert dialog._buttons["toggle"].isEnabled()
+        assert not dialog._buttons["remove"].isVisible()
 
-        removed = environment_record.model_copy(update={"removed": True})
-        dialog.set_catalog(_ExtensionCatalogModel(extensions={removed.id: removed}))
-        select("environment")
-        assert not dialog._buttons["toggle"].isEnabled()
-        assert dialog._buttons["remove"].isEnabled()
+        select("script")
+        dialog.set_removal_reason("Close Manager 2 first.")
+        assert not dialog._buttons["remove"].isEnabled()
+        assert dialog._buttons["remove"].toolTip()
+        assert not dialog.removal_reason_label.isHidden()
 
 
-def test_logically_removed_extension_can_be_restored(
+def test_script_removal_confirmation_is_permanent_and_preserves_original(
     manager_context,
     tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     script_path = tmp_path / "restorable.py"
     _script(script_path)
@@ -5849,16 +5765,31 @@ def test_logically_removed_extension_can_be_restored(
     with manager_context() as manager:
         manager._extensions.catalog.store.add_script(script_path)
         manager._extensions.catalog.refresh()
+        record = manager._extensions.catalog.model.extensions["restorable"]
+        managed_path = manager._extensions.catalog.store.source_path(
+            record.id, record.current_revision
+        )
+        responses = iter(
+            (
+                QtWidgets.QMessageBox.StandardButton.Cancel,
+                QtWidgets.QMessageBox.StandardButton.Yes,
+            )
+        )
+        monkeypatch.setattr(
+            manager._extensions, "_removal_blocker", lambda _extension_id: None
+        )
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox, "exec", lambda _dialog: next(responses)
+        )
 
         manager._extensions._manage_action("remove", "restorable")
-        removed = manager._extensions.catalog.model.extensions["restorable"]
-        assert removed.removed
-        assert not removed.enabled
+        assert "restorable" in manager._extensions.catalog.model.extensions
+        assert managed_path.is_file()
 
         manager._extensions._manage_action("remove", "restorable")
-        restored = manager._extensions.catalog.model.extensions["restorable"]
-        assert not restored.removed
-        assert not restored.enabled
+        assert "restorable" not in manager._extensions.catalog.model.extensions
+        assert not managed_path.exists()
+        assert script_path.is_file()
 
 
 def test_file_source_status_does_not_import_extension_code(
@@ -6504,6 +6435,14 @@ def test_collecting_requirements_merges_duplicate_loaded_capability(
     )
 
     with manager_context() as manager:
+        manager._extensions.catalog.store.add_embedded_script(
+            source,
+            extension_id="shared-routines",
+            expected_revision=revision,
+            name="Shared Routines",
+            change_summary="Current revision",
+        )
+        manager._extensions.catalog.refresh()
         index = manager.add_imagetool(
             erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
             show=False,
@@ -6538,8 +6477,9 @@ def test_collecting_requirements_merges_duplicate_loaded_capability(
     assert len(collected) == 1
     assert collected[0].referencing_nodes == (loaded_uid, "unresolved-existing")
     assert collected[0].metadata_snapshot == {
-        "author": "Existing Author",
-        "contact": "incoming@example.org",
+        "extension_name": "Shared Routines",
+        "routine_name": "Normalize",
+        "change_summary": "Current revision",
     }
     assert collected[0].embedded_object_id == f"extension-{revision}"
     attrs = workspace_arrays._read_workspace_root_attrs_h5py(workspace_path)
@@ -6597,7 +6537,6 @@ def test_collecting_requirements_keeps_workspace_source_identity(
         "contact": "workspace@example.org",
         "project_url": "https://example.org/workspace",
         "change_summary": "Workspace revision",
-        "changelog": "Workspace changelog",
         "source_modified_at": source_modified_at,
     }
     operation = ExtensionRoutineOperation(
@@ -6617,18 +6556,12 @@ def test_collecting_requirements_keeps_workspace_source_identity(
         id="shared-extension",
         name="Local Package",
         source_type="environment-package",
-        metadata=_ExtensionMetadata(
-            author="Local Author",
-            contact="local@example.org",
-            project_url="https://example.org/local",
-            change_summary="Local revision",
-            changelog="Local changelog",
-        ),
         current_revision=revision,
         revisions={
             revision: _ExtensionRevision(
                 source_hash=revision,
                 object_name="lab_package:extension",
+                change_summary="Local revision",
                 created_at="2026-01-01T00:00:00+00:00",
                 entry_point_group="erlab.extensions",
                 entry_point_name="extension",
@@ -6692,14 +6625,12 @@ def test_collecting_loader_requirements_keeps_workspace_source_identity(
         "contact": "workspace@example.org",
         "project_url": "https://example.org/workspace",
         "change_summary": "Workspace revision",
-        "changelog": "Workspace changelog",
     }
     local_script = _ExtensionRecord(
         id=extension_id,
         name="Local Script",
         source_type="script",
         current_revision=revision,
-        metadata=_ExtensionMetadata(author="Local Author"),
         revisions={
             revision: _ExtensionRevision(
                 source_hash=revision,
@@ -8837,7 +8768,6 @@ def test_session_capability_status_detects_corrupt_source(
             extension_id="session",
             revision_hash=revision,
             name="Session",
-            metadata=_ExtensionMetadata(),
             source_modified_at=None,
         )
         source_path = manager._extensions.execution._session_catalog_store.source_path(
@@ -9577,3 +9507,553 @@ def slow(data: xr.DataArray, delay: float = 0.4) -> xr.DataArray:
         assert queued_waiter.result.status == "discarded"
         assert execution._blocking_tasks == set()
         assert execution._shutdown_complete
+
+
+def test_extension_menus_group_routines_and_follow_manager_selection(
+    manager_context,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+
+    with manager_context() as manager:
+        controller = manager._extensions
+        menu = controller.menu
+        if menu is None:
+            raise TypeError("The extension menu must exist")
+        actions = menu.actions()
+        assert actions[0].objectName() == "manager_run_extension_routine_action"
+        assert actions[1].isSeparator()
+        assert "manager_extension_jobs_action" not in {
+            action.objectName() for action in actions
+        }
+        assert "manager_refresh_environment_extensions_action" not in {
+            action.objectName() for action in actions
+        }
+        assert not any(
+            first.isSeparator() and second.isSeparator()
+            for first, second in itertools.pairwise(actions)
+        )
+
+        catalog, _revision, _created = controller.catalog.store.add_script(script_path)
+        _validate_and_enable(
+            controller.catalog.store,
+            "scale",
+            expected_record_generation=catalog.extensions["scale"].record_generation,
+        )
+        controller.catalog.store.set_routine_favorite("scale", "scale", favorite=True)
+        controller.catalog.refresh()
+        controller._recent.append(("scale", "scale"))
+
+        def active_actions(current_menu: QtWidgets.QMenu) -> list[QtGui.QAction]:
+            values: list[QtGui.QAction] = []
+            for action in current_menu.actions():
+                values.append(action)
+                submenu = action.menu()
+                if submenu is not None:
+                    values.extend(active_actions(submenu))
+            return values
+
+        context_menu = manager.tree_view._extensions_menu
+        for selection, expected in zip(
+            ((), (0,), (0, 1)), (False, True, False), strict=True
+        ):
+            monkeypatch.setattr(
+                manager, "_selected_imagetool_targets", lambda value=selection: value
+            )
+            controller._populate_menu()
+            controller._populate_routine_menu(context_menu, compact=True)
+            required_actions = [
+                action
+                for current_menu in (menu, context_menu)
+                for action in active_actions(current_menu)
+                if action.property("requiresImageTool") is True
+            ]
+            assert required_actions
+            assert all(action.isEnabled() is expected for action in required_actions)
+            assert controller.add_script_action.isEnabled()
+            assert controller.manage_action.isEnabled()
+            assert controller.requirements_action.isEnabled()
+
+        actions = menu.actions()
+        assert actions[0].objectName() == "manager_run_extension_routine_action"
+        assert actions[1].isSeparator()
+        assert not any(
+            first.isSeparator() and second.isSeparator()
+            for first, second in itertools.pairwise(actions)
+        )
+
+
+def test_manage_dialog_is_flat_searchable_and_preserves_selection(
+    qtbot: pytest.QtBot,
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    records: dict[str, _ExtensionRecord] = {}
+    for index in range(24):
+        revision_hash = f"{index + 1:064x}"
+        records[f"extension-{index:02d}"] = _ExtensionRecord(
+            id=f"extension-{index:02d}",
+            name=f"Extension {index:02d}",
+            current_revision=revision_hash,
+            revisions={
+                revision_hash: _ExtensionRevision(
+                    source_hash=revision_hash,
+                    object_name=f"{revision_hash}.py",
+                    created_at="2026-01-01T00:00:00+00:00",
+                )
+            },
+        )
+    dialog = extension_dialogs._ManageExtensionsDialog(parent)
+    dialog.resize(900, 260)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.set_catalog(_ExtensionCatalogModel(extensions=records))
+
+    assert not dialog.refresh_packages_button.isHidden()
+    assert dialog.tree.columnCount() == 5
+    assert dialog.tree.isSortingEnabled()
+    assert all(
+        dialog.tree.topLevelItem(index).childCount() == 0
+        for index in range(dialog.tree.topLevelItemCount())
+    )
+    selected = next(
+        dialog.tree.topLevelItem(index)
+        for index in range(dialog.tree.topLevelItemCount())
+        if dialog.tree.topLevelItem(index).data(0, QtCore.Qt.ItemDataRole.UserRole)
+        == "extension-12"
+    )
+    dialog.tree.setCurrentItem(selected)
+    scroll_bar = dialog.tree.verticalScrollBar()
+    if scroll_bar is None:
+        raise TypeError("The extension list must have a scroll bar")
+    scroll_bar.setValue(scroll_bar.maximum())
+    scroll_position = scroll_bar.value()
+
+    dialog.set_catalog(
+        _ExtensionCatalogModel(extensions=dict(reversed(records.items())))
+    )
+
+    assert dialog.selected_extension_id == "extension-12"
+    assert scroll_bar.value() == scroll_position
+    dialog.search_edit.setText("extension 05")
+    visible = [
+        dialog.tree.topLevelItem(index)
+        for index in range(dialog.tree.topLevelItemCount())
+        if not dialog.tree.topLevelItem(index).isHidden()
+    ]
+    assert len(visible) == 1
+    assert visible[0].data(0, QtCore.Qt.ItemDataRole.UserRole) == "extension-05"
+    assert dialog.selected_extension_id == "extension-05"
+
+
+@pytest.mark.parametrize("editable", [False, True])
+def test_manage_dialog_presents_script_and_package_details(
+    qtbot: pytest.QtBot,
+    tmp_path: pathlib.Path,
+    editable: bool,
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    source_path = tmp_path / "analysis.py"
+    source_path.write_text("value = 2\n")
+    managed_path = tmp_path / "managed.py"
+    managed_path.write_text("value = 1\n")
+    script_hash = "a" * 64
+    script = _ExtensionRecord(
+        id="script",
+        name="Script",
+        current_revision=script_hash,
+        revisions={
+            script_hash: _ExtensionRevision(
+                source_hash=script_hash,
+                object_name=f"{script_hash}.py",
+                source_path=os.fspath(source_path),
+                created_at="2026-01-01T00:00:00+00:00",
+                approved=True,
+                import_error="traceback\nImportError: unavailable",
+            )
+        },
+    )
+    package_hash = "b" * 64
+    package = _ExtensionRecord(
+        id="package",
+        name="Package",
+        source_type="environment-package",
+        current_revision=package_hash,
+        revisions={
+            package_hash: _ExtensionRevision(
+                source_hash=package_hash,
+                object_name="lab_package:extension",
+                created_at="2026-01-01T00:00:00+00:00",
+                entry_point_group="erlab.extensions",
+                entry_point_name="extension",
+                entry_point_value="lab_package:extension",
+                distribution_name="lab-package",
+                distribution_version="1.2",
+                editable=editable,
+            )
+        },
+    )
+    dialog = extension_dialogs._ManageExtensionsDialog(parent)
+    qtbot.addWidget(dialog)
+    dialog.set_catalog(
+        _ExtensionCatalogModel(extensions={"script": script, "package": package}),
+        {
+            ("script", script_hash): "Stored source; original changed",
+            ("package", package_hash): "Environment package",
+        },
+        managed_paths={("script", script_hash): os.fspath(managed_path)},
+        package_locations={"package": os.fspath(tmp_path)},
+    )
+
+    def select(extension_id: str) -> None:
+        for index in range(dialog.tree.topLevelItemCount()):
+            item = dialog.tree.topLevelItem(index)
+            if item.data(0, QtCore.Qt.ItemDataRole.UserRole) == extension_id:
+                dialog.tree.setCurrentItem(item)
+                return
+        raise ValueError(extension_id)
+
+    select("script")
+    assert dialog.status_label.property("healthState") == "Import failed"
+    assert dialog._buttons["reload"].property("extensionActionState") == "review"
+    assert dialog._buttons["error"].isEnabled()
+    assert dialog._buttons["view_source"].isEnabled()
+    assert dialog._detail_labels["original_source"].property("sourcePath") == os.fspath(
+        source_path
+    )
+    assert dialog._detail_labels["managed_source"].property("sourcePath") == os.fspath(
+        managed_path
+    )
+    for key, path in (
+        ("original_source", source_path),
+        ("managed_source", managed_path),
+    ):
+        label = dialog._detail_labels[key]
+        assert isinstance(label, manager_widgets._ElidedValueLabel)
+        assert label.full_text == os.fspath(path)
+        assert label.toolTip() == os.fspath(path)
+        assert label.minimumSizeHint().width() == 0
+
+    source_path.unlink()
+    dialog.set_catalog(
+        _ExtensionCatalogModel(extensions={"script": script, "package": package}),
+        {
+            ("script", script_hash): "Stored source; original missing",
+            ("package", package_hash): "Environment package",
+        },
+        managed_paths={("script", script_hash): os.fspath(managed_path)},
+        package_locations={"package": os.fspath(tmp_path)},
+    )
+    select("script")
+    assert dialog._buttons["view_source"].isEnabled()
+    assert not dialog._buttons["open_source"].isEnabled()
+    assert not dialog._buttons["reveal_source"].isEnabled()
+    assert not dialog._buttons["copy_source"].isEnabled()
+
+    select("package")
+    assert not dialog._buttons["remove"].isVisible()
+    assert dialog._buttons["open_package"].isEnabled()
+    assert dialog._detail_labels["package_location"].property(
+        "sourcePath"
+    ) == os.fspath(tmp_path)
+    assert dialog._detail_labels["installation"].property("installationState") == (
+        "editable" if editable else "installed"
+    )
+
+    dialog.set_catalog(
+        _ExtensionCatalogModel(extensions={"package": package}),
+        {("package", package_hash): "Environment package unavailable"},
+    )
+    assert dialog.status_label.property("healthState") == "Source unavailable"
+    assert not dialog._buttons["open_package"].isEnabled()
+
+    embedded = script.model_copy(
+        update={
+            "id": "embedded",
+            "name": "Embedded",
+            "revisions": {
+                script_hash: script.revisions[script_hash].model_copy(
+                    update={"source_path": None, "import_error": None}
+                )
+            },
+        }
+    )
+    dialog.set_catalog(
+        _ExtensionCatalogModel(extensions={"embedded": embedded}),
+        {("embedded", script_hash): "Stored embedded source"},
+        managed_paths={("embedded", script_hash): os.fspath(managed_path)},
+    )
+    assert dialog._detail_labels["original_source"].property("sourcePath") is None
+    assert dialog._buttons["view_source"].isEnabled()
+    assert not dialog._buttons["open_source"].isEnabled()
+
+
+def test_extension_source_and_revision_viewers_use_python_editor(
+    qtbot: pytest.QtBot,
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    viewer = extension_dialogs._SourceViewerDialog(
+        "value = 1\n", parent, title="Source"
+    )
+    qtbot.addWidget(viewer)
+    assert isinstance(viewer.source, erlab.interactive.utils.PythonCodeEditor)
+    assert viewer.source.isReadOnly()
+
+    current_hash = "a" * 64
+    previous_hash = "b" * 64
+    record = _ExtensionRecord(
+        id="script",
+        name="Script",
+        current_revision=current_hash,
+        revisions={
+            current_hash: _ExtensionRevision(
+                source_hash=current_hash,
+                object_name=f"{current_hash}.py",
+                change_summary="Current",
+                created_at="2026-01-02T00:00:00+00:00",
+            ),
+            previous_hash: _ExtensionRevision(
+                source_hash=previous_hash,
+                object_name=f"{previous_hash}.py",
+                change_summary="Previous",
+                created_at="2026-01-01T00:00:00+00:00",
+            ),
+        },
+    )
+    history = extension_dialogs._RevisionHistoryDialog(
+        record, {current_hash: True, previous_hash: False}, parent
+    )
+    qtbot.addWidget(history)
+    assert all(
+        current_hash not in history.tree.topLevelItem(index).text(0)
+        and current_hash not in history.tree.topLevelItem(index).text(1)
+        and previous_hash not in history.tree.topLevelItem(index).text(0)
+        and previous_hash not in history.tree.topLevelItem(index).text(1)
+        for index in range(history.tree.topLevelItemCount())
+    )
+    first = history.tree.topLevelItem(0)
+    assert first.data(0, QtCore.Qt.ItemDataRole.UserRole + 1) is True
+    history.tree.setCurrentItem(history.tree.topLevelItem(1))
+    assert not history.view_button.isEnabled()
+    assert history.copy_id_button.isEnabled()
+
+
+def test_extension_source_and_package_location_actions(
+    manager_context,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "actions.py"
+    _script(script_path)
+    opened_urls: list[QtCore.QUrl] = []
+    revealed: list[pathlib.Path] = []
+    information_calls: list[None] = []
+    monkeypatch.setattr(
+        QtGui.QDesktopServices,
+        "openUrl",
+        lambda url: opened_urls.append(url) or True,
+    )
+    monkeypatch.setattr(
+        erlab.utils.misc,
+        "open_in_file_manager",
+        lambda path: revealed.append(pathlib.Path(path)),
+    )
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "information",
+        lambda *_args, **_kwargs: information_calls.append(None),
+    )
+
+    with manager_context() as manager:
+        controller = manager._extensions
+        controller.catalog.store.add_script(script_path)
+        controller.catalog.refresh()
+        controller._manage_action("open_source", "actions")
+        controller._manage_action("reveal_source", "actions")
+        controller._manage_action("copy_source", "actions")
+        assert opened_urls[0].toLocalFile() == os.fspath(script_path.resolve())
+        assert revealed == [script_path.resolve()]
+        clipboard = QtWidgets.QApplication.clipboard()
+        if clipboard is None:
+            raise TypeError("The application clipboard must exist")
+        assert clipboard.text() == os.fspath(script_path.resolve())
+
+        controller._open_extensions_folder()
+        assert revealed[-1] == controller.catalog.store.directory
+
+        script_path.unlink()
+        controller._manage_action("open_source", "actions")
+        assert information_calls == [None]
+        assert len(opened_urls) == 1
+
+        revision_hash = "c" * 64
+        package = _ExtensionRecord(
+            id="package",
+            name="Package",
+            source_type="environment-package",
+            current_revision=revision_hash,
+            revisions={
+                revision_hash: _ExtensionRevision(
+                    source_hash=revision_hash,
+                    object_name="lab_package:extension",
+                    created_at="2026-01-01T00:00:00+00:00",
+                    entry_point_group="erlab.extensions",
+                    entry_point_name="extension",
+                    entry_point_value="lab_package:extension",
+                    distribution_name="lab-package",
+                )
+            },
+        )
+        controller.catalog.model = _ExtensionCatalogModel(
+            extensions={"package": package}
+        )
+        monkeypatch.setattr(
+            extension_controller.importlib.metadata,
+            "distribution",
+            lambda _name: types.SimpleNamespace(locate_file=lambda _relative: tmp_path),
+        )
+        controller._manage_action("open_package", "package")
+        assert revealed[-1] == tmp_path.resolve()
+
+
+def test_removal_blockers_cover_managers_jobs_and_workspace_requirements(
+    manager_context,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "blocked.py"
+    _script(script_path)
+    with manager_context() as manager:
+        controller = manager._extensions
+        controller.catalog.store.add_script(script_path)
+        controller.catalog.refresh()
+        current_id = manager._manager_record.internal_id
+        other = types.SimpleNamespace(
+            internal_id="other",
+            index=7,
+            workspace_path=os.fspath(tmp_path / "other.itws"),
+        )
+        current = types.SimpleNamespace(
+            internal_id=current_id,
+            index=manager.manager_index,
+            workspace_path=None,
+        )
+        monkeypatch.setattr(
+            extension_controller, "live_manager_records", lambda: (current, other)
+        )
+        assert controller._removal_blocker("blocked") is not None
+
+        monkeypatch.setattr(
+            extension_controller, "live_manager_records", lambda: (current,)
+        )
+        monkeypatch.setattr(
+            controller.execution, "uses_extension", lambda extension_id: True
+        )
+        assert controller._removal_blocker("blocked") is not None
+
+        monkeypatch.setattr(
+            controller.execution, "uses_extension", lambda extension_id: False
+        )
+        controller.set_workspace_requirements(
+            (
+                _WorkspaceExtensionRequirement(
+                    extension_id="blocked",
+                    capability_id="scale",
+                    capability_kind="routine",
+                    revision_hash=controller.catalog.model.extensions[
+                        "blocked"
+                    ].current_revision,
+                    extension_api_version=1,
+                    source_type="script",
+                ),
+            )
+        )
+        assert controller._removal_blocker("blocked") is not None
+        controller.set_workspace_requirements(())
+        assert controller._removal_blocker("blocked") is None
+
+
+def test_permanent_removal_preserves_shared_objects_and_rolls_back_failed_commit(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_path = tmp_path / "first.py"
+    second_path = tmp_path / "second.py"
+    source = _script(first_path)
+    second_path.write_bytes(source)
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    catalog, revision, _created = store.add_script(first_path, extension_id="first")
+    catalog, _revision, _created = store.add_script(second_path, extension_id="second")
+    object_path = store.source_path("first", revision)
+
+    with pytest.raises(_ExtensionCatalogConflictError, match="another manager"):
+        store.remove_script(
+            "first",
+            expected_record_generation=(
+                catalog.extensions["first"].record_generation + 1
+            ),
+        )
+
+    catalog, retained = store.remove_script(
+        "first",
+        expected_record_generation=catalog.extensions["first"].record_generation,
+    )
+    assert retained is None
+    assert object_path.is_file()
+    assert first_path.is_file()
+    assert "first" not in catalog.extensions
+
+    original_write = store._write_unlocked
+
+    def fail_write(_catalog: _ExtensionCatalogModel) -> typing.Never:
+        raise _ExtensionCatalogConflictError("commit failed")
+
+    monkeypatch.setattr(store, "_write_unlocked", fail_write)
+    with pytest.raises(_ExtensionCatalogConflictError, match="commit failed"):
+        store.remove_script(
+            "second",
+            expected_record_generation=catalog.extensions["second"].record_generation,
+        )
+    assert object_path.is_file()
+    assert "second" in store.read().extensions
+    assert not tuple(store.directory.glob(".removal-*"))
+
+    monkeypatch.setattr(store, "_write_unlocked", original_write)
+    catalog, retained = store.remove_script(
+        "second",
+        expected_record_generation=catalog.extensions["second"].record_generation,
+    )
+    assert retained is None
+    assert not object_path.exists()
+    assert second_path.is_file()
+    assert catalog.extensions == {}
+
+
+def test_permanent_removal_reports_retained_cleanup_path(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "cleanup.py"
+    _script(script_path)
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    catalog, revision, _created = store.add_script(script_path)
+    original_cleanup = extension_catalog.shutil.rmtree
+
+    def fail_cleanup(_path: pathlib.Path) -> typing.Never:
+        raise OSError("cleanup failed")
+
+    monkeypatch.setattr(extension_catalog.shutil, "rmtree", fail_cleanup)
+    catalog, retained = store.remove_script(
+        "cleanup",
+        expected_record_generation=catalog.extensions["cleanup"].record_generation,
+    )
+
+    assert retained is not None
+    assert retained.is_dir()
+    assert "cleanup" not in catalog.extensions
+    assert not store.objects_directory.joinpath(f"{revision}.py").exists()
+    original_cleanup(retained)

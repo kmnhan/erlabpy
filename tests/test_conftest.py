@@ -3,6 +3,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import types
 import weakref
 
@@ -25,6 +26,13 @@ _CONFTEST = _load_conftest_module()
 class _DummyPluginManager:
     def __init__(self, plugins: set[str]) -> None:
         self._plugins = plugins
+
+
+def test_extension_catalog_uses_a_test_temporary_directory() -> None:
+    catalog_directory = pathlib.Path(os.environ["ERLAB_EXTENSION_CATALOG"])
+
+    assert catalog_directory.parent == pathlib.Path(tempfile.gettempdir())
+    assert catalog_directory.name.startswith("erlabpy-test-extension-catalog-")
 
     def hasplugin(self, name: str) -> bool:
         return name in self._plugins

@@ -88,11 +88,18 @@ _TEST_MANAGER_SETTINGS_MANAGED_ENV_VAR = (
     "ERLAB_IMAGETOOL_MANAGER_SETTINGS_PATH_TEST_MANAGED"
 )
 _TEST_MANAGER_SETTINGS_PATHS: list[pathlib.Path] = []
+_TEST_EXTENSION_CATALOG_DIRECTORIES: list[tempfile.TemporaryDirectory] = []
 _XDIST_WORKER_ERRORS: list[str] = []
 
 
 def pytest_configure(config: pytest.Config) -> None:
     worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    catalog_directory = tempfile.TemporaryDirectory(
+        prefix=f"erlabpy-test-extension-catalog-{worker_id}-{os.getpid()}-"
+    )
+    os.environ["ERLAB_EXTENSION_CATALOG"] = catalog_directory.name
+    _TEST_EXTENSION_CATALOG_DIRECTORIES.append(catalog_directory)
+
     if (
         _TEST_OPTIONS_ENV_VAR not in os.environ
         or os.environ.get(_TEST_OPTIONS_MANAGED_ENV_VAR) == "1"
@@ -300,6 +307,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     ):
         with contextlib.suppress(OSError):
             settings_path.unlink()
+    for catalog_directory in _TEST_EXTENSION_CATALOG_DIRECTORIES:
+        catalog_directory.cleanup()
 
     if _XDIST_WORKER_ERRORS:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED

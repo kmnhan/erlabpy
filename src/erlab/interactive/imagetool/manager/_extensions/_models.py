@@ -13,16 +13,6 @@ from erlab.extensions._models import (
 )
 
 
-class _ExtensionMetadata(pydantic.BaseModel):
-    author: str = ""
-    contact: str = ""
-    project_url: str = ""
-    change_summary: str = ""
-    changelog: str = ""
-
-    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
-
-
 class _EnvironmentLoaderMethod(pydantic.BaseModel):
     """Serializable file-dialog entry from an installed ``LoaderBase`` plugin."""
 
@@ -46,6 +36,7 @@ class _ExtensionRevision(pydantic.BaseModel):
 
     source_hash: str
     object_name: str
+    change_summary: str = ""
     source_path: str | None = None
     source_modified_at: str | None = None
     created_at: str
@@ -90,11 +81,8 @@ class _ExtensionRecord(pydantic.BaseModel):
     name: str
     source_type: typing.Literal["script", "environment-package"] = "script"
     enabled: bool = False
-    favorite: bool = False
-    removed: bool = False
     embed_policy: typing.Literal["referenced", "always", "never"] = "referenced"
     current_revision: str
-    metadata: _ExtensionMetadata = pydantic.Field(default_factory=_ExtensionMetadata)
     revisions: dict[str, _ExtensionRevision]
     record_generation: int = 0
 
@@ -139,8 +127,6 @@ class _ExtensionRecord(pydantic.BaseModel):
                 )
         if self.enabled and not self.revisions[self.current_revision].approved:
             raise ValueError("an enabled extension revision must be approved")
-        if self.enabled and self.removed:
-            raise ValueError("a removed extension cannot be enabled")
         return self
 
 
@@ -150,6 +136,7 @@ class _ExtensionCatalogModel(pydantic.BaseModel):
     schema_version: typing.Literal[1] = 1
     generation: int = 0
     extensions: dict[str, _ExtensionRecord] = pydantic.Field(default_factory=dict)
+    routine_favorites: tuple[tuple[str, str], ...] = ()
 
     model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 
@@ -159,6 +146,11 @@ class _ExtensionCatalogModel(pydantic.BaseModel):
         for extension_id, record in self.extensions.items():
             if record.id != extension_id:
                 raise ValueError("extension key does not match extension ID")
+        if len(set(self.routine_favorites)) != len(self.routine_favorites):
+            raise ValueError("routine favorites must be unique")
+        for extension_id, _routine_id in self.routine_favorites:
+            if extension_id not in self.extensions:
+                raise ValueError("routine favorite references an unknown extension")
         return self
 
 

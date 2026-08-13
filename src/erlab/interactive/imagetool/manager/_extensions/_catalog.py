@@ -5,10 +5,12 @@ from __future__ import annotations
 import datetime
 import hashlib
 import importlib.metadata
+import json
 import logging
 import os
 import pathlib
 import re
+import shutil
 import threading
 import types
 import typing
@@ -43,7 +45,6 @@ from erlab.extensions._entry_points import (
 from erlab.interactive.imagetool.manager._extensions._models import (
     _EnvironmentLoaderMethod,
     _ExtensionCatalogModel,
-    _ExtensionMetadata,
     _ExtensionRecord,
     _ExtensionRevision,
     _revision_loader_name_filters,
@@ -115,9 +116,8 @@ class _ExtensionCatalogStore:
         if not self.path.exists():
             return _ExtensionCatalogModel()
         try:
-            return _ExtensionCatalogModel.model_validate_json(
-                self.path.read_text(encoding="utf-8")
-            )
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            return _ExtensionCatalogModel.model_validate(payload)
         except (OSError, ValueError) as error:
             raise _ExtensionCatalogError(
                 f"Could not read the extension catalog: {error}"
@@ -150,6 +150,58 @@ class _ExtensionCatalogStore:
             raise _ExtensionCatalogError(
                 f"Could not commit the extension catalog: {save_file.errorString()}"
             )
+
+    def _commit_with_staged_objects(
+        self, catalog: _ExtensionCatalogModel, object_names: set[str]
+    ) -> pathlib.Path | None:
+        """Stage managed objects until the atomic catalog commit succeeds."""
+        staging_directory = self.directory / f".removal-{uuid.uuid4().hex}"
+        moved: list[tuple[pathlib.Path, pathlib.Path]] = []
+        invalid_object = next(
+            (
+                name
+                for name in object_names
+                if re.fullmatch(r"[0-9a-f]{64}\.py", name) is None
+            ),
+            None,
+        )
+        if invalid_object is not None:
+            raise _ExtensionCatalogError(
+                f"Invalid managed extension object name: {invalid_object!r}"
+            )
+        try:
+            for object_name in sorted(object_names):
+                source = self.objects_directory / object_name
+                if not source.is_file():
+                    continue
+                staging_directory.mkdir(parents=True, exist_ok=True)
+                staged = staging_directory / object_name
+                os.replace(source, staged)
+                moved.append((source, staged))
+            self._write_unlocked(catalog)
+        except Exception as error:
+            restore_errors: list[OSError] = []
+            for source, staged in reversed(moved):
+                try:
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(staged, source)
+                except OSError as restore_error:
+                    restore_errors.append(restore_error)
+            if staging_directory.exists() and not restore_errors:
+                shutil.rmtree(staging_directory, ignore_errors=True)
+            if restore_errors:
+                raise _ExtensionCatalogError(
+                    "Could not commit the extension catalog or restore staged source "
+                    f"objects. The retained staging path is {staging_directory}"
+                ) from error
+            raise
+        if not moved:
+            return None
+        try:
+            shutil.rmtree(staging_directory)
+        except OSError:
+            return staging_directory
+        return None
 
     def mutate(
         self,
@@ -220,7 +272,7 @@ class _ExtensionCatalogStore:
         *,
         extension_id: str | None = None,
         name: str | None = None,
-        metadata: _ExtensionMetadata | None = None,
+        change_summary: str | None = None,
         approved: bool = False,
         expected_revision: str | None = None,
         expected_record_generation: int | None = None,
@@ -257,18 +309,18 @@ class _ExtensionCatalogStore:
                     update={
                         "source_path": os.fspath(source_path),
                         "source_modified_at": modified_at,
+                        "change_summary": (
+                            current.change_summary
+                            if change_summary is None
+                            else change_summary
+                        ),
                     }
                 )
-                if updated_revision != current or (
-                    metadata is not None and metadata != existing.metadata
-                ):
+                if updated_revision != current:
                     revisions = dict(existing.revisions)
                     revisions[revision_hash] = updated_revision
                     records[extension_id] = existing.model_copy(
                         update={
-                            "metadata": (
-                                existing.metadata if metadata is None else metadata
-                            ),
                             "revisions": revisions,
                             "record_generation": existing.record_generation + 1,
                         }
@@ -281,13 +333,17 @@ class _ExtensionCatalogStore:
                     update={
                         "source_path": os.fspath(source_path),
                         "source_modified_at": modified_at,
+                        "change_summary": (
+                            revisions[revision_hash].change_summary
+                            if change_summary is None
+                            else change_summary
+                        ),
                     }
                 )
                 records[extension_id] = existing.model_copy(
                     update={
                         "current_revision": revision_hash,
                         "enabled": False,
-                        "metadata": metadata or existing.metadata,
                         "revisions": revisions,
                         "record_generation": existing.record_generation + 1,
                     }
@@ -297,6 +353,7 @@ class _ExtensionCatalogStore:
             revision = _ExtensionRevision(
                 source_hash=revision_hash,
                 object_name=object_name,
+                change_summary=change_summary or "",
                 source_path=os.fspath(source_path),
                 source_modified_at=modified_at,
                 created_at=now,
@@ -307,7 +364,6 @@ class _ExtensionCatalogStore:
                     id=extension_id,
                     name=name or source_path.stem.replace("_", " ").title(),
                     current_revision=revision_hash,
-                    metadata=metadata or _ExtensionMetadata(),
                     revisions={revision_hash: revision},
                     record_generation=1,
                 )
@@ -318,7 +374,6 @@ class _ExtensionCatalogStore:
                     update={
                         "current_revision": revision_hash,
                         "enabled": False,
-                        "metadata": metadata or existing.metadata,
                         "revisions": revisions,
                         "record_generation": existing.record_generation + 1,
                     }
@@ -342,7 +397,7 @@ class _ExtensionCatalogStore:
         extension_id: str,
         expected_revision: str,
         name: str,
-        metadata: _ExtensionMetadata,
+        change_summary: str | None = None,
         source_modified_at: str | None = None,
         expected_record_generation: int | None = None,
         check_record_generation: bool = False,
@@ -367,6 +422,7 @@ class _ExtensionCatalogStore:
             revision = _ExtensionRevision(
                 source_hash=actual_revision,
                 object_name=object_name,
+                change_summary=change_summary or "",
                 source_modified_at=source_modified_at,
                 created_at=now,
                 approved=False,
@@ -376,7 +432,6 @@ class _ExtensionCatalogStore:
                     id=extension_id,
                     name=name,
                     current_revision=actual_revision,
-                    metadata=metadata,
                     revisions={actual_revision: revision},
                     record_generation=1,
                 )
@@ -390,14 +445,26 @@ class _ExtensionCatalogStore:
                     and source_modified_at is not None
                 ):
                     revisions[actual_revision] = current_revision.model_copy(
-                        update={"source_modified_at": source_modified_at}
+                        update={
+                            "source_modified_at": source_modified_at,
+                            "change_summary": (
+                                current_revision.change_summary
+                                if change_summary is None
+                                else change_summary
+                            ),
+                        }
+                    )
+                elif (
+                    change_summary is not None
+                    and current_revision.change_summary != change_summary
+                ):
+                    revisions[actual_revision] = current_revision.model_copy(
+                        update={"change_summary": change_summary}
                     )
                 records[extension_id] = existing.model_copy(
                     update={
                         "current_revision": actual_revision,
                         "enabled": False,
-                        "removed": False,
-                        "metadata": metadata,
                         "revisions": revisions,
                         "record_generation": existing.record_generation + 1,
                     }
@@ -497,7 +564,7 @@ class _ExtensionCatalogStore:
                 else set()
             )
             for other in catalog.extensions.values():
-                if other.id == extension_id or other.removed or not other.enabled:
+                if other.id == extension_id or not other.enabled:
                     continue
                 other_revision = other.revisions[other.current_revision]
                 if other_revision.entry_point_group == "erlab.io.loaders":
@@ -530,7 +597,6 @@ class _ExtensionCatalogStore:
             records[extension_id] = current.model_copy(
                 update={
                     "enabled": True,
-                    "removed": False,
                     "revisions": revisions,
                     "record_generation": current.record_generation + 1,
                 }
@@ -553,18 +619,51 @@ class _ExtensionCatalogStore:
         inspected_entries: list[
             tuple[importlib.metadata.EntryPoint, str, str, bool, str]
         ] = []
+        inspection_failures: list[
+            tuple[importlib.metadata.EntryPoint, str, str, str, str]
+        ] = []
         for entry in entries:
             try:
                 dist_name, dist_version, payload, editable = (
                     _entry_point_revision_payload(entry)
                 )
-            except _EntryPointRevisionError:
+            except _EntryPointRevisionError as error:
                 logger.warning(
                     "Could not inspect environment extension %s:%s",
                     entry.group,
                     entry.name,
                     exc_info=True,
                     extra={"suppress_ui_alert": True},
+                )
+                distribution = entry.dist
+                try:
+                    dist_name = (
+                        entry.name
+                        if distribution is None
+                        else str(distribution.metadata.get("Name", entry.name))
+                    )
+                    dist_version = "" if distribution is None else distribution.version
+                except (AttributeError, TypeError, ValueError):
+                    dist_name = entry.name
+                    dist_version = ""
+                detail = str(error) or type(error).__name__
+                failed_payload = json.dumps(
+                    {
+                        "group": entry.group,
+                        "name": entry.name,
+                        "value": entry.value,
+                        "inspection_error": detail,
+                    },
+                    sort_keys=True,
+                )
+                inspection_failures.append(
+                    (
+                        entry,
+                        dist_name,
+                        dist_version,
+                        detail,
+                        hashlib.sha256(failed_payload.encode()).hexdigest(),
+                    )
                 )
                 continue
             inspected_entries.append(
@@ -578,7 +677,7 @@ class _ExtensionCatalogStore:
             )
         available_ids = {
             _safe_extension_id(f"environment.{entry.group}.{entry.name}")
-            for entry, _name, _version, _editable, _revision in inspected_entries
+            for entry in entries
         }
 
         def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
@@ -640,7 +739,67 @@ class _ExtensionCatalogStore:
                         update={
                             "current_revision": revision_hash,
                             "enabled": False,
-                            "removed": existing.removed,
+                            "revisions": revisions,
+                            "record_generation": existing.record_generation + 1,
+                        }
+                    )
+                changed = True
+            for (
+                entry,
+                dist_name,
+                dist_version,
+                import_error,
+                revision_hash,
+            ) in inspection_failures:
+                extension_id = _safe_extension_id(
+                    f"environment.{entry.group}.{entry.name}"
+                )
+                existing = records.get(extension_id)
+                if (
+                    existing is not None
+                    and existing.source_type != "environment-package"
+                ):
+                    continue
+                if existing is not None and revision_hash in existing.revisions:
+                    if existing.current_revision != revision_hash or existing.enabled:
+                        records[extension_id] = existing.model_copy(
+                            update={
+                                "current_revision": revision_hash,
+                                "enabled": False,
+                                "record_generation": (existing.record_generation + 1),
+                            }
+                        )
+                        changed = True
+                    continue
+                revision = _ExtensionRevision(
+                    source_hash=revision_hash,
+                    object_name=entry.value,
+                    created_at=datetime.datetime.now()
+                    .astimezone()
+                    .isoformat(timespec="seconds"),
+                    import_error=import_error,
+                    entry_point_group=entry.group,
+                    entry_point_name=entry.name,
+                    entry_point_value=entry.value,
+                    distribution_name=dist_name,
+                    distribution_version=dist_version,
+                )
+                if existing is None:
+                    records[extension_id] = _ExtensionRecord(
+                        id=extension_id,
+                        name=entry.name.replace("_", " ").title(),
+                        source_type="environment-package",
+                        current_revision=revision_hash,
+                        revisions={revision_hash: revision},
+                        record_generation=1,
+                    )
+                else:
+                    revisions = dict(existing.revisions)
+                    revisions[revision_hash] = revision
+                    records[extension_id] = existing.model_copy(
+                        update={
+                            "current_revision": revision_hash,
+                            "enabled": False,
                             "revisions": revisions,
                             "record_generation": existing.record_generation + 1,
                         }
@@ -650,18 +809,21 @@ class _ExtensionCatalogStore:
                 if (
                     record.source_type == "environment-package"
                     and extension_id not in available_ids
-                    and record.enabled
                 ):
-                    records[extension_id] = record.model_copy(
-                        update={
-                            "enabled": False,
-                            "record_generation": record.record_generation + 1,
-                        }
-                    )
+                    del records[extension_id]
                     changed = True
             if not changed:
                 return catalog
-            return catalog.model_copy(update={"extensions": records})
+            return catalog.model_copy(
+                update={
+                    "extensions": records,
+                    "routine_favorites": tuple(
+                        favorite
+                        for favorite in catalog.routine_favorites
+                        if favorite[0] in records
+                    ),
+                }
+            )
 
         catalog = self.mutate(None, update)
         verified_entries = {
@@ -715,7 +877,7 @@ class _ExtensionCatalogStore:
         if record is None or revision_hash not in record.revisions:
             raise KeyError(f"Unknown extension revision {extension_id}:{revision_hash}")
         revision = record.revisions[revision_hash]
-        if record.removed or not record.enabled:
+        if not record.enabled:
             raise ExtensionNotFoundError(f"Extension {extension_id!r} is disabled")
         if not revision.approved:
             raise ExtensionNotFoundError(
@@ -794,8 +956,6 @@ class _ExtensionCatalogStore:
         if source_type is not None and record.source_type != source_type:
             return "missing-revision"
         revision = record.revisions[revision_hash]
-        if record.removed:
-            return "missing-revision"
         if record.source_type == "environment-package":
             try:
                 self._entry_point_for_revision(revision)
@@ -847,10 +1007,7 @@ class _ExtensionCatalogStore:
         *,
         expected_record_generation: int,
         enabled: bool | None = None,
-        favorite: bool | None = None,
-        removed: bool | None = None,
         embed_policy: typing.Literal["referenced", "always", "never"] | None = None,
-        metadata: _ExtensionMetadata | None = None,
     ) -> _ExtensionCatalogModel:
         def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
             record = catalog.extensions[extension_id]
@@ -859,14 +1016,6 @@ class _ExtensionCatalogStore:
             }
             if enabled is not None:
                 values["enabled"] = enabled
-            if favorite is not None:
-                values["favorite"] = favorite
-            if removed is not None:
-                values["removed"] = removed
-                if removed:
-                    values["enabled"] = False
-            if metadata is not None:
-                values["metadata"] = metadata
             if embed_policy is not None:
                 values["embed_policy"] = embed_policy
             records = dict(catalog.extensions)
@@ -878,6 +1027,84 @@ class _ExtensionCatalogStore:
             update,
             expected_record_generation=expected_record_generation,
         )
+
+    def set_routine_favorite(
+        self,
+        extension_id: str,
+        routine_id: str,
+        *,
+        favorite: bool,
+    ) -> _ExtensionCatalogModel:
+        """Add or remove one routine from the application favorites."""
+
+        def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
+            if extension_id not in catalog.extensions:
+                raise KeyError(extension_id)
+            entry = (extension_id, routine_id)
+            favorites = list(catalog.routine_favorites)
+            if favorite and entry not in favorites:
+                favorites.append(entry)
+            elif not favorite and entry in favorites:
+                favorites.remove(entry)
+            else:
+                return catalog
+            return catalog.model_copy(
+                update={"routine_favorites": tuple(sorted(favorites))}
+            )
+
+        return self.mutate(None, update)
+
+    def remove_script(
+        self,
+        extension_id: str,
+        *,
+        expected_record_generation: int,
+    ) -> tuple[_ExtensionCatalogModel, pathlib.Path | None]:
+        """Permanently remove one script record and its unshared source objects."""
+        lock = self._lock()
+        try:
+            current = self.read()
+            record = current.extensions.get(extension_id)
+            actual_generation = None if record is None else record.record_generation
+            if actual_generation != expected_record_generation:
+                raise _ExtensionCatalogConflictError(
+                    f"Extension {extension_id!r} changed in another manager"
+                )
+            if record is None:
+                raise KeyError(extension_id)
+            if record.source_type != "script":
+                raise _ExtensionCatalogConflictError(
+                    "Environment packages cannot be removed through ERLab"
+                )
+            records = dict(current.extensions)
+            del records[extension_id]
+            referenced_objects = {
+                revision.object_name
+                for remaining in records.values()
+                if remaining.source_type == "script"
+                for revision in remaining.revisions.values()
+            }
+            removable_objects = {
+                revision.object_name for revision in record.revisions.values()
+            }.difference(referenced_objects)
+            updated = current.model_copy(
+                update={
+                    "generation": current.generation + 1,
+                    "extensions": records,
+                    "routine_favorites": tuple(
+                        favorite
+                        for favorite in current.routine_favorites
+                        if favorite[0] != extension_id
+                    ),
+                }
+            )
+            updated = _ExtensionCatalogModel.model_validate(
+                updated.model_dump(mode="python")
+            )
+            retained = self._commit_with_staged_objects(updated, removable_objects)
+            return updated, retained
+        finally:
+            lock.unlock()
 
 
 class _ExtensionCatalog(QtCore.QObject):

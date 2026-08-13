@@ -2747,10 +2747,14 @@ class SelectionDialog(DataTransformDialog):
 
         self.preview_label = QtWidgets.QLabel()
         self.preview_label.setObjectName("selection_result_preview")
-        self.code_preview = QtWidgets.QPlainTextEdit()
+        self.code_preview = erlab.interactive.utils.PythonCodeEditor()
         self.code_preview.setObjectName("selection_code_preview")
         self.code_preview.setReadOnly(True)
-        self.code_preview.setMaximumBlockCount(4)
+        self.code_preview.setLineWrapMode(QtWidgets.QTextEdit.LineWrapMode.NoWrap)
+        document = self.code_preview.document()
+        if document is None:
+            raise RuntimeError("Selection code preview has no text document")
+        document.setMaximumBlockCount(4)
         self.code_preview.setMaximumHeight(
             4 * QtGui.QFontMetrics(self.code_preview.font()).height()
         )

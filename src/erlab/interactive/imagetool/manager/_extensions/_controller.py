@@ -7,6 +7,7 @@ import copy
 import fnmatch
 import functools
 import hashlib
+import importlib.metadata
 import logging
 import os
 import pathlib
@@ -28,9 +29,10 @@ from erlab.interactive.imagetool.manager._extensions._catalog import (
 from erlab.interactive.imagetool.manager._extensions._dialogs import (
     _ExtensionParameterDialog,
     _ManageExtensionsDialog,
-    _MetadataDialog,
+    _RevisionHistoryDialog,
     _RoutineSelectionDialog,
     _SourceReviewDialog,
+    _SourceViewerDialog,
     _WorkspaceRequirementsDialog,
 )
 from erlab.interactive.imagetool.manager._extensions._execution import (
@@ -39,12 +41,12 @@ from erlab.interactive.imagetool.manager._extensions._execution import (
     _ExtensionLoaderCall,
 )
 from erlab.interactive.imagetool.manager._extensions._models import (
-    _ExtensionMetadata,
     _ExtensionRecord,
     _ExtensionRevision,
     _ResolvedWorkspaceRequirement,
     _WorkspaceExtensionRequirement,
 )
+from erlab.interactive.imagetool.manager._registry import live_manager_records
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -95,6 +97,9 @@ class _ExtensionController(QtCore.QObject):
         self._manage_action_slot = self._manage_action
         self.catalog.changed.connect(self._catalog_changed_slot)
         self._recent: deque[tuple[str, str]] = deque(maxlen=8)
+        self._routine_action_groups: list[
+            tuple[QtWidgets.QMenu, list[QtGui.QAction]]
+        ] = []
         self._workspace_requirements: tuple[_WorkspaceExtensionRequirement, ...] = ()
         self._workspace_embedded_sources: dict[tuple[str, str], bytes] = {}
         self._workspace_unresolved_embedded_objects: dict[
@@ -104,8 +109,24 @@ class _ExtensionController(QtCore.QObject):
         self._environment_loader_names: set[str] = set()
         self._closed = False
         self._unresolved_workspace_requirement_payloads: tuple[typing.Any, ...] = ()
-        self._manage_dialog = _ManageExtensionsDialog(manager)
+        self._manage_dialog = _ManageExtensionsDialog(
+            manager, show_package_refresh=not erlab.utils.misc._IS_PACKAGED
+        )
         self._manage_dialog.action_requested.connect(self._manage_action_slot)
+        self._manage_add_script_slot = self.add_script
+        self._manage_refresh_packages_slot = self.refresh_environment_packages
+        self._manage_open_folder_slot = self._open_extensions_folder
+        self._manage_selection_slot = self._refresh_removal_eligibility
+        self._manage_activated_slot = self._refresh_removal_eligibility
+        self._execution_state_slot = self._refresh_removal_eligibility
+        self._manage_dialog.add_script_requested.connect(self._manage_add_script_slot)
+        self._manage_dialog.refresh_packages_requested.connect(
+            self._manage_refresh_packages_slot
+        )
+        self._manage_dialog.open_folder_requested.connect(self._manage_open_folder_slot)
+        self._manage_dialog.selection_changed.connect(self._manage_selection_slot)
+        self._manage_dialog.activated.connect(self._manage_activated_slot)
+        self.execution.queue_changed.connect(self._execution_state_slot)
         self._menu_show_slot = self._populate_menu
         self._context_menu_connections: list[
             tuple[QtWidgets.QMenu, Callable[[], None]]
@@ -125,19 +146,6 @@ class _ExtensionController(QtCore.QObject):
         )
         self._show_requirements_slot = self.show_workspace_requirements
         self.requirements_action.triggered.connect(self._show_requirements_slot)
-        self.progress_action = QtGui.QAction("Extension Jobs", manager)
-        self.progress_action.setObjectName("manager_extension_jobs_action")
-        self._show_progress_slot = self.execution.show_progress
-        self.progress_action.triggered.connect(self._show_progress_slot)
-        self.refresh_packages_action = QtGui.QAction(
-            "Refresh Environment Packages", manager
-        )
-        self.refresh_packages_action.setObjectName(
-            "manager_refresh_environment_extensions_action"
-        )
-        self._refresh_packages_slot = self.refresh_environment_packages
-        self.refresh_packages_action.triggered.connect(self._refresh_packages_slot)
-        self.refresh_packages_action.setVisible(not erlab.utils.misc._IS_PACKAGED)
         self.menu: QtWidgets.QMenu | None = None
         self._sync_explorer_loaders()
 
@@ -146,7 +154,7 @@ class _ExtensionController(QtCore.QObject):
         menu.setObjectName("manager_extensions_menu")
         menu.aboutToShow.connect(self._menu_show_slot)
         self.menu = menu
-        self._populate_menu()
+        self._populate_routine_menu(menu, compact=False, update_actions=False)
         return menu
 
     def add_context_submenu(self, parent_menu: QtWidgets.QMenu) -> QtWidgets.QMenu:
@@ -157,14 +165,14 @@ class _ExtensionController(QtCore.QObject):
         )
         menu.aboutToShow.connect(populate_slot)
         self._context_menu_connections.append((menu, populate_slot))
-        self._populate_routine_menu(menu, compact=True)
+        self._populate_routine_menu(menu, compact=True, update_actions=False)
         parent_menu.addMenu(menu)
         return menu
 
     def _enabled_routines(self) -> tuple[tuple[str, str, RoutineDescriptor], ...]:
         entries: list[tuple[str, str, RoutineDescriptor]] = []
         for record in self.catalog.model.extensions.values():
-            if record.removed or not record.enabled:
+            if not record.enabled:
                 continue
             if record.source_type == "environment-package" and (
                 erlab.utils.misc._IS_PACKAGED
@@ -193,7 +201,7 @@ class _ExtensionController(QtCore.QObject):
         entries: dict[str, tuple[Callable[..., typing.Any], dict[str, typing.Any]]] = {}
         owners: dict[str, str] = {}
         for record in self.catalog.model.extensions.values():
-            if record.removed or not record.enabled:
+            if not record.enabled:
                 continue
             if record.source_type == "environment-package" and (
                 erlab.utils.misc._IS_PACKAGED
@@ -336,7 +344,6 @@ class _ExtensionController(QtCore.QObject):
         global_ready = (
             global_status == "ready"
             and record is not None
-            and not record.removed
             and record.enabled
             and record.source_type == replay_call.extension_source_type
             and revision is not None
@@ -451,7 +458,7 @@ class _ExtensionController(QtCore.QObject):
     def _sync_explorer_loaders(self) -> None:
         updated: dict[str, erlab.io.dataloader.LoaderBase] = {}
         for record in self.catalog.model.extensions.values():
-            if record.removed or not record.enabled:
+            if not record.enabled:
                 continue
             if record.source_type == "environment-package" and (
                 erlab.utils.misc._IS_PACKAGED
@@ -511,31 +518,59 @@ class _ExtensionController(QtCore.QObject):
             return
         self._populate_routine_menu(menu, compact=False)
 
-    def _populate_routine_menu(self, menu: QtWidgets.QMenu, *, compact: bool) -> None:
+    def _populate_routine_menu(
+        self,
+        menu: QtWidgets.QMenu,
+        *,
+        compact: bool,
+        update_actions: bool = True,
+    ) -> None:
         menu.clear()
+        retained = next(
+            (
+                actions
+                for retained_menu, actions in self._routine_action_groups
+                if retained_menu is menu
+            ),
+            None,
+        )
+        if retained is None:
+            retained = []
+            self._routine_action_groups.append((menu, retained))
+        else:
+            retained.clear()
         run_action = typing.cast("QtGui.QAction", menu.addAction("Run Routine…"))
         run_action.setObjectName("manager_run_extension_routine_action")
+        run_action.setProperty("requiresImageTool", True)
         run_action.triggered.connect(self.select_routine)
+        retained.append(run_action)
         routines = self._enabled_routines()
-        favorite_keys = {
-            (record.id, routine.id)
-            for record in self.catalog.model.extensions.values()
-            if record.favorite and record.enabled and not record.removed
-            for routine in record.revisions[record.current_revision].routines
-        }
-        if favorite_keys:
+        favorite_keys = set(self.catalog.model.routine_favorites)
+        if routines or not compact:
+            menu.addSeparator()
+        favorite_entries = tuple(
+            entry for entry in routines if (entry[0], entry[2].id) in favorite_keys
+        )
+        if favorite_entries:
             favorites = typing.cast("QtWidgets.QMenu", menu.addMenu("Favorites"))
-            for entry in routines:
-                if (entry[0], entry[2].id) in favorite_keys:
-                    self._add_routine_action(favorites, entry)
+            favorites_action = favorites.menuAction()
+            if favorites_action is not None:
+                favorites_action.setProperty("requiresImageTool", True)
+                retained.append(favorites_action)
+            for entry in favorite_entries:
+                self._add_routine_action(favorites, entry, retained)
         recent_keys = tuple(
             key for key in self._recent if key in {(e[0], e[2].id) for e in routines}
         )
         if recent_keys:
             recent_menu = typing.cast("QtWidgets.QMenu", menu.addMenu("Recent"))
+            recent_action = recent_menu.menuAction()
+            if recent_action is not None:
+                recent_action.setProperty("requiresImageTool", True)
+                retained.append(recent_action)
             by_key = {(entry[0], entry[2].id): entry for entry in routines}
             for key in recent_keys:
-                self._add_routine_action(recent_menu, by_key[key])
+                self._add_routine_action(recent_menu, by_key[key], retained)
         categories: dict[str, list[tuple[str, str, RoutineDescriptor]]] = defaultdict(
             list
         )
@@ -543,31 +578,58 @@ class _ExtensionController(QtCore.QObject):
             categories[entry[2].category].append(entry)
         for category in sorted(categories):
             category_menu = typing.cast("QtWidgets.QMenu", menu.addMenu(category))
+            category_action = category_menu.menuAction()
+            if category_action is not None:
+                category_action.setProperty("requiresImageTool", True)
+                retained.append(category_action)
             for entry in sorted(categories[category], key=lambda item: item[2].name):
-                self._add_routine_action(category_menu, entry)
+                self._add_routine_action(category_menu, entry, retained)
         if compact:
+            if update_actions:
+                self.update_actions()
             return
-        menu.addSeparator()
+        if routines:
+            menu.addSeparator()
         menu.addAction(self.add_script_action)
         menu.addAction(self.manage_action)
         menu.addAction(self.requirements_action)
-        menu.addAction(self.progress_action)
-        menu.addAction(self.refresh_packages_action)
+        if update_actions:
+            self.update_actions()
 
     def _add_routine_action(
         self,
         menu: QtWidgets.QMenu,
         entry: tuple[str, str, RoutineDescriptor],
+        retained: list[QtGui.QAction],
     ) -> None:
         extension_id, extension_name, descriptor = entry
         action = typing.cast("QtGui.QAction", menu.addAction(descriptor.name))
         action.setData((extension_id, descriptor.id))
+        action.setProperty("requiresImageTool", True)
         action.setToolTip(descriptor.summary or extension_name)
         action.triggered.connect(
             lambda _checked=False, ext=extension_id, routine=descriptor.id: (
                 self.run_routine(ext, routine)
             )
         )
+        retained.append(action)
+
+    def update_actions(self) -> None:
+        """Apply manager selection state to all retained routine actions."""
+        enabled = len(self._manager._selected_imagetool_targets()) == 1
+        live_groups: list[tuple[QtWidgets.QMenu, list[QtGui.QAction]]] = []
+        for menu, actions in self._routine_action_groups:
+            if not erlab.interactive.utils.qt_is_valid(menu):
+                continue
+            live_actions: list[QtGui.QAction] = []
+            for action in actions:
+                if not erlab.interactive.utils.qt_is_valid(action):
+                    continue
+                if action.property("requiresImageTool") is True:
+                    action.setEnabled(enabled)
+                live_actions.append(action)
+            live_groups.append((menu, live_actions))
+        self._routine_action_groups = live_groups
 
     @QtCore.Slot()
     def select_routine(self) -> None:
@@ -579,9 +641,34 @@ class _ExtensionController(QtCore.QObject):
                 "No enabled extension routines are available.",
             )
             return
-        dialog = _RoutineSelectionDialog(routines, self._manager)
+        dialog = _RoutineSelectionDialog(
+            routines,
+            self._manager,
+            favorites=self.catalog.model.routine_favorites,
+        )
+        favorite_slot = self._set_routine_favorite
+        dialog.favorite_requested.connect(favorite_slot)
         if dialog.exec() and dialog.selection is not None:
             self.run_routine(*dialog.selection)
+        with contextlib.suppress(TypeError, RuntimeError):
+            dialog.favorite_requested.disconnect(favorite_slot)
+
+    @QtCore.Slot(str, str, bool)
+    def _set_routine_favorite(
+        self, extension_id: str, routine_id: str, favorite: bool
+    ) -> None:
+        try:
+            self.catalog.store.set_routine_favorite(
+                extension_id, routine_id, favorite=favorite
+            )
+            self.catalog.refresh()
+        except Exception:
+            erlab.interactive.utils.MessageDialog.critical(
+                self._manager,
+                "Extension Error",
+                "The routine favorite could not be changed.",
+                detailed_text=traceback.format_exc(),
+            )
 
     def run_routine(self, extension_id: str, routine_id: str) -> None:
         targets = self._manager._selected_imagetool_targets()
@@ -593,7 +680,7 @@ class _ExtensionController(QtCore.QObject):
             )
             return
         record = self.catalog.model.extensions.get(extension_id)
-        if record is None or record.removed or not record.enabled:
+        if record is None or not record.enabled:
             return
         descriptor = next(
             (
@@ -687,18 +774,16 @@ class _ExtensionController(QtCore.QObject):
             )
             return False
         if existing is not None:
-            dialog.author_edit.setText(existing.metadata.author)
-            dialog.contact_edit.setText(existing.metadata.contact)
-            dialog.project_url_edit.setText(existing.metadata.project_url)
-            dialog.change_summary_edit.setText(existing.metadata.change_summary)
-            dialog.changelog_edit.setPlainText(existing.metadata.changelog)
+            existing_revision = existing.revisions.get(reviewed_revision)
+            if existing_revision is not None:
+                dialog.change_summary_edit.setText(existing_revision.change_summary)
         if not dialog.exec():
             return False
         try:
             _catalog, _revision, created = self.catalog.store.add_script(
                 path,
                 extension_id=extension_id,
-                metadata=dialog.metadata,
+                change_summary=dialog.change_summary,
                 expected_revision=reviewed_revision,
                 expected_record_generation=(
                     None if existing is None else existing.record_generation
@@ -731,11 +816,54 @@ class _ExtensionController(QtCore.QObject):
 
     @QtCore.Slot()
     def show_manager(self) -> None:
-        self._manage_dialog.set_catalog(
-            self.catalog.model, self._catalog_source_states()
-        )
+        self._refresh_manage_dialog()
         self._manage_dialog.show()
         self._manage_dialog.raise_()
+
+    def _refresh_manage_dialog(self) -> None:
+        managed_paths: dict[tuple[str, str], str] = {}
+        package_locations: dict[str, str] = {}
+        for record in self.catalog.model.extensions.values():
+            if record.source_type == "script":
+                for revision_hash in record.revisions:
+                    if not self.catalog.store.revision_available(record, revision_hash):
+                        continue
+                    with contextlib.suppress(FileNotFoundError, KeyError):
+                        managed_paths[(record.id, revision_hash)] = os.fspath(
+                            self.catalog.store.source_path(record.id, revision_hash)
+                        )
+                continue
+            revision = record.revisions[record.current_revision]
+            if revision.distribution_name:
+                try:
+                    distribution = importlib.metadata.distribution(
+                        revision.distribution_name
+                    )
+                    package_locations[record.id] = os.fspath(
+                        pathlib.Path(str(distribution.locate_file(""))).resolve()
+                    )
+                except (importlib.metadata.PackageNotFoundError, OSError, ValueError):
+                    pass
+        self._manage_dialog.set_catalog(
+            self.catalog.model,
+            self._catalog_source_states(),
+            managed_paths=managed_paths,
+            package_locations=package_locations,
+        )
+        self._refresh_removal_eligibility()
+
+    @QtCore.Slot()
+    def _open_extensions_folder(self) -> None:
+        try:
+            self.catalog.store.directory.mkdir(parents=True, exist_ok=True)
+            erlab.utils.misc.open_in_file_manager(self.catalog.store.directory)
+        except OSError:
+            erlab.interactive.utils.MessageDialog.critical(
+                self._manager,
+                "Extension Error",
+                "The extensions folder could not be opened.",
+                detailed_text=traceback.format_exc(),
+            )
 
     def _catalog_source_states(self) -> dict[tuple[str, str], str]:
         states: dict[tuple[str, str], str] = {}
@@ -813,35 +941,13 @@ class _ExtensionController(QtCore.QObject):
                     expected_record_generation=record.record_generation,
                     enabled=False,
                 )
-            elif action_id == "favorite":
-                self.catalog.store.update_record(
-                    extension_id,
-                    expected_record_generation=record.record_generation,
-                    favorite=not record.favorite,
-                )
             elif action_id == "remove":
-                self.catalog.store.update_record(
-                    extension_id,
-                    expected_record_generation=record.record_generation,
-                    removed=not record.removed,
-                )
-            elif action_id == "embedding":
-                labels = {
-                    "referenced": "Referenced scripts",
-                    "always": "Always include",
-                    "never": "Never embed",
-                }
-                selected, accepted = QtWidgets.QInputDialog.getItem(
-                    self._manager,
-                    "Script Embedding",
-                    "Workspace embedding policy",
-                    tuple(labels.values()),
-                    tuple(labels).index(record.embed_policy),
-                    False,
-                )
-                if not accepted:
+                self._remove_extension(record)
+                return
+            elif action_id.startswith("embedding:"):
+                policy = action_id.removeprefix("embedding:")
+                if policy not in {"referenced", "always", "never"}:
                     return
-                policy = next(key for key, value in labels.items() if value == selected)
                 self.catalog.store.update_record(
                     extension_id,
                     expected_record_generation=record.record_generation,
@@ -849,15 +955,53 @@ class _ExtensionController(QtCore.QObject):
                         'typing.Literal["referenced", "always", "never"]', policy
                     ),
                 )
-            elif action_id == "metadata":
-                dialog = _MetadataDialog(record.metadata, self._manager)
-                if not dialog.exec():
+            elif action_id == "history":
+                self._show_revision_history(record)
+                return
+            elif action_id == "error":
+                revision = record.revisions[record.current_revision]
+                if revision.import_error:
+                    erlab.interactive.utils.MessageDialog.critical(
+                        self._manager,
+                        "Extension Import Error",
+                        "The extension could not be imported.",
+                        detailed_text=revision.import_error,
+                    )
+                return
+            elif action_id == "view_source":
+                self._show_source(record.id, record.current_revision)
+                return
+            elif action_id in {"open_source", "reveal_source", "copy_source"}:
+                source_path = record.revisions[record.current_revision].source_path
+                if source_path is None or not pathlib.Path(source_path).is_file():
+                    QtWidgets.QMessageBox.information(
+                        self._manager,
+                        "Source File Unavailable",
+                        "The original source file is unavailable.",
+                    )
                     return
-                self.catalog.store.update_record(
-                    extension_id,
-                    expected_record_generation=record.record_generation,
-                    metadata=dialog.metadata,
+                if action_id == "open_source":
+                    QtGui.QDesktopServices.openUrl(
+                        QtCore.QUrl.fromLocalFile(source_path)
+                    )
+                elif action_id == "reveal_source":
+                    erlab.utils.misc.open_in_file_manager(source_path)
+                else:
+                    clipboard = QtWidgets.QApplication.clipboard()
+                    if clipboard is not None:
+                        clipboard.setText(source_path)
+                return
+            elif action_id == "open_package":
+                revision = record.revisions[record.current_revision]
+                if not revision.distribution_name:
+                    return
+                distribution = importlib.metadata.distribution(
+                    revision.distribution_name
                 )
+                erlab.utils.misc.open_in_file_manager(
+                    pathlib.Path(str(distribution.locate_file(""))).resolve()
+                )
+                return
             self.catalog.refresh()
         except _ExtensionCatalogConflictError as error:
             QtWidgets.QMessageBox.warning(
@@ -873,16 +1017,159 @@ class _ExtensionController(QtCore.QObject):
                 "The extension could not be changed.",
                 detailed_text=traceback.format_exc(),
             )
-        self._manage_dialog.set_catalog(
-            self.catalog.model, self._catalog_source_states()
+        self._refresh_manage_dialog()
+
+    def _show_source(self, extension_id: str, revision_hash: str) -> None:
+        record = self.catalog.model.extensions.get(extension_id)
+        if record is None:
+            return
+        try:
+            source_text = self.revision_source_bytes(
+                extension_id, revision_hash
+            ).decode("utf-8")
+        except (KeyError, OSError, UnicodeError):
+            erlab.interactive.utils.MessageDialog.critical(
+                self._manager,
+                "Extension Error",
+                "The stored extension source could not be read.",
+                detailed_text=traceback.format_exc(),
+            )
+            return
+        dialog = _SourceViewerDialog(
+            source_text,
+            self._manager,
+            title=f"Running Source — {record.name}",
         )
+        dialog.exec()
+
+    def _show_revision_history(self, record: _ExtensionRecord) -> None:
+        availability = {
+            revision_hash: record.source_type == "script"
+            and self.catalog.store.revision_available(record, revision_hash)
+            for revision_hash in record.revisions
+        }
+        dialog = _RevisionHistoryDialog(record, availability, self._manager)
+        action_slot = functools.partial(self._revision_history_action, record.id)
+        dialog.action_requested.connect(action_slot)
+        try:
+            dialog.exec()
+        finally:
+            with contextlib.suppress(TypeError, RuntimeError):
+                dialog.action_requested.disconnect(action_slot)
+
+    @QtCore.Slot(str, str, str)
+    def _revision_history_action(
+        self, extension_id: str, action_id: str, revision_hash: str
+    ) -> None:
+        if action_id == "view_revision_source":
+            self._show_source(extension_id, revision_hash)
+        elif action_id == "copy_revision_id":
+            clipboard = QtWidgets.QApplication.clipboard()
+            if clipboard is not None:
+                clipboard.setText(revision_hash)
+
+    @QtCore.Slot()
+    @QtCore.Slot(str)
+    def _refresh_removal_eligibility(self, _extension_id: str = "") -> None:
+        extension_id = self._manage_dialog.selected_extension_id
+        reason = None if extension_id is None else self._removal_blocker(extension_id)
+        self._manage_dialog.set_removal_reason(reason)
+
+    def _removal_blocker(self, extension_id: str) -> str | None:
+        record = self.catalog.model.extensions.get(extension_id)
+        if record is None or record.source_type != "script":
+            return None
+        try:
+            other_managers = tuple(
+                manager
+                for manager in live_manager_records()
+                if manager.internal_id != self._manager._manager_record.internal_id
+            )
+        except Exception:
+            return "Removal is unavailable because other managers could not be checked."
+        if other_managers:
+            descriptions = "; ".join(
+                f"Manager {manager.index}"
+                + (f" ({manager.workspace_path})" if manager.workspace_path else "")
+                for manager in other_managers
+            )
+            return f"Close the other ImageTool Managers first: {descriptions}."
+        if self.execution.uses_extension(extension_id):
+            return "Wait for this extension's active or queued jobs to finish."
+        requirements = tuple(
+            requirement
+            for requirement in self.collect_workspace_requirements()
+            if requirement.extension_id == extension_id
+        )
+        if requirements:
+            workspace_path = self._manager._manager_record.workspace_path
+            location = (
+                "the current workspace" if workspace_path is None else workspace_path
+            )
+            return f"Remove this extension from {location} before you delete it."
+        return None
+
+    def _remove_extension(self, record: _ExtensionRecord) -> None:
+        blocker = self._removal_blocker(record.id)
+        if blocker is not None:
+            QtWidgets.QMessageBox.information(
+                self._manager, "Extension Cannot Be Removed", blocker
+            )
+            self._refresh_removal_eligibility()
+            return
+        object_paths = {
+            self.catalog.store.objects_directory / revision.object_name
+            for revision in record.revisions.values()
+        }
+        total_size = sum(path.stat().st_size for path in object_paths if path.is_file())
+        current = record.revisions[record.current_revision]
+        dialog = QtWidgets.QMessageBox(self._manager)
+        dialog.setObjectName("manager_extension_remove_confirmation")
+        dialog.setWindowTitle("Remove Extension")
+        dialog.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        dialog.setText(f"Remove {record.name} from ERLab?")
+        dialog.setInformativeText(
+            f"This extension has {len(object_paths)} managed revisions "
+            f"({erlab.utils.formatting.format_nbytes(total_size)}). ERLab will delete "
+            "revision files that no other extension uses. The original source file "
+            "will not be deleted."
+        )
+        dialog.setDetailedText(
+            f"Original source: {current.source_path or 'No external source file'}\n\n"
+            "Closed workspaces that did not embed this script can lose replay "
+            "capability."
+        )
+        dialog.setStandardButtons(
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.Cancel
+        )
+        dialog.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        if dialog.exec() != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        blocker = self._removal_blocker(record.id)
+        if blocker is not None:
+            QtWidgets.QMessageBox.information(
+                self._manager, "Extension Cannot Be Removed", blocker
+            )
+            self._refresh_removal_eligibility()
+            return
+        _catalog, retained = self.catalog.store.remove_script(
+            record.id,
+            expected_record_generation=record.record_generation,
+        )
+        self.catalog.refresh()
+        if retained is not None:
+            QtWidgets.QMessageBox.warning(
+                self._manager,
+                "Extension Removed",
+                "The extension was removed, but staged source files could not be "
+                f"deleted. They remain at {retained}.",
+            )
 
     @QtCore.Slot(object)
     def _catalog_changed(self, _model: object) -> None:
         self._sync_explorer_loaders()
-        self._manage_dialog.set_catalog(
-            self.catalog.model, self._catalog_source_states()
-        )
+        self._refresh_manage_dialog()
         if self.menu is not None and self.menu.isVisible():
             self._populate_menu()
         explorer = self._manager._standalone_app_windows.get("explorer")
@@ -1019,11 +1306,18 @@ class _ExtensionController(QtCore.QObject):
                 else record.revisions.get(revision_hash)
             )
             if record is not None and record_revision is not None:
+                for obsolete_key in (
+                    "author",
+                    "contact",
+                    "project_url",
+                    "changelog",
+                ):
+                    metadata.pop(obsolete_key, None)
                 metadata = {
                     **metadata,
                     "extension_name": record.name,
                     "routine_name": operation.routine_name,
-                    **record.metadata.model_dump(),
+                    "change_summary": record_revision.change_summary,
                 }
             elif previous is None:
                 metadata = {
@@ -1089,10 +1383,17 @@ class _ExtensionController(QtCore.QObject):
                 else record.revisions.get(revision_hash)
             )
             if record is not None and loader_record_revision is not None:
+                for obsolete_key in (
+                    "author",
+                    "contact",
+                    "project_url",
+                    "changelog",
+                ):
+                    loader_metadata.pop(obsolete_key, None)
                 loader_metadata = {
                     **loader_metadata,
                     "extension_name": record.name,
-                    **record.metadata.model_dump(),
+                    "change_summary": loader_record_revision.change_summary,
                 }
             if (
                 previous is None
@@ -1172,16 +1473,12 @@ class _ExtensionController(QtCore.QObject):
             for item in requirements
         )
         for record in self.catalog.model.extensions.values():
-            if (
-                record.source_type != "script"
-                or record.embed_policy != "always"
-                or record.removed
-            ):
+            if record.source_type != "script" or record.embed_policy != "always":
                 continue
             revision = record.revisions[record.current_revision]
             metadata = {
                 "extension_name": record.name,
-                **record.metadata.model_dump(),
+                "change_summary": revision.change_summary,
             }
             for capability_kind, descriptors in (
                 ("routine", revision.routines),
@@ -1444,7 +1741,6 @@ class _ExtensionController(QtCore.QObject):
         )
         if session_status is not None and (
             record is None
-            or record.removed
             or record.source_type != requirement.source_type
             or global_revision is None
         ):
@@ -1463,7 +1759,7 @@ class _ExtensionController(QtCore.QObject):
                 state="missing",
                 detail="The catalog extension uses a different source type",
             )
-        if record is None or record.removed:
+        if record is None:
             if requirement.source_type == "environment-package":
                 return _ResolvedWorkspaceRequirement(
                     requirement=requirement,
@@ -1634,19 +1930,9 @@ class _ExtensionController(QtCore.QObject):
             source_text=source_text,
             choose_approval_scope=True,
         )
-        metadata_fields = _ExtensionMetadata.model_fields
-        metadata = _ExtensionMetadata(
-            **{
-                key: value
-                for key, value in requirement.metadata_snapshot.items()
-                if key in metadata_fields and isinstance(value, str)
-            }
-        )
-        dialog.author_edit.setText(metadata.author)
-        dialog.contact_edit.setText(metadata.contact)
-        dialog.project_url_edit.setText(metadata.project_url)
-        dialog.change_summary_edit.setText(metadata.change_summary)
-        dialog.changelog_edit.setPlainText(metadata.changelog)
+        change_summary = requirement.metadata_snapshot.get("change_summary", "")
+        if isinstance(change_summary, str):
+            dialog.change_summary_edit.setText(change_summary)
         if not dialog.exec():
             return
         try:
@@ -1665,7 +1951,7 @@ class _ExtensionController(QtCore.QObject):
                     extension_id=extension_id,
                     expected_revision=revision,
                     name=extension_name,
-                    metadata=dialog.metadata,
+                    change_summary=dialog.change_summary,
                     source_modified_at=source_modified_at,
                     expected_record_generation=(
                         None if existing is None else existing.record_generation
@@ -1685,7 +1971,7 @@ class _ExtensionController(QtCore.QObject):
                     extension_id=extension_id,
                     revision_hash=revision,
                     name=extension_name,
-                    metadata=dialog.metadata,
+                    change_summary=dialog.change_summary,
                     source_modified_at=source_modified_at,
                 )
                 self._catalog_changed(self.catalog.model)
@@ -1753,20 +2039,39 @@ class _ExtensionController(QtCore.QObject):
             (self.add_script_action, self._add_script_slot),
             (self.manage_action, self._show_manager_slot),
             (self.requirements_action, self._show_requirements_slot),
-            (self.progress_action, self._show_progress_slot),
-            (self.refresh_packages_action, self._refresh_packages_slot),
         ):
             if erlab.interactive.utils.qt_is_valid(action):
                 with contextlib.suppress(TypeError, RuntimeError):
                     action.triggered.disconnect(slot)
         if erlab.interactive.utils.qt_is_valid(self._manage_dialog):
-            with contextlib.suppress(TypeError, RuntimeError):
-                self._manage_dialog.action_requested.disconnect(
-                    self._manage_action_slot
-                )
+            for signal, slot in (
+                (self._manage_dialog.action_requested, self._manage_action_slot),
+                (
+                    self._manage_dialog.add_script_requested,
+                    self._manage_add_script_slot,
+                ),
+                (
+                    self._manage_dialog.refresh_packages_requested,
+                    self._manage_refresh_packages_slot,
+                ),
+                (
+                    self._manage_dialog.open_folder_requested,
+                    self._manage_open_folder_slot,
+                ),
+                (
+                    self._manage_dialog.selection_changed,
+                    self._manage_selection_slot,
+                ),
+                (self._manage_dialog.activated, self._manage_activated_slot),
+            ):
+                with contextlib.suppress(TypeError, RuntimeError):
+                    signal.disconnect(slot)
             self._manage_dialog.close()
             self._manage_dialog.deleteLater()
         with contextlib.suppress(TypeError, RuntimeError):
+            self.execution.queue_changed.disconnect(self._execution_state_slot)
+        with contextlib.suppress(TypeError, RuntimeError):
             self.catalog.changed.disconnect(self._catalog_changed_slot)
+        self._routine_action_groups.clear()
         self.catalog.close()
         self._closed = True

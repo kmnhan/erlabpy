@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import datetime
+import pathlib
+import sys
 import typing
 
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab.interactive.utils
 from erlab.extensions import (
     LoaderDescriptor,
     ParameterDescriptor,
@@ -13,20 +17,39 @@ from erlab.extensions import (
     RoutineDescriptor,
 )
 from erlab.extensions._models import _require_finite_parameter_values
-from erlab.interactive.imagetool.manager._extensions._models import (
-    _ExtensionCatalogModel,
-    _ExtensionMetadata,
-    _ExtensionRecord,
-    _ResolvedWorkspaceRequirement,
-)
+from erlab.interactive.imagetool.manager._widgets import _ElidedValueLabel
 
 if typing.TYPE_CHECKING:
-    import pathlib
     from collections.abc import Collection, Mapping
+
+    from erlab.interactive.imagetool.manager._extensions._models import (
+        _ExtensionCatalogModel,
+        _ExtensionRecord,
+        _ResolvedWorkspaceRequirement,
+    )
+
+
+def _display_datetime(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = datetime.datetime.fromisoformat(value).astimezone()
+    except ValueError:
+        return value
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def _source_is_unavailable(state: str) -> bool:
+    return state in {
+        "Stored source missing",
+        "Stored source unreadable",
+        "Stored source hash mismatch",
+        "Environment package unavailable",
+    }
 
 
 class _SourceReviewDialog(QtWidgets.QDialog):
-    """Review source and optional author metadata before code is approved."""
+    """Review source and describe its revision before code is approved."""
 
     def __init__(
         self,
@@ -41,9 +64,10 @@ class _SourceReviewDialog(QtWidgets.QDialog):
         self.setWindowTitle("Review Extension Source")
         self.resize(760, 600)
         layout = QtWidgets.QVBoxLayout(self)
-        source = QtWidgets.QPlainTextEdit(self)
+        source = erlab.interactive.utils.PythonCodeEditor(self)
         source.setObjectName("manager_extension_source_review")
         source.setReadOnly(True)
+        source.setLineWrapMode(QtWidgets.QTextEdit.LineWrapMode.NoWrap)
         if source_text is None:
             if path is None:
                 raise ValueError("path or source_text is required")
@@ -51,24 +75,9 @@ class _SourceReviewDialog(QtWidgets.QDialog):
         source.setPlainText(source_text)
         layout.addWidget(source, 1)
         form = QtWidgets.QFormLayout()
-        self.author_edit = QtWidgets.QLineEdit(self)
-        self.contact_edit = QtWidgets.QLineEdit(self)
-        self.project_url_edit = QtWidgets.QLineEdit(self)
         self.change_summary_edit = QtWidgets.QLineEdit(self)
-        self.changelog_edit = QtWidgets.QPlainTextEdit(self)
-        for editor, object_name in (
-            (self.author_edit, "manager_extension_author"),
-            (self.contact_edit, "manager_extension_contact"),
-            (self.project_url_edit, "manager_extension_project_url"),
-            (self.change_summary_edit, "manager_extension_change_summary"),
-            (self.changelog_edit, "manager_extension_changelog"),
-        ):
-            editor.setObjectName(object_name)
-        form.addRow("Author", self.author_edit)
-        form.addRow("Contact", self.contact_edit)
-        form.addRow("Project URL", self.project_url_edit)
+        self.change_summary_edit.setObjectName("manager_extension_change_summary")
         form.addRow("Change summary", self.change_summary_edit)
-        form.addRow("Changelog", self.changelog_edit)
         layout.addLayout(form)
         self._remember_approval = QtWidgets.QCheckBox(
             "Remember this extension in the application catalog", self
@@ -87,14 +96,9 @@ class _SourceReviewDialog(QtWidgets.QDialog):
         layout.addWidget(buttons)
 
     @property
-    def metadata(self) -> _ExtensionMetadata:
-        return _ExtensionMetadata(
-            author=self.author_edit.text().strip(),
-            contact=self.contact_edit.text().strip(),
-            project_url=self.project_url_edit.text().strip(),
-            change_summary=self.change_summary_edit.text().strip(),
-            changelog=self.changelog_edit.toPlainText().strip(),
-        )
+    def change_summary(self) -> str:
+        """Return the concise description for the reviewed revision."""
+        return self.change_summary_edit.text().strip()
 
     @property
     def remember_approval(self) -> bool:
@@ -245,12 +249,17 @@ class _ExtensionParameterDialog(QtWidgets.QDialog):
 
 
 class _RoutineSelectionDialog(QtWidgets.QDialog):
+    favorite_requested = QtCore.Signal(str, str, bool)
+
     def __init__(
         self,
         routines: tuple[tuple[str, str, RoutineDescriptor], ...],
         parent: QtWidgets.QWidget,
+        *,
+        favorites: Collection[tuple[str, str]] = (),
     ) -> None:
         super().__init__(parent)
+        self._favorites = set(favorites)
         self.setObjectName("manager_extension_routine_selection_dialog")
         self.setWindowTitle("Run Routine")
         layout = QtWidgets.QVBoxLayout(self)
@@ -268,7 +277,12 @@ class _RoutineSelectionDialog(QtWidgets.QDialog):
         if self.list_widget.count():
             self.list_widget.setCurrentRow(0)
         self.list_widget.itemDoubleClicked.connect(lambda _item: self.accept())
+        self.list_widget.currentItemChanged.connect(self._update_favorite_button)
         layout.addWidget(self.list_widget)
+        self.favorite_button = QtWidgets.QPushButton(self)
+        self.favorite_button.setObjectName("manager_extension_routine_favorite_button")
+        self.favorite_button.clicked.connect(self._toggle_favorite)
+        layout.addWidget(self.favorite_button)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Cancel
             | QtWidgets.QDialogButtonBox.StandardButton.Ok,
@@ -277,6 +291,7 @@ class _RoutineSelectionDialog(QtWidgets.QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self._update_favorite_button()
 
     @property
     def selection(self) -> tuple[str, str] | None:
@@ -287,40 +302,343 @@ class _RoutineSelectionDialog(QtWidgets.QDialog):
             "tuple[str, str]", item.data(QtCore.Qt.ItemDataRole.UserRole)
         )
 
+    @QtCore.Slot()
+    def _update_favorite_button(self) -> None:
+        selection = self.selection
+        favorite = selection is not None and selection in self._favorites
+        self.favorite_button.setEnabled(selection is not None)
+        self.favorite_button.setText(
+            "Remove from Favorites" if favorite else "Add to Favorites"
+        )
+        self.favorite_button.setProperty("favoriteState", favorite)
+
+    @QtCore.Slot()
+    def _toggle_favorite(self) -> None:
+        selection = self.selection
+        if selection is None:
+            return
+        favorite = selection not in self._favorites
+        if favorite:
+            self._favorites.add(selection)
+        else:
+            self._favorites.remove(selection)
+        self.favorite_requested.emit(*selection, favorite)
+        self._update_favorite_button()
+
+
+class _SourceViewerDialog(QtWidgets.QDialog):
+    """Show one immutable extension source revision with Python highlighting."""
+
+    def __init__(
+        self,
+        source_text: str,
+        parent: QtWidgets.QWidget,
+        *,
+        title: str,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("manager_extension_source_viewer_dialog")
+        self.setWindowTitle(title)
+        self.resize(800, 600)
+        layout = QtWidgets.QVBoxLayout(self)
+        self.source = erlab.interactive.utils.PythonCodeEditor(self)
+        self.source.setObjectName("manager_extension_running_source")
+        self.source.setReadOnly(True)
+        self.source.setLineWrapMode(QtWidgets.QTextEdit.LineWrapMode.NoWrap)
+        self.source.setPlainText(source_text)
+        layout.addWidget(self.source)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Close, parent=self
+        )
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
+class _RevisionHistoryDialog(QtWidgets.QDialog):
+    """Show revision history without exposing revision IDs as list columns."""
+
+    action_requested = QtCore.Signal(str, str)
+
+    def __init__(
+        self,
+        record: _ExtensionRecord,
+        source_availability: Mapping[str, bool],
+        parent: QtWidgets.QWidget,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("manager_extension_revision_history_dialog")
+        self.setWindowTitle(f"Revision History — {record.name}")
+        self.resize(700, 380)
+        self._extension_id = record.id
+        layout = QtWidgets.QVBoxLayout(self)
+        self.tree = QtWidgets.QTreeWidget(self)
+        self.tree.setObjectName("manager_extension_revision_history")
+        self.tree.setRootIsDecorated(False)
+        self.tree.setHeaderLabels(("Modified", "Change summary", "State", "Source"))
+        for revision_hash, revision in sorted(
+            record.revisions.items(),
+            key=lambda item: item[1].source_modified_at or item[1].created_at,
+            reverse=True,
+        ):
+            item = QtWidgets.QTreeWidgetItem(
+                (
+                    _display_datetime(
+                        revision.source_modified_at or revision.created_at
+                    ),
+                    revision.change_summary,
+                    "Current"
+                    if revision_hash == record.current_revision
+                    else "Previous",
+                    "Available"
+                    if source_availability.get(revision_hash, False)
+                    else "Unavailable",
+                )
+            )
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, revision_hash)
+            item.setData(
+                0,
+                QtCore.Qt.ItemDataRole.UserRole + 1,
+                source_availability.get(revision_hash, False),
+            )
+            item.setData(
+                0,
+                QtCore.Qt.ItemDataRole.UserRole + 2,
+                revision_hash == record.current_revision,
+            )
+            item.setData(
+                0,
+                QtCore.Qt.ItemDataRole.UserRole + 3,
+                revision.change_summary,
+            )
+            self.tree.addTopLevelItem(item)
+        if self.tree.topLevelItemCount():
+            self.tree.setCurrentItem(self.tree.topLevelItem(0))
+        layout.addWidget(self.tree)
+        action_layout = QtWidgets.QHBoxLayout()
+        self.view_button = QtWidgets.QPushButton("View Source", self)
+        self.view_button.setObjectName("manager_extension_revision_view_button")
+        self.copy_id_button = QtWidgets.QPushButton("Copy Revision ID", self)
+        self.copy_id_button.setObjectName("manager_extension_revision_copy_id_button")
+        self.view_button.clicked.connect(
+            lambda: self._emit_action("view_revision_source")
+        )
+        self.copy_id_button.clicked.connect(
+            lambda: self._emit_action("copy_revision_id")
+        )
+        self.tree.currentItemChanged.connect(self._update_actions)
+        action_layout.addWidget(self.view_button)
+        action_layout.addWidget(self.copy_id_button)
+        action_layout.addStretch(1)
+        layout.addLayout(action_layout)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Close, parent=self
+        )
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._update_actions()
+
+    @property
+    def selected_revision(self) -> str | None:
+        item = self.tree.currentItem()
+        if item is None:
+            return None
+        value = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        return value if isinstance(value, str) else None
+
+    @QtCore.Slot()
+    def _update_actions(self) -> None:
+        item = self.tree.currentItem()
+        available = item is not None and item.text(3) == "Available"
+        self.view_button.setEnabled(available)
+        self.copy_id_button.setEnabled(item is not None)
+
+    def _emit_action(self, action_id: str) -> None:
+        revision = self.selected_revision
+        if revision is not None:
+            self.action_requested.emit(action_id, revision)
+
 
 class _ManageExtensionsDialog(QtWidgets.QDialog):
     action_requested = QtCore.Signal(str, str)
+    add_script_requested = QtCore.Signal()
+    refresh_packages_requested = QtCore.Signal()
+    open_folder_requested = QtCore.Signal()
+    selection_changed = QtCore.Signal(str)
+    activated = QtCore.Signal()
 
-    def __init__(self, parent: QtWidgets.QWidget) -> None:
+    def __init__(
+        self, parent: QtWidgets.QWidget, *, show_package_refresh: bool = True
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("manager_manage_extensions_dialog")
         self.setWindowTitle("Manage Extensions")
-        self.resize(800, 460)
+        self.resize(1120, 620)
         layout = QtWidgets.QVBoxLayout(self)
+        controls = QtWidgets.QHBoxLayout()
+        self.add_script_button = QtWidgets.QPushButton("Add Script…", self)
+        self.add_script_button.setObjectName("manager_extension_add_script_button")
+        self.add_script_button.clicked.connect(self.add_script_requested)
+        controls.addWidget(self.add_script_button)
+        self.refresh_packages_button = QtWidgets.QPushButton(
+            "Refresh Environment Packages", self
+        )
+        self.refresh_packages_button.setObjectName(
+            "manager_extension_refresh_packages_button"
+        )
+        self.refresh_packages_button.setVisible(show_package_refresh)
+        self.refresh_packages_button.clicked.connect(self.refresh_packages_requested)
+        controls.addWidget(self.refresh_packages_button)
+        self.search_edit = QtWidgets.QLineEdit(self)
+        self.search_edit.setObjectName("manager_extension_search")
+        self.search_edit.setPlaceholderText("Search extensions")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.textChanged.connect(self._apply_search)
+        controls.addWidget(self.search_edit, 1)
+        self.open_folder_button = QtWidgets.QPushButton("Open Extensions Folder", self)
+        self.open_folder_button.setObjectName("manager_extension_open_folder_button")
+        self.open_folder_button.clicked.connect(self.open_folder_requested)
+        controls.addWidget(self.open_folder_button)
+        layout.addLayout(controls)
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal, self)
+        splitter.setObjectName("manager_extension_splitter")
         self.tree = QtWidgets.QTreeWidget(self)
         self.tree.setObjectName("manager_extension_catalog_tree")
-        self.tree.setHeaderLabels(("Extension", "State", "Revision", "Source"))
-        layout.addWidget(self.tree, 1)
-        buttons = QtWidgets.QHBoxLayout()
-        self._buttons: dict[str, QtWidgets.QPushButton] = {}
-        self._records: dict[str, _ExtensionRecord] = {}
-        for action_id, text in (
-            ("reload", "Reload Script"),
-            ("toggle", "Enable or Disable"),
-            ("favorite", "Toggle Favorite"),
-            ("embedding", "Change Embedding…"),
-            ("metadata", "Edit Metadata…"),
-            ("remove", "Remove"),
+        self.tree.setRootIsDecorated(False)
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setSortingEnabled(True)
+        self.tree.setHeaderLabels(
+            ("Extension", "Type", "Status", "Updated", "Location")
+        )
+        self.tree.sortByColumn(0, QtCore.Qt.SortOrder.AscendingOrder)
+        splitter.addWidget(self.tree)
+        details_widget = QtWidgets.QWidget(splitter)
+        details_layout = QtWidgets.QVBoxLayout(details_widget)
+        self.name_label = QtWidgets.QLabel(details_widget)
+        self.name_label.setObjectName("manager_extension_detail_name")
+        name_font = self.name_label.font()
+        name_font.setBold(True)
+        name_font.setPointSize(name_font.pointSize() + 2)
+        self.name_label.setFont(name_font)
+        details_layout.addWidget(self.name_label)
+        self.status_label = QtWidgets.QLabel(details_widget)
+        self.status_label.setObjectName("manager_extension_detail_status")
+        details_layout.addWidget(self.status_label)
+        self.failure_label = QtWidgets.QLabel(details_widget)
+        self.failure_label.setObjectName("manager_extension_detail_failure")
+        self.failure_label.setWordWrap(True)
+        details_layout.addWidget(self.failure_label)
+        self.capabilities_label = QtWidgets.QLabel(details_widget)
+        self.capabilities_label.setObjectName("manager_extension_detail_capabilities")
+        self.capabilities_label.setWordWrap(True)
+        details_layout.addWidget(self.capabilities_label)
+        form = QtWidgets.QFormLayout()
+        self._detail_labels: dict[str, QtWidgets.QLabel] = {}
+        self._detail_form_labels: dict[str, QtWidgets.QWidget] = {}
+        for key, title in (
+            ("embedding", "Workspace embedding"),
+            ("revision_date", "Current revision"),
+            ("change_summary", "Change summary"),
+            ("original_source", "Original source file"),
+            ("managed_source", "Running source"),
+            ("distribution", "Distribution"),
+            ("entry_point", "Entry point"),
+            ("package_location", "Package location"),
+            ("installation", "Installation"),
         ):
-            button = QtWidgets.QPushButton(text, self)
+            if key == "embedding":
+                self.embedding_combo = QtWidgets.QComboBox(details_widget)
+                self.embedding_combo.setObjectName("manager_extension_embedding_policy")
+                for option_label, value in (
+                    ("Embed when referenced", "referenced"),
+                    ("Always embed", "always"),
+                    ("Never embed", "never"),
+                ):
+                    self.embedding_combo.addItem(option_label, value)
+                self.embedding_combo.activated.connect(self._embedding_changed)
+                form.addRow(title, self.embedding_combo)
+                self._embedding_form_label = form.labelForField(self.embedding_combo)
+                continue
+            if key in {"original_source", "managed_source"}:
+                label = _ElidedValueLabel(parent=details_widget)
+            else:
+                label = QtWidgets.QLabel(details_widget)
+            label.setObjectName(f"manager_extension_detail_{key}")
+            label.setTextInteractionFlags(
+                QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            label.setWordWrap(key not in {"original_source", "managed_source"})
+            self._detail_labels[key] = label
+            form.addRow(title, label)
+            form_label = form.labelForField(label)
+            if form_label is not None:
+                self._detail_form_labels[key] = form_label
+        details_layout.addLayout(form)
+        extension_actions_group = QtWidgets.QGroupBox(
+            "Extension actions", details_widget
+        )
+        extension_actions_layout = QtWidgets.QGridLayout(extension_actions_group)
+        source_actions_group = QtWidgets.QGroupBox(
+            "Source and location actions", details_widget
+        )
+        source_actions_layout = QtWidgets.QGridLayout(source_actions_group)
+        self._buttons: dict[str, QtWidgets.QPushButton] = {}
+        for action_id, text in (
+            ("toggle", "Enable"),
+            ("reload", "Reload from Disk…"),
+            ("history", "Revision History"),
+            ("remove", "Remove Extension…"),
+            ("error", "Show Error Details"),
+            ("view_source", "View Running Source"),
+            ("open_source", "Open Source File"),
+            (
+                "reveal_source",
+                "Reveal in Finder"
+                if sys.platform == "darwin"
+                else "Reveal in File Explorer"
+                if sys.platform.startswith("win")
+                else "Open Containing Folder",
+            ),
+            ("copy_source", "Copy Path"),
+            ("open_package", "Open Package Location"),
+        ):
+            button = QtWidgets.QPushButton(text, details_widget)
             button.setObjectName(f"manager_extension_{action_id}_button")
+            button.setProperty("extensionAction", action_id)
             button.clicked.connect(
                 lambda _checked=False, value=action_id: self._emit_action(value)
             )
             self._buttons[action_id] = button
-            buttons.addWidget(button)
-        self.tree.currentItemChanged.connect(self._update_buttons)
-        layout.addLayout(buttons)
+            if action_id in {
+                "toggle",
+                "reload",
+                "history",
+                "remove",
+                "error",
+            }:
+                position = extension_actions_layout.count()
+                extension_actions_layout.addWidget(button, position // 2, position % 2)
+            else:
+                position = source_actions_layout.count()
+                source_actions_layout.addWidget(button, position // 2, position % 2)
+        details_layout.addWidget(extension_actions_group)
+        details_layout.addWidget(source_actions_group)
+        self.removal_reason_label = QtWidgets.QLabel(details_widget)
+        self.removal_reason_label.setObjectName(
+            "manager_extension_removal_unavailable_reason"
+        )
+        self.removal_reason_label.setWordWrap(True)
+        details_layout.addWidget(self.removal_reason_label)
+        details_layout.addStretch(1)
+        splitter.addWidget(details_widget)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter, 1)
+        self._records: dict[str, _ExtensionRecord] = {}
+        self._source_states: dict[tuple[str, str], str] = {}
+        self._managed_paths: dict[tuple[str, str], str] = {}
+        self._package_locations: dict[str, str] = {}
+        self._removal_reason: str | None = None
+        self.tree.currentItemChanged.connect(self._selection_changed)
         close_button = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Close, parent=self
         )
@@ -331,167 +649,297 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         self,
         catalog: _ExtensionCatalogModel,
         source_states: dict[tuple[str, str], str] | None = None,
+        *,
+        managed_paths: dict[tuple[str, str], str] | None = None,
+        package_locations: dict[str, str] | None = None,
     ) -> None:
         selected_id = self.selected_extension_id
+        scroll_bar = self.tree.verticalScrollBar()
+        scroll_position = 0 if scroll_bar is None else scroll_bar.value()
         self._records = dict(catalog.extensions)
-        source_states = source_states or {}
+        self._source_states = dict(source_states or {})
+        self._managed_paths = dict(managed_paths or {})
+        self._package_locations = dict(package_locations or {})
+        self.tree.setSortingEnabled(False)
         self.tree.clear()
         selected_item: QtWidgets.QTreeWidgetItem | None = None
         for record in catalog.extensions.values():
             current = record.revisions[record.current_revision]
-            state = (
-                "Removed"
-                if record.removed
-                else "Enabled"
-                if record.enabled
-                else "Disabled"
+            source_state = self._source_states.get(
+                (record.id, record.current_revision), ""
             )
+            health = "Ready"
             if current.import_error:
-                state = "Import failed"
+                health = "Import failed"
+            elif _source_is_unavailable(source_state):
+                health = "Source unavailable"
             elif not current.approved:
-                state = "Approval required"
+                health = "Approval required"
+            state = f"{'Enabled' if record.enabled else 'Disabled'} · {health}"
+            if record.source_type == "script":
+                location = current.source_path or "Workspace embedded source"
+                source_type = "Script"
+            else:
+                location = self._package_locations.get(
+                    record.id,
+                    current.distribution_name or current.entry_point_value or "",
+                )
+                source_type = "Environment package"
             item = QtWidgets.QTreeWidgetItem(
                 (
                     record.name,
+                    source_type,
                     state,
-                    current.source_modified_at or "",
-                    source_states.get(
-                        (record.id, record.current_revision),
-                        current.source_path or current.entry_point_value or "",
-                    ),
+                    _display_datetime(current.source_modified_at or current.created_at),
+                    location,
                 )
             )
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole, record.id)
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 1, record.source_type)
+            item.setData(
+                0,
+                QtCore.Qt.ItemDataRole.UserRole + 2,
+                "enabled" if record.enabled else "disabled",
+            )
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 3, health)
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 4, location)
             self.tree.addTopLevelItem(item)
-            for revision in record.revisions.values():
-                child = QtWidgets.QTreeWidgetItem(
-                    (
-                        "Revision",
-                        "Approved" if revision.approved else "Not approved",
-                        revision.source_modified_at or revision.created_at,
-                        revision.source_hash,
-                    )
-                )
-                item.addChild(child)
-                for kind, descriptors in (
-                    ("Routine", revision.routines),
-                    ("Loader", revision.loaders),
-                ):
-                    for descriptor in descriptors:
-                        child.addChild(
-                            QtWidgets.QTreeWidgetItem(
-                                (
-                                    kind,
-                                    descriptor.name,
-                                    descriptor.id,
-                                    descriptor.summary,
-                                )
-                            )
-                        )
-                if revision.import_error:
-                    error_item = QtWidgets.QTreeWidgetItem(
-                        (
-                            "Import failure",
-                            "",
-                            "",
-                            revision.import_error.splitlines()[-1],
-                        )
-                    )
-                    error_item.setToolTip(3, revision.import_error)
-                    child.addChild(error_item)
-            metadata_values = [
-                f"{name.replace('_', ' ').title()}: {value}"
-                for name, value in record.metadata.model_dump().items()
-                if value
-            ]
-            if metadata_values:
-                item.addChild(
-                    QtWidgets.QTreeWidgetItem(
-                        ("Metadata", "", "", "\n".join(metadata_values))
-                    )
-                )
             if record.id == selected_id:
                 selected_item = item
-        if selected_item is not None:
+        self.tree.setSortingEnabled(True)
+        self._apply_search()
+        if selected_item is not None and not selected_item.isHidden():
             self.tree.setCurrentItem(selected_item)
-        self._update_buttons()
+        else:
+            current_item = self.tree.currentItem()
+            if current_item is None or current_item.isHidden():
+                self._select_first_visible()
+        if scroll_bar is not None:
+            scroll_bar.setValue(scroll_position)
+        self._update_details()
 
     @QtCore.Slot()
-    def _update_buttons(self) -> None:
+    def _update_details(self) -> None:
         record = self._records.get(self.selected_extension_id or "")
-        available = record is not None and not record.removed
-        is_script = (
-            record is not None and not record.removed and record.source_type == "script"
+        if record is None:
+            self.name_label.clear()
+            self.status_label.clear()
+            self.failure_label.clear()
+            self.capabilities_label.clear()
+            for label in self._detail_labels.values():
+                label.setText("")
+            for button in self._buttons.values():
+                button.setEnabled(False)
+            self.embedding_combo.setEnabled(False)
+            self.removal_reason_label.clear()
+            return
+        revision = record.revisions[record.current_revision]
+        source_state = self._source_states.get((record.id, record.current_revision), "")
+        health = "Ready"
+        failure = ""
+        if revision.import_error:
+            health = "Import failed"
+            failure = revision.import_error.splitlines()[-1]
+        elif _source_is_unavailable(source_state):
+            health = "Source unavailable"
+            failure = source_state
+        elif not revision.approved:
+            health = "Approval required"
+        type_name = (
+            "Script" if record.source_type == "script" else "Environment package"
         )
-        current_source_path = (
-            None
-            if record is None
-            else record.revisions[record.current_revision].source_path
+        self.name_label.setText(f"{record.name} · {type_name}")
+        self.status_label.setText(
+            f"{'Enabled' if record.enabled else 'Disabled'} · {health}"
         )
-        self._buttons["reload"].setEnabled(bool(is_script and current_source_path))
-        self._buttons["toggle"].setEnabled(available)
-        self._buttons["favorite"].setEnabled(available)
-        self._buttons["embedding"].setEnabled(bool(is_script))
-        self._buttons["metadata"].setEnabled(record is not None)
-        self._buttons["remove"].setEnabled(record is not None)
-        self._buttons["remove"].setText(
-            "Restore" if record is not None and record.removed else "Remove"
+        self.status_label.setProperty(
+            "activationState", "enabled" if record.enabled else "disabled"
         )
+        self.status_label.setProperty("healthState", health)
+        self.failure_label.setText(failure)
+        self.failure_label.setProperty("fullError", revision.import_error or "")
+        routine_names = ", ".join(item.name for item in revision.routines) or "None"
+        loader_names = ", ".join(item.name for item in revision.loaders) or "None"
+        self.capabilities_label.setText(
+            f"Routines: {routine_names}\nLoaders: {loader_names}"
+        )
+        self._detail_labels["revision_date"].setText(
+            _display_datetime(revision.source_modified_at or revision.created_at)
+        )
+        self._detail_labels["change_summary"].setText(revision.change_summary or "—")
+        is_script = record.source_type == "script"
+        for key in ("original_source", "managed_source"):
+            self._detail_labels[key].setVisible(is_script)
+            form_label = self._detail_form_labels.get(key)
+            if form_label is not None:
+                form_label.setVisible(is_script)
+        for key in (
+            "distribution",
+            "entry_point",
+            "package_location",
+            "installation",
+        ):
+            self._detail_labels[key].setVisible(not is_script)
+            form_label = self._detail_form_labels.get(key)
+            if form_label is not None:
+                form_label.setVisible(not is_script)
+        source_path = revision.source_path
+        managed_path = self._managed_paths.get((record.id, record.current_revision), "")
+        package_path = self._package_locations.get(record.id, "")
+        self._detail_labels["original_source"].setText(
+            source_path or "No external source file" if is_script else "Not applicable"
+        )
+        self._detail_labels["original_source"].setProperty("sourcePath", source_path)
+        self._detail_labels["managed_source"].setText(
+            managed_path or "Unavailable" if is_script else "Not applicable"
+        )
+        self._detail_labels["managed_source"].setProperty(
+            "sourcePath", managed_path or None
+        )
+        distribution = revision.distribution_name or ""
+        if revision.distribution_version:
+            distribution = f"{distribution} {revision.distribution_version}".strip()
+        self._detail_labels["distribution"].setText(distribution or "Not applicable")
+        self._detail_labels["distribution"].setProperty(
+            "distributionName", revision.distribution_name
+        )
+        self._detail_labels["distribution"].setProperty(
+            "distributionVersion", revision.distribution_version
+        )
+        self._detail_labels["entry_point"].setText(
+            revision.entry_point_value or "Not applicable"
+        )
+        self._detail_labels["entry_point"].setProperty(
+            "entryPoint", revision.entry_point_value
+        )
+        self._detail_labels["package_location"].setText(
+            package_path or "Unavailable" if not is_script else "Not applicable"
+        )
+        self._detail_labels["package_location"].setProperty(
+            "sourcePath", package_path or None
+        )
+        self._detail_labels["installation"].setText(
+            ("Editable" if revision.editable else "Installed")
+            if not is_script
+            else "Not applicable"
+        )
+        self._detail_labels["installation"].setProperty(
+            "installationState",
+            "editable" if revision.editable else "installed" if not is_script else None,
+        )
+        self._buttons["toggle"].setEnabled(True)
+        self._buttons["toggle"].setText("Disable" if record.enabled else "Enable")
+        self._buttons["toggle"].setProperty(
+            "extensionActionState", "disable" if record.enabled else "enable"
+        )
+        original_available = bool(source_path and pathlib.Path(source_path).is_file())
+        source_changed = "original changed" in source_state.lower()
+        self._buttons["reload"].setEnabled(is_script and original_available)
+        self._buttons["reload"].setText(
+            "Review Update…" if source_changed else "Reload from Disk…"
+        )
+        self._buttons["reload"].setProperty(
+            "extensionActionState", "review" if source_changed else "reload"
+        )
+        self._buttons["history"].setEnabled(True)
+        self._buttons["error"].setVisible(bool(revision.import_error))
+        self._buttons["error"].setEnabled(bool(revision.import_error))
+        self._buttons["view_source"].setVisible(is_script)
+        self._buttons["view_source"].setEnabled(bool(managed_path))
+        for action_id in ("open_source", "reveal_source", "copy_source"):
+            self._buttons[action_id].setVisible(is_script)
+            self._buttons[action_id].setEnabled(original_available)
+            self._buttons[action_id].setToolTip(
+                "" if original_available else "The original source file is unavailable."
+            )
+        self._buttons["open_package"].setVisible(not is_script)
+        self._buttons["open_package"].setEnabled(bool(package_path))
+        self.embedding_combo.setVisible(is_script)
+        self.embedding_combo.setEnabled(is_script)
+        if self._embedding_form_label is not None:
+            self._embedding_form_label.setVisible(is_script)
+        if is_script:
+            index = self.embedding_combo.findData(record.embed_policy)
+            if index >= 0:
+                blocker = QtCore.QSignalBlocker(self.embedding_combo)
+                self.embedding_combo.setCurrentIndex(index)
+                del blocker
+        self._buttons["remove"].setVisible(is_script)
+        self._buttons["remove"].setEnabled(is_script and not self._removal_reason)
+        self._buttons["remove"].setToolTip(self._removal_reason or "")
+        self._buttons["remove"].setProperty(
+            "removalBlocked", bool(self._removal_reason)
+        )
+        self.removal_reason_label.setText(self._removal_reason or "")
+        self.removal_reason_label.setVisible(bool(self._removal_reason and is_script))
+
+    def set_removal_reason(self, reason: str | None) -> None:
+        self._removal_reason = reason
+        self._update_details()
 
     @property
     def selected_extension_id(self) -> str | None:
         item = self.tree.currentItem()
         if item is None:
             return None
-        parent = item.parent()
-        while parent is not None:
-            item = parent
-            parent = item.parent()
         value = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         return value if isinstance(value, str) else None
+
+    @QtCore.Slot()
+    def _selection_changed(self) -> None:
+        self._removal_reason = None
+        self._update_details()
+        extension_id = self.selected_extension_id
+        if extension_id is not None:
+            self.selection_changed.emit(extension_id)
+
+    @QtCore.Slot(str)
+    def _apply_search(self, _text: str = "") -> None:
+        query = self.search_edit.text().strip().casefold()
+        for index in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(index)
+            if item is None:
+                continue
+            item.setHidden(
+                bool(query)
+                and query
+                not in " ".join(item.text(column) for column in range(5)).casefold()
+            )
+        current = self.tree.currentItem()
+        if current is None or current.isHidden():
+            self._select_first_visible()
+
+    def _select_first_visible(self) -> None:
+        for index in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(index)
+            if item is not None and not item.isHidden():
+                self.tree.setCurrentItem(item)
+                return
+        self.tree.setCurrentItem(None)
+
+    @QtCore.Slot(int)
+    def _embedding_changed(self, _index: int) -> None:
+        policy = self.embedding_combo.currentData()
+        if isinstance(policy, str):
+            self._emit_action(f"embedding:{policy}")
 
     def _emit_action(self, action_id: str) -> None:
         extension_id = self.selected_extension_id
         if extension_id is not None:
             self.action_requested.emit(action_id, extension_id)
 
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        super().showEvent(event)
+        self.activated.emit()
 
-class _MetadataDialog(QtWidgets.QDialog):
-    def __init__(self, metadata: _ExtensionMetadata, parent: QtWidgets.QWidget) -> None:
-        super().__init__(parent)
-        self.setObjectName("manager_extension_metadata_dialog")
-        self.setWindowTitle("Extension Metadata")
-        layout = QtWidgets.QFormLayout(self)
-        self._edits: dict[str, QtWidgets.QLineEdit | QtWidgets.QPlainTextEdit] = {}
-        for name, value in metadata.model_dump().items():
-            editor: QtWidgets.QLineEdit | QtWidgets.QPlainTextEdit
-            if name == "changelog":
-                editor = QtWidgets.QPlainTextEdit(str(value), self)
-            else:
-                editor = QtWidgets.QLineEdit(str(value), self)
-            editor.setObjectName(f"manager_extension_metadata_{name}")
-            self._edits[name] = editor
-            layout.addRow(name.replace("_", " ").title(), editor)
-        buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Cancel
-            | QtWidgets.QDialogButtonBox.StandardButton.Ok,
-            parent=self,
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
-
-    @property
-    def metadata(self) -> _ExtensionMetadata:
-        values = {
-            name: (
-                editor.toPlainText()
-                if isinstance(editor, QtWidgets.QPlainTextEdit)
-                else editor.text()
-            ).strip()
-            for name, editor in self._edits.items()
-        }
-        return _ExtensionMetadata(**values)
+    def changeEvent(self, event: QtCore.QEvent | None) -> None:
+        super().changeEvent(event)
+        if (
+            event is not None
+            and event.type() == QtCore.QEvent.Type.ActivationChange
+            and self.isActiveWindow()
+        ):
+            self.activated.emit()
 
 
 class _WorkspaceRequirementsDialog(QtWidgets.QDialog):

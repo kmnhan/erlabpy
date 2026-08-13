@@ -25,7 +25,7 @@ from collections import deque
 
 import numpy as np
 import xarray as xr
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore
 
 import erlab
 from erlab.extensions import (
@@ -64,7 +64,6 @@ from erlab.interactive.imagetool.manager._extensions._catalog import (
 from erlab.interactive.imagetool.manager._extensions._models import (
     _EnvironmentLoaderMethod,
     _ExtensionCatalogModel,
-    _ExtensionMetadata,
     _ExtensionRecord,
     _ExtensionRevision,
     _revision_loader_name_filters,
@@ -353,7 +352,7 @@ class _ExtensionLoaderWorker(QtCore.QRunnable):
             self._started = True
         try:
             record = self.catalog_store.read().extensions.get(self.call.extension_id)
-            if record is None or record.removed or not record.enabled:
+            if record is None or not record.enabled:
                 self.error = ExtensionExecutionError("The extension is not enabled")
                 logger.info(
                     "Discarding disabled queued extension loader",
@@ -1134,7 +1133,7 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
         }
         try:
             record = self.catalog_store.read().extensions.get(self.job.extension_id)
-            enabled = record is not None and not record.removed and record.enabled
+            enabled = record is not None and record.enabled
             if not enabled:
                 status = "discarded"
                 logger.info(
@@ -1208,49 +1207,6 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
             self.signals.finished.emit(result)
 
 
-class _ExtensionProgressDialog(QtWidgets.QDialog):
-    """Non-modal queue view. Closing it does not cancel the active call."""
-
-    remove_requested = QtCore.Signal(str)
-
-    def __init__(self, parent: QtWidgets.QWidget) -> None:
-        super().__init__(parent)
-        self.setObjectName("manager_extension_progress_dialog")
-        self.setWindowTitle("Extension Jobs")
-        layout = QtWidgets.QVBoxLayout(self)
-        self.list_widget = QtWidgets.QListWidget(self)
-        self.list_widget.setObjectName("manager_extension_job_list")
-        layout.addWidget(self.list_widget)
-        remove_button = QtWidgets.QPushButton("Remove Queued Job", self)
-        remove_button.setObjectName("manager_extension_remove_job_button")
-        remove_button.clicked.connect(self._remove_selected)
-        layout.addWidget(remove_button)
-
-    def set_jobs(
-        self,
-        active: _ExtensionRoutineJob | None,
-        queued: tuple[_ExtensionRoutineJob, ...],
-    ) -> None:
-        self.list_widget.clear()
-        for job, active_job in (
-            *((job, True) for job in (() if active is None else (active,))),
-            *((job, False) for job in queued),
-        ):
-            item = QtWidgets.QListWidgetItem(
-                f"{job.routine.name} — {'running' if active_job else 'queued'}"
-            )
-            item.setData(QtCore.Qt.ItemDataRole.UserRole, job.job_id)
-            item.setData(QtCore.Qt.ItemDataRole.UserRole + 1, active_job)
-            self.list_widget.addItem(item)
-
-    @QtCore.Slot()
-    def _remove_selected(self) -> None:
-        item = self.list_widget.currentItem()
-        if item is None or bool(item.data(QtCore.Qt.ItemDataRole.UserRole + 1)):
-            return
-        self.remove_requested.emit(str(item.data(QtCore.Qt.ItemDataRole.UserRole)))
-
-
 class _ExtensionExecutionController(QtCore.QObject):
     """Own one serialized extension queue for one manager lifetime.
 
@@ -1288,13 +1244,8 @@ class _ExtensionExecutionController(QtCore.QObject):
         self._blocking_tasks_lock = threading.Lock()
         self._accepting = True
         self._shutdown_complete = False
-        self._progress_dialog = _ExtensionProgressDialog(manager)
-        self._remove_queued_slot = self.remove_queued
         self._finished_slot = self._finished
         self._started_slot = self._routine_started
-        self._refresh_progress_slot = self._refresh_progress
-        self._progress_dialog.remove_requested.connect(self._remove_queued_slot)
-        self.queue_changed.connect(self._refresh_progress_slot)
 
     @property
     def active(self) -> _ExtensionRoutineJob | None:
@@ -1309,10 +1260,23 @@ class _ExtensionExecutionController(QtCore.QObject):
         dispatched = () if active is None or active[1].started else (active[0],)
         return (*dispatched, *self._pending)
 
-    def show_progress(self) -> None:
-        self._refresh_progress()
-        self._progress_dialog.show()
-        self._progress_dialog.raise_()
+    def uses_extension(self, extension_id: str) -> bool:
+        """Return whether this manager retains work for one extension."""
+        active = self._active
+        if active is not None and active[0].extension_id == extension_id:
+            return True
+        if any(job.extension_id == extension_id for job in self._pending):
+            return True
+        with self._blocking_tasks_lock:
+            return any(
+                (
+                    task.extension_id
+                    if isinstance(task, _ExtensionValidationWorker)
+                    else task.call.extension_id
+                )
+                == extension_id
+                for task in self._blocking_tasks
+            )
 
     def run_loader(
         self,
@@ -1392,8 +1356,8 @@ class _ExtensionExecutionController(QtCore.QObject):
         extension_id: str,
         revision_hash: str,
         name: str,
-        metadata: _ExtensionMetadata,
-        source_modified_at: str | None,
+        change_summary: str = "",
+        source_modified_at: str | None = None,
     ) -> _ExtensionCatalogModel:
         """Validate embedded source in storage owned by this manager session."""
         existing = self._session_catalog_store.read().extensions.get(extension_id)
@@ -1402,7 +1366,7 @@ class _ExtensionExecutionController(QtCore.QObject):
             extension_id=extension_id,
             expected_revision=revision_hash,
             name=name,
-            metadata=metadata,
+            change_summary=change_summary,
             source_modified_at=source_modified_at,
             expected_record_generation=(
                 None if existing is None else existing.record_generation
@@ -1423,7 +1387,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         """Return one manager-local revision without importing its source."""
         catalog = self._session_catalog_store.read()
         record = catalog.extensions.get(extension_id)
-        if record is None or record.removed:
+        if record is None:
             return None
         revision = record.revisions.get(revision_hash)
         if revision is None:
@@ -1499,6 +1463,7 @@ class _ExtensionExecutionController(QtCore.QObject):
             except BaseException:
                 self._blocking_tasks.discard(task)
                 raise
+        self.queue_changed.emit()
         try:
             if QtCore.QThread.currentThread() == self.thread():
                 loop = QtCore.QEventLoop()
@@ -1525,6 +1490,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         finally:
             with self._blocking_tasks_lock:
                 self._blocking_tasks.discard(task)
+            self.queue_changed.emit()
         if task.error is not None:
             raise task.error
 
@@ -1636,7 +1602,6 @@ class _ExtensionExecutionController(QtCore.QObject):
         global_ready = (
             global_status == "ready"
             and record is not None
-            and not record.removed
             and record.enabled
             and (source_type is None or record.source_type == source_type)
             and revision is not None
@@ -1659,7 +1624,7 @@ class _ExtensionExecutionController(QtCore.QObject):
             catalog, record, revision = selected
             catalog_store = self._session_catalog_store
             pinned_revision = revision_hash
-        if record is None or record.removed or not record.enabled:
+        if record is None or not record.enabled:
             raise ExtensionExecutionError("The extension is not enabled")
         if source_type is not None and record.source_type != source_type:
             raise ExtensionExecutionError(
@@ -1818,12 +1783,6 @@ class _ExtensionExecutionController(QtCore.QObject):
             replay_source_data=result.job.input_data,
         )
 
-    @QtCore.Slot()
-    def _refresh_progress(self) -> None:
-        if not erlab.interactive.utils.qt_is_valid(self._progress_dialog):
-            return
-        self._progress_dialog.set_jobs(self.active, self.queued)
-
     def shutdown(self) -> None:
         if self._shutdown_complete:
             return
@@ -1870,15 +1829,6 @@ class _ExtensionExecutionController(QtCore.QObject):
                 self._active = None
         with self._blocking_tasks_lock:
             self._blocking_tasks.clear()
-        if erlab.interactive.utils.qt_is_valid(self._progress_dialog):
-            with contextlib.suppress(TypeError, RuntimeError):
-                self._progress_dialog.remove_requested.disconnect(
-                    self._remove_queued_slot
-                )
-            self._progress_dialog.close()
-            self._progress_dialog.deleteLater()
-        with contextlib.suppress(TypeError, RuntimeError):
-            self.queue_changed.disconnect(self._refresh_progress_slot)
         self._script_modules.clear()
         _remove_manager_modules(self._manager_session_id)
         self._session_directory.cleanup()

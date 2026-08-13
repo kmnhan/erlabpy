@@ -1982,6 +1982,7 @@ class ImageToolManager(_ImageToolManagerBase):
             self._deferred_workspace_actions_refresh = True
             return
         self._details_panel._update_actions()
+        self._extensions.update_actions()
 
     def about(self) -> None:
         self._widgets_controller.about()

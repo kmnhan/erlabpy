@@ -9520,6 +9520,11 @@ def test_high_dimensional_reduction_dialog_selects_scalar(qtbot) -> None:
         QtWidgets.QDialogButtonBox.StandardButton.Open
     )
 
+    assert isinstance(dialog.code_preview, erlab.interactive.utils.PythonCodeEditor)
+    assert dialog.code_preview.isReadOnly()
+    assert isinstance(
+        dialog.code_preview.highlighter, erlab.interactive.utils.PythonHighlighter
+    )
     assert not open_button.isEnabled()
     assert all(row.action == "keep" for row in dialog.rows)
     row = dialog.rows[-1]
@@ -9918,6 +9923,11 @@ def test_selection_dialog_seeds_4d_cursor_slice(qtbot) -> None:
 
     dialog = SelectionDialog(win.slicer_area)
 
+    assert isinstance(dialog.code_preview, erlab.interactive.utils.PythonCodeEditor)
+    assert dialog.code_preview.isReadOnly()
+    assert isinstance(
+        dialog.code_preview.highlighter, erlab.interactive.utils.PythonHighlighter
+    )
     assert [row.use_check.isChecked() for row in dialog.rows] == [
         False,
         False,
