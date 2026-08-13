@@ -1706,7 +1706,8 @@ class KspaceConversionDialog(DataTransformDialog):
     def _seed_from_current_view(self) -> None:
         initial_normal_emission, initial_delta = (
             _kspace_conversion.initial_normal_emission_from_slicer_area(
-                self.slicer_area
+                self.slicer_area,
+                configuration=self._control_data.kspace.configuration,
             )
         )
         if initial_normal_emission is not None:

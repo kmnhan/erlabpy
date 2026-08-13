@@ -8431,6 +8431,7 @@ def test_itool_open_in_ktool_uses_guideline_seed_on_alpha_beta_plane(
 
     assert captured["kwargs"]["initial_normal_emission"] == (1.0, 4.0)
     assert captured["kwargs"]["initial_delta"] == pytest.approx(30.0)
+    assert captured["kwargs"]["_initial_delta_from_guideline"] is True
 
     win.close()
 
@@ -8463,6 +8464,7 @@ def test_itool_open_in_ktool_ignores_non_alpha_beta_guidelines(
 
     assert captured["kwargs"]["initial_normal_emission"] == (4.0, 1.0)
     assert captured["kwargs"]["initial_delta"] is None
+    assert captured["kwargs"]["_initial_delta_from_guideline"] is False
 
     win.close()
 

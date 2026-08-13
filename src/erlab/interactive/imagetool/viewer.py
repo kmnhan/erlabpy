@@ -3892,6 +3892,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             data_name=self.watched_data_name,
             initial_normal_emission=initial_normal_emission,
             initial_delta=initial_delta,
+            _initial_delta_from_guideline=initial_delta is not None,
             options_model=self._options_model,
             execute=False,
         )
