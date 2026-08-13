@@ -70,7 +70,8 @@ and DPI of the figure, and the number of axes and their arrangement.
   several cells or nested regions created with {class}`matplotlib.gridspec.GridSpec`.
   Drag in the GridSpec editor to create rectangular axes or nested grids. Open a nested
   grid to edit it in place, then use the breadcrumb controls to return to the parent
-  grid.
+  grid. Select an axes region, then use the x or y control under {guilabel}`Share axes`
+  to select the axes that share that coordinate axis.
 
 (figure-composer-recipe)=
 

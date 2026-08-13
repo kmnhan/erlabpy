@@ -711,6 +711,79 @@ def test_figure_composer_codegen_axes_helpers_cover_invalid_targets(qtbot) -> No
         )
 
 
+def test_figure_composer_gridspec_shared_axes_render_and_generate_code(qtbot) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="data")
+    top = FigureGridSpecAxesState(
+        axes_id="top-id",
+        label="top",
+        span=FigureGridSpecSpanState(row_start=0, row_stop=1, col_start=0, col_stop=1),
+    )
+    lower_left = FigureGridSpecAxesState(
+        axes_id="lower-left-id",
+        label="lower_left",
+        span=FigureGridSpecSpanState(row_start=0, row_stop=1, col_start=0, col_stop=1),
+    )
+    lower_right = FigureGridSpecAxesState(
+        axes_id="lower-right-id",
+        label="lower_right",
+        span=FigureGridSpecSpanState(row_start=0, row_stop=1, col_start=1, col_stop=2),
+    )
+    child = FigureGridSpecGridState(
+        grid_id="child",
+        nrows=1,
+        ncols=2,
+        span=FigureGridSpecSpanState(row_start=1, row_stop=2, col_start=0, col_stop=1),
+        axes=(lower_left, lower_right),
+    )
+    setup = FigureSubplotsState(
+        layout_mode="gridspec",
+        gridspec=FigureGridSpecLayoutState(
+            root=FigureGridSpecGridState(
+                grid_id="root",
+                nrows=2,
+                ncols=1,
+                axes=(top,),
+                child_grids=(child,),
+            ),
+            shared_x_axes=(("top-id", "lower-left-id", "lower-right-id"),),
+            shared_y_axes=(("top-id", "lower-right-id"),),
+        ),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=setup,
+            sources=(FigureSourceState(name="data", label="data"),),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    figure = plt.figure()
+    rendered = figurecomposer_rendering._make_axes(tool, figure, sync_visible=False)
+    assert isinstance(rendered, dict)
+    shared_x = rendered["top-id"].get_shared_x_axes()
+    shared_y = rendered["top-id"].get_shared_y_axes()
+    assert shared_x.joined(rendered["top-id"], rendered["lower-left-id"])
+    assert shared_x.joined(rendered["top-id"], rendered["lower-right-id"])
+    assert not shared_y.joined(rendered["top-id"], rendered["lower-left-id"])
+    assert shared_y.joined(rendered["top-id"], rendered["lower-right-id"])
+    plt.close(figure)
+
+    namespace = {"data": data}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    generated_top = namespace["top"]
+    generated_left = namespace["lower_left"]
+    generated_right = namespace["lower_right"]
+    generated_shared_x = generated_top.get_shared_x_axes()
+    generated_shared_y = generated_top.get_shared_y_axes()
+    assert generated_shared_x.joined(generated_top, generated_left)
+    assert generated_shared_x.joined(generated_top, generated_right)
+    assert not generated_shared_y.joined(generated_top, generated_left)
+    assert generated_shared_y.joined(generated_top, generated_right)
+    plt.close(namespace["fig"])
+
+
 def test_figure_composer_gridspec_helpers_cover_naming_and_region_edges() -> None:
     invalid_child = FigureGridSpecGridState(
         grid_id="child",
@@ -900,6 +973,14 @@ def test_figure_composer_state_validators_cover_invalid_values() -> None:
         FigureGridSpecGridState(nrows=0, ncols=1)
     with pytest.raises(ValueError, match="ratios must be positive"):
         FigureGridSpecGridState(nrows=1, ncols=1, width_ratios=(0.0,))
+    with pytest.raises(ValueError, match="at least two axes"):
+        FigureGridSpecLayoutState(shared_x_axes=(("axis-a",),))
+    with pytest.raises(ValueError, match="duplicate axes"):
+        FigureGridSpecLayoutState(shared_x_axes=(("axis-a", "axis-a"),))
+    with pytest.raises(ValueError, match="multiple shared-axis groups"):
+        FigureGridSpecLayoutState(
+            shared_x_axes=(("axis-a", "axis-b"), ("axis-b", "axis-c"))
+        )
     with pytest.raises(ValueError, match="at least one row"):
         FigureSubplotsState(nrows=0)
     with pytest.raises(ValueError, match="figsize values"):
@@ -1135,4 +1216,142 @@ def test_gridspec_transformations_validate_edits_and_ignore_stale_ids() -> None:
     assert (
         figurecomposer_gridspec._gridspec_remove_region(setup, "root", "missing")
         == setup
+    )
+
+
+def test_gridspec_shared_axes_groups_update_and_clean_up() -> None:
+    axes = tuple(
+        FigureGridSpecAxesState(
+            axes_id=f"axis-{index}",
+            span=FigureGridSpecSpanState(
+                row_start=0,
+                row_stop=1,
+                col_start=index,
+                col_stop=index + 1,
+            ),
+        )
+        for index in range(4)
+    )
+    setup = FigureSubplotsState(
+        layout_mode="gridspec",
+        gridspec=FigureGridSpecLayoutState(
+            root=FigureGridSpecGridState(grid_id="root", nrows=1, ncols=4, axes=axes),
+            shared_x_axes=(("axis-0", "axis-1", "axis-2"),),
+            shared_y_axes=(("axis-0", "axis-1"),),
+        ),
+    )
+
+    assert figurecomposer_gridspec._gridspec_shared_axes_group(
+        setup, "axis-1", "x"
+    ) == ("axis-0", "axis-1", "axis-2")
+    assert figurecomposer_gridspec._gridspec_shared_axes_group(
+        setup, "axis-3", "x"
+    ) == ("axis-3",)
+    assert (
+        figurecomposer_gridspec._gridspec_shared_axes_group(setup, "missing", "x") == ()
+    )
+    assert figurecomposer_gridspec._gridspec_shared_axes_targets(setup, "x") == {
+        "axis-1": "axis-0",
+        "axis-2": "axis-0",
+    }
+
+    updated = figurecomposer_gridspec._gridspec_set_shared_axes_group(
+        setup, "axis-0", "x", ("axis-0", "axis-3")
+    )
+    assert updated.gridspec.shared_x_axes == (
+        ("axis-0", "axis-3"),
+        ("axis-1", "axis-2"),
+    )
+    assert (
+        figurecomposer_gridspec._gridspec_set_shared_axes_group(
+            updated, "missing", "x", ("axis-0",)
+        )
+        == updated
+    )
+    assert (
+        figurecomposer_gridspec._gridspec_set_shared_axes_group(
+            updated, "axis-0", "x", ("axis-0", "axis-3")
+        )
+        == updated
+    )
+    independent = figurecomposer_gridspec._gridspec_set_shared_axes_group(
+        updated, "axis-0", "x", ("axis-0",)
+    )
+    assert independent.gridspec.shared_x_axes == (("axis-1", "axis-2"),)
+    with pytest.raises(ValueError, match="unknown shared-axis dimension"):
+        figurecomposer_gridspec._gridspec_shared_axes_group(
+            setup, "axis-0", typing.cast("typing.Any", "z")
+        )
+
+    invalid_root = updated.gridspec.root.model_copy(update={"ncols": 3})
+    invalid_setup = updated.model_copy(
+        update={"gridspec": updated.gridspec.model_copy(update={"root": invalid_root})}
+    )
+    assert figurecomposer_gridspec._gridspec_shared_axes_targets(
+        invalid_setup, "x"
+    ) == {"axis-2": "axis-1"}
+
+    restored = FigureSubplotsState.model_validate_json(updated.model_dump_json())
+    assert restored == updated
+    assert (
+        figurecomposer_gridspec._gridspec_remove_region(updated, "missing", "axis-1")
+        == updated
+    )
+    removed = figurecomposer_gridspec._gridspec_remove_region(updated, "root", "axis-1")
+    assert removed.gridspec.shared_x_axes == (("axis-0", "axis-3"),)
+    assert removed.gridspec.shared_y_axes == ()
+
+    nested_axes = tuple(
+        axis.model_copy(
+            update={
+                "axes_id": f"nested-{index}",
+                "span": FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=index,
+                    col_stop=index + 1,
+                ),
+            }
+        )
+        for index, axis in enumerate(axes[:2])
+    )
+    child = FigureGridSpecGridState(
+        grid_id="child",
+        nrows=1,
+        ncols=2,
+        span=FigureGridSpecSpanState(row_start=0, row_stop=1, col_start=0, col_stop=1),
+        axes=nested_axes,
+    )
+    nested_setup = FigureSubplotsState(
+        layout_mode="gridspec",
+        gridspec=FigureGridSpecLayoutState(
+            root=FigureGridSpecGridState(
+                grid_id="root", nrows=1, ncols=1, child_grids=(child,)
+            ),
+            shared_x_axes=(("nested-0", "nested-1"),),
+        ),
+    )
+    removed_child = figurecomposer_gridspec._gridspec_remove_region(
+        nested_setup, "root", "child"
+    )
+    assert removed_child.gridspec.root.child_grids == ()
+    assert removed_child.gridspec.shared_x_axes == ()
+
+
+def test_subplots_shared_axes_groups_cover_boolean_modes() -> None:
+    setup = FigureSubplotsState(nrows=1, ncols=2)
+    axes_ids = ("axis-0", "axis-1")
+
+    assert (
+        figurecomposer_gridspec._subplots_shared_axes_groups(setup, axes_ids, False)
+        == ()
+    )
+    assert figurecomposer_gridspec._subplots_shared_axes_groups(
+        setup, axes_ids, True
+    ) == (axes_ids,)
+    assert (
+        figurecomposer_gridspec._subplots_shared_axes_groups(
+            FigureSubplotsState(), ("axis-0",), True
+        )
+        == ()
     )

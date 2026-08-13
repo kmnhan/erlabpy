@@ -23,9 +23,12 @@ from erlab.interactive._figurecomposer._model._gridspec import (
     _gridspec_region_label,
     _gridspec_region_valid,
     _gridspec_remove_region,
+    _gridspec_set_shared_axes_group,
+    _gridspec_shared_axes_group,
     _gridspec_update_axis_variable_name,
     _gridspec_update_grid_settings,
     _gridspec_update_region_span,
+    _gridspec_valid_axes_ids,
 )
 from erlab.interactive._figurecomposer._model._state import (
     FigureGridSpecGridState,
@@ -45,6 +48,61 @@ from erlab.interactive._widgets import _Separator
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable
+
+
+class _GridSpecShareAxesDialog(QtWidgets.QDialog):
+    """Select one complete shared-axis group from a visual GridSpec layout."""
+
+    def __init__(
+        self,
+        setup: FigureSubplotsState,
+        axes_id: str,
+        dimension: typing.Literal["x", "y"],
+        *,
+        reserved_names: Iterable[str] = (),
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._axes_id = axes_id
+        self.setObjectName(f"figureComposerGridSpecShare{dimension.upper()}Dialog")
+        self.setWindowTitle(f"Share {dimension} axis")
+
+        layout = QtWidgets.QVBoxLayout(self)
+        names = _gridspec_axis_code_names(setup, reserved_names=reserved_names)
+        axis_name = names.get(axes_id, axes_id)
+        label = QtWidgets.QLabel(
+            f"Select all axes that share the {dimension} axis with {axis_name}.",
+            self,
+        )
+        label.setWordWrap(True)
+        layout.addWidget(label)
+
+        self.axes_selector = _GridSpecViewWidget(self, mode="select")
+        self.axes_selector.set_layout(setup.gridspec.root, names)
+        self.axes_selector.set_selected_axes_ids(
+            _gridspec_shared_axes_group(setup, axes_id, dimension)
+        )
+        self.axes_selector.sigSelectionChanged.connect(self._selection_changed)
+        layout.addWidget(self.axes_selector)
+
+        self.button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+
+    def selected_axes_ids(self) -> tuple[str, ...]:
+        """Return the selected group, including the fixed current axes."""
+        return self.axes_selector.selected_axes_ids()
+
+    @QtCore.Slot(object)
+    def _selection_changed(self, axes_ids_object: object) -> None:
+        axes_ids = typing.cast("tuple[str, ...]", axes_ids_object)
+        if self._axes_id not in axes_ids:
+            self.axes_selector.set_selected_axes_ids((*axes_ids, self._axes_id))
 
 
 class FigureLayoutPanel(QtWidgets.QWidget):
@@ -193,8 +251,34 @@ class FigureLayoutPanel(QtWidgets.QWidget):
         )
         self.sharex_combo = QtWidgets.QComboBox(self)
         self.sharex_combo.addItems(["False", "True", "row", "col", "all"])
+        self.sharex_combo.setToolTip(
+            "Matplotlib sharex setting passed to plt.subplots."
+        )
         self.sharey_combo = QtWidgets.QComboBox(self)
         self.sharey_combo.addItems(["False", "True", "row", "col", "all"])
+        self.sharey_combo.setToolTip(
+            "Matplotlib sharey setting passed to plt.subplots."
+        )
+        self.gridspec_sharex_button = _step_toolbar_button(
+            self,
+            "figureComposerGridSpecShareXButton",
+            "Independent…",
+            "Select axes that share the x axis.",
+        )
+        self.gridspec_sharey_button = _step_toolbar_button(
+            self,
+            "figureComposerGridSpecShareYButton",
+            "Independent…",
+            "Select axes that share the y axis.",
+        )
+        self.sharex_control = QtWidgets.QStackedWidget(self)
+        self.sharex_control.setObjectName("figureComposerShareXControl")
+        self.sharex_control.addWidget(self.sharex_combo)
+        self.sharex_control.addWidget(self.gridspec_sharex_button)
+        self.sharey_control = QtWidgets.QStackedWidget(self)
+        self.sharey_control.setObjectName("figureComposerShareYControl")
+        self.sharey_control.addWidget(self.sharey_combo)
+        self.sharey_control.addWidget(self.gridspec_sharey_button)
         self.width_ratios_edit = QtWidgets.QLineEdit(self)
         self.width_ratios_edit.setObjectName("figureComposerWidthRatiosEdit")
         self.height_ratios_edit = QtWidgets.QLineEdit(self)
@@ -287,13 +371,13 @@ class FigureLayoutPanel(QtWidgets.QWidget):
             7,
             "Share axes",
             "figureComposerShareControls",
-            "Matplotlib shared-axis settings passed to plt.subplots.",
+            "Configure shared x and y axes.",
             "x",
-            self.sharex_combo,
-            "Matplotlib sharex setting passed to plt.subplots.",
+            self.sharex_control,
+            "Shared x-axis settings for the current layout.",
             "y",
-            self.sharey_combo,
-            "Matplotlib sharey setting passed to plt.subplots.",
+            self.sharey_control,
+            "Shared y-axis settings for the current layout.",
         )
         self._add_grid_pair_row(
             layout,
@@ -490,6 +574,12 @@ class FigureLayoutPanel(QtWidgets.QWidget):
         self.layout_combo.currentTextChanged.connect(self._controls_changed)
         self.sharex_combo.currentTextChanged.connect(self._controls_changed)
         self.sharey_combo.currentTextChanged.connect(self._controls_changed)
+        self.gridspec_sharex_button.clicked.connect(
+            lambda: self._edit_gridspec_shared_axes("x")
+        )
+        self.gridspec_sharey_button.clicked.connect(
+            lambda: self._edit_gridspec_shared_axes("y")
+        )
 
     @QtCore.Slot()
     @QtCore.Slot(int)
@@ -683,8 +773,8 @@ class FigureLayoutPanel(QtWidgets.QWidget):
         gridspec_mode = setup.layout_mode == "gridspec"
         self.gridspec_editor_container.setVisible(gridspec_mode)
         self.gridspec_editor_widget.setVisible(gridspec_mode)
-        self.sharex_combo.setEnabled(not gridspec_mode)
-        self.sharey_combo.setEnabled(not gridspec_mode)
+        self.sharex_control.setCurrentIndex(int(gridspec_mode))
+        self.sharey_control.setCurrentIndex(int(gridspec_mode))
 
     def _sync_size_mm_controls(self) -> None:
         self.width_mm_spin.setValue(self._setup.figsize[0] * _MM_PER_INCH)
@@ -843,6 +933,79 @@ class FigureLayoutPanel(QtWidgets.QWidget):
             if has_region
             else "Select an axes or nested grid region to delete it."
         )
+        self._refresh_gridspec_share_controls()
+
+    def _refresh_gridspec_share_controls(self) -> None:
+        setup = self._setup
+        region_id = self.gridspec_layout_widget.selected_region_id()
+        valid_region = bool(region_id and _gridspec_valid_axes_ids(setup, (region_id,)))
+        can_share = (
+            valid_region
+            and len(_gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))) >= 2
+        )
+        share_buttons: tuple[
+            tuple[typing.Literal["x", "y"], QtWidgets.QToolButton], ...
+        ] = (
+            ("x", self.gridspec_sharex_button),
+            ("y", self.gridspec_sharey_button),
+        )
+        for dimension, button in share_buttons:
+            button.setEnabled(can_share)
+            if not valid_region:
+                button.setText("Select axes…")
+                button.setToolTip("Select an axes region before configuring sharing.")
+                continue
+            group = _gridspec_shared_axes_group(
+                setup,
+                region_id,
+                dimension,
+            )
+            if len(group) < 2:
+                button.setText("Independent…")
+                button.setToolTip(
+                    f"The selected axes has an independent {dimension} axis. "
+                    "Click to change it."
+                )
+                continue
+            names = tuple(
+                _gridspec_axis_display_name(
+                    setup, axes_id, reserved_names=self._reserved_names
+                )
+                for axes_id in group
+                if axes_id != region_id
+            )
+            button.setText(f"Shared ({len(group)} axes)…")
+            button.setToolTip(
+                f"The selected axes shares its {dimension} axis with "
+                + ", ".join(names)
+                + ". Click to change the group."
+            )
+
+    def _edit_gridspec_shared_axes(self, dimension: typing.Literal["x", "y"]) -> None:
+        if self._syncing or self._released or self._setup.layout_mode != "gridspec":
+            return
+        axes_id = self.gridspec_layout_widget.selected_region_id()
+        if not _gridspec_valid_axes_ids(self._setup, (axes_id,)):
+            return
+        dialog = _GridSpecShareAxesDialog(
+            self._setup,
+            axes_id,
+            dimension,
+            reserved_names=self._reserved_names,
+            parent=self,
+        )
+        result = dialog.exec()
+        selected_axes_ids = dialog.selected_axes_ids()
+        dialog.deleteLater()
+        if result != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        setup = _gridspec_set_shared_axes_group(
+            self._setup,
+            axes_id,
+            dimension,
+            selected_axes_ids,
+        )
+        self._request_setup(setup, selected_region_id=axes_id)
 
     @staticmethod
     def _set_combo_value(combo: QtWidgets.QComboBox, value: str) -> None:

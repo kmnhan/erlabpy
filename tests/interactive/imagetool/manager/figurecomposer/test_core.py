@@ -274,6 +274,14 @@ def test_figure_document_converts_layout_and_operation_targets_atomically() -> N
     axes_ids = figurecomposer_gridspec._gridspec_all_axes_ids(gridspec_setup)
     converted = document.recipe.operations
     assert gridspec_setup.layout_mode == "gridspec"
+    assert gridspec_setup.gridspec.shared_x_axes == (
+        (axes_ids[0], axes_ids[2]),
+        (axes_ids[1], axes_ids[3]),
+    )
+    assert gridspec_setup.gridspec.shared_y_axes == (
+        (axes_ids[0], axes_ids[1]),
+        (axes_ids[2], axes_ids[3]),
+    )
     assert converted[0].axes.axes_ids == (axes_ids[1], axes_ids[2])
     assert converted[0].axes.expression == ""
     assert converted[1] == figure_operation
