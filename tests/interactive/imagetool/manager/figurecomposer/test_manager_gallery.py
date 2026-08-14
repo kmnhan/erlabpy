@@ -2072,7 +2072,8 @@ def test_manager_pending_figure_source_reference_uses_saved_imagetool_dim_order(
         assert isinstance(loaded_figure, FigureComposerTool)
         source = loaded_figure.source_data()[loaded_figure.tool_status.primary_source]
         assert source.dims == data.dims
-        assert source.chunks is not None
+        assert source.chunks is None
+        assert workspace_arrays.dataarray_is_numpy_backed(source)
         np.testing.assert_array_equal(source.values, data.values)
         assert source_node.pending_workspace_memory_payload is not None
 

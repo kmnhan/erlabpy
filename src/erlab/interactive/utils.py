@@ -5586,6 +5586,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         reference_resolver: Callable[[Mapping[str, typing.Any]], xr.DataArray | None]
         | None,
         variable_names: Collection[str] | None = None,
+        materialize_references: bool = False,
     ) -> dict[str, xr.DataArray]:
         requested = None if variable_names is None else frozenset(variable_names)
         references = cls._saved_tool_data_references(ds)
@@ -5594,12 +5595,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             if requested is not None and variable_name not in requested:
                 continue
             try:
-                data_items[variable_name] = cls._resolve_saved_tool_data_reference(
+                resolved = cls._resolve_saved_tool_data_reference(
                     reference,
                     ds,
                     source_parent_data=source_parent_data,
                     reference_resolver=reference_resolver,
                 )
+                if materialize_references:
+                    resolved = resolved.copy(deep=False).load()
+                data_items[variable_name] = resolved
             except _MissingSavedToolDataReferenceError:
                 if cls._missing_saved_tool_data_reference_optional(
                     variable_name, reference, ds
@@ -5671,6 +5675,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             "Callable[[Mapping[str, typing.Any]], xr.DataArray | None] | None",
             kwargs.pop("_tool_data_reference_resolver", None),
         )
+        materialize_data_references = bool(
+            kwargs.pop("_materialize_tool_data_references", False)
+        )
         defer_restore_work = bool(kwargs.pop("_defer_restore_work", False))
         ds = _serialization.restore_private_coords(ds, _SAVED_TOOL_DATA_NAME)
 
@@ -5689,6 +5696,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             ds,
             source_parent_data=source_parent_data,
             reference_resolver=reference_resolver,
+            materialize_references=materialize_data_references,
         )
 
         # Instantiate the class and set the status

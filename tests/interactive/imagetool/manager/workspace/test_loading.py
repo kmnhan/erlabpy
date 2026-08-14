@@ -1860,6 +1860,39 @@ def test_manager_load_workspace_tool_dataset_rejects_root_tool(
         )
 
 
+def test_manager_load_workspace_tool_dataset_materializes_reference(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(16.0).reshape((4, 4)), dims=("x", "y"), name="parent"
+    ).chunk({"x": 2, "y": 2})
+
+    with manager_context() as manager:
+        parent = itool(data, manager=False, execute=False, auto_compute=False)
+        assert isinstance(parent, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(parent, show=False)
+
+        child = _WorkspaceSweepChildTool(data.rename("child"))
+        child.set_source_binding(full_data())
+        manager.add_childtool(child, 0, show=False)
+        with child._save_tool_data_reference_context(manager._tool_graph.nodes):
+            ds = child.to_dataset()
+
+        target = manager._workspace_controller.loading._load_workspace_tool_dataset(
+            ds, parent_target=0
+        )
+        loaded_child = manager.get_childtool(target)
+
+        assert data.chunks is not None
+        assert loaded_child.tool_data.chunks is None
+        assert workspace_arrays.dataarray_is_numpy_backed(loaded_child.tool_data)
+        xr.testing.assert_identical(
+            loaded_child.tool_data, data.rename("child").compute()
+        )
+
+
 def test_manager_workspace_partially_loads_corrupted_child_with_warning(
     qtbot,
     monkeypatch,

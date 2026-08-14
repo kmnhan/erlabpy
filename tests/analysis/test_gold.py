@@ -492,7 +492,7 @@ def test_edge_adaptive_uses_per_edc_ranges(
     gold: xr.DataArray, use_dask: bool, normalize: bool
 ) -> None:
     if use_dask:
-        gold = gold.chunk(alpha=1, eV=25)
+        gold = gold.chunk(alpha=1)
 
     result = edge(
         gold,

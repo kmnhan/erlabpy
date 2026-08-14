@@ -1091,6 +1091,7 @@ class _WorkspaceLoader:
                         ds,
                         _source_parent_data=source_parent_data,
                         _tool_data_reference_resolver=tool_data_reference_resolver,
+                        _materialize_tool_data_references=True,
                         _defer_restore_work=True,
                     )
                 )
