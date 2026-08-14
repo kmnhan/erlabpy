@@ -7,6 +7,7 @@ ERLabPy is organized into multiple subpackages and submodules classified by thei
 | Subpackage               | Description                                                                                                                              |
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | {mod}`erlab.analysis`    | Routines for analyzing ARPES data.                                                                                                       |
+| {mod}`erlab.extensions`  | Public APIs for ImageTool Manager analysis and loader extensions.                                                                        |
 | {mod}`erlab.io`          | Reading and writing data.                                                                                                                |
 | {mod}`erlab.plotting`    | Functions related to static plotting with matplotlib.                                                                                    |
 | {mod}`erlab.interactive` | Interactive tools and widgets based on Qt and pyqtgraph                                                                                  |
@@ -21,6 +22,7 @@ ERLabPy is organized into multiple subpackages and submodules classified by thei
 :hidden: true
 
 erlab.analysis
+erlab.extensions
 erlab.io
 erlab.plotting
 erlab.interactive

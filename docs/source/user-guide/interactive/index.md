@@ -18,6 +18,9 @@ corresponding public Python APIs and explains how to round-trip between them.
 - [ImageTool manager](manager.md) sits on top of ImageTool and provides a high-level
   interface for organizing large numbers of ImageTools, and also keeps track of data
   provenance and analysis steps for reproducibility.
+- [ImageTool Manager extensions](extensions.md) add lab-specific analysis routines and
+  data loaders with ordinary Python functions. Basic extensions do not require Qt or
+  knowledge of manager internals.
 - Specialized tools such as {ref}`ktool <guide-ktool>` (momentum conversion),
   {ref}`dtool <guide-dtool>` (derivative plotting), and the
   {ref}`data explorer <guide-data-explorer>` integrate with both ImageTool and the
@@ -35,6 +38,7 @@ corresponding public Python APIs and explains how to round-trip between them.
 
 imagetool
 manager
+extensions
 figure-composer
 misc-tools
 options
