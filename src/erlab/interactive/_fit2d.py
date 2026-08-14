@@ -26,10 +26,14 @@ from xarray_lmfit.modelfit import (
 import erlab.interactive.utils
 from erlab.interactive._fit1d import (
     Fit1DTool,
+    _broadcast_uncertainty,
     _FitRestoreState,
     _load_lmfit_for_ftool_restore,
     _SnapCursorLine,
     _State2D,
+    _uncertainty_from_weights,
+    _validate_uncertainty_input,
+    _validate_weights_input,
 )
 from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceOperation,
@@ -71,6 +75,50 @@ _FIT2D_SEQUENCE_LIVE_REFRESH_INTERVAL_S = 0.10
 _R = typing.TypeVar("_R")
 
 
+def _fit_dataset_settings(
+    fit_ds: xr.Dataset,
+) -> tuple[bool | None, bool | None]:
+    """Return common covariance-scaling and weighted-fit settings."""
+    if "modelfit_results" not in fit_ds:
+        return None, None
+    try:
+        result_ds = _load_lmfit_for_ftool_restore(
+            lambda: fit_ds[["modelfit_results"]].compute()
+        )
+        results = result_ds["modelfit_results"].values
+    except Exception:
+        return None, None
+    scale_covar_values: set[bool] = set()
+    weighted_values: set[bool] = set()
+    scale_covar_known = True
+    weighted_known = True
+    for result in results.flat:
+        value = getattr(result, "scale_covar", None)
+        if not isinstance(value, (bool, np.bool_)):
+            scale_covar_known = False
+        else:
+            scale_covar_values.add(bool(value))
+        if not hasattr(result, "weights"):
+            weighted_known = False
+        else:
+            weighted_values.add(result.weights is not None)
+
+    scale_covar = (
+        scale_covar_values.pop()
+        if scale_covar_known and len(scale_covar_values) == 1
+        else None
+    )
+    weighted = (
+        weighted_values.pop() if weighted_known and len(weighted_values) == 1 else None
+    )
+    return scale_covar, weighted
+
+
+def _fit_dataset_scale_covar(fit_ds: xr.Dataset) -> bool | None:
+    """Return the common covariance-scaling setting in saved fit results."""
+    return _fit_dataset_settings(fit_ds)[0]
+
+
 def _rebuild_ui(
     *,
     mark_fresh: bool = True,
@@ -103,6 +151,12 @@ def _rebuild_ui(
                     self._data_full.isel({self._y_dim_name: self._current_idx}),
                     self._model,
                     None,
+                    uncertainty=(
+                        self._current_uncertainty()
+                        if self._direct_weights_full is None
+                        else None
+                    ),
+                    direct_weights=self._current_direct_weights(),
                     data_name=self._data_name,
                     model_name=self._model_name,
                 )
@@ -295,6 +349,7 @@ class Fit2DTool(Fit1DTool):
     _FIT_RANGE_MIN_COORD: typing.ClassVar[str] = "__ftool_fit_range_min__"
     _FIT_RANGE_MAX_COORD: typing.ClassVar[str] = "__ftool_fit_range_max__"
     _PARAMETER_OUTPUT_SEPARATOR: typing.ClassVar[str] = ":"
+    _direct_weights_full: xr.DataArray | None
 
     class Output(enum.StrEnum):
         PARAMETER_VALUES = "fit2d.param_plot.values"
@@ -350,6 +405,52 @@ class Fit2DTool(Fit1DTool):
         return self._data_full
 
     @property
+    def uncertainty(self) -> xr.DataArray | None:
+        """Absolute standard uncertainty used for weighted fitting."""
+        return self._uncertainty_full
+
+    def _set_uncertainty(self, uncertainty: xr.DataArray | None) -> None:
+        self._direct_weights_full = None
+        self._uncertainty_full = _validate_uncertainty_input(
+            self._data_full, uncertainty
+        )
+        self._direct_weights = None
+        self._uncertainty = self._current_uncertainty()
+
+    def _set_direct_weights(
+        self, weights: xr.DataArray | None, *, weights_name: str | None = None
+    ) -> None:
+        self._direct_weights_full = _validate_weights_input(self._data_full, weights)
+        self._uncertainty_full = (
+            None
+            if self._direct_weights_full is None
+            else _uncertainty_from_weights(self._direct_weights_full)
+        )
+        self._direct_weights = self._current_direct_weights()
+        self._uncertainty = self._current_uncertainty()
+        if weights_name is not None:
+            self._direct_weights_name = weights_name
+            self._uncertainty_name = f"1 / ({weights_name})"
+        self._refresh_weighting_ui()
+
+    def _direct_weights_for_persistence(self) -> xr.DataArray | None:
+        return self._direct_weights_full
+
+    def _current_direct_weights(self) -> xr.DataArray | None:
+        if self._direct_weights_full is None:
+            return None
+        if self._y_dim_name not in self._direct_weights_full.dims:
+            return self._direct_weights_full
+        return self._direct_weights_full.isel({self._y_dim_name: self._current_idx})
+
+    def _current_uncertainty(self) -> xr.DataArray | None:
+        if self._uncertainty_full is None:
+            return None
+        return _broadcast_uncertainty(self._data_full, self._uncertainty_full).isel(
+            {self._y_dim_name: self._current_idx}
+        )
+
+    @property
     def preview_imageitem(self) -> pg.ImageItem:
         return self.image
 
@@ -359,15 +460,18 @@ class Fit2DTool(Fit1DTool):
         model: lmfit.Model | None = None,
         params: lmfit.Parameters | Mapping[str, typing.Any] | None = None,
         *,
+        uncertainty: xr.DataArray | None = None,
         data_name: str | None = None,
         model_name: str | None = None,
+        uncertainty_name: str | None = None,
+        scale_covar: bool | None = None,
     ) -> None:
         if data.ndim != 2:
             raise ValueError("`data` must be a 2D DataArray")
 
         if data_name is None:
             data_name = "data"
-        self._init_full_data_state(data, data_name=data_name)
+        self._init_full_data_state(data, uncertainty=uncertainty, data_name=data_name)
 
         if params is not None:
             parameter_inputs = _parse_params(params)
@@ -427,7 +531,10 @@ class Fit2DTool(Fit1DTool):
             self._data_full.isel({self._y_dim_name: self._current_idx}),
             model,
             params,
+            uncertainty=self._current_uncertainty(),
             model_name=model_name,
+            uncertainty_name=uncertainty_name,
+            scale_covar=scale_covar,
         )
 
         self.param_model.sigParamsChanged.connect(self._update_params_full)
@@ -466,8 +573,23 @@ class Fit2DTool(Fit1DTool):
         info += self._summary_section("Current Slice Stats", self._fit_stats_rows())
         return info
 
-    def _init_full_data_state(self, data: xr.DataArray, *, data_name: str) -> None:
+    def _init_full_data_state(
+        self,
+        data: xr.DataArray,
+        *,
+        uncertainty: xr.DataArray | None = None,
+        direct_weights: xr.DataArray | None = None,
+        data_name: str,
+    ) -> None:
         self._data_full: xr.DataArray = data
+        if uncertainty is not None and direct_weights is not None:
+            raise ValueError("Only one of `uncertainty` and direct weights can be set")
+        self._direct_weights_full = _validate_weights_input(data, direct_weights)
+        self._uncertainty_full = (
+            _validate_uncertainty_input(data, uncertainty)
+            if self._direct_weights_full is None
+            else _uncertainty_from_weights(self._direct_weights_full)
+        )
         self._y_dim_name: Hashable = data.dims[0]
         self._y_values_cache: np.ndarray | None = None
         y_size = int(self._data_full.sizes[self._y_dim_name])
@@ -510,11 +632,24 @@ class Fit2DTool(Fit1DTool):
             old_cw.setParent(None)
             old_cw.deleteLater()
 
-        self._init_full_data_state(data, data_name=self._data_name_full)
+        uncertainty = self._uncertainty_full
+        direct_weights = self._direct_weights_full
+        self._init_full_data_state(
+            data,
+            uncertainty=uncertainty if direct_weights is None else None,
+            direct_weights=direct_weights,
+            data_name=self._data_name_full,
+        )
         self._reset_fit_state(
             self._data_full.isel({self._y_dim_name: self._current_idx}),
             self._model,
             params,
+            uncertainty=(
+                self._current_uncertainty()
+                if self._direct_weights_full is None
+                else None
+            ),
+            direct_weights=self._current_direct_weights(),
             data_name=self._data_name,
             model_name=self._model_name,
         )
@@ -1169,7 +1304,19 @@ class Fit2DTool(Fit1DTool):
     def _do_transpose(self) -> None:
         """Transpose the full 2D data (swap axes)."""
         self._init_full_data_state(
-            self._data_full.transpose(), data_name=self._data_name_full
+            self._data_full.transpose(),
+            uncertainty=(
+                None
+                if self._uncertainty_full is None
+                or self._direct_weights_full is not None
+                else self._uncertainty_full.transpose()
+            ),
+            direct_weights=(
+                None
+                if self._direct_weights_full is None
+                else self._direct_weights_full.transpose()
+            ),
+            data_name=self._data_name_full,
         )
 
     @QtCore.Slot()
@@ -1728,6 +1875,8 @@ class Fit2DTool(Fit1DTool):
 
     def _load_contents_from_index(self) -> None:
         self._data = self._data_full.isel({self._y_dim_name: self._current_idx})
+        self._direct_weights = self._current_direct_weights()
+        self._uncertainty = self._current_uncertainty()
 
         params = self._params_full[self._current_idx]
         params_from_coord = self._params_from_coord_full[self._current_idx]
@@ -1844,7 +1993,11 @@ class Fit2DTool(Fit1DTool):
                 )
 
         self._model = base_model
-        self._init_full_data_state(fit_data, data_name=self._data_name_full)
+        self._init_full_data_state(
+            fit_data,
+            uncertainty=self._uncertainty_full,
+            data_name=self._data_name_full,
+        )
         self._current_idx = min(
             self._current_idx, self._data_full.sizes[self._y_dim_name] - 1
         )
@@ -2245,21 +2398,35 @@ class Fit2DTool(Fit1DTool):
 
         try:
             fit_data = self._fit_data()
+            weights = self._fit_weights()
         except Exception:
             self._fit_start_errored(multi=True)
             self._finish_fit_2d_sequence()
             return
 
-        started = self._start_fit_worker(
-            fit_data,
-            self._params,
-            multi=True,
-            step=step,
-            total=self._fit_2d_total,
-            on_success=_on_success,
-            on_timeout=_on_timeout,
-            on_error=_on_error,
-        )
+        if weights is None:
+            started = self._start_fit_worker(
+                fit_data,
+                self._params,
+                multi=True,
+                step=step,
+                total=self._fit_2d_total,
+                on_success=_on_success,
+                on_timeout=_on_timeout,
+                on_error=_on_error,
+            )
+        else:
+            started = self._start_fit_worker(
+                fit_data,
+                self._params,
+                weights=weights,
+                multi=True,
+                step=step,
+                total=self._fit_2d_total,
+                on_success=_on_success,
+                on_timeout=_on_timeout,
+                on_error=_on_error,
+            )
         if not started:
             self._finish_fit_2d_sequence()
 
@@ -2313,6 +2480,10 @@ class Fit2DTool(Fit1DTool):
         data = erlab.interactive.utils.parse_data(new_data)
         if data.ndim != 2:
             raise ValueError("`data` must be a 2D DataArray")
+        if self._direct_weights_full is not None:
+            _validate_weights_input(data, self._direct_weights_full)
+        else:
+            _validate_uncertainty_input(data, self._uncertainty_full)
         return data
 
     def update_data(self, new_data: xr.DataArray) -> bool:
@@ -2349,6 +2520,59 @@ class Fit2DTool(Fit1DTool):
         self.save_full_button.setEnabled(can_save)
         self.copy_full_button.setEnabled(can_save)
 
+    def _direct_weights_for_full_fit_results(
+        self, fit_ranges: list[tuple[float, float]]
+    ) -> xr.DataArray | None:
+        """Return direct weights in the form used by the selected full fit."""
+        if self._direct_weights_full is None:
+            return None
+
+        weights = self._direct_weights_full
+        y_slice = self._y_range_slice()
+        if self._y_dim_name in weights.dims:
+            weights = weights.isel({self._y_dim_name: y_slice})
+
+        common_fit_range = self._common_fit_range(fit_ranges)
+        if (
+            self._coord_name in weights.dims
+            and common_fit_range is not None
+            and not self._fit_range_is_full(common_fit_range)
+        ):
+            weights = weights.sel(
+                {self._coord_name: self._fit_range_slice(common_fit_range)}
+            )
+
+        if self.normalize_check.isChecked():
+            normalization_factors: list[float] = []
+            selected_indices = range(
+                *y_slice.indices(self._data_full.sizes[self._y_dim_name])
+            )
+            for index, fit_range in zip(selected_indices, fit_ranges, strict=True):
+                fit_data = self._data_full.isel({self._y_dim_name: index})
+                if not self._fit_range_is_full(fit_range):
+                    fit_data = fit_data.sel(
+                        {self._coord_name: self._fit_range_slice(fit_range)}
+                    )
+                mean_value = float(np.nanmean(fit_data.values))
+                normalization_factors.append(
+                    abs(mean_value)
+                    if np.isfinite(mean_value) and not np.isclose(mean_value, 0.0)
+                    else 1.0
+                )
+
+            factor_coords: dict[Hashable, typing.Any] = {}
+            if self._y_dim_name in self._data_full.coords:
+                factor_coords[self._y_dim_name] = self._data_full.coords[
+                    self._y_dim_name
+                ].isel({self._y_dim_name: y_slice})
+            weights = weights * xr.DataArray(
+                normalization_factors,
+                dims=(self._y_dim_name,),
+                coords=factor_coords,
+            )
+
+        return weights.rename("modelfit_weights")
+
     @QtCore.Slot()
     def _save_fit_full(self) -> None:
         self._flush_restore_work()
@@ -2363,6 +2587,7 @@ class Fit2DTool(Fit1DTool):
                 )
                 return
             results.append(self._fit_result_with_range(ds))
+        fit_ranges = [self._fit_result_range(result) for result in results]
         with erlab.interactive.utils.wait_dialog(self, "Combining fit results..."):
             full_ds = xr.concat(
                 results,
@@ -2374,6 +2599,9 @@ class Fit2DTool(Fit1DTool):
                 combine_attrs="override",
             )
             full_ds = self._restore_fit_coord_order(full_ds)
+            direct_weights = self._direct_weights_for_full_fit_results(fit_ranges)
+            if direct_weights is not None:
+                full_ds["modelfit_weights"] = direct_weights
         erlab.interactive.utils.save_fit_ui(full_ds, parent=self)
 
     def _full_fit_parameter_specs(
@@ -2497,7 +2725,7 @@ class Fit2DTool(Fit1DTool):
     def _build_full_copy_prelude(
         self, *, warn: bool = True, input_name: str | None = None
     ) -> str:
-        data_name, _model_name, lines = self._make_model_code(
+        data_name, model_name, lines = self._make_model_code(
             input_name or self._data_name_full
         )
         parameters = self._full_fit_parameter_specs(warn=warn)
@@ -2507,8 +2735,15 @@ class Fit2DTool(Fit1DTool):
         isel_kw = erlab.interactive.utils.format_kwargs(
             {self._y_dim_name: self._y_range_slice()}
         )
+        input_data_name = data_name
         data_name = self._full_copy_fit_data_name(
-            data_name,
+            input_data_name,
+            isel_kw=isel_kw,
+            lines=lines,
+        )
+        self._full_copy_fit_weights_name(
+            input_data_name,
+            model_name,
             isel_kw=isel_kw,
             lines=lines,
         )
@@ -2526,6 +2761,7 @@ class Fit2DTool(Fit1DTool):
         *,
         isel_kw: str | None = None,
         lines: list[str] | None = None,
+        normalize: bool | None = None,
     ) -> str:
         if isel_kw is None:
             isel_kw = erlab.interactive.utils.format_kwargs(
@@ -2595,7 +2831,9 @@ class Fit2DTool(Fit1DTool):
                     )
             data_name = f"{data_name}_crop"
 
-        if self.normalize_check.isChecked():
+        if normalize is None:
+            normalize = self.normalize_check.isChecked()
+        if normalize:
             if lines is not None:
                 lines.append(
                     f"{data_name}_norm = "
@@ -2604,6 +2842,128 @@ class Fit2DTool(Fit1DTool):
             data_name = f"{data_name}_norm"
 
         return data_name
+
+    def _full_copy_fit_uncertainty_name(
+        self,
+        data_name: str,
+        model_name: str,
+        *,
+        isel_kw: str | None = None,
+        lines: list[str] | None = None,
+    ) -> str | None:
+        if self._uncertainty_full is None or self._direct_weights_full is not None:
+            return None
+        uncertainty_name = self._copy_uncertainty_name(data_name, model_name)
+        if lines is not None:
+            lines.append(
+                f"{uncertainty_name} = "
+                f"({self._uncertainty_name}).broadcast_like({data_name})"
+            )
+        uncertainty_name = self._full_copy_fit_data_name(
+            uncertainty_name,
+            isel_kw=isel_kw,
+            lines=lines,
+            normalize=False,
+        )
+        if self.normalize_check.isChecked():
+            raw_data_name = self._full_copy_fit_data_name(
+                data_name,
+                isel_kw=isel_kw,
+                normalize=False,
+            )
+            if lines is not None:
+                lines.append(
+                    f"{uncertainty_name}_norm = {uncertainty_name} / "
+                    f'abs({raw_data_name}.mean("{self._coord_name}"))'
+                )
+            uncertainty_name = f"{uncertainty_name}_norm"
+        return uncertainty_name
+
+    def _full_copy_fit_direct_weights_name(
+        self,
+        data_name: str,
+        model_name: str,
+        *,
+        isel_kw: str | None = None,
+        lines: list[str] | None = None,
+    ) -> str | None:
+        if self._direct_weights_full is None:
+            return None
+        weights_name = self._copy_weights_name(data_name, model_name)
+        if lines is not None:
+            lines.append(f"{weights_name} = {self._direct_weights_name}")
+
+        fit_ranges = self._selected_fit_ranges()
+        common_fit_range = (
+            self._common_fit_range(fit_ranges) if fit_ranges is not None else None
+        )
+        if fit_ranges is None:
+            fit_domain = self._fit_domain()
+            common_fit_range = (
+                self._data_fit_range(self._data_full)
+                if fit_domain is None
+                else self._canonical_fit_range(fit_domain)
+            )
+
+        if (
+            self._coord_name in self._direct_weights_full.dims
+            and common_fit_range is not None
+            and not self._fit_range_is_full(common_fit_range)
+        ):
+            fit_slice = self._fit_range_slice(common_fit_range)
+            sel_kw = erlab.interactive.utils.format_kwargs(
+                {self._coord_name: fit_slice}
+            )
+            if lines is not None:
+                lines.append(f"{weights_name}_crop = {weights_name}.sel({sel_kw})")
+            weights_name = f"{weights_name}_crop"
+
+        if self._y_dim_name in self._direct_weights_full.dims:
+            if isel_kw is None:
+                isel_kw = erlab.interactive.utils.format_kwargs(
+                    {self._y_dim_name: self._y_range_slice()}
+                )
+            if lines is not None:
+                lines.append(f"{weights_name}_slices = {weights_name}.isel({isel_kw})")
+            weights_name = f"{weights_name}_slices"
+
+        if self.normalize_check.isChecked():
+            raw_data_name = self._full_copy_fit_data_name(
+                data_name,
+                isel_kw=isel_kw,
+                normalize=False,
+            )
+            if lines is not None:
+                lines.append(
+                    f"{weights_name}_norm = {weights_name} * "
+                    f'abs({raw_data_name}.mean("{self._coord_name}"))'
+                )
+            weights_name = f"{weights_name}_norm"
+        return weights_name
+
+    def _full_copy_fit_weights_name(
+        self,
+        data_name: str,
+        model_name: str,
+        *,
+        isel_kw: str | None = None,
+        lines: list[str] | None = None,
+    ) -> str | None:
+        direct_weights_name = self._full_copy_fit_direct_weights_name(
+            data_name,
+            model_name,
+            isel_kw=isel_kw,
+            lines=lines,
+        )
+        if direct_weights_name is not None:
+            return direct_weights_name
+        uncertainty_name = self._full_copy_fit_uncertainty_name(
+            data_name,
+            model_name,
+            isel_kw=isel_kw,
+            lines=lines,
+        )
+        return None if uncertainty_name is None else f"1 / {uncertainty_name}"
 
     def _recorded_common_fit_range(self) -> tuple[float, float] | None:
         fit_ranges = self._selected_fit_ranges()
@@ -2620,15 +2980,24 @@ class Fit2DTool(Fit1DTool):
         data_name, model_name, _ = self._make_model_code(
             input_name or self._data_name_full
         )
-        data_name = self._full_copy_fit_data_name(data_name)
+        input_data_name = data_name
+        data_name = self._full_copy_fit_data_name(input_data_name)
+        weights_name = self._full_copy_fit_weights_name(
+            input_data_name,
+            model_name,
+        )
+        fit_kwargs: dict[str, typing.Any] = {
+            "model": f"|{model_name}|",
+            "params": "|params|",
+            "method": self.method_combo.currentText(),
+            "scale_covar": self.scale_covar_check.isChecked(),
+        }
+        if weights_name is not None:
+            fit_kwargs["weights"] = f"|{weights_name}|"
         return erlab.interactive.utils.generate_code(
             self._data_full.xlm.modelfit,
             args=[self._coord_name],
-            kwargs={
-                "model": f"|{model_name}|",
-                "params": "|params|",
-                "method": self.method_combo.currentText(),
-            },
+            kwargs=fit_kwargs,
             name="modelfit",
             module=f"{data_name}.xlm",
         )
@@ -2654,6 +3023,8 @@ class Fit2DTool(Fit1DTool):
     def current_provenance_spec(
         self, *, flush_deferred_restore: bool = True
     ) -> ToolProvenanceSpec | None:
+        if self._uncertainty_full is not None:
+            return None
         # Manager metadata and other passive provenance consumers should not trigger
         # interactive warnings for incomplete fit ranges.
         return self._resolve_script_provenance(
@@ -2690,7 +3061,7 @@ class Fit2DTool(Fit1DTool):
         source: QtCore.QObject | None = None,
     ) -> ToolProvenanceSpec | None:
         if source is None:
-            return self._resolve_script_provenance(self._DETACHED_COPY_PROVENANCE)
+            return self.current_provenance_spec()
         return super().detached_output_imagetool_provenance(
             data,
             source=source,
@@ -2732,6 +3103,8 @@ class Fit2DTool(Fit1DTool):
         parts = self._parameter_output_parts(output_id)
         if parts is None:
             return super().output_imagetool_provenance(output_id, data)
+        if not self._fit_is_current:
+            return None
         output, param_name = parts
         if param_name is None:
             current = self._current_param_output(
@@ -2744,12 +3117,16 @@ class Fit2DTool(Fit1DTool):
         request = self._resolve_parameter_output(output, param_name)
         if request is None:
             return None
+        if self._uncertainty_full is not None:
+            return None
         param_name, stderr = request
         return self._parameter_output_provenance(param_name, stderr=stderr, data=data)
 
     def _parameter_model_fit_operation(
         self, param_name: str, *, stderr: bool
     ) -> ModelFitOperation | None:
+        if not self.scale_covar_check.isChecked():
+            return None
         model_choice = self._infer_model_choice(self._model)
         if model_choice not in ModelFitOperation.supported_models:
             return None
@@ -2889,8 +3266,11 @@ def ftool(
     model: lmfit.Model | None = None,
     params: lmfit.Parameters | dict[str, typing.Any] | None = None,
     *,
+    uncertainty: xr.DataArray | None = None,
     data_name: str | None = None,
     model_name: str | None = None,
+    uncertainty_name: str | None = None,
+    scale_covar: bool | None = None,
     execute: bool | None = None,
 ) -> Fit1DTool | Fit2DTool:
     """Launch an interactive fitting tool.
@@ -2912,19 +3292,58 @@ def ftool(
         Initial parameters for the fit. If `None`, parameters will be initialized from
         the model. If `data` is 2D, `params` can be a dictionary that is interpreted
         like the ``params`` argument of :meth:`xarray.DataArray.xlm.modelfit`.
+    uncertainty
+        Absolute standard uncertainty of `data`. It must align with and broadcast to
+        `data`. Values must be finite and strictly positive wherever `data` is finite.
+        The fit uses its reciprocal as the lmfit weights.
     data_name : str, optional
         The name of the data variable, used in code generation. If `None`, an attempt
         will be made to infer the name from the calling context.
     model_name : str, optional
         The name of the model variable, used in code generation. If `None`, an attempt
         will be made to infer the name from the calling context.
+    uncertainty_name : str, optional
+        The name of the uncertainty variable, used in code generation. If `None`, an
+        attempt will be made to infer the name from the calling context.
+    scale_covar
+        Whether lmfit scales the parameter covariance by reduced chi-square. If `None`,
+        the default is `True` without `uncertainty` and `False` with `uncertainty`.
+        A restored fit result keeps its saved setting when all results agree and the
+        saved weighting is available.
     """
     fit_ds: xr.Dataset | None = None
+    fit_ds_scale_covar: bool | None = None
+    fit_ds_weighted: bool | None = None
+    fit_ds_weights: xr.DataArray | None = None
+    fit_ds_weights_name: str | None = None
+    saved_weighting_reproducible = False
     if isinstance(data, xr.Dataset):
         fit_ds = data
+        fit_ds_scale_covar, fit_ds_weighted = _fit_dataset_settings(fit_ds)
         data = Fit1DTool._extract_fit_data(fit_ds)
         if data_name is None:
-            data_name = "data"
+            try:
+                fit_ds_name = str(varname.argname("data", func=ftool, vars_only=False))
+            except Exception:
+                fit_ds_name = "fit_result"
+        else:
+            fit_ds_name = data_name
+        data_name = f"({fit_ds_name})['modelfit_data']"
+        if (
+            uncertainty is None
+            and fit_ds_weighted is True
+            and "modelfit_weights" in fit_ds
+        ):
+            with contextlib.suppress(TypeError, ValueError):
+                fit_ds_weights = _validate_weights_input(
+                    data, fit_ds["modelfit_weights"]
+                )
+                fit_ds_weights_name = f"({fit_ds_name})['modelfit_weights']"
+        saved_weighting_reproducible = (
+            fit_ds_weighted is False and "modelfit_weights" not in fit_ds
+        ) or (fit_ds_weighted is True and fit_ds_weights is not None)
+        if scale_covar is None and uncertainty is None and saved_weighting_reproducible:
+            scale_covar = fit_ds_scale_covar
         params = None
     elif data_name is None:
         try:
@@ -2936,6 +3355,13 @@ def ftool(
             model_name = str(varname.argname("model", func=ftool, vars_only=False))
         except Exception:
             model_name = "model"
+    if uncertainty is not None and uncertainty_name is None:
+        try:
+            uncertainty_name = str(
+                varname.argname("uncertainty", func=ftool, vars_only=False)
+            )
+        except Exception:
+            uncertainty_name = "uncertainty"
     match data.ndim:
         case 1:
             tool_cls = Fit1DTool
@@ -2944,13 +3370,33 @@ def ftool(
         case _:
             raise ValueError("`data` must be a 1D or 2D DataArray")
     with _patch_encode4js(), erlab.interactive.utils.setup_qapp(execute):
-        win = tool_cls(data, model, params, data_name=data_name, model_name=model_name)
+        win = tool_cls(
+            data,
+            model,
+            params,
+            uncertainty=uncertainty,
+            data_name=data_name,
+            model_name=model_name,
+            uncertainty_name=uncertainty_name,
+            scale_covar=scale_covar,
+        )
         if fit_ds is not None:
             try:
                 win._restore_from_fit_dataset(fit_ds, model=model)
             except Exception:
                 win.close()
                 raise
+            if fit_ds_weights is not None:
+                win._set_direct_weights(
+                    fit_ds_weights, weights_name=fit_ds_weights_name
+                )
+            if (
+                uncertainty is not None
+                or not saved_weighting_reproducible
+                or fit_ds_scale_covar is None
+                or win.scale_covar_check.isChecked() != fit_ds_scale_covar
+            ):
+                win._mark_fit_stale()
         win.show()
         win.raise_()
         win.activateWindow()
