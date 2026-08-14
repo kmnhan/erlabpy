@@ -17,15 +17,12 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-import erlab.extensions._entry_points as extension_entry_points
-import erlab.interactive.imagetool.manager as imagetool_manager
 import erlab.interactive.imagetool.manager._base as manager_base
 import erlab.interactive.imagetool.manager._extensions._catalog as extension_catalog
 import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dialogs
 import erlab.interactive.imagetool.manager._extensions._execution as extension_execution
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.viewer as imagetool_viewer
-from erlab.extensions._models import _PackageExtensionReference
 from erlab.interactive.imagetool._load_source import _resolve_load_func
 from erlab.interactive.imagetool._provenance._execution import (
     can_reload_without_trust,
@@ -72,9 +69,6 @@ from erlab.interactive.imagetool.manager._extensions._models import (
     _ResolvedWorkspaceRequirement,
     _WorkspaceExtensionRequirement,
 )
-from erlab.interactive.imagetool.manager._provenance_edit._files import (
-    _FileLoadEditDialog,
-)
 from erlab.interactive.imagetool.manager._workspace import _arrays as workspace_arrays
 from erlab.interactive.imagetool.manager._workspace import _format as workspace_format
 from erlab.interactive.imagetool.manager._workspace import _saving as workspace_saving
@@ -112,12 +106,6 @@ def load_data(path: Path) -> xr.DataArray:
     return source
 
 
-def generated_external_loader(
-    path: pathlib.Path, *, scale: float = 1.0
-) -> xr.DataArray:
-    return xr.DataArray([float(path.read_text()) * scale])
-
-
 def generated_external_routine(
     data: xr.DataArray, *, scale: float = 1.0
 ) -> xr.DataArray:
@@ -130,7 +118,7 @@ def _validate_and_enable(
     *,
     expected_record_generation: int,
 ) -> _ExtensionCatalogModel:
-    record = store.view().extensions[extension_id]
+    record = store.read().extensions[extension_id]
     manager_session_id = f"test-manager-{uuid.uuid4().hex}"
     try:
         return _validate_extension_source(
@@ -143,25 +131,6 @@ def _validate_and_enable(
         )
     finally:
         extension_execution._remove_manager_modules(manager_session_id)
-
-
-def _package_reference(
-    *,
-    distribution_name: str = "lab-package",
-    distribution_version: str = "1",
-    group: str = "erlab.extensions",
-    name: str = "lab",
-    value: str = "lab_package:extension",
-    editable: bool = False,
-) -> _PackageExtensionReference:
-    return _PackageExtensionReference(
-        distribution_name=distribution_name,
-        distribution_version=distribution_version,
-        entry_point_group=group,
-        entry_point_name=name,
-        entry_point_value=value,
-        editable=editable,
-    )
 
 
 def test_parameter_dialog_preserves_none_and_empty_string(qtbot) -> None:
@@ -519,26 +488,15 @@ def test_workspace_requirements_dialog_registers_only_recoverable_selection(
         capability_kind="routine",
         source_hash="a" * 64,
         extension_api_version=1,
-        source_type="script",
     )
     resolved = _ResolvedWorkspaceRequirement(
         requirement=requirement,
         state="approval-required",
     )
-    environment_resolved = resolved.model_copy(
-        update={
-            "requirement": requirement.model_copy(
-                update={
-                    "source_type": "environment-package",
-                    "package": _package_reference(),
-                }
-            )
-        }
-    )
     dialog = extension_dialogs._WorkspaceRequirementsDialog(
-        (environment_resolved, resolved),
+        (resolved,),
         parent,
-        recoverable={("lab", "a" * 64, "script")},
+        recoverable={("lab", "a" * 64)},
     )
     qtbot.addWidget(dialog)
     registrations: list[tuple[str, str]] = []
@@ -551,18 +509,7 @@ def test_workspace_requirements_dialog_registers_only_recoverable_selection(
         dialog._register_selected()
         assert registrations == []
         dialog.tree.setCurrentItem(dialog.tree.topLevelItem(0))
-        assert not dialog._register_button.isEnabled()
-        assert dialog._copy_package_button.isEnabled()
-        dialog._copy_package_requirement()
-        clipboard = QtWidgets.QApplication.clipboard()
-        if clipboard is None:
-            raise RuntimeError("Qt clipboard is unavailable")
-        assert clipboard.text() == "lab-package==1"
-        dialog._register_selected()
-        assert registrations == []
-        dialog.tree.setCurrentItem(dialog.tree.topLevelItem(1))
         assert dialog._register_button.isEnabled()
-        assert not dialog._copy_package_button.isEnabled()
         dialog._register_selected()
         assert registrations == [("lab", "a" * 64)]
 
@@ -619,61 +566,6 @@ def test_missing_scripts_dialog_lists_scripts_and_emits_selected_actions(
 
     assert located == ["second"]
     assert restored == ["second"]
-
-
-def test_packaged_controller_uses_bundled_environment_capabilities(
-    manager_context,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source_hash = "a" * 64
-    source = _ExtensionSource(
-        source_hash=source_hash,
-        object_name="lab_package:extension",
-        registered_at="2026-01-01T00:00:00+00:00",
-        approved=True,
-        routines=(
-            erlab.extensions.RoutineDescriptor(
-                id="calculate",
-                name="Calculate",
-                category="Lab",
-                summary="",
-                function_name="calculate",
-            ),
-        ),
-        loaders=(
-            erlab.extensions.LoaderDescriptor(
-                id="load_data",
-                name="Load Data",
-                category="Lab",
-                summary="",
-                function_name="load_data",
-            ),
-        ),
-        entry_point_group="erlab.extensions",
-        entry_point_name="lab",
-        entry_point_value="lab_package:extension",
-    )
-    record = _ExtensionRecord(
-        id="lab",
-        name="Lab",
-        source_type="environment-package",
-        enabled=True,
-        source=source,
-    )
-
-    with manager_context() as manager:
-        controller = manager._extensions
-        controller.catalog.model = _ExtensionCatalogModel(extensions={"lab": record})
-        monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", True)
-        monkeypatch.setattr(
-            controller.catalog.store,
-            "source_available",
-            lambda _record, _source_hash: True,
-        )
-        assert controller._enabled_routines() == (("lab", "Lab", source.routines[0]),)
-        assert set(controller.file_loaders()) == {"Load Data (*)"}
-        controller._sync_explorer_loaders()
-        assert set(controller.explorer_loaders) == {"lab:load_data"}
 
 
 def test_controller_filters_loader_paths_and_rejects_duplicate_filters(
@@ -735,26 +627,6 @@ def test_controller_filters_loader_paths_and_rejects_duplicate_filters(
             ValueError, match="Conflicting extension file dialog filter"
         ):
             controller.file_loaders()
-
-        environment_source = source.model_copy(
-            update={
-                "object_name": "lab_package:Loader",
-                "entry_point_group": "erlab.io.loaders",
-                "entry_point_name": "lab",
-                "entry_point_value": "lab_package:Loader",
-                "loader_dialog_methods": (),
-            }
-        )
-        environment_record = records["first"].model_copy(
-            update={
-                "source_type": "environment-package",
-                "source": environment_source,
-            }
-        )
-        controller.catalog.model = _ExtensionCatalogModel(
-            extensions={"first": environment_record}
-        )
-        assert controller.file_loaders() == {}
 
 
 def test_controller_menu_selection_and_routine_queue_paths(
@@ -934,7 +806,6 @@ def test_controller_replay_loader_rejects_incomplete_and_unapproved_calls(
             target="missing",
             source_hash="a" * 64,
             capability_id="load_data",
-            extension_source_type="script",
             selection=FileDataSelection(kind="dataarray"),
         )
         with pytest.raises(
@@ -959,20 +830,8 @@ def test_controller_replay_loader_rejects_incomplete_and_unapproved_calls(
             target="loader",
             source_hash=source_hash,
             capability_id="load_data",
-            extension_source_type="script",
             selection=FileDataSelection(kind="dataarray"),
         )
-        with pytest.raises(
-            erlab.extensions.ExtensionExecutionError,
-            match="source is not available",
-        ):
-            controller.replay_loader(
-                load_source(
-                    script_call.model_copy(
-                        update={"extension_source_type": "environment-package"}
-                    )
-                )
-            )
         missing_descriptor = record.source.model_copy(update={"loaders": ()})
         missing_descriptor_record = record.model_copy(
             update={"source": missing_descriptor}
@@ -990,78 +849,12 @@ def test_controller_replay_loader_rejects_incomplete_and_unapproved_calls(
             controller.replay_loader(load_source(script_call))
         monkeypatch.undo()
 
-        with pytest.raises(
-            erlab.extensions.ExtensionExecutionError,
-            match="do not provide alternate methods",
-        ):
-            controller.replay_loader(
-                load_source(script_call.model_copy(update={"loader_method": "preview"}))
-            )
-
-        environment_source = _ExtensionSource(
-            source_hash="b" * 64,
-            object_name="lab_package:Loader",
-            registered_at="2026-01-01T00:00:00+00:00",
-            approved=True,
-            loaders=(record.source.loaders[0],),
-            entry_point_group="erlab.io.loaders",
-            entry_point_name="lab",
-            entry_point_value="lab_package:Loader",
-            loader_dialog_methods=(
-                extension_catalog._EnvironmentLoaderMethod(
-                    name_filter="Lab Data (*.dat)", method=None
-                ),
-            ),
-        )
-        environment_record = _ExtensionRecord(
-            id="environment-loader",
-            name="Environment loader",
-            source_type="environment-package",
-            enabled=True,
-            source=environment_source,
-        )
-        environment_catalog = _ExtensionCatalogModel(
-            extensions={"environment-loader": environment_record}
-        )
-        monkeypatch.setattr(
-            controller.catalog.store, "read", lambda: environment_catalog
-        )
-        monkeypatch.setattr(
-            controller.catalog.store,
-            "capability_status",
-            lambda *_args: "ready",
-        )
-        environment_call = FileReplayCall(
-            kind="extension_loader",
-            target="environment-loader",
-            source_hash="b" * 64,
-            capability_id="load_data",
-            extension_source_type="environment-package",
-            loader_method="unapproved",
-            selection=FileDataSelection(kind="dataarray"),
-        )
-        with pytest.raises(
-            erlab.extensions.ExtensionExecutionError,
-            match="was not approved",
-        ):
-            controller.replay_loader(load_source(environment_call))
-
 
 def test_controller_capability_status_uses_application_catalog(
     manager_context,
 ) -> None:
     with manager_context() as manager:
         controller = manager._extensions
-        assert (
-            controller.capability_status(
-                "missing",
-                "a" * 64,
-                "routine",
-                "calculate",
-                "environment-package",
-            )
-            == "missing-source"
-        )
         assert (
             controller.capability_status("missing", "a" * 64, "routine", "calculate")
             == "missing-source"
@@ -1131,23 +924,6 @@ def test_catalog_source_states_distinguish_all_script_source_failures(
     add_script_record("unchanged", stored=b"source", original=b"source")
     add_script_record("changed", stored=b"source", original=b"changed")
 
-    environment_source = _ExtensionSource(
-        source_hash="a" * 64,
-        object_name="lab_package:extension",
-        registered_at="2026-01-01T00:00:00+00:00",
-        entry_point_group="erlab.extensions",
-        entry_point_name="lab",
-        entry_point_value="lab_package:extension",
-        editable=True,
-    )
-    for extension_id in ("environment-ready", "environment-missing"):
-        records[extension_id] = _ExtensionRecord(
-            id=extension_id,
-            name=extension_id.title(),
-            source_type="environment-package",
-            source=environment_source,
-        )
-
     original_read_bytes = pathlib.Path.read_bytes
 
     def read_bytes(path: pathlib.Path) -> bytes:
@@ -1159,11 +935,6 @@ def test_catalog_source_states_distinguish_all_script_source_failures(
         controller = manager._extensions
         controller.catalog.model = _ExtensionCatalogModel(extensions=records)
 
-        monkeypatch.setattr(
-            controller.catalog.store,
-            "source_available",
-            lambda record, _revision: record.id == "environment-ready",
-        )
         monkeypatch.setattr(pathlib.Path, "read_bytes", read_bytes)
         states = controller._catalog_source_states()
 
@@ -1179,8 +950,6 @@ def test_catalog_source_states_distinguish_all_script_source_failures(
         "unreadable-original": "Source file unreadable",
         "unchanged": "Ready",
         "changed": "Source file changed",
-        "environment-ready": "Editable environment package",
-        "environment-missing": "Environment package unavailable",
     }
 
 
@@ -1378,7 +1147,6 @@ def test_direct_extension_loader_uses_shared_loader_state(
         loader_id="load_data",
         descriptor=descriptor,
         source_path=pathlib.Path("lab.py"),
-        source_type="script",
         executor=lambda *_args: xr.DataArray([1.0]),
     )
     state = types.SimpleNamespace(
@@ -1448,38 +1216,6 @@ def test_direct_extension_loader_uses_shared_loader_state(
         {"Lab Data (*.dat)": (call, {"scale": 1.0})},
     )
     assert selected == ("Lab Data (*.dat)", call, {"scale": 7.0})
-
-
-def test_disabled_environment_loader_does_not_use_global_registry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ingress_calls: list[dict[str, typing.Any]] = []
-    dialogs: list[None] = []
-    builtin_loader = types.SimpleNamespace(load=lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(erlab.io, "loaders", {"reserved": builtin_loader})
-    monkeypatch.setattr(
-        erlab.interactive.utils.MessageDialog,
-        "critical",
-        lambda *_args, **_kwargs: dialogs.append(None),
-    )
-    manager = types.SimpleNamespace(
-        _extensions=types.SimpleNamespace(
-            environment_loader_names={"reserved"},
-            loader_by_name=lambda _name: None,
-        ),
-        _data_ingress=types.SimpleNamespace(
-            add_from_multiple_files=lambda *_args, **kwargs: ingress_calls.append(
-                kwargs
-            )
-        ),
-    )
-
-    from erlab.interactive.imagetool.manager._actions import _ActionsController
-
-    _ActionsController(manager)._data_load(["data.txt"], "reserved", {})
-
-    assert ingress_calls == []
-    assert dialogs == [None]
 
 
 def test_catalog_reload_preserves_source_identity(
@@ -1599,46 +1335,23 @@ def test_catalog_source_lookup_and_integrity_failures(tmp_path: pathlib.Path) ->
     assert store.read() == catalog
 
 
-@pytest.mark.parametrize(
-    ("record_update", "approved", "message"),
-    [
-        ({"source_type": "environment-package"}, False, "requires an entry point"),
-        ({"enabled": True}, False, "must be approved"),
-    ],
-)
-def test_extension_record_rejects_invalid_enabled_and_package_states(
-    record_update: dict[str, typing.Any],
-    approved: bool,
-    message: str,
-) -> None:
-    source_hash = "a" * 64
-    record = _ExtensionRecord(
-        id="lab",
-        name="Lab",
-        source=_ExtensionSource(
-            source_hash=source_hash,
-            object_name=f"{source_hash}.py",
-            registered_at="2026-01-01T00:00:00+00:00",
-            approved=approved,
-        ),
-    )
-
-    with pytest.raises(ValueError, match=message):
-        _ExtensionRecord.model_validate(
-            record.model_copy(update=record_update).model_dump(mode="python")
-        )
-
-
-def test_extension_models_reject_invalid_hash_and_nonfinite_loader_defaults() -> None:
+def test_extension_models_reject_invalid_hash_and_unapproved_enablement() -> None:
     with pytest.raises(ValueError, match="lowercase SHA-256"):
         _ExtensionSource(
             source_hash="A" * 64,
             object_name="source.py",
             registered_at="2026-01-01T00:00:00+00:00",
         )
-    with pytest.raises(ValueError, match="must be finite"):
-        extension_catalog._EnvironmentLoaderMethod(
-            name_filter="Data (*)", defaults={"scale": float("inf")}
+    with pytest.raises(ValueError, match="must be approved"):
+        _ExtensionRecord(
+            id="source",
+            name="source.py",
+            enabled=True,
+            source=_ExtensionSource(
+                source_hash="a" * 64,
+                object_name=f"{'a' * 64}.py",
+                registered_at="2026-01-01T00:00:00+00:00",
+            ),
         )
 
 
@@ -1661,8 +1374,6 @@ def test_catalog_rejects_validation_for_replaced_source(
             expected_record_generation=catalog.extensions["scale"].record_generation,
             routines=(),
             loaders=(),
-            loader_always_single=None,
-            loader_dialog_methods=(),
             enable_extension=False,
         )
     assert store.read().extensions["scale"].source.source_hash == new_source_hash
@@ -1744,52 +1455,6 @@ def test_catalog_reports_exact_script_capability_states(
     )
 
 
-def test_catalog_capability_status_reports_missing_package_source(
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source_hash = "a" * 64
-    source = _ExtensionSource(
-        source_hash=source_hash,
-        object_name="lab_package:calculate",
-        registered_at="2026-01-01T00:00:00+00:00",
-        approved=True,
-        entry_point_group="erlab.extensions",
-        entry_point_name="lab",
-        entry_point_value="lab_package:calculate",
-        routines=(
-            erlab.extensions.RoutineDescriptor(
-                id="calculate",
-                name="Calculate",
-                category="Lab",
-                summary="",
-                function_name="calculate",
-            ),
-        ),
-    )
-    record = _ExtensionRecord(
-        id="lab",
-        name="Lab",
-        source_type="environment-package",
-        enabled=True,
-        source=source,
-    )
-    model = _ExtensionCatalogModel(extensions={"lab": record})
-    store = _ExtensionCatalogStore(tmp_path / "catalog")
-    monkeypatch.setattr(store, "read", lambda: model)
-    monkeypatch.setattr(
-        store,
-        "_entry_point_for_source",
-        lambda _source: (_ for _ in ()).throw(ImportError("missing")),
-    )
-
-    assert (
-        store.capability_status("lab", source_hash, "routine", "calculate")
-        == "missing-source"
-    )
-    assert not store.source_available(record, source_hash)
-
-
 def test_catalog_source_availability_rejects_unknown_and_missing_sources(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1864,212 +1529,6 @@ def test_catalog_watcher_removes_stale_paths_and_ignores_closed_refresh(
         catalog.close()
 
 
-def test_catalog_resolves_environment_entry_points_only_after_refresh(
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class EntryPoint:
-        group = "erlab.extensions"
-        name = "lab"
-        value = "lab_package:calculate"
-        dist = None
-
-    class EntryPoints(tuple):
-        def select(self, **parameters):
-            return tuple(
-                entry
-                for entry in self
-                if all(
-                    getattr(entry, key, None) == value
-                    for key, value in parameters.items()
-                )
-            )
-
-    entry_point = EntryPoint()
-    monkeypatch.setattr(
-        extension_catalog.importlib.metadata,
-        "entry_points",
-        lambda: EntryPoints((entry_point,)),
-    )
-    store = _ExtensionCatalogStore(tmp_path / "catalog")
-    source_hash = extension_entry_points._entry_point_source_hash(entry_point)
-    source = _ExtensionSource(
-        source_hash=source_hash,
-        object_name=entry_point.value,
-        registered_at="2026-01-01T00:00:00+00:00",
-        entry_point_group=entry_point.group,
-        entry_point_name=entry_point.name,
-        entry_point_value=entry_point.value,
-    )
-
-    with pytest.raises(ImportError, match="unavailable"):
-        store._entry_point_for_source(source)
-    store.refresh_environment_packages()
-    assert store._entry_point_for_source(source) is entry_point
-
-
-def test_catalog_resolves_environment_module_and_callable_capabilities(
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    @erlab.extensions.routine(id="calculate")
-    def calculate(data: xr.DataArray) -> xr.DataArray:
-        return data + 1
-
-    @erlab.extensions.loader(id="load_data")
-    def load_data(path: pathlib.Path) -> xr.DataArray:
-        return xr.DataArray([len(path.name)])
-
-    source_hash = "a" * 64
-    source = _ExtensionSource(
-        source_hash=source_hash,
-        object_name="lab_package:extension",
-        registered_at="2026-01-01T00:00:00+00:00",
-        approved=True,
-        entry_point_group="erlab.extensions",
-        entry_point_name="lab",
-        entry_point_value="lab_package:extension",
-    )
-    record = _ExtensionRecord(
-        id="lab",
-        name="Lab",
-        source_type="environment-package",
-        enabled=True,
-        source=source,
-    )
-    store = _ExtensionCatalogStore(tmp_path / "catalog")
-    monkeypatch.setattr(
-        store,
-        "read",
-        lambda: _ExtensionCatalogModel(extensions={"lab": record}),
-    )
-    entry_point = types.SimpleNamespace(group="erlab.extensions")
-    monkeypatch.setattr(store, "_entry_point_for_source", lambda _: entry_point)
-
-    module = types.ModuleType("lab_package.extension")
-    calculate.__module__ = module.__name__
-    load_data.__module__ = module.__name__
-    module.calculate = calculate
-    module.load_data = load_data
-    monkeypatch.setattr(
-        extension_catalog, "_load_entry_point_value", lambda *_args: module
-    )
-    assert (
-        store.resolve_capability("lab", source_hash, "routine", "calculate")
-        is calculate
-    )
-    assert (
-        store.resolve_capability("lab", source_hash, "loader", "load_data") is load_data
-    )
-
-    monkeypatch.setattr(
-        extension_catalog, "_load_entry_point_value", lambda *_args: calculate
-    )
-    assert (
-        store.resolve_capability("lab", source_hash, "routine", "calculate")
-        is calculate
-    )
-    with pytest.raises(KeyError):
-        store.resolve_capability("lab", source_hash, "routine", "missing")
-
-    monkeypatch.setattr(
-        extension_catalog, "_load_entry_point_value", lambda *_args: load_data
-    )
-    with pytest.raises(TypeError, match="not a routine"):
-        store.resolve_capability("lab", source_hash, "routine", "load_data")
-
-
-def test_catalog_resolves_loaderbase_classes_and_instances(
-    example_loader,
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source_hash = "a" * 64
-    source = _ExtensionSource(
-        source_hash=source_hash,
-        object_name="lab_package:ExampleLoader",
-        registered_at="2026-01-01T00:00:00+00:00",
-        approved=True,
-        entry_point_group="erlab.io.loaders",
-        entry_point_name="example",
-        entry_point_value="lab_package:ExampleLoader",
-        loader_dialog_methods=(
-            extension_catalog._EnvironmentLoaderMethod(
-                name_filter="Example preview (*.txt)", method="preview"
-            ),
-        ),
-    )
-    record = _ExtensionRecord(
-        id="lab-loader",
-        name="Lab loader",
-        source_type="environment-package",
-        enabled=True,
-        source=source,
-    )
-    store = _ExtensionCatalogStore(tmp_path / "catalog")
-    monkeypatch.setattr(
-        store,
-        "read",
-        lambda: _ExtensionCatalogModel(extensions={"lab-loader": record}),
-    )
-    entry_point = types.SimpleNamespace(group="erlab.io.loaders")
-    monkeypatch.setattr(store, "_entry_point_for_source", lambda _: entry_point)
-
-    def preview(self, path: pathlib.Path) -> xr.DataArray:
-        del self
-        return xr.DataArray([len(path.name)])
-
-    monkeypatch.setattr(
-        example_loader,
-        "preview",
-        preview,
-        raising=False,
-    )
-
-    for value in (example_loader, example_loader()):
-        load_calls: list[str] = []
-
-        def load_entry_point_value(*_args, value=value, calls=load_calls):
-            calls.append("load")
-            return value
-
-        monkeypatch.setattr(
-            extension_catalog,
-            "_load_entry_point_value",
-            load_entry_point_value,
-        )
-        resolved = store.resolve_capability(
-            "lab-loader", source_hash, "loader", "example"
-        )
-        assert getattr(resolved, "__self__", None).name == "example"
-
-        preview = store.resolve_capability(
-            "lab-loader", source_hash, "loader", "example", "preview"
-        )
-        assert getattr(preview, "__self__", None).name == "example"
-        assert getattr(preview, "__name__", None) == "preview"
-
-        load_count = len(load_calls)
-        with pytest.raises(
-            erlab.extensions.ExtensionNotFoundError,
-            match="not approved for this source",
-        ):
-            store.resolve_capability(
-                "lab-loader", source_hash, "loader", "example", "os.remove"
-            )
-        assert len(load_calls) == load_count
-
-    with pytest.raises(KeyError):
-        store.resolve_capability("lab-loader", source_hash, "routine", "example")
-    with pytest.raises(KeyError):
-        store.resolve_capability("lab-loader", source_hash, "loader", "different")
-    monkeypatch.setattr(
-        extension_catalog, "_load_entry_point_value", lambda *_args: object()
-    )
-    with pytest.raises(TypeError, match="does not provide LoaderBase"):
-        store.resolve_capability("lab-loader", source_hash, "loader", "example")
-
-
 def test_extension_execution_value_guards_and_log_fields(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -2086,6 +1545,8 @@ def test_extension_execution_value_guards_and_log_fields(
         summary="",
         function_name="load_data",
     )
+    source = tmp_path / "loader.py"
+    source.write_text("source")
     call = _ExtensionLoaderCall(
         manager_session_id="manager",
         catalog_generation=1,
@@ -2094,36 +1555,24 @@ def test_extension_execution_value_guards_and_log_fields(
         source_hash="a" * 64,
         loader_id="load_data",
         descriptor=descriptor,
-        source_path=None,
-        source_type="script",
+        source_path=source,
         executor=lambda *_args: xr.DataArray([1.0]),
-        loader_method="preview",
     )
     assert call.manager_loader_name == "lab:load_data"
-    assert not call.uses_standard_loader_options
-    assert call.__name__ == "preview"
-    with pytest.raises(
-        erlab.extensions.ExtensionExecutionError, match="source is missing"
-    ):
-        extension_execution._require_loader_source(call)
+    assert call.__name__ == "load"
     with pytest.raises(erlab.extensions.ExtensionExecutionError, match="missing"):
         extension_execution._require_loader_entry(call, None)
 
     array = xr.DataArray([1.0], dims="x")
     dataset = xr.Dataset({"value": array})
     tree = xr.DataTree.from_dict({"/": dataset})
-    assert extension_execution._require_loader_output(
-        [array, dataset, tree], allow_multiple=True
-    ) == [array, dataset, tree]
+    assert extension_execution._require_loader_output(array) is array
+    assert extension_execution._require_loader_output(dataset) is dataset
+    assert extension_execution._require_loader_output(tree) is tree
     with pytest.raises(
         erlab.extensions.ExtensionExecutionError, match="expected an xarray"
     ):
-        extension_execution._require_loader_output([array], allow_multiple=False)
-    with pytest.raises(
-        erlab.extensions.ExtensionExecutionError,
-        match="list of xarray objects",
-    ):
-        extension_execution._require_loader_output([object()], allow_multiple=True)
+        extension_execution._require_loader_output([array])
 
     assert extension_execution._xarray_log_fields(dataset) == {
         "type": "Dataset",
@@ -2135,29 +1584,12 @@ def test_extension_execution_value_guards_and_log_fields(
     assert tree_fields["type"] == "DataTree"
     assert tree_fields["dimensions"] == ("x",)
     assert tree_fields["shape"] == (1,)
-    list_fields = extension_execution._loader_output_log_fields([array, dataset])
-    assert list_fields["type"] == "list"
-    assert len(list_fields["items"]) == 2
+    assert extension_execution._loader_output_log_fields(array)["type"] == "DataArray"
 
     with pytest.raises(
         erlab.extensions.ExtensionExecutionError, match="expected DataArray"
     ):
         extension_execution._require_dataarray(dataset)
-    with pytest.raises(
-        erlab.extensions.ExtensionExecutionError, match="source is missing"
-    ):
-        extension_execution._require_script_source(
-            types.SimpleNamespace(source_path=None)
-        )
-
-    source = tmp_path / "loader.py"
-    source.write_text("source")
-    assert (
-        extension_execution._require_loader_source(
-            types.SimpleNamespace(source_path=source)
-        )
-        == source
-    )
 
 
 def test_decorated_loader_adapter_preserves_loader_contract(
@@ -2190,7 +1622,6 @@ def test_decorated_loader_adapter_preserves_loader_contract(
         loader_id="load_data",
         descriptor=descriptor,
         source_path=tmp_path / "loader.py",
-        source_type="script",
         executor=execute,
     )
     adapter = extension_execution._DecoratedLoaderAdapter(call)
@@ -2200,13 +1631,8 @@ def test_decorated_loader_adapter_preserves_loader_contract(
     assert adapter.extension_id == "lab"
     assert adapter.source_hash == "a" * 64
     assert adapter.loader_id == "load_data"
-    assert adapter.loader_method is None
     assert adapter.source_path == tmp_path / "loader.py"
-    assert adapter.source_type == "script"
-    assert adapter.entry_point_group is None
-    assert adapter.entry_point_name is None
     assert adapter.descriptor == descriptor
-    assert not adapter.uses_standard_loader_options
     assert tuple(adapter.file_dialog_methods) == ("Load Data (*.dat)",)
     loaded = adapter.load(path)
     assert loaded.item() == 3.0
@@ -2215,31 +1641,8 @@ def test_decorated_loader_adapter_preserves_loader_contract(
         adapter.load_single(path, scale=2.0), xr.DataArray([3.0])
     )
     assert calls == [(path, {}), (path, {"scale": 2.0})]
-
-    environment_call = _ExtensionLoaderCall(
-        manager_session_id="manager",
-        catalog_generation=1,
-        extension_id="environment.erlab.io.loaders.lab",
-        extension_name="Lab",
-        source_hash="b" * 64,
-        loader_id="lab",
-        descriptor=descriptor,
-        source_path=None,
-        source_type="environment-package",
-        executor=execute,
-        entry_point_group="erlab.io.loaders",
-        entry_point_name="lab",
-    )
-    environment_adapter = extension_execution._DecoratedLoaderAdapter(environment_call)
-    assert environment_adapter.uses_standard_loader_options
-    assert environment_adapter.name == "lab"
-    with pytest.raises(TypeError, match="must use keywords"):
-        environment_adapter.load(path, 2.0)
-    xr.testing.assert_identical(
-        environment_adapter.load(path, scale=4.0), xr.DataArray([3.0])
-    )
     with pytest.raises(ValueError, match="must be finite"):
-        environment_call(path, scale=float("inf"))
+        call(path, scale=float("inf"))
 
 
 def test_loader_and_validation_workers_ignore_repeated_cancellation(
@@ -2261,7 +1664,6 @@ def test_loader_and_validation_workers_ignore_repeated_cancellation(
         loader_id="load_data",
         descriptor=descriptor,
         source_path=tmp_path / "loader.py",
-        source_type="script",
         executor=lambda *_args: xr.DataArray([1.0]),
     )
     store = _ExtensionCatalogStore(tmp_path / "catalog")
@@ -2309,7 +1711,6 @@ def test_loader_worker_contains_process_control_exceptions(
         loader_id="load_data",
         descriptor=descriptor,
         source_path=tmp_path / "loader.py",
-        source_type="script",
         executor=lambda *_args: xr.DataArray([1.0]),
     )
     record = types.SimpleNamespace(enabled=True)
@@ -2335,221 +1736,6 @@ def test_loader_worker_contains_process_control_exceptions(
     assert worker.done.is_set()
     assert isinstance(worker.error, erlab.extensions.ExtensionExecutionError)
     assert "KeyboardInterrupt" in str(worker.error)
-
-
-def test_environment_routine_resolves_callable_and_module_entry_points(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    @erlab.extensions.routine(id="calculate")
-    def calculate(data: xr.DataArray) -> xr.DataArray:
-        return data + 1
-
-    class EntryPoint:
-        group = "erlab.extensions"
-        name = "lab"
-        value = "lab_package:extension"
-
-    class EntryPoints(tuple):
-        def select(self, **parameters):
-            return tuple(
-                entry
-                for entry in self
-                if all(
-                    getattr(entry, key, None) == value
-                    for key, value in parameters.items()
-                )
-            )
-
-    entry_point = EntryPoint()
-    monkeypatch.setattr(
-        extension_execution.importlib.metadata,
-        "entry_points",
-        lambda: EntryPoints((entry_point,)),
-    )
-    monkeypatch.setattr(
-        extension_execution, "_environment_source_matches", lambda *_args: True
-    )
-    routine_descriptor = erlab.extensions.RoutineDescriptor(
-        id="calculate",
-        name="Calculate",
-        category="Lab",
-        summary="",
-        function_name="calculate",
-    )
-    job = types.SimpleNamespace(
-        entry_point_group=entry_point.group,
-        entry_point_name=entry_point.name,
-        entry_point_value=entry_point.value,
-        source_hash="a" * 64,
-        routine=routine_descriptor,
-    )
-
-    monkeypatch.setattr(
-        extension_execution, "_load_entry_point_value", lambda *_args: calculate
-    )
-    resolved_routine = extension_execution._environment_routine(job)
-    assert resolved_routine[0].id == "calculate"
-    assert resolved_routine[1] is calculate
-
-    module = types.ModuleType("lab_package.extension")
-    calculate.__module__ = module.__name__
-    module.calculate = calculate
-    monkeypatch.setattr(
-        extension_execution, "_load_entry_point_value", lambda *_args: module
-    )
-    assert extension_execution._environment_routine(job)[1] is calculate
-
-    monkeypatch.setattr(
-        extension_execution, "_load_entry_point_value", lambda *_args: object()
-    )
-    with pytest.raises(
-        erlab.extensions.ExtensionExecutionError, match="no longer available"
-    ):
-        extension_execution._environment_routine(job)
-
-    monkeypatch.setattr(
-        extension_execution, "_environment_source_matches", lambda *_args: False
-    )
-    with pytest.raises(
-        erlab.extensions.ExtensionExecutionError, match="no longer available"
-    ):
-        extension_execution._environment_routine(job)
-
-
-def test_environment_loader_resolves_supported_entry_point_shapes(
-    example_loader,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    @erlab.extensions.loader(id="load_data")
-    def load_data(path: pathlib.Path) -> xr.DataArray:
-        return xr.DataArray([len(path.name)])
-
-    class EntryPoint:
-        group = "erlab.extensions"
-        name = "lab"
-        value = "lab_package:extension"
-
-    class EntryPoints(tuple):
-        def select(self, **parameters):
-            return tuple(
-                entry
-                for entry in self
-                if all(
-                    getattr(entry, key, None) == value
-                    for key, value in parameters.items()
-                )
-            )
-
-    entry_point = EntryPoint()
-    monkeypatch.setattr(
-        extension_execution.importlib.metadata,
-        "entry_points",
-        lambda: EntryPoints((entry_point,)),
-    )
-    monkeypatch.setattr(
-        extension_execution, "_environment_source_matches", lambda *_args: True
-    )
-    descriptor = erlab.extensions.LoaderDescriptor(
-        id="load_data",
-        name="Load Data",
-        category="Lab",
-        summary="",
-        function_name="load_data",
-    )
-    call = types.SimpleNamespace(
-        entry_point_group=entry_point.group,
-        entry_point_name=entry_point.name,
-        entry_point_value=entry_point.value,
-        source_hash="a" * 64,
-        loader_id="load_data",
-        descriptor=descriptor,
-        loader_method=None,
-    )
-
-    monkeypatch.setattr(
-        extension_execution, "_load_entry_point_value", lambda *_args: load_data
-    )
-    resolved_loader = extension_execution._environment_loader(call)
-    assert resolved_loader is not None
-    assert resolved_loader[0].id == "load_data"
-    assert resolved_loader[1] is load_data
-
-    module = types.ModuleType("lab_package.extension")
-    load_data.__module__ = module.__name__
-    module.load_data = load_data
-    monkeypatch.setattr(
-        extension_execution, "_load_entry_point_value", lambda *_args: module
-    )
-    assert extension_execution._environment_loader(call)[1] is load_data
-
-    entry_point.group = "erlab.io.loaders"
-    call.entry_point_group = entry_point.group
-    call.entry_point_name = "example"
-    entry_point.name = "example"
-    call.loader_id = "example"
-    for value in (example_loader, example_loader()):
-        monkeypatch.setattr(
-            extension_execution,
-            "_load_entry_point_value",
-            lambda *_args, value=value: value,
-        )
-        resolved = extension_execution._environment_loader(call)
-        assert resolved is not None
-        assert getattr(resolved[1], "__self__", None).name == "example"
-
-    call.loader_id = "different"
-    assert extension_execution._environment_loader(call) is None
-    call.loader_id = "example"
-    monkeypatch.setattr(
-        extension_execution, "_load_entry_point_value", lambda *_args: object()
-    )
-    assert extension_execution._environment_loader(call) is None
-
-    monkeypatch.setattr(
-        extension_execution, "_environment_source_matches", lambda *_args: False
-    )
-    assert extension_execution._environment_loader(call) is None
-
-
-def test_environment_capability_validation_rejects_invalid_entry_points(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = _ExtensionSource(
-        source_hash="a" * 64,
-        object_name="lab_package:extension",
-        registered_at="2026-01-01T00:00:00+00:00",
-        entry_point_group="erlab.extensions",
-        entry_point_name="lab",
-        entry_point_value="lab_package:extension",
-    )
-    entry_point = types.SimpleNamespace(group="erlab.extensions")
-    store = types.SimpleNamespace(_entry_point_for_source=lambda _source: entry_point)
-
-    monkeypatch.setattr(
-        extension_execution, "_load_entry_point_value", lambda *_args: object()
-    )
-    with pytest.raises(TypeError, match="decorated function or module"):
-        extension_execution._environment_capabilities(
-            typing.cast("_ExtensionCatalogStore", store), source
-        )
-
-    module = types.ModuleType("empty_extension")
-    monkeypatch.setattr(
-        extension_execution, "_load_entry_point_value", lambda *_args: module
-    )
-    with pytest.raises(TypeError, match="has no capabilities"):
-        extension_execution._environment_capabilities(
-            typing.cast("_ExtensionCatalogStore", store), source
-        )
-
-    entry_point.group = "erlab.io.loaders"
-    monkeypatch.setattr(
-        extension_execution, "_load_entry_point_value", lambda *_args: object()
-    )
-    with pytest.raises(TypeError, match="must provide LoaderBase"):
-        extension_execution._environment_capabilities(
-            typing.cast("_ExtensionCatalogStore", store), source
-        )
 
 
 def test_extension_validation_rejects_an_unknown_record(
@@ -2615,7 +1801,6 @@ def test_execution_controller_reports_admission_and_validation_failures(
             loader_id="load_data",
             descriptor=descriptor,
             source_path=tmp_path / "loader.py",
-            source_type="script",
             executor=lambda *_args: xr.DataArray([1.0]),
         )
         with pytest.raises(
@@ -2669,7 +1854,6 @@ def test_execution_controller_removes_failed_pool_admission(
         loader_id="load_data",
         descriptor=descriptor,
         source_path=tmp_path / "loader.py",
-        source_type="script",
         executor=lambda *_args: xr.DataArray([1.0]),
     )
 
@@ -2735,20 +1919,6 @@ def test_routine_job_rejects_unavailable_catalog_state(
             "scale",
             expected_record_generation=catalog.extensions["scale"].record_generation,
         )
-        with pytest.raises(
-            erlab.extensions.ExtensionExecutionError,
-            match="different source type",
-        ):
-            execution._routine_job(
-                extension_id="scale",
-                source_hash=source_hash,
-                routine_id="scale",
-                source_type="environment-package",
-                parameters={},
-                input_data=data,
-                input_uid="uid",
-                input_snapshot="snapshot",
-            )
         with pytest.raises(
             erlab.extensions.ExtensionExecutionError, match="missing-source"
         ):
@@ -2839,11 +2009,6 @@ def test_extension_replay_reports_all_controller_result_states(
             routine_id="scale",
             extension_name="Scale",
             routine_name="Scale",
-            source_type="script",
-            function_name="scale",
-            source_path=os.fspath(script_path),
-            entry_point_group=None,
-            entry_point_name=None,
             parameters={"scale": 2.0},
         )
 
@@ -2954,7 +2119,7 @@ def test_execution_shutdown_is_safe_after_qt_teardown(
 
 @pytest.mark.parametrize(
     "corruption",
-    ["extension-key", "source-hash", "source-type", "object-name"],
+    ["extension-key", "source-hash", "object-name"],
 )
 def test_catalog_rejects_inconsistent_persisted_identity(
     tmp_path: pathlib.Path,
@@ -2970,47 +2135,12 @@ def test_catalog_rejects_inconsistent_persisted_identity(
         record["id"] = "different"
     elif corruption == "source-hash":
         record["source"]["source_hash"] = "0" * 64
-    elif corruption == "source-type":
-        record["source"]["entry_point_group"] = "erlab.extensions"
     else:
         record["source"]["object_name"] = "../outside.py"
     store.path.write_text(json.dumps(payload))
 
     with pytest.raises(extension_catalog._ExtensionCatalogError):
         store.read()
-
-
-def test_catalog_rejects_persisting_environment_packages(
-    tmp_path: pathlib.Path,
-) -> None:
-    store = _ExtensionCatalogStore(tmp_path / "catalog")
-    extension_id = "shared-id"
-    environment_source_hash = "a" * 64
-    environment_record = _ExtensionRecord(
-        id=extension_id,
-        name="Shared",
-        source_type="environment-package",
-        source=_ExtensionSource(
-            source_hash=environment_source_hash,
-            object_name="lab_package:extension",
-            registered_at="2026-01-01T00:00:00+00:00",
-            entry_point_group="erlab.extensions",
-            entry_point_name="extension",
-            entry_point_value="lab_package:extension",
-        ),
-    )
-    with pytest.raises(
-        extension_catalog._ExtensionCatalogError,
-        match="cannot be written",
-    ):
-        store.mutate(
-            None,
-            lambda current: current.model_copy(
-                update={"extensions": {extension_id: environment_record}}
-            ),
-        )
-
-    assert store.read().extensions == {}
 
 
 def test_catalog_validates_callback_output_before_commit(
@@ -3289,7 +2419,8 @@ def test_catalog_reads_unreleased_schema_as_schema_one(
     )
     payload = catalog.model_dump(mode="json")
     payload["schema_version"] = 4
-    payload.pop("routine_favorites")
+    payload["routine_favorites"] = [["environment.my-lab", "normalize"]]
+    payload["extensions"]["environment.my-lab"] = {"source_type": "environment-package"}
     record = payload["extensions"]["gaussian_tools"]
     source = record.pop("source")
     record["current_revision"] = revision
@@ -3316,45 +2447,6 @@ def test_catalog_reads_unreleased_schema_as_schema_one(
     assert migrated.extensions["gaussian_tools"].name == "gaussian_tools.py"
     assert migrated.extensions["gaussian_tools"].source.source_hash == revision
     assert migrated.routine_favorites == (("gaussian_tools", "scale"),)
-
-
-def test_catalog_startup_removes_persisted_environment_package_records(
-    tmp_path: pathlib.Path,
-) -> None:
-    store = _ExtensionCatalogStore(tmp_path / "catalog")
-    store.directory.mkdir(parents=True)
-    extension_id = "environment.erlab.extensions.lab"
-    record = _ExtensionRecord(
-        id=extension_id,
-        name="lab",
-        source_type="environment-package",
-        source=_ExtensionSource(
-            source_hash="a" * 64,
-            object_name="lab_package:extension",
-            registered_at="2026-01-01T00:00:00+00:00",
-            entry_point_group="erlab.extensions",
-            entry_point_name="lab",
-            entry_point_value="lab_package:extension",
-        ),
-    )
-    store.path.write_text(
-        _ExtensionCatalogModel(
-            extensions={extension_id: record},
-            routine_favorites=((extension_id, "calculate"),),
-        ).model_dump_json(),
-        encoding="utf-8",
-    )
-
-    catalog = _ExtensionCatalog(directory=store.directory)
-    try:
-        assert catalog.model.extensions == {}
-        assert catalog.model.routine_favorites == ((extension_id, "calculate"),)
-    finally:
-        catalog.close()
-
-    payload = json.loads(store.path.read_text(encoding="utf-8"))
-    assert payload["extensions"] == {}
-    assert payload["routine_favorites"] == [[extension_id, "calculate"]]
 
 
 def test_failed_script_registration_does_not_leave_an_orphaned_source(
@@ -3511,11 +2603,6 @@ def test_script_routine_generated_code_uses_public_path_api(
             routine_id="scale",
             extension_name="Scale",
             routine_name="Scale",
-            source_type="script",
-            function_name="scale",
-            source_path=str(first.store.recovery_source_path("scale", revision)),
-            entry_point_group=None,
-            entry_point_name=None,
             parameters={"scale": 3.0},
         )
         data = xr.DataArray([1.0, 2.0])
@@ -3566,11 +2653,6 @@ def old_scale(data: xr.DataArray, scale: float = 2.0) -> xr.DataArray:
             routine_id="scale",
             extension_name="lab_routines.py",
             routine_name="Scale",
-            source_type="script",
-            function_name="old_scale",
-            source_path=str(script_path),
-            entry_point_group=None,
-            entry_point_name=None,
             parameters={"scale": 3.0},
         )
         script_path.write_text(
@@ -3608,36 +2690,6 @@ def scale_data(data: xr.DataArray, scale: float = 2.0) -> xr.DataArray:
     xr.testing.assert_identical(namespace["result"], data * 3.0 + 1.0)
 
 
-def test_package_routine_generated_code_uses_a_direct_import() -> None:
-    operation = ExtensionRoutineOperation(
-        extension_id="environment.erlab.extensions.lab",
-        source_hash="a" * 64,
-        routine_id="scale",
-        extension_name="lab",
-        routine_name="Scale",
-        source_type="environment-package",
-        function_name="scale",
-        source_path=None,
-        entry_point_group="erlab.extensions",
-        entry_point_name="lab",
-        public_call_reference=f"{__name__}:generated_external_routine",
-        parameters={"scale": 3.0},
-    )
-    data = xr.DataArray([1.0, 2.0])
-
-    code = operation.replay_code("data", output_name="result")
-    assert "load_entry_point" not in code
-    assert operation.source_hash not in code
-    namespace: dict[str, typing.Any] = {"data": data}
-    exec(code, namespace)  # noqa: S102
-
-    xr.testing.assert_identical(namespace["result"], data * 3.0)
-    private_operation = operation.model_copy(
-        update={"public_call_reference": "lab_package._plugin:scale"}
-    )
-    assert private_operation.derivation_entry().code is None
-
-
 def test_unregistered_script_provenance_remains_visible_without_copied_code() -> None:
     operation = ExtensionRoutineOperation(
         extension_id=f"workspace-{uuid.uuid4().hex}",
@@ -3645,11 +2697,6 @@ def test_unregistered_script_provenance_remains_visible_without_copied_code() ->
         routine_id="scale",
         extension_name="workspace_scale.py",
         routine_name="Scale",
-        source_type="script",
-        function_name="scale",
-        source_path="workspace_scale.py",
-        entry_point_group=None,
-        entry_point_name=None,
         parameters={"scale": 3.0},
     )
 
@@ -3678,11 +2725,6 @@ def test_changed_registered_script_provenance_has_no_copied_code(
             routine_id="scale",
             extension_name="scale.py",
             routine_name="Scale",
-            source_type="script",
-            function_name="scale",
-            source_path=str(script_path),
-            entry_point_group=None,
-            entry_point_name=None,
             parameters={"scale": 3.0},
         )
         script_path.write_text("changed source")
@@ -3703,11 +2745,6 @@ def test_extension_routine_reloadability_requires_ready_exact_source() -> None:
         routine_id="normalize",
         extension_name="Lab",
         routine_name="Normalize",
-        source_type="script",
-        function_name="normalize",
-        source_path="extension.py",
-        entry_point_group=None,
-        entry_point_name=None,
         parameters={},
     )
     spec = ToolProvenanceSpec(
@@ -3717,14 +2754,13 @@ def test_extension_routine_reloadability_requires_ready_exact_source() -> None:
         active_name="derived",
         operations=(operation,),
     )
-    calls: list[tuple[str, str, str, str, str | None]] = []
+    calls: list[tuple[str, str, str, str]] = []
 
     def ready(
         extension_id: str,
         source_hash: str,
         capability_kind: str,
         capability_id: str,
-        source_type: str | None,
     ) -> typing.Literal["ready"]:
         calls.append(
             (
@@ -3732,13 +2768,12 @@ def test_extension_routine_reloadability_requires_ready_exact_source() -> None:
                 source_hash,
                 capability_kind,
                 capability_id,
-                source_type,
             )
         )
         return "ready"
 
     assert can_reload_without_trust(spec, extension_status_resolver=ready)
-    assert calls == [("lab", revision, "routine", "normalize", "script")]
+    assert calls == [("lab", revision, "routine", "normalize")]
     assert not can_reload_without_trust(
         spec,
         extension_status_resolver=lambda *_args: "disabled",
@@ -3756,11 +2791,6 @@ def test_managed_reload_reason_uses_the_manager_extension_state(
         routine_id="normalize",
         extension_name="Lab",
         routine_name="Normalize",
-        source_type="script",
-        function_name="normalize",
-        source_path="extension.py",
-        entry_point_group=None,
-        entry_point_name=None,
         parameters={},
     )
     spec = ToolProvenanceSpec(
@@ -3792,11 +2822,6 @@ def test_persisted_extension_parameters_reject_nonfinite_values() -> None:
             routine_id="scale",
             extension_name="Scale",
             routine_name="Scale",
-            source_type="script",
-            function_name="scale",
-            source_path="scale.py",
-            entry_point_group=None,
-            entry_point_name=None,
             parameters={"scale": float("inf")},
         )
 
@@ -3806,7 +2831,6 @@ def test_persisted_extension_parameters_reject_nonfinite_values() -> None:
             target="scale",
             source_hash="a" * 64,
             capability_id="load_scale",
-            extension_source_type="script",
             kwargs={"scale": float("nan")},
             selection=FileDataSelection(kind="dataarray"),
         )
@@ -3897,524 +2921,6 @@ def test_catalog_watcher_propagates_global_record_state(
     finally:
         first.close()
         second.close()
-
-
-def test_environment_loader_entry_point_is_inspected_before_import(
-    example_loader,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: pathlib.Path,
-) -> None:
-    load_calls: list[None] = []
-
-    class _EntryPoint:
-        group = "erlab.io.loaders"
-        name = "example"
-        value = "lab_package:ExampleLoader"
-        dist = None
-
-        @staticmethod
-        def load():
-            load_calls.append(None)
-            return example_loader
-
-    class _EntryPoints(tuple):
-        def select(self, **parameters):
-            return tuple(
-                entry
-                for entry in self
-                if all(
-                    getattr(entry, key, None) == value
-                    for key, value in parameters.items()
-                )
-            )
-
-    entry_points = _EntryPoints((_EntryPoint(),))
-    monkeypatch.setattr(
-        extension_catalog.importlib.metadata,
-        "entry_points",
-        lambda: entry_points,
-    )
-    store = _ExtensionCatalogStore(tmp_path / "catalog")
-
-    catalog = store.refresh_environment_packages()
-    assert load_calls == []
-    extension_id = "environment.erlab.io.loaders.example"
-    record = catalog.extensions[extension_id]
-    catalog = _validate_and_enable(
-        store,
-        extension_id,
-        expected_record_generation=record.record_generation,
-    )
-
-    record = catalog.extensions[extension_id]
-    assert len(load_calls) == 1
-    assert record.enabled
-    revision = record.source
-    assert revision.loaders[0].id == "example"
-    assert revision.loader_always_single is False
-    assert tuple(
-        (method.name_filter, method.method, method.defaults)
-        for method in revision.loader_dialog_methods
-    ) == (("Example Raw Data (*.h5)", None, {}),)
-    resolved = store.resolve_capability(
-        extension_id,
-        record.source.source_hash,
-        "loader",
-        "example",
-    )
-    assert len(load_calls) == 2
-    assert getattr(resolved, "__self__", None).name == "example"
-
-
-def test_environment_loader_entry_point_name_can_differ_from_loader_name(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: pathlib.Path,
-) -> None:
-    class _AliasedLoader(erlab.io.dataloader.LoaderBase):
-        name = "extension_loader_actual_name"
-        extensions: typing.ClassVar[set[str]] = {".alias-test"}
-        skip_validate = True
-
-        @property
-        def file_dialog_methods(self):
-            return {"Aliased Extension Data (*.alias-test)": (self.load, {})}
-
-        def load_single(self, file_path, without_values=False):
-            del file_path, without_values
-            return xr.DataArray([1.0])
-
-    class _EntryPoint:
-        group = "erlab.io.loaders"
-        name = "package_alias"
-        value = "lab_package:AliasedLoader"
-        dist = None
-
-        @staticmethod
-        def load():
-            return _AliasedLoader
-
-    class _EntryPoints(tuple):
-        def select(self, **parameters):
-            return tuple(
-                entry
-                for entry in self
-                if all(
-                    getattr(entry, key, None) == value
-                    for key, value in parameters.items()
-                )
-            )
-
-    monkeypatch.setattr(
-        extension_catalog.importlib.metadata,
-        "entry_points",
-        lambda: _EntryPoints((_EntryPoint(),)),
-    )
-    store = _ExtensionCatalogStore(tmp_path / "catalog")
-    catalog = store.refresh_environment_packages()
-    extension_id = "environment.erlab.io.loaders.package_alias"
-
-    catalog = _validate_and_enable(
-        store,
-        extension_id,
-        expected_record_generation=catalog.extensions[extension_id].record_generation,
-    )
-
-    record = catalog.extensions[extension_id]
-    assert record.enabled
-    assert record.source.loaders[0].id == ("extension_loader_actual_name")
-
-
-def test_environment_loader_name_conflict_is_rejected(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: pathlib.Path,
-) -> None:
-    class _FirstLoader(erlab.io.dataloader.LoaderBase):
-        name = "shared_environment_loader"
-        extensions: typing.ClassVar[set[str]] = {".first-loader-test"}
-        skip_validate = True
-
-        @property
-        def file_dialog_methods(self):
-            return {"First Environment Data (*.first-loader-test)": (self.load, {})}
-
-        def load_single(self, file_path, without_values=False):
-            del file_path, without_values
-            return xr.DataArray([1.0])
-
-    class _SecondLoader(erlab.io.dataloader.LoaderBase):
-        name = "shared_environment_loader"
-        extensions: typing.ClassVar[set[str]] = {".second-loader-test"}
-        skip_validate = True
-
-        @property
-        def file_dialog_methods(self):
-            return {"Second Environment Data (*.second-loader-test)": (self.load, {})}
-
-        def load_single(self, file_path, without_values=False):
-            del file_path, without_values
-            return xr.DataArray([2.0])
-
-    class _EntryPoint:
-        group = "erlab.io.loaders"
-        dist = None
-
-        def __init__(self, name: str, loader_type: type) -> None:
-            self.name = name
-            self.value = f"lab_package:{loader_type.__name__}"
-            self._loader_type = loader_type
-
-        def load(self):
-            return self._loader_type
-
-    class _EntryPoints(tuple):
-        def select(self, **parameters):
-            return tuple(
-                entry
-                for entry in self
-                if all(
-                    getattr(entry, key, None) == value
-                    for key, value in parameters.items()
-                )
-            )
-
-    monkeypatch.setattr(
-        extension_catalog.importlib.metadata,
-        "entry_points",
-        lambda: _EntryPoints(
-            (
-                _EntryPoint("first_package", _FirstLoader),
-                _EntryPoint("second_package", _SecondLoader),
-            )
-        ),
-    )
-    store = _ExtensionCatalogStore(tmp_path / "catalog")
-    catalog = store.refresh_environment_packages()
-    first_id = "environment.erlab.io.loaders.first_package"
-    second_id = "environment.erlab.io.loaders.second_package"
-
-    catalog = _validate_and_enable(
-        store,
-        first_id,
-        expected_record_generation=catalog.extensions[first_id].record_generation,
-    )
-    with pytest.raises(
-        _ExtensionCatalogConflictError,
-        match=r"conflicts with enabled extension .* for loader names",
-    ):
-        _validate_and_enable(
-            store,
-            second_id,
-            expected_record_generation=(
-                catalog.extensions[second_id].record_generation
-            ),
-        )
-
-    runtime = store.view()
-    assert runtime.extensions[first_id].enabled
-    assert not runtime.extensions[second_id].enabled
-    assert store.read().extensions == {}
-
-
-def test_environment_refresh_does_not_replace_a_script_record(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: pathlib.Path,
-) -> None:
-    class _EntryPoints(tuple):
-        def select(self, **parameters):
-            return tuple(
-                entry
-                for entry in self
-                if all(
-                    getattr(entry, key, None) == value
-                    for key, value in parameters.items()
-                )
-            )
-
-    entry_point = types.SimpleNamespace(
-        group="erlab.extensions",
-        name="example",
-        value="lab_package:extension",
-        dist=None,
-    )
-    monkeypatch.setattr(
-        extension_catalog.importlib.metadata,
-        "entry_points",
-        lambda: _EntryPoints((entry_point,)),
-    )
-    store = _ExtensionCatalogStore(tmp_path / "catalog")
-    script_path = tmp_path / "environment.erlab.extensions.example.py"
-    _script(script_path)
-    before, _revision, _created = store.add_script(script_path)
-
-    after = store.refresh_environment_packages()
-
-    assert after == before
-    assert after.extensions[script_path.stem].source_type == "script"
-
-
-def test_environment_loader_preserves_file_dialog_contract(
-    manager_context,
-    qtbot: pytest.QtBot,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: pathlib.Path,
-) -> None:
-    call_threads: list[int] = []
-    stale_load_calls: list[None] = []
-
-    class _Distribution:
-        metadata: typing.ClassVar[dict[str, str]] = {"Name": "lab-package"}
-
-        def __init__(self, version: str) -> None:
-            self.version = version
-
-        @staticmethod
-        def read_text(_name: str) -> None:
-            return None
-
-    class _MultiLoader(erlab.io.dataloader.LoaderBase):
-        name = "multi_extension"
-        extensions: typing.ClassVar[set[str]] = {".txt"}
-        always_single = False
-        skip_validate = True
-
-        @property
-        def file_dialog_methods(self):
-            return {
-                "Normal Extension Data (*.txt)": (self.load, {"single": True}),
-                "Scaled Extension Data (*.txt)": (
-                    self.load_scaled,
-                    {"scale": 3.0},
-                ),
-                "Multiple Extension Data (*.txt)": (self.load_multiple, {}),
-            }
-
-        def load_single(self, file_path, without_values=False):
-            del without_values
-            return xr.DataArray([float(pathlib.Path(file_path).read_text())])
-
-        def load_scaled(self, file_path, scale=1.0):
-            call_threads.append(threading.get_ident())
-            return xr.DataArray([float(pathlib.Path(file_path).read_text()) * scale])
-
-        def load_multiple(self, file_path):
-            value = float(pathlib.Path(file_path).read_text())
-            return [xr.DataArray([value]), xr.DataArray([value + 1.0])]
-
-    class _EntryPoint:
-        group = "erlab.io.loaders"
-        name = "multi_extension"
-        value = "lab_package:MultiLoader"
-        dist = _Distribution("2")
-
-        @staticmethod
-        def load():
-            return _MultiLoader
-
-    class _StaleEntryPoint(_EntryPoint):
-        dist = _Distribution("1")
-
-        @staticmethod
-        def load():
-            stale_load_calls.append(None)
-            return _MultiLoader
-
-    class _EntryPoints(tuple):
-        def select(self, **parameters):
-            return tuple(
-                entry
-                for entry in self
-                if all(
-                    getattr(entry, key, None) == value
-                    for key, value in parameters.items()
-                )
-            )
-
-    entry_points = _EntryPoints((_StaleEntryPoint(), _EntryPoint()))
-    monkeypatch.setattr(
-        extension_catalog.importlib.metadata,
-        "entry_points",
-        lambda: entry_points,
-    )
-    value_path = tmp_path / "value.txt"
-    value_path.write_text("4")
-
-    with manager_context() as manager:
-        catalog = manager._extensions.catalog.store.refresh_environment_packages()
-        extension_id = "environment.erlab.io.loaders.multi_extension"
-        record = catalog.extensions[extension_id]
-        _validate_and_enable(
-            manager._extensions.catalog.store,
-            extension_id,
-            expected_record_generation=record.record_generation,
-        )
-        manager._extensions.catalog.refresh()
-
-        loaders = manager._extensions.file_loaders(value_path)
-        normal_func, normal_defaults = loaders["Normal Extension Data (*.txt)"]
-        scaled_func, scaled_defaults = loaders["Scaled Extension Data (*.txt)"]
-        multiple_func, multiple_defaults = loaders["Multiple Extension Data (*.txt)"]
-        assert normal_defaults == {"single": True}
-        assert scaled_defaults == {"scale": 3.0}
-        assert multiple_defaults == {}
-        assert normal_func.__self__.always_single is False
-        assert scaled_func.__self__.always_single is False
-        normal_result = normal_func(value_path, **normal_defaults)
-        xr.testing.assert_equal(normal_result, xr.DataArray([4.0]))
-        assert normal_result.attrs["data_loader_name"] == "multi_extension"
-        xr.testing.assert_identical(
-            scaled_func(value_path, **scaled_defaults), xr.DataArray([12.0])
-        )
-        multiple_result = multiple_func(value_path, **multiple_defaults)
-        assert isinstance(multiple_result, list)
-        xr.testing.assert_identical(multiple_result[0], xr.DataArray([4.0]))
-        xr.testing.assert_identical(multiple_result[1], xr.DataArray([5.0]))
-        assert manager._extensions.explorer_loaders[
-            "multi_extension"
-        ].always_single is (False)
-
-        resolved = _resolve_load_func(
-            (
-                scaled_func,
-                scaled_defaults,
-                FileDataSelection(kind="dataarray"),
-            )
-        )
-        assert resolved is not None
-        replay_call = resolved.replay_call()
-        assert replay_call.kind == "extension_loader"
-        assert replay_call.loader_method == "load_scaled"
-        replay_spec = file_load(
-            start_label="Load extension data",
-            seed_code="derived = xr.DataArray([12.0])",
-            file_load_source=FileLoadSource(
-                path=str(value_path),
-                loader_label="Extension Loader",
-                loader_text="multi_extension",
-                kwargs_text="scale=3.0",
-                replay_call=replay_call,
-            ),
-        )
-        call_threads.clear()
-        processed_events: list[None] = []
-        QtCore.QTimer.singleShot(0, lambda: processed_events.append(None))
-        xr.testing.assert_identical(
-            replay_file_provenance(
-                replay_spec,
-                extension_loader_executor=manager._extensions.replay_loader,
-            ),
-            xr.DataArray([12.0]),
-        )
-        assert len(call_threads) == 1
-        assert call_threads[0] != threading.get_ident()
-        assert stale_load_calls == []
-        assert processed_events == [None]
-        system_calls: list[str] = []
-        monkeypatch.setattr(
-            os,
-            "system",
-            lambda command: system_calls.append(command) or 0,
-        )
-        malicious_call = replay_call.model_copy(update={"loader_method": "os.system"})
-        malicious_source = replay_spec.file_load_source.model_copy(
-            update={"replay_call": malicious_call}
-        )
-        with pytest.raises(
-            erlab.extensions.ExtensionExecutionError, match="not approved"
-        ):
-            manager._extensions.replay_loader(malicious_source)
-        assert system_calls == []
-        code = resolved.load_code(value_path, assign="loaded")
-        assert code is None
-
-        dialog = _FileLoadEditDialog(
-            FileLoadSource(
-                path=str(value_path),
-                loader_label="Extension Loader",
-                loader_text="multi_extension",
-                kwargs_text="scale=3.0",
-                replay_call=replay_call,
-            ),
-            manager,
-            file_loaders=manager._available_file_loaders,
-        )
-        try:
-            selected_filter = dialog._checked_filter_name()
-            assert selected_filter is not None
-            selected_func = dialog.loader_options._valid_loaders[selected_filter][0]
-            assert (
-                _resolve_load_func(
-                    (
-                        selected_func,
-                        scaled_defaults,
-                        FileDataSelection(kind="dataarray"),
-                    )
-                )
-                .replay_call()
-                .loader_method
-                == "load_scaled"
-            )
-        finally:
-            dialog.close()
-
-        manager._data_load([str(value_path)], "multi_extension", {"single": True})
-        qtbot.wait_until(
-            lambda: len(manager._tool_graph.root_wrappers) == 1,
-            timeout=5000,
-        )
-        loaded_spec = manager._tool_graph.root_wrappers[0].provenance_spec
-        assert loaded_spec is not None
-        assert loaded_spec.file_load_source is not None
-        loaded_call = loaded_spec.file_load_source.replay_call
-        assert loaded_call is not None
-        assert loaded_call.kind == "extension_loader"
-        assert loaded_call.target == extension_id
-        assert loaded_call.source_hash == record.source.source_hash
-
-
-def test_generated_external_loader_uses_direct_public_import(
-    tmp_path: pathlib.Path,
-) -> None:
-    revision = "a" * 64
-    descriptor = erlab.extensions.LoaderDescriptor(
-        id="external",
-        name="External",
-        category="Environment",
-        summary="",
-        function_name="load",
-    )
-    call = _ExtensionLoaderCall(
-        manager_session_id="manager",
-        catalog_generation=1,
-        extension_id="environment.erlab.io.loaders.external",
-        extension_name="External",
-        source_hash=revision,
-        loader_id="external",
-        descriptor=descriptor,
-        source_path=None,
-        source_type="environment-package",
-        executor=lambda *_args: xr.DataArray([0.0]),
-        entry_point_group="erlab.io.loaders",
-        entry_point_name="external",
-        public_call_reference=f"{__name__}:generated_external_loader",
-        loader_method=f"{__name__}.generated_external_loader",
-    )
-    resolved = _resolve_load_func(
-        (call, {"scale": 3.0}, FileDataSelection(kind="dataarray"))
-    )
-    if resolved is None:
-        raise RuntimeError("The extension loader did not resolve")
-    path = tmp_path / "value.txt"
-    path.write_text("4")
-    code = resolved.load_code(path, assign="loaded")
-    if code is None:
-        raise RuntimeError("The extension loader did not generate code")
-    assert "load_entry_point" not in code
-    assert revision not in code
-    namespace: dict[str, typing.Any] = {}
-
-    exec(code, namespace)  # noqa: S102
-
-    xr.testing.assert_identical(namespace["loaded"], xr.DataArray([12.0]))
 
 
 def test_registered_script_loader_code_uses_current_user_path(
@@ -4517,8 +3023,6 @@ def test_embedded_script_loader_has_replay_metadata_but_no_copied_code(
                 target=f"workspace-{uuid.uuid4().hex}",
                 source_hash="a" * 64,
                 capability_id="load_data",
-                extension_source_type="script",
-                function_name="load_data",
                 selection=FileDataSelection(kind="dataarray"),
             ),
         ),
@@ -4532,492 +3036,6 @@ def test_embedded_script_loader_has_replay_metadata_but_no_copied_code(
         ),
         xr.DataArray([4.0]),
     )
-
-
-def test_package_loader_file_provenance_uses_direct_public_import(
-    tmp_path: pathlib.Path,
-) -> None:
-    data_path = tmp_path / "value.txt"
-    data_path.write_text("4")
-    spec = file_load(
-        start_label="Load package data",
-        seed_code=None,
-        file_load_source=FileLoadSource(
-            path=str(data_path),
-            loader_label="Package data",
-            loader_text="external",
-            kwargs_text="scale=3.0",
-            replay_call=FileReplayCall(
-                kind="extension_loader",
-                target="environment.erlab.extensions.external",
-                source_hash="a" * 64,
-                capability_id="external",
-                extension_source_type="environment-package",
-                function_name="load",
-                public_call_reference=(f"{__name__}:generated_external_loader"),
-                kwargs={"scale": 3.0},
-                selection=FileDataSelection(kind="dataarray"),
-            ),
-        ),
-    )
-
-    code = spec.display_code()
-    if code is None:
-        raise RuntimeError("The package loader did not generate code")
-    namespace: dict[str, typing.Any] = {}
-    exec(code, namespace)  # noqa: S102
-
-    xr.testing.assert_identical(namespace["derived"], xr.DataArray([12.0]))
-
-
-def test_editable_source_fingerprint_tracks_custom_layout_and_sibling_modules(
-    tmp_path: pathlib.Path,
-) -> None:
-    source = tmp_path / "python" / "packages" / "lab_package" / "plugin.py"
-    source.parent.mkdir(parents=True)
-    source.write_text("VALUE = 1\n")
-    helper = tmp_path / "python" / "packages" / "shared" / "helper.py"
-    helper.parent.mkdir(parents=True)
-    helper.write_text("HELPER = 1\n")
-
-    direct_url = {
-        "url": tmp_path.as_uri(),
-        "dir_info": {"editable": True},
-    }
-    first = extension_entry_points._editable_source_fingerprint(direct_url)
-    source.write_text("VALUE = 2\n")
-    second = extension_entry_points._editable_source_fingerprint(direct_url)
-    helper.write_text("HELPER = 2\n")
-    third = extension_entry_points._editable_source_fingerprint(direct_url)
-
-    assert second is not None
-    assert first != second
-    assert second != third
-
-
-@pytest.mark.parametrize(
-    ("url", "uri_path"),
-    [
-        ("file:///C:/lab/project%20files", "/C:/lab/project%20files"),
-        (
-            "file://server/share/project%20files",
-            "//server/share/project%20files",
-        ),
-    ],
-)
-def test_editable_source_fingerprint_uses_platform_file_url_conversion(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: pathlib.Path,
-    url: str,
-    uri_path: str,
-) -> None:
-    (tmp_path / "plugin.py").write_text("VALUE = 1\n")
-    converted: list[str] = []
-
-    def url2pathname(value: str) -> str:
-        converted.append(value)
-        return str(tmp_path)
-
-    monkeypatch.setattr(
-        extension_entry_points.urllib.request, "url2pathname", url2pathname
-    )
-
-    fingerprint = extension_entry_points._editable_source_fingerprint({"url": url})
-
-    assert fingerprint
-    assert converted == [uri_path]
-
-
-def test_editable_source_fingerprint_rejects_unknown_source(
-    tmp_path: pathlib.Path,
-) -> None:
-    direct_url = {
-        "url": tmp_path.as_uri(),
-        "dir_info": {"editable": True},
-    }
-
-    with pytest.raises(
-        extension_entry_points._EntryPointInspectionError,
-        match="no fingerprintable source",
-    ):
-        extension_entry_points._editable_source_fingerprint(direct_url)
-
-
-def test_editable_package_source_change_creates_unapproved_source(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: pathlib.Path,
-) -> None:
-    source = tmp_path / "custom" / "lab_package" / "plugin.py"
-    source.parent.mkdir(parents=True)
-    source.write_text("VALUE = 1\n")
-    helper = tmp_path / "custom" / "shared" / "helper.py"
-    helper.parent.mkdir(parents=True)
-    helper.write_text("HELPER = 1\n")
-
-    @erlab.extensions.routine()
-    def extension(data: xr.DataArray) -> xr.DataArray:
-        return data
-
-    class _Distribution:
-        metadata: typing.ClassVar[dict[str, str]] = {"Name": "lab-package"}
-        version = "1"
-
-        @staticmethod
-        def read_text(name: str) -> str | None:
-            if name != "direct_url.json":
-                return None
-            return json.dumps(
-                {
-                    "url": tmp_path.as_uri(),
-                    "dir_info": {"editable": True},
-                }
-            )
-
-    class _EntryPoint:
-        group = "erlab.extensions"
-        name = "editable"
-        value = "lab_package.plugin:extension"
-        dist = _Distribution()
-
-        @staticmethod
-        def load():
-            return extension
-
-    class _EntryPoints(tuple):
-        def select(self, *, group: str):
-            return tuple(entry for entry in self if entry.group == group)
-
-    monkeypatch.setattr(
-        extension_catalog.importlib.metadata,
-        "entry_points",
-        lambda: _EntryPoints((_EntryPoint(),)),
-    )
-    store = _ExtensionCatalogStore(tmp_path / "catalog")
-    catalog = store.refresh_environment_packages()
-    extension_id = "environment.erlab.extensions.editable"
-    catalog = _validate_and_enable(
-        store,
-        extension_id,
-        expected_record_generation=catalog.extensions[extension_id].record_generation,
-    )
-    approved_revision = catalog.extensions[extension_id].source.source_hash
-
-    helper.write_text("HELPER = 2\n")
-    catalog = store.refresh_environment_packages()
-
-    record = catalog.extensions[extension_id]
-    assert record.source.source_hash != approved_revision
-    assert not record.enabled
-    assert not record.source.approved
-
-    with pytest.raises(
-        extension_entry_points._EntryPointReloadRequiredError,
-        match="Restart Python",
-    ):
-        _validate_and_enable(
-            store,
-            extension_id,
-            expected_record_generation=record.record_generation,
-        )
-
-
-def test_editable_package_availability_uses_refresh_fingerprint(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: pathlib.Path,
-) -> None:
-    source = tmp_path / "src" / "lab_package" / "plugin.py"
-    source.parent.mkdir(parents=True)
-    source.write_text("VALUE = 1\n")
-
-    class _Distribution:
-        metadata: typing.ClassVar[dict[str, str]] = {"Name": "lab-package"}
-        version = "1"
-
-        @staticmethod
-        def read_text(name: str) -> str | None:
-            if name != "direct_url.json":
-                return None
-            return json.dumps(
-                {
-                    "url": tmp_path.as_uri(),
-                    "dir_info": {"editable": True},
-                }
-            )
-
-    class _EntryPoint:
-        group = "erlab.extensions"
-        name = "cached_editable"
-        value = "lab_package.plugin:extension"
-        dist = _Distribution()
-
-    class _EntryPoints(tuple):
-        def select(self, *, group: str):
-            return tuple(entry for entry in self if entry.group == group)
-
-    monkeypatch.setattr(
-        extension_catalog.importlib.metadata,
-        "entry_points",
-        lambda: _EntryPoints((_EntryPoint(),)),
-    )
-    fingerprint_calls = 0
-    fingerprint = extension_entry_points._editable_source_fingerprint
-
-    def counted_fingerprint(direct_url):
-        nonlocal fingerprint_calls
-        fingerprint_calls += 1
-        return fingerprint(direct_url)
-
-    monkeypatch.setattr(
-        extension_entry_points,
-        "_editable_source_fingerprint",
-        counted_fingerprint,
-    )
-    store = _ExtensionCatalogStore(tmp_path / "catalog")
-
-    catalog = store.refresh_environment_packages()
-    extension_id = "environment.erlab.extensions.cached_editable"
-    record = catalog.extensions[extension_id]
-    source_hash = record.source.source_hash
-    assert fingerprint_calls == 1
-
-    for _ in range(3):
-        assert store.source_available(record, source_hash)
-        assert (
-            store.capability_status(
-                extension_id,
-                source_hash,
-                "routine",
-                "extension",
-            )
-            == "import-failed"
-        )
-    assert fingerprint_calls == 1
-
-    source.write_text("VALUE = 2\n")
-    catalog = store.refresh_environment_packages()
-    record = catalog.extensions[extension_id]
-    assert record.source.source_hash != source_hash
-    assert fingerprint_calls == 2
-    assert store.source_available(record, record.source.source_hash)
-    assert fingerprint_calls == 2
-
-
-def test_environment_refresh_skips_an_invalid_entry_point(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: pathlib.Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    class BrokenDistribution:
-        metadata: typing.ClassVar[dict[str, str]] = {"Name": "broken-package"}
-        version = "1"
-
-        @staticmethod
-        def read_text(name: str) -> str | None:
-            if name != "direct_url.json":
-                return None
-            return json.dumps(
-                {
-                    "url": (tmp_path / "missing").as_uri(),
-                    "dir_info": {"editable": True},
-                }
-            )
-
-    broken = types.SimpleNamespace(
-        group="erlab.extensions",
-        name="broken",
-        value="broken_package",
-        dist=BrokenDistribution(),
-    )
-    valid = types.SimpleNamespace(
-        group="erlab.extensions",
-        name="valid",
-        value="valid_package",
-        dist=None,
-    )
-
-    class EntryPoints(tuple):
-        def select(self, **parameters):
-            return tuple(
-                entry
-                for entry in self
-                if all(
-                    getattr(entry, key, None) == value
-                    for key, value in parameters.items()
-                )
-            )
-
-    monkeypatch.setattr(
-        extension_catalog.importlib.metadata,
-        "entry_points",
-        lambda: EntryPoints((broken, valid)),
-    )
-
-    catalog = _ExtensionCatalogStore(
-        tmp_path / "catalog"
-    ).refresh_environment_packages()
-
-    assert "environment.erlab.extensions.valid" in catalog.extensions
-    broken_record = catalog.extensions["environment.erlab.extensions.broken"]
-    assert not broken_record.enabled
-    assert broken_record.source.import_error
-    assert "Could not inspect environment extension erlab.extensions:broken" in (
-        caplog.text
-    )
-
-
-def test_environment_refresh_tracks_changed_package_source(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: pathlib.Path,
-) -> None:
-    class _EntryPoint:
-        group = "erlab.extensions"
-        name = "removed"
-        value = "lab_package:extension"
-        dist = None
-
-    class _EntryPoints(tuple):
-        def select(self, *, group: str):
-            return tuple(entry for entry in self if entry.group == group)
-
-    entry_point = _EntryPoint()
-    entry_points = _EntryPoints((entry_point,))
-    monkeypatch.setattr(
-        extension_catalog.importlib.metadata,
-        "entry_points",
-        lambda: entry_points,
-    )
-    store = _ExtensionCatalogStore(tmp_path / "catalog")
-
-    catalog = store.refresh_environment_packages()
-    extension_id = "environment.erlab.extensions.removed"
-    original_source_hash = catalog.extensions[extension_id].source.source_hash
-
-    entry_point.value = "lab_package:changed_extension"
-    catalog = store.refresh_environment_packages()
-    record = catalog.extensions[extension_id]
-    assert not record.enabled
-    assert record.source.source_hash != original_source_hash
-
-    entry_point.value = "lab_package:extension"
-    catalog = store.refresh_environment_packages()
-    record = catalog.extensions[extension_id]
-    assert not record.enabled
-    assert record.source.source_hash == original_source_hash
-
-
-def test_environment_refresh_removes_and_rediscovers_an_unavailable_package(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: pathlib.Path,
-) -> None:
-    class _EntryPoint:
-        group = "erlab.extensions"
-        name = "temporarily_unavailable"
-        value = "lab_package:extension"
-        dist = None
-
-    class _EntryPoints(tuple):
-        def select(self, *, group: str):
-            return tuple(entry for entry in self if entry.group == group)
-
-    entry_point = _EntryPoint()
-    available = True
-    monkeypatch.setattr(
-        extension_catalog.importlib.metadata,
-        "entry_points",
-        lambda: _EntryPoints((entry_point,)) if available else _EntryPoints(),
-    )
-    store = _ExtensionCatalogStore(tmp_path / "catalog")
-    catalog = store.refresh_environment_packages()
-    extension_id = "environment.erlab.extensions.temporarily_unavailable"
-    record = catalog.extensions[extension_id]
-    revision = record.source.source_hash
-    descriptor = erlab.extensions.RoutineDescriptor(
-        id="extension",
-        name="Extension",
-        category="Lab",
-        summary="",
-        function_name="extension",
-    )
-    catalog = store.enable_validated_source(
-        extension_id,
-        source_hash=revision,
-        expected_record_generation=record.record_generation,
-        routines=(descriptor,),
-        loaders=(),
-        loader_always_single=None,
-        loader_dialog_methods=(),
-    )
-    catalog = store.set_routine_favorite(extension_id, "extension", favorite=True)
-    assert catalog.routine_favorites == ((extension_id, "extension"),)
-
-    available = False
-    catalog = store.refresh_environment_packages()
-    assert extension_id not in catalog.extensions
-    assert catalog.routine_favorites == ((extension_id, "extension"),)
-
-    available = True
-    catalog = store.refresh_environment_packages()
-    record = catalog.extensions[extension_id]
-    assert not record.enabled
-    assert record.source.source_hash == revision
-    assert store.source_available(record, revision)
-
-
-def test_packaged_manager_discovers_bundled_entry_points_on_startup(
-    manager_context,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: pathlib.Path,
-) -> None:
-    class _EntryPoint:
-        group = "erlab.io.loaders"
-        name = "bundled_loader"
-        value = "lab_package:BundledLoader"
-        dist = None
-
-    class _EntryPoints(tuple):
-        def select(self, **parameters):
-            return tuple(
-                entry
-                for entry in self
-                if all(
-                    getattr(entry, key, None) == value
-                    for key, value in parameters.items()
-                )
-            )
-
-    monkeypatch.setattr(
-        extension_catalog.importlib.metadata,
-        "entry_points",
-        lambda: _EntryPoints((_EntryPoint(),)),
-    )
-    monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", True)
-    updater_settings = QtCore.QSettings(
-        str(tmp_path / "updater.ini"), QtCore.QSettings.Format.IniFormat
-    )
-    updater_settings.setValue("version_before_update", erlab.__version__)
-    monkeypatch.setattr(
-        imagetool_manager, "_get_updater_settings", lambda: updater_settings
-    )
-
-    def unexpected_update_notice(*_args: object, **_kwargs: object) -> typing.Never:
-        raise AssertionError("The isolated updater state must suppress the notice")
-
-    monkeypatch.setattr(
-        imagetool_manager.ImageToolManager, "updated", unexpected_update_notice
-    )
-
-    with manager_context() as manager:
-        record = manager._extensions.catalog.model.extensions[
-            "environment.erlab.io.loaders.bundled_loader"
-        ]
-        assert record.source_type == "environment-package"
-        assert record.source.entry_point_value == "lab_package:BundledLoader"
-        assert not record.enabled
-        assert (
-            not manager._extensions._manage_dialog.refresh_packages_button.isVisible()
-        )
-        assert manager._extensions.environment_loader_names == {"bundled_loader"}
-        assert manager._extensions.explorer_loaders == {}
 
 
 def test_manager_reports_unknown_requested_loader(
@@ -5087,21 +3105,7 @@ def test_workspace_requirement_rejects_a_mismatched_embedded_object_id() -> None
             capability_kind="routine",
             source_hash="a" * 64,
             extension_api_version=1,
-            source_type="script",
             embedded_object_id="extension-node-data",
-        )
-
-
-def test_workspace_requirement_rejects_embedded_environment_package() -> None:
-    with pytest.raises(ValueError, match="cannot embed source"):
-        _WorkspaceExtensionRequirement(
-            extension_id="lab",
-            capability_id="routine",
-            capability_kind="routine",
-            source_hash="a" * 64,
-            extension_api_version=1,
-            source_type="environment-package",
-            embedded_object_id=f"extension-{'a' * 64}",
         )
 
 
@@ -5121,7 +3125,6 @@ def test_extension_object_write_cannot_replace_node_data(
         "capability_kind": "routine",
         "source_hash": revision,
         "extension_api_version": 1,
-        "source_type": "script",
         "embedded_object_id": object_id,
         "referencing_nodes": [],
         "file_sources": [],
@@ -5321,15 +3324,6 @@ def test_save_as_preserves_an_existing_embedding_when_policy_is_never(
             routine_id="scale",
             extension_name="Preserved",
             routine_name="Scale",
-            source_type="script",
-            function_name="scale",
-            source_path=str(
-                manager._extensions.catalog.store.recovery_source_path(
-                    "preserved", revision
-                )
-            ),
-            entry_point_group=None,
-            entry_point_name=None,
             parameters={},
         )
         index = manager.add_imagetool(
@@ -5347,7 +3341,6 @@ def test_save_as_preserves_an_existing_embedding_when_policy_is_never(
                     capability_kind="routine",
                     source_hash=revision,
                     extension_api_version=1,
-                    source_type="script",
                     metadata_snapshot={
                         "source_modified_at": (
                             catalog.extensions["preserved"].source.source_modified_at
@@ -5444,7 +3437,6 @@ def test_workspace_requirement_states_do_not_import_embedded_code(
         capability_kind="routine",
         source_hash=revision,
         extension_api_version=1,
-        source_type="script",
         embedded_object_id=f"extension-{revision}",
     )
 
@@ -5465,22 +3457,6 @@ def test_workspace_requirement_states_do_not_import_embedded_code(
             "hash-mismatch"
         )
 
-        manager._extensions.set_workspace_requirements(
-            (
-                requirement.model_copy(
-                    update={
-                        "source_type": "environment-package",
-                        "package": _package_reference(),
-                        "embedded_object_id": None,
-                    }
-                ),
-            ),
-            embedded_sources={("workspace-only", revision): source},
-        )
-        assert manager._extensions.resolved_workspace_requirements()[0].state == (
-            "missing"
-        )
-
 
 def test_workspace_requirements_dialog_refreshes_after_registration(
     manager_context,
@@ -5492,7 +3468,6 @@ def test_workspace_requirements_dialog_refreshes_after_registration(
         capability_kind="routine",
         source_hash="a" * 64,
         extension_api_version=1,
-        source_type="script",
     )
     current = [_ResolvedWorkspaceRequirement(requirement=requirement, state="missing")]
     shown_dialogs = []
@@ -5548,7 +3523,6 @@ def test_workspace_script_must_be_saved_before_it_can_run(
         capability_kind="routine",
         source_hash=revision,
         extension_api_version=1,
-        source_type="script",
         metadata_snapshot={"extension_name": "workspace_scale.py"},
         embedded_object_id=f"extension-{revision}",
     )
@@ -5589,11 +3563,6 @@ def test_workspace_script_must_be_saved_before_it_can_run(
             routine_id="scale",
             extension_name=record.name,
             routine_name="Scale",
-            source_type="script",
-            function_name="scale",
-            source_path=str(destination),
-            entry_point_group=None,
-            entry_point_name=None,
             parameters={"scale": 3.0},
         )
         xr.testing.assert_identical(
@@ -5657,7 +3626,6 @@ def test_workspace_source_conflict_creates_a_separate_registration(
             capability_kind="routine",
             source_hash=workspace_source_hash,
             extension_api_version=1,
-            source_type="script",
             metadata_snapshot={"extension_name": "shared.py"},
             embedded_object_id=f"extension-{workspace_source_hash}",
         )
@@ -5699,7 +3667,6 @@ def test_canceling_workspace_script_review_does_not_register_source(
         capability_kind="routine",
         source_hash=revision,
         extension_api_version=1,
-        source_type="script",
         embedded_object_id=f"extension-{revision}",
     )
     monkeypatch.setattr(
@@ -5946,28 +3913,9 @@ def test_manage_dialog_enables_only_applicable_actions(
             script_path
         )
         script_record = catalog.extensions["script"]
-        environment_source_hash = "b" * 64
-        environment_record = _ExtensionRecord(
-            id="environment",
-            name="Environment",
-            source_type="environment-package",
-            source=_ExtensionSource(
-                source_hash=environment_source_hash,
-                object_name="lab_package:extension",
-                registered_at="2026-01-01T00:00:00+00:00",
-                entry_point_group="erlab.extensions",
-                entry_point_name="extension",
-                entry_point_value="lab_package:extension",
-            ),
-        )
         dialog = manager._extensions._manage_dialog
         dialog.set_catalog(
-            _ExtensionCatalogModel(
-                extensions={
-                    script_record.id: script_record,
-                    environment_record.id: environment_record,
-                }
-            ),
+            _ExtensionCatalogModel(extensions={script_record.id: script_record}),
             {
                 ("script", script_record.source.source_hash): (
                     "Stored source; original unchanged"
@@ -5995,13 +3943,6 @@ def test_manage_dialog_enables_only_applicable_actions(
         assert dialog.embedding_combo.isEnabled()
         assert dialog._buttons["view_source"].isEnabled()
 
-        select("environment")
-        assert not dialog._buttons["reload"].isEnabled()
-        assert not dialog.embedding_combo.isVisible()
-        assert not dialog._buttons["toggle"].isVisible()
-        assert not dialog._buttons["remove"].isVisible()
-
-        select("script")
         dialog.set_removal_reason("Close Manager 2 first.")
         assert not dialog._buttons["remove"].isEnabled()
         assert dialog._buttons["remove"].toolTip()
@@ -6084,7 +4025,6 @@ def source_loader(path: Path) -> xr.DataArray:
                     target="source_loader",
                     source_hash=revision,
                     capability_id="source_loader",
-                    extension_source_type="script",
                     selection=FileDataSelection(kind="dataarray"),
                 ),
             ),
@@ -6191,7 +4131,6 @@ def test_file_source_status_reports_extension_import_failure(
                     target="broken_loader",
                     source_hash=revision,
                     capability_id="broken_loader",
-                    extension_source_type="script",
                     selection=FileDataSelection(kind="dataarray"),
                 ),
             ),
@@ -6217,7 +4156,6 @@ def test_workspace_requirement_catalog_states(
             capability_kind="routine",
             source_hash=revision,
             extension_api_version=1,
-            source_type="script",
         )
         manager._extensions.catalog.refresh()
         manager._extensions.set_workspace_requirements((requirement,))
@@ -6257,20 +4195,6 @@ def test_workspace_requirement_catalog_states(
         assert manager._extensions.resolved_workspace_requirements()[0].state == (
             "unsupported-api"
         )
-        manager._extensions.set_workspace_requirements(
-            (
-                requirement.model_copy(
-                    update={
-                        "source_type": "environment-package",
-                        "package": _package_reference(),
-                    }
-                ),
-            )
-        )
-        assert manager._extensions.resolved_workspace_requirements()[0].state == (
-            "missing"
-        )
-
         broken_path = tmp_path / "broken.py"
         broken_path.write_text("raise RuntimeError('broken import')\n")
         catalog, broken_revision, _created = (
@@ -6337,7 +4261,6 @@ def test_embedded_source_does_not_mask_unusable_registered_source(
                     capability_kind="routine",
                     source_hash=revision,
                     extension_api_version=1,
-                    source_type="script",
                     embedded_object_id=f"extension-{revision}",
                 ),
             ),
@@ -6363,7 +4286,6 @@ def test_degraded_workspace_load_preserves_requirements_for_save_as(
         "capability_kind": "routine",
         "source_hash": "a" * 64,
         "extension_api_version": 1,
-        "source_type": "script",
         "metadata_snapshot": {"extension_name": "Missing Lab"},
         "embedded_object_id": None,
         "referencing_nodes": [],
@@ -6444,7 +4366,6 @@ def test_failed_workspace_load_restores_extension_requirement_state(
         capability_kind="routine",
         source_hash="a" * 64,
         extension_api_version=1,
-        source_type="script",
     )
     previous = incoming.model_copy(
         update={"extension_id": "previous", "source_hash": "b" * 64}
@@ -6506,79 +4427,6 @@ def test_failed_workspace_load_restores_extension_requirement_state(
         assert manager._workspace_state.degraded_reasons == ("previous: missing",)
 
 
-def test_degraded_save_as_preserves_missing_environment_requirement(
-    manager_context,
-    tmp_path: pathlib.Path,
-) -> None:
-    data_path = tmp_path / "data.txt"
-    data_path.write_text("unused")
-    saved_path = tmp_path / "missing-environment-extension.itws"
-    extension_id = "environment.erlab.io.loaders.missing"
-    revision = "b" * 64
-    metadata = {"extension_name": "Missing Environment Loader"}
-    requirement = _WorkspaceExtensionRequirement(
-        extension_id=extension_id,
-        capability_id="missing",
-        capability_kind="loader",
-        source_hash=revision,
-        extension_api_version=2,
-        source_type="environment-package",
-        package=_package_reference(
-            group="erlab.io.loaders",
-            name="missing",
-            value="lab_package:missing",
-        ),
-        metadata_snapshot=metadata,
-        referencing_nodes=("old-node",),
-        file_sources=(str(data_path),),
-    )
-    spec = file_load(
-        start_label="Load missing environment data",
-        seed_code="data = xr.DataArray([[1.0]])",
-        file_load_source=FileLoadSource(
-            path=str(data_path),
-            loader_label="Missing Environment Loader",
-            loader_text="missing",
-            kwargs_text="",
-            replay_call=FileReplayCall(
-                kind="extension_loader",
-                target=extension_id,
-                source_hash=revision,
-                capability_id="missing",
-                extension_source_type="environment-package",
-                package=_package_reference(
-                    group="erlab.io.loaders",
-                    name="missing",
-                    value="lab_package:missing",
-                ),
-                selection=FileDataSelection(kind="dataarray"),
-            ),
-        ),
-    )
-
-    with manager_context() as manager:
-        tool = erlab.interactive.imagetool.ImageTool(xr.DataArray([[1.0]]))
-        manager.add_imagetool(tool, show=False, provenance_spec=spec)
-        manager._extensions.set_workspace_requirements((requirement,))
-
-        collected = manager._extensions.collect_workspace_requirements()
-        assert len(collected) == 1
-        assert collected[0].source_type == "environment-package"
-        assert collected[0].extension_api_version == 2
-        assert collected[0].metadata_snapshot == metadata
-        assert collected[0].embedded_object_id is None
-
-        manager._workspace_controller.saving._save_workspace_document(saved_path)
-
-    attrs = workspace_arrays._read_workspace_root_attrs_h5py(saved_path)
-    manifest = workspace_format._workspace_manifest_from_attrs(attrs)
-    saved_requirement = manifest["extension_requirements"][0]
-    assert saved_requirement["source_type"] == "environment-package"
-    assert saved_requirement["extension_api_version"] == 2
-    assert saved_requirement["metadata_snapshot"] == metadata
-    assert saved_requirement["embedded_object_id"] is None
-
-
 def test_removing_node_discards_only_its_workspace_requirements(
     manager_context,
 ) -> None:
@@ -6588,11 +4436,6 @@ def test_removing_node_discards_only_its_workspace_requirements(
         routine_id="normalize",
         extension_name="Missing Extension",
         routine_name="Normalize",
-        source_type="script",
-        function_name="normalize",
-        source_path="missing_extension.py",
-        entry_point_group=None,
-        entry_point_name=None,
         parameters={},
     )
     with manager_context() as manager:
@@ -6614,7 +4457,6 @@ def test_removing_node_discards_only_its_workspace_requirements(
             capability_kind="routine",
             source_hash="a" * 64,
             extension_api_version=1,
-            source_type="script",
             referencing_nodes=(first_uid, second_uid),
         )
         manager._extensions.set_workspace_requirements((requirement,))
@@ -6639,11 +4481,6 @@ def test_collecting_requirements_reconciles_loaded_and_unresolved_nodes(
         routine_id="normalize",
         extension_name="Workspace Routines",
         routine_name="Normalize",
-        source_type="script",
-        function_name="normalize",
-        source_path="workspace_routines.py",
-        entry_point_group=None,
-        entry_point_name=None,
         parameters={},
     )
 
@@ -6659,7 +4496,6 @@ def test_collecting_requirements_reconciles_loaded_and_unresolved_nodes(
             capability_kind="routine",
             source_hash=revision,
             extension_api_version=1,
-            source_type="script",
             referencing_nodes=(node.uid, "unresolved-node"),
         )
         manager._extensions.set_workspace_requirements((requirement,))
@@ -6690,11 +4526,6 @@ def test_collecting_requirements_merges_duplicate_loaded_capability(
         routine_id="normalize",
         extension_name="Shared Routines",
         routine_name="Normalize",
-        source_type="script",
-        function_name="normalize",
-        source_path="shared_routines.py",
-        entry_point_group=None,
-        entry_point_name=None,
         parameters={},
     )
 
@@ -6719,7 +4550,6 @@ def test_collecting_requirements_merges_duplicate_loaded_capability(
             capability_kind="routine",
             source_hash=revision,
             extension_api_version=1,
-            source_type="script",
             metadata_snapshot={
                 "author": "Existing Author",
                 "change_summary": "Obsolete source note",
@@ -6770,7 +4600,6 @@ def test_collecting_requirements_merges_duplicate_unresolved_loaders(
         capability_kind="loader",
         source_hash=revision,
         extension_api_version=1,
-        source_type="script",
         referencing_nodes=("unresolved-first",),
         file_sources=("first.dat",),
     )
@@ -6794,173 +4623,6 @@ def test_collecting_requirements_merges_duplicate_unresolved_loaders(
     assert collected[0].file_sources == ("first.dat", "second.dat")
 
 
-def test_collecting_requirements_keeps_workspace_source_identity(
-    manager_context,
-) -> None:
-    revision = "d" * 64
-    source_modified_at = "2025-06-01T12:34:56+00:00"
-    metadata_snapshot = {
-        "extension_name": "Workspace Script",
-        "routine_name": "Normalize",
-        "author": "Workspace Author",
-        "contact": "workspace@example.org",
-        "project_url": "https://example.org/workspace",
-        "source_modified_at": source_modified_at,
-    }
-    operation = ExtensionRoutineOperation(
-        extension_id="shared-extension",
-        source_hash=revision,
-        routine_id="normalize",
-        extension_name="Shared Extension",
-        routine_name="Normalize",
-        source_type="script",
-        function_name="normalize",
-        source_path="shared_extension.py",
-        entry_point_group=None,
-        entry_point_name=None,
-        parameters={},
-    )
-    environment_record = _ExtensionRecord(
-        id="shared-extension",
-        name="Local Package",
-        source_type="environment-package",
-        source=_ExtensionSource(
-            source_hash=revision,
-            object_name="lab_package:extension",
-            registered_at="2026-01-01T00:00:00+00:00",
-            entry_point_group="erlab.extensions",
-            entry_point_name="extension",
-            entry_point_value="lab_package:extension",
-        ),
-    )
-
-    with manager_context() as manager:
-        manager._extensions.catalog.store._environment_extensions[
-            environment_record.id
-        ] = environment_record
-        manager._extensions.catalog.refresh()
-        index = manager.add_imagetool(
-            erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
-            show=False,
-            provenance_spec=full_data(operation),
-        )
-        node = manager._node_for_target(index)
-        object_id = f"extension-{revision}"
-        manager._extensions.set_workspace_requirements(
-            (
-                _WorkspaceExtensionRequirement(
-                    extension_id="shared-extension",
-                    capability_id="normalize",
-                    capability_kind="routine",
-                    source_hash=revision,
-                    extension_api_version=1,
-                    source_type="script",
-                    metadata_snapshot=metadata_snapshot,
-                    embedded_object_id=object_id,
-                    referencing_nodes=(node.uid,),
-                ),
-            )
-        )
-
-        collected = manager._extensions.collect_workspace_requirements()
-        resolved = manager._extensions.resolved_workspace_requirements()
-
-    assert collected[0].source_type == "script"
-    assert collected[0].metadata_snapshot == metadata_snapshot
-    assert collected[0].embedded_object_id == object_id
-    assert resolved[0].state == "missing"
-    assert resolved[0].detail == "The catalog extension uses a different source type"
-
-
-def test_collecting_loader_requirements_keeps_workspace_source_identity(
-    manager_context,
-    tmp_path: pathlib.Path,
-) -> None:
-    revision = "e" * 64
-    extension_id = "shared-loader"
-    data_path = tmp_path / "data.txt"
-    data_path.write_text("unused")
-    metadata_snapshot = {
-        "extension_name": "Workspace Package",
-        "author": "Workspace Author",
-        "contact": "workspace@example.org",
-        "project_url": "https://example.org/workspace",
-    }
-    local_script = _ExtensionRecord(
-        id=extension_id,
-        name="Local Script",
-        source_type="script",
-        source=_ExtensionSource(
-            source_hash=revision,
-            object_name=f"{revision}.py",
-            registered_at="2026-01-01T00:00:00+00:00",
-        ),
-    )
-    spec = file_load(
-        start_label="Load workspace package data",
-        seed_code="data = xr.DataArray([1.0])",
-        file_load_source=FileLoadSource(
-            path=str(data_path),
-            loader_label="Workspace Package",
-            loader_text="workspace-loader",
-            kwargs_text="",
-            replay_call=FileReplayCall(
-                kind="extension_loader",
-                target=extension_id,
-                source_hash=revision,
-                capability_id="workspace-loader",
-                extension_source_type="environment-package",
-                package=_package_reference(
-                    group="erlab.io.loaders",
-                    name="workspace-loader",
-                    value="lab_package:workspace_loader",
-                ),
-                selection=FileDataSelection(kind="dataarray"),
-            ),
-        ),
-    )
-
-    with manager_context() as manager:
-        manager._extensions.catalog.store.mutate(
-            None,
-            lambda catalog: catalog.model_copy(
-                update={"extensions": {local_script.id: local_script}}
-            ),
-        )
-        manager._extensions.catalog.refresh()
-        index = manager.add_imagetool(
-            erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
-            show=False,
-            provenance_spec=spec,
-        )
-        node = manager._node_for_target(index)
-        manager._extensions.set_workspace_requirements(
-            (
-                _WorkspaceExtensionRequirement(
-                    extension_id=extension_id,
-                    capability_id="workspace-loader",
-                    capability_kind="loader",
-                    source_hash=revision,
-                    extension_api_version=1,
-                    source_type="environment-package",
-                    package=_package_reference(
-                        group="erlab.io.loaders",
-                        name="workspace-loader",
-                        value="lab_package:workspace_loader",
-                    ),
-                    metadata_snapshot=metadata_snapshot,
-                    referencing_nodes=(node.uid,),
-                    file_sources=(str(data_path),),
-                ),
-            )
-        )
-
-        collected = manager._extensions.collect_workspace_requirements()
-
-    assert collected[0].source_type == "environment-package"
-    assert collected[0].metadata_snapshot == metadata_snapshot
-
-
 def test_workspace_requirements_include_nested_script_inputs(
     manager_context,
     tmp_path: pathlib.Path,
@@ -6974,11 +4636,6 @@ def test_workspace_requirements_include_nested_script_inputs(
         routine_id="normalize",
         extension_name="Nested Routines",
         routine_name="Normalize",
-        source_type="script",
-        function_name="normalize",
-        source_path="nested_routines.py",
-        entry_point_group=None,
-        entry_point_name=None,
         parameters={},
     )
     nested = file_load(
@@ -6994,7 +4651,6 @@ def test_workspace_requirements_include_nested_script_inputs(
                 target="nested-loaders",
                 source_hash=revision,
                 capability_id="nested_loader",
-                extension_source_type="script",
                 selection=FileDataSelection(kind="dataarray"),
             ),
         ),
@@ -7050,7 +4706,6 @@ def test_degraded_save_as_prefers_preserved_source_over_corrupt_catalog(
         "capability_kind": "routine",
         "source_hash": revision,
         "extension_api_version": 1,
-        "source_type": "script",
         "metadata_snapshot": {},
         "embedded_object_id": object_id,
         "referencing_nodes": [],
@@ -7122,7 +4777,6 @@ def test_degraded_save_as_preserves_requirement_with_missing_embedded_object(
         capability_kind="routine",
         source_hash=revision,
         extension_api_version=1,
-        source_type="script",
         embedded_object_id=object_id,
     ).model_dump(mode="json")
     with workspace_store.WorkspaceStore(source_path, create=True) as store:
@@ -7240,7 +4894,6 @@ def test_degraded_save_as_preserves_source_from_malformed_requirement_container(
         "capability_kind": "routine",
         "source_hash": revision,
         "extension_api_version": 1,
-        "source_type": "script",
         "metadata_snapshot": {},
         "embedded_object_id": object_id,
         "referencing_nodes": [],
@@ -7309,7 +4962,6 @@ def test_degraded_save_as_preserves_an_invalid_embedded_object_reference(
         "capability_kind": "routine",
         "source_hash": "a" * 64,
         "extension_api_version": 1,
-        "source_type": "script",
         "metadata_snapshot": {},
         "embedded_object_id": "../future-object",
         "referencing_nodes": [],
@@ -7445,7 +5097,6 @@ def test_workspace_import_preserves_unavailable_embedded_source(
         "capability_kind": "routine",
         "source_hash": revision,
         "extension_api_version": 1,
-        "source_type": "script",
         "metadata_snapshot": {},
         "embedded_object_id": object_id,
         "referencing_nodes": [],
@@ -7509,7 +5160,6 @@ def test_workspace_import_keeps_valid_source_over_conflicting_object(
         capability_kind="routine",
         source_hash=revision,
         extension_api_version=1,
-        source_type="script",
         embedded_object_id=object_id,
     )
     manifest = {
@@ -7572,11 +5222,6 @@ def test_workspace_import_rebases_only_incoming_extension_requirements(
             routine_id="normalize",
             extension_name=extension_id,
             routine_name="Normalize",
-            source_type="script",
-            function_name="normalize",
-            source_path=f"{extension_id}.py",
-            entry_point_group=None,
-            entry_point_name=None,
             parameters={},
         )
 
@@ -7653,7 +5298,6 @@ def test_workspace_import_preserves_unparsed_embedded_source(
         "capability_kind": "routine",
         "source_hash": revision,
         "extension_api_version": 1,
-        "source_type": "script",
         "metadata_snapshot": {},
         "embedded_object_id": object_id,
         "referencing_nodes": [],
@@ -7714,7 +5358,6 @@ def test_workspace_import_ignores_unselected_extension_requirements(
         capability_kind="routine",
         source_hash="a" * 64,
         extension_api_version=1,
-        source_type="script",
         referencing_nodes=("omitted-node",),
     )
     manifest = {
@@ -7808,7 +5451,6 @@ def counter_loader(path: Path, scale: float = 1.0) -> xr.DataArray:
         assert resolved is not None
         replay_call = resolved.replay_call()
         assert replay_call.kind == "extension_loader"
-        assert replay_call.extension_source_type == "script"
         code = resolved.load_code(value_path, assign="loaded")
         assert code is not None
         with pytest.raises(ValueError, match="must be finite"):
@@ -7857,7 +5499,7 @@ def test_direct_extension_loader_reload_rechecks_catalog_state(
         )
         manager.add_imagetool(tool, show=False)
 
-        source_types: list[str | None] = []
+        calls: list[tuple[str, str, str, str]] = []
         original_status = manager._extensions.capability_status
 
         def capability_status(
@@ -7865,16 +5507,9 @@ def test_direct_extension_loader_reload_rechecks_catalog_state(
             source_hash: str,
             kind: str,
             capability_id: str,
-            source_type: str | None = None,
         ) -> str:
-            source_types.append(source_type)
-            return original_status(
-                extension_id,
-                source_hash,
-                kind,
-                capability_id,
-                source_type,
-            )
+            calls.append((extension_id, source_hash, kind, capability_id))
+            return original_status(extension_id, source_hash, kind, capability_id)
 
         monkeypatch.setattr(
             manager._extensions,
@@ -7882,7 +5517,7 @@ def test_direct_extension_loader_reload_rechecks_catalog_state(
             capability_status,
         )
         assert tool.slicer_area._direct_reloadable()
-        assert source_types == ["script"]
+        assert calls == [("reload_loader", _revision, "loader", "load_data")]
         assert tool.slicer_area._reload_unavailable_reason() is None
 
         current = manager._extensions.catalog.store.read().extensions["reload_loader"]
@@ -7900,53 +5535,6 @@ def test_direct_extension_loader_reload_rechecks_catalog_state(
         assert reason is not None
         with pytest.raises(RuntimeError, match="cannot be reloaded"):
             tool.slicer_area._fetch_reload_data()
-
-
-def test_file_load_edit_dialog_matches_extension_loader_source_type(
-    qtbot,
-    tmp_path: pathlib.Path,
-) -> None:
-    class ExtensionCall:
-        __name__ = "load"
-        extension_id = "shared"
-        source_hash = "a" * 64
-        loader_id = "load"
-        loader_method = None
-
-        def __init__(self, source_type: str) -> None:
-            self.source_type = source_type
-
-        def __call__(self, _path: pathlib.Path) -> xr.DataArray:
-            return xr.DataArray([1.0])
-
-    package_call = ExtensionCall("environment-package")
-    script_call = ExtensionCall("script")
-    parent = QtWidgets.QWidget()
-    qtbot.addWidget(parent)
-    dialog = _FileLoadEditDialog(
-        FileLoadSource(
-            path=str(tmp_path / "data.txt"),
-            loader_label="Extension Loader",
-            loader_text="shared: load",
-            kwargs_text="(none)",
-            replay_call=FileReplayCall(
-                kind="extension_loader",
-                target="shared",
-                source_hash="a" * 64,
-                capability_id="load",
-                extension_source_type="script",
-                selection=FileDataSelection(kind="dataarray"),
-            ),
-        ),
-        parent,
-        file_loaders=lambda _path: {
-            "Package": (package_call, {}),
-            "Script": (script_call, {}),
-        },
-    )
-    qtbot.addWidget(dialog)
-
-    assert dialog._checked_filter_name() == "Script"
 
 
 def test_extension_loader_filter_conflict_is_rejected(
@@ -8517,7 +6105,6 @@ def test_canceling_pending_loader_releases_qt_waiter(
             function_name="load",
         ),
         source_path=tmp_path / "missing.py",
-        source_type="script",
         executor=lambda *_args: xr.DataArray([1.0]),
     )
     worker = _ExtensionLoaderWorker(
@@ -8777,37 +6364,6 @@ def invalid_shape(data: xr.DataArray) -> xr.DataArray:
         assert shown == [None]
 
 
-@pytest.mark.parametrize("packaged", [False, True])
-def test_controller_startup_contains_environment_refresh_failure(
-    manager_context,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-    *,
-    packaged: bool,
-) -> None:
-    monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", packaged)
-
-    def fail_refresh(_store) -> typing.Never:
-        raise RuntimeError("unreadable package metadata")
-
-    monkeypatch.setattr(
-        _ExtensionCatalogStore,
-        "refresh_environment_packages",
-        fail_refresh,
-    )
-
-    with (
-        caplog.at_level(
-            "ERROR",
-            logger="erlab.interactive.imagetool.manager._extensions._controller",
-        ),
-        manager_context() as manager,
-    ):
-        assert manager._extensions.catalog.model.extensions == {}
-
-    assert "Could not refresh environment extensions" in caplog.text
-
-
 def test_controller_identifies_extension_loader_callables(
     manager_context,
 ) -> None:
@@ -8828,7 +6384,6 @@ def test_controller_identifies_extension_loader_callables(
         loader_id="load_data",
         descriptor=descriptor,
         source_path=pathlib.Path("lab.py"),
-        source_type="script",
         executor=lambda *_args, **_kwargs: xr.DataArray([1.0]),
     )
     adapter = extension_execution._DecoratedLoaderAdapter(call)
@@ -9028,7 +6583,6 @@ def test_workspace_resolution_distinguishes_missing_exact_sources(
         capability_kind="routine",
         source_hash=requested_hash,
         extension_api_version=1,
-        source_type="script",
     )
 
     with manager_context() as manager:
@@ -9056,114 +6610,6 @@ def test_workspace_resolution_distinguishes_missing_exact_sources(
         assert missing.state == "missing"
         assert missing.detail == "The required source is not registered"
 
-        environment_source = current_source.model_copy(
-            update={
-                "object_name": "lab_package:extension",
-                "entry_point_group": "erlab.extensions",
-                "entry_point_name": "lab",
-                "entry_point_value": "lab_package:extension",
-                "distribution_name": "lab-package",
-                "distribution_version": "1",
-                "routines": (
-                    erlab.extensions.RoutineDescriptor(
-                        id="analyze",
-                        name="Analyze",
-                        category="Lab",
-                        summary="",
-                        function_name="analyze",
-                    ),
-                ),
-            }
-        )
-        environment_record = script_record.model_copy(
-            update={
-                "source_type": "environment-package",
-                "source": environment_source,
-            }
-        )
-        environment_requirement = requirement.model_copy(
-            update={
-                "source_type": "environment-package",
-                "package": _package_reference(),
-            }
-        )
-        manager._extensions.catalog.model = _ExtensionCatalogModel(
-            extensions={"lab": environment_record}
-        )
-        assert (
-            manager._extensions._resolve_requirement(environment_requirement).state
-            == "hash-mismatch"
-        )
-
-        monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", True)
-        monkeypatch.setattr(
-            manager._extensions.catalog.store,
-            "_entry_point_for_source",
-            lambda _source: object(),
-        )
-        packaged = manager._extensions._resolve_requirement(
-            environment_requirement.model_copy(update={"source_hash": current_hash})
-        )
-        assert packaged.state == "ready"
-
-
-def test_workspace_resolution_checks_environment_entry_point_and_capability(
-    manager_context,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source_hash = "c" * 64
-    source = _ExtensionSource(
-        source_hash=source_hash,
-        object_name="lab_package:extension",
-        registered_at="2026-01-01T00:00:00+00:00",
-        approved=True,
-        entry_point_group="erlab.extensions",
-        entry_point_name="lab",
-        entry_point_value="lab_package:extension",
-        distribution_name="lab-package",
-        distribution_version="1",
-    )
-    record = _ExtensionRecord(
-        id="lab",
-        name="Lab",
-        source_type="environment-package",
-        enabled=True,
-        source=source,
-    )
-    requirement = _WorkspaceExtensionRequirement(
-        extension_id="lab",
-        capability_id="analyze",
-        capability_kind="routine",
-        source_hash=source_hash,
-        extension_api_version=1,
-        source_type="environment-package",
-        package=_package_reference(),
-    )
-
-    with manager_context() as manager:
-        manager._extensions.catalog.model = _ExtensionCatalogModel(
-            extensions={"lab": record}
-        )
-        monkeypatch.setattr(
-            manager._extensions.catalog.store,
-            "_entry_point_for_source",
-            lambda _source: (_ for _ in ()).throw(LookupError("missing")),
-        )
-        result = manager._extensions._resolve_requirement(requirement)
-        assert result.state == "missing"
-        assert result.detail == "The environment package entry point is unavailable"
-
-        monkeypatch.setattr(
-            manager._extensions.catalog.store,
-            "_entry_point_for_source",
-            lambda _source: object(),
-        )
-        result = manager._extensions._resolve_requirement(requirement)
-        assert result.state == "missing"
-        assert result.detail == (
-            "The registered source does not provide the required capability"
-        )
-
 
 def test_workspace_requirement_helpers_cover_empty_and_unavailable_nodes(
     manager_context,
@@ -9175,7 +6621,6 @@ def test_workspace_requirement_helpers_cover_empty_and_unavailable_nodes(
         capability_kind="routine",
         source_hash="a" * 64,
         extension_api_version=1,
-        source_type="script",
         referencing_nodes=("node",),
     )
 
@@ -9232,11 +6677,6 @@ def test_collecting_always_embedded_referenced_script_avoids_duplicates(
             routine_id="scale",
             extension_name="Always",
             routine_name="Scale",
-            source_type="script",
-            function_name="scale",
-            source_path=str(script_path),
-            entry_point_group=None,
-            entry_point_name=None,
             parameters={},
         )
         manager.add_imagetool(
@@ -9265,7 +6705,6 @@ def test_workspace_registration_selects_the_script_requirement(
         capability_kind="routine",
         source_hash=revision,
         extension_api_version=1,
-        source_type="script",
         embedded_object_id=f"extension-{revision}",
     )
     monkeypatch.setattr(
@@ -9282,35 +6721,21 @@ def test_workspace_registration_selects_the_script_requirement(
 
     with manager_context() as manager:
         manager._extensions.set_workspace_requirements(
-            (
-                base.model_copy(
-                    update={
-                        "source_type": "environment-package",
-                        "package": _package_reference(),
-                        "embedded_object_id": None,
-                    }
-                ),
-                base,
-            ),
+            (base,),
             embedded_sources={("mixed", revision): source},
         )
         assert manager._extensions._save_and_register_embedded_script("mixed", revision)
         requirements = manager._extensions.collect_workspace_requirements()
 
         assert (
-            manager._extensions.capability_status(
-                "mixed", revision, "routine", "scale", "script"
-            )
+            manager._extensions.capability_status("mixed", revision, "routine", "scale")
             == "ready"
         )
         assert (
             manager._extensions.catalog.model.extensions["mixed"].name
             == destination.name
         )
-        assert {item.source_type for item in requirements} == {
-            "script",
-            "environment-package",
-        }
+        assert {item.capability_kind for item in requirements} == {"routine"}
         for requirement in requirements:
             _WorkspaceExtensionRequirement.model_validate(
                 requirement.model_dump(mode="json")
@@ -9339,7 +6764,6 @@ def test_workspace_registration_rejects_unusable_workspace_state(
         capability_kind="routine",
         source_hash=revision,
         extension_api_version=1,
-        source_type="script",
     )
     warnings: list[None] = []
     monkeypatch.setattr(
@@ -9375,7 +6799,6 @@ def test_workspace_registration_reports_validation_failure(
         capability_kind="routine",
         source_hash=revision,
         extension_api_version=1,
-        source_type="script",
     )
     failures: list[str] = []
     monkeypatch.setattr(
@@ -9414,82 +6837,6 @@ def test_workspace_registration_reports_validation_failure(
     assert failures == ["The saved workspace extension could not be registered."]
 
 
-def test_workspace_notification_and_environment_refresh_paths(
-    manager_context,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    requirement = _WorkspaceExtensionRequirement(
-        extension_id="missing",
-        capability_id="analyze",
-        capability_kind="routine",
-        source_hash="a" * 64,
-        extension_api_version=1,
-        source_type="script",
-    )
-    dialogs: list[str] = []
-    refreshes: list[str] = []
-
-    class Dialog:
-        def __init__(self, *_args, **kwargs) -> None:
-            dialogs.append(kwargs["title"])
-
-        @staticmethod
-        def exec() -> None:
-            return None
-
-        @staticmethod
-        def critical(_parent, title: str, _text: str, **_kwargs) -> None:
-            dialogs.append(title)
-
-    with manager_context() as manager:
-        monkeypatch.setattr(erlab.interactive.utils, "MessageDialog", Dialog)
-        monkeypatch.setattr(
-            manager._extensions,
-            "resolved_workspace_requirements",
-            lambda: (
-                _ResolvedWorkspaceRequirement(requirement=requirement, state="ready"),
-            ),
-        )
-        manager._extensions.notify_unavailable_workspace_requirements()
-        assert dialogs == []
-
-        monkeypatch.setattr(
-            manager._extensions,
-            "resolved_workspace_requirements",
-            lambda: (
-                _ResolvedWorkspaceRequirement(requirement=requirement, state="missing"),
-            ),
-        )
-        manager._extensions.notify_unavailable_workspace_requirements()
-        assert dialogs == ["Workspace Extensions Unavailable"]
-
-        monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", True)
-        monkeypatch.setattr(
-            manager._extensions.catalog.store,
-            "refresh_environment_packages",
-            lambda: refreshes.append("store") or manager._extensions.catalog.model,
-        )
-        manager._extensions.refresh_environment_packages()
-        assert refreshes == []
-
-        monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", False)
-        monkeypatch.setattr(
-            manager._extensions.catalog,
-            "refresh",
-            lambda: refreshes.append("catalog"),
-        )
-        manager._extensions.refresh_environment_packages()
-        assert refreshes == ["store", "catalog"]
-
-        monkeypatch.setattr(
-            manager._extensions.catalog.store,
-            "refresh_environment_packages",
-            lambda: (_ for _ in ()).throw(RuntimeError("refresh failed")),
-        )
-        manager._extensions.refresh_environment_packages()
-        assert dialogs[-1] == "Extension Error"
-
-
 def test_workspace_notification_repeats_missing_script_recovery(
     manager_context,
     tmp_path: pathlib.Path,
@@ -9516,7 +6863,6 @@ def test_workspace_notification_repeats_missing_script_recovery(
                     capability_kind="routine",
                     source_hash=revision,
                     extension_api_version=1,
-                    source_type="script",
                 ),
             )
         )
@@ -9544,7 +6890,6 @@ def test_workspace_notification_opens_embedded_script_recovery(
         capability_kind="routine",
         source_hash=revision,
         extension_api_version=1,
-        source_type="script",
         embedded_object_id=f"extension-{revision}",
     )
     shown: list[None] = []
@@ -9595,7 +6940,6 @@ def load_data(path: Path) -> xr.DataArray:
         loader_id="load_data",
         descriptor=descriptor,
         source_path=script_path,
-        source_type="script",
         executor=lambda *_args, **_kwargs: xr.DataArray([1.0]),
     )
 
@@ -9609,73 +6953,6 @@ def load_data(path: Path) -> xr.DataArray:
         call._invoke(tmp_path / "data.dat", {}, {})
 
     assert "Extension loader failed" in caplog.text
-
-
-def test_environment_routine_worker_executes_resolved_callable(
-    manager_context,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    descriptor = erlab.extensions.RoutineDescriptor(
-        id="calculate",
-        name="Calculate",
-        category="Lab",
-        summary="",
-        function_name="calculate",
-    )
-    source_hash = "a" * 64
-    source = _ExtensionSource(
-        source_hash=source_hash,
-        object_name="lab_package:calculate",
-        registered_at="2026-01-01T00:00:00+00:00",
-        approved=True,
-        routines=(descriptor,),
-        entry_point_group="erlab.extensions",
-        entry_point_name="lab",
-        entry_point_value="lab_package:calculate",
-    )
-    record = _ExtensionRecord(
-        id="lab",
-        name="Lab",
-        source_type="environment-package",
-        enabled=True,
-        source=source,
-    )
-
-    @erlab.extensions.routine(id="calculate")
-    def calculate(data: xr.DataArray) -> xr.DataArray:
-        return data + 1.0
-
-    with manager_context() as manager:
-        store = manager._extensions.catalog.store
-        store._environment_extensions["lab"] = record
-        manager._extensions.catalog.refresh()
-        monkeypatch.setattr(store, "capability_status", lambda *_args: "ready")
-        job = manager._extensions.execution._routine_job(
-            extension_id="lab",
-            source_hash=source_hash,
-            routine_id="calculate",
-            parameters={},
-            input_data=xr.DataArray([1.0]),
-            input_uid="input",
-            input_snapshot="snapshot",
-        )
-        monkeypatch.setattr(
-            extension_execution,
-            "_environment_routine",
-            lambda _job: (descriptor, calculate),
-        )
-        worker = extension_execution._ExtensionRoutineWorker(
-            job,
-            manager_session_id="manager",
-            catalog_store=store,
-            script_modules={},
-        )
-
-        worker.run()
-
-    assert worker.result is not None
-    assert worker.result.status == "success"
-    xr.testing.assert_identical(worker.result.output, xr.DataArray([2.0]))
 
 
 def test_remove_queued_without_replay_waiter_discards_job(
@@ -9781,7 +7058,6 @@ def slow(data: xr.DataArray, delay: float = 0.4) -> xr.DataArray:
             loader_id="load_data",
             descriptor=loader_descriptor,
             source_path=script_path,
-            source_type="script",
             executor=lambda *_args, **_kwargs: xr.DataArray([1.0]),
         )
 
@@ -9829,9 +7105,6 @@ def test_extension_menus_group_routines_and_follow_manager_selection(
         assert actions[0].objectName() == "manager_run_extension_routine_action"
         assert actions[1].isSeparator()
         assert "manager_extension_jobs_action" not in {
-            action.objectName() for action in actions
-        }
-        assert "manager_refresh_environment_extensions_action" not in {
             action.objectName() for action in actions
         }
         assert not any(
@@ -9911,8 +7184,7 @@ def test_manage_dialog_is_flat_searchable_and_preserves_selection(
     dialog.show()
     dialog.set_catalog(_ExtensionCatalogModel(extensions=records))
 
-    assert not dialog.refresh_packages_button.isHidden()
-    assert dialog.tree.columnCount() == 5
+    assert dialog.tree.columnCount() == 4
     assert dialog.tree.isSortingEnabled()
     assert all(
         dialog.tree.topLevelItem(index).childCount() == 0
@@ -9948,141 +7220,6 @@ def test_manage_dialog_is_flat_searchable_and_preserves_selection(
     assert dialog.selected_extension_id == "extension-05"
 
 
-@pytest.mark.parametrize("editable", [False, True])
-def test_manage_dialog_presents_script_and_package_details(
-    qtbot: pytest.QtBot,
-    tmp_path: pathlib.Path,
-    editable: bool,
-) -> None:
-    parent = QtWidgets.QWidget()
-    qtbot.addWidget(parent)
-    source_path = tmp_path / "analysis.py"
-    source_path.write_text("value = 2\n")
-    managed_path = tmp_path / "managed.py"
-    managed_path.write_text("value = 1\n")
-    script_hash = "a" * 64
-    script = _ExtensionRecord(
-        id="script",
-        name="Script",
-        source=_ExtensionSource(
-            source_hash=script_hash,
-            object_name=f"{script_hash}.py",
-            source_path=os.fspath(source_path),
-            registered_at="2026-01-01T00:00:00+00:00",
-            approved=True,
-            import_error="traceback\nImportError: unavailable",
-        ),
-    )
-    package_hash = "b" * 64
-    package = _ExtensionRecord(
-        id="package",
-        name="Package",
-        source_type="environment-package",
-        source=_ExtensionSource(
-            source_hash=package_hash,
-            object_name="lab_package:extension",
-            registered_at="2026-01-01T00:00:00+00:00",
-            entry_point_group="erlab.extensions",
-            entry_point_name="extension",
-            entry_point_value="lab_package:extension",
-            distribution_name="lab-package",
-            distribution_version="1.2",
-            editable=editable,
-        ),
-    )
-    dialog = extension_dialogs._ManageExtensionsDialog(parent)
-    qtbot.addWidget(dialog)
-    dialog.set_catalog(
-        _ExtensionCatalogModel(extensions={"script": script, "package": package}),
-        {
-            ("script", script_hash): "Source file changed",
-            ("package", package_hash): "Environment package",
-        },
-        managed_paths={("script", script_hash): os.fspath(managed_path)},
-        package_locations={"package": os.fspath(tmp_path)},
-    )
-
-    def select(extension_id: str) -> None:
-        for index in range(dialog.tree.topLevelItemCount()):
-            item = dialog.tree.topLevelItem(index)
-            if item.data(0, QtCore.Qt.ItemDataRole.UserRole) == extension_id:
-                dialog.tree.setCurrentItem(item)
-                return
-        raise ValueError(extension_id)
-
-    select("script")
-    assert dialog.status_label.property("healthState") == "Import failed"
-    assert dialog._buttons["reload"].property("extensionActionState") == "review"
-    assert dialog._buttons["error"].isEnabled()
-    assert dialog._buttons["view_source"].isEnabled()
-    assert dialog._detail_labels["original_source"].property("sourcePath") == os.fspath(
-        source_path
-    )
-    assert dialog._detail_labels["managed_source"].property("sourcePath") == os.fspath(
-        managed_path
-    )
-    for key, path in (
-        ("original_source", source_path),
-        ("managed_source", managed_path),
-    ):
-        label = dialog._detail_labels[key]
-        assert isinstance(label, manager_widgets._ElidedValueLabel)
-        assert label.full_text == os.fspath(path)
-        assert label.toolTip() == os.fspath(path)
-        assert label.minimumSizeHint().width() == 0
-
-    source_path.unlink()
-    dialog.set_catalog(
-        _ExtensionCatalogModel(extensions={"script": script, "package": package}),
-        {
-            ("script", script_hash): "Stored source; original missing",
-            ("package", package_hash): "Environment package",
-        },
-        managed_paths={("script", script_hash): os.fspath(managed_path)},
-        package_locations={"package": os.fspath(tmp_path)},
-    )
-    select("script")
-    assert dialog._buttons["view_source"].isEnabled()
-    assert not dialog._buttons["open_source"].isEnabled()
-    assert not dialog._buttons["reveal_source"].isEnabled()
-    assert not dialog._buttons["copy_source"].isEnabled()
-
-    select("package")
-    assert not dialog._buttons["remove"].isVisible()
-    assert dialog._buttons["open_package"].isEnabled()
-    assert dialog._detail_labels["package_location"].property(
-        "sourcePath"
-    ) == os.fspath(tmp_path)
-    assert dialog._detail_labels["installation"].property("installationState") == (
-        "editable" if editable else "installed"
-    )
-
-    dialog.set_catalog(
-        _ExtensionCatalogModel(extensions={"package": package}),
-        {("package", package_hash): "Environment package unavailable"},
-    )
-    assert dialog.status_label.property("healthState") == "Source unavailable"
-    assert not dialog._buttons["open_package"].isEnabled()
-
-    embedded = script.model_copy(
-        update={
-            "id": "embedded",
-            "name": "Embedded",
-            "source": script.source.model_copy(
-                update={"source_path": None, "import_error": None}
-            ),
-        }
-    )
-    dialog.set_catalog(
-        _ExtensionCatalogModel(extensions={"embedded": embedded}),
-        {("embedded", script_hash): "Stored embedded source"},
-        managed_paths={("embedded", script_hash): os.fspath(managed_path)},
-    )
-    assert dialog._detail_labels["original_source"].property("sourcePath") is None
-    assert dialog._buttons["view_source"].isEnabled()
-    assert not dialog._buttons["open_source"].isEnabled()
-
-
 def test_extension_source_viewer_uses_python_editor(
     qtbot: pytest.QtBot,
 ) -> None:
@@ -10094,81 +7231,6 @@ def test_extension_source_viewer_uses_python_editor(
     qtbot.addWidget(viewer)
     assert isinstance(viewer.source, erlab.interactive.utils.PythonCodeEditor)
     assert viewer.source.isReadOnly()
-
-
-def test_extension_source_and_package_location_actions(
-    manager_context,
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    script_path = tmp_path / "actions.py"
-    _script(script_path)
-    opened_urls: list[QtCore.QUrl] = []
-    revealed: list[pathlib.Path] = []
-    information_calls: list[None] = []
-    monkeypatch.setattr(
-        QtGui.QDesktopServices,
-        "openUrl",
-        lambda url: opened_urls.append(url) or True,
-    )
-    monkeypatch.setattr(
-        erlab.utils.misc,
-        "open_in_file_manager",
-        lambda path: revealed.append(pathlib.Path(path)),
-    )
-    monkeypatch.setattr(
-        QtWidgets.QMessageBox,
-        "information",
-        lambda *_args, **_kwargs: information_calls.append(None),
-    )
-
-    with manager_context() as manager:
-        controller = manager._extensions
-        controller.catalog.store.add_script(script_path)
-        controller.catalog.refresh()
-        controller._manage_action("open_source", "actions")
-        controller._manage_action("reveal_source", "actions")
-        controller._manage_action("copy_source", "actions")
-        assert opened_urls[0].toLocalFile() == os.fspath(script_path.resolve())
-        assert revealed == [script_path.resolve()]
-        clipboard = QtWidgets.QApplication.clipboard()
-        if clipboard is None:
-            raise TypeError("The application clipboard must exist")
-        assert clipboard.text() == os.fspath(script_path.resolve())
-
-        controller._open_extensions_folder()
-        assert revealed[-1] == controller.catalog.store.directory
-
-        script_path.unlink()
-        controller._manage_action("open_source", "actions")
-        assert information_calls == [None]
-        assert len(opened_urls) == 1
-
-        source_hash = "c" * 64
-        package = _ExtensionRecord(
-            id="package",
-            name="Package",
-            source_type="environment-package",
-            source=_ExtensionSource(
-                source_hash=source_hash,
-                object_name="lab_package:extension",
-                registered_at="2026-01-01T00:00:00+00:00",
-                entry_point_group="erlab.extensions",
-                entry_point_name="extension",
-                entry_point_value="lab_package:extension",
-                distribution_name="lab-package",
-            ),
-        )
-        controller.catalog.model = _ExtensionCatalogModel(
-            extensions={"package": package}
-        )
-        monkeypatch.setattr(
-            extension_controller.importlib.metadata,
-            "distribution",
-            lambda _name: types.SimpleNamespace(locate_file=lambda _relative: tmp_path),
-        )
-        controller._manage_action("open_package", "package")
-        assert revealed[-1] == tmp_path.resolve()
 
 
 def test_removal_blockers_cover_managers_jobs_and_workspace_requirements(
@@ -10219,7 +7281,6 @@ def test_removal_blockers_cover_managers_jobs_and_workspace_requirements(
                         "blocked"
                     ].source.source_hash,
                     extension_api_version=1,
-                    source_type="script",
                 ),
             )
         )

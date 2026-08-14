@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import sys
 import types
 import typing
@@ -12,7 +11,6 @@ import xarray as xr
 
 import erlab
 import erlab.extensions._api as extension_api
-import erlab.extensions._entry_points as entry_point_api
 from erlab.extensions import (
     ExtensionExecutionError,
     ExtensionSignatureError,
@@ -20,40 +18,17 @@ from erlab.extensions import (
     ParameterDescriptor,
     ParameterKind,
     RoutineDescriptor,
-    load_entry_point,
     load_script,
     loader,
     routine,
     run_loader,
     run_routine,
 )
-from erlab.extensions._api import (
-    _coerce_call_parameters,
-    _loader_method_reference,
-    _resolve_loader_method,
-)
-from erlab.extensions._entry_points import _entry_point_source_hash
+from erlab.extensions._api import _coerce_call_parameters
 
 if typing.TYPE_CHECKING:
     import importlib.machinery
     import pathlib
-
-
-def _entry_point_preview_loader(
-    path: typing.Any, *, scale: float = 1.0
-) -> xr.DataArray:
-    return xr.DataArray([float(path.read_text()) * scale])
-
-
-class _EntryPoints(tuple):
-    def select(self, **parameters):
-        return tuple(
-            entry
-            for entry in self
-            if all(
-                getattr(entry, key, None) == value for key, value in parameters.items()
-            )
-        )
 
 
 def test_routine_decorator_preserves_normal_call_behavior() -> None:
@@ -269,381 +244,6 @@ def scale(data: xr.DataArray) -> xr.DataArray:
         )
     finally:
         sys.modules.pop(module_name, None)
-
-
-def test_load_entry_point_exposes_a_pinned_package_routine(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = types.ModuleType("lab_package")
-
-    @routine()
-    def normalize(data: xr.DataArray) -> xr.DataArray:
-        return data / data.max()
-
-    module.normalize = normalize
-    load_calls: list[None] = []
-
-    class EntryPoint:
-        group = "erlab.extensions"
-        name = "lab"
-        value = "lab_package"
-        dist = None
-
-        @staticmethod
-        def load():
-            load_calls.append(None)
-            return module
-
-    entry_point = EntryPoint()
-    monkeypatch.setattr(
-        extension_api.importlib.metadata,
-        "entry_points",
-        lambda: _EntryPoints((entry_point,)),
-    )
-    revision = _entry_point_source_hash(entry_point)
-
-    loaded = load_entry_point("erlab.extensions", "lab", expected_source_hash=revision)
-
-    xr.testing.assert_identical(
-        loaded.normalize(xr.DataArray([1.0, 2.0])), xr.DataArray([0.5, 1.0])
-    )
-    assert load_calls == [None]
-
-
-def test_load_entry_point_exposes_declared_external_loader_method(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: pathlib.Path,
-) -> None:
-    class PreviewLoader(erlab.io.dataloader.LoaderBase):
-        name = "preview"
-        extensions: typing.ClassVar[set[str]] = {".txt"}
-        skip_validate = True
-
-        @property
-        def file_dialog_methods(self):
-            return {
-                "Preview Data (*.txt)": (
-                    _entry_point_preview_loader,
-                    {"scale": 2.0},
-                )
-            }
-
-        def load_single(self, file_path, without_values=False):
-            del without_values
-            return xr.DataArray([float(file_path.read_text())])
-
-    class EntryPoint:
-        group = "erlab.io.loaders"
-        name = "preview"
-        value = "lab_package:PreviewLoader"
-        dist = None
-
-        @staticmethod
-        def load():
-            return PreviewLoader
-
-    entry_point = EntryPoint()
-    monkeypatch.setattr(
-        extension_api.importlib.metadata,
-        "entry_points",
-        lambda: _EntryPoints((entry_point,)),
-    )
-    revision = _entry_point_source_hash(entry_point)
-    path = tmp_path / "value.txt"
-    path.write_text("3")
-
-    loaded = load_entry_point(
-        "erlab.io.loaders", "preview", expected_source_hash=revision
-    )
-    method = loaded.resolve_loader(f"{__name__}._entry_point_preview_loader")
-
-    xr.testing.assert_identical(method(path, scale=2.0), xr.DataArray([6.0]))
-    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="not declared"):
-        loaded.resolve_loader("lab_package.missing")
-    with pytest.raises(
-        erlab.extensions.ExtensionNotFoundError, match="does not match source hash"
-    ):
-        load_entry_point(
-            "erlab.io.loaders",
-            "preview",
-            expected_source_hash="a" * 64,
-        )
-
-
-def test_load_entry_point_rejects_a_preloaded_editable_module(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: pathlib.Path,
-) -> None:
-    package_path = tmp_path / "lab_package"
-    package_path.mkdir()
-    (package_path / "plugin.py").write_text("VALUE = 1\n")
-    load_calls: list[None] = []
-
-    class Distribution:
-        metadata: typing.ClassVar[dict[str, str]] = {"Name": "preloaded-lab"}
-        version = "1"
-
-        @staticmethod
-        def read_text(name: str) -> str | None:
-            if name != "direct_url.json":
-                return None
-            return json.dumps(
-                {
-                    "url": tmp_path.as_uri(),
-                    "dir_info": {"editable": True},
-                }
-            )
-
-    class EntryPoint:
-        group = "erlab.extensions"
-        name = "preloaded"
-        value = "lab_package.plugin:normalize"
-        dist = Distribution()
-
-        @staticmethod
-        def load():
-            load_calls.append(None)
-
-    entry_point = EntryPoint()
-    monkeypatch.setattr(
-        extension_api.importlib.metadata,
-        "entry_points",
-        lambda: _EntryPoints((entry_point,)),
-    )
-    monkeypatch.setitem(sys.modules, "lab_package.plugin", types.ModuleType("plugin"))
-
-    with pytest.raises(erlab.extensions.ExtensionImportError, match="Restart Python"):
-        load_entry_point(
-            entry_point.group,
-            entry_point.name,
-            expected_source_hash=_entry_point_source_hash(entry_point),
-        )
-
-    assert load_calls == []
-
-
-@pytest.mark.parametrize(
-    ("direct_url", "message"),
-    [
-        ({}, "URL is unavailable"),
-        ({"url": "https://example.test/package"}, "not a local path"),
-    ],
-)
-def test_editable_source_fingerprint_rejects_nonlocal_urls(
-    direct_url: dict[str, typing.Any], message: str
-) -> None:
-    with pytest.raises(entry_point_api._EntryPointInspectionError, match=message):
-        entry_point_api._editable_source_fingerprint(direct_url)
-
-
-def test_editable_source_fingerprint_validates_project_contents(
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    missing = tmp_path / "missing"
-    with pytest.raises(
-        entry_point_api._EntryPointInspectionError, match="directory is unavailable"
-    ):
-        entry_point_api._editable_source_fingerprint({"url": str(missing)})
-
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    with pytest.raises(
-        entry_point_api._EntryPointInspectionError, match="no fingerprintable source"
-    ):
-        entry_point_api._editable_source_fingerprint({"url": str(empty)})
-
-    source = tmp_path / "project"
-    source.mkdir()
-    module = source / "module.py"
-    module.write_text("VALUE = 1\n")
-    original_read_bytes = entry_point_api.pathlib.Path.read_bytes
-
-    def fail_for_module(path: pathlib.Path) -> bytes:
-        if path == module:
-            raise OSError("unreadable")
-        return original_read_bytes(path)
-
-    monkeypatch.setattr(entry_point_api.pathlib.Path, "read_bytes", fail_for_module)
-    with pytest.raises(
-        entry_point_api._EntryPointInspectionError, match="Could not fingerprint"
-    ):
-        entry_point_api._editable_source_fingerprint({"url": str(source)})
-
-
-def test_editable_source_fingerprint_reports_directory_walk_failure(
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-
-    def failed_walk(root, *, onerror):
-        del root
-        onerror(OSError("cannot walk"))
-        return []
-
-    monkeypatch.setattr(entry_point_api.os, "walk", failed_walk)
-    with pytest.raises(
-        entry_point_api._EntryPointInspectionError, match="Could not inspect"
-    ):
-        entry_point_api._editable_source_fingerprint({"url": str(project)})
-
-
-@pytest.mark.parametrize(
-    ("direct_url", "message"),
-    [
-        ("not json", "not valid JSON"),
-        ("[]", "must be a JSON object"),
-        ('{"dir_info": []}', "directory metadata must be a JSON object"),
-    ],
-)
-def test_entry_point_source_hash_rejects_invalid_direct_url_metadata(
-    direct_url: str,
-    message: str,
-) -> None:
-    class Distribution:
-        metadata: typing.ClassVar[dict[str, str]] = {"Name": "lab"}
-        version = "1"
-
-        @staticmethod
-        def read_text(name: str) -> str | None:
-            return direct_url if name == "direct_url.json" else None
-
-    class EntryPoint:
-        group = "erlab.extensions"
-        name = "lab"
-        value = "lab_package"
-        dist = Distribution()
-
-    with pytest.raises(entry_point_api._EntryPointInspectionError, match=message):
-        entry_point_api._entry_point_source_hash(EntryPoint())
-
-
-def test_load_entry_point_value_records_an_editable_source(
-    tmp_path: pathlib.Path,
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "plugin.py").write_text("VALUE = 1\n")
-    loaded_value = object()
-
-    class Distribution:
-        metadata: typing.ClassVar[dict[str, str]] = {"Name": "editable-lab"}
-        version = "1"
-
-        @staticmethod
-        def read_text(name: str) -> str | None:
-            if name != "direct_url.json":
-                return None
-            return json.dumps({"url": project.as_uri(), "dir_info": {"editable": True}})
-
-    class EntryPoint:
-        group = "erlab.extensions"
-        name = "editable"
-        value = "editable_lab_package"
-        dist = Distribution()
-
-        @staticmethod
-        def load():
-            return loaded_value
-
-    entry_point = EntryPoint()
-    revision = _entry_point_source_hash(entry_point)
-    entry_point_api._loaded_editable_distributions.pop("editable-lab", None)
-    try:
-        assert (
-            entry_point_api._load_entry_point_value(entry_point, revision)
-            is loaded_value
-        )
-        assert "editable-lab" in entry_point_api._loaded_editable_distributions
-        with pytest.raises(
-            entry_point_api._EntryPointInspectionError,
-            match="does not match source hash",
-        ):
-            entry_point_api._load_entry_point_value(entry_point, "0" * 64)
-    finally:
-        entry_point_api._loaded_editable_distributions.pop("editable-lab", None)
-
-
-def test_load_entry_point_reports_lookup_metadata_and_type_errors(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        extension_api.importlib.metadata,
-        "entry_points",
-        lambda: _EntryPoints(),
-    )
-    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="not installed"):
-        load_entry_point("erlab.extensions", "missing", expected_source_hash="0" * 64)
-
-    class EntryPoint:
-        group = "erlab.io.loaders"
-        name = "invalid"
-        value = "lab_package:value"
-        dist = None
-
-        @staticmethod
-        def load():
-            return object()
-
-    entry_point = EntryPoint()
-    monkeypatch.setattr(
-        extension_api.importlib.metadata,
-        "entry_points",
-        lambda: _EntryPoints((entry_point,)),
-    )
-    revision = _entry_point_source_hash(entry_point)
-    monkeypatch.setattr(
-        extension_api,
-        "_entry_point_source_hash",
-        lambda _entry_point: (_ for _ in ()).throw(
-            entry_point_api._EntryPointInspectionError("bad metadata")
-        ),
-    )
-    with pytest.raises(erlab.extensions.ExtensionImportError, match="bad metadata"):
-        load_entry_point(
-            entry_point.group, entry_point.name, expected_source_hash=revision
-        )
-
-    monkeypatch.setattr(extension_api, "_entry_point_source_hash", lambda _: revision)
-    with pytest.raises(erlab.extensions.ExtensionImportError, match="LoaderBase"):
-        load_entry_point(
-            entry_point.group, entry_point.name, expected_source_hash=revision
-        )
-
-
-def test_load_entry_point_accepts_a_single_decorated_callable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    @routine()
-    def calculate(data: xr.DataArray) -> xr.DataArray:
-        return data + 1
-
-    class EntryPoint:
-        group = "erlab.extensions"
-        name = "callable"
-        value = "lab_package:calculate"
-        dist = None
-
-        @staticmethod
-        def load():
-            return calculate
-
-    entry_point = EntryPoint()
-    monkeypatch.setattr(
-        extension_api.importlib.metadata,
-        "entry_points",
-        lambda: _EntryPoints((entry_point,)),
-    )
-    revision = _entry_point_source_hash(entry_point)
-
-    loaded = load_entry_point(
-        entry_point.group, entry_point.name, expected_source_hash=revision
-    )
-
-    xr.testing.assert_identical(loaded.calculate(xr.DataArray([1])), xr.DataArray([2]))
-    assert loaded.value is calculate
 
 
 def test_load_script_executes_verified_source_snapshot(
@@ -981,23 +581,30 @@ def invalid(path: Path) -> list[float]:
         load_script(source)
 
 
-def test_loader_method_resolution_preserves_dependency_import_error(
+def test_script_can_use_an_installed_dependency(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    package = tmp_path / "dependency_extension"
-    package.mkdir()
-    (package / "__init__.py").write_text("")
-    (package / "loader.py").write_text(
-        "import dependency_that_is_not_installed\n\ndef load(path):\n    return path\n"
+    (tmp_path / "lab_dependency.py").write_text(
+        "def scale(values, factor):\n    return values * factor\n"
+    )
+    source = tmp_path / "lab_extension.py"
+    source.write_text(
+        "import xarray as xr\n"
+        "from erlab.extensions import routine\n"
+        "from lab_dependency import scale\n\n"
+        "@routine()\n"
+        "def apply_scale(data: xr.DataArray, factor: float = 2.0) -> xr.DataArray:\n"
+        "    return scale(data, factor)\n"
     )
     monkeypatch.syspath_prepend(tmp_path)
 
-    with pytest.raises(ModuleNotFoundError, match="dependency_that_is_not_installed"):
-        _resolve_loader_method(
-            lambda path: path,
-            "dependency_extension.loader.load",
-        )
+    loaded = load_script(source)
+
+    xr.testing.assert_identical(
+        loaded.apply_scale(xr.DataArray([1.0, 2.0]), factor=3.0),
+        xr.DataArray([3.0, 6.0]),
+    )
 
 
 def test_source_resolver_lookup_survives_manager_removal(
@@ -1237,11 +844,6 @@ def test_run_functions_validate_lookup_and_results(
         erlab.extensions.ExtensionNotFoundError, match="Loader 'missing'"
     ):
         run_loader("data.txt", script=source, loader_id="missing")
-    with pytest.raises(
-        erlab.extensions.ExtensionNotFoundError,
-        match="do not provide alternate methods",
-    ):
-        run_loader("data.txt", script=source, loader_id="load_data", method="os.remove")
     with pytest.raises(ExtensionExecutionError, match="expected an xarray object"):
         run_loader("data.txt", script=source, loader_id="load_data")
 
@@ -1254,15 +856,12 @@ def test_capability_resolvers_run_direct_callables_and_report_absence() -> None:
         source_hash: str,
         kind: str,
         capability_id: str,
-        method: str | None,
     ) -> typing.Callable[..., typing.Any]:
         if (extension_id, source_hash, capability_id) != ("lab", "source", "value"):
             raise KeyError
         if kind == "routine":
             return lambda data: data + 1
-        if method is not None:
-            raise erlab.extensions.ExtensionNotFoundError("method was not approved")
-        return lambda path: [xr.DataArray([len(path.name)])]
+        return lambda path: xr.DataArray([len(path.name)])
 
     extension_api._set_capability_resolver(owner, resolve)
     try:
@@ -1281,50 +880,9 @@ def test_capability_resolvers_run_direct_callables_and_report_absence() -> None:
             source_hash="source",
             loader_id="value",
         )
-        assert isinstance(result, list)
-        xr.testing.assert_identical(result[0], xr.DataArray([9]))
-        with pytest.raises(
-            erlab.extensions.ExtensionNotFoundError, match="not approved"
-        ):
-            run_loader(
-                "value.txt",
-                extension_id="lab",
-                source_hash="source",
-                loader_id="value",
-                method="os.remove",
-            )
+        xr.testing.assert_identical(result, xr.DataArray([9]))
     finally:
         extension_api._remove_resolvers(owner)
 
     with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="No extension"):
         extension_api._resolved_source("lab", "source")
-
-
-def test_loader_method_helpers_validate_stable_references() -> None:
-    class Loader:
-        def load(self) -> None:
-            return None
-
-        def preview(self) -> None:
-            return None
-
-    loader_instance = Loader()
-    assert _loader_method_reference(loader_instance, loader_instance.load) is None
-    assert (
-        _loader_method_reference(loader_instance, loader_instance.preview) == "preview"
-    )
-    with pytest.raises(TypeError, match="stable name"):
-        _loader_method_reference(
-            loader_instance, types.MethodType(lambda self: None, loader_instance)
-        )
-    with pytest.raises(TypeError, match="importable functions"):
-        _loader_method_reference(loader_instance, lambda: None)
-
-    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="was not found"):
-        _resolve_loader_method(
-            loader_instance.load, "package_that_does_not_exist.method"
-        )
-    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="was not found"):
-        _resolve_loader_method(loader_instance.load, "json.missing")
-    with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="not callable"):
-        _resolve_loader_method(loader_instance.load, "json.__name__")

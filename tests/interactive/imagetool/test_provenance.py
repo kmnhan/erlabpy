@@ -547,17 +547,11 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
         ),
         AssignAttrsOperation(attrs={"sample": "test"}),
         ExtensionRoutineOperation(
-            extension_id="environment.erlab.extensions.my-lab",
+            extension_id="my_lab",
             source_hash="a" * 64,
             routine_id="where",
             extension_name="My Lab",
             routine_name="Where",
-            source_type="environment-package",
-            function_name="where",
-            source_path=None,
-            entry_point_group="erlab.extensions",
-            entry_point_name="my-lab",
-            public_call_reference="xarray:where",
             parameters={},
         ),
         KspaceConfigurationOperation(configuration=2),
@@ -590,7 +584,11 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
 
 @pytest.mark.parametrize(
     "operation",
-    _representative_structured_operations(),
+    tuple(
+        operation
+        for operation in _representative_structured_operations()
+        if not isinstance(operation, ExtensionRoutineOperation)
+    ),
     ids=lambda operation: operation.op,
 )
 def test_structured_operations_generate_public_code(
@@ -603,6 +601,18 @@ def test_structured_operations_generate_public_code(
 
     assert "erlab.interactive.imagetool" not in code
     assert "decode_provenance_value" not in code
+
+
+def test_extension_routine_omits_code_without_a_registered_script() -> None:
+    operation = next(
+        operation
+        for operation in _representative_structured_operations()
+        if isinstance(operation, ExtensionRoutineOperation)
+    )
+
+    assert operation.derivation_entry().code is None
+    with pytest.raises(NotImplementedError):
+        operation.statement_code("data", output_name="derived")
 
 
 @pytest.mark.parametrize(
@@ -5231,22 +5241,12 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
             target="lab-loader",
             source_hash="not-a-source",
             capability_id="load_data",
-            extension_source_type="script",
             selection=FileDataSelection(kind="dataarray"),
         )
-    with pytest.raises(ValidationError, match="extension_source_type"):
+    with pytest.raises(ValidationError, match="source_hash and capability_id"):
         FileReplayCall(
             kind="extension_loader",
             target="lab-loader",
-            source_hash="a" * 64,
-            capability_id="load_data",
-            selection=FileDataSelection(kind="dataarray"),
-        )
-    with pytest.raises(ValidationError, match="only valid"):
-        FileReplayCall(
-            kind="callable",
-            target="xarray.load_dataarray",
-            extension_source_type="script",
             selection=FileDataSelection(kind="dataarray"),
         )
 
@@ -5340,11 +5340,6 @@ def test_extension_routine_rejects_invalid_source_identity() -> None:
             routine_id="normalize",
             extension_name="Lab Routines",
             routine_name="Normalize",
-            source_type="script",
-            function_name="normalize",
-            source_path="lab_routines.py",
-            entry_point_group=None,
-            entry_point_name=None,
             parameters={},
         )
 
