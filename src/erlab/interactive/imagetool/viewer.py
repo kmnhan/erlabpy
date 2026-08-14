@@ -2745,8 +2745,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         if self._load_func is None:
             return None
-        extension_id, source_hash, loader_id, _loader_method, source_type = (
-            _extension_loader_identity(self._load_func[0])
+        extension_id, source_hash, loader_id = _extension_loader_identity(
+            self._load_func[0]
         )
         if not (
             isinstance(extension_id, str)
@@ -2768,7 +2768,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
             source_hash,
             "loader",
             loader_id,
-            source_type,
         )
 
     def _provenance_reloadable(self) -> bool:

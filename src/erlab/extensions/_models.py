@@ -18,25 +18,6 @@ if typing.TYPE_CHECKING:
 EXTENSION_API_VERSION: typing.Literal[1] = 1
 
 
-def _parse_public_call_reference(value: object) -> tuple[str, str] | None:
-    """Parse a direct import that does not expose private package names."""
-    if not isinstance(value, str):
-        return None
-    module_name, separator, function_name = value.partition(":")
-    module_parts = module_name.split(".")
-    if (
-        not separator
-        or not module_name
-        or not all(
-            part.isidentifier() and not part.startswith("_") for part in module_parts
-        )
-        or not function_name.isidentifier()
-        or function_name.startswith("_")
-    ):
-        return None
-    return module_name, function_name
-
-
 def _validate_source_hash(value: str) -> str:
     """Validate one lowercase SHA-256 digest used as immutable identity."""
     if len(value) != 64 or any(
@@ -61,31 +42,6 @@ def _require_finite_parameter_values(values: Mapping[str, typing.Any]) -> None:
 
     for name, value in values.items():
         check(value, name)
-
-
-class _PackageExtensionReference(pydantic.BaseModel):
-    """Standard installed-package identity stored with provenance."""
-
-    distribution_name: str
-    distribution_version: str
-    entry_point_group: str
-    entry_point_name: str
-    entry_point_value: str
-    editable: bool = False
-
-    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
-
-    @pydantic.field_validator(
-        "distribution_name",
-        "entry_point_group",
-        "entry_point_name",
-        "entry_point_value",
-    )
-    @classmethod
-    def _not_empty(cls, value: str) -> str:
-        if not value:
-            raise ValueError("package extension identity fields must not be empty")
-        return value
 
 
 class ExtensionError(RuntimeError):
@@ -370,86 +326,3 @@ class LoadedScript:
             entry[0] for entry in self.loaders.values()
         ]
         return (*routines, *loaders)
-
-
-class LoadedEntryPoint:
-    """Imported package extension with direct access to its public callables.
-
-    Parameters
-    ----------
-    group
-        Python entry-point group.
-    name
-        Python entry-point name.
-    source_hash
-        Hash computed from package metadata and editable sources.
-    value
-        Object loaded from the entry point. A ``LoaderBase`` class entry point is
-        instantiated so its loader methods are available directly.
-    callables
-        Validated extension callables keyed by their Python function names.
-    loader_methods
-        LoaderBase file-dialog callables keyed by their stable method references.
-    """
-
-    def __init__(
-        self,
-        *,
-        group: str,
-        name: str,
-        source_hash: str,
-        value: typing.Any,
-        callables: dict[str, Callable[..., typing.Any]],
-        loader_methods: dict[str | None, Callable[..., typing.Any]],
-    ) -> None:
-        self.group = group
-        self.name = name
-        self.source_hash = source_hash
-        self.value = value
-        self.callables = callables
-        self.loader_methods = loader_methods
-
-    def __getattr__(self, name: str) -> typing.Any:
-        """Return a public attribute or the entry-point callable itself."""
-        if name in self.callables:
-            return _extension_callable(self.callables[name])
-        return getattr(self.value, name)
-
-    def resolve_loader(self, method: str | None = None) -> Callable[..., typing.Any]:
-        """Return one declared LoaderBase file-dialog callable.
-
-        Parameters
-        ----------
-        method
-            Stable method reference reported by the loader entry point. Use ``None``
-            for its normal ``load`` method.
-
-        Returns
-        -------
-        collections.abc.Callable
-            The exact callable declared by the verified entry point.
-
-        Raises
-        ------
-        ExtensionNotFoundError
-            If this entry point does not declare the requested loader method.
-
-        Examples
-        --------
-        >>> extension = load_entry_point(  # doctest: +SKIP
-        ...     "erlab.io.loaders",
-        ...     "my_lab",
-        ...     expected_source_hash="0a12...",
-        ... )
-        >>> load_preview = extension.resolve_loader(  # doctest: +SKIP
-        ...     "my_lab.preview.load"
-        ... )
-        >>> data = load_preview("scan.dat")  # doctest: +SKIP
-        """
-        try:
-            return self.loader_methods[method]
-        except KeyError as error:
-            raise ExtensionNotFoundError(
-                f"Loader method {method!r} is not declared by entry point "
-                f"{self.group}:{self.name}"
-            ) from error

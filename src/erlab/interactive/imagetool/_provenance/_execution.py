@@ -258,7 +258,6 @@ def _load_file_source_object(
             extension_id=call.target,
             source_hash=call.source_hash,
             loader_id=call.capability_id,
-            method=call.loader_method,
             parameters=_deserialize_loader_kwargs(call.kwargs),
         )
     else:
@@ -492,7 +491,6 @@ def file_load_source_status(
             replay_call.source_hash,
             "loader",
             replay_call.capability_id,
-            replay_call.extension_source_type,
         )
         if capability_status == "disabled":
             return "extension-disabled"
@@ -554,7 +552,6 @@ def can_reload_without_trust(
                 extension_operation.source_hash,
                 "routine",
                 extension_operation.routine_id,
-                extension_operation.source_type,
             )
             != "ready"
         ):

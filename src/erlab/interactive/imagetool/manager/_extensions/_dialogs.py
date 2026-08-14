@@ -45,7 +45,6 @@ def _source_is_unavailable(state: str) -> bool:
         "Source file unreadable",
         "Source file changed",
         "No registered source file",
-        "Environment package unavailable",
     }
 
 
@@ -335,14 +334,11 @@ class _SourceViewerDialog(QtWidgets.QDialog):
 class _ManageExtensionsDialog(QtWidgets.QDialog):
     action_requested = QtCore.Signal(str, str)
     add_script_requested = QtCore.Signal()
-    refresh_packages_requested = QtCore.Signal()
     open_folder_requested = QtCore.Signal()
     selection_changed = QtCore.Signal(str)
     activated = QtCore.Signal()
 
-    def __init__(
-        self, parent: QtWidgets.QWidget, *, show_package_refresh: bool = True
-    ) -> None:
+    def __init__(self, parent: QtWidgets.QWidget) -> None:
         super().__init__(parent)
         self.setObjectName("manager_manage_extensions_dialog")
         self.setWindowTitle("Manage Extensions")
@@ -353,15 +349,6 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         self.add_script_button.setObjectName("manager_extension_add_script_button")
         self.add_script_button.clicked.connect(self.add_script_requested)
         controls.addWidget(self.add_script_button)
-        self.refresh_packages_button = QtWidgets.QPushButton(
-            "Refresh Environment Packages", self
-        )
-        self.refresh_packages_button.setObjectName(
-            "manager_extension_refresh_packages_button"
-        )
-        self.refresh_packages_button.setVisible(show_package_refresh)
-        self.refresh_packages_button.clicked.connect(self.refresh_packages_requested)
-        controls.addWidget(self.refresh_packages_button)
         self.search_edit = QtWidgets.QLineEdit(self)
         self.search_edit.setObjectName("manager_extension_search")
         self.search_edit.setPlaceholderText("Search extensions")
@@ -380,9 +367,7 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
         self.tree.setSortingEnabled(True)
-        self.tree.setHeaderLabels(
-            ("Extension", "Type", "Status", "Updated", "Location")
-        )
+        self.tree.setHeaderLabels(("Extension", "Status", "Updated", "Location"))
         self.tree.sortByColumn(0, QtCore.Qt.SortOrder.AscendingOrder)
         splitter.addWidget(self.tree)
         details_widget = QtWidgets.QWidget(splitter)
@@ -413,10 +398,6 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
             ("registered_date", "Registered"),
             ("original_source", "Registered source file"),
             ("managed_source", "Stored recovery source"),
-            ("distribution", "Distribution"),
-            ("entry_point", "Entry point"),
-            ("package_location", "Package location"),
-            ("installation", "Installation"),
         ):
             if key == "embedding":
                 self.embedding_combo = QtWidgets.QComboBox(details_widget)
@@ -471,7 +452,6 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
                 else "Open Containing Folder",
             ),
             ("copy_source", "Copy Path"),
-            ("open_package", "Open Package Location"),
         ):
             button = QtWidgets.QPushButton(text, details_widget)
             button.setObjectName(f"manager_extension_{action_id}_button")
@@ -507,7 +487,6 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         self._records: dict[str, _ExtensionRecord] = {}
         self._source_states: dict[tuple[str, str], str] = {}
         self._managed_paths: dict[tuple[str, str], str] = {}
-        self._package_locations: dict[str, str] = {}
         self._removal_reason: str | None = None
         self.tree.currentItemChanged.connect(self._selection_changed)
         close_button = QtWidgets.QDialogButtonBox(
@@ -522,7 +501,6 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         source_states: dict[tuple[str, str], str] | None = None,
         *,
         managed_paths: dict[tuple[str, str], str] | None = None,
-        package_locations: dict[str, str] | None = None,
     ) -> None:
         selected_id = self.selected_extension_id
         scroll_bar = self.tree.verticalScrollBar()
@@ -530,7 +508,6 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         self._records = dict(catalog.extensions)
         self._source_states = dict(source_states or {})
         self._managed_paths = dict(managed_paths or {})
-        self._package_locations = dict(package_locations or {})
         self.tree.setSortingEnabled(False)
         self.tree.clear()
         selected_item: QtWidgets.QTreeWidgetItem | None = None
@@ -545,27 +522,13 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
             elif _source_is_unavailable(source_state):
                 health = "Source unavailable"
             elif not current.approved:
-                health = (
-                    "Approval required"
-                    if record.source_type == "script"
-                    else "Not loaded"
-                )
-            if record.source_type == "script":
-                activation = "Enabled" if record.enabled else "Disabled"
-                location = current.source_path or "Workspace embedded source"
-                source_type = "Script"
-            else:
-                activation = "Available" if record.enabled else "Unavailable"
-                location = self._package_locations.get(
-                    record.id,
-                    current.distribution_name or current.entry_point_value or "",
-                )
-                source_type = "Environment package"
+                health = "Approval required"
+            activation = "Enabled" if record.enabled else "Disabled"
+            location = current.source_path or "Workspace embedded source"
             state = f"{activation} · {health}"
             item = QtWidgets.QTreeWidgetItem(
                 (
                     record.name,
-                    source_type,
                     state,
                     _display_datetime(
                         current.source_modified_at or current.registered_at
@@ -574,16 +537,13 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
                 )
             )
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole, record.id)
-            item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 1, record.source_type)
             item.setData(
                 0,
-                QtCore.Qt.ItemDataRole.UserRole + 2,
-                ("enabled" if record.enabled else "disabled")
-                if record.source_type == "script"
-                else ("available" if record.enabled else "unavailable"),
+                QtCore.Qt.ItemDataRole.UserRole + 1,
+                "enabled" if record.enabled else "disabled",
             )
-            item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 3, health)
-            item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 4, location)
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 2, health)
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 3, location)
             self.tree.addTopLevelItem(item)
             if record.id == selected_id:
                 selected_item = item
@@ -625,24 +585,13 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
             health = "Source unavailable"
             failure = source_state
         elif not source.approved:
-            health = (
-                "Approval required" if record.source_type == "script" else "Not loaded"
-            )
-        type_name = (
-            "Script" if record.source_type == "script" else "Environment package"
-        )
-        self.name_label.setText(f"{record.name} · {type_name}")
-        activation = (
-            ("Enabled" if record.enabled else "Disabled")
-            if record.source_type == "script"
-            else ("Available" if record.enabled else "Unavailable")
-        )
+            health = "Approval required"
+        self.name_label.setText(record.name)
+        activation = "Enabled" if record.enabled else "Disabled"
         self.status_label.setText(f"{activation} · {health}")
         self.status_label.setProperty(
             "activationState",
-            ("enabled" if record.enabled else "disabled")
-            if record.source_type == "script"
-            else ("available" if record.enabled else "unavailable"),
+            "enabled" if record.enabled else "disabled",
         )
         self.status_label.setProperty("healthState", health)
         self.failure_label.setText(failure)
@@ -655,78 +604,24 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         self._detail_labels["registered_date"].setText(
             _display_datetime(source.source_modified_at or source.registered_at)
         )
-        is_script = record.source_type == "script"
-        registered_form_label = self._detail_form_labels.get("registered_date")
-        if isinstance(registered_form_label, QtWidgets.QLabel):
-            registered_form_label.setText("Registered" if is_script else "Discovered")
-        for key in ("original_source", "managed_source"):
-            self._detail_labels[key].setVisible(is_script)
-            form_label = self._detail_form_labels.get(key)
-            if form_label is not None:
-                form_label.setVisible(is_script)
-        for key in (
-            "distribution",
-            "entry_point",
-            "package_location",
-            "installation",
-        ):
-            self._detail_labels[key].setVisible(not is_script)
-            form_label = self._detail_form_labels.get(key)
-            if form_label is not None:
-                form_label.setVisible(not is_script)
         source_path = source.source_path
         managed_path = self._managed_paths.get((record.id, source.source_hash), "")
-        package_path = self._package_locations.get(record.id, "")
         self._detail_labels["original_source"].setText(
-            source_path or "No external source file" if is_script else "Not applicable"
+            source_path or "No external source file"
         )
         self._detail_labels["original_source"].setProperty("sourcePath", source_path)
-        self._detail_labels["managed_source"].setText(
-            managed_path or "Unavailable" if is_script else "Not applicable"
-        )
+        self._detail_labels["managed_source"].setText(managed_path or "Unavailable")
         self._detail_labels["managed_source"].setProperty(
             "sourcePath", managed_path or None
         )
-        distribution = source.distribution_name or ""
-        if source.distribution_version:
-            distribution = f"{distribution} {source.distribution_version}".strip()
-        self._detail_labels["distribution"].setText(distribution or "Not applicable")
-        self._detail_labels["distribution"].setProperty(
-            "distributionName", source.distribution_name
-        )
-        self._detail_labels["distribution"].setProperty(
-            "distributionVersion", source.distribution_version
-        )
-        self._detail_labels["entry_point"].setText(
-            source.entry_point_value or "Not applicable"
-        )
-        self._detail_labels["entry_point"].setProperty(
-            "entryPoint", source.entry_point_value
-        )
-        self._detail_labels["package_location"].setText(
-            package_path or "Unavailable" if not is_script else "Not applicable"
-        )
-        self._detail_labels["package_location"].setProperty(
-            "sourcePath", package_path or None
-        )
-        self._detail_labels["installation"].setText(
-            ("Editable" if source.editable else "Installed")
-            if not is_script
-            else "Not applicable"
-        )
-        self._detail_labels["installation"].setProperty(
-            "installationState",
-            "editable" if source.editable else "installed" if not is_script else None,
-        )
-        self._buttons["toggle"].setVisible(is_script)
-        self._buttons["toggle"].setEnabled(is_script)
+        self._buttons["toggle"].setEnabled(True)
         self._buttons["toggle"].setText("Disable" if record.enabled else "Enable")
         self._buttons["toggle"].setProperty(
             "extensionActionState", "disable" if record.enabled else "enable"
         )
         original_available = bool(source_path and pathlib.Path(source_path).is_file())
         source_changed = source_state == "Source file changed"
-        self._buttons["reload"].setEnabled(is_script)
+        self._buttons["reload"].setEnabled(True)
         reload_text = (
             "Restore Stored Copy…"
             if source_path is None
@@ -749,34 +644,25 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         )
         self._buttons["error"].setVisible(bool(source.import_error))
         self._buttons["error"].setEnabled(bool(source.import_error))
-        self._buttons["view_source"].setVisible(is_script)
         self._buttons["view_source"].setEnabled(bool(managed_path))
         for action_id in ("open_source", "reveal_source", "copy_source"):
-            self._buttons[action_id].setVisible(is_script)
             self._buttons[action_id].setEnabled(original_available)
             self._buttons[action_id].setToolTip(
                 "" if original_available else "The original source file is unavailable."
             )
-        self._buttons["open_package"].setVisible(not is_script)
-        self._buttons["open_package"].setEnabled(bool(package_path))
-        self.embedding_combo.setVisible(is_script)
-        self.embedding_combo.setEnabled(is_script)
-        if self._embedding_form_label is not None:
-            self._embedding_form_label.setVisible(is_script)
-        if is_script:
-            index = self.embedding_combo.findData(record.embed_policy)
-            if index >= 0:
-                blocker = QtCore.QSignalBlocker(self.embedding_combo)
-                self.embedding_combo.setCurrentIndex(index)
-                del blocker
-        self._buttons["remove"].setVisible(is_script)
-        self._buttons["remove"].setEnabled(is_script and not self._removal_reason)
+        self.embedding_combo.setEnabled(True)
+        index = self.embedding_combo.findData(record.embed_policy)
+        if index >= 0:
+            blocker = QtCore.QSignalBlocker(self.embedding_combo)
+            self.embedding_combo.setCurrentIndex(index)
+            del blocker
+        self._buttons["remove"].setEnabled(not self._removal_reason)
         self._buttons["remove"].setToolTip(self._removal_reason or "")
         self._buttons["remove"].setProperty(
             "removalBlocked", bool(self._removal_reason)
         )
         self.removal_reason_label.setText(self._removal_reason or "")
-        self.removal_reason_label.setVisible(bool(self._removal_reason and is_script))
+        self.removal_reason_label.setVisible(bool(self._removal_reason))
 
     def set_removal_reason(self, reason: str | None) -> None:
         self._removal_reason = reason
@@ -808,7 +694,7 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
             item.setHidden(
                 bool(query)
                 and query
-                not in " ".join(item.text(column) for column in range(5)).casefold()
+                not in " ".join(item.text(column) for column in range(4)).casefold()
             )
         current = self.tree.currentItem()
         if current is None or current.isHidden():
@@ -855,7 +741,7 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
         requirements: tuple[_ResolvedWorkspaceRequirement, ...],
         parent: QtWidgets.QWidget,
         *,
-        recoverable: Collection[tuple[str, str, str]] = (),
+        recoverable: Collection[tuple[str, str]] = (),
     ) -> None:
         super().__init__(parent)
         self._recoverable = frozenset(recoverable)
@@ -873,14 +759,6 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
         self._register_button.clicked.connect(self._register_selected)
         self.tree.currentItemChanged.connect(self._update_register_button)
         layout.addWidget(self._register_button)
-        self._copy_package_button = QtWidgets.QPushButton(
-            "Copy Install Requirement", self
-        )
-        self._copy_package_button.setObjectName(
-            "manager_workspace_extension_copy_package_requirement_button"
-        )
-        self._copy_package_button.clicked.connect(self._copy_package_requirement)
-        layout.addWidget(self._copy_package_button)
         self.set_requirements(requirements)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Close, parent=self
@@ -918,15 +796,9 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
                 (
                     requirement.extension_id,
                     requirement.source_hash,
-                    requirement.source_type,
                 ),
             )
             item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 1, resolved.state)
-            item.setData(
-                0,
-                QtCore.Qt.ItemDataRole.UserRole + 2,
-                requirement.package,
-            )
             self.tree.addTopLevelItem(item)
             if item.data(0, QtCore.Qt.ItemDataRole.UserRole) == selected_key:
                 self.tree.setCurrentItem(item)
@@ -942,25 +814,6 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
             and item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1)
             in {"approval-required", "missing", "hash-mismatch", "import-failed"}
         )
-        self._copy_package_button.setEnabled(
-            item is not None
-            and item.data(0, QtCore.Qt.ItemDataRole.UserRole + 2) is not None
-        )
-
-    @QtCore.Slot()
-    def _copy_package_requirement(self) -> None:
-        item = self.tree.currentItem()
-        if item is None:
-            return
-        package = item.data(0, QtCore.Qt.ItemDataRole.UserRole + 2)
-        if package is None:
-            return
-        value = package.distribution_name
-        if package.distribution_version:
-            value += f"=={package.distribution_version}"
-        clipboard = QtWidgets.QApplication.clipboard()
-        if clipboard is not None:
-            clipboard.setText(value)
 
     @QtCore.Slot()
     def _register_selected(self) -> None:
@@ -973,7 +826,7 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
         ):
             return
         key = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
-        if isinstance(key, tuple) and len(key) == 3 and key[2] == "script":
+        if isinstance(key, tuple) and len(key) == 2:
             self.register_requested.emit(str(key[0]), str(key[1]))
 
 

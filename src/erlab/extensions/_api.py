@@ -5,7 +5,6 @@ from __future__ import annotations
 import enum
 import hashlib
 import importlib
-import importlib.metadata
 import importlib.util
 import inspect
 import os
@@ -19,18 +18,12 @@ from collections.abc import Callable, Iterable, Mapping
 
 import xarray as xr
 
-from erlab.extensions._entry_points import (
-    _entry_point_source_hash,
-    _EntryPointInspectionError,
-    _load_entry_point_value,
-)
 from erlab.extensions._models import (
     EXTENSION_API_VERSION,
     ExtensionExecutionError,
     ExtensionImportError,
     ExtensionNotFoundError,
     ExtensionSignatureError,
-    LoadedEntryPoint,
     LoadedScript,
     LoaderDescriptor,
     ParameterDescriptor,
@@ -44,9 +37,7 @@ _SourceResolver = Callable[[str, str], os.PathLike[str] | str]
 _ScriptCapabilityReferenceResolver = Callable[
     [str, str, str], tuple[os.PathLike[str] | str, str]
 ]
-_CapabilityResolver = Callable[
-    [str, str, str, str, str | None], Callable[..., typing.Any]
-]
+_CapabilityResolver = Callable[[str, str, str, str], Callable[..., typing.Any]]
 _CapabilityStatus = typing.Literal[
     "ready",
     "disabled",
@@ -57,9 +48,7 @@ _CapabilityStatus = typing.Literal[
     "unsupported-api",
     "import-failed",
 ]
-_CapabilityStatusResolver = Callable[
-    [str, str, str, str, str | None], _CapabilityStatus
-]
+_CapabilityStatusResolver = Callable[[str, str, str, str], _CapabilityStatus]
 _source_resolvers: dict[str, _SourceResolver] = {}
 _script_capability_reference_resolvers: dict[
     str, _ScriptCapabilityReferenceResolver
@@ -627,120 +616,6 @@ def load_script(
     )
 
 
-def load_entry_point(
-    group: str,
-    name: str,
-    *,
-    expected_source_hash: str,
-) -> LoadedEntryPoint:
-    """Import one installed extension package with a required source hash.
-
-    Entry-point and distribution metadata are inspected before package code is
-    imported. Editable packages include a fingerprint of their Python
-    sources.
-
-    Parameters
-    ----------
-    group
-        Entry-point group, such as ``"erlab.extensions"``.
-    name
-        Entry-point name declared by the package.
-    expected_source_hash
-        Required package source hash.
-
-    Returns
-    -------
-    LoadedEntryPoint
-        Imported entry-point object with direct access to its callables.
-
-    Raises
-    ------
-    ExtensionNotFoundError
-        If no matching entry point or source is installed.
-    ExtensionImportError
-        If package metadata is invalid or package code cannot be imported.
-
-    Examples
-    --------
-    The returned object exposes functions from a module entry point directly.
-
-    >>> from erlab.extensions import load_entry_point
-    >>> extension = load_entry_point(  # doctest: +SKIP
-    ...     "erlab.extensions",
-    ...     "my_lab",
-    ...     expected_source_hash="0a12...",
-    ... )
-    >>> result = extension.normalize(data)  # doctest: +SKIP
-    """
-    matching = importlib.metadata.entry_points().select(group=group, name=name)
-    if not matching:
-        raise ExtensionNotFoundError(
-            f"Extension entry point {group}:{name} is not installed"
-        )
-    for entry_point in matching:
-        try:
-            source_hash = _entry_point_source_hash(entry_point)
-        except _EntryPointInspectionError as error:
-            raise ExtensionImportError(
-                f"Could not inspect extension entry point {group}:{name}: {error}"
-            ) from error
-        if source_hash != expected_source_hash:
-            continue
-        try:
-            value = _load_entry_point_value(entry_point, expected_source_hash)
-        except Exception as error:
-            raise ExtensionImportError(
-                f"Could not import extension entry point {group}:{name}: {error}"
-            ) from error
-        loader_methods: dict[str | None, Callable[..., typing.Any]] = {}
-        if group == "erlab.io.loaders":
-            from erlab.io.dataloader import LoaderBase
-
-            if isinstance(value, type) and issubclass(value, LoaderBase):
-                value = value()
-            if not isinstance(value, LoaderBase):
-                raise ExtensionImportError(
-                    f"Extension entry point {group}:{name} does not provide LoaderBase"
-                )
-            callables = {}
-            loader_methods[None] = value.load
-            for method, _defaults in value.file_dialog_methods.values():
-                reference = _loader_method_reference(value, method)
-                previous = loader_methods.get(reference)
-                if previous is not None and previous != method:
-                    raise ExtensionImportError(
-                        f"Extension entry point {group}:{name} declares multiple "
-                        f"loader methods as {reference!r}"
-                    )
-                loader_methods[reference] = method
-        elif isinstance(value, types.ModuleType):
-            routines, loaders = _module_capabilities(value)
-            callables = {
-                descriptor.function_name: func for descriptor, func in routines.values()
-            } | {
-                descriptor.function_name: func for descriptor, func in loaders.values()
-            }
-        elif (
-            callable(value) and getattr(value, _CAPABILITY_ATTRIBUTE, None) is not None
-        ):
-            descriptor = _descriptor_for(value, getattr(value, _CAPABILITY_ATTRIBUTE))
-            callables = {descriptor.function_name: value}
-        else:
-            callables = {}
-        return LoadedEntryPoint(
-            group=group,
-            name=name,
-            source_hash=source_hash,
-            value=value,
-            callables=callables,
-            loader_methods=loader_methods,
-        )
-    raise ExtensionNotFoundError(
-        f"Extension entry point {group}:{name} does not match source hash "
-        f"{expected_source_hash}"
-    )
-
-
 def _set_source_resolver(owner: str, resolver: _SourceResolver) -> None:
     """Register one live catalog resolver without displacing other managers."""
     with _resolver_lock:
@@ -783,7 +658,6 @@ def _resolved_capability(
     source_hash: str,
     kind: typing.Literal["routine", "loader"],
     capability_id: str,
-    method: str | None = None,
 ) -> Callable[..., typing.Any] | None:
     with _resolver_lock:
         resolvers = tuple(_capability_resolvers.values())
@@ -791,7 +665,7 @@ def _resolved_capability(
         return None
     for resolver in reversed(resolvers):
         try:
-            return resolver(extension_id, source_hash, kind, capability_id, method)
+            return resolver(extension_id, source_hash, kind, capability_id)
         except KeyError:
             continue
     return None
@@ -802,14 +676,13 @@ def _capability_status(
     source_hash: str,
     kind: typing.Literal["routine", "loader"],
     capability_id: str,
-    source_type: str | None = None,
 ) -> _CapabilityStatus:
     """Return why a catalog can or cannot run a capability without importing it."""
     with _resolver_lock:
         resolvers = tuple(_capability_status_resolvers.values())
     for resolver in reversed(resolvers):
         try:
-            return resolver(extension_id, source_hash, kind, capability_id, source_type)
+            return resolver(extension_id, source_hash, kind, capability_id)
         except KeyError:
             continue
     return "missing-source"
@@ -848,64 +721,6 @@ def _resolved_script_capability_reference(
     )
 
 
-def _loader_method_reference(loader: object, method: Callable) -> str | None:
-    """Return the persisted reference for one LoaderBase dialog callable."""
-    if getattr(method, "__self__", None) is loader:
-        name = getattr(method, "__name__", None)
-        if not isinstance(name, str) or not callable(getattr(loader, name, None)):
-            raise TypeError("Loader file-dialog methods must have a stable name")
-        return None if name == "load" else name
-    module = getattr(method, "__module__", None)
-    qualname = getattr(method, "__qualname__", None)
-    if (
-        not isinstance(module, str)
-        or not isinstance(qualname, str)
-        or "<locals>" in qualname
-    ):
-        raise TypeError("Loader file-dialog callables must be importable functions")
-    return f"{module}.{qualname}"
-
-
-def _resolve_loader_method(
-    func: Callable[..., typing.Any], method: str | None
-) -> Callable[..., typing.Any]:
-    """Resolve a persisted ``LoaderBase`` method or package callable."""
-    if method is None:
-        return func
-    owner = getattr(func, "__self__", None)
-    candidate = getattr(owner, method, None)
-    if callable(candidate):
-        return candidate
-    parts = method.split(".")
-    module: types.ModuleType | None = None
-    attr_start = 0
-    for index in range(len(parts), 0, -1):
-        module_name = ".".join(parts[:index])
-        try:
-            module = importlib.import_module(module_name)
-        except ModuleNotFoundError as error:
-            if error.name is None or not (
-                error.name == module_name or module_name.startswith(f"{error.name}.")
-            ):
-                raise
-            continue
-        attr_start = index
-        break
-    if module is None:
-        raise ExtensionNotFoundError(f"Loader method {method!r} was not found")
-    resolved: typing.Any = module
-    try:
-        for attr in parts[attr_start:]:
-            resolved = getattr(resolved, attr)
-    except AttributeError as error:
-        raise ExtensionNotFoundError(
-            f"Loader method {method!r} was not found"
-        ) from error
-    if not callable(resolved):
-        raise ExtensionNotFoundError(f"Loader method {method!r} is not callable")
-    return resolved
-
-
 def run_routine(
     data: xr.DataArray,
     *,
@@ -917,9 +732,9 @@ def run_routine(
 ) -> xr.DataArray:
     """Run one decorated routine without manager or Qt knowledge.
 
-    Supply ``script`` for a direct notebook call. Manager-generated calls instead
-    supply ``extension_id`` and ``source_hash`` so the configured catalog resolves the
-    immutable source.
+    Supply ``script`` for a direct notebook call. Manager replay can instead supply
+    ``extension_id`` and ``source_hash`` so the active catalog resolves the recorded
+    source.
 
     Parameters
     ----------
@@ -932,7 +747,8 @@ def run_routine(
     extension_id
         Catalog extension identifier.
     source_hash
-        Exact source SHA-256 hash.
+        Required source SHA-256 hash for catalog-based replay. You can also use it to
+        verify a direct script.
     parameters
         User parameter values.
 
@@ -1006,15 +822,9 @@ def run_loader(
     script: os.PathLike[str] | str | None = None,
     extension_id: str | None = None,
     source_hash: str | None = None,
-    method: str | None = None,
     parameters: Mapping[str, typing.Any] | None = None,
-) -> (
-    xr.DataArray
-    | xr.Dataset
-    | xr.DataTree
-    | list[xr.DataArray | xr.Dataset | xr.DataTree]
-):
-    """Run one decorated loader with a required source hash.
+) -> xr.DataArray | xr.Dataset | xr.DataTree:
+    """Run one decorated loader without manager or Qt knowledge.
 
     Parameters
     ----------
@@ -1027,17 +837,15 @@ def run_loader(
     extension_id
         Catalog extension identifier.
     source_hash
-        Exact source or package hash.
-    method
-        Installed ``LoaderBase`` method name or importable package callable. Omit this
-        value for the normal ``load`` method.
+        Required source SHA-256 hash for catalog-based replay. You can also use it to
+        verify a direct script.
     parameters
         Loader parameter values.
 
     Returns
     -------
-    xarray.DataArray, xarray.Dataset, xarray.DataTree, or list of xarray objects
-        Validated loader output. Installed ``LoaderBase`` methods can return a list.
+    xarray.DataArray, xarray.Dataset, or xarray.DataTree
+        Validated loader output.
 
     Raises
     ------
@@ -1066,16 +874,10 @@ def run_loader(
             raise ExtensionNotFoundError(
                 "script or both extension_id and source_hash are required"
             )
-        func = _resolved_capability(
-            extension_id, source_hash, "loader", loader_id, method
-        )
+        func = _resolved_capability(extension_id, source_hash, "loader", loader_id)
         if func is None:
             source = _resolved_source(extension_id, source_hash)
     if func is None:
-        if method is not None:
-            raise ExtensionNotFoundError(
-                "Decorated extension loaders do not provide alternate methods"
-            )
         loaded = load_script(
             typing.cast("os.PathLike[str] | str", source),
             expected_source_hash=source_hash,
@@ -1084,31 +886,16 @@ def run_loader(
         if entry is None:
             raise ExtensionNotFoundError(f"Loader {loader_id!r} was not found")
         func = entry[1]
-    decorated = getattr(func, _CAPABILITY_ATTRIBUTE, None) is not None
     try:
-        values = (
-            _coerce_call_parameters(func, parameters or {})
-            if decorated
-            else dict(parameters or {})
-        )
+        values = _coerce_call_parameters(func, parameters or {})
         result = func(pathlib.Path(path), **values)
     except Exception as error:
         raise ExtensionExecutionError(
             f"Loader {loader_id!r} failed: {error}"
         ) from error
-    if not isinstance(result, (xr.DataArray, xr.Dataset, xr.DataTree)) and not (
-        not decorated
-        and isinstance(result, list)
-        and all(
-            isinstance(item, (xr.DataArray, xr.Dataset, xr.DataTree)) for item in result
-        )
-    ):
+    if not isinstance(result, (xr.DataArray, xr.Dataset, xr.DataTree)):
         raise ExtensionExecutionError(
             f"Loader {loader_id!r} returned {type(result).__name__}; "
-            "expected an xarray object or supported LoaderBase list"
+            "expected an xarray object"
         )
-    return typing.cast(
-        "xr.DataArray | xr.Dataset | xr.DataTree | "
-        "list[xr.DataArray | xr.Dataset | xr.DataTree]",
-        result,
-    )
+    return result

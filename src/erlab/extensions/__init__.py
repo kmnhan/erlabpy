@@ -4,14 +4,7 @@ Extension authors normally need only :func:`routine` or :func:`loader`. Decorate
 functions remain ordinary Python functions and work directly in notebooks.
 """
 
-from erlab.extensions._api import (
-    load_entry_point,
-    load_script,
-    loader,
-    routine,
-    run_loader,
-    run_routine,
-)
+from erlab.extensions._api import load_script, loader, routine, run_loader, run_routine
 from erlab.extensions._models import (
     EXTENSION_API_VERSION,
     CapabilityDescriptor,
@@ -20,7 +13,6 @@ from erlab.extensions._models import (
     ExtensionImportError,
     ExtensionNotFoundError,
     ExtensionSignatureError,
-    LoadedEntryPoint,
     LoadedScript,
     LoaderDescriptor,
     ParameterDescriptor,
@@ -36,13 +28,11 @@ __all__ = (
     "ExtensionImportError",
     "ExtensionNotFoundError",
     "ExtensionSignatureError",
-    "LoadedEntryPoint",
     "LoadedScript",
     "LoaderDescriptor",
     "ParameterDescriptor",
     "ParameterKind",
     "RoutineDescriptor",
-    "load_entry_point",
     "load_script",
     "loader",
     "routine",

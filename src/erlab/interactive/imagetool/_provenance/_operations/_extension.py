@@ -11,8 +11,6 @@ import pydantic
 
 import erlab
 from erlab.extensions._models import (
-    _PackageExtensionReference,
-    _parse_public_call_reference,
     _require_finite_parameter_values,
     _validate_source_hash,
 )
@@ -37,13 +35,6 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
     routine_id: str
     extension_name: str
     routine_name: str
-    source_type: typing.Literal["script", "environment-package"]
-    function_name: str
-    source_path: str | None
-    entry_point_group: str | None
-    entry_point_name: str | None
-    package: _PackageExtensionReference | None = None
-    public_call_reference: str | None = None
     parameters: dict[str, bool | int | float | str | None]
 
     @pydantic.field_validator("source_hash")
@@ -58,14 +49,6 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
     ) -> dict[str, bool | int | float | str | None]:
         _require_finite_parameter_values(value)
         return value
-
-    @pydantic.model_validator(mode="after")
-    def _validate_package_reference(self) -> typing.Self:
-        if self.source_type == "script" and self.package is not None:
-            raise ValueError(
-                "script extension provenance cannot contain package identity"
-            )
-        return self
 
     def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.extensions.run_routine(
@@ -130,47 +113,31 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
             for name, value in self.parameters.items()
         )
         unavailable = {input_name, output_name, *reserved_names}
-        if self.source_type == "script":
-            from erlab.extensions._api import _resolved_script_capability_reference
+        from erlab.extensions._api import _resolved_script_capability_reference
 
-            try:
-                resolved_path, function_name = _resolved_script_capability_reference(
-                    self.extension_id,
-                    "routine",
-                    self.routine_id,
-                )
-            except erlab.extensions.ExtensionNotFoundError as error:
-                raise NotImplementedError from error
-            source_path = pathlib.Path(resolved_path)
-            module_base = re.sub(r"\W", "_", source_path.stem)
-            if not module_base.isidentifier() or keyword.iskeyword(module_base):
-                module_base = "extension_script"
-            module_name = module_base
-            suffix = 2
-            while module_name in unavailable:
-                module_name = f"{module_base}_{suffix}"
-                suffix += 1
-            call_target = f"{module_name}.{function_name}"
-            prelude = (
-                "from erlab.extensions import load_script",
-                "",
-                f"{module_name} = load_script({str(source_path)!r})",
+        try:
+            resolved_path, function_name = _resolved_script_capability_reference(
+                self.extension_id,
+                "routine",
+                self.routine_id,
             )
-        else:
-            parsed_reference = _parse_public_call_reference(self.public_call_reference)
-            if parsed_reference is None:
-                raise NotImplementedError
-            module_name, function_name = parsed_reference
-            imported_name = function_name
-            suffix = 2
-            while imported_name in unavailable:
-                imported_name = f"{function_name}_{suffix}"
-                suffix += 1
-            import_line = f"from {module_name} import {function_name}"
-            if imported_name != function_name:
-                import_line += f" as {imported_name}"
-            call_target = imported_name
-            prelude = (import_line,)
+        except erlab.extensions.ExtensionNotFoundError as error:
+            raise NotImplementedError from error
+        source_path = pathlib.Path(resolved_path)
+        module_base = re.sub(r"\W", "_", source_path.stem)
+        if not module_base.isidentifier() or keyword.iskeyword(module_base):
+            module_base = "extension_script"
+        module_name = module_base
+        suffix = 2
+        while module_name in unavailable:
+            module_name = f"{module_base}_{suffix}"
+            suffix += 1
+        call_target = f"{module_name}.{function_name}"
+        prelude = (
+            "from erlab.extensions import load_script",
+            "",
+            f"{module_name} = load_script({str(source_path)!r})",
+        )
         return "\n".join(
             (
                 *prelude,

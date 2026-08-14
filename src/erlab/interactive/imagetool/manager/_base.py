@@ -337,14 +337,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             if isinstance(paths, (str, os.PathLike))
             else tuple(paths)
         )
-        managed_names = self._extensions.environment_loader_names
-        builtins = {
-            name_filter: entry
-            for name_filter, entry in erlab.interactive.utils.file_loaders(
-                path_values
-            ).items()
-            if _builtin_loader_name_for_callable(entry[0]) not in managed_names
-        }
+        builtins = erlab.interactive.utils.file_loaders(path_values)
         extensions = self._extensions.file_loaders(path_values)
         conflicts = sorted(builtins.keys() & extensions.keys())
         if conflicts:
@@ -524,7 +517,6 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             root_path=self._recent_or_default_directory(),
             loader_name=loader_name,
             external_loaders=self._extensions.explorer_loaders,
-            excluded_loaders=self._extensions.environment_loader_names,
         )
         loader_kwargs, loader_extensions = (
             self._workspace_controller.loading._explorer_loader_state()

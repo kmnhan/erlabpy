@@ -128,7 +128,7 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab.extensions._models import _PackageExtensionReference, _validate_source_hash
+from erlab.extensions._models import _validate_source_hash
 from erlab.interactive.imagetool._provenance._code import (
     _DATAARRAY_MARKER,
     _DATASET_MARKER,
@@ -1990,11 +1990,6 @@ class FileReplayCall(pydantic.BaseModel):
     target: str
     source_hash: str | None = None
     capability_id: str | None = None
-    extension_source_type: typing.Literal["script", "environment-package"] | None = None
-    package: _PackageExtensionReference | None = None
-    function_name: str | None = None
-    public_call_reference: str | None = None
-    loader_method: str | None = None
     kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     selection: FileDataSelection
     cast_float64: bool = False
@@ -2024,35 +2019,10 @@ class FileReplayCall(pydantic.BaseModel):
         if not self.target:
             raise ValueError("target must not be empty")
         if self.kind == "extension_loader" and (
-            not self.source_hash
-            or not self.capability_id
-            or self.extension_source_type is None
+            not self.source_hash or not self.capability_id
         ):
             raise ValueError(
-                "extension loader replay requires source_hash, capability_id, and "
-                "extension_source_type"
-            )
-        if self.kind != "extension_loader" and self.extension_source_type is not None:
-            raise ValueError(
-                "extension_source_type is only valid for extension loader replay"
-            )
-        if self.kind != "extension_loader" and self.package is not None:
-            raise ValueError(
-                "package identity is only valid for extension loader replay"
-            )
-        if (
-            self.kind == "extension_loader"
-            and self.extension_source_type == "script"
-            and self.package is not None
-        ):
-            raise ValueError(
-                "script extension loader replay cannot contain package identity"
-            )
-        if self.kind != "extension_loader" and (
-            self.function_name is not None or self.public_call_reference is not None
-        ):
-            raise ValueError(
-                "extension call references are only valid for extension loader replay"
+                "extension loader replay requires source_hash and capability_id"
             )
         if self.kind == "extension_loader":
             _validate_source_hash(typing.cast("str", self.source_hash))

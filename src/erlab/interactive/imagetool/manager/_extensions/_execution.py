@@ -7,8 +7,6 @@ import contextlib
 import copy
 import dataclasses
 import hashlib
-import importlib.metadata
-import inspect
 import logging
 import pathlib
 import re
@@ -16,7 +14,6 @@ import sys
 import threading
 import time
 import traceback
-import types
 import typing
 import uuid
 from collections import deque
@@ -33,24 +30,8 @@ from erlab.extensions import (
     RoutineDescriptor,
     load_script,
 )
-from erlab.extensions._api import (
-    _CAPABILITY_ATTRIBUTE,
-    _CapabilityStatus,
-    _coerce_call_parameters,
-    _descriptor_for,
-    _loader_method_reference,
-    _module_capabilities,
-    _resolve_loader_method,
-)
-from erlab.extensions._entry_points import (
-    _entry_point_source_hash,
-    _load_entry_point_value,
-)
-from erlab.extensions._models import (
-    _PackageExtensionReference,
-    _parse_public_call_reference,
-    _require_finite_parameter_values,
-)
+from erlab.extensions._api import _CapabilityStatus, _coerce_call_parameters
+from erlab.extensions._models import _require_finite_parameter_values
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     compose_display_provenance,
@@ -64,7 +45,6 @@ from erlab.interactive.imagetool.manager._extensions._catalog import (
     _ExtensionCatalogStore,
 )
 from erlab.interactive.imagetool.manager._extensions._models import (
-    _EnvironmentLoaderMethod,
     _ExtensionCatalogModel,
     _ExtensionSource,
     _source_loader_name_filters,
@@ -146,13 +126,7 @@ class _ExtensionRoutineJob:
     extension_name: str
     source_hash: str
     routine: RoutineDescriptor
-    source_path: pathlib.Path | None
-    source_type: typing.Literal["script", "environment-package"]
-    entry_point_group: str | None
-    entry_point_name: str | None
-    entry_point_value: str | None
-    package: _PackageExtensionReference | None
-    public_call_reference: str | None
+    source_path: pathlib.Path
     parameters: dict[str, typing.Any]
     input_uid: str
     input_snapshot: str
@@ -189,32 +163,15 @@ class _ExtensionLoaderCall:
     source_hash: str
     loader_id: str
     descriptor: LoaderDescriptor
-    source_path: pathlib.Path | None
-    source_type: typing.Literal["script", "environment-package"]
+    source_path: pathlib.Path
     executor: Callable[
         [_ExtensionLoaderCall, pathlib.Path, dict[str, typing.Any]],
-        xr.DataArray
-        | xr.Dataset
-        | xr.DataTree
-        | list[xr.DataArray | xr.Dataset | xr.DataTree],
+        xr.DataArray | xr.Dataset | xr.DataTree,
     ] = dataclasses.field(repr=False, compare=False)
-    entry_point_group: str | None = None
-    entry_point_name: str | None = None
-    entry_point_value: str | None = None
-    package: _PackageExtensionReference | None = None
-    public_call_reference: str | None = None
-    loader_method: str | None = None
-    loader_always_single: bool = True
 
     @property
     def manager_loader_name(self) -> str:
-        if self.entry_point_group == "erlab.io.loaders":
-            return self.loader_id
         return f"{self.extension_id}:{self.loader_id}"
-
-    @property
-    def uses_standard_loader_options(self) -> bool:
-        return self.entry_point_group == "erlab.io.loaders"
 
     def __call__(self, path: pathlib.Path, **parameters: typing.Any) -> typing.Any:
         _require_finite_parameter_values(parameters)
@@ -222,19 +179,14 @@ class _ExtensionLoaderCall:
 
     @property
     def __name__(self) -> str:
-        return self.loader_method or "load"
+        return "load"
 
     def _invoke(
         self,
         path: pathlib.Path,
         parameters: Mapping[str, typing.Any],
         script_modules: dict[tuple[str, str], LoadedScript],
-    ) -> (
-        xr.DataArray
-        | xr.Dataset
-        | xr.DataTree
-        | list[xr.DataArray | xr.Dataset | xr.DataTree]
-    ):
+    ) -> xr.DataArray | xr.Dataset | xr.DataTree:
         """Import and invoke this pinned loader from the extension worker."""
         started = time.perf_counter()
         fields = {
@@ -243,38 +195,28 @@ class _ExtensionLoaderCall:
             "extension_id": self.extension_id,
             "extension_source_hash": self.source_hash,
             "capability_id": self.loader_id,
-            "extension_source": str(self.source_path or self.entry_point_value),
+            "extension_source": str(self.source_path),
             "parameters": parameters,
             "file_path": str(path),
         }
         try:
             logger.info("Importing extension loader source", extra=fields)
-            if self.source_type == "script":
-                loaded = _cached_script(
-                    script_modules,
-                    extension_id=self.extension_id,
-                    source_hash=self.source_hash,
-                    source_path=_require_loader_source(self),
-                    module_name=_manager_module_name(
-                        self.manager_session_id,
-                        self.extension_id,
-                        self.source_hash,
-                    ),
-                )
-                entry = loaded.loaders.get(self.loader_id)
-            else:
-                entry = _environment_loader(self)
+            loaded = _cached_script(
+                script_modules,
+                extension_id=self.extension_id,
+                source_hash=self.source_hash,
+                source_path=self.source_path,
+                module_name=_manager_module_name(
+                    self.manager_session_id,
+                    self.extension_id,
+                    self.source_hash,
+                ),
+            )
+            entry = loaded.loaders.get(self.loader_id)
             entry = _require_loader_entry(self, entry)
-            values = (
-                _coerce_call_parameters(entry[1], parameters)
-                if getattr(entry[1], _CAPABILITY_ATTRIBUTE, None) is not None
-                else dict(parameters)
-            )
+            values = _coerce_call_parameters(entry[1], parameters)
             logger.info("Invoking extension loader", extra=fields)
-            result = _require_loader_output(
-                entry[1](path, **values),
-                allow_multiple=self.uses_standard_loader_options,
-            )
+            result = _require_loader_output(entry[1](path, **values))
         except BaseException:
             logger.exception(
                 "Extension loader failed",
@@ -323,13 +265,7 @@ class _ExtensionLoaderWorker(QtCore.QRunnable):
         self.script_modules = script_modules
         self.signals = _ExtensionLoaderSignals()
         self.done = threading.Event()
-        self.output: (
-            xr.DataArray
-            | xr.Dataset
-            | xr.DataTree
-            | list[xr.DataArray | xr.Dataset | xr.DataTree]
-            | None
-        ) = None
+        self.output: xr.DataArray | xr.Dataset | xr.DataTree | None = None
         self.error: Exception | None = None
         self._state_lock = threading.Lock()
         self._started = False
@@ -362,7 +298,6 @@ class _ExtensionLoaderWorker(QtCore.QRunnable):
                     self.call.source_hash,
                     "loader",
                     self.call.loader_id,
-                    self.call.source_type,
                 )
             except KeyError:
                 status = "missing-source"
@@ -454,7 +389,7 @@ class _ExtensionValidationWorker(QtCore.QRunnable):
             "extension_source": None,
         }
         try:
-            catalog = self.catalog_store.view()
+            catalog = self.catalog_store.read()
             record = catalog.extensions.get(self.extension_id)
             fields.update(
                 {
@@ -463,14 +398,10 @@ class _ExtensionValidationWorker(QtCore.QRunnable):
                     "extension_source": (
                         None
                         if record is None
-                        else (
-                            str(
-                                self.catalog_store.executable_source_path(
-                                    self.extension_id, self.source_hash
-                                )
+                        else str(
+                            self.catalog_store.executable_source_path(
+                                self.extension_id, self.source_hash
                             )
-                            if record.source_type == "script"
-                            else record.source.entry_point_value
                         )
                     ),
                 }
@@ -524,7 +455,6 @@ class _DecoratedLoaderAdapter(LoaderBase):
         self.name = call.manager_loader_name
         self.description = call.descriptor.summary
         self.extensions = set(call.descriptor.extensions) or None  # type: ignore[misc]
-        self.always_single = call.loader_always_single
 
     @property
     def extension_id(self) -> str:
@@ -539,32 +469,8 @@ class _DecoratedLoaderAdapter(LoaderBase):
         return self._extension_call.loader_id
 
     @property
-    def loader_method(self) -> str | None:
-        return self._extension_call.loader_method
-
-    @property
-    def source_path(self) -> pathlib.Path | None:
+    def source_path(self) -> pathlib.Path:
         return self._extension_call.source_path
-
-    @property
-    def source_type(self) -> typing.Literal["script", "environment-package"]:
-        return self._extension_call.source_type
-
-    @property
-    def entry_point_group(self) -> str | None:
-        return self._extension_call.entry_point_group
-
-    @property
-    def entry_point_name(self) -> str | None:
-        return self._extension_call.entry_point_name
-
-    @property
-    def public_call_reference(self) -> str | None:
-        return self._extension_call.public_call_reference
-
-    @property
-    def package(self) -> _PackageExtensionReference | None:
-        return self._extension_call.package
 
     @property
     def file_dialog_methods(
@@ -576,18 +482,6 @@ class _DecoratedLoaderAdapter(LoaderBase):
     @property
     def descriptor(self) -> LoaderDescriptor:
         return self._extension_call.descriptor
-
-    @property
-    def uses_standard_loader_options(self) -> bool:
-        return self._extension_call.uses_standard_loader_options
-
-    def load(self, identifier: typing.Any, *args: typing.Any, **kwargs: typing.Any):
-        """Preserve installed ``LoaderBase.load`` behavior through the worker."""
-        if self.uses_standard_loader_options:
-            if args:
-                raise TypeError("Loader arguments after the path must use keywords")
-            return self._extension_call(pathlib.Path(identifier), **kwargs)
-        return super().load(identifier, *args, **kwargs)
 
     def load_single(  # type: ignore[override]
         self,
@@ -702,12 +596,6 @@ def _detached_routine_output(
     return result
 
 
-def _require_loader_source(call: _ExtensionLoaderCall) -> pathlib.Path:
-    if call.source_path is None:
-        raise ExtensionExecutionError("Script source is missing")
-    return call.source_path
-
-
 def _require_loader_entry(
     call: _ExtensionLoaderCall,
     entry: tuple[LoaderDescriptor, Callable[..., typing.Any]] | None,
@@ -720,30 +608,12 @@ def _require_loader_entry(
 
 
 def _require_loader_output(
-    value: typing.Any, *, allow_multiple: bool
-) -> (
-    xr.DataArray
-    | xr.Dataset
-    | xr.DataTree
-    | list[xr.DataArray | xr.Dataset | xr.DataTree]
-):
+    value: typing.Any,
+) -> xr.DataArray | xr.Dataset | xr.DataTree:
     if isinstance(value, (xr.DataArray, xr.Dataset, xr.DataTree)):
         return value
-    if (
-        allow_multiple
-        and isinstance(value, list)
-        and all(
-            isinstance(item, (xr.DataArray, xr.Dataset, xr.DataTree)) for item in value
-        )
-    ):
-        return value
-    expected = (
-        "an xarray object or a list of xarray objects"
-        if allow_multiple
-        else ("an xarray object")
-    )
     raise ExtensionExecutionError(
-        f"Loader returned {type(value).__name__}; expected {expected}"
+        f"Loader returned {type(value).__name__}; expected an xarray object"
     )
 
 
@@ -783,16 +653,8 @@ def _xarray_log_fields(
 
 
 def _loader_output_log_fields(
-    data: xr.DataArray
-    | xr.Dataset
-    | xr.DataTree
-    | list[xr.DataArray | xr.Dataset | xr.DataTree],
+    data: xr.DataArray | xr.Dataset | xr.DataTree,
 ) -> dict[str, typing.Any]:
-    if isinstance(data, list):
-        return {
-            "type": "list",
-            "items": tuple(_xarray_log_fields(item) for item in data),
-        }
     return _xarray_log_fields(data)
 
 
@@ -815,191 +677,6 @@ def _require_dataarray(value: typing.Any) -> xr.DataArray:
     return value
 
 
-def _require_script_source(job: _ExtensionRoutineJob) -> pathlib.Path:
-    if job.source_path is None:
-        raise ExtensionExecutionError("Script source is missing")
-    return job.source_path
-
-
-def _environment_routine(
-    job: _ExtensionRoutineJob,
-) -> tuple[RoutineDescriptor, Callable[..., typing.Any]]:
-    for entry_point in importlib.metadata.entry_points().select(
-        group=job.entry_point_group or ""
-    ):
-        if (
-            entry_point.name != job.entry_point_name
-            or entry_point.value != job.entry_point_value
-        ):
-            continue
-        if not _environment_source_matches(entry_point, job.source_hash):
-            continue
-        value = _load_entry_point_value(entry_point, job.source_hash)
-        if isinstance(value, types.ModuleType):
-            routines, _loaders = _module_capabilities(value)
-            entry = routines.get(job.routine.id)
-        elif (
-            callable(value) and getattr(value, _CAPABILITY_ATTRIBUTE, None) is not None
-        ):
-            descriptor = _descriptor_for(value, getattr(value, _CAPABILITY_ATTRIBUTE))
-            entry = (
-                (descriptor, value)
-                if isinstance(descriptor, RoutineDescriptor)
-                and descriptor.id == job.routine.id
-                else None
-            )
-        else:
-            entry = None
-        if entry is None:
-            break
-        return entry
-    raise ExtensionExecutionError(
-        f"Environment routine {job.routine.id!r} is no longer available"
-    )
-
-
-def _environment_loader(
-    call: _ExtensionLoaderCall,
-) -> tuple[erlab.extensions.LoaderDescriptor, Callable[..., typing.Any]] | None:
-    for entry_point in importlib.metadata.entry_points().select(
-        group=call.entry_point_group or ""
-    ):
-        if (
-            entry_point.name != call.entry_point_name
-            or entry_point.value != call.entry_point_value
-        ):
-            continue
-        if not _environment_source_matches(entry_point, call.source_hash):
-            continue
-        value = _load_entry_point_value(entry_point, call.source_hash)
-        if entry_point.group == "erlab.io.loaders":
-            if isinstance(value, type) and issubclass(value, LoaderBase):
-                loader_instance = value()
-            elif isinstance(value, LoaderBase):
-                loader_instance = value
-            else:
-                return None
-            if loader_instance.name != call.loader_id:
-                return None
-            return call.descriptor, _resolve_loader_method(
-                loader_instance.load, call.loader_method
-            )
-        if isinstance(value, types.ModuleType):
-            _routines, loaders = _module_capabilities(value)
-            return loaders.get(call.loader_id)
-        if callable(value) and getattr(value, _CAPABILITY_ATTRIBUTE, None) is not None:
-            descriptor = _descriptor_for(value, getattr(value, _CAPABILITY_ATTRIBUTE))
-            if (
-                isinstance(descriptor, erlab.extensions.LoaderDescriptor)
-                and descriptor.id == call.loader_id
-            ):
-                return descriptor, value
-        break
-    return None
-
-
-def _environment_source_matches(
-    entry_point: importlib.metadata.EntryPoint, expected_source_hash: str
-) -> bool:
-    return _entry_point_source_hash(entry_point) == expected_source_hash
-
-
-def _environment_capabilities(
-    catalog_store: _ExtensionCatalogStore,
-    source: _ExtensionSource,
-) -> tuple[
-    tuple[RoutineDescriptor, ...],
-    tuple[LoaderDescriptor, ...],
-    bool | None,
-    tuple[_EnvironmentLoaderMethod, ...],
-    dict[str, str],
-    dict[str, str],
-]:
-    """Import and validate capabilities from one exact installed entry point."""
-    entry_point = catalog_store._entry_point_for_source(source)
-    value = _load_entry_point_value(entry_point, source.source_hash)
-    if entry_point.group == "erlab.io.loaders":
-        loader_type = value if isinstance(value, type) else type(value)
-        if not issubclass(loader_type, LoaderBase):
-            raise TypeError("erlab.io.loaders entry points must provide LoaderBase")
-        loader_instance = value() if isinstance(value, type) else value
-        descriptor = LoaderDescriptor(
-            id=loader_instance.name,
-            name=loader_instance.name.replace("_", " ").title(),
-            category="Environment",
-            summary=(inspect.getdoc(loader_type) or "").split("\n", maxsplit=1)[0],
-            function_name="load",
-            extensions=tuple(sorted(loader_instance.extensions or ())),
-        )
-        dialog_methods = tuple(
-            _EnvironmentLoaderMethod(
-                name_filter=name_filter,
-                method=_loader_method_reference(loader_instance, method),
-                defaults=defaults,
-            )
-            for name_filter, (method, defaults) in (
-                loader_instance.file_dialog_methods.items()
-            )
-        )
-        return (), (descriptor,), loader_instance.always_single, dialog_methods, {}, {}
-    if isinstance(value, types.ModuleType):
-        routines, loaders = _module_capabilities(value)
-    elif callable(value) and isinstance(
-        getattr(value, _CAPABILITY_ATTRIBUTE, None), collections.abc.Mapping
-    ):
-        descriptor = _descriptor_for(value, getattr(value, _CAPABILITY_ATTRIBUTE))
-        routines = (
-            {descriptor.id: (descriptor, value)}
-            if isinstance(descriptor, RoutineDescriptor)
-            else {}
-        )
-        loaders = (
-            {descriptor.id: (descriptor, value)}
-            if isinstance(descriptor, LoaderDescriptor)
-            else {}
-        )
-    else:
-        raise TypeError(
-            "erlab.extensions entry points must provide a decorated function or module"
-        )
-    if not routines and not loaders:
-        raise TypeError("The environment entry point has no capabilities")
-    routine_call_references = _public_call_references(routines)
-    loader_call_references = _public_call_references(loaders)
-    return (
-        tuple(item[0] for item in routines.values()),
-        tuple(item[0] for item in loaders.values()),
-        None,
-        (),
-        routine_call_references,
-        loader_call_references,
-    )
-
-
-def _public_call_references(
-    entries: Mapping[str, tuple[object, Callable[..., typing.Any]]],
-) -> dict[str, str]:
-    """Return direct imports for capabilities exported from their own modules."""
-    references: dict[str, str] = {}
-    for capability_id, (_descriptor, func) in entries.items():
-        module_name = getattr(func, "__module__", None)
-        function_name = getattr(func, "__name__", None)
-        module = sys.modules.get(module_name) if isinstance(module_name, str) else None
-        reference = (
-            f"{module_name}:{function_name}"
-            if isinstance(module_name, str) and isinstance(function_name, str)
-            else None
-        )
-        parsed_reference = _parse_public_call_reference(reference)
-        if (
-            parsed_reference is not None
-            and module is not None
-            and getattr(module, parsed_reference[1], None) is func
-        ):
-            references[capability_id] = typing.cast("str", reference)
-    return references
-
-
 def _reject_builtin_loader_filter_conflicts(
     catalog: _ExtensionCatalogModel,
     extension_id: str,
@@ -1009,32 +686,7 @@ def _reject_builtin_loader_filter_conflicts(
     candidate_filters = set(_source_loader_name_filters(source))
     if not candidate_filters:
         return
-    managed_names = {
-        descriptor.id
-        for record in catalog.extensions.values()
-        if record.source_type == "environment-package"
-        if record.source.entry_point_group == "erlab.io.loaders"
-        for descriptor in record.source.loaders
-    }
-    managed_names.update(
-        record.source.entry_point_name
-        for record in catalog.extensions.values()
-        if record.source_type == "environment-package"
-        if record.source.entry_point_group == "erlab.io.loaders"
-        and record.source.entry_point_name is not None
-    )
-    if source.entry_point_group == "erlab.io.loaders":
-        managed_names.update(descriptor.id for descriptor in source.loaders)
-    builtin_filters = {
-        name_filter
-        for name_filter, (func, _defaults) in (
-            erlab.interactive.utils.file_loaders().items()
-        )
-        if not (
-            isinstance((owner := getattr(func, "__self__", None)), LoaderBase)
-            and owner.name in managed_names
-        )
-    }
+    builtin_filters = set(erlab.interactive.utils.file_loaders())
     conflicts = sorted(candidate_filters.intersection(builtin_filters))
     if conflicts:
         joined = ", ".join(repr(value) for value in conflicts)
@@ -1056,7 +708,7 @@ def _validate_extension_source(
     enable_extension: bool = True,
 ) -> _ExtensionCatalogModel:
     """Import the current source, then record its validated descriptors."""
-    catalog = catalog_store.view()
+    catalog = catalog_store.read()
     record = catalog.extensions.get(extension_id)
     if record is None:
         raise KeyError(extension_id)
@@ -1068,41 +720,21 @@ def _validate_extension_source(
             f"Extension {extension_id!r} changed before validation"
         )
     try:
-        loader_always_single: bool | None = None
-        loader_dialog_methods: tuple[_EnvironmentLoaderMethod, ...] = ()
-        routine_call_references: dict[str, str] = {}
-        loader_call_references: dict[str, str] = {}
-        if record.source_type == "script":
-            loaded = _cached_script(
-                script_modules,
-                extension_id=extension_id,
-                source_hash=source_hash,
-                source_path=catalog_store.executable_source_path(
-                    extension_id, source_hash
-                ),
-                module_name=_manager_module_name(
-                    manager_session_id, extension_id, source_hash
-                ),
-            )
-            routines = tuple(item[0] for item in loaded.routines.values())
-            loaders = tuple(item[0] for item in loaded.loaders.values())
-        else:
-            (
-                routines,
-                loaders,
-                loader_always_single,
-                loader_dialog_methods,
-                routine_call_references,
-                loader_call_references,
-            ) = _environment_capabilities(catalog_store, record.source)
+        loaded = _cached_script(
+            script_modules,
+            extension_id=extension_id,
+            source_hash=source_hash,
+            source_path=catalog_store.executable_source_path(extension_id, source_hash),
+            module_name=_manager_module_name(
+                manager_session_id, extension_id, source_hash
+            ),
+        )
+        routines = tuple(item[0] for item in loaded.routines.values())
+        loaders = tuple(item[0] for item in loaded.loaders.values())
         validated_source = record.source.model_copy(
             update={
                 "routines": routines,
                 "loaders": loaders,
-                "loader_always_single": loader_always_single,
-                "loader_dialog_methods": loader_dialog_methods,
-                "routine_call_references": routine_call_references,
-                "loader_call_references": loader_call_references,
             }
         )
         if check_loader_filter_conflicts:
@@ -1115,10 +747,6 @@ def _validate_extension_source(
             expected_record_generation=expected_record_generation,
             routines=routines,
             loaders=loaders,
-            routine_call_references=routine_call_references,
-            loader_call_references=loader_call_references,
-            loader_always_single=loader_always_single,
-            loader_dialog_methods=loader_dialog_methods,
             enable_extension=enable_extension,
         )
     except BaseException:
@@ -1179,11 +807,7 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
             "extension_id": self.job.extension_id,
             "extension_source_hash": self.job.source_hash,
             "capability_id": self.job.routine.id,
-            "extension_source": (
-                str(self.job.source_path)
-                if self.job.source_path is not None
-                else self.job.entry_point_value
-            ),
+            "extension_source": str(self.job.source_path),
             "parameters": self.job.parameters,
             "input_uid": self.job.input_uid,
             "input_snapshot": self.job.input_snapshot,
@@ -1196,7 +820,6 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
                     self.job.source_hash,
                     "routine",
                     self.job.routine.id,
-                    self.job.source_type,
                 )
             except KeyError:
                 capability_status = "missing-source"
@@ -1213,23 +836,19 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
             self._started.set()
             self.signals.started.emit()
             logger.info("Importing extension source", extra=fields)
-            if self.job.source_type == "script":
-                source_path = _require_script_source(self.job)
-                module_name = _manager_module_name(
-                    self.manager_session_id,
-                    self.job.extension_id,
-                    self.job.source_hash,
-                )
-                loaded = _cached_script(
-                    self.script_modules,
-                    extension_id=self.job.extension_id,
-                    source_hash=self.job.source_hash,
-                    source_path=source_path,
-                    module_name=module_name,
-                )
-                entry = _require_routine(loaded, self.job.routine.id)
-            else:
-                entry = _environment_routine(self.job)
+            module_name = _manager_module_name(
+                self.manager_session_id,
+                self.job.extension_id,
+                self.job.source_hash,
+            )
+            loaded = _cached_script(
+                self.script_modules,
+                extension_id=self.job.extension_id,
+                source_hash=self.job.source_hash,
+                source_path=self.job.source_path,
+                module_name=module_name,
+            )
+            entry = _require_routine(loaded, self.job.routine.id)
             parameters = _coerce_call_parameters(entry[1], self.job.parameters)
             logger.info("Invoking extension routine", extra=fields)
             result = _require_dataarray(
@@ -1343,12 +962,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         call: _ExtensionLoaderCall,
         path: pathlib.Path,
         parameters: dict[str, typing.Any],
-    ) -> (
-        xr.DataArray
-        | xr.Dataset
-        | xr.DataTree
-        | list[xr.DataArray | xr.Dataset | xr.DataTree]
-    ):
+    ) -> xr.DataArray | xr.Dataset | xr.DataTree:
         """Run a loader synchronously on this manager's extension thread pool."""
         task = _ExtensionLoaderWorker(
             call,
@@ -1369,7 +983,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         expected_record_generation: int,
     ) -> _ExtensionCatalogModel:
         """Validate the current catalog source on the extension thread."""
-        record = self._catalog.store.view().extensions.get(extension_id)
+        record = self._catalog.store.read().extensions.get(extension_id)
         if record is None:
             raise KeyError(extension_id)
         return self.validate_source(
@@ -1389,7 +1003,7 @@ class _ExtensionExecutionController(QtCore.QObject):
     ) -> _ExtensionCatalogModel:
         """Validate one registered source on the manager extension thread."""
         catalog_store = self._catalog.store
-        catalog = catalog_store.view()
+        catalog = catalog_store.read()
         record = catalog.extensions.get(extension_id)
         if record is None:
             raise KeyError(extension_id)
@@ -1475,7 +1089,6 @@ class _ExtensionExecutionController(QtCore.QObject):
             extension_id=extension_id,
             source_hash=None,
             routine_id=routine_id,
-            source_type=None,
             parameters=parameters,
             input_data=data,
             input_uid=node.uid,
@@ -1504,7 +1117,6 @@ class _ExtensionExecutionController(QtCore.QObject):
             extension_id=operation.extension_id,
             source_hash=operation.source_hash,
             routine_id=operation.routine_id,
-            source_type=operation.source_type,
             parameters=operation.parameters,
             input_data=data,
             input_uid="provenance-replay",
@@ -1534,7 +1146,6 @@ class _ExtensionExecutionController(QtCore.QObject):
         extension_id: str,
         source_hash: str | None,
         routine_id: str,
-        source_type: typing.Literal["script", "environment-package"] | None = None,
         parameters: Mapping[str, typing.Any],
         input_data: xr.DataArray,
         input_uid: str,
@@ -1543,7 +1154,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         """Pin catalog state and input identity before queue admission."""
         _require_finite_parameter_values(parameters)
         catalog_store = self._catalog.store
-        catalog = catalog_store.view()
+        catalog = catalog_store.read()
         record = catalog.extensions.get(extension_id)
         pinned_source_hash = (
             None
@@ -1565,12 +1176,9 @@ class _ExtensionExecutionController(QtCore.QObject):
                     source_hash,
                     "routine",
                     routine_id,
-                    source_type,
                 )
         if record is None or not record.enabled:
             raise ExtensionExecutionError("The extension is not enabled")
-        if source_type is not None and record.source_type != source_type:
-            raise ExtensionExecutionError("The extension has a different source type")
         if source_hash is not None and global_status != "ready":
             raise ExtensionExecutionError(
                 f"The extension source is unavailable: {global_status}"
@@ -1588,17 +1196,9 @@ class _ExtensionExecutionController(QtCore.QObject):
             extension_name=record.name,
             source_hash=pinned_source_hash,
             routine=routine,
-            source_path=(
-                catalog_store.executable_source_path(extension_id, pinned_source_hash)
-                if record.source_type == "script"
-                else None
+            source_path=catalog_store.executable_source_path(
+                extension_id, pinned_source_hash
             ),
-            source_type=record.source_type,
-            entry_point_group=source.entry_point_group,
-            entry_point_name=source.entry_point_name,
-            entry_point_value=source.entry_point_value,
-            package=source.package_reference,
-            public_call_reference=source.routine_call_references.get(routine.id),
             parameters=dict(parameters),
             input_uid=input_uid,
             input_snapshot=input_snapshot,
@@ -1705,15 +1305,6 @@ class _ExtensionExecutionController(QtCore.QObject):
             routine_id=result.job.routine.id,
             extension_name=result.job.extension_name,
             routine_name=result.job.routine.name,
-            source_type=result.job.source_type,
-            function_name=result.job.routine.function_name,
-            source_path=(
-                None if result.job.source_path is None else str(result.job.source_path)
-            ),
-            entry_point_group=result.job.entry_point_group,
-            entry_point_name=result.job.entry_point_name,
-            package=result.job.package,
-            public_call_reference=result.job.public_call_reference,
             parameters=result.job.parameters,
         )
         provenance = compose_display_provenance(
