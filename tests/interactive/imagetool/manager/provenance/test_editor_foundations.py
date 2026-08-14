@@ -35,6 +35,7 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     _ProvenanceDisplayRow,
     _ProvenanceStepRef,
+    file_load,
     full_data,
     script,
 )
@@ -244,6 +245,76 @@ def test_file_load_edit_dialog_edits_extension_loader_parameters(
     assert replay_call.source_hash == source_hash
     assert replay_call.capability_id == "load_lab_data"
     assert _deserialize_loader_kwargs(replay_call.kwargs) == {"scale": 3.0}
+
+
+def test_file_load_edit_dialog_does_not_substitute_for_missing_extension_loader(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    data_path = tmp_path / "scan.txt"
+    data_path.write_text("1\n")
+    load_source = FileLoadSource(
+        path=str(data_path),
+        loader_label="Extension Loader",
+        loader_text="lab_loader: load_lab_data",
+        kwargs_text="scale=2.0",
+        replay_call=FileReplayCall(
+            kind="extension_loader",
+            target="lab_loader",
+            source_hash="a" * 64,
+            capability_id="load_lab_data",
+            kwargs={"scale": 2.0},
+            selection=FileDataSelection(kind="dataarray"),
+        ),
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+
+    with pytest.raises(RuntimeError, match="recorded file loader"):
+        provenance_edit_files._FileLoadEditDialog(
+            load_source,
+            parent,
+            file_loaders=lambda _path=None: {
+                "Unrelated loader (*.txt)": (xr.load_dataarray, {})
+            },
+        )
+
+
+def test_missing_extension_loader_provenance_is_not_editable(
+    tmp_path: pathlib.Path,
+) -> None:
+    data_path = tmp_path / "scan.txt"
+    data_path.write_text("1\n")
+    spec = file_load(
+        start_label="Load data",
+        seed_code=None,
+        file_load_source=FileLoadSource(
+            path=str(data_path),
+            loader_label="Extension Loader",
+            loader_text="lab_loader: load_lab_data",
+            kwargs_text="",
+            replay_call=FileReplayCall(
+                kind="extension_loader",
+                target="lab_loader",
+                source_hash="a" * 64,
+                capability_id="load_lab_data",
+                selection=FileDataSelection(kind="dataarray"),
+            ),
+        ),
+    )
+    node = _fake_edit_node(spec)
+    controller = _fake_edit_controller(node)
+    controller._manager._extensions.capability_status = lambda *_args: "missing-source"
+    row = next(
+        row
+        for row in spec.display_rows()
+        if row.edit_ref is not None and row.edit_ref.kind == "file_load"
+    )
+
+    editable, reason = controller.can_edit_row(row)
+
+    assert not editable
+    assert reason
 
 
 def test_file_load_edit_dialog_restores_spreadsheet_metadata_controls(

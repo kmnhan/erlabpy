@@ -311,8 +311,14 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         selected_filter = (
             preferred_filter if preferred_filter in valid_loaders else None
         )
-        if selected_filter is None and self._replay_call is not None:
-            for name_filter, (func, kwargs) in valid_loaders.items():
+
+        def recorded_filter(
+            loaders: dict[str, tuple[Callable[..., typing.Any], dict[str, typing.Any]]],
+        ) -> str | None:
+            """Find the exact loader recorded by this provenance step."""
+            if self._replay_call is None:
+                return None
+            for name_filter, (func, kwargs) in loaders.items():
                 if self._replay_call.kind == "erlab_loader":
                     loader = getattr(func, "__self__", None)
                     matches = (
@@ -338,8 +344,17 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
                         for key, value in kwargs.items()
                     )
                 if matches:
-                    selected_filter = name_filter
-                    break
+                    return name_filter
+            return None
+
+        if selected_filter is None and self._replay_call is not None:
+            selected_filter = recorded_filter(valid_loaders)
+            if selected_filter is None and preferred_filter is None:
+                all_loaders = self._file_loaders(None)
+                selected_filter = recorded_filter(all_loaders)
+                if selected_filter is None:
+                    raise RuntimeError("The recorded file loader is not available")
+                valid_loaders = all_loaders
         selected_filter = selected_filter or next(iter(valid_loaders), None)
         if selected_filter is not None:
             func, kwargs = valid_loaders[selected_filter]

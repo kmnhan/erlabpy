@@ -455,8 +455,8 @@ def file_load_source_status(
 ) -> FileLoadSourceStatus:
     """Return the current availability of the recorded file-load source.
 
-    A managed ImageTool can supply its own resolver so session-only extension
-    approvals do not affect other manager instances.
+    A managed ImageTool can supply its own resolver so session-specific extension
+    validation failures do not affect other manager instances.
     """
     spec = parse_tool_provenance_spec(value)
     if spec is None or spec.file_load_source is None:

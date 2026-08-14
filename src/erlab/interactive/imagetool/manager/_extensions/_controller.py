@@ -81,8 +81,10 @@ class _ExtensionController(QtCore.QObject):
         self.catalog = _ExtensionCatalog(parent=self)
         self.execution = _ExtensionExecutionController(manager, self.catalog)
         self._catalog_changed_slot = self._catalog_changed
+        self._catalog_read_failed_slot = self._show_catalog_read_error
         self._manage_action_slot = self._manage_action
         self.catalog.changed.connect(self._catalog_changed_slot)
+        self.catalog.read_failed.connect(self._catalog_read_failed_slot)
         self._recent: deque[tuple[str, str]] = deque(maxlen=8)
         self._routine_action_groups: list[
             tuple[QtWidgets.QMenu, list[QtGui.QAction]]
@@ -94,6 +96,7 @@ class _ExtensionController(QtCore.QObject):
         ] = {}
         self._explorer_loaders: dict[str, erlab.io.dataloader.LoaderBase] = {}
         self._closed = False
+        self._shown_catalog_errors: set[str] = set()
         self._missing_script_prompt_shown = False
         self._missing_scripts_dialog: _MissingScriptsDialog | None = None
         self._missing_scripts_dialog_slots: (
@@ -108,11 +111,13 @@ class _ExtensionController(QtCore.QObject):
         self._manage_selection_slot = self._refresh_removal_eligibility
         self._manage_activated_slot = self._refresh_removal_eligibility
         self._execution_state_slot = self._refresh_removal_eligibility
+        self._validation_changed_slot = self._session_validation_changed
         self._manage_dialog.add_script_requested.connect(self._manage_add_script_slot)
         self._manage_dialog.open_folder_requested.connect(self._manage_open_folder_slot)
         self._manage_dialog.selection_changed.connect(self._manage_selection_slot)
         self._manage_dialog.activated.connect(self._manage_activated_slot)
         self.execution.queue_changed.connect(self._execution_state_slot)
+        self.execution.validation_changed.connect(self._validation_changed_slot)
         self._menu_show_slot = self._populate_menu
         self._context_menu_connections: list[
             tuple[QtWidgets.QMenu, Callable[[], None]]
@@ -134,8 +139,35 @@ class _ExtensionController(QtCore.QObject):
         self.requirements_action.triggered.connect(self._show_requirements_slot)
         self.menu: QtWidgets.QMenu | None = None
         self._sync_explorer_loaders()
+        self._initial_catalog_error_slot = self._show_initial_catalog_error
+        QtCore.QTimer.singleShot(0, self._initial_catalog_error_slot)
         self._missing_script_prompt_slot = self._prompt_for_missing_scripts
         QtCore.QTimer.singleShot(0, self._missing_script_prompt_slot)
+
+    @QtCore.Slot()
+    def _show_initial_catalog_error(self) -> None:
+        """Report startup failure only after the manager can own the dialog."""
+        error = self.catalog.load_error
+        if error is not None:
+            self._show_catalog_read_error(error)
+
+    @QtCore.Slot(str)
+    def _show_catalog_read_error(self, error: str) -> None:
+        """Show each distinct catalog read failure once during this manager session."""
+        if (
+            self._closed
+            or error in self._shown_catalog_errors
+            or not erlab.interactive.utils.qt_is_valid(self._manager)
+        ):
+            return
+        self._shown_catalog_errors.add(error)
+        erlab.interactive.utils.MessageDialog.critical(
+            self._manager,
+            "Extension Catalog Unavailable",
+            "ImageTool Manager could not read the extension catalog. The existing "
+            "catalog was not changed.",
+            detailed_text=f"Catalog: {self.catalog.store.path}\n\n{error}",
+        )
 
     def create_menu(self, menu_bar: QtWidgets.QMenuBar) -> QtWidgets.QMenu:
         menu = typing.cast("QtWidgets.QMenu", menu_bar.addMenu("&Extensions"))
@@ -165,6 +197,8 @@ class _ExtensionController(QtCore.QObject):
             source = record.source
             if not self.catalog.store.source_available(record, source.source_hash):
                 continue
+            if self.execution.validation_error(record.id, source.source_hash):
+                continue
             entries.extend((record.id, record.name, item) for item in source.routines)
         return tuple(entries)
 
@@ -187,6 +221,8 @@ class _ExtensionController(QtCore.QObject):
                 continue
             source = record.source
             if not self.catalog.store.source_available(record, source.source_hash):
+                continue
+            if self.execution.validation_error(record.id, source.source_hash):
                 continue
             for descriptor in source.loaders:
                 patterns = tuple(f"*{suffix}" for suffix in descriptor.extensions) or (
@@ -262,15 +298,12 @@ class _ExtensionController(QtCore.QObject):
             and record.source.source_hash == replay_call.source_hash
             else None
         )
-        try:
-            global_status = self.catalog.store.capability_status(
-                replay_call.target,
-                replay_call.source_hash,
-                "loader",
-                replay_call.capability_id,
-            )
-        except KeyError:
-            global_status = "missing-source"
+        global_status = self.capability_status(
+            replay_call.target,
+            replay_call.source_hash,
+            "loader",
+            replay_call.capability_id,
+        )
         global_ready = (
             global_status == "ready"
             and record is not None
@@ -314,6 +347,8 @@ class _ExtensionController(QtCore.QObject):
         capability_id: str,
     ) -> _CapabilityStatus:
         """Resolve application catalog state for this manager."""
+        if self.execution.validation_error(extension_id, source_hash) is not None:
+            return "validation-failed"
         try:
             global_status = self.catalog.store.capability_status(
                 extension_id,
@@ -352,6 +387,8 @@ class _ExtensionController(QtCore.QObject):
                 continue
             source = record.source
             if not self.catalog.store.source_available(record, source.source_hash):
+                continue
+            if self.execution.validation_error(record.id, source.source_hash):
                 continue
             for descriptor in source.loaders:
                 adapter = _DecoratedLoaderAdapter(
@@ -942,6 +979,7 @@ class _ExtensionController(QtCore.QObject):
             self.catalog.model,
             self._catalog_source_states(),
             managed_paths=managed_paths,
+            validation_errors=self.execution.validation_errors,
         )
         self._refresh_removal_eligibility()
 
@@ -999,7 +1037,24 @@ class _ExtensionController(QtCore.QObject):
                     pathlib.Path(source_path), extension_id=extension_id
                 )
                 return
-            if action_id == "toggle" and not record.enabled:
+            validation_error = self.execution.validation_error(
+                record.id, record.source.source_hash
+            )
+            if action_id == "toggle" and validation_error is not None:
+                if record.source.approved:
+                    self.execution.validate_source(
+                        extension_id,
+                        record.source.source_hash,
+                        expected_record_generation=record.record_generation,
+                        enable_extension=False,
+                        persist_result=False,
+                    )
+                else:
+                    self.execution.validate_and_enable(
+                        extension_id,
+                        expected_record_generation=record.record_generation,
+                    )
+            elif action_id == "toggle" and not record.enabled:
                 self.execution.validate_and_enable(
                     extension_id,
                     expected_record_generation=record.record_generation,
@@ -1025,13 +1080,15 @@ class _ExtensionController(QtCore.QObject):
                     ),
                 )
             elif action_id == "error":
-                source = record.source
-                if source.validation_error:
+                validation_error = self.execution.validation_error(
+                    record.id, record.source.source_hash
+                )
+                if validation_error:
                     erlab.interactive.utils.MessageDialog.critical(
                         self._manager,
                         "Extension Validation Error",
                         "The extension could not be validated.",
-                        detailed_text=source.validation_error,
+                        detailed_text=validation_error,
                     )
                 return
             elif action_id == "view_source":
@@ -1194,6 +1251,11 @@ class _ExtensionController(QtCore.QObject):
 
     @QtCore.Slot(object)
     def _catalog_changed(self, _model: object) -> None:
+        self.execution.prune_validation_errors(self.catalog.model)
+        self._refresh_extension_state_views()
+
+    def _refresh_extension_state_views(self) -> None:
+        """Apply global or manager-local extension state to all manager views."""
         self._sync_explorer_loaders()
         self._refresh_manage_dialog()
         if self.menu is not None and self.menu.isVisible():
@@ -1206,6 +1268,13 @@ class _ExtensionController(QtCore.QObject):
         for node in self._manager._tool_graph.nodes.values():
             if node.tool_window is not None:
                 node.tool_window._refresh_reload_data_action()
+
+    @QtCore.Slot()
+    def _session_validation_changed(self) -> None:
+        """Refresh manager state after this session observes source health."""
+        if self._closed or not erlab.interactive.utils.qt_is_valid(self._manager):
+            return
+        self._refresh_extension_state_views()
 
     def collect_workspace_requirements(
         self,
@@ -1867,11 +1936,14 @@ class _ExtensionController(QtCore.QObject):
                 state="missing",
                 detail="The registered script file is unavailable",
             )
-        if source.validation_error:
+        validation_error = self.execution.validation_error(
+            record.id, requirement.source_hash
+        )
+        if validation_error:
             return _ResolvedWorkspaceRequirement(
                 requirement=requirement,
                 state="validation-failed",
-                detail=source.validation_error,
+                detail=validation_error,
             )
         if not source.approved:
             return _ResolvedWorkspaceRequirement(
@@ -2136,6 +2208,10 @@ class _ExtensionController(QtCore.QObject):
         with contextlib.suppress(TypeError, RuntimeError):
             self.execution.queue_changed.disconnect(self._execution_state_slot)
         with contextlib.suppress(TypeError, RuntimeError):
+            self.execution.validation_changed.disconnect(self._validation_changed_slot)
+        with contextlib.suppress(TypeError, RuntimeError):
             self.catalog.changed.disconnect(self._catalog_changed_slot)
+        with contextlib.suppress(TypeError, RuntimeError):
+            self.catalog.read_failed.disconnect(self._catalog_read_failed_slot)
         self._routine_action_groups.clear()
         self.catalog.close()

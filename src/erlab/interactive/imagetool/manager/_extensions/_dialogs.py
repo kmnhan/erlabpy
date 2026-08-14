@@ -487,6 +487,7 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         self._records: dict[str, _ExtensionRecord] = {}
         self._source_states: dict[tuple[str, str], str] = {}
         self._managed_paths: dict[tuple[str, str], str] = {}
+        self._validation_errors: dict[tuple[str, str], str] = {}
         self._removal_reason: str | None = None
         self.tree.currentItemChanged.connect(self._selection_changed)
         close_button = QtWidgets.QDialogButtonBox(
@@ -501,6 +502,7 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         source_states: dict[tuple[str, str], str] | None = None,
         *,
         managed_paths: dict[tuple[str, str], str] | None = None,
+        validation_errors: dict[tuple[str, str], str] | None = None,
     ) -> None:
         selected_id = self.selected_extension_id
         scroll_bar = self.tree.verticalScrollBar()
@@ -508,6 +510,7 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         self._records = dict(catalog.extensions)
         self._source_states = dict(source_states or {})
         self._managed_paths = dict(managed_paths or {})
+        self._validation_errors = dict(validation_errors or {})
         self.tree.setSortingEnabled(False)
         self.tree.clear()
         selected_item: QtWidgets.QTreeWidgetItem | None = None
@@ -516,9 +519,12 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
             source_state = self._source_states.get(
                 (record.id, record.source.source_hash), ""
             )
+            validation_error = self._validation_errors.get(
+                (record.id, current.source_hash)
+            )
             health = "Ready"
-            if current.validation_error:
-                health = "Validation failed"
+            if validation_error:
+                health = "Import failed"
             elif _source_is_unavailable(source_state):
                 health = "Source unavailable"
             elif not current.approved:
@@ -576,11 +582,12 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
             return
         source = record.source
         source_state = self._source_states.get((record.id, source.source_hash), "")
+        validation_error = self._validation_errors.get((record.id, source.source_hash))
         health = "Ready"
         failure = ""
-        if source.validation_error:
-            health = "Validation failed"
-            failure = source.validation_error.splitlines()[-1]
+        if validation_error:
+            health = "Import failed"
+            failure = validation_error.splitlines()[-1]
         elif _source_is_unavailable(source_state):
             health = "Source unavailable"
             failure = source_state
@@ -595,7 +602,7 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         )
         self.status_label.setProperty("healthState", health)
         self.failure_label.setText(failure)
-        self.failure_label.setProperty("fullError", source.validation_error or "")
+        self.failure_label.setProperty("fullError", validation_error or "")
         routine_names = ", ".join(item.name for item in source.routines) or "None"
         loader_names = ", ".join(item.name for item in source.loaders) or "None"
         self.capabilities_label.setText(
@@ -615,9 +622,16 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
             "sourcePath", managed_path or None
         )
         self._buttons["toggle"].setEnabled(True)
-        self._buttons["toggle"].setText("Disable" if record.enabled else "Enable")
+        self._buttons["toggle"].setText(
+            "Retry Validation"
+            if validation_error
+            else "Disable"
+            if record.enabled
+            else "Enable"
+        )
         self._buttons["toggle"].setProperty(
-            "extensionActionState", "disable" if record.enabled else "enable"
+            "extensionActionState",
+            "retry" if validation_error else "disable" if record.enabled else "enable",
         )
         original_available = bool(source_path and pathlib.Path(source_path).is_file())
         source_changed = source_state == "Source file changed"
@@ -642,8 +656,8 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
             if source_changed
             else "reload",
         )
-        self._buttons["error"].setVisible(bool(source.validation_error))
-        self._buttons["error"].setEnabled(bool(source.validation_error))
+        self._buttons["error"].setVisible(bool(validation_error))
+        self._buttons["error"].setEnabled(bool(validation_error))
         self._buttons["view_source"].setEnabled(bool(managed_path))
         for action_id in ("open_source", "reveal_source", "copy_source"):
             self._buttons[action_id].setEnabled(original_available)

@@ -1442,18 +1442,6 @@ def test_catalog_reports_exact_script_capability_states(
         )
         == "approval-required"
     )
-    assert (
-        status_for(
-            ready_record.model_copy(
-                update={
-                    "source": ready_source.model_copy(
-                        update={"validation_error": "broken"}
-                    )
-                }
-            )
-        )
-        == "validation-failed"
-    )
     assert status_for(ready_record, "missing") == "missing-capability"
 
     unsupported_descriptor = ready_source.routines[0].model_copy(
@@ -1697,7 +1685,14 @@ def test_loader_and_validation_workers_ignore_repeated_cancellation(
         executor=lambda *_args: xr.DataArray([1.0]),
     )
     store = _ExtensionCatalogStore(tmp_path / "catalog")
-    loader_worker = _ExtensionLoaderWorker(call, tmp_path / "data", {}, store, {})
+    loader_worker = _ExtensionLoaderWorker(
+        call,
+        tmp_path / "data",
+        {},
+        store,
+        {},
+        source_is_healthy=lambda *_args: True,
+    )
     loader_worker.cancel_if_pending()
     first_error = loader_worker.error
     loader_worker.cancel_if_pending()
@@ -1759,6 +1754,7 @@ def test_loader_worker_contains_process_control_exceptions(
         {},
         typing.cast("_ExtensionCatalogStore", store),
         {},
+        source_is_healthy=lambda *_args: True,
     )
 
     worker.run()
@@ -1851,6 +1847,7 @@ def test_execution_controller_reports_admission_and_validation_failures(
                     {},
                     manager._extensions.catalog.store,
                     {},
+                    source_is_healthy=lambda *_args: True,
                 )
             )
         with pytest.raises(RuntimeError, match="shutting down"):
@@ -1897,6 +1894,7 @@ def test_execution_controller_removes_failed_pool_admission(
             {},
             manager._extensions.catalog.store,
             {},
+            source_is_healthy=lambda *_args: True,
         )
         try:
             with pytest.raises(RuntimeError, match="pool rejected"):
@@ -2557,10 +2555,87 @@ def test_catalog_reads_unreleased_schema_as_schema_one(
     assert migrated.extensions["gaussian_tools"].name == "gaussian_tools.py"
     assert migrated.extensions["gaussian_tools"].source.source_hash == revision
     assert (
-        migrated.extensions["gaussian_tools"].source.validation_error
-        == "old validation failure"
+        "validation_error"
+        not in migrated.extensions["gaussian_tools"].source.model_dump()
     )
     assert migrated.routine_favorites == (("gaussian_tools", "scale"),)
+
+
+def test_unreadable_catalog_does_not_prevent_manager_startup(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog_directory = pathlib.Path(os.environ["ERLAB_EXTENSION_CATALOG"])
+    catalog_directory.mkdir(parents=True)
+    catalog_path = catalog_directory / "catalog.json"
+    invalid_catalog = b'{"schema_version": 999, "extensions": {}}'
+    catalog_path.write_bytes(invalid_catalog)
+    errors: list[tuple[str, str, str | None]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda _parent, title, text, detailed_text=None, **_kwargs: errors.append(
+            (title, text, detailed_text)
+        ),
+    )
+
+    with manager_context() as manager:
+        QtWidgets.QApplication.processEvents()
+
+        assert manager._extensions.catalog.model == _ExtensionCatalogModel()
+        assert manager._extensions.catalog.load_error is not None
+        assert catalog_path.read_bytes() == invalid_catalog
+        assert len(errors) == 1
+        assert errors[0][0] == "Extension Catalog Unavailable"
+        assert str(catalog_path) in (errors[0][2] or "")
+
+
+def test_catalog_recovers_after_an_unreadable_file_is_repaired(
+    tmp_path: pathlib.Path,
+) -> None:
+    directory = tmp_path / "catalog"
+    directory.mkdir()
+    path = directory / "catalog.json"
+    path.write_text("{", encoding="utf-8")
+    catalog = _ExtensionCatalog(directory=directory)
+    changed: list[_ExtensionCatalogModel] = []
+    failures: list[str] = []
+    catalog.changed.connect(changed.append)
+    catalog.read_failed.connect(failures.append)
+    try:
+        assert catalog.load_error is not None
+        path.write_text(_ExtensionCatalogModel().model_dump_json(), encoding="utf-8")
+
+        catalog.refresh()
+
+        assert catalog.load_error is None
+        assert changed == [_ExtensionCatalogModel()]
+        assert failures == []
+    finally:
+        catalog.close()
+
+
+def test_catalog_recovers_after_its_directory_becomes_available(
+    tmp_path: pathlib.Path,
+) -> None:
+    directory = tmp_path / "catalog"
+    directory.write_text("not a directory", encoding="utf-8")
+
+    catalog = _ExtensionCatalog(directory=directory)
+    changed: list[_ExtensionCatalogModel] = []
+    catalog.changed.connect(changed.append)
+    try:
+        assert catalog.model == _ExtensionCatalogModel()
+        assert catalog.load_error is not None
+
+        directory.unlink()
+        directory.mkdir()
+        catalog.refresh()
+
+        assert catalog.load_error is None
+        assert changed == [_ExtensionCatalogModel()]
+    finally:
+        catalog.close()
 
 
 def test_failed_script_registration_does_not_leave_an_orphaned_source(
@@ -2679,13 +2754,14 @@ def test_old_source_can_be_registered_as_a_separate_extension(
     )
 
 
-def test_catalog_preserves_source_validation_diagnostics(
+def test_failed_validation_does_not_change_the_shared_catalog(
     tmp_path: pathlib.Path,
 ) -> None:
     store = _ExtensionCatalogStore(tmp_path / "catalog")
     script_path = tmp_path / "broken.py"
     script_path.write_text("raise RuntimeError('broken import')\n")
     catalog, _source_hash, _created = store.add_script(script_path)
+    before = store.path.read_bytes()
 
     with pytest.raises(erlab.extensions.ExtensionImportError, match="broken import"):
         _validate_and_enable(
@@ -2695,8 +2771,143 @@ def test_catalog_preserves_source_validation_diagnostics(
         )
 
     record = store.read().extensions["broken"]
-    assert not record.enabled
-    assert "RuntimeError: broken import" in str(record.source.validation_error)
+    assert store.path.read_bytes() == before
+    assert record == catalog.extensions["broken"]
+
+
+def test_environment_validation_failure_stays_in_one_manager_session(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    dependency_name = "extension_test_session_dependency"
+    dependency = types.ModuleType(dependency_name)
+    sys.modules[dependency_name] = dependency
+    script_path = tmp_path / "session_health.py"
+    script_path.write_text(
+        f"""import {dependency_name}
+import xarray as xr
+from erlab.extensions import routine
+
+@routine(name="Session Health")
+def session_health(data: xr.DataArray) -> xr.DataArray:
+    return data
+"""
+    )
+    try:
+        with manager_context() as manager:
+            store = manager._extensions.catalog.store
+            catalog, source_hash, _created = store.add_script(script_path)
+            catalog = _validate_and_enable(
+                store,
+                "session_health",
+                expected_record_generation=catalog.extensions[
+                    "session_health"
+                ].record_generation,
+            )
+            manager._extensions.catalog.refresh()
+            record = catalog.extensions["session_health"]
+            shared_catalog = store.read()
+            sys.modules.pop(dependency_name)
+
+            with pytest.raises(erlab.extensions.ExtensionImportError):
+                manager._extensions.execution.validate_source(
+                    record.id,
+                    source_hash,
+                    expected_record_generation=record.record_generation,
+                    enable_extension=False,
+                    persist_result=False,
+                )
+
+            assert store.read() == shared_catalog
+            assert (
+                store.capability_status(
+                    record.id, source_hash, "routine", "session_health"
+                )
+                == "ready"
+            )
+            assert (
+                manager._extensions.capability_status(
+                    record.id, source_hash, "routine", "session_health"
+                )
+                == "validation-failed"
+            )
+            dialog = manager._extensions._manage_dialog
+            assert dialog._buttons["toggle"].property("extensionActionState") == "retry"
+            assert dialog._buttons["error"].isVisibleTo(dialog)
+
+            sys.modules[dependency_name] = dependency
+            manager._extensions.execution.validate_source(
+                record.id,
+                source_hash,
+                expected_record_generation=record.record_generation,
+                enable_extension=False,
+                persist_result=False,
+            )
+
+            assert store.read() == shared_catalog
+            assert (
+                manager._extensions.execution.validation_error(record.id, source_hash)
+                is None
+            )
+            assert (
+                manager._extensions.capability_status(
+                    record.id, source_hash, "routine", "session_health"
+                )
+                == "ready"
+            )
+    finally:
+        sys.modules.pop(dependency_name, None)
+
+
+def test_retry_validation_enables_a_previously_invalid_script(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    dependency_name = "extension_test_retry_dependency"
+    script_path = tmp_path / "retry_health.py"
+    script_path.write_text(
+        f"""import {dependency_name}
+import xarray as xr
+from erlab.extensions import routine
+
+@routine(name="Retry Health")
+def retry_health(data: xr.DataArray) -> xr.DataArray:
+    return data
+"""
+    )
+    try:
+        with manager_context() as manager:
+            catalog, source_hash, _created = (
+                manager._extensions.catalog.store.add_script(script_path)
+            )
+            manager._extensions.catalog.refresh()
+            record = catalog.extensions["retry_health"]
+            with pytest.raises(erlab.extensions.ExtensionImportError):
+                manager._extensions.execution.validate_and_enable(
+                    record.id,
+                    expected_record_generation=record.record_generation,
+                )
+
+            failed = manager._extensions.catalog.store.read().extensions[record.id]
+            assert not failed.enabled
+            assert not failed.source.approved
+            assert (
+                manager._extensions.execution.validation_error(record.id, source_hash)
+                is not None
+            )
+
+            sys.modules[dependency_name] = types.ModuleType(dependency_name)
+            manager._extensions._manage_action("toggle", record.id)
+
+            enabled = manager._extensions.catalog.store.read().extensions[record.id]
+            assert enabled.enabled
+            assert enabled.source.approved
+            assert (
+                manager._extensions.execution.validation_error(record.id, source_hash)
+                is None
+            )
+    finally:
+        sys.modules.pop(dependency_name, None)
 
 
 def test_script_routine_generated_code_uses_public_path_api(
@@ -4045,6 +4256,7 @@ def test_extension_actions_disconnect_when_controller_closes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dialog_calls: list[None] = []
+    validation_refreshes: list[None] = []
     monkeypatch.setattr(
         extension_controller.QtWidgets.QFileDialog,
         "getOpenFileName",
@@ -4052,12 +4264,21 @@ def test_extension_actions_disconnect_when_controller_closes(
     )
 
     with manager_context() as manager:
+        monkeypatch.setattr(
+            manager._extensions,
+            "_refresh_extension_state_views",
+            lambda: validation_refreshes.append(None),
+        )
         manager._extensions.add_script_action.trigger()
+        manager._extensions.execution.validation_changed.emit()
         assert dialog_calls == [None]
+        assert validation_refreshes == [None]
 
         manager._extensions.close()
         manager._extensions.add_script_action.trigger()
+        manager._extensions.execution.validation_changed.emit()
         assert dialog_calls == [None]
+        assert validation_refreshes == [None]
 
 
 def test_manage_dialog_enables_only_applicable_actions(
@@ -4270,8 +4491,7 @@ def test_file_source_status_reports_extension_validation_failure(
             script_path
         )
         with pytest.raises(erlab.extensions.ExtensionImportError):
-            _validate_and_enable(
-                manager._extensions.catalog.store,
+            manager._extensions.execution.validate_and_enable(
                 "broken_loader",
                 expected_record_generation=(
                     catalog.extensions["broken_loader"].record_generation
@@ -4295,7 +4515,13 @@ def test_file_source_status_reports_extension_validation_failure(
             ),
         )
 
-        assert file_load_source_status(spec) == "extension-validation-failed"
+        assert (
+            file_load_source_status(
+                spec,
+                extension_status_resolver=manager._extensions.capability_status,
+            )
+            == "extension-validation-failed"
+        )
 
 
 def test_workspace_requirement_catalog_states(
@@ -4360,8 +4586,7 @@ def test_workspace_requirement_catalog_states(
             manager._extensions.catalog.store.add_script(broken_path)
         )
         with pytest.raises(erlab.extensions.ExtensionImportError):
-            _validate_and_enable(
-                manager._extensions.catalog.store,
+            manager._extensions.execution.validate_and_enable(
                 "broken",
                 expected_record_generation=(
                     catalog.extensions["broken"].record_generation
@@ -5734,7 +5959,6 @@ def test_extension_loader_filter_conflict_is_rejected(
         assert tuple(loaders) == ("Lab Data (*.txt)",)
         rejected = manager._extensions.catalog.model.extensions["second"]
         assert not rejected.enabled
-        assert rejected.source.validation_error is None
         assert (
             rejected.record_generation == second.extensions["second"].record_generation
         )
@@ -5772,7 +5996,6 @@ def test_builtin_and_extension_loader_filter_conflict_is_rejected(
         assert "NetCDF Files (*.nc *.nc4 *.cdf)" in loaders
         rejected = manager._extensions.catalog.model.extensions["netcdf"]
         assert not rejected.enabled
-        assert rejected.source.validation_error is None
         assert (
             rejected.record_generation == catalog.extensions["netcdf"].record_generation
         )
@@ -6282,6 +6505,7 @@ def test_canceling_pending_loader_releases_qt_waiter(
         {},
         _ExtensionCatalogStore(tmp_path / "catalog"),
         {},
+        source_is_healthy=lambda *_args: True,
     )
 
     with qtbot.waitSignal(worker.signals.finished, timeout=1000):
@@ -6342,9 +6566,12 @@ def validate_thread(data: xr.DataArray) -> xr.DataArray:
             )
 
         failed = manager._extensions.catalog.store.read().extensions["stops"]
-        assert not failed.enabled
+        assert failed == catalog.extensions["stops"]
         assert "SystemExit: extension requested exit" in (
-            failed.source.validation_error or ""
+            manager._extensions.execution.validation_error(
+                "stops", failed.source.source_hash
+            )
+            or ""
         )
 
 

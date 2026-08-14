@@ -752,8 +752,40 @@ class _ProvenanceEditController:
         if row.edit_ref.kind == "file_load":
             if spec.kind not in {"file", "script"} or spec.file_load_source is None:
                 return False, "This row is not a file load step."
-            if spec.file_load_source.replay_call is None:
+            replay_call = spec.file_load_source.replay_call
+            if replay_call is None:
                 return False, "This file load step cannot be replayed."
+            if replay_call.kind == "extension_loader":
+                status = self._manager._extensions.capability_status(
+                    replay_call.target,
+                    typing.cast("str", replay_call.source_hash),
+                    "loader",
+                    typing.cast("str", replay_call.capability_id),
+                )
+                if status != "ready":
+                    return False, {
+                        "disabled": "Enable this extension before you edit this load.",
+                        "approval-required": (
+                            "Review and enable this extension before you edit this "
+                            "load."
+                        ),
+                        "missing-source": (
+                            "Register the exact loader script before you edit this "
+                            "load."
+                        ),
+                        "missing-capability": (
+                            "The registered script does not provide this loader."
+                        ),
+                        "hash-mismatch": (
+                            "The registered loader script changed after this load."
+                        ),
+                        "unsupported-api": (
+                            "This loader uses an unsupported extension API version."
+                        ),
+                        "validation-failed": (
+                            "The extension loader did not pass validation."
+                        ),
+                    }[status]
             return True, ""
         operation = spec._operation_for_ref(row.edit_ref)
         if operation is None:

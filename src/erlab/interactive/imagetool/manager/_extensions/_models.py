@@ -21,7 +21,6 @@ class _ExtensionSource(pydantic.BaseModel):
     approved: bool = False
     routines: tuple[RoutineDescriptor, ...] = ()
     loaders: tuple[LoaderDescriptor, ...] = ()
-    validation_error: str | None = None
 
     model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 

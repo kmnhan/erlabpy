@@ -123,9 +123,8 @@ def _catalog_payload_v1(payload: object) -> object:
         source = record.get("source")
         if isinstance(source, dict):
             source = dict(source)
-            legacy_validation_error = source.pop("import_error", None)
-            if source.get("validation_error") is None and legacy_validation_error:
-                source["validation_error"] = legacy_validation_error
+            source.pop("import_error", None)
+            source.pop("validation_error", None)
             source.pop("change_summary", None)
             for field in (
                 "routine_call_references",
@@ -204,7 +203,12 @@ class _ExtensionCatalogStore:
         return _catalog_with_canonical_names(catalog)
 
     def _lock(self) -> QtCore.QLockFile:
-        self.directory.mkdir(parents=True, exist_ok=True)
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise _ExtensionCatalogLockError(
+                f"Could not create the extension catalog directory: {error}"
+            ) from error
         lock = QtCore.QLockFile(os.fspath(self.lock_path))
         lock.setStaleLockTime(30_000)
         if not lock.tryLock(10_000):
@@ -544,41 +548,6 @@ class _ExtensionCatalogStore:
                 (self.objects_directory / replaced_object_name).unlink(missing_ok=True)
         return catalog, source_hash, changed
 
-    def record_source_validation_failure(
-        self,
-        extension_id: str,
-        *,
-        source_hash: str,
-        expected_record_generation: int,
-        validation_error: str,
-    ) -> _ExtensionCatalogModel:
-        """Persist a source-validation failure without changing a newer source."""
-
-        def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
-            current = catalog.extensions[extension_id]
-            if source_hash != current.source.source_hash:
-                raise _ExtensionCatalogConflictError(
-                    f"Extension {extension_id!r} changed during validation"
-                )
-            source = current.source.model_copy(
-                update={"validation_error": validation_error, "approved": False}
-            )
-            records = dict(catalog.extensions)
-            records[extension_id] = current.model_copy(
-                update={
-                    "source": source,
-                    "enabled": False,
-                    "record_generation": current.record_generation + 1,
-                }
-            )
-            return catalog.model_copy(update={"extensions": records})
-
-        return self.mutate(
-            extension_id,
-            update,
-            expected_record_generation=expected_record_generation,
-        )
-
     def enable_validated_source(
         self,
         extension_id: str,
@@ -602,7 +571,6 @@ class _ExtensionCatalogStore:
                     "approved": True,
                     "routines": routines,
                     "loaders": loaders,
-                    "validation_error": None,
                 }
             )
             name_filters = _source_loader_name_filters(validated_source)
@@ -695,8 +663,6 @@ class _ExtensionCatalogStore:
             return "missing-source"
         except _ExtensionCatalogConflictError:
             return "hash-mismatch"
-        if source.validation_error:
-            return "validation-failed"
         if not source.approved:
             return "approval-required"
         descriptors = source.routines if kind == "routine" else source.loaders
@@ -826,6 +792,7 @@ class _ExtensionCatalog(QtCore.QObject):
     """
 
     changed = QtCore.Signal(object)
+    read_failed = QtCore.Signal(str)
 
     def __init__(
         self,
@@ -836,8 +803,15 @@ class _ExtensionCatalog(QtCore.QObject):
         super().__init__(parent)
         self._closed = False
         self.store = _ExtensionCatalogStore(directory)
-        self.store.clean_unreleased_catalog()
-        self.model = self.store.read()
+        self.load_error: str | None = None
+        try:
+            self.store.clean_unreleased_catalog()
+            self.model = self.store.read()
+        except _ExtensionCatalogError as error:
+            # Keep the unreadable file in place. This prevents an older or damaged
+            # installation from replacing catalog data that it cannot validate.
+            self.load_error = str(error)
+            self.model = _ExtensionCatalogModel()
         self._watcher = QtCore.QFileSystemWatcher(self)
         self._schedule_refresh_slot = self._schedule_refresh
         self._watcher.fileChanged.connect(self._schedule_refresh_slot)
@@ -857,8 +831,15 @@ class _ExtensionCatalog(QtCore.QObject):
             self._resolver_owner, self.store.capability_status
         )
 
-    def _restore_watches(self) -> None:
-        self.store.directory.mkdir(parents=True, exist_ok=True)
+    def _restore_watches(self) -> bool:
+        try:
+            self.store.directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            detail = f"Could not access the extension catalog directory: {error}"
+            if detail != self.load_error:
+                self.load_error = detail
+                self.read_failed.emit(detail)
+            return False
         wanted = {os.fspath(self.store.directory)}
         if self.store.path.exists():
             wanted.add(os.fspath(self.store.path))
@@ -869,6 +850,7 @@ class _ExtensionCatalog(QtCore.QObject):
         missing = wanted - current
         if missing:
             self._watcher.addPaths(list(missing))
+        return True
 
     @QtCore.Slot()
     def _schedule_refresh(self) -> None:
@@ -880,9 +862,19 @@ class _ExtensionCatalog(QtCore.QObject):
     def refresh(self) -> None:
         if self._closed:
             return
-        self._restore_watches()
-        model = self.store.read()
-        if model == self.model:
+        if not self._restore_watches():
+            return
+        try:
+            model = self.store.read()
+        except _ExtensionCatalogError as error:
+            detail = str(error)
+            if detail != self.load_error:
+                self.load_error = detail
+                self.read_failed.emit(detail)
+            return
+        recovered = self.load_error is not None
+        self.load_error = None
+        if model == self.model and not recovered:
             return
         self.model = model
         self.changed.emit(model)

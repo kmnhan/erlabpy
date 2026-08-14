@@ -42,6 +42,7 @@ from erlab.interactive.imagetool._provenance._operations import (
 )
 from erlab.interactive.imagetool.manager._extensions._catalog import (
     _ExtensionCatalogConflictError,
+    _ExtensionCatalogError,
     _ExtensionCatalogStore,
 )
 from erlab.interactive.imagetool.manager._extensions._models import (
@@ -117,6 +118,10 @@ def _extension_error(error: BaseException, action: str) -> Exception:
     )
 
 
+class _ExtensionSourceLoadFailure(ExtensionExecutionError):
+    """Identify a failure that occurred before extension function invocation."""
+
+
 @dataclasses.dataclass(frozen=True)
 class _ExtensionRoutineJob:
     """Pinned source and input identity for one queued routine call."""
@@ -142,6 +147,7 @@ class _ExtensionRoutineResult:
     duration: float
     status: typing.Literal["success", "failed", "discarded"]
     traceback_text: str | None = None
+    source_failure: bool = False
 
 
 @dataclasses.dataclass
@@ -200,20 +206,25 @@ class _ExtensionLoaderCall:
             "file_path": str(path),
         }
         try:
-            logger.info("Importing extension loader source", extra=fields)
-            loaded = _cached_script(
-                script_modules,
-                extension_id=self.extension_id,
-                source_hash=self.source_hash,
-                source_path=self.source_path,
-                module_name=_manager_module_name(
-                    self.manager_session_id,
-                    self.extension_id,
-                    self.source_hash,
-                ),
-            )
-            entry = loaded.loaders.get(self.loader_id)
-            entry = _require_loader_entry(self, entry)
+            try:
+                logger.info("Importing extension loader source", extra=fields)
+                loaded = _cached_script(
+                    script_modules,
+                    extension_id=self.extension_id,
+                    source_hash=self.source_hash,
+                    source_path=self.source_path,
+                    module_name=_manager_module_name(
+                        self.manager_session_id,
+                        self.extension_id,
+                        self.source_hash,
+                    ),
+                )
+                entry = loaded.loaders.get(self.loader_id)
+                entry = _require_loader_entry(self, entry)
+            except BaseException as error:
+                raise _ExtensionSourceLoadFailure(
+                    f"Extension loader {self.loader_id!r} could not be imported"
+                ) from error
             values = _coerce_call_parameters(entry[1], parameters)
             logger.info("Invoking extension loader", extra=fields)
             result = _require_loader_output(entry[1](path, **values))
@@ -256,6 +267,8 @@ class _ExtensionLoaderWorker(QtCore.QRunnable):
         parameters: dict[str, typing.Any],
         catalog_store: _ExtensionCatalogStore,
         script_modules: dict[tuple[str, str], LoadedScript],
+        *,
+        source_is_healthy: Callable[[str, str], bool],
     ) -> None:
         super().__init__()
         self.call = call
@@ -263,10 +276,13 @@ class _ExtensionLoaderWorker(QtCore.QRunnable):
         self.parameters = parameters
         self.catalog_store = catalog_store
         self.script_modules = script_modules
+        self.source_is_healthy = source_is_healthy
         self.signals = _ExtensionLoaderSignals()
         self.done = threading.Event()
         self.output: xr.DataArray | xr.Dataset | xr.DataTree | None = None
         self.error: Exception | None = None
+        self.traceback_text: str | None = None
+        self.source_failure = False
         self._state_lock = threading.Lock()
         self._started = False
         self._cancelled = False
@@ -301,9 +317,11 @@ class _ExtensionLoaderWorker(QtCore.QRunnable):
                 )
             except KeyError:
                 status = "missing-source"
-            if status != "ready":
+            if status != "ready" or not self.source_is_healthy(
+                self.call.extension_id, self.call.source_hash
+            ):
                 self.error = ExtensionExecutionError(
-                    f"The extension loader is unavailable: {status}"
+                    "The extension loader is unavailable in this manager session"
                 )
                 logger.info(
                     "Discarding unavailable queued extension loader",
@@ -321,6 +339,8 @@ class _ExtensionLoaderWorker(QtCore.QRunnable):
                     self.path, self.parameters, self.script_modules
                 )
         except BaseException as error:
+            self.traceback_text = traceback.format_exc()
+            self.source_failure = isinstance(error, _ExtensionSourceLoadFailure)
             self.error = _extension_error(error, "loader execution")
         finally:
             self.done.set()
@@ -341,6 +361,7 @@ class _ExtensionValidationWorker(QtCore.QRunnable):
         script_modules: dict[tuple[str, str], LoadedScript],
         check_loader_filter_conflicts: bool = True,
         enable_extension: bool = True,
+        persist_result: bool = True,
     ) -> None:
         super().__init__()
         self.extension_id = extension_id
@@ -351,10 +372,13 @@ class _ExtensionValidationWorker(QtCore.QRunnable):
         self.script_modules = script_modules
         self.check_loader_filter_conflicts = check_loader_filter_conflicts
         self.enable_extension = enable_extension
+        self.persist_result = persist_result
         self.signals = _ExtensionLoaderSignals()
         self.done = threading.Event()
         self.output: _ExtensionCatalogModel | None = None
         self.error: Exception | None = None
+        self.traceback_text: str | None = None
+        self.source_failure = False
         self._state_lock = threading.Lock()
         self._started = False
         self._cancelled = False
@@ -416,8 +440,14 @@ class _ExtensionValidationWorker(QtCore.QRunnable):
                 script_modules=self.script_modules,
                 check_loader_filter_conflicts=self.check_loader_filter_conflicts,
                 enable_extension=self.enable_extension,
+                persist_result=self.persist_result,
             )
         except BaseException as error:
+            self.traceback_text = traceback.format_exc()
+            self.source_failure = not isinstance(
+                error,
+                (_ExtensionCatalogError, FileNotFoundError, KeyError),
+            )
             self.error = _extension_error(error, "validation")
             logger.exception(
                 "Extension validation failed",
@@ -706,6 +736,7 @@ def _validate_extension_source(
     script_modules: dict[tuple[str, str], LoadedScript],
     check_loader_filter_conflicts: bool = True,
     enable_extension: bool = True,
+    persist_result: bool = True,
 ) -> _ExtensionCatalogModel:
     """Validate the current source, then record its capability descriptors."""
     catalog = catalog_store.read()
@@ -719,27 +750,15 @@ def _validate_extension_source(
         raise _ExtensionCatalogConflictError(
             f"Extension {extension_id!r} changed before validation"
         )
-    try:
-        loaded = _cached_script(
-            script_modules,
-            extension_id=extension_id,
-            source_hash=source_hash,
-            source_path=catalog_store.executable_source_path(extension_id, source_hash),
-            module_name=_manager_module_name(
-                manager_session_id, extension_id, source_hash
-            ),
-        )
-        routines = tuple(item[0] for item in loaded.routines.values())
-        loaders = tuple(item[0] for item in loaded.loaders.values())
-    except BaseException:
-        with contextlib.suppress(_ExtensionCatalogConflictError):
-            catalog_store.record_source_validation_failure(
-                extension_id,
-                source_hash=source_hash,
-                expected_record_generation=expected_record_generation,
-                validation_error=traceback.format_exc(),
-            )
-        raise
+    loaded = _cached_script(
+        script_modules,
+        extension_id=extension_id,
+        source_hash=source_hash,
+        source_path=catalog_store.executable_source_path(extension_id, source_hash),
+        module_name=_manager_module_name(manager_session_id, extension_id, source_hash),
+    )
+    routines = tuple(item[0] for item in loaded.routines.values())
+    loaders = tuple(item[0] for item in loaded.loaders.values())
     validated_source = record.source.model_copy(
         update={
             "routines": routines,
@@ -748,6 +767,8 @@ def _validate_extension_source(
     )
     if check_loader_filter_conflicts:
         _reject_builtin_loader_filter_conflicts(catalog, extension_id, validated_source)
+    if not persist_result:
+        return catalog
     return catalog_store.enable_validated_source(
         extension_id,
         source_hash=source_hash,
@@ -768,12 +789,14 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
         manager_session_id: str,
         catalog_store: _ExtensionCatalogStore,
         script_modules: dict[tuple[str, str], LoadedScript],
+        source_is_healthy: Callable[[str, str], bool],
     ) -> None:
         super().__init__()
         self.job = job
         self.manager_session_id = manager_session_id
         self.catalog_store = catalog_store
         self.script_modules = script_modules
+        self.source_is_healthy = source_is_healthy
         self.signals = _ExtensionWorkerSignals()
         self.result: _ExtensionRoutineResult | None = None
         self._started = threading.Event()
@@ -799,6 +822,7 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
         output: xr.DataArray | None = None
         status: typing.Literal["success", "failed", "discarded"] = "failed"
         traceback_text: str | None = None
+        source_failure = False
         fields: dict[str, typing.Any] = {
             "manager_session_id": self.manager_session_id,
             "catalog_generation": self.job.catalog_generation,
@@ -821,7 +845,9 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
                 )
             except KeyError:
                 capability_status = "missing-source"
-            if capability_status != "ready":
+            if capability_status != "ready" or not self.source_is_healthy(
+                self.job.extension_id, self.job.source_hash
+            ):
                 status = "discarded"
                 logger.info(
                     "Discarding unavailable queued extension routine",
@@ -839,14 +865,20 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
                 self.job.extension_id,
                 self.job.source_hash,
             )
-            loaded = _cached_script(
-                self.script_modules,
-                extension_id=self.job.extension_id,
-                source_hash=self.job.source_hash,
-                source_path=self.job.source_path,
-                module_name=module_name,
-            )
-            entry = _require_routine(loaded, self.job.routine.id)
+            try:
+                loaded = _cached_script(
+                    self.script_modules,
+                    extension_id=self.job.extension_id,
+                    source_hash=self.job.source_hash,
+                    source_path=self.job.source_path,
+                    module_name=module_name,
+                )
+                entry = _require_routine(loaded, self.job.routine.id)
+            except BaseException as error:
+                source_failure = True
+                raise _ExtensionSourceLoadFailure(
+                    f"Extension routine {self.job.routine.id!r} could not be imported"
+                ) from error
             parameters = _coerce_call_parameters(entry[1], self.job.parameters)
             logger.info("Invoking extension routine", extra=fields)
             result = _require_dataarray(
@@ -885,6 +917,7 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
                 duration=duration,
                 status=status,
                 traceback_text=traceback_text,
+                source_failure=source_failure,
             )
             self.result = result
             self.signals.finished.emit(result)
@@ -899,6 +932,7 @@ class _ExtensionExecutionController(QtCore.QObject):
     """
 
     queue_changed = QtCore.Signal()
+    validation_changed = QtCore.Signal()
 
     def __init__(
         self,
@@ -919,10 +953,51 @@ class _ExtensionExecutionController(QtCore.QObject):
             _ExtensionLoaderWorker | _ExtensionValidationWorker
         ] = set()
         self._blocking_tasks_lock = threading.Lock()
+        self._validation_errors: dict[tuple[str, str], str] = {}
+        self._validation_errors_lock = threading.Lock()
         self._accepting = True
         self._shutdown_complete = False
         self._finished_slot = self._finished
         self._started_slot = self._routine_started
+
+    @property
+    def validation_errors(self) -> dict[tuple[str, str], str]:
+        """Return manager-local source failures keyed by extension and source."""
+        with self._validation_errors_lock:
+            return dict(self._validation_errors)
+
+    def validation_error(self, extension_id: str, source_hash: str) -> str | None:
+        """Return a source failure observed only by this manager process."""
+        with self._validation_errors_lock:
+            return self._validation_errors.get((extension_id, source_hash))
+
+    def _source_is_healthy(self, extension_id: str, source_hash: str) -> bool:
+        return self.validation_error(extension_id, source_hash) is None
+
+    def _set_validation_error(
+        self, extension_id: str, source_hash: str, detail: str | None
+    ) -> None:
+        key = (extension_id, source_hash)
+        changed = False
+        with self._validation_errors_lock:
+            if detail is None:
+                changed = self._validation_errors.pop(key, None) is not None
+            elif self._validation_errors.get(key) != detail:
+                self._validation_errors[key] = detail
+                changed = True
+        if changed:
+            self.validation_changed.emit()
+
+    def prune_validation_errors(self, catalog: _ExtensionCatalogModel) -> None:
+        """Discard failures for sources that are no longer current."""
+        current = {
+            (record.id, record.source.source_hash)
+            for record in catalog.extensions.values()
+        }
+        with self._validation_errors_lock:
+            for key in tuple(self._validation_errors):
+                if key not in current:
+                    self._validation_errors.pop(key)
 
     @property
     def active(self) -> _ExtensionRoutineJob | None:
@@ -968,10 +1043,19 @@ class _ExtensionExecutionController(QtCore.QObject):
             parameters,
             self._catalog.store,
             self._script_modules,
+            source_is_healthy=self._source_is_healthy,
         )
-        self._run_blocking_task(task)
+        try:
+            self._run_blocking_task(task)
+        except BaseException:
+            if task.source_failure:
+                self._set_validation_error(
+                    call.extension_id, call.source_hash, task.traceback_text
+                )
+            raise
         if task.output is None:
             raise ExtensionExecutionError("The extension loader returned no result")
+        self._set_validation_error(call.extension_id, call.source_hash, None)
         return task.output
 
     def validate_and_enable(
@@ -998,6 +1082,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         *,
         expected_record_generation: int,
         enable_extension: bool,
+        persist_result: bool = True,
     ) -> _ExtensionCatalogModel:
         """Validate one registered source on the manager extension thread."""
         catalog_store = self._catalog.store
@@ -1018,10 +1103,19 @@ class _ExtensionExecutionController(QtCore.QObject):
             script_modules=self._script_modules,
             check_loader_filter_conflicts=enable_extension,
             enable_extension=enable_extension,
+            persist_result=persist_result,
         )
-        self._run_blocking_task(task, wait_message="Validating extension...")
+        try:
+            self._run_blocking_task(task, wait_message="Validating extension...")
+        except BaseException:
+            if task.source_failure:
+                self._set_validation_error(
+                    extension_id, source_hash, task.traceback_text
+                )
+            raise
         if task.output is None:
             raise ExtensionExecutionError("Extension validation returned no result")
+        self._set_validation_error(extension_id, source_hash, None)
         return task.output
 
     def _run_blocking_task(
@@ -1243,6 +1337,7 @@ class _ExtensionExecutionController(QtCore.QObject):
                 manager_session_id=self._manager_session_id,
                 catalog_store=job.catalog_store,
                 script_modules=self._script_modules,
+                source_is_healthy=self._source_is_healthy,
             )
             worker.signals.finished.connect(self._finished_slot)
             worker.signals.started.connect(self._started_slot)
@@ -1260,6 +1355,16 @@ class _ExtensionExecutionController(QtCore.QObject):
         active[1].signals.finished.disconnect(self._finished_slot)
         active[1].signals.started.disconnect(self._started_slot)
         self._active = None
+        if result.source_failure:
+            self._set_validation_error(
+                result.job.extension_id,
+                result.job.source_hash,
+                result.traceback_text,
+            )
+        elif result.status == "success":
+            self._set_validation_error(
+                result.job.extension_id, result.job.source_hash, None
+            )
         waiter = self._routine_waiters.pop(result.job.job_id, None)
         if waiter is not None:
             waiter.result = result
