@@ -2,29 +2,38 @@
 
 from __future__ import annotations
 
-import os
+import keyword
+import pathlib
+import re
 import typing
 
 import pydantic
 
 import erlab
 from erlab.extensions._models import (
+    _PackageExtensionReference,
+    _parse_public_call_reference,
     _require_finite_parameter_values,
-    _validate_revision_hash,
+    _validate_source_hash,
 )
 from erlab.interactive.imagetool._provenance._code import _provenance_value_code
-from erlab.interactive.imagetool._provenance._model import ToolProvenanceOperation
+from erlab.interactive.imagetool._provenance._model import (
+    DerivationEntry,
+    ToolProvenanceOperation,
+)
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Collection
+
     import xarray as xr
 
 
 class ExtensionRoutineOperation(ToolProvenanceOperation):
-    """Apply one exact revision of a user extension routine."""
+    """Apply a user extension routine from an identified source snapshot."""
 
     op: typing.Literal["extension_routine"] = "extension_routine"
     extension_id: str
-    revision_hash: str
+    source_hash: str
     routine_id: str
     extension_name: str
     routine_name: str
@@ -33,12 +42,14 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
     source_path: str | None
     entry_point_group: str | None
     entry_point_name: str | None
+    package: _PackageExtensionReference | None = None
+    public_call_reference: str | None = None
     parameters: dict[str, bool | int | float | str | None]
 
-    @pydantic.field_validator("revision_hash")
+    @pydantic.field_validator("source_hash")
     @classmethod
-    def _valid_revision_hash(cls, value: str) -> str:
-        return _validate_revision_hash(value)
+    def _valid_source_hash(cls, value: str) -> str:
+        return _validate_source_hash(value)
 
     @pydantic.field_validator("parameters")
     @classmethod
@@ -48,11 +59,19 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
         _require_finite_parameter_values(value)
         return value
 
+    @pydantic.model_validator(mode="after")
+    def _validate_package_reference(self) -> typing.Self:
+        if self.source_type == "script" and self.package is not None:
+            raise ValueError(
+                "script extension provenance cannot contain package identity"
+            )
+        return self
+
     def apply(self, data: xr.DataArray) -> xr.DataArray:
         return erlab.extensions.run_routine(
             data,
             extension_id=self.extension_id,
-            revision=self.revision_hash,
+            source_hash=self.source_hash,
             routine_id=self.routine_id,
             parameters=self.parameters,
         )
@@ -60,43 +79,103 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
     def derivation_label(self) -> str:
         return f"Run {self.routine_name} ({self.extension_name})"
 
+    def derivation_entry(self) -> DerivationEntry:
+        try:
+            code = self.replay_code(
+                "derived", output_name="derived", source_name="data"
+            )
+        except NotImplementedError:
+            code = None
+        return DerivationEntry(self.derivation_label(), code, code is not None)
+
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        raise NotImplementedError
+
+    def statement_code(
+        self,
+        input_name: str,
+        *,
+        output_name: str,
+        source_name: str | None = None,
+    ) -> str:
+        return self._extension_statement_code(
+            input_name, output_name=output_name, reserved_names=()
+        )
+
+    def _statement_replay_code(
+        self,
+        input_name: str,
+        *,
+        output_name: str,
+        source_name: str | None = None,
+        reserved_names: Collection[str] = (),
+    ) -> str:
+        return self._extension_statement_code(
+            input_name,
+            output_name=output_name,
+            reserved_names=reserved_names,
+        )
+
+    def _extension_statement_code(
+        self,
+        input_name: str,
+        *,
+        output_name: str,
+        reserved_names: Collection[str],
     ) -> str:
         parameters = tuple(
             f"    {name}={_provenance_value_code(value)},"
             for name, value in self.parameters.items()
         )
+        unavailable = {input_name, output_name, *reserved_names}
         if self.source_type == "script":
-            from erlab.extensions._api import _resolved_revision
+            from erlab.extensions._api import _resolved_script_capability_reference
 
-            source_path = self.source_path
             try:
-                source_path = os.fspath(
-                    _resolved_revision(self.extension_id, self.revision_hash)
+                resolved_path, function_name = _resolved_script_capability_reference(
+                    self.extension_id,
+                    "routine",
+                    self.routine_id,
                 )
-            except erlab.extensions.ExtensionNotFoundError:
-                if source_path is None:
-                    raise
-            loader = (
-                "erlab.extensions.load_script(\n"
-                f"    {source_path!r},\n"
-                f"    expected_revision={self.revision_hash!r},\n"
-                ")"
+            except erlab.extensions.ExtensionNotFoundError as error:
+                raise NotImplementedError from error
+            source_path = pathlib.Path(resolved_path)
+            module_base = re.sub(r"\W", "_", source_path.stem)
+            if not module_base.isidentifier() or keyword.iskeyword(module_base):
+                module_base = "extension_script"
+            module_name = module_base
+            suffix = 2
+            while module_name in unavailable:
+                module_name = f"{module_base}_{suffix}"
+                suffix += 1
+            call_target = f"{module_name}.{function_name}"
+            prelude = (
+                "from erlab.extensions import load_script",
+                "",
+                f"{module_name} = load_script({str(source_path)!r})",
             )
         else:
-            if self.entry_point_group is None or self.entry_point_name is None:
-                raise ValueError("Environment extension provenance is incomplete")
-            loader = (
-                "erlab.extensions.load_entry_point(\n"
-                f"    {self.entry_point_group!r},\n"
-                f"    {self.entry_point_name!r},\n"
-                f"    expected_revision={self.revision_hash!r},\n"
-                ")"
-            )
+            parsed_reference = _parse_public_call_reference(self.public_call_reference)
+            if parsed_reference is None:
+                raise NotImplementedError
+            module_name, function_name = parsed_reference
+            imported_name = function_name
+            suffix = 2
+            while imported_name in unavailable:
+                imported_name = f"{function_name}_{suffix}"
+                suffix += 1
+            import_line = f"from {module_name} import {function_name}"
+            if imported_name != function_name:
+                import_line += f" as {imported_name}"
+            call_target = imported_name
+            prelude = (import_line,)
         return "\n".join(
             (
-                f"{loader}.{self.function_name}(",
+                *prelude,
+                "",
+                f"{output_name} = {call_target}(",
                 f"    {input_name},",
                 *parameters,
                 ")",

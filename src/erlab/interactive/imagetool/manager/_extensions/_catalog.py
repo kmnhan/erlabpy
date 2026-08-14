@@ -1,7 +1,8 @@
-"""Atomic global catalog for ImageTool Manager extensions."""
+"""Persistent script catalog and live package discovery for extensions."""
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import hashlib
 import importlib.metadata
@@ -34,20 +35,20 @@ from erlab.extensions._api import (
     _resolve_loader_method,
     _set_capability_resolver,
     _set_capability_status_resolver,
-    _set_revision_resolver,
+    _set_script_capability_reference_resolver,
+    _set_source_resolver,
 )
 from erlab.extensions._entry_points import (
-    _entry_point_revision,
-    _entry_point_revision_payload,
-    _EntryPointRevisionError,
+    _entry_point_source_payload,
+    _EntryPointInspectionError,
     _load_entry_point_value,
 )
 from erlab.interactive.imagetool.manager._extensions._models import (
     _EnvironmentLoaderMethod,
     _ExtensionCatalogModel,
     _ExtensionRecord,
-    _ExtensionRevision,
-    _revision_loader_name_filters,
+    _ExtensionSource,
+    _source_loader_name_filters,
 )
 
 if typing.TYPE_CHECKING:
@@ -85,6 +86,86 @@ def _safe_extension_id(value: str) -> str:
     return normalized
 
 
+def _catalog_payload_v1(payload: object) -> object:
+    """Normalize catalogs written by unreleased extension prototypes."""
+    if not isinstance(payload, dict) or payload.get("schema_version", 1) not in {
+        1,
+        2,
+        3,
+        4,
+    }:
+        return payload
+    migrated = dict(payload)
+    migrated["schema_version"] = 1
+    raw_extensions = migrated.get("extensions", {})
+    if not isinstance(raw_extensions, dict):
+        return migrated
+    favorites = {
+        tuple(value)
+        for value in migrated.get("routine_favorites", ())
+        if isinstance(value, (list, tuple)) and len(value) == 2
+    }
+    extensions: dict[str, object] = {}
+    for extension_id, raw_record in raw_extensions.items():
+        if not isinstance(extension_id, str) or not isinstance(raw_record, dict):
+            extensions[extension_id] = raw_record
+            continue
+        record = dict(raw_record)
+        removed = record.pop("removed", False)
+        favorite = record.pop("favorite", False)
+        record.pop("metadata", None)
+        source_type = record.get("source_type", "script")
+        if source_type == "environment-package":
+            continue
+        if removed and source_type == "script":
+            continue
+        revisions = record.pop("revisions", None)
+        current_revision = record.pop("current_revision", None)
+        if isinstance(revisions, dict):
+            current = revisions.get(current_revision)
+            if isinstance(current, dict):
+                current = dict(current)
+                current.pop("change_summary", None)
+                if "registered_at" not in current and "created_at" in current:
+                    current["registered_at"] = current.pop("created_at")
+                record["source"] = current
+                if favorite:
+                    for routine in current.get("routines", ()):
+                        if isinstance(routine, dict) and isinstance(
+                            routine.get("id"), str
+                        ):
+                            favorites.add((extension_id, routine["id"]))
+        source = record.get("source")
+        if isinstance(source, dict):
+            source = dict(source)
+            source.pop("change_summary", None)
+            if "registered_at" not in source and "created_at" in source:
+                source["registered_at"] = source.pop("created_at")
+            record["source"] = source
+        extensions[extension_id] = record
+    migrated["extensions"] = extensions
+    migrated["routine_favorites"] = tuple(sorted(favorites))
+    return migrated
+
+
+def _catalog_with_canonical_names(
+    catalog: _ExtensionCatalogModel,
+) -> _ExtensionCatalogModel:
+    """Use source filenames and entry-point names as persisted visible names."""
+    records = dict(catalog.extensions)
+    changed = False
+    for extension_id, record in catalog.extensions.items():
+        canonical_name = (
+            pathlib.Path(record.source.source_path).name
+            if record.source_type == "script" and record.source.source_path
+            else None
+        )
+        if canonical_name and canonical_name != record.name:
+            records[extension_id] = record.model_copy(update={"name": canonical_name})
+            changed = True
+    return catalog.model_copy(update={"extensions": records}) if changed else catalog
+
+
 class _ExtensionCatalogStore:
     """Own catalog locking, generation checks, and atomic commits.
 
@@ -92,15 +173,10 @@ class _ExtensionCatalogStore:
     merge an unrelated global change, but a changed ``record_generation`` rejects
     stale edits to the same extension.
 
-    Environment entry-point verification is shared by managers in this process.
-    Startup and explicit refresh replace the cache. Routine status checks use the
-    verified entries without scanning editable source trees again.
+    Only script registrations and user preferences cross the persistence boundary.
+    Environment packages are derived from the running interpreter and stay in
+    memory for this store's lifetime.
     """
-
-    _environment_entry_points: typing.ClassVar[
-        dict[tuple[str, str, str, str], importlib.metadata.EntryPoint]
-    ] = {}
-    _environment_entry_points_lock: typing.ClassVar[threading.RLock] = threading.RLock()
 
     def __init__(self, directory: os.PathLike[str] | str | None = None) -> None:
         self.directory = (
@@ -111,17 +187,39 @@ class _ExtensionCatalogStore:
         self.path = self.directory / "catalog.json"
         self.lock_path = self.directory / "catalog.json.lock"
         self.objects_directory = self.directory / "objects"
+        self._environment_extensions: dict[str, _ExtensionRecord] = {}
+        self._environment_entry_points: dict[
+            tuple[str, str, str, str], importlib.metadata.EntryPoint
+        ] = {}
+        self._environment_lock = threading.RLock()
 
     def read(self) -> _ExtensionCatalogModel:
         if not self.path.exists():
             return _ExtensionCatalogModel()
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
-            return _ExtensionCatalogModel.model_validate(payload)
+            catalog = _ExtensionCatalogModel.model_validate(
+                _catalog_payload_v1(payload)
+            )
         except (OSError, ValueError) as error:
             raise _ExtensionCatalogError(
                 f"Could not read the extension catalog: {error}"
             ) from error
+        return _catalog_with_canonical_names(catalog)
+
+    def view(self) -> _ExtensionCatalogModel:
+        """Return persistent scripts together with live environment packages."""
+        catalog = self.read()
+        with self._environment_lock:
+            environment_extensions = dict(self._environment_extensions)
+        return catalog.model_copy(
+            update={
+                "extensions": {
+                    **environment_extensions,
+                    **catalog.extensions,
+                }
+            }
+        )
 
     def _lock(self) -> QtCore.QLockFile:
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -134,6 +232,13 @@ class _ExtensionCatalogStore:
         return lock
 
     def _write_unlocked(self, catalog: _ExtensionCatalogModel) -> None:
+        if any(
+            record.source_type == "environment-package"
+            for record in catalog.extensions.values()
+        ):
+            raise _ExtensionCatalogError(
+                "Environment packages cannot be written to the extension catalog"
+            )
         self.directory.mkdir(parents=True, exist_ok=True)
         payload = (catalog.model_dump_json(indent=2) + "\n").encode()
         save_file = QtCore.QSaveFile(os.fspath(self.path))
@@ -150,6 +255,26 @@ class _ExtensionCatalogStore:
             raise _ExtensionCatalogError(
                 f"Could not commit the extension catalog: {save_file.errorString()}"
             )
+
+    def clean_unreleased_catalog(self) -> None:
+        """Remove prototype fields and package records from the persistent file."""
+        if not self.path.exists():
+            return
+        lock = self._lock()
+        try:
+            try:
+                payload = json.loads(self.path.read_text(encoding="utf-8"))
+                normalized = _catalog_with_canonical_names(
+                    _ExtensionCatalogModel.model_validate(_catalog_payload_v1(payload))
+                )
+            except (OSError, ValueError) as error:
+                raise _ExtensionCatalogError(
+                    f"Could not read the extension catalog: {error}"
+                ) from error
+            if payload != normalized.model_dump(mode="json"):
+                self._write_unlocked(normalized)
+        finally:
+            lock.unlock()
 
     def _commit_with_staged_objects(
         self, catalog: _ExtensionCatalogModel, object_names: set[str]
@@ -223,7 +348,7 @@ class _ExtensionCatalogStore:
                     raise _ExtensionCatalogConflictError(
                         f"Extension {extension_id!r} changed in another manager"
                     )
-            updated = callback(current)
+            updated = _catalog_with_canonical_names(callback(current))
             if updated == current:
                 return current
             updated = updated.model_copy(update={"generation": current.generation + 1})
@@ -235,24 +360,86 @@ class _ExtensionCatalogStore:
         finally:
             lock.unlock()
 
-    def source_path(self, extension_id: str, revision: str) -> pathlib.Path:
+    def recovery_source_path(self, extension_id: str, source_hash: str) -> pathlib.Path:
+        """Return the recovery copy when it matches the registered source."""
         record = self.read().extensions.get(extension_id)
-        if record is None or revision not in record.revisions:
-            raise KeyError(f"Unknown extension revision {extension_id}:{revision}")
-        path = self.objects_directory / record.revisions[revision].object_name
+        if record is None or record.source.source_hash != source_hash:
+            raise KeyError(f"Unknown extension source {extension_id}:{source_hash}")
+        path = self.objects_directory / record.source.object_name
         if not path.is_file():
             raise FileNotFoundError(path)
         return path
 
-    def _store_script_source(self, source: bytes, revision_hash: str) -> str:
+    def executable_source_path(
+        self, extension_id: str, source_hash: str
+    ) -> pathlib.Path:
+        """Return a registered user file only when it matches the source hash.
+
+        Managed source objects are recovery copies. They must not become an
+        implicit execution location when a user-owned script is missing or changed.
+        """
+        record = self.read().extensions.get(extension_id)
+        if record is None or record.source.source_hash != source_hash:
+            raise KeyError(f"Unknown extension source {extension_id}:{source_hash}")
+        if record.source_type != "script" or record.source.source_path is None:
+            raise FileNotFoundError(
+                f"Extension {extension_id}:{source_hash} has no registered script file"
+            )
+        path = pathlib.Path(record.source.source_path).expanduser().resolve()
+        try:
+            source = path.read_bytes()
+        except OSError as error:
+            raise FileNotFoundError(path) from error
+        if hashlib.sha256(source).hexdigest() != source_hash:
+            raise _ExtensionCatalogConflictError(
+                f"Registered script {path} does not match source {source_hash}"
+            )
+        return path
+
+    def script_capability_reference(
+        self,
+        extension_id: str,
+        kind: str,
+        capability_id: str,
+    ) -> tuple[pathlib.Path, str]:
+        """Return the current validated user path and public function name.
+
+        Copied code follows the locally registered script. Runtime checks use
+        :meth:`executable_source_path` to reject changed source.
+        """
+        record = self.read().extensions.get(extension_id)
+        if record is None or record.source_type != "script":
+            raise KeyError(extension_id)
+        source = record.source
+        descriptors = (
+            source.routines
+            if kind == "routine"
+            else source.loaders
+            if kind == "loader"
+            else ()
+        )
+        descriptor = next(
+            (item for item in descriptors if item.id == capability_id), None
+        )
+        if descriptor is None or not source.approved:
+            raise KeyError(capability_id)
+        try:
+            path = self.executable_source_path(extension_id, source.source_hash)
+        except _ExtensionCatalogConflictError as error:
+            raise FileNotFoundError(
+                f"Registered script {extension_id!r} changed on disk"
+            ) from error
+        return path, descriptor.function_name
+
+    def _store_script_source(self, source: bytes, source_hash: str) -> str:
         """Store verified bytes and atomically repair a corrupt source object."""
-        if hashlib.sha256(source).hexdigest() != revision_hash:
-            raise ValueError("Extension source does not match its revision hash")
-        object_name = f"{revision_hash}.py"
+        if hashlib.sha256(source).hexdigest() != source_hash:
+            raise ValueError("Extension source does not match its source hash")
+        object_name = f"{source_hash}.py"
         self.objects_directory.mkdir(parents=True, exist_ok=True)
         object_path = self.objects_directory / object_name
         try:
-            if hashlib.sha256(object_path.read_bytes()).hexdigest() == revision_hash:
+            if hashlib.sha256(object_path.read_bytes()).hexdigest() == source_hash:
                 return object_name
         except OSError:
             pass
@@ -271,281 +458,199 @@ class _ExtensionCatalogStore:
         path: os.PathLike[str] | str,
         *,
         extension_id: str | None = None,
-        name: str | None = None,
-        change_summary: str | None = None,
         approved: bool = False,
-        expected_revision: str | None = None,
+        expected_source_hash: str | None = None,
         expected_record_generation: int | None = None,
         check_record_generation: bool = False,
     ) -> tuple[_ExtensionCatalogModel, str, bool]:
         source_path = pathlib.Path(path).expanduser().resolve()
         source = source_path.read_bytes()
-        revision_hash = hashlib.sha256(source).hexdigest()
-        if expected_revision is not None and revision_hash != expected_revision:
+        source_hash = hashlib.sha256(source).hexdigest()
+        if expected_source_hash is not None and source_hash != expected_source_hash:
             raise _ExtensionCatalogConflictError(
                 "The script source changed after it was reviewed"
             )
         extension_id = _safe_extension_id(extension_id or source_path.stem)
-        object_name = self._store_script_source(source, revision_hash)
+        object_path = self.objects_directory / f"{source_hash}.py"
+        object_existed = object_path.is_file()
+        object_name = self._store_script_source(source, source_hash)
         modified_at = (
             datetime.datetime.fromtimestamp(source_path.stat().st_mtime)
             .astimezone()
             .isoformat(timespec="seconds")
         )
         now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
-        created = False
+        changed = False
+        replaced_object_name: str | None = None
 
         def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
-            nonlocal created
+            nonlocal changed, replaced_object_name
             records = dict(catalog.extensions)
             existing = records.get(extension_id)
-            if existing is not None and existing.source_type != "script":
-                raise _ExtensionCatalogConflictError(
-                    f"Extension {extension_id!r} is an environment package"
-                )
-            if existing is not None and revision_hash == existing.current_revision:
-                current = existing.revisions[revision_hash]
-                updated_revision = current.model_copy(
+            if existing is not None and source_hash == existing.source.source_hash:
+                updated_source = existing.source.model_copy(
                     update={
                         "source_path": os.fspath(source_path),
                         "source_modified_at": modified_at,
-                        "change_summary": (
-                            current.change_summary
-                            if change_summary is None
-                            else change_summary
-                        ),
                     }
                 )
-                if updated_revision != current:
-                    revisions = dict(existing.revisions)
-                    revisions[revision_hash] = updated_revision
+                if (
+                    updated_source != existing.source
+                    or existing.name != source_path.name
+                ):
                     records[extension_id] = existing.model_copy(
                         update={
-                            "revisions": revisions,
+                            "name": source_path.name,
+                            "source": updated_source,
                             "record_generation": existing.record_generation + 1,
                         }
                     )
                     return catalog.model_copy(update={"extensions": records})
                 return catalog
-            if existing is not None and revision_hash in existing.revisions:
-                revisions = dict(existing.revisions)
-                revisions[revision_hash] = revisions[revision_hash].model_copy(
-                    update={
-                        "source_path": os.fspath(source_path),
-                        "source_modified_at": modified_at,
-                        "change_summary": (
-                            revisions[revision_hash].change_summary
-                            if change_summary is None
-                            else change_summary
-                        ),
-                    }
-                )
-                records[extension_id] = existing.model_copy(
-                    update={
-                        "current_revision": revision_hash,
-                        "enabled": False,
-                        "revisions": revisions,
-                        "record_generation": existing.record_generation + 1,
-                    }
-                )
-                created = True
-                return catalog.model_copy(update={"extensions": records})
-            revision = _ExtensionRevision(
-                source_hash=revision_hash,
+            registered_source = _ExtensionSource(
+                source_hash=source_hash,
                 object_name=object_name,
-                change_summary=change_summary or "",
                 source_path=os.fspath(source_path),
                 source_modified_at=modified_at,
-                created_at=now,
+                registered_at=now,
                 approved=approved,
             )
             if existing is None:
                 record = _ExtensionRecord(
                     id=extension_id,
-                    name=name or source_path.stem.replace("_", " ").title(),
-                    current_revision=revision_hash,
-                    revisions={revision_hash: revision},
+                    name=source_path.name,
+                    source=registered_source,
                     record_generation=1,
                 )
             else:
-                revisions = dict(existing.revisions)
-                revisions[revision_hash] = revision
+                replaced_object_name = existing.source.object_name
                 record = existing.model_copy(
                     update={
-                        "current_revision": revision_hash,
+                        "name": source_path.name,
                         "enabled": False,
-                        "revisions": revisions,
+                        "source": registered_source,
                         "record_generation": existing.record_generation + 1,
                     }
                 )
             records[extension_id] = record
-            created = True
+            changed = True
             return catalog.model_copy(update={"extensions": records})
 
-        catalog = self.mutate(
-            extension_id,
-            update,
-            expected_record_generation=expected_record_generation,
-            check_record_generation=check_record_generation,
-        )
-        return catalog, revision_hash, created
-
-    def add_embedded_script(
-        self,
-        source: bytes,
-        *,
-        extension_id: str,
-        expected_revision: str,
-        name: str,
-        change_summary: str | None = None,
-        source_modified_at: str | None = None,
-        expected_record_generation: int | None = None,
-        check_record_generation: bool = False,
-    ) -> _ExtensionCatalogModel:
-        """Copy approved workspace source into this catalog."""
-        actual_revision = hashlib.sha256(source).hexdigest()
-        if actual_revision != expected_revision:
-            raise ValueError(
-                "Embedded extension source hash does not match its manifest"
+        try:
+            catalog = self.mutate(
+                extension_id,
+                update,
+                expected_record_generation=expected_record_generation,
+                check_record_generation=check_record_generation,
             )
-        extension_id = _safe_extension_id(extension_id)
-        object_name = self._store_script_source(source, actual_revision)
-        now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
-
-        def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
-            records = dict(catalog.extensions)
-            existing = records.get(extension_id)
-            if existing is not None and existing.source_type != "script":
-                raise _ExtensionCatalogConflictError(
-                    f"Extension {extension_id!r} is an environment package"
+        except Exception:
+            if not object_existed:
+                try:
+                    current = self.read()
+                except _ExtensionCatalogError:
+                    current = None
+                referenced = current is not None and any(
+                    record.source.object_name == object_name
+                    for record in current.extensions.values()
                 )
-            revision = _ExtensionRevision(
-                source_hash=actual_revision,
-                object_name=object_name,
-                change_summary=change_summary or "",
-                source_modified_at=source_modified_at,
-                created_at=now,
-                approved=False,
+                if not referenced:
+                    with contextlib.suppress(OSError):
+                        object_path.unlink(missing_ok=True)
+            raise
+        if (
+            replaced_object_name is not None
+            and replaced_object_name != object_name
+            and not any(
+                record.source.object_name == replaced_object_name
+                for record in catalog.extensions.values()
             )
-            if existing is None:
-                records[extension_id] = _ExtensionRecord(
-                    id=extension_id,
-                    name=name,
-                    current_revision=actual_revision,
-                    revisions={actual_revision: revision},
-                    record_generation=1,
-                )
-            else:
-                revisions = dict(existing.revisions)
-                current_revision = revisions.get(actual_revision)
-                if current_revision is None:
-                    revisions[actual_revision] = revision
-                elif (
-                    current_revision.source_modified_at is None
-                    and source_modified_at is not None
-                ):
-                    revisions[actual_revision] = current_revision.model_copy(
-                        update={
-                            "source_modified_at": source_modified_at,
-                            "change_summary": (
-                                current_revision.change_summary
-                                if change_summary is None
-                                else change_summary
-                            ),
-                        }
-                    )
-                elif (
-                    change_summary is not None
-                    and current_revision.change_summary != change_summary
-                ):
-                    revisions[actual_revision] = current_revision.model_copy(
-                        update={"change_summary": change_summary}
-                    )
-                records[extension_id] = existing.model_copy(
-                    update={
-                        "current_revision": actual_revision,
-                        "enabled": False,
-                        "revisions": revisions,
-                        "record_generation": existing.record_generation + 1,
-                    }
-                )
-            return catalog.model_copy(update={"extensions": records})
-
-        return self.mutate(
-            extension_id,
-            update,
-            expected_record_generation=expected_record_generation,
-            check_record_generation=check_record_generation,
-        )
+        ):
+            with contextlib.suppress(OSError):
+                (self.objects_directory / replaced_object_name).unlink(missing_ok=True)
+        return catalog, source_hash, changed
 
     def record_validation_failure(
         self,
         extension_id: str,
         *,
-        revision_hash: str,
+        source_hash: str,
         expected_record_generation: int,
         import_error: str,
     ) -> _ExtensionCatalogModel:
-        """Persist a failed import without changing a newer revision."""
+        """Persist a failed import without changing a newer source."""
 
         def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
             current = catalog.extensions[extension_id]
-            if current.current_revision != revision_hash:
+            if source_hash != current.source.source_hash:
                 raise _ExtensionCatalogConflictError(
                     f"Extension {extension_id!r} changed during validation"
                 )
-            revisions = dict(current.revisions)
-            revisions[revision_hash] = revisions[revision_hash].model_copy(
+            source = current.source.model_copy(
                 update={"import_error": import_error, "approved": False}
             )
             records = dict(catalog.extensions)
             records[extension_id] = current.model_copy(
                 update={
+                    "source": source,
                     "enabled": False,
-                    "revisions": revisions,
                     "record_generation": current.record_generation + 1,
                 }
             )
             return catalog.model_copy(update={"extensions": records})
 
+        with self._environment_lock:
+            if extension_id in self._environment_extensions:
+                current = self._environment_extensions[extension_id]
+                if current.record_generation != expected_record_generation:
+                    raise _ExtensionCatalogConflictError(
+                        f"Extension {extension_id!r} changed during validation"
+                    )
+                updated = update(self.view())
+                self._environment_extensions[extension_id] = updated.extensions[
+                    extension_id
+                ]
+                return self.view()
         return self.mutate(
             extension_id,
             update,
             expected_record_generation=expected_record_generation,
         )
 
-    def enable_validated_revision(
+    def enable_validated_source(
         self,
         extension_id: str,
         *,
-        revision_hash: str,
+        source_hash: str,
         expected_record_generation: int,
         routines: tuple[RoutineDescriptor, ...],
         loaders: tuple[LoaderDescriptor, ...],
+        routine_call_references: dict[str, str] | None = None,
+        loader_call_references: dict[str, str] | None = None,
         loader_always_single: bool | None,
         loader_dialog_methods: tuple[_EnvironmentLoaderMethod, ...],
+        enable_extension: bool = True,
     ) -> _ExtensionCatalogModel:
         """Commit descriptors produced by execution-layer validation."""
 
         def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
             current = catalog.extensions[extension_id]
-            if current.current_revision != revision_hash:
+            if source_hash != current.source.source_hash:
                 raise _ExtensionCatalogConflictError(
                     f"Extension {extension_id!r} changed during validation"
                 )
-            revisions = dict(current.revisions)
-            revision = revisions[revision_hash]
-            validated_revision = revision.model_copy(
+            validated_source = current.source.model_copy(
                 update={
                     "approved": True,
                     "routines": routines,
                     "loaders": loaders,
+                    "routine_call_references": routine_call_references or {},
+                    "loader_call_references": loader_call_references or {},
                     "import_error": None,
                     "loader_always_single": loader_always_single,
                     "loader_dialog_methods": loader_dialog_methods,
                 }
             )
-            name_filters = _revision_loader_name_filters(validated_revision)
+            name_filters = _source_loader_name_filters(validated_source)
             duplicate_filters = sorted(
                 name_filter
                 for name_filter in set(name_filters)
@@ -559,18 +664,18 @@ class _ExtensionCatalogStore:
                 )
             candidate_filters = set(name_filters)
             candidate_loader_names = (
-                {descriptor.id for descriptor in validated_revision.loaders}
-                if validated_revision.entry_point_group == "erlab.io.loaders"
+                {descriptor.id for descriptor in validated_source.loaders}
+                if validated_source.entry_point_group == "erlab.io.loaders"
                 else set()
             )
             for other in catalog.extensions.values():
                 if other.id == extension_id or not other.enabled:
                     continue
-                other_revision = other.revisions[other.current_revision]
-                if other_revision.entry_point_group == "erlab.io.loaders":
+                other_source = other.source
+                if other_source.entry_point_group == "erlab.io.loaders":
                     loader_name_conflicts = sorted(
                         candidate_loader_names.intersection(
-                            descriptor.id for descriptor in other_revision.loaders
+                            descriptor.id for descriptor in other_source.loaders
                         )
                     )
                     if loader_name_conflicts:
@@ -583,7 +688,7 @@ class _ExtensionCatalogStore:
                         )
                 conflicts = sorted(
                     candidate_filters.intersection(
-                        _revision_loader_name_filters(other_revision)
+                        _source_loader_name_filters(other_source)
                     )
                 )
                 if conflicts:
@@ -592,17 +697,28 @@ class _ExtensionCatalogStore:
                         f"Extension {extension_id!r} conflicts with enabled extension "
                         f"{other.id!r} for file dialog filters: {joined}"
                     )
-            revisions[revision_hash] = validated_revision
             records = dict(catalog.extensions)
             records[extension_id] = current.model_copy(
                 update={
-                    "enabled": True,
-                    "revisions": revisions,
+                    "enabled": current.enabled or enable_extension,
+                    "source": validated_source,
                     "record_generation": current.record_generation + 1,
                 }
             )
             return catalog.model_copy(update={"extensions": records})
 
+        with self._environment_lock:
+            if extension_id in self._environment_extensions:
+                current = self._environment_extensions[extension_id]
+                if current.record_generation != expected_record_generation:
+                    raise _ExtensionCatalogConflictError(
+                        f"Extension {extension_id!r} changed during validation"
+                    )
+                updated = update(self.view())
+                self._environment_extensions[extension_id] = updated.extensions[
+                    extension_id
+                ]
+                return self.view()
         return self.mutate(
             extension_id,
             update,
@@ -610,7 +726,7 @@ class _ExtensionCatalogStore:
         )
 
     def refresh_environment_packages(self) -> _ExtensionCatalogModel:
-        """Refresh entry-point metadata without importing package code."""
+        """Replace the transient entry-point snapshot without importing code."""
         entries = tuple(
             entry
             for group in ("erlab.extensions", "erlab.io.loaders")
@@ -625,9 +741,9 @@ class _ExtensionCatalogStore:
         for entry in entries:
             try:
                 dist_name, dist_version, payload, editable = (
-                    _entry_point_revision_payload(entry)
+                    _entry_point_source_payload(entry)
                 )
-            except _EntryPointRevisionError as error:
+            except _EntryPointInspectionError as error:
                 logger.warning(
                     "Could not inspect environment extension %s:%s",
                     entry.group,
@@ -675,213 +791,117 @@ class _ExtensionCatalogStore:
                     hashlib.sha256(payload.encode()).hexdigest(),
                 )
             )
-        available_ids = {
-            _safe_extension_id(f"environment.{entry.group}.{entry.name}")
-            for entry in entries
-        }
-
-        def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
-            records = dict(catalog.extensions)
-            changed = False
-            for (
-                entry,
-                dist_name,
-                dist_version,
-                editable,
-                revision_hash,
-            ) in inspected_entries:
-                extension_id = _safe_extension_id(
-                    f"environment.{entry.group}.{entry.name}"
-                )
-                existing = records.get(extension_id)
-                if (
-                    existing is not None
-                    and existing.source_type != "environment-package"
-                ):
-                    continue
-                if existing is not None and revision_hash in existing.revisions:
-                    if revision_hash != existing.current_revision:
-                        records[extension_id] = existing.model_copy(
-                            update={
-                                "current_revision": revision_hash,
-                                "enabled": False,
-                                "record_generation": existing.record_generation + 1,
-                            }
-                        )
-                        changed = True
-                    continue
-                revision = _ExtensionRevision(
-                    source_hash=revision_hash,
+        with self._environment_lock:
+            previous = dict(self._environment_extensions)
+        persistent_ids = set(self.read().extensions)
+        records: dict[str, _ExtensionRecord] = {}
+        now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+        for entry, dist_name, dist_version, editable, source_hash in inspected_entries:
+            extension_id = _safe_extension_id(f"environment.{entry.group}.{entry.name}")
+            if extension_id in persistent_ids:
+                continue
+            existing = previous.get(extension_id)
+            if existing is not None and existing.source.source_hash == source_hash:
+                records[extension_id] = existing
+                continue
+            records[extension_id] = _ExtensionRecord(
+                id=extension_id,
+                name=entry.name,
+                source_type="environment-package",
+                source=_ExtensionSource(
+                    source_hash=source_hash,
                     object_name=entry.value,
-                    created_at=datetime.datetime.now()
-                    .astimezone()
-                    .isoformat(timespec="seconds"),
+                    registered_at=now,
                     entry_point_group=entry.group,
                     entry_point_name=entry.name,
                     entry_point_value=entry.value,
                     distribution_name=dist_name,
                     distribution_version=dist_version,
                     editable=editable,
-                )
-                if existing is None:
-                    records[extension_id] = _ExtensionRecord(
-                        id=extension_id,
-                        name=entry.name.replace("_", " ").title(),
-                        source_type="environment-package",
-                        current_revision=revision_hash,
-                        revisions={revision_hash: revision},
-                        record_generation=1,
-                    )
-                else:
-                    revisions = dict(existing.revisions)
-                    revisions[revision_hash] = revision
-                    records[extension_id] = existing.model_copy(
-                        update={
-                            "current_revision": revision_hash,
-                            "enabled": False,
-                            "revisions": revisions,
-                            "record_generation": existing.record_generation + 1,
-                        }
-                    )
-                changed = True
-            for (
-                entry,
-                dist_name,
-                dist_version,
-                import_error,
-                revision_hash,
-            ) in inspection_failures:
-                extension_id = _safe_extension_id(
-                    f"environment.{entry.group}.{entry.name}"
-                )
-                existing = records.get(extension_id)
-                if (
-                    existing is not None
-                    and existing.source_type != "environment-package"
-                ):
-                    continue
-                if existing is not None and revision_hash in existing.revisions:
-                    if existing.current_revision != revision_hash or existing.enabled:
-                        records[extension_id] = existing.model_copy(
-                            update={
-                                "current_revision": revision_hash,
-                                "enabled": False,
-                                "record_generation": (existing.record_generation + 1),
-                            }
-                        )
-                        changed = True
-                    continue
-                revision = _ExtensionRevision(
-                    source_hash=revision_hash,
+                ),
+                record_generation=(
+                    1 if existing is None else existing.record_generation + 1
+                ),
+            )
+        for (
+            entry,
+            dist_name,
+            dist_version,
+            import_error,
+            source_hash,
+        ) in inspection_failures:
+            extension_id = _safe_extension_id(f"environment.{entry.group}.{entry.name}")
+            if extension_id in persistent_ids:
+                continue
+            existing = previous.get(extension_id)
+            records[extension_id] = _ExtensionRecord(
+                id=extension_id,
+                name=entry.name,
+                source_type="environment-package",
+                source=_ExtensionSource(
+                    source_hash=source_hash,
                     object_name=entry.value,
-                    created_at=datetime.datetime.now()
-                    .astimezone()
-                    .isoformat(timespec="seconds"),
+                    registered_at=now,
                     import_error=import_error,
                     entry_point_group=entry.group,
                     entry_point_name=entry.name,
                     entry_point_value=entry.value,
                     distribution_name=dist_name,
                     distribution_version=dist_version,
-                )
-                if existing is None:
-                    records[extension_id] = _ExtensionRecord(
-                        id=extension_id,
-                        name=entry.name.replace("_", " ").title(),
-                        source_type="environment-package",
-                        current_revision=revision_hash,
-                        revisions={revision_hash: revision},
-                        record_generation=1,
-                    )
-                else:
-                    revisions = dict(existing.revisions)
-                    revisions[revision_hash] = revision
-                    records[extension_id] = existing.model_copy(
-                        update={
-                            "current_revision": revision_hash,
-                            "enabled": False,
-                            "revisions": revisions,
-                            "record_generation": existing.record_generation + 1,
-                        }
-                    )
-                changed = True
-            for extension_id, record in tuple(records.items()):
-                if (
-                    record.source_type == "environment-package"
-                    and extension_id not in available_ids
-                ):
-                    del records[extension_id]
-                    changed = True
-            if not changed:
-                return catalog
-            return catalog.model_copy(
-                update={
-                    "extensions": records,
-                    "routine_favorites": tuple(
-                        favorite
-                        for favorite in catalog.routine_favorites
-                        if favorite[0] in records
-                    ),
-                }
+                ),
+                record_generation=(
+                    1 if existing is None else existing.record_generation + 1
+                ),
             )
-
-        catalog = self.mutate(None, update)
+        with self._environment_lock:
+            self._environment_extensions = records
         verified_entries = {
-            (entry.group, entry.name, entry.value, revision_hash): entry
+            (entry.group, entry.name, entry.value, source_hash): entry
             for (
                 entry,
                 _dist_name,
                 _dist_version,
                 _editable,
-                revision_hash,
+                source_hash,
             ) in inspected_entries
         }
-        with self._environment_entry_points_lock:
-            type(self)._environment_entry_points = verified_entries
-        return catalog
+        with self._environment_lock:
+            self._environment_entry_points = verified_entries
+        return self.view()
 
-    def _entry_point_for_revision(
-        self, revision: _ExtensionRevision
+    def _entry_point_for_source(
+        self, source: _ExtensionSource
     ) -> importlib.metadata.EntryPoint:
         key = (
-            revision.entry_point_group or "",
-            revision.entry_point_name or "",
-            revision.entry_point_value or "",
-            revision.source_hash,
+            source.entry_point_group or "",
+            source.entry_point_name or "",
+            source.entry_point_value or "",
+            source.source_hash,
         )
-        with self._environment_entry_points_lock:
+        with self._environment_lock:
             cached = self._environment_entry_points.get(key)
-            if cached is not None:
-                return cached
-            for entry_point in importlib.metadata.entry_points().select(group=key[0]):
-                if entry_point.name == key[1] and entry_point.value == key[2]:
-                    try:
-                        revision_hash = _entry_point_revision(entry_point)
-                    except _EntryPointRevisionError:
-                        continue
-                    if revision_hash == revision.source_hash:
-                        self._environment_entry_points[key] = entry_point
-                        return entry_point
-        raise ImportError("The exact environment package revision is unavailable")
+        if cached is not None:
+            return cached
+        raise ImportError("The registered environment package source is unavailable")
 
     def resolve_capability(
         self,
         extension_id: str,
-        revision_hash: str,
+        source_hash: str,
         kind: str,
         capability_id: str,
         method: str | None = None,
     ) -> Callable[..., typing.Any]:
-        """Resolve a pinned capability and an approved loader method."""
-        record = self.read().extensions.get(extension_id)
-        if record is None or revision_hash not in record.revisions:
-            raise KeyError(f"Unknown extension revision {extension_id}:{revision_hash}")
-        revision = record.revisions[revision_hash]
+        """Resolve a capability from the current approved source."""
+        record = self.view().extensions.get(extension_id)
+        if record is None or source_hash != record.source.source_hash:
+            raise KeyError(f"Unknown extension source {extension_id}:{source_hash}")
+        source = record.source
         if not record.enabled:
             raise ExtensionNotFoundError(f"Extension {extension_id!r} is disabled")
-        if not revision.approved:
+        if not source.approved:
             raise ExtensionNotFoundError(
-                f"Extension revision {extension_id}:{revision_hash} is not approved"
+                f"Extension source {extension_id}:{source_hash} is not approved"
             )
         if record.source_type == "script":
             if method is not None:
@@ -889,8 +909,8 @@ class _ExtensionCatalogStore:
                     "Decorated extension loaders do not provide alternate methods"
                 )
             loaded = load_script(
-                self.source_path(extension_id, revision_hash),
-                expected_revision=revision_hash,
+                self.executable_source_path(extension_id, source_hash),
+                expected_source_hash=source_hash,
             )
             entries = loaded.routines if kind == "routine" else loaded.loaders
             try:
@@ -899,23 +919,23 @@ class _ExtensionCatalogStore:
                 raise KeyError(
                     f"Unknown {kind} capability {capability_id!r}"
                 ) from error
-        entry_point = self._entry_point_for_revision(revision)
+        entry_point = self._entry_point_for_source(source)
         if entry_point.group == "erlab.io.loaders":
             if kind != "loader":
                 raise KeyError(capability_id)
             approved_methods = {
                 None,
-                *(item.method for item in revision.loader_dialog_methods),
+                *(item.method for item in source.loader_dialog_methods),
             }
             if method not in approved_methods:
                 raise ExtensionNotFoundError(
-                    "The requested loader method was not approved for this revision"
+                    "The requested loader method was not approved for this source"
                 )
         elif method is not None:
             raise ExtensionNotFoundError(
                 "Decorated extension loaders do not provide alternate methods"
             )
-        value = _load_entry_point_value(entry_point, revision_hash)
+        value = _load_entry_point_value(entry_point, source_hash)
         if entry_point.group == "erlab.io.loaders":
             from erlab.io.dataloader import LoaderBase
 
@@ -944,35 +964,37 @@ class _ExtensionCatalogStore:
     def capability_status(
         self,
         extension_id: str,
-        revision_hash: str,
+        source_hash: str,
         kind: str,
         capability_id: str,
         source_type: str | None = None,
     ) -> _CapabilityStatus:
         """Resolve exact catalog state without importing extension code."""
-        record = self.read().extensions.get(extension_id)
-        if record is None or revision_hash not in record.revisions:
-            raise KeyError(f"Unknown extension revision {extension_id}:{revision_hash}")
+        record = self.view().extensions.get(extension_id)
+        if record is None or source_hash != record.source.source_hash:
+            raise KeyError(f"Unknown extension source {extension_id}:{source_hash}")
         if source_type is not None and record.source_type != source_type:
-            return "missing-revision"
-        revision = record.revisions[revision_hash]
+            return "missing-source"
+        source = record.source
         if record.source_type == "environment-package":
             try:
-                self._entry_point_for_revision(revision)
+                self._entry_point_for_source(source)
             except ImportError:
-                return "missing-revision"
+                return "missing-source"
         else:
             try:
-                source = (self.objects_directory / revision.object_name).read_bytes()
-            except OSError:
-                return "missing-revision"
-            if hashlib.sha256(source).hexdigest() != revision_hash:
+                self.executable_source_path(extension_id, source_hash)
+            except (FileNotFoundError, KeyError):
+                return "missing-source"
+            except _ExtensionCatalogConflictError:
                 return "hash-mismatch"
-        if revision.import_error:
+        if source.import_error:
             return "import-failed"
-        if not revision.approved:
+        if not source.approved:
+            if record.source_type == "environment-package":
+                return "import-failed"
             return "approval-required"
-        descriptors = revision.routines if kind == "routine" else revision.loaders
+        descriptors = source.routines if kind == "routine" else source.loaders
         descriptor = next(
             (item for item in descriptors if item.id == capability_id), None
         )
@@ -984,22 +1006,21 @@ class _ExtensionCatalogStore:
             return "disabled"
         return "ready"
 
-    def revision_available(self, record: _ExtensionRecord, revision_hash: str) -> bool:
-        """Check an exact revision source without importing extension code."""
-        revision = record.revisions.get(revision_hash)
-        if revision is None:
+    def source_available(self, record: _ExtensionRecord, source_hash: str) -> bool:
+        """Check the registered source without importing extension code."""
+        if record.source.source_hash != source_hash:
             return False
         if record.source_type == "environment-package":
             try:
-                self._entry_point_for_revision(revision)
+                self._entry_point_for_source(record.source)
             except ImportError:
                 return False
             return True
         try:
-            source = (self.objects_directory / revision.object_name).read_bytes()
-        except OSError:
+            self.executable_source_path(record.id, source_hash)
+        except (FileNotFoundError, KeyError, _ExtensionCatalogConflictError):
             return False
-        return hashlib.sha256(source).hexdigest() == revision_hash
+        return True
 
     def update_record(
         self,
@@ -1011,6 +1032,10 @@ class _ExtensionCatalogStore:
     ) -> _ExtensionCatalogModel:
         def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
             record = catalog.extensions[extension_id]
+            if record.source_type != "script":
+                raise _ExtensionCatalogConflictError(
+                    "Environment packages are managed by the Python environment"
+                )
             values: dict[str, typing.Any] = {
                 "record_generation": record.record_generation + 1
             }
@@ -1038,8 +1063,6 @@ class _ExtensionCatalogStore:
         """Add or remove one routine from the application favorites."""
 
         def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
-            if extension_id not in catalog.extensions:
-                raise KeyError(extension_id)
             entry = (extension_id, routine_id)
             favorites = list(catalog.routine_favorites)
             if favorite and entry not in favorites:
@@ -1079,14 +1102,13 @@ class _ExtensionCatalogStore:
             records = dict(current.extensions)
             del records[extension_id]
             referenced_objects = {
-                revision.object_name
+                remaining.source.object_name
                 for remaining in records.values()
                 if remaining.source_type == "script"
-                for revision in remaining.revisions.values()
             }
-            removable_objects = {
-                revision.object_name for revision in record.revisions.values()
-            }.difference(referenced_objects)
+            removable_objects = {record.source.object_name}.difference(
+                referenced_objects
+            )
             updated = current.model_copy(
                 update={
                     "generation": current.generation + 1,
@@ -1125,7 +1147,8 @@ class _ExtensionCatalog(QtCore.QObject):
         super().__init__(parent)
         self._closed = False
         self.store = _ExtensionCatalogStore(directory)
-        self.model = self.store.read()
+        self.store.clean_unreleased_catalog()
+        self.model = self.store.view()
         self._watcher = QtCore.QFileSystemWatcher(self)
         self._schedule_refresh_slot = self._schedule_refresh
         self._watcher.fileChanged.connect(self._schedule_refresh_slot)
@@ -1136,7 +1159,10 @@ class _ExtensionCatalog(QtCore.QObject):
         self._refresh_timer.timeout.connect(self._refresh_slot)
         self._restore_watches()
         self._resolver_owner = uuid.uuid4().hex
-        _set_revision_resolver(self._resolver_owner, self.store.source_path)
+        _set_source_resolver(self._resolver_owner, self.store.executable_source_path)
+        _set_script_capability_reference_resolver(
+            self._resolver_owner, self.store.script_capability_reference
+        )
         _set_capability_resolver(self._resolver_owner, self.store.resolve_capability)
         _set_capability_status_resolver(
             self._resolver_owner, self.store.capability_status
@@ -1166,8 +1192,8 @@ class _ExtensionCatalog(QtCore.QObject):
         if self._closed:
             return
         self._restore_watches()
-        model = self.store.read()
-        if model.generation == self.model.generation:
+        model = self.store.view()
+        if model == self.model:
             return
         self.model = model
         self.changed.emit(model)

@@ -32,7 +32,7 @@ from erlab.extensions._api import (
     _loader_method_reference,
     _resolve_loader_method,
 )
-from erlab.extensions._entry_points import _entry_point_revision
+from erlab.extensions._entry_points import _entry_point_source_hash
 
 if typing.TYPE_CHECKING:
     import importlib.machinery
@@ -106,7 +106,7 @@ def test_loader_decorator_rejects_invalid_extensions() -> None:
         loader(extensions=typing.cast("typing.Any", (1,)))
 
 
-def test_load_script_validates_parameters_and_exact_revision(
+def test_load_script_validates_parameters_and_exact_source(
     tmp_path: pathlib.Path,
 ) -> None:
     script = tmp_path / "extension.py"
@@ -158,7 +158,7 @@ def adjust(
     result = run_routine(
         xr.DataArray([2.0]),
         script=script,
-        revision=loaded.revision,
+        source_hash=loaded.source_hash,
         routine_id="stable-adjust",
         parameters={
             "mode": "multiply",
@@ -205,7 +205,7 @@ def choose(data: xr.DataArray, enabled: bool) -> xr.DataArray:
 
     script.write_text(script.read_text() + "\n# changed\n")
     with pytest.raises(erlab.extensions.ExtensionImportError, match="does not match"):
-        load_script(script, expected_revision=loaded.revision)
+        load_script(script, expected_source_hash=loaded.source_hash)
 
 
 def test_loaded_script_preserves_natural_function_call_forms(
@@ -300,9 +300,9 @@ def test_load_entry_point_exposes_a_pinned_package_routine(
         "entry_points",
         lambda: _EntryPoints((entry_point,)),
     )
-    revision = _entry_point_revision(entry_point)
+    revision = _entry_point_source_hash(entry_point)
 
-    loaded = load_entry_point("erlab.extensions", "lab", expected_revision=revision)
+    loaded = load_entry_point("erlab.extensions", "lab", expected_source_hash=revision)
 
     xr.testing.assert_identical(
         loaded.normalize(xr.DataArray([1.0, 2.0])), xr.DataArray([0.5, 1.0])
@@ -348,23 +348,25 @@ def test_load_entry_point_exposes_declared_external_loader_method(
         "entry_points",
         lambda: _EntryPoints((entry_point,)),
     )
-    revision = _entry_point_revision(entry_point)
+    revision = _entry_point_source_hash(entry_point)
     path = tmp_path / "value.txt"
     path.write_text("3")
 
-    loaded = load_entry_point("erlab.io.loaders", "preview", expected_revision=revision)
+    loaded = load_entry_point(
+        "erlab.io.loaders", "preview", expected_source_hash=revision
+    )
     method = loaded.resolve_loader(f"{__name__}._entry_point_preview_loader")
 
     xr.testing.assert_identical(method(path, scale=2.0), xr.DataArray([6.0]))
     with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="not declared"):
         loaded.resolve_loader("lab_package.missing")
     with pytest.raises(
-        erlab.extensions.ExtensionNotFoundError, match="does not match revision"
+        erlab.extensions.ExtensionNotFoundError, match="does not match source hash"
     ):
         load_entry_point(
             "erlab.io.loaders",
             "preview",
-            expected_revision="a" * 64,
+            expected_source_hash="a" * 64,
         )
 
 
@@ -414,7 +416,7 @@ def test_load_entry_point_rejects_a_preloaded_editable_module(
         load_entry_point(
             entry_point.group,
             entry_point.name,
-            expected_revision=_entry_point_revision(entry_point),
+            expected_source_hash=_entry_point_source_hash(entry_point),
         )
 
     assert load_calls == []
@@ -430,7 +432,7 @@ def test_load_entry_point_rejects_a_preloaded_editable_module(
 def test_editable_source_fingerprint_rejects_nonlocal_urls(
     direct_url: dict[str, typing.Any], message: str
 ) -> None:
-    with pytest.raises(entry_point_api._EntryPointRevisionError, match=message):
+    with pytest.raises(entry_point_api._EntryPointInspectionError, match=message):
         entry_point_api._editable_source_fingerprint(direct_url)
 
 
@@ -440,14 +442,14 @@ def test_editable_source_fingerprint_validates_project_contents(
 ) -> None:
     missing = tmp_path / "missing"
     with pytest.raises(
-        entry_point_api._EntryPointRevisionError, match="directory is unavailable"
+        entry_point_api._EntryPointInspectionError, match="directory is unavailable"
     ):
         entry_point_api._editable_source_fingerprint({"url": str(missing)})
 
     empty = tmp_path / "empty"
     empty.mkdir()
     with pytest.raises(
-        entry_point_api._EntryPointRevisionError, match="no fingerprintable source"
+        entry_point_api._EntryPointInspectionError, match="no fingerprintable source"
     ):
         entry_point_api._editable_source_fingerprint({"url": str(empty)})
 
@@ -464,7 +466,7 @@ def test_editable_source_fingerprint_validates_project_contents(
 
     monkeypatch.setattr(entry_point_api.pathlib.Path, "read_bytes", fail_for_module)
     with pytest.raises(
-        entry_point_api._EntryPointRevisionError, match="Could not fingerprint"
+        entry_point_api._EntryPointInspectionError, match="Could not fingerprint"
     ):
         entry_point_api._editable_source_fingerprint({"url": str(source)})
 
@@ -483,7 +485,7 @@ def test_editable_source_fingerprint_reports_directory_walk_failure(
 
     monkeypatch.setattr(entry_point_api.os, "walk", failed_walk)
     with pytest.raises(
-        entry_point_api._EntryPointRevisionError, match="Could not inspect"
+        entry_point_api._EntryPointInspectionError, match="Could not inspect"
     ):
         entry_point_api._editable_source_fingerprint({"url": str(project)})
 
@@ -496,7 +498,7 @@ def test_editable_source_fingerprint_reports_directory_walk_failure(
         ('{"dir_info": []}', "directory metadata must be a JSON object"),
     ],
 )
-def test_entry_point_revision_rejects_invalid_direct_url_metadata(
+def test_entry_point_source_hash_rejects_invalid_direct_url_metadata(
     direct_url: str,
     message: str,
 ) -> None:
@@ -514,11 +516,11 @@ def test_entry_point_revision_rejects_invalid_direct_url_metadata(
         value = "lab_package"
         dist = Distribution()
 
-    with pytest.raises(entry_point_api._EntryPointRevisionError, match=message):
-        entry_point_api._entry_point_revision(EntryPoint())
+    with pytest.raises(entry_point_api._EntryPointInspectionError, match=message):
+        entry_point_api._entry_point_source_hash(EntryPoint())
 
 
-def test_load_entry_point_value_records_an_editable_revision(
+def test_load_entry_point_value_records_an_editable_source(
     tmp_path: pathlib.Path,
 ) -> None:
     project = tmp_path / "project"
@@ -547,7 +549,7 @@ def test_load_entry_point_value_records_an_editable_revision(
             return loaded_value
 
     entry_point = EntryPoint()
-    revision = _entry_point_revision(entry_point)
+    revision = _entry_point_source_hash(entry_point)
     entry_point_api._loaded_editable_distributions.pop("editable-lab", None)
     try:
         assert (
@@ -556,7 +558,8 @@ def test_load_entry_point_value_records_an_editable_revision(
         )
         assert "editable-lab" in entry_point_api._loaded_editable_distributions
         with pytest.raises(
-            entry_point_api._EntryPointRevisionError, match="does not match revision"
+            entry_point_api._EntryPointInspectionError,
+            match="does not match source hash",
         ):
             entry_point_api._load_entry_point_value(entry_point, "0" * 64)
     finally:
@@ -572,7 +575,7 @@ def test_load_entry_point_reports_lookup_metadata_and_type_errors(
         lambda: _EntryPoints(),
     )
     with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="not installed"):
-        load_entry_point("erlab.extensions", "missing", expected_revision="0" * 64)
+        load_entry_point("erlab.extensions", "missing", expected_source_hash="0" * 64)
 
     class EntryPoint:
         group = "erlab.io.loaders"
@@ -590,23 +593,23 @@ def test_load_entry_point_reports_lookup_metadata_and_type_errors(
         "entry_points",
         lambda: _EntryPoints((entry_point,)),
     )
-    revision = _entry_point_revision(entry_point)
+    revision = _entry_point_source_hash(entry_point)
     monkeypatch.setattr(
         extension_api,
-        "_entry_point_revision",
+        "_entry_point_source_hash",
         lambda _entry_point: (_ for _ in ()).throw(
-            entry_point_api._EntryPointRevisionError("bad metadata")
+            entry_point_api._EntryPointInspectionError("bad metadata")
         ),
     )
     with pytest.raises(erlab.extensions.ExtensionImportError, match="bad metadata"):
         load_entry_point(
-            entry_point.group, entry_point.name, expected_revision=revision
+            entry_point.group, entry_point.name, expected_source_hash=revision
         )
 
-    monkeypatch.setattr(extension_api, "_entry_point_revision", lambda _: revision)
+    monkeypatch.setattr(extension_api, "_entry_point_source_hash", lambda _: revision)
     with pytest.raises(erlab.extensions.ExtensionImportError, match="LoaderBase"):
         load_entry_point(
-            entry_point.group, entry_point.name, expected_revision=revision
+            entry_point.group, entry_point.name, expected_source_hash=revision
         )
 
 
@@ -633,10 +636,10 @@ def test_load_entry_point_accepts_a_single_decorated_callable(
         "entry_points",
         lambda: _EntryPoints((entry_point,)),
     )
-    revision = _entry_point_revision(entry_point)
+    revision = _entry_point_source_hash(entry_point)
 
     loaded = load_entry_point(
-        entry_point.group, entry_point.name, expected_revision=revision
+        entry_point.group, entry_point.name, expected_source_hash=revision
     )
 
     xr.testing.assert_identical(loaded.calculate(xr.DataArray([1])), xr.DataArray([2]))
@@ -671,7 +674,7 @@ def value(data: xr.DataArray) -> xr.DataArray:
         replace_source_during_import,
     )
 
-    loaded = load_script(script, expected_revision=revision)
+    loaded = load_script(script, expected_source_hash=revision)
 
     xr.testing.assert_identical(
         loaded.routines["value"][1](xr.DataArray([1])), xr.DataArray([2])
@@ -951,7 +954,7 @@ def text_values(path: Path, scale: float = 1.0) -> xr.DataArray | xr.Dataset:
     result = run_loader(
         values,
         script=source,
-        revision=loaded.revision,
+        source_hash=loaded.source_hash,
         loader_id="text_values",
         parameters={"scale": 2.0},
     )
@@ -997,22 +1000,22 @@ def test_loader_method_resolution_preserves_dependency_import_error(
         )
 
 
-def test_revision_resolver_lookup_survives_manager_removal(
+def test_source_resolver_lookup_survives_manager_removal(
     tmp_path: pathlib.Path,
 ) -> None:
-    source_path = tmp_path / "revision.py"
+    source_path = tmp_path / "source.py"
     source_path.write_text("value = 1\n")
 
-    def closing_resolver(_extension_id: str, _revision: str) -> pathlib.Path:
+    def closing_resolver(_extension_id: str, _source_hash: str) -> pathlib.Path:
         extension_api._remove_resolvers("first")
         raise KeyError
 
-    extension_api._set_revision_resolver(
-        "first", lambda _extension_id, _revision: source_path
+    extension_api._set_source_resolver(
+        "first", lambda _extension_id, _source_hash: source_path
     )
-    extension_api._set_revision_resolver("closing", closing_resolver)
+    extension_api._set_source_resolver("closing", closing_resolver)
     try:
-        assert extension_api._resolved_revision("lab", "revision") == source_path
+        assert extension_api._resolved_source("lab", "source") == source_path
     finally:
         extension_api._remove_resolvers("first")
         extension_api._remove_resolvers("closing")
@@ -1248,12 +1251,12 @@ def test_capability_resolvers_run_direct_callables_and_report_absence() -> None:
 
     def resolve(
         extension_id: str,
-        revision: str,
+        source_hash: str,
         kind: str,
         capability_id: str,
         method: str | None,
     ) -> typing.Callable[..., typing.Any]:
-        if (extension_id, revision, capability_id) != ("lab", "revision", "value"):
+        if (extension_id, source_hash, capability_id) != ("lab", "source", "value"):
             raise KeyError
         if kind == "routine":
             return lambda data: data + 1
@@ -1267,7 +1270,7 @@ def test_capability_resolvers_run_direct_callables_and_report_absence() -> None:
             run_routine(
                 xr.DataArray([1]),
                 extension_id="lab",
-                revision="revision",
+                source_hash="source",
                 routine_id="value",
             ),
             xr.DataArray([2]),
@@ -1275,7 +1278,7 @@ def test_capability_resolvers_run_direct_callables_and_report_absence() -> None:
         result = run_loader(
             "value.txt",
             extension_id="lab",
-            revision="revision",
+            source_hash="source",
             loader_id="value",
         )
         assert isinstance(result, list)
@@ -1286,7 +1289,7 @@ def test_capability_resolvers_run_direct_callables_and_report_absence() -> None:
             run_loader(
                 "value.txt",
                 extension_id="lab",
-                revision="revision",
+                source_hash="source",
                 loader_id="value",
                 method="os.remove",
             )
@@ -1294,7 +1297,7 @@ def test_capability_resolvers_run_direct_callables_and_report_absence() -> None:
         extension_api._remove_resolvers(owner)
 
     with pytest.raises(erlab.extensions.ExtensionNotFoundError, match="No extension"):
-        extension_api._resolved_revision("lab", "revision")
+        extension_api._resolved_source("lab", "source")
 
 
 def test_loader_method_helpers_validate_stable_references() -> None:

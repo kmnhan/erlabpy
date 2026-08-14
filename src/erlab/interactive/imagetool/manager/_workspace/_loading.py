@@ -2694,9 +2694,9 @@ class _WorkspaceLoader:
                     )
                     continue
                 embedded_sources[
-                    (requirement.extension_id, requirement.revision_hash)
+                    (requirement.extension_id, requirement.source_hash)
                 ] = source
-                if hashlib.sha256(source).hexdigest() != requirement.revision_hash:
+                if hashlib.sha256(source).hexdigest() != requirement.source_hash:
                     unresolved_embedded_objects[requirement.embedded_object_id] = (
                         source,
                         kind,
@@ -2726,7 +2726,7 @@ class _WorkspaceLoader:
                 unresolved_payloads=unresolved_payloads,
             )
         else:
-            # One revision hash names one source object across the combined document.
+            # One source hash names one source object across the combined document.
             # Prefer bytes that satisfy that identity. If neither copy does, retain
             # the open document's bytes so an import cannot replace unresolved state.
             merged_embedded_sources = dict(
@@ -2747,10 +2747,10 @@ class _WorkspaceLoader:
                 merged_unresolved_objects.setdefault(object_id, unresolved_object)
             for (
                 _extension_id,
-                revision_hash,
+                source_hash,
             ), source in merged_embedded_sources.items():
-                if hashlib.sha256(source).hexdigest() == revision_hash:
-                    merged_unresolved_objects.pop(f"extension-{revision_hash}", None)
+                if hashlib.sha256(source).hexdigest() == source_hash:
+                    merged_unresolved_objects.pop(f"extension-{source_hash}", None)
 
             self._manager._extensions.set_workspace_requirements(
                 (

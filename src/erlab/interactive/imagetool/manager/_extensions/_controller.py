@@ -13,6 +13,7 @@ import os
 import pathlib
 import traceback
 import typing
+import uuid
 from collections import defaultdict, deque
 
 from qtpy import QtCore, QtGui, QtWidgets
@@ -29,7 +30,7 @@ from erlab.interactive.imagetool.manager._extensions._catalog import (
 from erlab.interactive.imagetool.manager._extensions._dialogs import (
     _ExtensionParameterDialog,
     _ManageExtensionsDialog,
-    _RevisionHistoryDialog,
+    _MissingScriptsDialog,
     _RoutineSelectionDialog,
     _SourceReviewDialog,
     _SourceViewerDialog,
@@ -42,25 +43,23 @@ from erlab.interactive.imagetool.manager._extensions._execution import (
 )
 from erlab.interactive.imagetool.manager._extensions._models import (
     _ExtensionRecord,
-    _ExtensionRevision,
+    _ExtensionSource,
     _ResolvedWorkspaceRequirement,
     _WorkspaceExtensionRequirement,
 )
 from erlab.interactive.imagetool.manager._registry import live_manager_records
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Collection, Iterable
 
     import xarray as xr
 
     from erlab.extensions._api import _CapabilityStatus
+    from erlab.extensions._models import _PackageExtensionReference
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool._provenance._model import FileLoadSource
     from erlab.interactive.imagetool._provenance._operations import (
         ExtensionRoutineOperation,
-    )
-    from erlab.interactive.imagetool.manager._extensions._models import (
-        _WorkspaceRequirementState,
     )
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
@@ -68,31 +67,29 @@ logger = logging.getLogger(__name__)
 
 
 class _ExtensionSourceHashMismatchError(FileNotFoundError):
-    """Report that available script bytes do not match the requested revision."""
+    """Report that available script bytes do not match the required source."""
 
 
 class _ExtensionController(QtCore.QObject):
-    """Own catalog UI, revision approval, and execution for one manager.
+    """Own extension UI, script approval, and execution for one manager.
 
-    The catalog is application-wide. Source approval and workspace ``Open Without``
-    decisions that are not persisted stay on this controller and do not propagate to
-    other managers.
+    Script registrations are application-wide. Package extensions come from the
+    running interpreter and are not persisted. Workspace ``Open Without`` decisions
+    stay on this controller and do not propagate to other managers.
     """
 
     def __init__(self, manager: ImageToolManager) -> None:
         super().__init__(manager)
         self._manager = manager
         self.catalog = _ExtensionCatalog(parent=self)
-        if not erlab.utils.misc._IS_PACKAGED:
-            try:
-                self.catalog.store.refresh_environment_packages()
-                self.catalog.refresh()
-            except Exception:
-                logger.exception(
-                    "Could not refresh environment extensions during manager startup",
-                    extra={"suppress_ui_alert": True},
-                )
         self.execution = _ExtensionExecutionController(manager, self.catalog)
+        try:
+            self._refresh_environment_packages()
+        except Exception:
+            logger.exception(
+                "Could not refresh environment extensions during manager startup",
+                extra={"suppress_ui_alert": True},
+            )
         self._catalog_changed_slot = self._catalog_changed
         self._manage_action_slot = self._manage_action
         self.catalog.changed.connect(self._catalog_changed_slot)
@@ -108,6 +105,12 @@ class _ExtensionController(QtCore.QObject):
         self._explorer_loaders: dict[str, erlab.io.dataloader.LoaderBase] = {}
         self._environment_loader_names: set[str] = set()
         self._closed = False
+        self._missing_script_prompt_shown = False
+        self._missing_scripts_dialog: _MissingScriptsDialog | None = None
+        self._missing_scripts_dialog_slots: (
+            tuple[Callable[[str], None], Callable[[str], None], Callable[[int], None]]
+            | None
+        ) = None
         self._unresolved_workspace_requirement_payloads: tuple[typing.Any, ...] = ()
         self._manage_dialog = _ManageExtensionsDialog(
             manager, show_package_refresh=not erlab.utils.misc._IS_PACKAGED
@@ -148,6 +151,8 @@ class _ExtensionController(QtCore.QObject):
         self.requirements_action.triggered.connect(self._show_requirements_slot)
         self.menu: QtWidgets.QMenu | None = None
         self._sync_explorer_loaders()
+        self._missing_script_prompt_slot = self._prompt_for_missing_scripts
+        QtCore.QTimer.singleShot(0, self._missing_script_prompt_slot)
 
     def create_menu(self, menu_bar: QtWidgets.QMenuBar) -> QtWidgets.QMenu:
         menu = typing.cast("QtWidgets.QMenu", menu_bar.addMenu("&Extensions"))
@@ -174,16 +179,10 @@ class _ExtensionController(QtCore.QObject):
         for record in self.catalog.model.extensions.values():
             if not record.enabled:
                 continue
-            if record.source_type == "environment-package" and (
-                erlab.utils.misc._IS_PACKAGED
-            ):
+            source = record.source
+            if not self.catalog.store.source_available(record, source.source_hash):
                 continue
-            revision = record.revisions[record.current_revision]
-            if not self.catalog.store.revision_available(
-                record, record.current_revision
-            ):
-                continue
-            entries.extend((record.id, record.name, item) for item in revision.routines)
+            entries.extend((record.id, record.name, item) for item in source.routines)
         return tuple(entries)
 
     def file_loaders(
@@ -203,19 +202,13 @@ class _ExtensionController(QtCore.QObject):
         for record in self.catalog.model.extensions.values():
             if not record.enabled:
                 continue
-            if record.source_type == "environment-package" and (
-                erlab.utils.misc._IS_PACKAGED
-            ):
+            source = record.source
+            if not self.catalog.store.source_available(record, source.source_hash):
                 continue
-            revision = record.revisions[record.current_revision]
-            if not self.catalog.store.revision_available(
-                record, record.current_revision
-            ):
-                continue
-            for descriptor in revision.loaders:
-                dialog_methods = revision.loader_dialog_methods
+            for descriptor in source.loaders:
+                dialog_methods = source.loader_dialog_methods
                 if (
-                    revision.entry_point_group == "erlab.io.loaders"
+                    source.entry_point_group == "erlab.io.loaders"
                     and not dialog_methods
                 ):
                     continue
@@ -254,11 +247,11 @@ class _ExtensionController(QtCore.QObject):
                         )
                     call = self._loader_call(
                         record,
-                        revision,
+                        source,
                         descriptor,
                         loader_method=loader_method,
                     )
-                    if revision.entry_point_group == "erlab.io.loaders" and (
+                    if source.entry_point_group == "erlab.io.loaders" and (
                         loader_method is None or "." not in loader_method
                     ):
                         call_adapter = _DecoratedLoaderAdapter(call)
@@ -271,39 +264,40 @@ class _ExtensionController(QtCore.QObject):
     def _loader_call(
         self,
         record: _ExtensionRecord,
-        revision: _ExtensionRevision,
+        source: _ExtensionSource,
         descriptor: LoaderDescriptor,
         *,
-        revision_hash: str | None = None,
+        source_hash: str | None = None,
         loader_method: str | None = None,
     ) -> _ExtensionLoaderCall:
         """Create one manager-local call pinned to validated catalog state."""
-        pinned_revision = (
-            record.current_revision if revision_hash is None else revision_hash
-        )
+        pinned_source_hash = source.source_hash if source_hash is None else source_hash
+        self._remember_registered_source(record, pinned_source_hash)
         return _ExtensionLoaderCall(
             manager_session_id=self._manager._manager_record.internal_id,
             catalog_generation=self.catalog.model.generation,
             extension_id=record.id,
             extension_name=record.name,
-            revision_hash=pinned_revision,
+            source_hash=pinned_source_hash,
             loader_id=descriptor.id,
             descriptor=descriptor,
             source_path=(
-                self.catalog.store.source_path(record.id, pinned_revision)
+                self.catalog.store.executable_source_path(record.id, pinned_source_hash)
                 if record.source_type == "script"
                 else None
             ),
             source_type=record.source_type,
             executor=self.execution.run_loader,
-            entry_point_group=revision.entry_point_group,
-            entry_point_name=revision.entry_point_name,
-            entry_point_value=revision.entry_point_value,
+            entry_point_group=source.entry_point_group,
+            entry_point_name=source.entry_point_name,
+            entry_point_value=source.entry_point_value,
+            package=source.package_reference,
+            public_call_reference=source.loader_call_references.get(descriptor.id),
             loader_method=loader_method,
             loader_always_single=(
                 True
-                if revision.loader_always_single is None
-                else revision.loader_always_single
+                if source.loader_always_single is None
+                else source.loader_always_single
             ),
         )
 
@@ -320,82 +314,62 @@ class _ExtensionController(QtCore.QObject):
         if (
             replay_call is None
             or replay_call.kind != "extension_loader"
-            or replay_call.revision is None
+            or replay_call.source_hash is None
             or replay_call.capability_id is None
         ):
             raise erlab.extensions.ExtensionExecutionError(
                 "Extension loader replay metadata is incomplete"
             )
-        catalog = self.catalog.store.read()
+        catalog = self.catalog.store.view()
         record = catalog.extensions.get(replay_call.target)
-        revision = (
-            None if record is None else record.revisions.get(replay_call.revision)
+        source = (
+            record.source
+            if record is not None
+            and record.source.source_hash == replay_call.source_hash
+            else None
         )
         try:
             global_status = self.catalog.store.capability_status(
                 replay_call.target,
-                replay_call.revision,
+                replay_call.source_hash,
                 "loader",
                 replay_call.capability_id,
                 replay_call.extension_source_type,
             )
         except KeyError:
-            global_status = "missing-revision"
+            global_status = "missing-source"
         global_ready = (
             global_status == "ready"
             and record is not None
             and record.enabled
             and record.source_type == replay_call.extension_source_type
-            and revision is not None
-            and revision.approved
+            and source is not None
+            and source.approved
         )
         if not global_ready:
-            if (
-                replay_call.extension_source_type != "script"
-                or self.execution.session_capability_status(
-                    replay_call.target,
-                    replay_call.revision,
-                    "loader",
-                    replay_call.capability_id,
-                )
-                != "ready"
-            ):
-                raise erlab.extensions.ExtensionExecutionError(
-                    "The extension loader revision is not available"
-                )
-            if replay_call.loader_method is not None:
-                raise erlab.extensions.ExtensionExecutionError(
-                    "Decorated extension loaders do not provide alternate methods"
-                )
-            call = self.execution.session_loader_call(
-                replay_call.target,
-                replay_call.revision,
-                replay_call.capability_id,
-            )
-            return call(
-                pathlib.Path(load_source.path),
-                **_deserialize_loader_kwargs(replay_call.kwargs),
-            )
-        if record is None or revision is None:
             raise erlab.extensions.ExtensionExecutionError(
-                "The extension loader revision is not available"
+                "The extension loader source is not available"
+            )
+        if record is None or source is None:
+            raise erlab.extensions.ExtensionExecutionError(
+                "The extension loader source is not available"
             )
         descriptor = next(
-            (item for item in revision.loaders if item.id == replay_call.capability_id),
+            (item for item in source.loaders if item.id == replay_call.capability_id),
             None,
         )
         if descriptor is None:
             raise erlab.extensions.ExtensionExecutionError(
                 f"Loader {replay_call.capability_id!r} is not available"
             )
-        if revision.entry_point_group == "erlab.io.loaders":
+        if source.entry_point_group == "erlab.io.loaders":
             approved_methods = {
                 None,
-                *(item.method for item in revision.loader_dialog_methods),
+                *(item.method for item in source.loader_dialog_methods),
             }
             if replay_call.loader_method not in approved_methods:
                 raise erlab.extensions.ExtensionExecutionError(
-                    "The requested loader method was not approved for this revision"
+                    "The requested loader method was not approved for this source"
                 )
         elif replay_call.loader_method is not None:
             raise erlab.extensions.ExtensionExecutionError(
@@ -403,9 +377,9 @@ class _ExtensionController(QtCore.QObject):
             )
         call = self._loader_call(
             record,
-            revision,
+            source,
             descriptor,
-            revision_hash=replay_call.revision,
+            source_hash=replay_call.source_hash,
             loader_method=replay_call.loader_method,
         )
         return self.execution.run_loader(
@@ -417,33 +391,23 @@ class _ExtensionController(QtCore.QObject):
     def capability_status(
         self,
         extension_id: str,
-        revision_hash: str,
+        source_hash: str,
         kind: str,
         capability_id: str,
         source_type: str | None = None,
     ) -> _CapabilityStatus:
-        """Resolve global state with this manager's session approvals."""
+        """Resolve application catalog state for this manager."""
         try:
             global_status = self.catalog.store.capability_status(
                 extension_id,
-                revision_hash,
+                source_hash,
                 kind,
                 capability_id,
                 source_type,
             )
         except KeyError:
-            global_status = "missing-revision"
-        if global_status == "ready":
-            return global_status
-        if source_type == "environment-package":
-            return global_status
-        session_status = self.execution.session_capability_status(
-            extension_id,
-            revision_hash,
-            kind,
-            capability_id,
-        )
-        return global_status if session_status is None else session_status
+            global_status = "missing-source"
+        return global_status
 
     @property
     def explorer_loaders(self) -> dict[str, erlab.io.dataloader.LoaderBase]:
@@ -460,38 +424,29 @@ class _ExtensionController(QtCore.QObject):
         for record in self.catalog.model.extensions.values():
             if not record.enabled:
                 continue
-            if record.source_type == "environment-package" and (
-                erlab.utils.misc._IS_PACKAGED
-            ):
+            source = record.source
+            if not self.catalog.store.source_available(record, source.source_hash):
                 continue
-            revision = record.revisions[record.current_revision]
-            if not self.catalog.store.revision_available(
-                record, record.current_revision
-            ):
-                continue
-            for descriptor in revision.loaders:
+            for descriptor in source.loaders:
                 adapter = _DecoratedLoaderAdapter(
-                    self._loader_call(record, revision, descriptor)
+                    self._loader_call(record, source, descriptor)
                 )
                 updated[adapter.name] = adapter
         managed_names: set[str] = set()
-        if not erlab.utils.misc._IS_PACKAGED:
-            managed_names.update(
-                descriptor.id
-                for record in self.catalog.model.extensions.values()
-                if record.source_type == "environment-package"
-                for revision in record.revisions.values()
-                if revision.entry_point_group == "erlab.io.loaders"
-                for descriptor in revision.loaders
-            )
-            managed_names.update(
-                revision.entry_point_name
-                for record in self.catalog.model.extensions.values()
-                if record.source_type == "environment-package"
-                for revision in record.revisions.values()
-                if revision.entry_point_group == "erlab.io.loaders"
-                and revision.entry_point_name is not None
-            )
+        managed_names.update(
+            descriptor.id
+            for record in self.catalog.model.extensions.values()
+            if record.source_type == "environment-package"
+            if record.source.entry_point_group == "erlab.io.loaders"
+            for descriptor in record.source.loaders
+        )
+        managed_names.update(
+            record.source.entry_point_name
+            for record in self.catalog.model.extensions.values()
+            if record.source_type == "environment-package"
+            if record.source.entry_point_group == "erlab.io.loaders"
+            and record.source.entry_point_name is not None
+        )
         self._explorer_loaders.clear()
         self._explorer_loaders.update(updated)
         self._environment_loader_names.clear()
@@ -683,15 +638,12 @@ class _ExtensionController(QtCore.QObject):
         if record is None or not record.enabled:
             return
         descriptor = next(
-            (
-                item
-                for item in record.revisions[record.current_revision].routines
-                if item.id == routine_id
-            ),
+            (item for item in record.source.routines if item.id == routine_id),
             None,
         )
         if descriptor is None:
             return
+        self._remember_registered_source(record, record.source.source_hash)
         dialog = _ExtensionParameterDialog(descriptor, self._manager)
         if not dialog.exec():
             return
@@ -715,6 +667,23 @@ class _ExtensionController(QtCore.QObject):
             self._recent.remove(key)
         self._recent.appendleft(key)
 
+    def _remember_registered_source(
+        self, record: _ExtensionRecord, source_hash: str
+    ) -> None:
+        """Retain script bytes used by this workspace before registration changes."""
+        if record.source_type != "script":
+            return
+        key = (record.id, source_hash)
+        if key in self._workspace_embedded_sources:
+            return
+        try:
+            path = self.catalog.store.executable_source_path(record.id, source_hash)
+            source = path.read_bytes()
+        except (KeyError, OSError, _ExtensionCatalogConflictError):
+            return
+        if hashlib.sha256(source).hexdigest() == source_hash:
+            self._workspace_embedded_sources[key] = source
+
     @QtCore.Slot()
     def add_script(self) -> None:
         path, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
@@ -731,35 +700,39 @@ class _ExtensionController(QtCore.QObject):
     ) -> bool:
         try:
             reviewed_source = path.read_bytes()
-            reviewed_revision = hashlib.sha256(reviewed_source).hexdigest()
+            reviewed_source_hash = hashlib.sha256(reviewed_source).hexdigest()
             source_text = reviewed_source.decode("utf-8")
             catalog_extension_id = _safe_extension_id(extension_id or path.stem)
             existing = self.catalog.model.extensions.get(catalog_extension_id)
+            if extension_id is None:
+                resolved_path = path.expanduser().resolve()
+                matching_record = next(
+                    (
+                        record
+                        for record in self.catalog.model.extensions.values()
+                        if record.source_type == "script"
+                        and (source_path := record.source.source_path) is not None
+                        and pathlib.Path(source_path).expanduser().resolve()
+                        == resolved_path
+                    ),
+                    None,
+                )
+                if matching_record is not None:
+                    catalog_extension_id = matching_record.id
+                    existing = matching_record
             if extension_id is None and existing is not None:
-                current_revision = existing.revisions[existing.current_revision]
+                current_source = existing.source
                 same_source = (
                     existing.source_type == "script"
-                    and current_revision.source_path is not None
-                    and pathlib.Path(current_revision.source_path)
-                    .expanduser()
-                    .resolve()
-                    == path.expanduser().resolve()
+                    and current_source.source_path is not None
+                    and pathlib.Path(current_source.source_path).expanduser().resolve()
+                    == resolved_path
                 )
-                same_content = (
-                    existing.source_type == "script"
-                    and existing.current_revision == reviewed_revision
-                )
-                if not same_source and not same_content:
-                    erlab.interactive.utils.MessageDialog.critical(
-                        self._manager,
-                        "Extension ID Already Exists",
-                        (
-                            f"A different extension already uses ID "
-                            f"{catalog_extension_id!r}. Rename this script file or "
-                            "use Reload for the existing extension."
-                        ),
+                if not same_source:
+                    catalog_extension_id = _safe_extension_id(
+                        f"{path.stem}-{uuid.uuid4().hex[:8]}"
                     )
-                    return False
+                    existing = None
             dialog = _SourceReviewDialog(
                 None,
                 self._manager,
@@ -773,31 +746,27 @@ class _ExtensionController(QtCore.QObject):
                 detailed_text=traceback.format_exc(),
             )
             return False
-        if existing is not None:
-            existing_revision = existing.revisions.get(reviewed_revision)
-            if existing_revision is not None:
-                dialog.change_summary_edit.setText(existing_revision.change_summary)
         if not dialog.exec():
             return False
         try:
-            _catalog, _revision, created = self.catalog.store.add_script(
+            _catalog, _source_hash, changed = self.catalog.store.add_script(
                 path,
-                extension_id=extension_id,
-                change_summary=dialog.change_summary,
-                expected_revision=reviewed_revision,
+                extension_id=catalog_extension_id,
+                expected_source_hash=reviewed_source_hash,
                 expected_record_generation=(
                     None if existing is None else existing.record_generation
                 ),
                 check_record_generation=True,
             )
             self.catalog.refresh()
-            if not created:
+            record = self.catalog.model.extensions[catalog_extension_id]
+            source = record.source
+            if not changed and record.enabled and source.approved:
                 self._manager._status_bar.showMessage(
-                    "The script contents did not change; no revision was created.",
+                    "The registered script contents did not change.",
                     4000,
                 )
                 return True
-            record = self.catalog.model.extensions[catalog_extension_id]
             self.execution.validate_and_enable(
                 record.id,
                 expected_record_generation=record.record_generation,
@@ -814,6 +783,244 @@ class _ExtensionController(QtCore.QObject):
             self.catalog.refresh()
             return False
 
+    def _missing_script_records(
+        self, extension_ids: Collection[str] | None = None
+    ) -> tuple[_ExtensionRecord, ...]:
+        """Return enabled scripts whose registered current file cannot be read."""
+        missing: list[_ExtensionRecord] = []
+        for record in self.catalog.model.extensions.values():
+            if (
+                record.source_type != "script"
+                or not record.enabled
+                or (extension_ids is not None and record.id not in extension_ids)
+            ):
+                continue
+            source = record.source
+            if source.source_path is None:
+                missing.append(record)
+                continue
+            try:
+                pathlib.Path(source.source_path).read_bytes()
+            except OSError:
+                missing.append(record)
+        return tuple(missing)
+
+    @QtCore.Slot()
+    def _prompt_for_missing_scripts(self) -> None:
+        """Prompt for missing registered scripts after the event loop starts."""
+        self._show_missing_script_recovery()
+
+    def _show_missing_script_recovery(
+        self,
+        *,
+        extension_ids: Collection[str] | None = None,
+        repeat: bool = False,
+    ) -> bool:
+        """Offer one session-scoped recovery dialog for all missing scripts."""
+        if self._closed or not erlab.interactive.utils.qt_is_valid(self._manager):
+            return False
+        current_dialog = self._missing_scripts_dialog
+        if current_dialog is not None and erlab.interactive.utils.qt_is_valid(
+            current_dialog
+        ):
+            current_dialog.raise_()
+            return True
+        if self._missing_script_prompt_shown and not repeat:
+            return False
+        records = self._missing_script_records(extension_ids)
+        if not records:
+            return False
+        self._missing_script_prompt_shown = True
+        dialog = _MissingScriptsDialog(records, self._manager)
+
+        def refresh_dialog() -> None:
+            if not erlab.interactive.utils.qt_is_valid(dialog):
+                return
+            remaining = self._missing_script_records(extension_ids)
+            if not remaining:
+                dialog.accept()
+            else:
+                dialog.set_records(remaining)
+
+        def locate_slot(extension_id: str) -> None:
+            self._locate_missing_script(extension_id)
+            refresh_dialog()
+
+        def restore_slot(extension_id: str) -> None:
+            self._restore_missing_script(extension_id)
+            refresh_dialog()
+
+        def finished_slot(_result: int) -> None:
+            if self._missing_scripts_dialog is not dialog:
+                return
+            with contextlib.suppress(TypeError, RuntimeError):
+                dialog.locate_requested.disconnect(locate_slot)
+            with contextlib.suppress(TypeError, RuntimeError):
+                dialog.restore_requested.disconnect(restore_slot)
+            with contextlib.suppress(TypeError, RuntimeError):
+                dialog.finished.disconnect(finished_slot)
+            self._missing_scripts_dialog = None
+            self._missing_scripts_dialog_slots = None
+
+        dialog.locate_requested.connect(locate_slot)
+        dialog.restore_requested.connect(restore_slot)
+        dialog.finished.connect(finished_slot)
+        self._missing_scripts_dialog = dialog
+        self._missing_scripts_dialog_slots = (
+            locate_slot,
+            restore_slot,
+            finished_slot,
+        )
+        dialog.show()
+        dialog.raise_()
+        return True
+
+    def _locate_missing_script(self, extension_id: str) -> bool:
+        record = self.catalog.model.extensions.get(extension_id)
+        if record is None or record.source_type != "script":
+            return False
+        source = record.source
+        initial = source.source_path or self._manager._recent_or_default_directory()
+        path_value, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
+            self._manager,
+            f"Locate {record.name}",
+            initial or "",
+            "Python scripts (*.py)",
+        )
+        if not path_value:
+            return False
+        path = pathlib.Path(path_value).expanduser().resolve()
+        try:
+            source_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            erlab.interactive.utils.MessageDialog.critical(
+                self._manager,
+                "Extension Error",
+                "The selected script could not be read.",
+                detailed_text=traceback.format_exc(),
+            )
+            return False
+        if source_hash != source.source_hash:
+            return self._review_and_add(path, extension_id=extension_id)
+        try:
+            self.catalog.store.add_script(
+                path,
+                extension_id=extension_id,
+                expected_source_hash=source.source_hash,
+                expected_record_generation=record.record_generation,
+                check_record_generation=True,
+            )
+            self.catalog.refresh()
+            return True  # noqa: TRY300 - success exits before the shared error path.
+        except Exception:
+            erlab.interactive.utils.MessageDialog.critical(
+                self._manager,
+                "Extension Error",
+                "The script location could not be updated.",
+                detailed_text=traceback.format_exc(),
+            )
+            self.catalog.refresh()
+            return False
+
+    def _save_source_as_user_file(
+        self,
+        source: bytes,
+        *,
+        title: str,
+        suggested_name: str,
+    ) -> pathlib.Path | None:
+        """Write recovery source without replacing a different user file."""
+        initial_directory = self._manager._recent_or_default_directory() or ""
+        suggested_path = os.fspath(pathlib.Path(initial_directory) / suggested_name)
+        destination_value, _selected_filter = QtWidgets.QFileDialog.getSaveFileName(
+            self._manager,
+            title,
+            suggested_path,
+            "Python scripts (*.py)",
+        )
+        if not destination_value:
+            return None
+        destination = pathlib.Path(destination_value).expanduser().resolve()
+        if destination.suffix.lower() != ".py":
+            destination = destination.with_suffix(".py")
+
+        def write_new_file() -> None:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            save_file = QtCore.QSaveFile(os.fspath(destination))
+            if not save_file.open(QtCore.QIODevice.OpenModeFlag.WriteOnly):
+                raise OSError(save_file.errorString())
+            if save_file.write(source) != len(source):
+                save_file.cancelWriting()
+                raise OSError(save_file.errorString())
+            if not save_file.commit():
+                raise OSError(save_file.errorString())
+
+        try:
+            if destination.exists():
+                if destination.read_bytes() != source:
+                    QtWidgets.QMessageBox.warning(
+                        self._manager,
+                        "Choose a Different File",
+                        "The selected file contains different source. Choose a new "
+                        "filename so that it is not overwritten.",
+                    )
+                    return None
+                return destination
+            write_new_file()
+        except OSError:
+            erlab.interactive.utils.MessageDialog.critical(
+                self._manager,
+                "Extension Error",
+                "The extension script could not be saved.",
+                detailed_text=traceback.format_exc(),
+            )
+            return None
+        return destination
+
+    def _restore_missing_script(self, extension_id: str) -> bool:
+        record = self.catalog.model.extensions.get(extension_id)
+        if record is None or record.source_type != "script":
+            return False
+        source_hash = record.source.source_hash
+        try:
+            source = self.catalog.store.recovery_source_path(
+                extension_id, source_hash
+            ).read_bytes()
+        except OSError:
+            erlab.interactive.utils.MessageDialog.critical(
+                self._manager,
+                "Extension Error",
+                "The stored recovery source is unavailable.",
+                detailed_text=traceback.format_exc(),
+            )
+            return False
+        destination = self._save_source_as_user_file(
+            source,
+            title=f"Restore {record.name}",
+            suggested_name=record.name,
+        )
+        if destination is None:
+            return False
+        try:
+            self.catalog.store.add_script(
+                destination,
+                extension_id=extension_id,
+                expected_source_hash=source_hash,
+                expected_record_generation=record.record_generation,
+                check_record_generation=True,
+            )
+            self.catalog.refresh()
+            return True  # noqa: TRY300 - success exits before the shared error path.
+        except Exception:
+            erlab.interactive.utils.MessageDialog.critical(
+                self._manager,
+                "Extension Error",
+                "The restored script could not be registered.",
+                detailed_text=traceback.format_exc(),
+            )
+            self.catalog.refresh()
+            return False
+
     @QtCore.Slot()
     def show_manager(self) -> None:
         self._refresh_manage_dialog()
@@ -825,19 +1032,17 @@ class _ExtensionController(QtCore.QObject):
         package_locations: dict[str, str] = {}
         for record in self.catalog.model.extensions.values():
             if record.source_type == "script":
-                for revision_hash in record.revisions:
-                    if not self.catalog.store.revision_available(record, revision_hash):
-                        continue
-                    with contextlib.suppress(FileNotFoundError, KeyError):
-                        managed_paths[(record.id, revision_hash)] = os.fspath(
-                            self.catalog.store.source_path(record.id, revision_hash)
-                        )
+                source_hash = record.source.source_hash
+                with contextlib.suppress(FileNotFoundError, KeyError):
+                    managed_paths[(record.id, source_hash)] = os.fspath(
+                        self.catalog.store.recovery_source_path(record.id, source_hash)
+                    )
                 continue
-            revision = record.revisions[record.current_revision]
-            if revision.distribution_name:
+            source = record.source
+            if source.distribution_name:
                 try:
                     distribution = importlib.metadata.distribution(
-                        revision.distribution_name
+                        source.distribution_name
                     )
                     package_locations[record.id] = os.fspath(
                         pathlib.Path(str(distribution.locate_file(""))).resolve()
@@ -868,50 +1073,34 @@ class _ExtensionController(QtCore.QObject):
     def _catalog_source_states(self) -> dict[tuple[str, str], str]:
         states: dict[tuple[str, str], str] = {}
         for record in self.catalog.model.extensions.values():
-            for revision_hash, revision in record.revisions.items():
-                key = (record.id, revision_hash)
-                if record.source_type == "environment-package":
-                    if self.catalog.store.revision_available(record, revision_hash):
-                        states[key] = (
-                            "Editable environment package"
-                            if revision.editable
-                            else "Environment package"
-                        )
-                    else:
-                        states[key] = "Environment package unavailable"
-                    continue
-                try:
-                    stored_path = self.catalog.store.source_path(
-                        record.id, revision_hash
-                    )
-                except (FileNotFoundError, KeyError):
-                    states[key] = "Stored source missing"
-                    continue
-                try:
-                    stored_hash = hashlib.sha256(stored_path.read_bytes()).hexdigest()
-                except OSError:
-                    states[key] = "Stored source unreadable"
-                    continue
-                if stored_hash != revision_hash:
-                    states[key] = "Stored source hash mismatch"
-                    continue
-                if revision.source_path is None:
-                    states[key] = "Stored embedded source"
-                    continue
-                source_path = pathlib.Path(revision.source_path)
-                if not source_path.is_file():
-                    states[key] = "Stored source; original missing"
-                    continue
-                try:
-                    current_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
-                except OSError:
-                    states[key] = "Stored source; original unreadable"
-                else:
+            source = record.source
+            source_hash = source.source_hash
+            key = (record.id, source_hash)
+            if record.source_type == "environment-package":
+                if self.catalog.store.source_available(record, source_hash):
                     states[key] = (
-                        "Stored source; original unchanged"
-                        if current_hash == revision_hash
-                        else "Stored source; original changed"
+                        "Editable environment package"
+                        if source.editable
+                        else "Environment package"
                     )
+                else:
+                    states[key] = "Environment package unavailable"
+                continue
+            if source.source_path is None:
+                states[key] = "No registered source file"
+                continue
+            source_path = pathlib.Path(source.source_path)
+            if not source_path.is_file():
+                states[key] = "Source file missing"
+                continue
+            try:
+                current_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+            except OSError:
+                states[key] = "Source file unreadable"
+            else:
+                states[key] = (
+                    "Ready" if current_hash == source_hash else "Source file changed"
+                )
         return states
 
     @QtCore.Slot(str, str)
@@ -921,14 +1110,18 @@ class _ExtensionController(QtCore.QObject):
             return
         try:
             if action_id == "reload":
-                source_path = record.revisions[record.current_revision].source_path
+                source_path = record.source.source_path
                 if source_path is None:
-                    raise FileNotFoundError(  # noqa: TRY301
-                        "This extension has no script source path"
-                    )
+                    self._restore_missing_script(extension_id)
+                    return
+                if not pathlib.Path(source_path).is_file():
+                    self._locate_missing_script(extension_id)
+                    return
                 self._review_and_add(
                     pathlib.Path(source_path), extension_id=extension_id
                 )
+                return
+            if action_id == "toggle" and record.source_type != "script":
                 return
             if action_id == "toggle" and not record.enabled:
                 self.execution.validate_and_enable(
@@ -955,24 +1148,21 @@ class _ExtensionController(QtCore.QObject):
                         'typing.Literal["referenced", "always", "never"]', policy
                     ),
                 )
-            elif action_id == "history":
-                self._show_revision_history(record)
-                return
             elif action_id == "error":
-                revision = record.revisions[record.current_revision]
-                if revision.import_error:
+                source = record.source
+                if source.import_error:
                     erlab.interactive.utils.MessageDialog.critical(
                         self._manager,
                         "Extension Import Error",
                         "The extension could not be imported.",
-                        detailed_text=revision.import_error,
+                        detailed_text=source.import_error,
                     )
                 return
             elif action_id == "view_source":
-                self._show_source(record.id, record.current_revision)
+                self._show_source(record.id, record.source.source_hash)
                 return
             elif action_id in {"open_source", "reveal_source", "copy_source"}:
-                source_path = record.revisions[record.current_revision].source_path
+                source_path = record.source.source_path
                 if source_path is None or not pathlib.Path(source_path).is_file():
                     QtWidgets.QMessageBox.information(
                         self._manager,
@@ -992,12 +1182,10 @@ class _ExtensionController(QtCore.QObject):
                         clipboard.setText(source_path)
                 return
             elif action_id == "open_package":
-                revision = record.revisions[record.current_revision]
-                if not revision.distribution_name:
+                source = record.source
+                if not source.distribution_name:
                     return
-                distribution = importlib.metadata.distribution(
-                    revision.distribution_name
-                )
+                distribution = importlib.metadata.distribution(source.distribution_name)
                 erlab.utils.misc.open_in_file_manager(
                     pathlib.Path(str(distribution.locate_file(""))).resolve()
                 )
@@ -1019,14 +1207,12 @@ class _ExtensionController(QtCore.QObject):
             )
         self._refresh_manage_dialog()
 
-    def _show_source(self, extension_id: str, revision_hash: str) -> None:
+    def _show_source(self, extension_id: str, source_hash: str) -> None:
         record = self.catalog.model.extensions.get(extension_id)
         if record is None:
             return
         try:
-            source_text = self.revision_source_bytes(
-                extension_id, revision_hash
-            ).decode("utf-8")
+            source_text = self.source_bytes(extension_id, source_hash).decode("utf-8")
         except (KeyError, OSError, UnicodeError):
             erlab.interactive.utils.MessageDialog.critical(
                 self._manager,
@@ -1041,32 +1227,6 @@ class _ExtensionController(QtCore.QObject):
             title=f"Running Source — {record.name}",
         )
         dialog.exec()
-
-    def _show_revision_history(self, record: _ExtensionRecord) -> None:
-        availability = {
-            revision_hash: record.source_type == "script"
-            and self.catalog.store.revision_available(record, revision_hash)
-            for revision_hash in record.revisions
-        }
-        dialog = _RevisionHistoryDialog(record, availability, self._manager)
-        action_slot = functools.partial(self._revision_history_action, record.id)
-        dialog.action_requested.connect(action_slot)
-        try:
-            dialog.exec()
-        finally:
-            with contextlib.suppress(TypeError, RuntimeError):
-                dialog.action_requested.disconnect(action_slot)
-
-    @QtCore.Slot(str, str, str)
-    def _revision_history_action(
-        self, extension_id: str, action_id: str, revision_hash: str
-    ) -> None:
-        if action_id == "view_revision_source":
-            self._show_source(extension_id, revision_hash)
-        elif action_id == "copy_revision_id":
-            clipboard = QtWidgets.QApplication.clipboard()
-            if clipboard is not None:
-                clipboard.setText(revision_hash)
 
     @QtCore.Slot()
     @QtCore.Slot(str)
@@ -1118,21 +1278,20 @@ class _ExtensionController(QtCore.QObject):
             self._refresh_removal_eligibility()
             return
         object_paths = {
-            self.catalog.store.objects_directory / revision.object_name
-            for revision in record.revisions.values()
+            self.catalog.store.objects_directory / record.source.object_name
         }
         total_size = sum(path.stat().st_size for path in object_paths if path.is_file())
-        current = record.revisions[record.current_revision]
+        current = record.source
         dialog = QtWidgets.QMessageBox(self._manager)
         dialog.setObjectName("manager_extension_remove_confirmation")
         dialog.setWindowTitle("Remove Extension")
         dialog.setIcon(QtWidgets.QMessageBox.Icon.Warning)
         dialog.setText(f"Remove {record.name} from ERLab?")
         dialog.setInformativeText(
-            f"This extension has {len(object_paths)} managed revisions "
+            "ERLab stores one recovery copy "
             f"({erlab.utils.formatting.format_nbytes(total_size)}). ERLab will delete "
-            "revision files that no other extension uses. The original source file "
-            "will not be deleted."
+            "that copy if no other extension uses it. The original source file will "
+            "not be deleted."
         )
         dialog.setDetailedText(
             f"Original source: {current.source_path or 'No external source file'}\n\n"
@@ -1197,7 +1356,7 @@ class _ExtensionController(QtCore.QObject):
             persisted[
                 (
                     item.extension_id,
-                    item.revision_hash,
+                    item.source_hash,
                     item.capability_kind,
                     item.capability_id,
                     item.source_type,
@@ -1207,7 +1366,7 @@ class _ExtensionController(QtCore.QObject):
         def merged_persisted_requirement(
             key: tuple[str, str, str, str, str],
         ) -> _WorkspaceExtensionRequirement | None:
-            """Merge per-node state for one immutable capability revision."""
+            """Merge per-node state for one immutable source dependency."""
             items = persisted.get(key)
             if not items:
                 return None
@@ -1236,6 +1395,7 @@ class _ExtensionController(QtCore.QObject):
         operations: dict[tuple[str, str, str, str], typing.Any] = {}
         loader_references: dict[tuple[str, str, str, str], set[str]] = defaultdict(set)
         loader_files: dict[tuple[str, str, str, str], set[str]] = defaultdict(set)
+        loader_calls: dict[tuple[str, str, str, str], typing.Any] = {}
         for uid, node in self._manager._tool_graph.nodes.items():
             spec = node.passive_displayed_provenance_spec
             pending_specs = deque(() if spec is None else (spec,))
@@ -1254,7 +1414,7 @@ class _ExtensionController(QtCore.QObject):
                     )
                     key = (
                         extension_operation.extension_id,
-                        extension_operation.revision_hash,
+                        extension_operation.source_hash,
                         extension_operation.routine_id,
                         extension_operation.source_type,
                     )
@@ -1266,21 +1426,22 @@ class _ExtensionController(QtCore.QObject):
                 if (
                     replay_call is None
                     or replay_call.kind != "extension_loader"
-                    or replay_call.revision is None
+                    or replay_call.source_hash is None
                     or replay_call.capability_id is None
                 ):
                     continue
                 key = (
                     replay_call.target,
-                    replay_call.revision,
+                    replay_call.source_hash,
                     replay_call.capability_id,
                     typing.cast("str", replay_call.extension_source_type),
                 )
                 loader_references[key].add(uid)
                 loader_files[key].add(current_spec.file_load_source.path)
+                loader_calls[key] = replay_call
         requirements: list[_WorkspaceExtensionRequirement] = []
         for key, node_uids in references.items():
-            extension_id, revision_hash, routine_id, source_type_value = key
+            extension_id, source_hash, routine_id, source_type_value = key
             source_type = typing.cast(
                 'typing.Literal["script", "environment-package"]', source_type_value
             )
@@ -1289,7 +1450,7 @@ class _ExtensionController(QtCore.QObject):
             previous = merged_persisted_requirement(
                 (
                     extension_id,
-                    revision_hash,
+                    source_hash,
                     "routine",
                     routine_id,
                     source_type,
@@ -1300,16 +1461,19 @@ class _ExtensionController(QtCore.QObject):
                     set(previous.referencing_nodes).difference(loaded_node_uids)
                 )
             metadata = {} if previous is None else dict(previous.metadata_snapshot)
-            record_revision = (
+            record_source = (
                 None
-                if record is None or record.source_type != source_type
-                else record.revisions.get(revision_hash)
+                if record is None
+                or record.source_type != source_type
+                or record.source.source_hash != source_hash
+                else record.source
             )
-            if record is not None and record_revision is not None:
+            if record is not None and record_source is not None:
                 for obsolete_key in (
                     "author",
                     "contact",
                     "project_url",
+                    "change_summary",
                     "changelog",
                 ):
                     metadata.pop(obsolete_key, None)
@@ -1317,7 +1481,6 @@ class _ExtensionController(QtCore.QObject):
                     **metadata,
                     "extension_name": record.name,
                     "routine_name": operation.routine_name,
-                    "change_summary": record_revision.change_summary,
                 }
             elif previous is None:
                 metadata = {
@@ -1326,16 +1489,16 @@ class _ExtensionController(QtCore.QObject):
                 }
             if (
                 previous is None
-                and record_revision is not None
-                and record_revision.source_modified_at is not None
+                and record_source is not None
+                and record_source.source_modified_at is not None
             ):
-                metadata["source_modified_at"] = record_revision.source_modified_at
+                metadata["source_modified_at"] = record_source.source_modified_at
             requirements.append(
                 _WorkspaceExtensionRequirement(
                     extension_id=extension_id,
                     capability_id=routine_id,
                     capability_kind="routine",
-                    revision_hash=revision_hash,
+                    source_hash=source_hash,
                     extension_api_version=(
                         EXTENSION_API_VERSION
                         if previous is None
@@ -1343,9 +1506,17 @@ class _ExtensionController(QtCore.QObject):
                     ),
                     source_type=source_type,
                     metadata_snapshot=metadata,
+                    package=(
+                        record_source.package_reference
+                        if record_source is not None
+                        and source_type == "environment-package"
+                        else previous.package
+                        if previous is not None
+                        else operation.package
+                    ),
                     embedded_object_id=self._embedded_script_object_id(
                         record=record,
-                        revision_hash=revision_hash,
+                        source_hash=source_hash,
                         source_type=source_type,
                         previous=previous,
                     ),
@@ -1353,16 +1524,17 @@ class _ExtensionController(QtCore.QObject):
                 )
             )
         for key, node_uids in loader_references.items():
-            extension_id, revision_hash, loader_id, loader_source_type_value = key
+            extension_id, source_hash, loader_id, loader_source_type_value = key
             loader_source_type = typing.cast(
                 'typing.Literal["script", "environment-package"]',
                 loader_source_type_value,
             )
             record = self.catalog.model.extensions.get(extension_id)
+            replay_call = loader_calls[key]
             previous = merged_persisted_requirement(
                 (
                     extension_id,
-                    revision_hash,
+                    source_hash,
                     "loader",
                     loader_id,
                     loader_source_type,
@@ -1377,38 +1549,40 @@ class _ExtensionController(QtCore.QObject):
             loader_metadata = (
                 {} if previous is None else dict(previous.metadata_snapshot)
             )
-            loader_record_revision = (
+            loader_record_source = (
                 None
-                if record is None or record.source_type != loader_source_type
-                else record.revisions.get(revision_hash)
+                if record is None
+                or record.source_type != loader_source_type
+                or record.source.source_hash != source_hash
+                else record.source
             )
-            if record is not None and loader_record_revision is not None:
+            if record is not None and loader_record_source is not None:
                 for obsolete_key in (
                     "author",
                     "contact",
                     "project_url",
+                    "change_summary",
                     "changelog",
                 ):
                     loader_metadata.pop(obsolete_key, None)
                 loader_metadata = {
                     **loader_metadata,
                     "extension_name": record.name,
-                    "change_summary": loader_record_revision.change_summary,
                 }
             if (
                 previous is None
-                and loader_record_revision is not None
-                and loader_record_revision.source_modified_at is not None
+                and loader_record_source is not None
+                and loader_record_source.source_modified_at is not None
             ):
                 loader_metadata["source_modified_at"] = (
-                    loader_record_revision.source_modified_at
+                    loader_record_source.source_modified_at
                 )
             requirements.append(
                 _WorkspaceExtensionRequirement(
                     extension_id=extension_id,
                     capability_id=loader_id,
                     capability_kind="loader",
-                    revision_hash=revision_hash,
+                    source_hash=source_hash,
                     extension_api_version=(
                         EXTENSION_API_VERSION
                         if previous is None
@@ -1416,9 +1590,17 @@ class _ExtensionController(QtCore.QObject):
                     ),
                     source_type=loader_source_type,
                     metadata_snapshot=loader_metadata,
+                    package=(
+                        loader_record_source.package_reference
+                        if loader_record_source is not None
+                        and loader_source_type == "environment-package"
+                        else previous.package
+                        if previous is not None
+                        else replay_call.package
+                    ),
                     embedded_object_id=self._embedded_script_object_id(
                         record=record,
-                        revision_hash=revision_hash,
+                        source_hash=source_hash,
                         source_type=loader_source_type,
                         previous=previous,
                     ),
@@ -1438,7 +1620,7 @@ class _ExtensionController(QtCore.QObject):
         keys = {
             (
                 item.extension_id,
-                item.revision_hash,
+                item.source_hash,
                 item.capability_kind,
                 item.capability_id,
                 item.source_type,
@@ -1465,7 +1647,7 @@ class _ExtensionController(QtCore.QObject):
         keys.update(
             (
                 item.extension_id,
-                item.revision_hash,
+                item.source_hash,
                 item.capability_kind,
                 item.capability_id,
                 item.source_type,
@@ -1475,19 +1657,16 @@ class _ExtensionController(QtCore.QObject):
         for record in self.catalog.model.extensions.values():
             if record.source_type != "script" or record.embed_policy != "always":
                 continue
-            revision = record.revisions[record.current_revision]
-            metadata = {
-                "extension_name": record.name,
-                "change_summary": revision.change_summary,
-            }
+            source = record.source
+            metadata = {"extension_name": record.name}
             for capability_kind, descriptors in (
-                ("routine", revision.routines),
-                ("loader", revision.loaders),
+                ("routine", source.routines),
+                ("loader", source.loaders),
             ):
                 for descriptor in descriptors:
                     key = (
                         record.id,
-                        record.current_revision,
+                        source.source_hash,
                         capability_kind,
                         descriptor.id,
                         record.source_type,
@@ -1502,20 +1681,20 @@ class _ExtensionController(QtCore.QObject):
                                 'typing.Literal["routine", "loader"]',
                                 capability_kind,
                             ),
-                            revision_hash=record.current_revision,
+                            source_hash=source.source_hash,
                             extension_api_version=EXTENSION_API_VERSION,
                             source_type="script",
                             metadata_snapshot=(
                                 metadata
-                                if revision.source_modified_at is None
+                                if source.source_modified_at is None
                                 else {
                                     **metadata,
-                                    "source_modified_at": revision.source_modified_at,
+                                    "source_modified_at": source.source_modified_at,
                                 }
                             ),
                             embedded_object_id=self._embedded_script_object_id(
                                 record=record,
-                                revision_hash=record.current_revision,
+                                source_hash=source.source_hash,
                                 source_type="script",
                                 previous=None,
                             ),
@@ -1527,7 +1706,7 @@ class _ExtensionController(QtCore.QObject):
         self,
         *,
         record: _ExtensionRecord | None,
-        revision_hash: str,
+        source_hash: str,
         source_type: typing.Literal["script", "environment-package"],
         previous: _WorkspaceExtensionRequirement | None,
     ) -> str | None:
@@ -1541,42 +1720,46 @@ class _ExtensionController(QtCore.QObject):
         if record.embed_policy == "never":
             return None
         try:
-            self.revision_source_bytes(record.id, revision_hash)
+            self.source_bytes(record.id, source_hash)
         except (KeyError, OSError):
             return None
-        return f"extension-{revision_hash}"
+        return f"extension-{source_hash}"
 
-    def revision_source_bytes(self, extension_id: str, revision: str) -> bytes:
-        """Return verified workspace or catalog bytes for an exact revision."""
-        return self._verified_revision_source(extension_id, revision)
+    def source_bytes(self, extension_id: str, source_hash: str) -> bytes:
+        """Return workspace or catalog bytes that match a source hash."""
+        return self._verified_source(extension_id, source_hash)
 
-    def _verified_revision_source(
+    def _verified_source(
         self,
         extension_id: str,
-        revision: str,
+        source_hash: str,
         *,
         include_embedded: bool = True,
         include_catalog: bool = True,
     ) -> bytes:
-        """Select the first source whose bytes match the requested revision."""
+        """Select the first source whose bytes match the requested hash."""
         candidates: list[bytes] = []
         if include_embedded:
-            embedded = self._workspace_embedded_sources.get((extension_id, revision))
+            embedded = self._workspace_embedded_sources.get((extension_id, source_hash))
             if embedded is not None:
                 candidates.append(embedded)
         if include_catalog:
             with contextlib.suppress(KeyError, OSError):
                 candidates.append(
-                    self.catalog.store.source_path(extension_id, revision).read_bytes()
+                    self.catalog.store.recovery_source_path(
+                        extension_id, source_hash
+                    ).read_bytes()
                 )
         for source in candidates:
-            if hashlib.sha256(source).hexdigest() == revision:
+            if hashlib.sha256(source).hexdigest() == source_hash:
                 return source
         if candidates:
             raise _ExtensionSourceHashMismatchError(
-                f"Available source does not match {extension_id}:{revision}"
+                f"Available source does not match {extension_id}:{source_hash}"
             )
-        raise FileNotFoundError(f"No source is available for {extension_id}:{revision}")
+        raise FileNotFoundError(
+            f"No source is available for {extension_id}:{source_hash}"
+        )
 
     def set_workspace_requirements(
         self,
@@ -1594,6 +1777,90 @@ class _ExtensionController(QtCore.QObject):
         self._unresolved_workspace_requirement_payloads = tuple(
             copy.deepcopy(item) for item in unresolved_payloads
         )
+
+    def _remap_workspace_extension(
+        self, previous_id: str, source_hash: str, registered_id: str
+    ) -> None:
+        """Remap one workspace source after it is registered under a new ID."""
+
+        def remap_spec(spec: typing.Any) -> typing.Any:
+            candidate = spec
+            for ref, operation in reversed(tuple(iter_operation_refs(spec))):
+                if (
+                    getattr(operation, "op", None) == "extension_routine"
+                    and getattr(operation, "extension_id", None) == previous_id
+                    and getattr(operation, "source_hash", None) == source_hash
+                ):
+                    candidate = candidate._replace_operation_ref(
+                        ref,
+                        (operation.model_copy(update={"extension_id": registered_id}),),
+                    )
+
+            script_inputs = []
+            script_inputs_changed = False
+            for script_input in candidate.script_inputs:
+                nested = script_input.parsed_provenance_spec()
+                if nested is None:
+                    script_inputs.append(script_input)
+                    continue
+                remapped_nested = remap_spec(nested)
+                if remapped_nested == nested:
+                    script_inputs.append(script_input)
+                    continue
+                script_inputs_changed = True
+                script_inputs.append(
+                    script_input.model_copy(
+                        update={
+                            "provenance_spec": remapped_nested.model_dump(mode="json")
+                        }
+                    )
+                )
+            if script_inputs_changed:
+                candidate = candidate.model_copy(
+                    update={"script_inputs": tuple(script_inputs)}
+                )
+
+            load_source = candidate.file_load_source
+            replay_call = None if load_source is None else load_source.replay_call
+            if (
+                replay_call is not None
+                and replay_call.kind == "extension_loader"
+                and replay_call.target == previous_id
+                and replay_call.source_hash == source_hash
+            ):
+                candidate = candidate.model_copy(
+                    update={
+                        "file_load_source": load_source.model_copy(
+                            update={
+                                "replay_call": replay_call.model_copy(
+                                    update={"target": registered_id}
+                                )
+                            }
+                        )
+                    }
+                )
+            return candidate
+
+        for node in self._manager._tool_graph.nodes.values():
+            spec = node.passive_displayed_provenance_spec
+            if spec is None:
+                continue
+            remapped = remap_spec(spec)
+            if remapped != spec:
+                node.set_displayed_provenance(remapped, advance_snapshot=False)
+
+        self._workspace_requirements = tuple(
+            requirement.model_copy(update={"extension_id": registered_id})
+            if requirement.extension_id == previous_id
+            and requirement.source_hash == source_hash
+            else requirement
+            for requirement in self._workspace_requirements
+        )
+        embedded = self._workspace_embedded_sources.pop(
+            (previous_id, source_hash), None
+        )
+        if embedded is not None:
+            self._workspace_embedded_sources[(registered_id, source_hash)] = embedded
 
     def workspace_requirement_state(
         self,
@@ -1711,48 +1978,54 @@ class _ExtensionController(QtCore.QObject):
                 state="unsupported-api",
                 detail=f"API {requirement.extension_api_version} is not supported",
             )
-        if (
-            requirement.source_type == "environment-package"
-            and erlab.utils.misc._IS_PACKAGED
-        ):
-            return _ResolvedWorkspaceRequirement(
-                requirement=requirement,
-                state="missing",
-                detail="Environment package extensions are unavailable in this build",
-            )
         record = self.catalog.model.extensions.get(requirement.extension_id)
-        session_status = (
-            self.execution.session_capability_status(
-                requirement.extension_id,
-                requirement.revision_hash,
-                requirement.capability_kind,
-                requirement.capability_id,
+        if requirement.source_type == "environment-package":
+            package = typing.cast("_PackageExtensionReference", requirement.package)
+            record = next(
+                (
+                    candidate
+                    for candidate in self.catalog.model.extensions.values()
+                    if candidate.source_type == "environment-package"
+                    and (source := candidate.source).entry_point_group
+                    == package.entry_point_group
+                    and source.entry_point_name == package.entry_point_name
+                    and source.entry_point_value == package.entry_point_value
+                    and (source.distribution_name or "").casefold()
+                    == package.distribution_name.casefold()
+                ),
+                None,
             )
-            if requirement.source_type == "script"
-            else None
-        )
-        if session_status == "ready":
-            return _ResolvedWorkspaceRequirement(
-                requirement=requirement,
-                state="ready",
-            )
-        global_revision = (
-            None if record is None else record.revisions.get(requirement.revision_hash)
-        )
-        if session_status is not None and (
-            record is None
-            or record.source_type != requirement.source_type
-            or global_revision is None
-        ):
-            state = (
-                "missing"
-                if session_status in {"missing-revision", "missing-capability"}
-                else session_status
-            )
-            return _ResolvedWorkspaceRequirement(
-                requirement=requirement,
-                state=typing.cast("_WorkspaceRequirementState", state),
-            )
+            if record is None:
+                return _ResolvedWorkspaceRequirement(
+                    requirement=requirement,
+                    state="missing",
+                    detail=(
+                        f"Install {package.distribution_name}"
+                        + (
+                            f" {package.distribution_version}"
+                            if package.distribution_version
+                            else ""
+                        )
+                        + " in this Python environment"
+                    ),
+                )
+            if record.source.import_error:
+                return _ResolvedWorkspaceRequirement(
+                    requirement=requirement,
+                    state="import-failed",
+                    detail=record.source.import_error,
+                )
+            if record.source.source_hash != requirement.source_hash:
+                installed_version = record.source.distribution_version or "unknown"
+                return _ResolvedWorkspaceRequirement(
+                    requirement=requirement,
+                    state="hash-mismatch",
+                    detail=(
+                        f"Workspace used {package.distribution_name} "
+                        f"{package.distribution_version or 'with no version'}; "
+                        f"this environment has {installed_version}"
+                    ),
+                )
         if record is not None and record.source_type != requirement.source_type:
             return _ResolvedWorkspaceRequirement(
                 requirement=requirement,
@@ -1760,16 +2033,10 @@ class _ExtensionController(QtCore.QObject):
                 detail="The catalog extension uses a different source type",
             )
         if record is None:
-            if requirement.source_type == "environment-package":
-                return _ResolvedWorkspaceRequirement(
-                    requirement=requirement,
-                    state="missing",
-                    detail="The exact environment package revision is unavailable",
-                )
             try:
-                self._verified_revision_source(
+                self._verified_source(
                     requirement.extension_id,
-                    requirement.revision_hash,
+                    requirement.source_hash,
                     include_catalog=False,
                 )
             except _ExtensionSourceHashMismatchError:
@@ -1781,20 +2048,20 @@ class _ExtensionController(QtCore.QObject):
                     requirement=requirement, state="missing"
                 )
             return _ResolvedWorkspaceRequirement(
-                requirement=requirement, state="approval-required"
+                requirement=requirement,
+                state="missing",
+                detail="Save and register the script included with this workspace",
             )
-        revision = record.revisions.get(requirement.revision_hash)
-        if revision is None:
-            if requirement.source_type == "environment-package":
-                return _ResolvedWorkspaceRequirement(
-                    requirement=requirement,
-                    state="missing",
-                    detail="The exact environment package revision is unavailable",
-                )
+        source = (
+            record.source
+            if record.source.source_hash == requirement.source_hash
+            else None
+        )
+        if source is None:
             try:
-                self._verified_revision_source(
+                self._verified_source(
                     requirement.extension_id,
-                    requirement.revision_hash,
+                    requirement.source_hash,
                     include_catalog=False,
                 )
             except _ExtensionSourceHashMismatchError:
@@ -1805,61 +2072,69 @@ class _ExtensionController(QtCore.QObject):
                 pass
             else:
                 return _ResolvedWorkspaceRequirement(
-                    requirement=requirement, state="approval-required"
+                    requirement=requirement,
+                    state="missing",
+                    detail=(
+                        "Save and register the script included with this workspace"
+                    ),
                 )
             return _ResolvedWorkspaceRequirement(
                 requirement=requirement,
                 state="missing",
-                detail="The exact revision is not in the application catalog",
+                detail="The required source is not registered",
             )
         if record.source_type == "script":
             try:
-                self._verified_revision_source(
-                    record.id,
-                    requirement.revision_hash,
-                    include_embedded=False,
+                self.catalog.store.executable_source_path(
+                    record.id, requirement.source_hash
                 )
-            except _ExtensionSourceHashMismatchError:
+            except _ExtensionCatalogConflictError:
                 return _ResolvedWorkspaceRequirement(
                     requirement=requirement,
                     state="hash-mismatch",
-                    detail="The stored revision source hash does not match",
+                    detail="The registered script file changed",
                 )
-            except FileNotFoundError:
+            except (FileNotFoundError, KeyError):
                 return _ResolvedWorkspaceRequirement(
                     requirement=requirement,
                     state="missing",
-                    detail="The stored revision source is unavailable",
+                    detail="The registered script file is unavailable",
                 )
         else:
             try:
-                self.catalog.store._entry_point_for_revision(revision)
+                self.catalog.store._entry_point_for_source(source)
             except Exception:
                 return _ResolvedWorkspaceRequirement(
                     requirement=requirement,
                     state="missing",
                     detail="The environment package entry point is unavailable",
                 )
-        if revision.import_error:
+        if source.import_error:
             return _ResolvedWorkspaceRequirement(
                 requirement=requirement,
                 state="import-failed",
-                detail=revision.import_error,
+                detail=source.import_error,
             )
-        if not revision.approved:
+        if not source.approved:
+            if requirement.source_type == "environment-package":
+                return _ResolvedWorkspaceRequirement(
+                    requirement=requirement,
+                    state="import-failed",
+                    detail="The package entry point could not be loaded",
+                )
             return _ResolvedWorkspaceRequirement(
                 requirement=requirement, state="approval-required"
             )
         capabilities = (
-            revision.routines
+            source.routines
             if requirement.capability_kind == "routine"
-            else revision.loaders
+            else source.loaders
         )
         if all(item.id != requirement.capability_id for item in capabilities):
             return _ResolvedWorkspaceRequirement(
                 requirement=requirement,
                 state="missing",
-                detail="The revision does not provide the required capability",
+                detail="The registered source does not provide the required capability",
             )
         if not record.enabled:
             return _ResolvedWorkspaceRequirement(
@@ -1872,49 +2147,52 @@ class _ExtensionController(QtCore.QObject):
         dialog = _WorkspaceRequirementsDialog(
             self.resolved_workspace_requirements(),
             self._manager,
-            approvable={
-                (item.extension_id, item.revision_hash, item.source_type)
+            recoverable={
+                (item.extension_id, item.source_hash, item.source_type)
                 for item in self._workspace_requirements
                 if item.source_type == "script"
-                and (item.extension_id, item.revision_hash)
+                and (item.extension_id, item.source_hash)
                 in self._workspace_embedded_sources
             },
         )
 
-        def approve_slot(extension_id: str, revision: str) -> None:
-            self._approve_embedded_script(extension_id, revision)
+        def register_slot(extension_id: str, source_hash: str) -> None:
+            self._save_and_register_embedded_script(extension_id, source_hash)
             if erlab.interactive.utils.qt_is_valid(dialog):
                 dialog.set_requirements(self.resolved_workspace_requirements())
 
-        dialog.approve_requested.connect(approve_slot)
+        dialog.register_requested.connect(register_slot)
         try:
             dialog.exec()
         finally:
             with contextlib.suppress(TypeError, RuntimeError):
-                dialog.approve_requested.disconnect(approve_slot)
+                dialog.register_requested.disconnect(register_slot)
 
     @QtCore.Slot(str, str)
-    def _approve_embedded_script(self, extension_id: str, revision: str) -> None:
-        source = self._workspace_embedded_sources.get((extension_id, revision))
+    def _save_and_register_embedded_script(
+        self, extension_id: str, source_hash: str
+    ) -> bool:
+        """Save workspace source as a user file before registration and import."""
+        source = self._workspace_embedded_sources.get((extension_id, source_hash))
         if source is None:
             QtWidgets.QMessageBox.warning(
                 self._manager,
                 "Embedded Source Unavailable",
                 "The selected requirement has no readable embedded script.",
             )
-            return
+            return False
         requirement = next(
             (
                 item
                 for item in self._workspace_requirements
                 if item.extension_id == extension_id
-                and item.revision_hash == revision
+                and item.source_hash == source_hash
                 and item.source_type == "script"
             ),
             None,
         )
         if requirement is None:
-            return
+            return False
         try:
             source_text = source.decode("utf-8")
         except UnicodeDecodeError:
@@ -1923,65 +2201,91 @@ class _ExtensionController(QtCore.QObject):
                 "Embedded Source Unavailable",
                 "The embedded script is not valid UTF-8 source.",
             )
-            return
+            return False
         dialog = _SourceReviewDialog(
             None,
             self._manager,
             source_text=source_text,
-            choose_approval_scope=True,
         )
-        change_summary = requirement.metadata_snapshot.get("change_summary", "")
-        if isinstance(change_summary, str):
-            dialog.change_summary_edit.setText(change_summary)
         if not dialog.exec():
-            return
+            return False
+        extension_name = str(
+            requirement.metadata_snapshot.get("extension_name", extension_id)
+        )
+        suggested_name = (
+            extension_name
+            if extension_name.lower().endswith(".py")
+            else f"{extension_id}.py"
+        )
+        existing = self.catalog.model.extensions.get(extension_id)
+        if (
+            existing is not None
+            and existing.source_type == "script"
+            and existing.source.source_hash != source_hash
+        ):
+            modified = requirement.metadata_snapshot.get("source_modified_at")
+            try:
+                date = (
+                    QtCore.QDateTime.fromString(
+                        str(modified), QtCore.Qt.DateFormat.ISODate
+                    )
+                    .date()
+                    .toString("yyyy-MM-dd")
+                )
+            except (TypeError, ValueError):
+                date = ""
+            if not date:
+                date = QtCore.QDate.currentDate().toString("yyyy-MM-dd")
+            path_name = pathlib.Path(suggested_name)
+            suggested_name = f"{path_name.stem}_workspace_{date}.py"
+        destination = self._save_source_as_user_file(
+            source,
+            title="Save Workspace Extension Script",
+            suggested_name=suggested_name,
+        )
+        if destination is None:
+            return False
         try:
-            extension_name = str(
-                requirement.metadata_snapshot.get("extension_name", extension_id)
-            )
-            source_modified_at = (
-                str(requirement.metadata_snapshot["source_modified_at"])
-                if requirement.metadata_snapshot.get("source_modified_at") is not None
-                else None
-            )
-            if dialog.remember_approval:
-                existing = self.catalog.model.extensions.get(extension_id)
-                self.catalog.store.add_embedded_script(
-                    source,
-                    extension_id=extension_id,
-                    expected_revision=revision,
-                    name=extension_name,
-                    change_summary=dialog.change_summary,
-                    source_modified_at=source_modified_at,
-                    expected_record_generation=(
-                        None if existing is None else existing.record_generation
-                    ),
-                    check_record_generation=True,
+            registration_id = extension_id
+            if existing is not None and existing.source.source_hash != source_hash:
+                registration_id = _safe_extension_id(
+                    f"{destination.stem}-{uuid.uuid4().hex[:8]}"
                 )
-                self.catalog.refresh()
-                record = self.catalog.model.extensions[extension_id]
-                self.execution.validate_and_enable(
-                    extension_id,
+            self.catalog.store.add_script(
+                destination,
+                extension_id=registration_id,
+                expected_source_hash=source_hash,
+                expected_record_generation=(
+                    None
+                    if registration_id != extension_id or existing is None
+                    else existing.record_generation
+                ),
+                check_record_generation=True,
+            )
+            self.catalog.refresh()
+            record = self.catalog.model.extensions[registration_id]
+            if not record.source.approved:
+                self.execution.validate_source(
+                    registration_id,
+                    source_hash,
                     expected_record_generation=record.record_generation,
+                    enable_extension=True,
                 )
                 self.catalog.refresh()
-            else:
-                self.execution.approve_session_script(
-                    source,
-                    extension_id=extension_id,
-                    revision_hash=revision,
-                    name=extension_name,
-                    change_summary=dialog.change_summary,
-                    source_modified_at=source_modified_at,
+            if registration_id != extension_id:
+                self._remap_workspace_extension(
+                    extension_id, source_hash, registration_id
                 )
-                self._catalog_changed(self.catalog.model)
+            return True  # noqa: TRY300 - success exits before the shared error path.
         except Exception:
             erlab.interactive.utils.MessageDialog.critical(
                 self._manager,
                 "Extension Error",
-                "The embedded extension could not be enabled.",
+                "The saved workspace extension could not be registered.",
                 detailed_text=traceback.format_exc(),
             )
+            self.catalog.refresh()
+            return False
 
     def notify_unavailable_workspace_requirements(self) -> None:
         unavailable = [
@@ -1990,6 +2294,35 @@ class _ExtensionController(QtCore.QObject):
             if item.state != "ready"
         ]
         if not unavailable:
+            return
+        missing_registered_scripts = {
+            item.requirement.extension_id
+            for item in unavailable
+            if item.state == "missing"
+            and item.requirement.source_type == "script"
+            and (
+                record := self.catalog.model.extensions.get(
+                    item.requirement.extension_id
+                )
+            )
+            is not None
+            and record.source.source_hash == item.requirement.source_hash
+        }
+        if missing_registered_scripts and self._show_missing_script_recovery(
+            extension_ids=missing_registered_scripts,
+            repeat=True,
+        ):
+            return
+        if any(
+            item.requirement.source_type == "script"
+            and (
+                item.requirement.extension_id,
+                item.requirement.source_hash,
+            )
+            in self._workspace_embedded_sources
+            for item in unavailable
+        ):
+            self.show_workspace_requirements()
             return
         states = ", ".join(
             f"{item.requirement.extension_id}: {item.state}" for item in unavailable
@@ -2013,8 +2346,7 @@ class _ExtensionController(QtCore.QObject):
         if erlab.utils.misc._IS_PACKAGED:
             return
         try:
-            self.catalog.store.refresh_environment_packages()
-            self.catalog.refresh()
+            self._refresh_environment_packages()
         except Exception:
             erlab.interactive.utils.MessageDialog.critical(
                 self._manager,
@@ -2023,9 +2355,40 @@ class _ExtensionController(QtCore.QObject):
                 detailed_text=traceback.format_exc(),
             )
 
+    def _refresh_environment_packages(self) -> None:
+        """Discover and validate packages without writing them to the catalog."""
+        discovered = self.catalog.store.refresh_environment_packages()
+        for record in discovered.extensions.values():
+            if (
+                record.source_type != "environment-package"
+                or record.source.import_error is not None
+                or record.source.approved
+            ):
+                continue
+            try:
+                self.execution.validate_and_enable(
+                    record.id,
+                    expected_record_generation=record.record_generation,
+                )
+            except Exception:
+                logger.exception(
+                    "Could not import environment extension %s",
+                    record.id,
+                    extra={"suppress_ui_alert": True},
+                )
+        self.catalog.refresh()
+
     def close(self) -> None:
         if self._closed:
             return
+        self._closed = True
+        missing_dialog = self._missing_scripts_dialog
+        if missing_dialog is not None and erlab.interactive.utils.qt_is_valid(
+            missing_dialog
+        ):
+            missing_dialog.close()
+        self._missing_scripts_dialog = None
+        self._missing_scripts_dialog_slots = None
         self.execution.shutdown()
         if self.menu is not None and erlab.interactive.utils.qt_is_valid(self.menu):
             with contextlib.suppress(TypeError, RuntimeError):
@@ -2074,4 +2437,3 @@ class _ExtensionController(QtCore.QObject):
             self.catalog.changed.disconnect(self._catalog_changed_slot)
         self._routine_action_groups.clear()
         self.catalog.close()
-        self._closed = True

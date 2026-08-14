@@ -20,8 +20,8 @@ from collections.abc import Callable, Iterable, Mapping
 import xarray as xr
 
 from erlab.extensions._entry_points import (
-    _entry_point_revision,
-    _EntryPointRevisionError,
+    _entry_point_source_hash,
+    _EntryPointInspectionError,
     _load_entry_point_value,
 )
 from erlab.extensions._models import (
@@ -40,7 +40,10 @@ from erlab.extensions._models import (
 )
 
 _CAPABILITY_ATTRIBUTE = "__erlab_extension_capability__"
-_RevisionResolver = Callable[[str, str], os.PathLike[str] | str]
+_SourceResolver = Callable[[str, str], os.PathLike[str] | str]
+_ScriptCapabilityReferenceResolver = Callable[
+    [str, str, str], tuple[os.PathLike[str] | str, str]
+]
 _CapabilityResolver = Callable[
     [str, str, str, str, str | None], Callable[..., typing.Any]
 ]
@@ -48,7 +51,7 @@ _CapabilityStatus = typing.Literal[
     "ready",
     "disabled",
     "approval-required",
-    "missing-revision",
+    "missing-source",
     "missing-capability",
     "hash-mismatch",
     "unsupported-api",
@@ -57,7 +60,10 @@ _CapabilityStatus = typing.Literal[
 _CapabilityStatusResolver = Callable[
     [str, str, str, str, str | None], _CapabilityStatus
 ]
-_revision_resolvers: dict[str, _RevisionResolver] = {}
+_source_resolvers: dict[str, _SourceResolver] = {}
+_script_capability_reference_resolvers: dict[
+    str, _ScriptCapabilityReferenceResolver
+] = {}
 _capability_resolvers: dict[str, _CapabilityResolver] = {}
 _capability_status_resolvers: dict[str, _CapabilityStatusResolver] = {}
 _resolver_lock = threading.RLock()
@@ -528,7 +534,7 @@ def load_script(
     path: os.PathLike[str] | str,
     *,
     module_name: str | None = None,
-    expected_revision: str | None = None,
+    expected_source_hash: str | None = None,
 ) -> LoadedScript:
     """Import and validate all decorated capabilities in a Python script.
 
@@ -542,13 +548,13 @@ def load_script(
     module_name
         Import name. The name must not already exist in ``sys.modules``. Graphical
         clients use a name that identifies their session.
-    expected_revision
+    expected_source_hash
         Required SHA-256 source hash. A mismatch stops the import.
 
     Returns
     -------
     LoadedScript
-        Imported module, source revision, and validated capabilities.
+        Imported module, source hash, and validated capabilities.
 
     Raises
     ------
@@ -574,16 +580,16 @@ def load_script(
         raise ExtensionImportError(
             f"Could not read extension source: {error}"
         ) from error
-    revision = hashlib.sha256(source).hexdigest()
-    if expected_revision is not None and revision != expected_revision:
+    source_hash = hashlib.sha256(source).hexdigest()
+    if expected_source_hash is not None and source_hash != expected_source_hash:
         raise ExtensionImportError(
-            f"Extension source hash {revision} does not match expected revision "
-            f"{expected_revision}"
+            f"Extension source hash {source_hash} does not match expected hash "
+            f"{expected_source_hash}"
         )
     import_name = (
         module_name
         if module_name is not None
-        else f"_erlab_extension_{revision[:12]}_{uuid.uuid4().hex}"
+        else f"_erlab_extension_{source_hash[:12]}_{uuid.uuid4().hex}"
     )
     if import_name in sys.modules:
         raise ExtensionImportError(
@@ -614,7 +620,7 @@ def load_script(
             sys.modules.pop(import_name, None)
     return LoadedScript(
         path=source_path,
-        revision=revision,
+        source_hash=source_hash,
         module=module,
         routines=routines,
         loaders=loaders,
@@ -625,12 +631,12 @@ def load_entry_point(
     group: str,
     name: str,
     *,
-    expected_revision: str,
+    expected_source_hash: str,
 ) -> LoadedEntryPoint:
-    """Import one installed extension package at an exact revision.
+    """Import one installed extension package with a required source hash.
 
     Entry-point and distribution metadata are inspected before package code is
-    imported. Editable package revisions include a fingerprint of their Python
+    imported. Editable packages include a fingerprint of their Python
     sources.
 
     Parameters
@@ -639,8 +645,8 @@ def load_entry_point(
         Entry-point group, such as ``"erlab.extensions"``.
     name
         Entry-point name declared by the package.
-    expected_revision
-        Required package revision hash.
+    expected_source_hash
+        Required package source hash.
 
     Returns
     -------
@@ -650,7 +656,7 @@ def load_entry_point(
     Raises
     ------
     ExtensionNotFoundError
-        If no matching entry point or revision is installed.
+        If no matching entry point or source is installed.
     ExtensionImportError
         If package metadata is invalid or package code cannot be imported.
 
@@ -662,7 +668,7 @@ def load_entry_point(
     >>> extension = load_entry_point(  # doctest: +SKIP
     ...     "erlab.extensions",
     ...     "my_lab",
-    ...     expected_revision="0a12...",
+    ...     expected_source_hash="0a12...",
     ... )
     >>> result = extension.normalize(data)  # doctest: +SKIP
     """
@@ -673,15 +679,15 @@ def load_entry_point(
         )
     for entry_point in matching:
         try:
-            revision = _entry_point_revision(entry_point)
-        except _EntryPointRevisionError as error:
+            source_hash = _entry_point_source_hash(entry_point)
+        except _EntryPointInspectionError as error:
             raise ExtensionImportError(
                 f"Could not inspect extension entry point {group}:{name}: {error}"
             ) from error
-        if revision != expected_revision:
+        if source_hash != expected_source_hash:
             continue
         try:
-            value = _load_entry_point_value(entry_point, expected_revision)
+            value = _load_entry_point_value(entry_point, expected_source_hash)
         except Exception as error:
             raise ExtensionImportError(
                 f"Could not import extension entry point {group}:{name}: {error}"
@@ -724,21 +730,29 @@ def load_entry_point(
         return LoadedEntryPoint(
             group=group,
             name=name,
-            revision=revision,
+            source_hash=source_hash,
             value=value,
             callables=callables,
             loader_methods=loader_methods,
         )
     raise ExtensionNotFoundError(
-        f"Extension entry point {group}:{name} does not match revision "
-        f"{expected_revision}"
+        f"Extension entry point {group}:{name} does not match source hash "
+        f"{expected_source_hash}"
     )
 
 
-def _set_revision_resolver(owner: str, resolver: _RevisionResolver) -> None:
+def _set_source_resolver(owner: str, resolver: _SourceResolver) -> None:
     """Register one live catalog resolver without displacing other managers."""
     with _resolver_lock:
-        _revision_resolvers[owner] = resolver
+        _source_resolvers[owner] = resolver
+
+
+def _set_script_capability_reference_resolver(
+    owner: str, resolver: _ScriptCapabilityReferenceResolver
+) -> None:
+    """Register metadata used to generate code for current local scripts."""
+    with _resolver_lock:
+        _script_capability_reference_resolvers[owner] = resolver
 
 
 def _set_capability_resolver(owner: str, resolver: _CapabilityResolver) -> None:
@@ -758,14 +772,15 @@ def _set_capability_status_resolver(
 def _remove_resolvers(owner: str) -> None:
     """Remove only the resolvers owned by one closing manager."""
     with _resolver_lock:
-        _revision_resolvers.pop(owner, None)
+        _source_resolvers.pop(owner, None)
+        _script_capability_reference_resolvers.pop(owner, None)
         _capability_resolvers.pop(owner, None)
         _capability_status_resolvers.pop(owner, None)
 
 
 def _resolved_capability(
     extension_id: str,
-    revision: str,
+    source_hash: str,
     kind: typing.Literal["routine", "loader"],
     capability_id: str,
     method: str | None = None,
@@ -776,7 +791,7 @@ def _resolved_capability(
         return None
     for resolver in reversed(resolvers):
         try:
-            return resolver(extension_id, revision, kind, capability_id, method)
+            return resolver(extension_id, source_hash, kind, capability_id, method)
         except KeyError:
             continue
     return None
@@ -784,7 +799,7 @@ def _resolved_capability(
 
 def _capability_status(
     extension_id: str,
-    revision: str,
+    source_hash: str,
     kind: typing.Literal["routine", "loader"],
     capability_id: str,
     source_type: str | None = None,
@@ -794,24 +809,42 @@ def _capability_status(
         resolvers = tuple(_capability_status_resolvers.values())
     for resolver in reversed(resolvers):
         try:
-            return resolver(extension_id, revision, kind, capability_id, source_type)
+            return resolver(extension_id, source_hash, kind, capability_id, source_type)
         except KeyError:
             continue
-    return "missing-revision"
+    return "missing-source"
 
 
-def _resolved_revision(extension_id: str, revision: str) -> os.PathLike[str] | str:
+def _resolved_source(extension_id: str, source_hash: str) -> os.PathLike[str] | str:
     with _resolver_lock:
-        resolvers = tuple(_revision_resolvers.values())
+        resolvers = tuple(_source_resolvers.values())
     if not resolvers:
         raise ExtensionNotFoundError("No extension catalog resolver is configured")
     for resolver in reversed(resolvers):
         try:
-            return resolver(extension_id, revision)
+            return resolver(extension_id, source_hash)
         except (FileNotFoundError, KeyError):
             continue
     raise ExtensionNotFoundError(
-        f"Extension revision {extension_id}:{revision} was not found"
+        f"Extension source {extension_id}:{source_hash} was not found"
+    )
+
+
+def _resolved_script_capability_reference(
+    extension_id: str,
+    kind: typing.Literal["routine", "loader"],
+    capability_id: str,
+) -> tuple[os.PathLike[str] | str, str]:
+    """Return the current registered path and function for copied script code."""
+    with _resolver_lock:
+        resolvers = tuple(_script_capability_reference_resolvers.values())
+    for resolver in reversed(resolvers):
+        try:
+            return resolver(extension_id, kind, capability_id)
+        except (FileNotFoundError, KeyError):
+            continue
+    raise ExtensionNotFoundError(
+        f"Current script capability {extension_id}:{capability_id} was not found"
     )
 
 
@@ -879,13 +912,13 @@ def run_routine(
     routine_id: str,
     script: os.PathLike[str] | str | None = None,
     extension_id: str | None = None,
-    revision: str | None = None,
+    source_hash: str | None = None,
     parameters: Mapping[str, typing.Any] | None = None,
 ) -> xr.DataArray:
     """Run one decorated routine without manager or Qt knowledge.
 
     Supply ``script`` for a direct notebook call. Manager-generated calls instead
-    supply ``extension_id`` and ``revision`` so the configured catalog resolves the
+    supply ``extension_id`` and ``source_hash`` so the configured catalog resolves the
     immutable source.
 
     Parameters
@@ -898,7 +931,7 @@ def run_routine(
         Python source file. This is optional when a manager catalog resolver exists.
     extension_id
         Catalog extension identifier.
-    revision
+    source_hash
         Exact source SHA-256 hash.
     parameters
         User parameter values.
@@ -911,7 +944,7 @@ def run_routine(
     Raises
     ------
     ExtensionNotFoundError
-        If the requested script, revision, or routine is unavailable.
+        If the requested script, source, or routine is unavailable.
     ExtensionImportError
         If the script cannot be imported.
     ExtensionSignatureError
@@ -935,16 +968,17 @@ def run_routine(
     source = script
     func: Callable[..., typing.Any] | None = None
     if source is None:
-        if extension_id is None or revision is None:
+        if extension_id is None or source_hash is None:
             raise ExtensionNotFoundError(
-                "script or both extension_id and revision are required"
+                "script or both extension_id and source_hash are required"
             )
-        func = _resolved_capability(extension_id, revision, "routine", routine_id)
+        func = _resolved_capability(extension_id, source_hash, "routine", routine_id)
         if func is None:
-            source = _resolved_revision(extension_id, revision)
+            source = _resolved_source(extension_id, source_hash)
     if func is None:
         loaded = load_script(
-            typing.cast("os.PathLike[str] | str", source), expected_revision=revision
+            typing.cast("os.PathLike[str] | str", source),
+            expected_source_hash=source_hash,
         )
         entry = loaded.routines.get(routine_id)
         if entry is None:
@@ -971,7 +1005,7 @@ def run_loader(
     loader_id: str,
     script: os.PathLike[str] | str | None = None,
     extension_id: str | None = None,
-    revision: str | None = None,
+    source_hash: str | None = None,
     method: str | None = None,
     parameters: Mapping[str, typing.Any] | None = None,
 ) -> (
@@ -980,7 +1014,7 @@ def run_loader(
     | xr.DataTree
     | list[xr.DataArray | xr.Dataset | xr.DataTree]
 ):
-    """Run one decorated loader with an exact source revision.
+    """Run one decorated loader with a required source hash.
 
     Parameters
     ----------
@@ -992,8 +1026,8 @@ def run_loader(
         Direct Python source path.
     extension_id
         Catalog extension identifier.
-    revision
-        Exact source or package revision.
+    source_hash
+        Exact source or package hash.
     method
         Installed ``LoaderBase`` method name or importable package callable. Omit this
         value for the normal ``load`` method.
@@ -1008,7 +1042,7 @@ def run_loader(
     Raises
     ------
     ExtensionNotFoundError
-        If the requested script, revision, or loader is unavailable.
+        If the requested script, source, or loader is unavailable.
     ExtensionImportError
         If the script cannot be imported.
     ExtensionSignatureError
@@ -1028,20 +1062,23 @@ def run_loader(
     source = script
     func: Callable[..., typing.Any] | None = None
     if source is None:
-        if extension_id is None or revision is None:
+        if extension_id is None or source_hash is None:
             raise ExtensionNotFoundError(
-                "script or both extension_id and revision are required"
+                "script or both extension_id and source_hash are required"
             )
-        func = _resolved_capability(extension_id, revision, "loader", loader_id, method)
+        func = _resolved_capability(
+            extension_id, source_hash, "loader", loader_id, method
+        )
         if func is None:
-            source = _resolved_revision(extension_id, revision)
+            source = _resolved_source(extension_id, source_hash)
     if func is None:
         if method is not None:
             raise ExtensionNotFoundError(
                 "Decorated extension loaders do not provide alternate methods"
             )
         loaded = load_script(
-            typing.cast("os.PathLike[str] | str", source), expected_revision=revision
+            typing.cast("os.PathLike[str] | str", source),
+            expected_source_hash=source_hash,
         )
         entry = loaded.loaders.get(loader_id)
         if entry is None:

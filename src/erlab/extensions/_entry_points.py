@@ -1,4 +1,4 @@
-"""Revision identity for standard Python extension entry points."""
+"""Source identity for standard Python extension entry points."""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ if typing.TYPE_CHECKING:
     from collections.abc import Mapping
 
 
-class _EntryPointRevisionError(ValueError):
-    """An installed entry point does not have usable revision metadata."""
+class _EntryPointInspectionError(ValueError):
+    """An installed entry point does not have usable source hash metadata."""
 
 
-class _EntryPointReloadRequiredError(_EntryPointRevisionError):
+class _EntryPointReloadRequiredError(_EntryPointInspectionError):
     """An editable entry point changed after its module was imported."""
 
 
@@ -33,17 +33,17 @@ def _editable_source_fingerprint(direct_url: Mapping[str, typing.Any]) -> str:
     """Hash Python sources in an editable distribution project."""
     url = direct_url.get("url")
     if not isinstance(url, str):
-        raise _EntryPointRevisionError("Editable package URL is unavailable")
+        raise _EntryPointInspectionError("Editable package URL is unavailable")
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("", "file"):
-        raise _EntryPointRevisionError("Editable package URL is not a local path")
+        raise _EntryPointInspectionError("Editable package URL is not a local path")
     if parsed.scheme == "file":
         uri_path = f"//{parsed.netloc}{parsed.path}" if parsed.netloc else parsed.path
         root = pathlib.Path(urllib.request.url2pathname(uri_path))
     else:
         root = pathlib.Path(url)
     if not root.is_dir():
-        raise _EntryPointRevisionError(
+        raise _EntryPointInspectionError(
             f"Editable package directory is unavailable: {root}"
         )
     candidates: list[pathlib.Path] = []
@@ -64,7 +64,7 @@ def _editable_source_fingerprint(direct_url: Mapping[str, typing.Any]) -> str:
     }
 
     def walk_error(error: OSError) -> typing.Never:
-        raise _EntryPointRevisionError(
+        raise _EntryPointInspectionError(
             f"Could not inspect editable package directory {root}: {error}"
         ) from error
 
@@ -77,7 +77,7 @@ def _editable_source_fingerprint(direct_url: Mapping[str, typing.Any]) -> str:
             if path.suffix in {".py", ".pyi"} or path.name == "pyproject.toml":
                 candidates.append(path)
     if not candidates:
-        raise _EntryPointRevisionError(
+        raise _EntryPointInspectionError(
             f"Editable package contains no fingerprintable source: {root}"
         )
     digest = hashlib.sha256()
@@ -85,7 +85,7 @@ def _editable_source_fingerprint(direct_url: Mapping[str, typing.Any]) -> str:
         try:
             source = path.read_bytes()
         except OSError as error:
-            raise _EntryPointRevisionError(
+            raise _EntryPointInspectionError(
                 f"Could not fingerprint editable package source {path}: {error}"
             ) from error
         digest.update(path.relative_to(root).as_posix().encode())
@@ -95,10 +95,10 @@ def _editable_source_fingerprint(direct_url: Mapping[str, typing.Any]) -> str:
     return digest.hexdigest()
 
 
-def _entry_point_revision_payload(
+def _entry_point_source_payload(
     entry_point: importlib.metadata.EntryPoint,
 ) -> tuple[str, str, str, bool]:
-    """Return stable distribution metadata used to identify one revision."""
+    """Return stable distribution metadata used to identify one source hash."""
     distribution = entry_point.dist
     distribution_name = (
         entry_point.name
@@ -114,16 +114,16 @@ def _entry_point_revision_payload(
             try:
                 parsed = json.loads(direct_url)
             except json.JSONDecodeError as error:
-                raise _EntryPointRevisionError(
+                raise _EntryPointInspectionError(
                     "Editable package metadata is not valid JSON"
                 ) from error
             if not isinstance(parsed, dict):
-                raise _EntryPointRevisionError(
+                raise _EntryPointInspectionError(
                     "Editable package metadata must be a JSON object"
                 )
             directory_info = parsed.get("dir_info", {})
             if not isinstance(directory_info, dict):
-                raise _EntryPointRevisionError(
+                raise _EntryPointInspectionError(
                     "Editable package directory metadata must be a JSON object"
                 )
             editable = bool(directory_info.get("editable", False))
@@ -144,35 +144,35 @@ def _entry_point_revision_payload(
     return distribution_name, distribution_version, payload, editable
 
 
-def _entry_point_revision(entry_point: importlib.metadata.EntryPoint) -> str:
-    """Return the exact revision hash for one entry point without importing it."""
-    _name, _version, payload, _editable = _entry_point_revision_payload(entry_point)
+def _entry_point_source_hash(entry_point: importlib.metadata.EntryPoint) -> str:
+    """Return the source hash for one entry point without importing it."""
+    _name, _version, payload, _editable = _entry_point_source_payload(entry_point)
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _load_entry_point_value(
     entry_point: importlib.metadata.EntryPoint,
-    expected_revision: str,
+    expected_source_hash: str,
 ) -> typing.Any:
-    """Load one exact package revision without reusing stale editable code.
+    """Load one exact package source without reusing stale editable code.
 
     Python cannot safely replace an imported package while active calls can retain
     references to its module globals. A changed editable package is therefore rejected
     until the interpreter restarts.
     """
-    distribution_name, _version, payload, editable = _entry_point_revision_payload(
+    distribution_name, _version, payload, editable = _entry_point_source_payload(
         entry_point
     )
-    revision = hashlib.sha256(payload.encode()).hexdigest()
-    if revision != expected_revision:
-        raise _EntryPointRevisionError(
+    source_hash = hashlib.sha256(payload.encode()).hexdigest()
+    if source_hash != expected_source_hash:
+        raise _EntryPointInspectionError(
             f"Entry point {entry_point.group}:{entry_point.name} does not match "
-            f"revision {expected_revision}"
+            f"source hash {expected_source_hash}"
         )
     payload_values = json.loads(payload)
     editable_source = payload_values.get("editable_source")
     if editable and not isinstance(editable_source, str):
-        raise _EntryPointRevisionError(
+        raise _EntryPointInspectionError(
             f"Editable extension {entry_point.name!r} has no source fingerprint"
         )
     module_name = entry_point.value.partition(":")[0]
@@ -184,7 +184,7 @@ def _load_entry_point_value(
         ):
             raise _EntryPointReloadRequiredError(
                 f"Editable extension {entry_point.name!r} changed after its module "
-                "was imported. Restart Python before enabling this revision."
+                "was imported. Restart Python before enabling this source."
             )
         value = entry_point.load()
         if editable:

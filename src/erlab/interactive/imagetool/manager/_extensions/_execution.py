@@ -6,7 +6,6 @@ import collections.abc
 import contextlib
 import copy
 import dataclasses
-import functools
 import hashlib
 import importlib.metadata
 import inspect
@@ -14,7 +13,6 @@ import logging
 import pathlib
 import re
 import sys
-import tempfile
 import threading
 import time
 import traceback
@@ -45,10 +43,14 @@ from erlab.extensions._api import (
     _resolve_loader_method,
 )
 from erlab.extensions._entry_points import (
-    _entry_point_revision,
+    _entry_point_source_hash,
     _load_entry_point_value,
 )
-from erlab.extensions._models import _require_finite_parameter_values
+from erlab.extensions._models import (
+    _PackageExtensionReference,
+    _parse_public_call_reference,
+    _require_finite_parameter_values,
+)
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._model import (
     compose_display_provenance,
@@ -64,9 +66,8 @@ from erlab.interactive.imagetool.manager._extensions._catalog import (
 from erlab.interactive.imagetool.manager._extensions._models import (
     _EnvironmentLoaderMethod,
     _ExtensionCatalogModel,
-    _ExtensionRecord,
-    _ExtensionRevision,
-    _revision_loader_name_filters,
+    _ExtensionSource,
+    _source_loader_name_filters,
 )
 from erlab.io.dataloader import LoaderBase
 
@@ -85,15 +86,15 @@ logger = logging.getLogger(__name__)
 def _manager_module_name(
     manager_session_id: str,
     extension_id: str,
-    revision_hash: str,
+    source_hash: str,
 ) -> str:
-    """Return an import name isolated to one manager and source revision."""
+    """Return an import name isolated to one manager and source snapshot."""
     safe_session_id = re.sub(r"\W", "_", manager_session_id)
     safe_extension_id = re.sub(r"\W", "_", extension_id)
     extension_token = hashlib.sha256(extension_id.encode()).hexdigest()[:12]
     return (
         f"_erlab_extension_{safe_session_id}_{safe_extension_id}_"
-        f"{extension_token}_{revision_hash}"
+        f"{extension_token}_{source_hash}"
     )
 
 
@@ -110,18 +111,18 @@ def _cached_script(
     modules: dict[tuple[str, str], LoadedScript],
     *,
     extension_id: str,
-    revision_hash: str,
+    source_hash: str,
     source_path: pathlib.Path,
     module_name: str,
 ) -> LoadedScript:
     """Import one exact script once during a manager execution lifetime."""
-    key = (extension_id, revision_hash)
+    key = (extension_id, source_hash)
     loaded = modules.get(key)
     if loaded is None:
         loaded = load_script(
             source_path,
             module_name=module_name,
-            expected_revision=revision_hash,
+            expected_source_hash=source_hash,
         )
         modules[key] = loaded
     return loaded
@@ -143,13 +144,15 @@ class _ExtensionRoutineJob:
     job_id: str
     extension_id: str
     extension_name: str
-    revision_hash: str
+    source_hash: str
     routine: RoutineDescriptor
     source_path: pathlib.Path | None
     source_type: typing.Literal["script", "environment-package"]
     entry_point_group: str | None
     entry_point_name: str | None
     entry_point_value: str | None
+    package: _PackageExtensionReference | None
+    public_call_reference: str | None
     parameters: dict[str, typing.Any]
     input_uid: str
     input_snapshot: str
@@ -183,7 +186,7 @@ class _ExtensionLoaderCall:
     catalog_generation: int
     extension_id: str
     extension_name: str
-    revision_hash: str
+    source_hash: str
     loader_id: str
     descriptor: LoaderDescriptor
     source_path: pathlib.Path | None
@@ -198,6 +201,8 @@ class _ExtensionLoaderCall:
     entry_point_group: str | None = None
     entry_point_name: str | None = None
     entry_point_value: str | None = None
+    package: _PackageExtensionReference | None = None
+    public_call_reference: str | None = None
     loader_method: str | None = None
     loader_always_single: bool = True
 
@@ -236,24 +241,24 @@ class _ExtensionLoaderCall:
             "manager_session_id": self.manager_session_id,
             "catalog_generation": self.catalog_generation,
             "extension_id": self.extension_id,
-            "extension_revision": self.revision_hash,
+            "extension_source_hash": self.source_hash,
             "capability_id": self.loader_id,
             "extension_source": str(self.source_path or self.entry_point_value),
             "parameters": parameters,
             "file_path": str(path),
         }
         try:
-            logger.info("Importing extension loader revision", extra=fields)
+            logger.info("Importing extension loader source", extra=fields)
             if self.source_type == "script":
                 loaded = _cached_script(
                     script_modules,
                     extension_id=self.extension_id,
-                    revision_hash=self.revision_hash,
+                    source_hash=self.source_hash,
                     source_path=_require_loader_source(self),
                     module_name=_manager_module_name(
                         self.manager_session_id,
                         self.extension_id,
-                        self.revision_hash,
+                        self.source_hash,
                     ),
                 )
                 entry = loaded.loaders.get(self.loader_id)
@@ -351,18 +356,29 @@ class _ExtensionLoaderWorker(QtCore.QRunnable):
                 return
             self._started = True
         try:
-            record = self.catalog_store.read().extensions.get(self.call.extension_id)
-            if record is None or not record.enabled:
-                self.error = ExtensionExecutionError("The extension is not enabled")
+            try:
+                status = self.catalog_store.capability_status(
+                    self.call.extension_id,
+                    self.call.source_hash,
+                    "loader",
+                    self.call.loader_id,
+                    self.call.source_type,
+                )
+            except KeyError:
+                status = "missing-source"
+            if status != "ready":
+                self.error = ExtensionExecutionError(
+                    f"The extension loader is unavailable: {status}"
+                )
                 logger.info(
-                    "Discarding disabled queued extension loader",
+                    "Discarding unavailable queued extension loader",
                     extra={
                         "manager_session_id": self.call.manager_session_id,
                         "catalog_generation": self.call.catalog_generation,
                         "extension_id": self.call.extension_id,
-                        "extension_revision": self.call.revision_hash,
+                        "extension_source_hash": self.call.source_hash,
                         "capability_id": self.call.loader_id,
-                        "extension_status": "disabled-before-start",
+                        "extension_status": f"{status}-before-start",
                     },
                 )
             else:
@@ -377,27 +393,29 @@ class _ExtensionLoaderWorker(QtCore.QRunnable):
 
 
 class _ExtensionValidationWorker(QtCore.QRunnable):
-    """Validate and enable one revision on the serialized extension queue."""
+    """Validate and enable one source on the serialized extension queue."""
 
     def __init__(
         self,
         extension_id: str,
-        revision_hash: str,
+        source_hash: str,
         expected_record_generation: int,
         *,
         manager_session_id: str,
         catalog_store: _ExtensionCatalogStore,
         script_modules: dict[tuple[str, str], LoadedScript],
         check_loader_filter_conflicts: bool = True,
+        enable_extension: bool = True,
     ) -> None:
         super().__init__()
         self.extension_id = extension_id
-        self.revision_hash = revision_hash
+        self.source_hash = source_hash
         self.expected_record_generation = expected_record_generation
         self.manager_session_id = manager_session_id
         self.catalog_store = catalog_store
         self.script_modules = script_modules
         self.check_loader_filter_conflicts = check_loader_filter_conflicts
+        self.enable_extension = enable_extension
         self.signals = _ExtensionLoaderSignals()
         self.done = threading.Event()
         self.output: _ExtensionCatalogModel | None = None
@@ -431,48 +449,42 @@ class _ExtensionValidationWorker(QtCore.QRunnable):
             "manager_session_id": self.manager_session_id,
             "catalog_generation": None,
             "extension_id": self.extension_id,
-            "extension_revision": None,
+            "extension_source_hash": None,
             "capability_id": None,
             "extension_source": None,
         }
         try:
-            catalog = self.catalog_store.read()
+            catalog = self.catalog_store.view()
             record = catalog.extensions.get(self.extension_id)
             fields.update(
                 {
                     "catalog_generation": catalog.generation,
-                    "extension_revision": self.revision_hash,
+                    "extension_source_hash": self.source_hash,
                     "extension_source": (
                         None
                         if record is None
                         else (
                             str(
-                                self.catalog_store.source_path(
-                                    self.extension_id, self.revision_hash
+                                self.catalog_store.executable_source_path(
+                                    self.extension_id, self.source_hash
                                 )
                             )
                             if record.source_type == "script"
-                            else (
-                                None
-                                if (
-                                    revision := record.revisions.get(self.revision_hash)
-                                )
-                                is None
-                                else revision.entry_point_value
-                            )
+                            else record.source.entry_point_value
                         )
                     ),
                 }
             )
-            logger.info("Importing extension revision for validation", extra=fields)
-            self.output = _validate_extension_revision(
+            logger.info("Importing extension source for validation", extra=fields)
+            self.output = _validate_extension_source(
                 self.catalog_store,
                 self.extension_id,
-                revision_hash=self.revision_hash,
+                source_hash=self.source_hash,
                 expected_record_generation=self.expected_record_generation,
                 manager_session_id=self.manager_session_id,
                 script_modules=self.script_modules,
                 check_loader_filter_conflicts=self.check_loader_filter_conflicts,
+                enable_extension=self.enable_extension,
             )
         except BaseException as error:
             self.error = _extension_error(error, "validation")
@@ -519,8 +531,8 @@ class _DecoratedLoaderAdapter(LoaderBase):
         return self._extension_call.extension_id
 
     @property
-    def revision_hash(self) -> str:
-        return self._extension_call.revision_hash
+    def source_hash(self) -> str:
+        return self._extension_call.source_hash
 
     @property
     def loader_id(self) -> str:
@@ -545,6 +557,14 @@ class _DecoratedLoaderAdapter(LoaderBase):
     @property
     def entry_point_name(self) -> str | None:
         return self._extension_call.entry_point_name
+
+    @property
+    def public_call_reference(self) -> str | None:
+        return self._extension_call.public_call_reference
+
+    @property
+    def package(self) -> _PackageExtensionReference | None:
+        return self._extension_call.package
 
     @property
     def file_dialog_methods(
@@ -684,7 +704,7 @@ def _detached_routine_output(
 
 def _require_loader_source(call: _ExtensionLoaderCall) -> pathlib.Path:
     if call.source_path is None:
-        raise ExtensionExecutionError("Script revision source is missing")
+        raise ExtensionExecutionError("Script source is missing")
     return call.source_path
 
 
@@ -694,7 +714,7 @@ def _require_loader_entry(
 ) -> tuple[LoaderDescriptor, Callable[..., typing.Any]]:
     if entry is None:
         raise ExtensionExecutionError(
-            f"Loader {call.loader_id!r} is missing from the revision"
+            f"Loader {call.loader_id!r} is missing from the registered source"
         )
     return entry
 
@@ -782,7 +802,7 @@ def _require_routine(
     entry = loaded.routines.get(routine_id)
     if entry is None:
         raise ExtensionExecutionError(
-            f"Routine {routine_id!r} is missing from the revision"
+            f"Routine {routine_id!r} is missing from the registered source"
         )
     return entry
 
@@ -797,7 +817,7 @@ def _require_dataarray(value: typing.Any) -> xr.DataArray:
 
 def _require_script_source(job: _ExtensionRoutineJob) -> pathlib.Path:
     if job.source_path is None:
-        raise ExtensionExecutionError("Script revision source is missing")
+        raise ExtensionExecutionError("Script source is missing")
     return job.source_path
 
 
@@ -812,9 +832,9 @@ def _environment_routine(
             or entry_point.value != job.entry_point_value
         ):
             continue
-        if not _environment_revision_matches(entry_point, job.revision_hash):
+        if not _environment_source_matches(entry_point, job.source_hash):
             continue
-        value = _load_entry_point_value(entry_point, job.revision_hash)
+        value = _load_entry_point_value(entry_point, job.source_hash)
         if isinstance(value, types.ModuleType):
             routines, _loaders = _module_capabilities(value)
             entry = routines.get(job.routine.id)
@@ -849,9 +869,9 @@ def _environment_loader(
             or entry_point.value != call.entry_point_value
         ):
             continue
-        if not _environment_revision_matches(entry_point, call.revision_hash):
+        if not _environment_source_matches(entry_point, call.source_hash):
             continue
-        value = _load_entry_point_value(entry_point, call.revision_hash)
+        value = _load_entry_point_value(entry_point, call.source_hash)
         if entry_point.group == "erlab.io.loaders":
             if isinstance(value, type) and issubclass(value, LoaderBase):
                 loader_instance = value()
@@ -878,24 +898,26 @@ def _environment_loader(
     return None
 
 
-def _environment_revision_matches(
-    entry_point: importlib.metadata.EntryPoint, expected_revision: str
+def _environment_source_matches(
+    entry_point: importlib.metadata.EntryPoint, expected_source_hash: str
 ) -> bool:
-    return _entry_point_revision(entry_point) == expected_revision
+    return _entry_point_source_hash(entry_point) == expected_source_hash
 
 
 def _environment_capabilities(
     catalog_store: _ExtensionCatalogStore,
-    revision: _ExtensionRevision,
+    source: _ExtensionSource,
 ) -> tuple[
     tuple[RoutineDescriptor, ...],
     tuple[LoaderDescriptor, ...],
     bool | None,
     tuple[_EnvironmentLoaderMethod, ...],
+    dict[str, str],
+    dict[str, str],
 ]:
     """Import and validate capabilities from one exact installed entry point."""
-    entry_point = catalog_store._entry_point_for_revision(revision)
-    value = _load_entry_point_value(entry_point, revision.source_hash)
+    entry_point = catalog_store._entry_point_for_source(source)
+    value = _load_entry_point_value(entry_point, source.source_hash)
     if entry_point.group == "erlab.io.loaders":
         loader_type = value if isinstance(value, type) else type(value)
         if not issubclass(loader_type, LoaderBase):
@@ -919,7 +941,7 @@ def _environment_capabilities(
                 loader_instance.file_dialog_methods.items()
             )
         )
-        return (), (descriptor,), loader_instance.always_single, dialog_methods
+        return (), (descriptor,), loader_instance.always_single, dialog_methods, {}, {}
     if isinstance(value, types.ModuleType):
         routines, loaders = _module_capabilities(value)
     elif callable(value) and isinstance(
@@ -942,41 +964,67 @@ def _environment_capabilities(
         )
     if not routines and not loaders:
         raise TypeError("The environment entry point has no capabilities")
+    routine_call_references = _public_call_references(routines)
+    loader_call_references = _public_call_references(loaders)
     return (
         tuple(item[0] for item in routines.values()),
         tuple(item[0] for item in loaders.values()),
         None,
         (),
+        routine_call_references,
+        loader_call_references,
     )
+
+
+def _public_call_references(
+    entries: Mapping[str, tuple[object, Callable[..., typing.Any]]],
+) -> dict[str, str]:
+    """Return direct imports for capabilities exported from their own modules."""
+    references: dict[str, str] = {}
+    for capability_id, (_descriptor, func) in entries.items():
+        module_name = getattr(func, "__module__", None)
+        function_name = getattr(func, "__name__", None)
+        module = sys.modules.get(module_name) if isinstance(module_name, str) else None
+        reference = (
+            f"{module_name}:{function_name}"
+            if isinstance(module_name, str) and isinstance(function_name, str)
+            else None
+        )
+        parsed_reference = _parse_public_call_reference(reference)
+        if (
+            parsed_reference is not None
+            and module is not None
+            and getattr(module, parsed_reference[1], None) is func
+        ):
+            references[capability_id] = typing.cast("str", reference)
+    return references
 
 
 def _reject_builtin_loader_filter_conflicts(
     catalog: _ExtensionCatalogModel,
     extension_id: str,
-    revision: _ExtensionRevision,
+    source: _ExtensionSource,
 ) -> None:
     """Reject filters that would hide a built-in file loader."""
-    candidate_filters = set(_revision_loader_name_filters(revision))
+    candidate_filters = set(_source_loader_name_filters(source))
     if not candidate_filters:
         return
     managed_names = {
         descriptor.id
         for record in catalog.extensions.values()
         if record.source_type == "environment-package"
-        for current_revision in record.revisions.values()
-        if current_revision.entry_point_group == "erlab.io.loaders"
-        for descriptor in current_revision.loaders
+        if record.source.entry_point_group == "erlab.io.loaders"
+        for descriptor in record.source.loaders
     }
     managed_names.update(
-        current_revision.entry_point_name
+        record.source.entry_point_name
         for record in catalog.extensions.values()
         if record.source_type == "environment-package"
-        for current_revision in record.revisions.values()
-        if current_revision.entry_point_group == "erlab.io.loaders"
-        and current_revision.entry_point_name is not None
+        if record.source.entry_point_group == "erlab.io.loaders"
+        and record.source.entry_point_name is not None
     )
-    if revision.entry_point_group == "erlab.io.loaders":
-        managed_names.update(descriptor.id for descriptor in revision.loaders)
+    if source.entry_point_group == "erlab.io.loaders":
+        managed_names.update(descriptor.id for descriptor in source.loaders)
     builtin_filters = {
         name_filter
         for name_filter, (func, _defaults) in (
@@ -996,23 +1044,24 @@ def _reject_builtin_loader_filter_conflicts(
         )
 
 
-def _validate_extension_revision(
+def _validate_extension_source(
     catalog_store: _ExtensionCatalogStore,
     extension_id: str,
     *,
-    revision_hash: str,
+    source_hash: str,
     expected_record_generation: int,
     manager_session_id: str,
     script_modules: dict[tuple[str, str], LoadedScript],
     check_loader_filter_conflicts: bool = True,
+    enable_extension: bool = True,
 ) -> _ExtensionCatalogModel:
-    """Import one revision, then atomically record its validated descriptors."""
-    catalog = catalog_store.read()
+    """Import the current source, then record its validated descriptors."""
+    catalog = catalog_store.view()
     record = catalog.extensions.get(extension_id)
     if record is None:
         raise KeyError(extension_id)
     if (
-        record.current_revision != revision_hash
+        source_hash != record.source.source_hash
         or record.record_generation != expected_record_generation
     ):
         raise _ExtensionCatalogConflictError(
@@ -1021,14 +1070,18 @@ def _validate_extension_revision(
     try:
         loader_always_single: bool | None = None
         loader_dialog_methods: tuple[_EnvironmentLoaderMethod, ...] = ()
+        routine_call_references: dict[str, str] = {}
+        loader_call_references: dict[str, str] = {}
         if record.source_type == "script":
             loaded = _cached_script(
                 script_modules,
                 extension_id=extension_id,
-                revision_hash=revision_hash,
-                source_path=catalog_store.source_path(extension_id, revision_hash),
+                source_hash=source_hash,
+                source_path=catalog_store.executable_source_path(
+                    extension_id, source_hash
+                ),
                 module_name=_manager_module_name(
-                    manager_session_id, extension_id, revision_hash
+                    manager_session_id, extension_id, source_hash
                 ),
             )
             routines = tuple(item[0] for item in loaded.routines.values())
@@ -1039,35 +1092,40 @@ def _validate_extension_revision(
                 loaders,
                 loader_always_single,
                 loader_dialog_methods,
-            ) = _environment_capabilities(
-                catalog_store, record.revisions[revision_hash]
-            )
-        validated_revision = record.revisions[revision_hash].model_copy(
+                routine_call_references,
+                loader_call_references,
+            ) = _environment_capabilities(catalog_store, record.source)
+        validated_source = record.source.model_copy(
             update={
                 "routines": routines,
                 "loaders": loaders,
                 "loader_always_single": loader_always_single,
                 "loader_dialog_methods": loader_dialog_methods,
+                "routine_call_references": routine_call_references,
+                "loader_call_references": loader_call_references,
             }
         )
         if check_loader_filter_conflicts:
             _reject_builtin_loader_filter_conflicts(
-                catalog, extension_id, validated_revision
+                catalog, extension_id, validated_source
             )
-        return catalog_store.enable_validated_revision(
+        return catalog_store.enable_validated_source(
             extension_id,
-            revision_hash=revision_hash,
+            source_hash=source_hash,
             expected_record_generation=expected_record_generation,
             routines=routines,
             loaders=loaders,
+            routine_call_references=routine_call_references,
+            loader_call_references=loader_call_references,
             loader_always_single=loader_always_single,
             loader_dialog_methods=loader_dialog_methods,
+            enable_extension=enable_extension,
         )
     except BaseException:
         with contextlib.suppress(_ExtensionCatalogConflictError):
             catalog_store.record_validation_failure(
                 extension_id,
-                revision_hash=revision_hash,
+                source_hash=source_hash,
                 expected_record_generation=expected_record_generation,
                 import_error=traceback.format_exc(),
             )
@@ -1075,7 +1133,7 @@ def _validate_extension_revision(
 
 
 class _ExtensionRoutineWorker(QtCore.QRunnable):
-    """Run one pinned revision without accessing Qt widgets."""
+    """Run one pinned source snapshot without accessing Qt widgets."""
 
     def __init__(
         self,
@@ -1119,7 +1177,7 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
             "manager_session_id": self.manager_session_id,
             "catalog_generation": self.job.catalog_generation,
             "extension_id": self.job.extension_id,
-            "extension_revision": self.job.revision_hash,
+            "extension_source_hash": self.job.source_hash,
             "capability_id": self.job.routine.id,
             "extension_source": (
                 str(self.job.source_path)
@@ -1132,32 +1190,40 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
             "input": _array_log_fields(self.job.input_data),
         }
         try:
-            record = self.catalog_store.read().extensions.get(self.job.extension_id)
-            enabled = record is not None and record.enabled
-            if not enabled:
+            try:
+                capability_status = self.catalog_store.capability_status(
+                    self.job.extension_id,
+                    self.job.source_hash,
+                    "routine",
+                    self.job.routine.id,
+                    self.job.source_type,
+                )
+            except KeyError:
+                capability_status = "missing-source"
+            if capability_status != "ready":
                 status = "discarded"
                 logger.info(
-                    "Discarding disabled queued extension routine",
+                    "Discarding unavailable queued extension routine",
                     extra={
                         **fields,
-                        "extension_status": "disabled-before-start",
+                        "extension_status": f"{capability_status}-before-start",
                     },
                 )
                 return
             self._started.set()
             self.signals.started.emit()
-            logger.info("Importing extension revision", extra=fields)
+            logger.info("Importing extension source", extra=fields)
             if self.job.source_type == "script":
                 source_path = _require_script_source(self.job)
                 module_name = _manager_module_name(
                     self.manager_session_id,
                     self.job.extension_id,
-                    self.job.revision_hash,
+                    self.job.source_hash,
                 )
                 loaded = _cached_script(
                     self.script_modules,
                     extension_id=self.job.extension_id,
-                    revision_hash=self.job.revision_hash,
+                    source_hash=self.job.source_hash,
                     source_path=source_path,
                     module_name=module_name,
                 )
@@ -1210,9 +1276,9 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
 class _ExtensionExecutionController(QtCore.QObject):
     """Own one serialized extension queue for one manager lifetime.
 
-    Running code keeps its pinned input and source revision until completion. Queued
+    Running code keeps its pinned input and source snapshot until completion. Queued
     jobs recheck their owning catalog before they start. Shutdown stops admission,
-    removes queued jobs, waits for the one active worker, and removes session source.
+    removes queued jobs, and waits for the one active worker.
     """
 
     queue_changed = QtCore.Signal()
@@ -1226,12 +1292,6 @@ class _ExtensionExecutionController(QtCore.QObject):
         self._manager = manager
         self._catalog = catalog
         self._manager_session_id = manager._manager_record.internal_id
-        self._session_directory = tempfile.TemporaryDirectory(
-            prefix="erlab-manager-extensions-"
-        )
-        self._session_catalog_store = _ExtensionCatalogStore(
-            pathlib.Path(self._session_directory.name)
-        )
         self._pool = QtCore.QThreadPool(self)
         self._pool.setMaxThreadCount(1)
         self._script_modules: dict[tuple[str, str], LoadedScript] = {}
@@ -1283,8 +1343,6 @@ class _ExtensionExecutionController(QtCore.QObject):
         call: _ExtensionLoaderCall,
         path: pathlib.Path,
         parameters: dict[str, typing.Any],
-        *,
-        catalog_store: _ExtensionCatalogStore | None = None,
     ) -> (
         xr.DataArray
         | xr.Dataset
@@ -1296,7 +1354,7 @@ class _ExtensionExecutionController(QtCore.QObject):
             call,
             path,
             parameters,
-            self._catalog.store if catalog_store is None else catalog_store,
+            self._catalog.store,
             self._script_modules,
         )
         self._run_blocking_task(task)
@@ -1310,24 +1368,28 @@ class _ExtensionExecutionController(QtCore.QObject):
         *,
         expected_record_generation: int,
     ) -> _ExtensionCatalogModel:
-        """Validate one catalog revision on the manager extension thread."""
-        return self._validate_and_enable_in_store(
-            self._catalog.store,
+        """Validate the current catalog source on the extension thread."""
+        record = self._catalog.store.view().extensions.get(extension_id)
+        if record is None:
+            raise KeyError(extension_id)
+        return self.validate_source(
             extension_id,
+            record.source.source_hash,
             expected_record_generation=expected_record_generation,
-            check_loader_filter_conflicts=True,
+            enable_extension=True,
         )
 
-    def _validate_and_enable_in_store(
+    def validate_source(
         self,
-        catalog_store: _ExtensionCatalogStore,
         extension_id: str,
+        source_hash: str,
         *,
         expected_record_generation: int,
-        check_loader_filter_conflicts: bool,
+        enable_extension: bool,
     ) -> _ExtensionCatalogModel:
-        """Validate one revision against its owning catalog on the worker queue."""
-        catalog = catalog_store.read()
+        """Validate one registered source on the manager extension thread."""
+        catalog_store = self._catalog.store
+        catalog = catalog_store.view()
         record = catalog.extensions.get(extension_id)
         if record is None:
             raise KeyError(extension_id)
@@ -1337,115 +1399,18 @@ class _ExtensionExecutionController(QtCore.QObject):
             )
         task = _ExtensionValidationWorker(
             extension_id,
-            record.current_revision,
+            source_hash,
             expected_record_generation,
             manager_session_id=self._manager_session_id,
             catalog_store=catalog_store,
             script_modules=self._script_modules,
-            check_loader_filter_conflicts=check_loader_filter_conflicts,
+            check_loader_filter_conflicts=enable_extension,
+            enable_extension=enable_extension,
         )
         self._run_blocking_task(task, wait_message="Validating extension...")
         if task.output is None:
             raise ExtensionExecutionError("Extension validation returned no result")
         return task.output
-
-    def approve_session_script(
-        self,
-        source: bytes,
-        *,
-        extension_id: str,
-        revision_hash: str,
-        name: str,
-        change_summary: str = "",
-        source_modified_at: str | None = None,
-    ) -> _ExtensionCatalogModel:
-        """Validate embedded source in storage owned by this manager session."""
-        existing = self._session_catalog_store.read().extensions.get(extension_id)
-        catalog = self._session_catalog_store.add_embedded_script(
-            source,
-            extension_id=extension_id,
-            expected_revision=revision_hash,
-            name=name,
-            change_summary=change_summary,
-            source_modified_at=source_modified_at,
-            expected_record_generation=(
-                None if existing is None else existing.record_generation
-            ),
-            check_record_generation=True,
-        )
-        record = catalog.extensions[extension_id]
-        return self._validate_and_enable_in_store(
-            self._session_catalog_store,
-            extension_id,
-            expected_record_generation=record.record_generation,
-            check_loader_filter_conflicts=False,
-        )
-
-    def _session_revision(
-        self, extension_id: str, revision_hash: str
-    ) -> tuple[_ExtensionCatalogModel, _ExtensionRecord, _ExtensionRevision] | None:
-        """Return one manager-local revision without importing its source."""
-        catalog = self._session_catalog_store.read()
-        record = catalog.extensions.get(extension_id)
-        if record is None:
-            return None
-        revision = record.revisions.get(revision_hash)
-        if revision is None:
-            return None
-        return catalog, record, revision
-
-    def session_capability_status(
-        self,
-        extension_id: str,
-        revision_hash: str,
-        kind: str,
-        capability_id: str,
-    ) -> _CapabilityStatus | None:
-        """Return manager-local capability state, or `None` when it is unknown."""
-        try:
-            return self._session_catalog_store.capability_status(
-                extension_id,
-                revision_hash,
-                kind,
-                capability_id,
-            )
-        except KeyError:
-            return None
-
-    def session_loader_call(
-        self,
-        extension_id: str,
-        revision_hash: str,
-        loader_id: str,
-    ) -> _ExtensionLoaderCall:
-        """Create a loader call pinned to manager-local embedded source."""
-        selected = self._session_revision(extension_id, revision_hash)
-        if selected is None:
-            raise ExtensionExecutionError("The extension revision is not available")
-        catalog, record, revision = selected
-        if not record.enabled or not revision.approved:
-            raise ExtensionExecutionError("The extension revision is not available")
-        descriptor = next(
-            (item for item in revision.loaders if item.id == loader_id), None
-        )
-        if descriptor is None:
-            raise ExtensionExecutionError(f"Loader {loader_id!r} is not available")
-        return _ExtensionLoaderCall(
-            manager_session_id=self._manager_session_id,
-            catalog_generation=catalog.generation,
-            extension_id=record.id,
-            extension_name=record.name,
-            revision_hash=revision_hash,
-            loader_id=descriptor.id,
-            descriptor=descriptor,
-            source_path=self._session_catalog_store.source_path(
-                extension_id, revision_hash
-            ),
-            source_type="script",
-            executor=functools.partial(
-                self.run_loader, catalog_store=self._session_catalog_store
-            ),
-        )
 
     def _run_blocking_task(
         self,
@@ -1508,7 +1473,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         data = node.data_for_role("displayed")
         job = self._routine_job(
             extension_id=extension_id,
-            revision_hash=None,
+            source_hash=None,
             routine_id=routine_id,
             source_type=None,
             parameters=parameters,
@@ -1537,13 +1502,13 @@ class _ExtensionExecutionController(QtCore.QObject):
             raise ExtensionExecutionError("Another extension replay is in progress")
         job = self._routine_job(
             extension_id=operation.extension_id,
-            revision_hash=operation.revision_hash,
+            source_hash=operation.source_hash,
             routine_id=operation.routine_id,
             source_type=operation.source_type,
             parameters=operation.parameters,
             input_data=data,
             input_uid="provenance-replay",
-            input_snapshot="pinned-revision",
+            input_snapshot="pinned-source",
         )
         waiter = _ExtensionRoutineWaiter(QtCore.QEventLoop())
         self._routine_waiters[job.job_id] = waiter
@@ -1567,7 +1532,7 @@ class _ExtensionExecutionController(QtCore.QObject):
         self,
         *,
         extension_id: str,
-        revision_hash: str | None,
+        source_hash: str | None,
         routine_id: str,
         source_type: typing.Literal["script", "environment-package"] | None = None,
         parameters: Mapping[str, typing.Any],
@@ -1578,62 +1543,42 @@ class _ExtensionExecutionController(QtCore.QObject):
         """Pin catalog state and input identity before queue admission."""
         _require_finite_parameter_values(parameters)
         catalog_store = self._catalog.store
-        catalog = catalog_store.read()
+        catalog = catalog_store.view()
         record = catalog.extensions.get(extension_id)
-        if revision_hash is None:
-            pinned_revision = None if record is None else record.current_revision
-        else:
-            pinned_revision = revision_hash
-        revision = (
+        pinned_source_hash = (
             None
-            if record is None or pinned_revision is None
-            else record.revisions.get(pinned_revision)
+            if record is None
+            else record.source.source_hash
+            if source_hash is None
+            else source_hash
         )
-        global_status: _CapabilityStatus = "missing-revision"
-        if revision_hash is not None:
+        source = (
+            record.source
+            if record is not None and pinned_source_hash == record.source.source_hash
+            else None
+        )
+        global_status: _CapabilityStatus = "missing-source"
+        if source_hash is not None:
             with contextlib.suppress(KeyError):
                 global_status = catalog_store.capability_status(
                     extension_id,
-                    revision_hash,
+                    source_hash,
                     "routine",
                     routine_id,
                     source_type,
                 )
-        global_ready = (
-            global_status == "ready"
-            and record is not None
-            and record.enabled
-            and (source_type is None or record.source_type == source_type)
-            and revision is not None
-            and revision.approved
-        )
-        if (
-            revision_hash is not None
-            and not global_ready
-            and source_type != "environment-package"
-            and self.session_capability_status(
-                extension_id,
-                revision_hash,
-                "routine",
-                routine_id,
-            )
-            == "ready"
-            and (selected := self._session_revision(extension_id, revision_hash))
-            is not None
-        ):
-            catalog, record, revision = selected
-            catalog_store = self._session_catalog_store
-            pinned_revision = revision_hash
         if record is None or not record.enabled:
             raise ExtensionExecutionError("The extension is not enabled")
         if source_type is not None and record.source_type != source_type:
+            raise ExtensionExecutionError("The extension has a different source type")
+        if source_hash is not None and global_status != "ready":
             raise ExtensionExecutionError(
-                "The extension revision has a different source type"
+                f"The extension source is unavailable: {global_status}"
             )
-        if pinned_revision is None or revision is None or not revision.approved:
-            raise ExtensionExecutionError("The extension revision is not available")
+        if pinned_source_hash is None or source is None or not source.approved:
+            raise ExtensionExecutionError("The extension source is not available")
         routine = next(
-            (item for item in revision.routines if item.id == routine_id), None
+            (item for item in source.routines if item.id == routine_id), None
         )
         if routine is None:
             raise ExtensionExecutionError(f"Routine {routine_id!r} is not available")
@@ -1641,17 +1586,19 @@ class _ExtensionExecutionController(QtCore.QObject):
             job_id=uuid.uuid4().hex,
             extension_id=extension_id,
             extension_name=record.name,
-            revision_hash=pinned_revision,
+            source_hash=pinned_source_hash,
             routine=routine,
             source_path=(
-                catalog_store.source_path(extension_id, pinned_revision)
+                catalog_store.executable_source_path(extension_id, pinned_source_hash)
                 if record.source_type == "script"
                 else None
             ),
             source_type=record.source_type,
-            entry_point_group=revision.entry_point_group,
-            entry_point_name=revision.entry_point_name,
-            entry_point_value=revision.entry_point_value,
+            entry_point_group=source.entry_point_group,
+            entry_point_name=source.entry_point_name,
+            entry_point_value=source.entry_point_value,
+            package=source.package_reference,
+            public_call_reference=source.routine_call_references.get(routine.id),
             parameters=dict(parameters),
             input_uid=input_uid,
             input_snapshot=input_snapshot,
@@ -1744,7 +1691,7 @@ class _ExtensionExecutionController(QtCore.QObject):
                 extra={
                     "manager_session_id": self._manager_session_id,
                     "extension_id": result.job.extension_id,
-                    "extension_revision": result.job.revision_hash,
+                    "extension_source_hash": result.job.source_hash,
                     "capability_id": result.job.routine.id,
                     "input_uid": result.job.input_uid,
                     "input_snapshot": result.job.input_snapshot,
@@ -1754,7 +1701,7 @@ class _ExtensionExecutionController(QtCore.QObject):
             return
         operation = ExtensionRoutineOperation(
             extension_id=result.job.extension_id,
-            revision_hash=result.job.revision_hash,
+            source_hash=result.job.source_hash,
             routine_id=result.job.routine.id,
             extension_name=result.job.extension_name,
             routine_name=result.job.routine.name,
@@ -1765,6 +1712,8 @@ class _ExtensionExecutionController(QtCore.QObject):
             ),
             entry_point_group=result.job.entry_point_group,
             entry_point_name=result.job.entry_point_name,
+            package=result.job.package,
+            public_call_reference=result.job.public_call_reference,
             parameters=result.job.parameters,
         )
         provenance = compose_display_provenance(
@@ -1831,5 +1780,4 @@ class _ExtensionExecutionController(QtCore.QObject):
             self._blocking_tasks.clear()
         self._script_modules.clear()
         _remove_manager_modules(self._manager_session_id)
-        self._session_directory.cleanup()
         self._shutdown_complete = True

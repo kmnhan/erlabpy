@@ -2739,20 +2739,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """Return the current state of the pinned direct loader, if applicable.
 
         A callable extension loader is not sufficient evidence that reload is safe.
-        Its immutable revision must still be available and enabled. Managed windows
+        Its identified source must still be available and enabled. Managed windows
         use their manager's resolver so session-only approvals do not leak between
         manager instances.
         """
         if self._load_func is None:
             return None
-        extension_id, revision_hash, loader_id, _loader_method, source_type = (
+        extension_id, source_hash, loader_id, _loader_method, source_type = (
             _extension_loader_identity(self._load_func[0])
         )
         if not (
             isinstance(extension_id, str)
             and extension_id
-            and isinstance(revision_hash, str)
-            and revision_hash
+            and isinstance(source_hash, str)
+            and source_hash
             and isinstance(loader_id, str)
             and loader_id
         ):
@@ -2765,7 +2765,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
         return resolver(
             extension_id,
-            revision_hash,
+            source_hash,
             "loader",
             loader_id,
             source_type,
@@ -2866,22 +2866,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 )
             if source_status == "extension-approval-required":
                 return (
-                    "The saved extension revision is not approved. Review it in "
+                    "The saved extension source is not approved. Review it in "
                     "ImageTool Manager, then try again."
                 )
-            if source_status == "extension-missing-revision":
+            if source_status == "extension-missing-source":
                 return (
-                    "The exact saved extension revision is not available. Restore it "
+                    "The exact saved extension source is not available. Restore it "
                     "in ImageTool Manager, then try again."
                 )
             if source_status == "extension-missing-capability":
                 return (
-                    "The saved extension revision does not provide loader "
+                    "The saved extension source does not provide loader "
                     f"{replay_call.capability_id!r}."
                 )
             if source_status == "extension-hash-mismatch":
                 return (
-                    "The stored extension source does not match its saved revision. "
+                    "The stored extension source does not match its saved source. "
                     "Restore the exact source in ImageTool Manager, then try again."
                 )
             if source_status == "extension-unsupported-api":

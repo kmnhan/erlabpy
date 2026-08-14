@@ -232,13 +232,13 @@ class _ProvenanceEditController:
                 "missing-loader": "The recorded source loader is not available.",
                 "extension-disabled": "The recorded extension is disabled.",
                 "extension-approval-required": (
-                    "The recorded extension revision needs approval."
+                    "The recorded extension source needs approval."
                 ),
-                "extension-missing-revision": (
-                    "The recorded extension revision is not available."
+                "extension-missing-source": (
+                    "The recorded extension source is not available."
                 ),
                 "extension-missing-capability": (
-                    "The recorded extension revision does not provide this loader."
+                    "The recorded extension source does not provide this loader."
                 ),
                 "extension-hash-mismatch": (
                     "The recorded extension source has the wrong content hash."

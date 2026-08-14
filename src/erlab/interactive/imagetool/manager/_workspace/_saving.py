@@ -1225,15 +1225,15 @@ class _WorkspaceSaver:
                 )
                 continue
             extension_id = raw_requirement.get("extension_id")
-            revision_hash = raw_requirement.get("revision_hash")
+            source_hash = raw_requirement.get("source_hash")
             if (
                 isinstance(extension_id, str)
-                and isinstance(revision_hash, str)
-                and object_id == f"extension-{revision_hash}"
+                and isinstance(source_hash, str)
+                and object_id == f"extension-{source_hash}"
             ):
                 try:
-                    source = self._manager._extensions.revision_source_bytes(
-                        extension_id, revision_hash
+                    source = self._manager._extensions.source_bytes(
+                        extension_id, source_hash
                     )
                 except (FileNotFoundError, KeyError):
                     pass

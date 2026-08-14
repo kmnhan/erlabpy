@@ -547,17 +547,18 @@ def _representative_structured_operations() -> tuple[ToolProvenanceOperation, ..
         ),
         AssignAttrsOperation(attrs={"sample": "test"}),
         ExtensionRoutineOperation(
-            extension_id="my-lab",
-            revision_hash="a" * 64,
-            routine_id="normalize",
+            extension_id="environment.erlab.extensions.my-lab",
+            source_hash="a" * 64,
+            routine_id="where",
             extension_name="My Lab",
-            routine_name="Normalize",
-            source_type="script",
-            function_name="normalize",
-            source_path="my_lab.py",
-            entry_point_group=None,
-            entry_point_name=None,
-            parameters={"mode": "maximum"},
+            routine_name="Where",
+            source_type="environment-package",
+            function_name="where",
+            source_path=None,
+            entry_point_group="erlab.extensions",
+            entry_point_name="my-lab",
+            public_call_reference="xarray:where",
+            parameters={},
         ),
         KspaceConfigurationOperation(configuration=2),
         KspaceWorkFunctionOperation(work_function=4.2),
@@ -5228,7 +5229,7 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
         FileReplayCall(
             kind="extension_loader",
             target="lab-loader",
-            revision="not-a-revision",
+            source_hash="not-a-source",
             capability_id="load_data",
             extension_source_type="script",
             selection=FileDataSelection(kind="dataarray"),
@@ -5237,7 +5238,7 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
         FileReplayCall(
             kind="extension_loader",
             target="lab-loader",
-            revision="a" * 64,
+            source_hash="a" * 64,
             capability_id="load_data",
             selection=FileDataSelection(kind="dataarray"),
         )
@@ -5331,11 +5332,11 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
         full_data().append_replay_stage(full_data())
 
 
-def test_extension_routine_rejects_invalid_revision_identity() -> None:
+def test_extension_routine_rejects_invalid_source_identity() -> None:
     with pytest.raises(ValidationError, match="lowercase SHA-256"):
         ExtensionRoutineOperation(
             extension_id="lab-routines",
-            revision_hash="not-a-revision",
+            source_hash="not-a-source",
             routine_id="normalize",
             extension_name="Lab Routines",
             routine_name="Normalize",

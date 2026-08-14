@@ -698,7 +698,7 @@ def _file_load_key_payload(
     load_source: typing.Any,
     *,
     setup_code: str | None,
-    load_code: str,
+    load_code: str | None,
     active_name: str,
 ) -> dict[str, typing.Any]:
     payload = typing.cast(
@@ -706,7 +706,9 @@ def _file_load_key_payload(
         load_source.model_dump(mode="json"),
     )
     payload["setup_code"] = setup_code
-    payload["load_code"] = _canonical_file_load_code(load_code, active_name)
+    payload["load_code"] = (
+        None if load_code is None else _canonical_file_load_code(load_code, active_name)
+    )
     return payload
 
 
@@ -715,7 +717,7 @@ def _add_file_load_node(
     load_source: typing.Any,
     *,
     setup_code: str | None,
-    load_code: str,
+    load_code: str | None,
     active_name: str,
 ) -> str:
     setup_key = None
@@ -896,6 +898,7 @@ def _compile_spec(
     *,
     display: bool,
     trusted_user_code: bool,
+    structured_file_replay: bool,
     external_inputs: Mapping[str, xr.DataArray] | None,
     live_input_resolver: LiveInputResolver | None,
 ) -> str:
@@ -906,12 +909,14 @@ def _compile_spec(
     if parsed.kind == "file":
         if parsed.file_load_source is None:
             raise ReplayGraphError("File provenance does not define a load source")
-        if parsed.active_name is None or parsed.seed_code is None:
-            raise ReplayGraphError("File provenance does not define replay code")
-
-        setup_code, load_code = _file_seed_code_parts(
-            parsed.seed_code,
-            parsed.active_name,
+        if parsed.active_name is None:
+            raise ReplayGraphError("File provenance does not define an active name")
+        structured_replay = parsed.file_load_source.replay_call is not None
+        setup_code, load_code = (
+            (None, None)
+            if (structured_replay and structured_file_replay)
+            or parsed.seed_code is None
+            else _file_seed_code_parts(parsed.seed_code, parsed.active_name)
         )
         current_key = _add_file_load_node(
             graph,
@@ -975,6 +980,7 @@ def _compile_spec(
                         input_spec,
                         display=display,
                         trusted_user_code=trusted_user_code,
+                        structured_file_replay=structured_file_replay,
                         external_inputs=external_inputs,
                         live_input_resolver=live_input_resolver,
                     )
@@ -1291,9 +1297,15 @@ def compile_replay_graph(
     *,
     display: bool = False,
     trusted_user_code: bool = False,
+    structured_file_replay: bool = False,
     external_inputs: Mapping[str, xr.DataArray] | None = None,
     live_input_resolver: LiveInputResolver | None = None,
 ) -> ReplayGraph:
+    """Compile provenance for code output or structured runtime execution.
+
+    ``structured_file_replay`` makes a recorded replay call authoritative and omits
+    copied file-load Python from runtime nodes. Code-output callers keep it false.
+    """
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None:
         raise ReplayGraphError("Expected provenance spec")
@@ -1310,6 +1322,7 @@ def compile_replay_graph(
         parsed,
         display=display,
         trusted_user_code=trusted_user_code,
+        structured_file_replay=structured_file_replay,
         external_inputs=external_inputs,
         live_input_resolver=live_input_resolver,
     )
@@ -2704,7 +2717,9 @@ def emit_replay_code(
         name = names[node.key]
         if node.kind == "file_load":
             active_name = typing.cast("str", node.payload["active_name"])
-            load_code = typing.cast("str", node.payload["load_code"])
+            load_code = node.payload["load_code"]
+            if not isinstance(load_code, str):
+                raise ReplayGraphError("File source does not provide copied code")
             setup_key = node.parents[0] if node.parents else None
             if setup_key is not None and active_setup_key != setup_key:
                 setup_node = node_by_key[setup_key]
@@ -2912,6 +2927,7 @@ def script_inputs_code(script_inputs: Sequence[typing.Any], *, display: bool) ->
             input_spec,
             display=display,
             trusted_user_code=False,
+            structured_file_replay=False,
             external_inputs=None,
             live_input_resolver=None,
         )

@@ -295,23 +295,23 @@ class _LineageController:
             )
         if source_status == "extension-approval-required":
             return (
-                f"The saved extension revision for {label} is not approved. "
+                f"The saved extension source for {label} is not approved. "
                 "Review it in Workspace Requirements, then try again."
             )
-        if source_status == "extension-missing-revision":
+        if source_status == "extension-missing-source":
             return (
-                f"The exact saved extension revision for {label} is not available. "
+                f"The exact saved extension source for {label} is not available. "
                 "Restore it from Workspace Requirements, then try again."
             )
         if source_status == "extension-missing-capability":
             return (
-                f"The saved extension revision for {label} does not provide loader "
+                f"The saved extension source for {label} does not provide loader "
                 f"{replay_call.capability_id!r}."
             )
         if source_status == "extension-hash-mismatch":
             return (
                 f"The stored extension source for {label} does not match its saved "
-                "revision. Restore the exact source, then try again."
+                "source hash. Restore the required source, then try again."
             )
         if source_status == "extension-unsupported-api":
             return (

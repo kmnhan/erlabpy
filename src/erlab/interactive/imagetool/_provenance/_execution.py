@@ -249,14 +249,14 @@ def _load_file_source_object(
     if call.kind == "erlab_loader":
         func = erlab.io.loaders[call.target].load
     elif call.kind == "extension_loader":
-        if call.revision is None or call.capability_id is None:
+        if call.source_hash is None or call.capability_id is None:
             raise ValueError("Extension loader replay metadata is incomplete")
         if extension_loader_executor is not None:
             return extension_loader_executor(load_source)
         return erlab.extensions.run_loader(
             file_path,
             extension_id=call.target,
-            revision=call.revision,
+            source_hash=call.source_hash,
             loader_id=call.capability_id,
             method=call.loader_method,
             parameters=_deserialize_loader_kwargs(call.kwargs),
@@ -438,7 +438,7 @@ def replay_file_provenance(
 ) -> xr.DataArray:
     """Replay structured file provenance without executing generated Python."""
     try:
-        graph = compile_replay_graph(spec)
+        graph = compile_replay_graph(spec, structured_file_replay=True)
         return execute_replay_graph(
             graph,
             cache=cache,
@@ -479,8 +479,8 @@ def file_load_source_status(
         except (AttributeError, ModuleNotFoundError, TypeError, ValueError):
             return "missing-loader"
     if replay_call.kind == "extension_loader":
-        if replay_call.revision is None:
-            return "extension-missing-revision"
+        if replay_call.source_hash is None:
+            return "extension-missing-source"
         if replay_call.capability_id is None:
             return "extension-missing-capability"
         capability_status = (
@@ -489,7 +489,7 @@ def file_load_source_status(
             else extension_status_resolver
         )(
             replay_call.target,
-            replay_call.revision,
+            replay_call.source_hash,
             "loader",
             replay_call.capability_id,
             replay_call.extension_source_type,
@@ -498,8 +498,8 @@ def file_load_source_status(
             return "extension-disabled"
         if capability_status == "approval-required":
             return "extension-approval-required"
-        if capability_status == "missing-revision":
-            return "extension-missing-revision"
+        if capability_status == "missing-source":
+            return "extension-missing-source"
         if capability_status == "missing-capability":
             return "extension-missing-capability"
         if capability_status == "hash-mismatch":
@@ -551,7 +551,7 @@ def can_reload_without_trust(
         if (
             capability_status(
                 extension_operation.extension_id,
-                extension_operation.revision_hash,
+                extension_operation.source_hash,
                 "routine",
                 extension_operation.routine_id,
                 extension_operation.source_type,
@@ -687,6 +687,7 @@ def replay_script_provenance(
             spec,
             external_inputs=inputs,
             trusted_user_code=trusted_user_code,
+            structured_file_replay=True,
         )
         return execute_replay_graph(
             graph,
@@ -817,6 +818,7 @@ def rebuild_script_provenance(
         rebuilt_spec,
         live_input_resolver=resolve_live,
         trusted_user_code=trusted_user_code,
+        structured_file_replay=True,
     )
     return (
         execute_replay_graph(

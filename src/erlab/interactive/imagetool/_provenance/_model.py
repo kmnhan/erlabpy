@@ -128,7 +128,7 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab.extensions._models import _validate_revision_hash
+from erlab.extensions._models import _PackageExtensionReference, _validate_source_hash
 from erlab.interactive.imagetool._provenance._code import (
     _DATAARRAY_MARKER,
     _DATASET_MARKER,
@@ -159,7 +159,7 @@ FileLoadSourceStatus: typing.TypeAlias = typing.Literal[
     "missing-loader",
     "extension-disabled",
     "extension-approval-required",
-    "extension-missing-revision",
+    "extension-missing-source",
     "extension-missing-capability",
     "extension-hash-mismatch",
     "extension-unsupported-api",
@@ -1988,9 +1988,12 @@ class FileReplayCall(pydantic.BaseModel):
 
     kind: typing.Literal["erlab_loader", "callable", "extension_loader"]
     target: str
-    revision: str | None = None
+    source_hash: str | None = None
     capability_id: str | None = None
     extension_source_type: typing.Literal["script", "environment-package"] | None = None
+    package: _PackageExtensionReference | None = None
+    function_name: str | None = None
+    public_call_reference: str | None = None
     loader_method: str | None = None
     kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     selection: FileDataSelection
@@ -2021,20 +2024,38 @@ class FileReplayCall(pydantic.BaseModel):
         if not self.target:
             raise ValueError("target must not be empty")
         if self.kind == "extension_loader" and (
-            not self.revision
+            not self.source_hash
             or not self.capability_id
             or self.extension_source_type is None
         ):
             raise ValueError(
-                "extension loader replay requires revision, capability_id, and "
+                "extension loader replay requires source_hash, capability_id, and "
                 "extension_source_type"
             )
         if self.kind != "extension_loader" and self.extension_source_type is not None:
             raise ValueError(
                 "extension_source_type is only valid for extension loader replay"
             )
+        if self.kind != "extension_loader" and self.package is not None:
+            raise ValueError(
+                "package identity is only valid for extension loader replay"
+            )
+        if (
+            self.kind == "extension_loader"
+            and self.extension_source_type == "script"
+            and self.package is not None
+        ):
+            raise ValueError(
+                "script extension loader replay cannot contain package identity"
+            )
+        if self.kind != "extension_loader" and (
+            self.function_name is not None or self.public_call_reference is not None
+        ):
+            raise ValueError(
+                "extension call references are only valid for extension loader replay"
+            )
         if self.kind == "extension_loader":
-            _validate_revision_hash(typing.cast("str", self.revision))
+            _validate_source_hash(typing.cast("str", self.source_hash))
         if any(not isinstance(key, str) for key in self.kwargs):
             raise TypeError("file replay kwargs must use string keys")
         if self.kind == "extension_loader":
@@ -2707,14 +2728,17 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if self.kind == "file":
             if self.start_label is None:
                 raise ValueError("file provenance specs must define `start_label`")
-            if self.seed_code is None:
-                raise ValueError("file provenance specs must define `seed_code`")
             if self.active_name is None:
                 raise ValueError("file provenance specs must define `active_name`")
             if self.file_load_source is None:
                 raise ValueError("file provenance specs must define `file_load_source`")
             if self.file_load_source.replay_call is None:
                 raise ValueError("file provenance specs must define `replay_call`")
+            if (
+                self.seed_code is None
+                and self.file_load_source.replay_call.kind != "extension_loader"
+            ):
+                raise ValueError("file provenance specs must define `seed_code`")
             if self.source_operations:
                 raise ValueError("file provenance specs must define replay steps")
             if any(step.context_names for step in self.steps):
@@ -3473,13 +3497,45 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         )
 
         try:
-            graph = compile_replay_graph(self, display=display)
+            copy_spec = self._copyable_spec()
+            if copy_spec is None:
+                return None
+            graph = compile_replay_graph(copy_spec, display=display)
             return emit_replay_code(
                 graph,
                 output_name=typing.cast("str", self.active_name),
             )
         except ReplayGraphError:
             return None
+
+    def _copyable_spec(self) -> ToolProvenanceSpec | None:
+        """Resolve extension file paths for copied code without changing replay."""
+        load_source = self.file_load_source
+        replay_call = None if load_source is None else load_source.replay_call
+        if replay_call is None or replay_call.kind != "extension_loader":
+            return self
+        if load_source is None:
+            return None
+        if self.active_name is None:
+            return None
+        from erlab.interactive.imagetool._load_source import (
+            _extension_load_code_from_provenance,
+        )
+
+        seed_code = _extension_load_code_from_provenance(
+            load_source, assign=self.active_name
+        )
+        load_code = _extension_load_code_from_provenance(load_source, assign="data")
+        if seed_code is None or load_code is None:
+            return None
+        return self.model_copy(
+            update={
+                "seed_code": seed_code,
+                "file_load_source": load_source.model_copy(
+                    update={"load_code": load_code}
+                ),
+            }
+        )
 
     def _code_lines_from_entries(
         self, entries: Sequence[DerivationEntry]
@@ -3523,7 +3579,10 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if graph_code := self._graph_code(display=True):
             return graph_code
         if self.kind in {"script", "file"}:
-            prefix = self.seed_code
+            copy_spec = self._copyable_spec()
+            if copy_spec is None:
+                return None
+            prefix = copy_spec.seed_code
         entries = self._code_fallback_entries()
         step_codes = self._code_lines_from_entries(entries[1:])
         if step_codes is None:
@@ -3701,7 +3760,10 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if graph_code := self._graph_code(display=True):
             return graph_code
         if self.kind in {"script", "file"}:
-            prefix = self.seed_code
+            copy_spec = self._copyable_spec()
+            if copy_spec is None:
+                return None
+            prefix = copy_spec.seed_code
 
         entries = self._code_fallback_entries(parent_data=parent_data)
         step_codes = self._code_lines_from_entries(entries[1:])
@@ -4261,7 +4323,7 @@ def script(
 def file_load(
     *,
     start_label: str,
-    seed_code: str,
+    seed_code: str | None,
     file_load_source: FileLoadSource,
     active_name: str = "derived",
     steps: Sequence[ReplayStep] = (),
