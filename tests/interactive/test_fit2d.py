@@ -140,6 +140,89 @@ def _trust_allows_local_code_edit(trust) -> bool:
     return issue_execution_capability(trust, (entry,))[1] is not None
 
 
+def test_fit_dataset_scale_covar_requires_one_common_value(monkeypatch) -> None:
+    model = lmfit.models.LinearModel()
+
+    class _Result:
+        def __init__(self, scale_covar: bool, *, weighted: bool = False) -> None:
+            self.model = model
+            self.scale_covar = scale_covar
+            self.weights = np.ones(2) if weighted else None
+
+    common = xr.Dataset(
+        {
+            "modelfit_results": xr.DataArray(
+                [_Result(False), _Result(False)], dims=("fit",)
+            )
+        }
+    )
+    mixed = common.copy()
+    mixed["modelfit_results"] = xr.DataArray(
+        [_Result(False), _Result(True)], dims=("fit",)
+    )
+    missing = xr.Dataset(
+        {"modelfit_results": xr.DataArray([_Result(False), object()], dims=("fit",))}
+    )
+    weighted = xr.Dataset(
+        {
+            "modelfit_results": xr.DataArray(
+                [_Result(False, weighted=True), _Result(False, weighted=True)],
+                dims=("fit",),
+            )
+        }
+    )
+    mixed_weighted = xr.Dataset(
+        {
+            "modelfit_results": xr.DataArray(
+                [_Result(False), _Result(False, weighted=True)],
+                dims=("fit",),
+            )
+        }
+    )
+
+    assert fit2d_module._fit_dataset_settings(common) == (False, False)
+    assert fit2d_module._fit_dataset_settings(weighted) == (False, True)
+    assert fit2d_module._fit_dataset_settings(mixed_weighted) == (False, None)
+    assert fit2d_module._fit_dataset_scale_covar(common) is False
+    assert fit2d_module._fit_dataset_scale_covar(mixed) is None
+    assert fit2d_module._fit_dataset_scale_covar(missing) is None
+    assert fit2d_module._fit_dataset_scale_covar(xr.Dataset()) is None
+
+    original_compute = xr.DataArray.compute
+
+    def _raise_compute(self, **kwargs):
+        if self.name == "modelfit_results":
+            raise RuntimeError("cannot load result")
+        return original_compute(self, **kwargs)
+
+    monkeypatch.setattr(xr.DataArray, "compute", _raise_compute)
+    assert fit2d_module._fit_dataset_scale_covar(common) is None
+
+
+def test_ftool_uncertainty_name_fallback(qtbot, monkeypatch) -> None:
+    data = _make_1d_data()
+    uncertainty = xr.full_like(data, 0.2)
+
+    def _raise_argname(*_args, **_kwargs):
+        raise RuntimeError("name unavailable")
+
+    monkeypatch.setattr(fit2d_module.varname, "argname", _raise_argname)
+    win = erlab.interactive.ftool(data, uncertainty=uncertainty, execute=False)
+    qtbot.addWidget(win)
+
+    assert win.tool_status.uncertainty_name == "uncertainty"
+
+    model = lmfit.models.LinearModel()
+    fit_ds = data.xlm.modelfit("x", model=model, params=model.make_params()).load()
+    restored = erlab.interactive.ftool(fit_ds, execute=False)
+    qtbot.addWidget(restored)
+    assert restored.tool_status.data_name == "(fit_result)['modelfit_data']"
+
+    named = erlab.interactive.ftool(fit_ds, data_name="saved_fit", execute=False)
+    qtbot.addWidget(named)
+    assert named.tool_status.data_name == "(saved_fit)['modelfit_data']"
+
+
 def _assert_fit_result_dataset_equivalent(
     actual: xr.Dataset,
     expected: xr.Dataset,
@@ -271,6 +354,8 @@ def _seed_fit2d_param_results(win: Fit2DTool, params_list) -> None:
         win._fit_result_with_range(_fit_result_dataset(params))
         for params in params_list
     ]
+    win._fit_is_current = True
+    win._update_full_fit_saveable()
     win._update_param_plot_options()
 
 
@@ -768,6 +853,115 @@ def test_fit2d_run_fit(qtbot, exp_decay_model, monkeypatch) -> None:
     code = win._copy_code_full()
     assert "modelfit" in code
     assert ".isel(" in code
+
+
+def test_fit2d_weighted_fit_broadcasts_uncertainty(
+    qtbot, exp_decay_model, monkeypatch
+) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    y = np.arange(3)
+    data = xr.DataArray(
+        np.stack([((1.0 + 0.5 * idx) * np.exp(-t / 2.0)) for idx in y]),
+        dims=("y", "t"),
+        coords={"y": y, "t": t},
+        name="decay2d",
+    )
+    uncertainty = xr.DataArray(
+        np.linspace(0.1, 0.2, t.size),
+        dims=("t",),
+        coords={"t": t},
+        name="sigma",
+    )
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data,
+        model=exp_decay_model,
+        params=params,
+        uncertainty=uncertainty,
+        data_name="decay2d",
+        model_name="model",
+        uncertainty_name="sigma.copy()",
+        execute=False,
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    warnings, errors = _configure_fit2d_for_tests(win, monkeypatch)
+
+    assert win.uncertainty is uncertainty
+    assert not win.scale_covar_check.isChecked()
+    np.testing.assert_allclose(win.data_errorbar.opts["top"], uncertainty)
+
+    win.y_index_spin.setValue(win.y_min_spin.value())
+    win.nfev_spin.setValue(0)
+    win._run_fit_2d("up")
+    qtbot.waitUntil(
+        lambda: all(ds is not None for ds in win._result_ds_full), timeout=10000
+    )
+
+    for result_ds in win._result_ds_full:
+        assert result_ds is not None
+        result = result_ds.modelfit_results.compute().item()
+        np.testing.assert_allclose(result.weights, 1.0 / uncertainty.values)
+        assert result.scale_covar is False
+    assert not warnings
+    assert not errors
+
+    unnormalized_namespace = {
+        "decay2d": data,
+        "model": exp_decay_model,
+        "sigma": uncertainty,
+        "xr": xr,
+    }
+    exec(win._copy_code_full(), unnormalized_namespace)  # noqa: S102
+    unnormalized_replay = unnormalized_namespace["result"]
+    for result in unnormalized_replay.modelfit_results.compute().values:
+        np.testing.assert_allclose(result.weights, 1.0 / uncertainty.values)
+
+    win.normalize_check.setChecked(True)
+    namespace = dict(unnormalized_namespace)
+    code = win._copy_code_full()
+    assert "input_uncertainty" not in code
+    exec(code, namespace)  # noqa: S102
+    replayed = namespace["result"]
+    for idx, result in enumerate(replayed.modelfit_results.compute().values):
+        np.testing.assert_allclose(
+            result.weights,
+            abs(data.isel(y=idx).mean().item()) / uncertainty.values,
+        )
+        assert result.scale_covar is False
+
+    slice_namespace = {
+        "decay2d": data,
+        "model": exp_decay_model,
+        "sigma": uncertainty,
+    }
+    exec(win.copy_code_1d(), slice_namespace)  # noqa: S102
+    replayed_slice = slice_namespace["result"]
+    slice_result = replayed_slice.modelfit_results.compute().item()
+    assert any(
+        np.allclose(
+            slice_result.weights,
+            abs(data.isel(y=idx).mean().item()) / uncertainty.values,
+        )
+        for idx in range(data.sizes["y"])
+    )
+
+    assert win.current_provenance_spec() is None
+    assert win.detached_output_imagetool_provenance(data) is None
+    assert win._parameter_model_fit_operation("n0", stderr=False) is None
+    values_output_id = Fit2DTool._parameter_output_id(
+        Fit2DTool.Output.PARAMETER_VALUES,
+        "n0",
+    )
+    values = win.output_imagetool_data(values_output_id)
+    assert values is not None
+    assert win.output_imagetool_provenance(values_output_id, values) is None
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+    assert isinstance(restored, Fit2DTool)
+    xr.testing.assert_identical(restored.uncertainty, uncertainty)
+    assert restored.scale_covar_check.isChecked() is False
 
 
 def test_fit2d_full_provenance_handles_spaced_fit_axis(qtbot) -> None:
@@ -1576,6 +1770,7 @@ def test_fit2d_open_saved_fit_dataset(qtbot, exp_decay_model, monkeypatch) -> No
     assert isinstance(win, Fit2DTool)
     warnings, errors = _configure_fit2d_for_tests(win, monkeypatch)
 
+    win.scale_covar_check.setChecked(False)
     win.y_index_spin.setValue(win.y_min_spin.value())
     win.nfev_spin.setValue(0)
     win._run_fit_2d("up")
@@ -1605,6 +1800,303 @@ def test_fit2d_open_saved_fit_dataset(qtbot, exp_decay_model, monkeypatch) -> No
     assert win_restored.save_button.isEnabled()
     assert win_restored.copy_full_button.isEnabled()
     assert win_restored.save_full_button.isEnabled()
+    assert not win_restored.scale_covar_check.isChecked()
+
+
+def test_fit2d_open_weighted_saved_fit_dataset(
+    qtbot, exp_decay_model, monkeypatch
+) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    y = np.arange(3)
+    data = xr.DataArray(
+        np.stack([((1.0 + 0.5 * idx) * np.exp(-t / 2.0)) for idx in y], axis=0),
+        dims=("y", "t"),
+        coords={"y": y, "t": t},
+        name="decay2d",
+    )
+    weights = xr.DataArray(np.linspace(0.3, 2.7, t.size), dims="t", coords={"t": t})
+    assert not np.array_equal(weights, 1.0 / (1.0 / weights))
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    weighted_fit_ds = data.xlm.modelfit(
+        "t",
+        model=exp_decay_model,
+        params=params,
+        weights=weights,
+        scale_covar=False,
+    ).load()
+
+    win = erlab.interactive.ftool(weighted_fit_ds, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    xr.testing.assert_identical(
+        win._direct_weights_full, weighted_fit_ds.modelfit_weights
+    )
+    np.testing.assert_array_equal(win._fit_weights(), weights)
+    assert win.uncertainty is not None
+    xr.testing.assert_allclose(win.uncertainty, 1.0 / weights)
+    np.testing.assert_allclose(win.data_errorbar.opts["top"], 1.0 / weights)
+    assert win._fit_is_current
+    assert win.copy_full_button.isEnabled()
+    assert win.save_full_button.isEnabled()
+
+    namespace = {
+        "weighted_fit_ds": weighted_fit_ds,
+        "model": exp_decay_model,
+        "xr": xr,
+    }
+    exec(win._copy_code_full(), namespace)  # noqa: S102
+    xr.testing.assert_identical(
+        namespace["result"].modelfit_weights,
+        weighted_fit_ds.modelfit_weights,
+    )
+    for result in namespace["result"].modelfit_results.compute().values:
+        np.testing.assert_array_equal(result.weights, weights)
+
+    workspace_restored = erlab.interactive.utils.ToolWindow.from_dataset(
+        win.to_dataset()
+    )
+    qtbot.addWidget(workspace_restored)
+    assert isinstance(workspace_restored, Fit2DTool)
+    xr.testing.assert_identical(
+        workspace_restored._direct_weights_full,
+        weighted_fit_ds.modelfit_weights,
+    )
+    np.testing.assert_array_equal(workspace_restored._fit_weights(), weights)
+
+    win.normalize_check.setChecked(True)
+    normalized_namespace = {
+        "weighted_fit_ds": weighted_fit_ds,
+        "model": exp_decay_model,
+        "xr": xr,
+    }
+    exec(win._copy_code_full(), normalized_namespace)  # noqa: S102
+    for idx, result in enumerate(
+        normalized_namespace["result"].modelfit_results.compute().values
+    ):
+        norm = abs(data.isel(y=idx).mean("t").item())
+        np.testing.assert_allclose(result.weights, weights * norm)
+    expected_normalized_weights = (weights * abs(data.mean("t"))).rename(
+        "modelfit_weights"
+    )
+    xr.testing.assert_identical(
+        normalized_namespace["result"].modelfit_weights,
+        expected_normalized_weights,
+    )
+    assert workspace_restored._fit_is_current
+    updated_data = data * 1.01
+    assert workspace_restored.update_data(updated_data)
+    xr.testing.assert_identical(
+        workspace_restored._direct_weights_full,
+        weighted_fit_ds.modelfit_weights,
+    )
+    np.testing.assert_array_equal(workspace_restored._fit_weights(), weights)
+
+    y_weights = xr.DataArray([0.5, 0.7, 0.9], dims="y", coords={"y": y})
+    y_weighted_fit_ds = data.xlm.modelfit(
+        "t",
+        model=exp_decay_model,
+        params=params,
+        weights=y_weights,
+        scale_covar=False,
+    ).load()
+    y_weighted = erlab.interactive.ftool(y_weighted_fit_ds, execute=False)
+    qtbot.addWidget(y_weighted)
+    assert isinstance(y_weighted, Fit2DTool)
+    xr.testing.assert_identical(
+        y_weighted._direct_weights_full,
+        y_weighted_fit_ds.modelfit_weights,
+    )
+    xr.testing.assert_equal(y_weighted._fit_weights(), y_weights.isel(y=1))
+    y_weighted.y_min_spin.setValue(1)
+    y_weighted.y_max_spin.setValue(2)
+    y_weighted_namespace = {
+        "y_weighted_fit_ds": y_weighted_fit_ds,
+        "model": exp_decay_model,
+        "xr": xr,
+    }
+    exec(y_weighted._copy_code_full(), y_weighted_namespace)  # noqa: S102
+    xr.testing.assert_identical(
+        y_weighted_namespace["result"].modelfit_weights,
+        y_weighted_fit_ds.modelfit_weights.isel(y=slice(1, 3)),
+    )
+
+    crop_x = np.linspace(-1.0, 1.0, 9)
+    crop_data = xr.DataArray(
+        np.stack((2.0 * crop_x + 1.0, 3.0 * crop_x - 1.0)),
+        dims=("y", "x"),
+        coords={"y": [0, 1], "x": crop_x},
+    )
+    crop_weights = xr.DataArray(
+        np.linspace(0.5, 1.5, crop_x.size), dims="x", coords={"x": crop_x}
+    )
+    crop_model = lmfit.models.LinearModel()
+    crop_params = crop_model.make_params(slope=1.0, intercept=0.0)
+    cropped = erlab.interactive.ftool(
+        crop_data,
+        model=crop_model,
+        params=crop_params,
+        data_name="crop_data",
+        model_name="crop_model",
+        execute=False,
+    )
+    qtbot.addWidget(cropped)
+    assert isinstance(cropped, Fit2DTool)
+    monkeypatch.setattr(
+        cropped,
+        "_show_warning",
+        lambda title, text: pytest.fail(f"{title}: {text}"),
+    )
+    cropped._set_direct_weights(crop_weights, weights_name="crop_weights")
+    direct_weight_lines: list[str] = []
+    direct_weight_name = cropped._full_copy_fit_direct_weights_name(
+        "crop_data", "crop_model", lines=direct_weight_lines
+    )
+    assert direct_weight_name is not None
+    direct_weight_namespace = {"crop_weights": crop_weights}
+    exec("\n".join(direct_weight_lines), direct_weight_namespace)  # noqa: S102
+    xr.testing.assert_identical(
+        direct_weight_namespace[direct_weight_name], crop_weights
+    )
+    _fit_slices_with_ranges(cropped, [(-0.5, 0.5), (-0.5, 0.5)])
+    cropped_namespace = {
+        "crop_data": crop_data,
+        "crop_model": crop_model,
+        "crop_weights": crop_weights,
+        "xr": xr,
+    }
+    exec(cropped._copy_code_full(), cropped_namespace)  # noqa: S102
+    xr.testing.assert_identical(
+        cropped_namespace["result"].modelfit_weights,
+        crop_weights.sel(x=slice(-0.5, 0.5)).rename("modelfit_weights"),
+    )
+
+    legacy = erlab.interactive.ftool(
+        weighted_fit_ds.drop_vars("modelfit_weights"), execute=False
+    )
+    qtbot.addWidget(legacy)
+    assert isinstance(legacy, Fit2DTool)
+    assert legacy.uncertainty is None
+    assert legacy.scale_covar_check.isChecked()
+    assert not legacy._fit_is_current
+    assert not legacy.copy_full_button.isEnabled()
+    assert not legacy.save_full_button.isEnabled()
+
+
+@pytest.mark.parametrize(
+    ("weight_kind", "normalize"),
+    [
+        pytest.param("scalar", False, id="scalar"),
+        pytest.param("fit", False, id="fit-dimension"),
+        pytest.param("slice", False, id="slice-dimension"),
+        pytest.param("full", False, id="two-dimensional"),
+        pytest.param("fit", True, id="normalized-fit-dimension"),
+    ],
+)
+def test_fit2d_save_full_preserves_direct_weight_dimensions(
+    qtbot, monkeypatch, weight_kind, normalize
+) -> None:
+    x = np.linspace(-1.0, 1.0, 9)
+    y = np.array([10.0, 20.0])
+    data = xr.DataArray(
+        np.stack((2.0 * x, 3.0 * x + 2.0)),
+        dims=("y", "x"),
+        coords={"y": y, "x": x},
+    )
+    fit_weights = xr.DataArray(np.linspace(0.5, 1.5, x.size), dims="x", coords={"x": x})
+    match weight_kind:
+        case "scalar":
+            weights = xr.DataArray(0.5)
+        case "fit":
+            weights = fit_weights
+        case "slice":
+            weights = xr.DataArray([0.5, 0.8], dims="y", coords={"y": y})
+        case "full":
+            weights = xr.DataArray(
+                np.outer([0.5, 0.8], fit_weights.values),
+                dims=("y", "x"),
+                coords={"y": y, "x": x},
+            )
+        case _:
+            raise ValueError(f"Unexpected weight kind: {weight_kind}")
+
+    model = lmfit.models.LinearModel()
+    fit_ds = data.xlm.modelfit(
+        "x",
+        model=model,
+        params=model.make_params(slope=1.0, intercept=0.0),
+        weights=weights,
+        scale_covar=False,
+    ).load()
+    win = erlab.interactive.ftool(fit_ds, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    warnings, errors = _configure_fit2d_for_tests(win, monkeypatch)
+
+    if normalize:
+        win.normalize_check.setChecked(True)
+        win.domain_min_spin.setValue(-0.5)
+        win.domain_max_spin.setValue(0.5)
+        win.y_index_spin.setValue(win.y_min_spin.value())
+        win.nfev_spin.setValue(0)
+        win._run_fit_2d("up")
+        qtbot.waitUntil(lambda: not win._fit_2d_sequence_active(), timeout=10000)
+
+    saved_fits: list[xr.Dataset] = []
+
+    @contextlib.contextmanager
+    def _wait_stub(_parent, _message):
+        yield None
+
+    monkeypatch.setattr(erlab.interactive.utils, "wait_dialog", _wait_stub)
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "save_fit_ui",
+        lambda fit_result, *, parent: saved_fits.append(fit_result),
+    )
+    win._save_fit_full()
+
+    assert len(saved_fits) == 1
+    saved_weights = saved_fits[0].modelfit_weights
+    if normalize:
+        fit_data = data.sel(x=slice(-0.5, 0.5))
+        normalization = abs(fit_data.mean("x"))
+        normalization = normalization.where(~np.isclose(normalization, 0.0), 1.0)
+        expected = (fit_weights.sel(x=fit_data.x) * normalization).rename(
+            "modelfit_weights"
+        )
+        assert saved_weights.dims == expected.dims == ("x", "y")
+        np.testing.assert_allclose(saved_weights.values, expected.values)
+    else:
+        expected = fit_ds.modelfit_weights
+        assert saved_weights.dims == expected.dims
+        np.testing.assert_array_equal(saved_weights.values, expected.values)
+    for dim in expected.dims:
+        np.testing.assert_array_equal(
+            saved_weights.coords[dim].values, expected.coords[dim].values
+        )
+    reopened = erlab.interactive.ftool(saved_fits[0], execute=False)
+    qtbot.addWidget(reopened)
+    assert isinstance(reopened, Fit2DTool)
+    assert reopened._fit_is_current
+    xr.testing.assert_identical(reopened._direct_weights_full, saved_weights)
+    assert not warnings
+    assert not errors
+
+
+def test_fit2d_rejects_ambiguous_internal_weighting(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    weighting = xr.ones_like(data)
+    with pytest.raises(ValueError, match="Only one"):
+        win._init_full_data_state(
+            data,
+            uncertainty=weighting,
+            direct_weights=weighting,
+            data_name="data",
+        )
 
 
 def test_fit2d_persistence_roundtrip_preserves_fit_results(
@@ -2271,6 +2763,26 @@ def test_fit2d_mixed_slice_ranges_copy_and_output_provenance(
     )
     xr.testing.assert_allclose(replayed, values)
 
+    direct_weights = xr.DataArray(
+        np.linspace(0.5, 1.5, x.size), dims="x", coords={"x": x}
+    )
+    win._set_direct_weights(direct_weights, weights_name="direct_weights")
+    namespace = {
+        "source_spectrum": data,
+        "direct_weights": direct_weights,
+        "era": erlab.analysis,
+        "xr": xr,
+    }
+    exec(win._copy_code_full(), namespace)  # noqa: S102
+    xr.testing.assert_identical(
+        namespace["result"].modelfit_weights,
+        direct_weights.rename("modelfit_weights"),
+    )
+    xr.testing.assert_identical(
+        win._direct_weights_for_full_fit_results(fit_ranges),
+        direct_weights.rename("modelfit_weights"),
+    )
+
 
 @pytest.mark.parametrize("descending", [False, True])
 def test_fit2d_mixed_slice_ranges_persistence_roundtrip(
@@ -2739,6 +3251,15 @@ def test_fit2d_parameter_output_provenance_uses_distinct_active_names(qtbot) -> 
     assert bound_values_code is not None
     assert "param='p0_center'" in bound_values_code
     assert "param='p0_width'" not in bound_values_code
+
+    win._set_uncertainty(xr.ones_like(win._data_full))
+    assert win.output_imagetool_provenance(values_output_id, values) is None
+    win._set_uncertainty(None)
+
+    win.scale_covar_check.setChecked(False)
+    win.scale_covar_check.setChecked(True)
+    assert not win._fit_is_current
+    assert win.output_imagetool_provenance(values_output_id, values) is None
 
     malformed_id = f"{Fit2DTool.Output.PARAMETER_VALUES.value}:"
     missing_id = Fit2DTool._parameter_output_id(

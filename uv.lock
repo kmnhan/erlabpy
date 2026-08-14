@@ -1060,7 +1060,7 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.66.2" },
     { name = "varname", specifier = ">=0.13.0" },
     { name = "xarray", specifier = ">=2024.10.0" },
-    { name = "xarray-lmfit", specifier = ">=0.5.5" },
+    { name = "xarray-lmfit", specifier = ">=0.6.0" },
     { name = "xraydb", specifier = ">=4.5.8" },
     { name = "zarr", marker = "extra == 'io'", specifier = ">=3.1.2" },
 ]
@@ -5452,7 +5452,7 @@ wheels = [
 
 [[package]]
 name = "xarray-lmfit"
-version = "0.5.6"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "lazy-loader" },
@@ -5460,9 +5460,9 @@ dependencies = [
     { name = "numpy" },
     { name = "xarray" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1c/0e/6e50f32759076c9ffeaf59ceea20fe8d865fb7ee8aaed3bb8b6820a958c4/xarray_lmfit-0.5.6.tar.gz", hash = "sha256:043560eecfd0d474dc997cc6705833be125a9439fade925ce23e68c77387b8e3", size = 41442, upload-time = "2026-07-23T06:00:45.866Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ef/2d/25d05ed8f2633746c49e663a7ba05ba87b0559c09afda88f48dae2923c5d/xarray_lmfit-0.6.0.tar.gz", hash = "sha256:3df9c2c0f4f1e95e012379fb1d04aedc815e6100a51346105722b97cb6b716da", size = 42217, upload-time = "2026-08-14T01:49:08.883Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f2/e6/10c8215ba81503e5c59bc84c4d4f88ad894347234eb2ea42ef26e0e9d6b3/xarray_lmfit-0.5.6-py3-none-any.whl", hash = "sha256:9e603138153794c719c8bf50f1f2c5326a91a2e81efce6caa8b9683e6eb9adb9", size = 29072, upload-time = "2026-07-23T06:00:44.732Z" },
+    { url = "https://files.pythonhosted.org/packages/af/fa/246c81cb6049211df61b8acb185879605dd7c560f2f707affc9e4e456170/xarray_lmfit-0.6.0-py3-none-any.whl", hash = "sha256:6685a0d5d92b2721ebf15043011ec2fd814ad0c7caf0a28dec85cc9900d4876d", size = 29315, upload-time = "2026-08-14T01:49:07.76Z" },
 ]
 
 [[package]]
