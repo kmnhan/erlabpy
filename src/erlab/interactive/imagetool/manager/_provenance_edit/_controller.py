@@ -49,6 +49,9 @@ from erlab.interactive.imagetool._provenance._operations import (
     ScriptCodeOperation,
     SortByOperation,
 )
+from erlab.interactive.imagetool.manager._extensions._dialogs import (
+    _ExtensionParameterDialog,
+)
 from erlab.interactive.imagetool.manager._provenance_edit._editors import (
     _NATIVE_TERMINAL_CURRENT_DATA_EDITORS,
     _dialog_match_for_operation_ref,
@@ -79,6 +82,7 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
+    from erlab.extensions import RoutineDescriptor
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import (
         _ImageToolWrapper,
@@ -781,6 +785,9 @@ class _ProvenanceEditController:
             return False, "This live row needs a parent source to replay."
         if script_operation is not None:
             return True, ""
+        if isinstance(operation, ExtensionRoutineOperation):
+            descriptor, reason = self._extension_routine_edit_descriptor(operation)
+            return descriptor is not None, reason
         dialog_match = _dialog_match_for_operation_ref(spec, row.edit_ref)
         if dialog_match is None:
             reason = _uneditable_operation_reason(operation)
@@ -1511,6 +1518,15 @@ class _ProvenanceEditController:
         ):
             self._edit_script_code_operation_row(node, row, spec, ref, operation)
             return
+        if isinstance(operation, ExtensionRoutineOperation):
+            self._edit_extension_routine_operation_row(
+                node,
+                row,
+                spec,
+                ref,
+                operation,
+            )
+            return
         dialog_match = _dialog_match_for_operation_ref(spec, ref)
         if dialog_match is None:
             raise RuntimeError("No editing dialog is available for this step")
@@ -1560,6 +1576,76 @@ class _ProvenanceEditController:
             row.scope,
             root_candidate,
             where="validating the edited Python code",
+        )
+
+    def _extension_routine_edit_descriptor(
+        self,
+        operation: ExtensionRoutineOperation,
+    ) -> tuple[RoutineDescriptor | None, str]:
+        status = self._manager._extensions.capability_status(
+            operation.extension_id,
+            operation.source_hash,
+            "routine",
+            operation.routine_id,
+        )
+        if status != "ready":
+            reason = {
+                "disabled": "Enable this extension before you edit this step.",
+                "approval-required": (
+                    "Review and enable this extension before you edit this step."
+                ),
+                "missing-source": (
+                    "Register the exact script used by this step before you edit it."
+                ),
+                "missing-capability": (
+                    "The registered script does not provide this routine."
+                ),
+                "hash-mismatch": (
+                    "The registered script changed after this step was recorded."
+                ),
+                "unsupported-api": (
+                    "This routine uses an unsupported extension API version."
+                ),
+                "validation-failed": ("The extension source did not pass validation."),
+            }[status]
+            return None, reason
+        descriptor = self._manager._extensions.routine_descriptor(
+            operation.extension_id,
+            operation.source_hash,
+            operation.routine_id,
+        )
+        if descriptor is None:
+            return None, "The routine descriptor is not available."
+        if not descriptor.parameters:
+            return None, "This routine does not have editable parameters."
+        return descriptor, ""
+
+    def _edit_extension_routine_operation_row(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        row: _ProvenanceDisplayRow,
+        spec: ToolProvenanceSpec,
+        ref: _ProvenanceStepRef,
+        operation: ExtensionRoutineOperation,
+    ) -> None:
+        descriptor, reason = self._extension_routine_edit_descriptor(operation)
+        if descriptor is None:
+            raise RuntimeError(reason)
+        dialog = _ExtensionParameterDialog(
+            descriptor,
+            self._manager,
+            values=operation.parameters,
+        )
+        if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+            return
+        replacement = operation.model_copy(update={"parameters": dialog.parameters})
+        candidate = spec._replace_operation_ref(ref, (replacement,))
+        root_candidate = self._root_candidate_for_row(node, row, candidate)
+        self._validate_and_replace(
+            node,
+            row.scope,
+            root_candidate,
+            where="validating the edited extension routine",
         )
 
     def _edited_native_operations(

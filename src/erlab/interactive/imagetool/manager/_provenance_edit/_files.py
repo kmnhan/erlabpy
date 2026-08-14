@@ -11,6 +11,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.utils
+from erlab.extensions import LoaderDescriptor
 from erlab.interactive.imagetool._load_source import (
     _deserialize_loader_kwargs,
     _extension_loader_identity,
@@ -188,6 +189,7 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         self._initial_loader_extensions = (
             dict(loader_extensions) if isinstance(loader_extensions, dict) else None
         )
+        self._accepted_extension_parameters: dict[str, typing.Any] | None = None
         self._file_loaders = file_loaders or erlab.interactive.utils.file_loaders
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -499,6 +501,8 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
         replay_steps: tuple[ReplayStep, ...],
     ) -> ToolProvenanceSpec:
         _filter_name, func, kwargs = self.loader_options.checked_filter()
+        if self._accepted_extension_parameters is not None:
+            kwargs = self._accepted_extension_parameters
         if selection.kind == "parsed_index":
             selection = _migrate_legacy_file_data_selection(
                 path,
@@ -577,6 +581,23 @@ class _FileLoadEditDialog(QtWidgets.QDialog):
     def accept(self) -> None:
         if not self.loader_options.validate_checked_values():
             return
+        _filter_name, func, kwargs = self.loader_options.checked_filter()
+        descriptor = getattr(func, "descriptor", None)
+        if isinstance(descriptor, LoaderDescriptor) and not bool(
+            getattr(func, "uses_standard_loader_options", False)
+        ):
+            from erlab.interactive.imagetool.manager._extensions._dialogs import (
+                _ExtensionParameterDialog,
+            )
+
+            parameter_dialog = _ExtensionParameterDialog(
+                descriptor,
+                self,
+                values=kwargs,
+            )
+            if parameter_dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+                return
+            self._accepted_extension_parameters = parameter_dialog.parameters
         super().accept()
 
 

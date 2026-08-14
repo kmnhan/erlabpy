@@ -31,6 +31,7 @@ from erlab.interactive.imagetool._provenance._model import (
 from erlab.interactive.imagetool._provenance._operations import (
     AffineCoordOperation,
     DivideByCoordOperation,
+    ExtensionRoutineOperation,
     GaussianFilterOperation,
     ImageDerivativeOperation,
     IselOperation,
@@ -405,6 +406,179 @@ def test_manager_terminal_current_data_edit_accept_still_replays_for_validation(
 
     assert replayed == [spec]
     assert replaced == [spec]
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_editable"),
+    [
+        ("ready", True),
+        ("disabled", False),
+        ("approval-required", False),
+        ("missing-source", False),
+        ("missing-capability", False),
+        ("hash-mismatch", False),
+        ("unsupported-api", False),
+        ("validation-failed", False),
+    ],
+)
+def test_manager_extension_routine_editability_requires_a_ready_descriptor(
+    status: str,
+    expected_editable: bool,
+) -> None:
+    operation = ExtensionRoutineOperation(
+        extension_id="lab",
+        source_hash="a" * 64,
+        routine_id="scale",
+        extension_name="lab.py",
+        routine_name="Scale",
+        parameters={"scale": 2.0},
+    )
+    descriptor = erlab.extensions.RoutineDescriptor(
+        id="scale",
+        name="Scale",
+        category="Lab",
+        summary="",
+        function_name="scale",
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="scale",
+                kind=erlab.extensions.ParameterKind.NUMBER,
+                required=False,
+                default=2.0,
+            ),
+        ),
+    )
+    spec = full_data(operation)
+    node = _fake_edit_node(spec)
+    node.has_replay_source = True
+    node.replay_source_data = xr.DataArray([1.0])
+    controller = _fake_edit_controller(node)
+    controller._manager._extensions = types.SimpleNamespace(
+        capability_status=lambda *_args: status,
+        routine_descriptor=lambda *_args: descriptor,
+    )
+
+    editable, reason = controller.can_edit_row(spec.display_rows()[1])
+
+    assert editable is expected_editable
+    assert bool(reason) is not expected_editable
+
+
+def test_manager_extension_routine_without_parameters_is_not_editable() -> None:
+    operation = ExtensionRoutineOperation(
+        extension_id="lab",
+        source_hash="a" * 64,
+        routine_id="normalize",
+        extension_name="lab.py",
+        routine_name="Normalize",
+        parameters={},
+    )
+    descriptor = erlab.extensions.RoutineDescriptor(
+        id="normalize",
+        name="Normalize",
+        category="Lab",
+        summary="",
+        function_name="normalize",
+    )
+    spec = full_data(operation)
+    node = _fake_edit_node(spec)
+    node.has_replay_source = True
+    node.replay_source_data = xr.DataArray([1.0])
+    controller = _fake_edit_controller(node)
+    controller._manager._extensions = types.SimpleNamespace(
+        capability_status=lambda *_args: "ready",
+        routine_descriptor=lambda *_args: descriptor,
+    )
+
+    editable, reason = controller.can_edit_row(spec.display_rows()[1])
+
+    assert not editable
+    assert reason
+
+
+def test_manager_extension_routine_editor_preserves_identity_and_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = ExtensionRoutineOperation(
+        extension_id="lab",
+        source_hash="a" * 64,
+        routine_id="scale",
+        extension_name="lab.py",
+        routine_name="Scale",
+        parameters={"scale": 2.0},
+    )
+    descriptor = erlab.extensions.RoutineDescriptor(
+        id="scale",
+        name="Scale",
+        category="Lab",
+        summary="",
+        function_name="scale",
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="scale",
+                kind=erlab.extensions.ParameterKind.NUMBER,
+                required=False,
+                default=2.0,
+            ),
+        ),
+    )
+    spec = full_data(operation)
+    node = _fake_edit_node(spec)
+    node.has_replay_source = True
+    node.replay_source_data = xr.DataArray([1.0])
+    controller = _fake_edit_controller(node)
+    controller._manager._extensions = types.SimpleNamespace(
+        capability_status=lambda *_args: "ready",
+        routine_descriptor=lambda *_args: descriptor,
+    )
+    initial_values: list[dict[str, typing.Any]] = []
+    accepted = True
+
+    class ParameterDialog:
+        parameters: typing.ClassVar[dict[str, float]] = {"scale": 3.0}
+
+        def __init__(
+            self,
+            descriptor_arg: erlab.extensions.RoutineDescriptor,
+            _parent: object,
+            values: dict[str, typing.Any] | None = None,
+        ) -> None:
+            assert descriptor_arg is descriptor
+            initial_values.append(dict(values or {}))
+
+        def exec(self) -> int:
+            return int(
+                QtWidgets.QDialog.DialogCode.Accepted
+                if accepted
+                else QtWidgets.QDialog.DialogCode.Rejected
+            )
+
+    monkeypatch.setattr(
+        provenance_edit_controller,
+        "_ExtensionParameterDialog",
+        ParameterDialog,
+    )
+    candidates: list[ToolProvenanceSpec] = []
+    monkeypatch.setattr(
+        controller,
+        "_validate_and_replace",
+        lambda _node, _scope, candidate, **_kwargs: candidates.append(candidate),
+    )
+    row = spec.display_rows()[1]
+
+    controller.edit_row(row)
+
+    assert initial_values == [{"scale": 2.0}]
+    replacement = candidates[0].operations[0]
+    assert isinstance(replacement, ExtensionRoutineOperation)
+    assert (
+        replacement.model_copy(update={"parameters": operation.parameters}) == operation
+    )
+    assert replacement.parameters == {"scale": 3.0}
+
+    accepted = False
+    controller.edit_row(row)
+    assert len(candidates) == 1
 
 
 def test_manager_terminal_current_data_edit_seed_rejects_grouped_operations(

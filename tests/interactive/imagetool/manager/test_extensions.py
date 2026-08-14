@@ -70,6 +70,9 @@ from erlab.interactive.imagetool.manager._extensions._models import (
     _ResolvedWorkspaceRequirement,
     _WorkspaceExtensionRequirement,
 )
+from erlab.interactive.imagetool.manager._provenance_edit import (
+    _controller as provenance_edit_controller,
+)
 from erlab.interactive.imagetool.manager._workspace import _arrays as workspace_arrays
 from erlab.interactive.imagetool.manager._workspace import _format as workspace_format
 from erlab.interactive.imagetool.manager._workspace import _saving as workspace_saving
@@ -2128,6 +2131,85 @@ def test_extension_replay_reports_all_controller_result_states(
             xr.testing.assert_identical(
                 execution.run_operation(operation, data), xr.DataArray([2.0])
             )
+
+
+def test_extension_routine_provenance_parameters_are_editable(
+    manager_context,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+    source_data = xr.DataArray([1.0, 2.0], dims=("x",))
+
+    with manager_context() as manager:
+        catalog, source_hash, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        _validate_and_enable(
+            manager._extensions.catalog.store,
+            "scale",
+            expected_record_generation=catalog.extensions["scale"].record_generation,
+        )
+        manager._extensions.catalog.refresh()
+        operation = ExtensionRoutineOperation(
+            extension_id="scale",
+            source_hash=source_hash,
+            routine_id="scale",
+            extension_name="scale.py",
+            routine_name="Scale",
+            parameters={"scale": 2.0},
+        )
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(source_data * 2.0),
+            show=False,
+            provenance_spec=full_data(operation),
+            replay_source_data=source_data,
+        )
+        node = manager._node_for_target(target)
+        manager._metadata_node_uid = node.uid
+        spec = node.displayed_provenance_spec
+        if spec is None:
+            raise RuntimeError("Expected extension provenance")
+        row = spec.display_rows()[1]
+        assert manager._provenance_edit_controller.can_edit_row(row) == (True, "")
+        initial_values: list[dict[str, typing.Any]] = []
+
+        class ParameterDialog:
+            parameters: typing.ClassVar[dict[str, float]] = {"scale": 3.0}
+
+            def __init__(
+                self,
+                descriptor: erlab.extensions.RoutineDescriptor,
+                _parent: object,
+                values: dict[str, typing.Any] | None = None,
+            ) -> None:
+                if descriptor.id != "scale":
+                    raise ValueError("Expected the scale routine descriptor")
+                initial_values.append(dict(values or {}))
+
+            def exec(self) -> int:
+                return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(
+            provenance_edit_controller,
+            "_ExtensionParameterDialog",
+            ParameterDialog,
+        )
+
+        manager._provenance_edit_controller.edit_row(row)
+
+        assert initial_values == [{"scale": 2.0}]
+        updated = node.displayed_provenance_spec
+        if updated is None:
+            raise RuntimeError("Expected edited extension provenance")
+        edited_operation = updated.operations[0]
+        assert isinstance(edited_operation, ExtensionRoutineOperation)
+        assert edited_operation.parameters == {"scale": 3.0}
+        xr.testing.assert_identical(
+            node.current_public_data(),
+            source_data * 3.0,
+        )
 
 
 def test_execution_shutdown_is_safe_after_qt_teardown(
@@ -6637,13 +6719,14 @@ def test_catalog_change_refreshes_visible_extension_consumers(
             tool_window=tool
         )
         monkeypatch.setattr(manager, "_update_actions", lambda: calls.append("actions"))
+        monkeypatch.setattr(manager, "_update_info", lambda: calls.append("details"))
 
         try:
             controller._catalog_changed(controller.catalog.model)
         finally:
             manager._tool_graph.nodes.pop("extension-test-tool")
 
-    assert calls == ["menu", "explorer", "actions", "tool"]
+    assert calls == ["menu", "explorer", "actions", "details", "tool"]
 
 
 def test_workspace_resolution_distinguishes_missing_exact_sources(

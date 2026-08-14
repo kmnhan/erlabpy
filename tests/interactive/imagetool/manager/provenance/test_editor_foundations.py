@@ -16,11 +16,15 @@ import erlab
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.manager._details_panel as manager_details_panel
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
+import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dialogs
 import erlab.interactive.imagetool.manager._lineage as manager_lineage
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
-from erlab.interactive.imagetool._load_source import _serialize_loader_kwargs
+from erlab.interactive.imagetool._load_source import (
+    _deserialize_loader_kwargs,
+    _serialize_loader_kwargs,
+)
 from erlab.interactive.imagetool._provenance._model import (
     DerivationEntry,
     FileDataSelection,
@@ -136,6 +140,110 @@ def test_file_load_edit_dialog_uses_loader_options_widget(qtbot) -> None:
         "engine": "h5netcdf",
         "chunks": {"x": 1},
     }
+
+
+def test_file_load_edit_dialog_edits_extension_loader_parameters(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = tmp_path / "lab_loader.py"
+    source_path.write_text("# test source\n")
+    data_path = tmp_path / "scan.txt"
+    data_path.write_text("1\n")
+    source_hash = "a" * 64
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_lab_data",
+        name="Load Lab Data",
+        category="Lab",
+        summary="Load one lab data file.",
+        function_name="load_lab_data",
+        extensions=(".txt",),
+        parameters=(
+            erlab.extensions.ParameterDescriptor(
+                id="scale",
+                kind=erlab.extensions.ParameterKind.NUMBER,
+                required=False,
+                default=1.0,
+            ),
+        ),
+    )
+
+    class _LoaderCall:
+        extension_id = "lab_loader"
+        loader_id = "load_lab_data"
+        __name__ = "load"
+
+        def __init__(self) -> None:
+            self.source_hash = source_hash
+            self.source_path = source_path
+            self.descriptor = descriptor
+
+        def __call__(self, path: pathlib.Path, **kwargs: typing.Any) -> xr.DataArray:
+            del path, kwargs
+            return xr.DataArray([1.0])
+
+    loader_call = _LoaderCall()
+    name_filter = "Load Lab Data (*.txt)"
+    load_source = FileLoadSource(
+        path=str(data_path),
+        loader_label="Extension Loader",
+        loader_text="lab_loader: load_lab_data",
+        kwargs_text="scale=2.0",
+        replay_call=FileReplayCall(
+            kind="extension_loader",
+            target="lab_loader",
+            source_hash=source_hash,
+            capability_id="load_lab_data",
+            kwargs=_serialize_loader_kwargs({"scale": 2.0}),
+            selection=FileDataSelection(kind="dataarray"),
+        ),
+    )
+    observed_values: list[dict[str, typing.Any]] = []
+
+    class _ParameterDialog:
+        def __init__(
+            self,
+            received_descriptor: erlab.extensions.LoaderDescriptor,
+            parent: QtWidgets.QWidget,
+            values: dict[str, typing.Any],
+        ) -> None:
+            del parent
+            if received_descriptor is not descriptor:
+                raise RuntimeError("The editor received the wrong loader descriptor")
+            observed_values.append(dict(values))
+            self.parameters = {"scale": 3.0}
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(
+        extension_dialogs,
+        "_ExtensionParameterDialog",
+        _ParameterDialog,
+    )
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = provenance_edit_files._FileLoadEditDialog(
+        load_source,
+        parent,
+        file_loaders=lambda _path=None: {name_filter: (loader_call, {"scale": 1.0})},
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.accept()
+
+    assert dialog.result() == int(QtWidgets.QDialog.DialogCode.Accepted)
+    assert observed_values == [{"scale": 2.0}]
+    candidate = dialog.provenance_spec(active_name="data", replay_steps=())
+    replay_call = candidate.file_load_source.replay_call
+    if replay_call is None:
+        raise RuntimeError("The edited file load has no replay call")
+    assert replay_call.kind == "extension_loader"
+    assert replay_call.target == "lab_loader"
+    assert replay_call.source_hash == source_hash
+    assert replay_call.capability_id == "load_lab_data"
+    assert _deserialize_loader_kwargs(replay_call.kwargs) == {"scale": 3.0}
 
 
 def test_file_load_edit_dialog_restores_spreadsheet_metadata_controls(

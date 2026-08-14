@@ -325,6 +325,21 @@ class _ExtensionController(QtCore.QObject):
             global_status = "missing-source"
         return global_status
 
+    def routine_descriptor(
+        self,
+        extension_id: str,
+        source_hash: str,
+        routine_id: str,
+    ) -> RoutineDescriptor | None:
+        """Return a routine descriptor from the exact registered script source."""
+        record = self.catalog.model.extensions.get(extension_id)
+        if record is None or record.source.source_hash != source_hash:
+            return None
+        return next(
+            (item for item in record.source.routines if item.id == routine_id),
+            None,
+        )
+
     @property
     def explorer_loaders(self) -> dict[str, erlab.io.dataloader.LoaderBase]:
         """Manager-local loader adapters used by existing Data Explorer tabs."""
@@ -1187,6 +1202,7 @@ class _ExtensionController(QtCore.QObject):
         if explorer is not None and erlab.interactive.utils.qt_is_valid(explorer):
             typing.cast("_TabbedExplorer", explorer).refresh_loader_choices()
         self._manager._update_actions()
+        self._manager._update_info()
         for node in self._manager._tool_graph.nodes.values():
             if node.tool_window is not None:
                 node.tool_window._refresh_reload_data_action()
