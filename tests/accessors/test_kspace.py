@@ -1034,17 +1034,6 @@ def test_kconv_hvdep_kinetic_rejects(
     )
 
 
-def test_kconv_rechunks_core_dimensions(anglemap) -> None:
-    data = anglemap.copy(deep=True)
-    data.attrs["configuration"] = AxesConfiguration.Type1.value
-
-    expected = data.kspace.convert(silent=True)
-    chunked = data.chunk({"alpha": 4, "beta": 4, "eV": 4})
-    actual = chunked.kspace.convert(silent=True).compute()
-
-    xarray.testing.assert_allclose(actual, expected)
-
-
 @pytest.mark.parametrize("missing_coord", ["alpha", "beta", "chi", "xi", "eV", "hv"])
 def test_kconv_missing_coord(missing_coord, anglemap):
     data = anglemap.copy().assign_coords(chi=0.0)

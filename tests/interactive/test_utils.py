@@ -4508,6 +4508,29 @@ def test_tool_window_resolves_references_with_missing_placeholder_variables() ->
         )
 
 
+def test_tool_window_materializes_referenced_data_without_mutating_source() -> None:
+    source = xr.DataArray(np.arange(4.0), dims=("x",)).chunk({"x": 2})
+    variable_name = erlab.interactive.utils._SAVED_TOOL_DATA_NAME
+    ds = xr.Dataset(
+        attrs={
+            erlab.interactive.utils._TOOL_DATA_REFERENCES_ATTR: json.dumps(
+                {variable_name: {"kind": "manager_node", "node_uid": "source"}}
+            )
+        }
+    )
+
+    data_items = erlab.interactive.utils.ToolWindow._tool_data_items_from_dataset(
+        ds,
+        source_parent_data=None,
+        reference_resolver=lambda _reference: source,
+        materialize_references=True,
+    )
+
+    assert source.chunks is not None
+    assert data_items[variable_name].chunks is None
+    xr.testing.assert_identical(data_items[variable_name], source.compute())
+
+
 def test_tool_window_source_binding_empty_and_type_error_branches(qtbot) -> None:
     tool = _PersistentTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
     qtbot.addWidget(tool)

@@ -2725,7 +2725,7 @@ def test_manager_workspace_show_materializes_hidden_memory_payload(
         assert loaded.array_slicer.get_value(0, 1) == 3.0
 
 
-def test_manager_workspace_child_tool_reference_keeps_pending_parent_unmaterialized(
+def test_manager_workspace_child_tool_reference_materializes_only_child_data(
     qtbot,
     monkeypatch,
     tmp_path,
@@ -2800,11 +2800,12 @@ def test_manager_workspace_child_tool_reference_keeps_pending_parent_unmateriali
         assert isinstance(loaded_child, _WorkspaceSweepChildTool)
         assert loaded_child.tool_data.name == child_data.name
         assert loaded_child.tool_data.dims == child_data.dims
-        assert loaded_child.tool_data.chunks is not None
+        assert loaded_child.tool_data.chunks is None
+        assert workspace_arrays.dataarray_is_numpy_backed(loaded_child.tool_data)
         np.testing.assert_array_equal(loaded_child.tool_data.values, child_data.values)
 
 
-def test_manager_workspace_tool_manager_node_reference_keeps_pending_source(
+def test_manager_workspace_tool_reference_materializes_without_opening_source(
     qtbot,
     monkeypatch,
     tmp_path,
@@ -2858,7 +2859,7 @@ def test_manager_workspace_tool_manager_node_reference_keeps_pending_source(
         def _fail_materialize_pending_payload(_node) -> bool:
             if _node.is_imagetool:
                 pytest.fail(
-                    "tool manager-node restore should not materialize source data"
+                    "tool reference restore should not open the source ImageTool"
                 )
             return original_materialize(_node)
 
@@ -2866,7 +2867,7 @@ def test_manager_workspace_tool_manager_node_reference_keeps_pending_source(
             del cls
             if load_data:
                 pytest.fail(
-                    "tool manager-node restore should not eagerly load source data"
+                    "tool reference restore should not eagerly open the source payload"
                 )
             return original_read(workspace_path, payload_path, load_data=load_data)
 
@@ -2894,7 +2895,8 @@ def test_manager_workspace_tool_manager_node_reference_keeps_pending_source(
         assert isinstance(loaded_figure, _WorkspaceManagerReferenceFigureTool)
         assert loaded_figure.tool_data.name == data.name
         assert loaded_figure.tool_data.dims == data.dims
-        assert loaded_figure.tool_data.chunks is not None
+        assert loaded_figure.tool_data.chunks is None
+        assert workspace_arrays.dataarray_is_numpy_backed(loaded_figure.tool_data)
         np.testing.assert_array_equal(loaded_figure.tool_data.values, data.values)
 
 
