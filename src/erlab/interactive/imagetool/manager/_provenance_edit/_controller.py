@@ -246,8 +246,8 @@ class _ProvenanceEditController:
                 "extension-unsupported-api": (
                     "The recorded extension uses an unsupported API version."
                 ),
-                "extension-import-failed": (
-                    "The recorded extension loader could not be imported."
+                "extension-validation-failed": (
+                    "The recorded extension loader could not be validated."
                 ),
             }[source_status]
 

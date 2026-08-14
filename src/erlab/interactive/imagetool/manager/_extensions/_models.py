@@ -21,7 +21,7 @@ class _ExtensionSource(pydantic.BaseModel):
     approved: bool = False
     routines: tuple[RoutineDescriptor, ...] = ()
     loaders: tuple[LoaderDescriptor, ...] = ()
-    import_error: str | None = None
+    validation_error: str | None = None
 
     model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 
@@ -120,7 +120,7 @@ _WorkspaceRequirementState = typing.Literal[
     "missing",
     "hash-mismatch",
     "unsupported-api",
-    "import-failed",
+    "validation-failed",
 ]
 
 

@@ -504,8 +504,8 @@ def file_load_source_status(
             return "extension-hash-mismatch"
         if capability_status == "unsupported-api":
             return "extension-unsupported-api"
-        if capability_status == "import-failed":
-            return "extension-import-failed"
+        if capability_status == "validation-failed":
+            return "extension-validation-failed"
     return "loadable"
 
 

@@ -517,8 +517,8 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
                 (record.id, record.source.source_hash), ""
             )
             health = "Ready"
-            if current.import_error:
-                health = "Import failed"
+            if current.validation_error:
+                health = "Validation failed"
             elif _source_is_unavailable(source_state):
                 health = "Source unavailable"
             elif not current.approved:
@@ -578,9 +578,9 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         source_state = self._source_states.get((record.id, source.source_hash), "")
         health = "Ready"
         failure = ""
-        if source.import_error:
-            health = "Import failed"
-            failure = source.import_error.splitlines()[-1]
+        if source.validation_error:
+            health = "Validation failed"
+            failure = source.validation_error.splitlines()[-1]
         elif _source_is_unavailable(source_state):
             health = "Source unavailable"
             failure = source_state
@@ -595,7 +595,7 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
         )
         self.status_label.setProperty("healthState", health)
         self.failure_label.setText(failure)
-        self.failure_label.setProperty("fullError", source.import_error or "")
+        self.failure_label.setProperty("fullError", source.validation_error or "")
         routine_names = ", ".join(item.name for item in source.routines) or "None"
         loader_names = ", ".join(item.name for item in source.loaders) or "None"
         self.capabilities_label.setText(
@@ -642,8 +642,8 @@ class _ManageExtensionsDialog(QtWidgets.QDialog):
             if source_changed
             else "reload",
         )
-        self._buttons["error"].setVisible(bool(source.import_error))
-        self._buttons["error"].setEnabled(bool(source.import_error))
+        self._buttons["error"].setVisible(bool(source.validation_error))
+        self._buttons["error"].setEnabled(bool(source.validation_error))
         self._buttons["view_source"].setEnabled(bool(managed_path))
         for action_id in ("open_source", "reveal_source", "copy_source"):
             self._buttons[action_id].setEnabled(original_available)
@@ -812,7 +812,12 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
             item is not None
             and key in self._recoverable
             and item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1)
-            in {"approval-required", "missing", "hash-mismatch", "import-failed"}
+            in {
+                "approval-required",
+                "missing",
+                "hash-mismatch",
+                "validation-failed",
+            }
         )
 
     @QtCore.Slot()
@@ -822,7 +827,12 @@ class _WorkspaceRequirementsDialog(QtWidgets.QDialog):
             item is None
             or item.data(0, QtCore.Qt.ItemDataRole.UserRole) not in self._recoverable
             or item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1)
-            not in {"approval-required", "missing", "hash-mismatch", "import-failed"}
+            not in {
+                "approval-required",
+                "missing",
+                "hash-mismatch",
+                "validation-failed",
+            }
         ):
             return
         key = item.data(0, QtCore.Qt.ItemDataRole.UserRole)

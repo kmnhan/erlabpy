@@ -58,9 +58,9 @@ def _default_catalog_directory() -> pathlib.Path:
     if override:
         return pathlib.Path(override).expanduser().resolve()
     location = QtCore.QStandardPaths.writableLocation(
-        QtCore.QStandardPaths.StandardLocation.AppDataLocation
+        QtCore.QStandardPaths.StandardLocation.GenericDataLocation
     )
-    return pathlib.Path(location) / "extensions"
+    return pathlib.Path(location) / "ERLab" / "ImageTool Manager" / "extensions"
 
 
 def _safe_extension_id(value: str) -> str:
@@ -123,6 +123,9 @@ def _catalog_payload_v1(payload: object) -> object:
         source = record.get("source")
         if isinstance(source, dict):
             source = dict(source)
+            legacy_validation_error = source.pop("import_error", None)
+            if source.get("validation_error") is None and legacy_validation_error:
+                source["validation_error"] = legacy_validation_error
             source.pop("change_summary", None)
             for field in (
                 "routine_call_references",
@@ -541,15 +544,15 @@ class _ExtensionCatalogStore:
                 (self.objects_directory / replaced_object_name).unlink(missing_ok=True)
         return catalog, source_hash, changed
 
-    def record_validation_failure(
+    def record_source_validation_failure(
         self,
         extension_id: str,
         *,
         source_hash: str,
         expected_record_generation: int,
-        import_error: str,
+        validation_error: str,
     ) -> _ExtensionCatalogModel:
-        """Persist a failed import without changing a newer source."""
+        """Persist a source-validation failure without changing a newer source."""
 
         def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
             current = catalog.extensions[extension_id]
@@ -558,7 +561,7 @@ class _ExtensionCatalogStore:
                     f"Extension {extension_id!r} changed during validation"
                 )
             source = current.source.model_copy(
-                update={"import_error": import_error, "approved": False}
+                update={"validation_error": validation_error, "approved": False}
             )
             records = dict(catalog.extensions)
             records[extension_id] = current.model_copy(
@@ -599,7 +602,7 @@ class _ExtensionCatalogStore:
                     "approved": True,
                     "routines": routines,
                     "loaders": loaders,
-                    "import_error": None,
+                    "validation_error": None,
                 }
             )
             name_filters = _source_loader_name_filters(validated_source)
@@ -692,8 +695,8 @@ class _ExtensionCatalogStore:
             return "missing-source"
         except _ExtensionCatalogConflictError:
             return "hash-mismatch"
-        if source.import_error:
-            return "import-failed"
+        if source.validation_error:
+            return "validation-failed"
         if not source.approved:
             return "approval-required"
         descriptors = source.routines if kind == "routine" else source.loaders

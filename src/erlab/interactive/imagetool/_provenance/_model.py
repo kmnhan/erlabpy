@@ -163,7 +163,7 @@ FileLoadSourceStatus: typing.TypeAlias = typing.Literal[
     "extension-missing-capability",
     "extension-hash-mismatch",
     "extension-unsupported-api",
-    "extension-import-failed",
+    "extension-validation-failed",
 ]
 
 _DEFAULT_REPLAY_SEED_CODE = "derived = data"

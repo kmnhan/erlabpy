@@ -2885,9 +2885,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 )
             if source_status == "extension-unsupported-api":
                 return "The saved loader uses an unsupported extension API version."
-            if source_status == "extension-import-failed":
+            if source_status == "extension-validation-failed":
                 return (
-                    "The saved extension loader could not be imported. Open Manage "
+                    "The saved extension loader could not be validated. Open Manage "
                     "Extensions in ImageTool Manager for details."
                 )
             if provenance_spec.kind == "file":

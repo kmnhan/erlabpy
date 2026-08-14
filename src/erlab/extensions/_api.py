@@ -46,7 +46,7 @@ _CapabilityStatus = typing.Literal[
     "missing-capability",
     "hash-mismatch",
     "unsupported-api",
-    "import-failed",
+    "validation-failed",
 ]
 _CapabilityStatusResolver = Callable[[str, str, str, str], _CapabilityStatus]
 _source_resolvers: dict[str, _SourceResolver] = {}

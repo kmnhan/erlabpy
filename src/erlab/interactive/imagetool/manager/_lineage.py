@@ -318,9 +318,9 @@ class _LineageController:
                 f"The saved extension loader for {label} uses an unsupported "
                 "extension API version."
             )
-        if source_status == "extension-import-failed":
+        if source_status == "extension-validation-failed":
             return (
-                f"The saved extension loader for {label} could not be imported. "
+                f"The saved extension loader for {label} could not be validated. "
                 "Open Manage Extensions for details."
             )
         return None

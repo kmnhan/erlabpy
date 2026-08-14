@@ -707,7 +707,7 @@ def _validate_extension_source(
     check_loader_filter_conflicts: bool = True,
     enable_extension: bool = True,
 ) -> _ExtensionCatalogModel:
-    """Import the current source, then record its validated descriptors."""
+    """Validate the current source, then record its capability descriptors."""
     catalog = catalog_store.read()
     record = catalog.extensions.get(extension_id)
     if record is None:
@@ -731,33 +731,31 @@ def _validate_extension_source(
         )
         routines = tuple(item[0] for item in loaded.routines.values())
         loaders = tuple(item[0] for item in loaded.loaders.values())
-        validated_source = record.source.model_copy(
-            update={
-                "routines": routines,
-                "loaders": loaders,
-            }
-        )
-        if check_loader_filter_conflicts:
-            _reject_builtin_loader_filter_conflicts(
-                catalog, extension_id, validated_source
-            )
-        return catalog_store.enable_validated_source(
-            extension_id,
-            source_hash=source_hash,
-            expected_record_generation=expected_record_generation,
-            routines=routines,
-            loaders=loaders,
-            enable_extension=enable_extension,
-        )
     except BaseException:
         with contextlib.suppress(_ExtensionCatalogConflictError):
-            catalog_store.record_validation_failure(
+            catalog_store.record_source_validation_failure(
                 extension_id,
                 source_hash=source_hash,
                 expected_record_generation=expected_record_generation,
-                import_error=traceback.format_exc(),
+                validation_error=traceback.format_exc(),
             )
         raise
+    validated_source = record.source.model_copy(
+        update={
+            "routines": routines,
+            "loaders": loaders,
+        }
+    )
+    if check_loader_filter_conflicts:
+        _reject_builtin_loader_filter_conflicts(catalog, extension_id, validated_source)
+    return catalog_store.enable_validated_source(
+        extension_id,
+        source_hash=source_hash,
+        expected_record_generation=expected_record_generation,
+        routines=routines,
+        loaders=loaders,
+        enable_extension=enable_extension,
+    )
 
 
 class _ExtensionRoutineWorker(QtCore.QRunnable):

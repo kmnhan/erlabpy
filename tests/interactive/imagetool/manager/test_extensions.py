@@ -513,7 +513,7 @@ def test_workspace_requirements_dialog_registers_only_recoverable_selection(
         dialog._register_selected()
         assert registrations == [("lab", "a" * 64)]
 
-        for state in ("missing", "hash-mismatch", "import-failed"):
+        for state in ("missing", "hash-mismatch", "validation-failed"):
             dialog.set_requirements((resolved.model_copy(update={"state": state}),))
             assert dialog._register_button.isEnabled()
             dialog._register_selected()
@@ -1248,6 +1248,30 @@ def test_catalog_uses_override_directory_and_safe_generated_id(
     assert extension_catalog._safe_extension_id("...").startswith("extension-")
 
 
+def test_default_catalog_directory_is_independent_of_application_name(
+    qapp: QtWidgets.QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ERLAB_EXTENSION_CATALOG", raising=False)
+    original_name = qapp.applicationName()
+    try:
+        qapp.setApplicationName("ImageTool Manager")
+        packaged_path = extension_catalog._default_catalog_directory()
+        qapp.setApplicationName("ipykernel")
+        notebook_path = extension_catalog._default_catalog_directory()
+    finally:
+        qapp.setApplicationName(original_name)
+
+    data_root = pathlib.Path(
+        QtCore.QStandardPaths.writableLocation(
+            QtCore.QStandardPaths.StandardLocation.GenericDataLocation
+        )
+    )
+    expected = data_root / "ERLab" / "ImageTool Manager" / "extensions"
+    assert packaged_path == expected
+    assert notebook_path == expected
+
+
 def test_catalog_reports_lock_failure(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1418,11 +1442,13 @@ def test_catalog_reports_exact_script_capability_states(
         status_for(
             ready_record.model_copy(
                 update={
-                    "source": ready_source.model_copy(update={"import_error": "broken"})
+                    "source": ready_source.model_copy(
+                        update={"validation_error": "broken"}
+                    )
                 }
             )
         )
-        == "import-failed"
+        == "validation-failed"
     )
     assert status_for(ready_record, "missing") == "missing-capability"
 
@@ -2423,6 +2449,7 @@ def test_catalog_reads_unreleased_schema_as_schema_one(
     payload["extensions"]["environment.my-lab"] = {"source_type": "environment-package"}
     record = payload["extensions"]["gaussian_tools"]
     source = record.pop("source")
+    source["import_error"] = "old validation failure"
     record["current_revision"] = revision
     record["revisions"] = {revision: source}
     record.update(
@@ -2446,6 +2473,10 @@ def test_catalog_reads_unreleased_schema_as_schema_one(
     assert migrated.schema_version == 1
     assert migrated.extensions["gaussian_tools"].name == "gaussian_tools.py"
     assert migrated.extensions["gaussian_tools"].source.source_hash == revision
+    assert (
+        migrated.extensions["gaussian_tools"].source.validation_error
+        == "old validation failure"
+    )
     assert migrated.routine_favorites == (("gaussian_tools", "scale"),)
 
 
@@ -2565,7 +2596,9 @@ def test_old_source_can_be_registered_as_a_separate_extension(
     )
 
 
-def test_catalog_preserves_import_failure_diagnostics(tmp_path: pathlib.Path) -> None:
+def test_catalog_preserves_source_validation_diagnostics(
+    tmp_path: pathlib.Path,
+) -> None:
     store = _ExtensionCatalogStore(tmp_path / "catalog")
     script_path = tmp_path / "broken.py"
     script_path.write_text("raise RuntimeError('broken import')\n")
@@ -2580,7 +2613,7 @@ def test_catalog_preserves_import_failure_diagnostics(tmp_path: pathlib.Path) ->
 
     record = store.read().extensions["broken"]
     assert not record.enabled
-    assert "RuntimeError: broken import" in str(record.source.import_error)
+    assert "RuntimeError: broken import" in str(record.source.validation_error)
 
 
 def test_script_routine_generated_code_uses_public_path_api(
@@ -4097,7 +4130,7 @@ def source_loader(path: Path) -> xr.DataArray:
         assert not marker.exists()
 
 
-def test_file_source_status_reports_extension_import_failure(
+def test_file_source_status_reports_extension_validation_failure(
     manager_context,
     tmp_path: pathlib.Path,
 ) -> None:
@@ -4136,7 +4169,7 @@ def test_file_source_status_reports_extension_import_failure(
             ),
         )
 
-        assert file_load_source_status(spec) == "extension-import-failed"
+        assert file_load_source_status(spec) == "extension-validation-failed"
 
 
 def test_workspace_requirement_catalog_states(
@@ -4220,7 +4253,7 @@ def test_workspace_requirement_catalog_states(
             )
         )
         assert manager._extensions.resolved_workspace_requirements()[0].state == (
-            "import-failed"
+            "validation-failed"
         )
 
 
@@ -5573,7 +5606,12 @@ def test_extension_loader_filter_conflict_is_rejected(
 
         loaders = manager._extensions.file_loaders()
         assert tuple(loaders) == ("Lab Data (*.txt)",)
-        assert not manager._extensions.catalog.model.extensions["second"].enabled
+        rejected = manager._extensions.catalog.model.extensions["second"]
+        assert not rejected.enabled
+        assert rejected.source.validation_error is None
+        assert (
+            rejected.record_generation == second.extensions["second"].record_generation
+        )
 
 
 def test_builtin_and_extension_loader_filter_conflict_is_rejected(
@@ -5606,7 +5644,12 @@ def test_builtin_and_extension_loader_filter_conflict_is_rejected(
 
         loaders = manager._available_file_loaders()
         assert "NetCDF Files (*.nc *.nc4 *.cdf)" in loaders
-        assert not manager._extensions.catalog.model.extensions["netcdf"].enabled
+        rejected = manager._extensions.catalog.model.extensions["netcdf"]
+        assert not rejected.enabled
+        assert rejected.source.validation_error is None
+        assert (
+            rejected.record_generation == catalog.extensions["netcdf"].record_generation
+        )
 
 
 def test_loader_shares_routine_queue_and_rechecks_enablement(
@@ -6175,7 +6218,7 @@ def validate_thread(data: xr.DataArray) -> xr.DataArray:
         failed = manager._extensions.catalog.store.read().extensions["stops"]
         assert not failed.enabled
         assert "SystemExit: extension requested exit" in (
-            failed.source.import_error or ""
+            failed.source.validation_error or ""
         )
 
 

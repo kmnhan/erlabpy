@@ -1011,12 +1011,12 @@ class _ExtensionController(QtCore.QObject):
                 )
             elif action_id == "error":
                 source = record.source
-                if source.import_error:
+                if source.validation_error:
                     erlab.interactive.utils.MessageDialog.critical(
                         self._manager,
-                        "Extension Import Error",
-                        "The extension could not be imported.",
-                        detailed_text=source.import_error,
+                        "Extension Validation Error",
+                        "The extension could not be validated.",
+                        detailed_text=source.validation_error,
                     )
                 return
             elif action_id == "view_source":
@@ -1851,11 +1851,11 @@ class _ExtensionController(QtCore.QObject):
                 state="missing",
                 detail="The registered script file is unavailable",
             )
-        if source.import_error:
+        if source.validation_error:
             return _ResolvedWorkspaceRequirement(
                 requirement=requirement,
-                state="import-failed",
-                detail=source.import_error,
+                state="validation-failed",
+                detail=source.validation_error,
             )
         if not source.approved:
             return _ResolvedWorkspaceRequirement(
