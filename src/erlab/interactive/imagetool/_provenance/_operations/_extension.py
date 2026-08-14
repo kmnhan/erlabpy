@@ -112,7 +112,17 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
             f"    {name}={_provenance_value_code(value)},"
             for name, value in self.parameters.items()
         )
-        unavailable = {input_name, output_name, *reserved_names}
+        unavailable = {input_name, output_name, "load_script", *reserved_names}
+        call_input_name = input_name
+        prelude: list[str] = []
+        if input_name == "load_script":
+            call_input_name = "data"
+            suffix = 2
+            while call_input_name in unavailable:
+                call_input_name = f"data_{suffix}"
+                suffix += 1
+            unavailable.add(call_input_name)
+            prelude.extend((f"{call_input_name} = {input_name}", ""))
         from erlab.extensions._api import _resolved_script_capability_reference
 
         try:
@@ -133,17 +143,19 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
             module_name = f"{module_base}_{suffix}"
             suffix += 1
         call_target = f"{module_name}.{function_name}"
-        prelude = (
-            "from erlab.extensions import load_script",
-            "",
-            f"{module_name} = load_script({str(source_path)!r})",
+        prelude.extend(
+            (
+                "from erlab.extensions import load_script",
+                "",
+                f"{module_name} = load_script({str(source_path)!r})",
+            )
         )
         return "\n".join(
             (
                 *prelude,
                 "",
                 f"{output_name} = {call_target}(",
-                f"    {input_name},",
+                f"    {call_input_name},",
                 *parameters,
                 ")",
             )

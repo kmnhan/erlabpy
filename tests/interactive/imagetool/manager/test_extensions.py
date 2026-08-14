@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import itertools
 import json
@@ -2654,6 +2655,49 @@ def test_script_routine_generated_code_uses_public_path_api(
 
     namespace: dict[str, typing.Any] = {"data": data}
     exec(generated, namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["result"], data * 3.0)
+
+
+def test_script_routine_generated_code_renames_a_conflicting_data_variable(
+    tmp_path: pathlib.Path,
+) -> None:
+    catalog = _ExtensionCatalog(directory=tmp_path / "catalog")
+    script_path = tmp_path / "load_script.py"
+    _script(script_path)
+    try:
+        model, source_hash, _created = catalog.store.add_script(script_path)
+        _validate_and_enable(
+            catalog.store,
+            "load_script",
+            expected_record_generation=model.extensions[
+                "load_script"
+            ].record_generation,
+        )
+        operation = ExtensionRoutineOperation(
+            extension_id="load_script",
+            source_hash=source_hash,
+            routine_id="scale",
+            extension_name="load_script.py",
+            routine_name="Scale",
+            parameters={"scale": 3.0},
+        )
+        data = xr.DataArray([1.0, 2.0])
+        code = operation.replay_code("load_script", output_name="result")
+    finally:
+        catalog.close()
+
+    namespace: dict[str, typing.Any] = {"load_script": data}
+    exec(code, namespace)  # noqa: S102
+
+    imports = [
+        node
+        for node in ast.parse(code).body
+        if isinstance(node, ast.ImportFrom) and node.module == "erlab.extensions"
+    ]
+    assert len(imports) == 1
+    assert [(alias.name, alias.asname) for alias in imports[0].names] == [
+        ("load_script", None)
+    ]
     xr.testing.assert_identical(namespace["result"], data * 3.0)
 
 
