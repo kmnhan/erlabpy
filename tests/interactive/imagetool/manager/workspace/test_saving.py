@@ -4212,9 +4212,13 @@ def test_manager_workspace_save_as_preserves_legacy_dependency_for_dirty_data(
             mark_dirty=False,
             select=False,
         )
+        dirty_data = manager._get_imagetool_data(0)
+        if dirty_data is None:
+            raise RuntimeError("Expected loaded ImageTool data")
+        dirty_data = dirty_data + 1.0
         expected = data + 1.0
         manager.get_imagetool(0).slicer_area.replace_source_data(
-            manager._get_imagetool_data(0) + 1.0,
+            dirty_data,
             auto_compute=False,
             emit_edited=True,
         )
@@ -4250,6 +4254,7 @@ def test_manager_workspace_save_as_preserves_legacy_dependency_for_dirty_data(
         assert manager.compact_workspace()
         assert legacy_path in store.h5_file
         np.testing.assert_array_equal(manager._get_imagetool_data(0), expected)
+        np.testing.assert_array_equal(dirty_data, expected)
 
 
 def test_manager_workspace_upgrade_repoints_pending_payload_before_compaction(
