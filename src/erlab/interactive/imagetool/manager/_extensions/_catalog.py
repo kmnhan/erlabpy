@@ -375,6 +375,36 @@ class _ExtensionCatalogStore:
             )
         return path
 
+    def pin_execution_source(
+        self, extension_id: str, source_hash: str
+    ) -> tuple[_ExtensionCatalogModel, pathlib.Path, bytes]:
+        """Read one executable source snapshot while catalog writers are blocked.
+
+        The registered file proves that the source is still available to the user.
+        The managed object supplies immutable bytes to the admitted call. Reload and
+        removal transactions cannot replace either catalog identity or managed bytes
+        between these checks.
+        """
+        lock = self._lock()
+        try:
+            catalog = self.read()
+            record = catalog.extensions.get(extension_id)
+            if record is None or record.source.source_hash != source_hash:
+                raise KeyError(f"Unknown extension source {extension_id}:{source_hash}")
+            registered_path = self.executable_source_path(extension_id, source_hash)
+            managed_path = self.objects_directory / record.source.object_name
+            try:
+                source = managed_path.read_bytes()
+            except OSError as error:
+                raise FileNotFoundError(managed_path) from error
+            if hashlib.sha256(source).hexdigest() != source_hash:
+                raise _ExtensionCatalogConflictError(
+                    f"Managed script {managed_path} does not match source {source_hash}"
+                )
+            return catalog, registered_path, source
+        finally:
+            lock.unlock()
+
     def script_capability_reference(
         self,
         extension_id: str,
@@ -450,103 +480,119 @@ class _ExtensionCatalogStore:
                 "The script source changed after it was reviewed"
             )
         extension_id = _safe_extension_id(extension_id or source_path.stem)
-        object_path = self.objects_directory / f"{source_hash}.py"
-        object_existed = object_path.is_file()
-        object_name = self._store_script_source(source, source_hash)
         modified_at = (
             datetime.datetime.fromtimestamp(source_path.stat().st_mtime)
             .astimezone()
             .isoformat(timespec="seconds")
         )
         now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
-        changed = False
-        replaced_object_name: str | None = None
+        object_name = f"{source_hash}.py"
+        object_path = self.objects_directory / object_name
 
-        def update(catalog: _ExtensionCatalogModel) -> _ExtensionCatalogModel:
-            nonlocal changed, replaced_object_name
-            records = dict(catalog.extensions)
-            existing = records.get(extension_id)
-            if existing is not None and source_hash == existing.source.source_hash:
-                updated_source = existing.source.model_copy(
-                    update={
-                        "source_path": os.fspath(source_path),
-                        "source_modified_at": modified_at,
-                    }
+        lock = self._lock()
+        try:
+            current = self.read()
+            if expected_record_generation is not None or check_record_generation:
+                existing = current.extensions.get(extension_id)
+                actual = None if existing is None else existing.record_generation
+                if actual != expected_record_generation:
+                    raise _ExtensionCatalogConflictError(
+                        f"Extension {extension_id!r} changed in another manager"
+                    )
+
+            object_existed = object_path.exists()
+            try:
+                self._store_script_source(source, source_hash)
+                records = dict(current.extensions)
+                existing = records.get(extension_id)
+                changed = existing is None or (
+                    source_hash != existing.source.source_hash
                 )
-                if (
-                    updated_source != existing.source
-                    or existing.name != source_path.name
-                ):
-                    records[extension_id] = existing.model_copy(
+                replaced_object_name = (
+                    existing.source.object_name
+                    if existing is not None and changed
+                    else None
+                )
+
+                if existing is not None and not changed:
+                    updated_source = existing.source.model_copy(
                         update={
-                            "name": source_path.name,
-                            "source": updated_source,
-                            "record_generation": existing.record_generation + 1,
+                            "source_path": os.fspath(source_path),
+                            "source_modified_at": modified_at,
                         }
                     )
-                    return catalog.model_copy(update={"extensions": records})
-                return catalog
-            registered_source = _ExtensionSource(
-                source_hash=source_hash,
-                object_name=object_name,
-                source_path=os.fspath(source_path),
-                source_modified_at=modified_at,
-                registered_at=now,
-                approved=approved,
-            )
-            if existing is None:
-                record = _ExtensionRecord(
-                    id=extension_id,
-                    name=source_path.name,
-                    source=registered_source,
-                    record_generation=1,
-                )
-            else:
-                replaced_object_name = existing.source.object_name
-                record = existing.model_copy(
-                    update={
-                        "name": source_path.name,
-                        "enabled": False,
-                        "source": registered_source,
-                        "record_generation": existing.record_generation + 1,
-                    }
-                )
-            records[extension_id] = record
-            changed = True
-            return catalog.model_copy(update={"extensions": records})
+                    if (
+                        updated_source != existing.source
+                        or existing.name != source_path.name
+                    ):
+                        records[extension_id] = existing.model_copy(
+                            update={
+                                "name": source_path.name,
+                                "source": updated_source,
+                                "record_generation": existing.record_generation + 1,
+                            }
+                        )
+                else:
+                    registered_source = _ExtensionSource(
+                        source_hash=source_hash,
+                        object_name=object_name,
+                        source_path=os.fspath(source_path),
+                        source_modified_at=modified_at,
+                        registered_at=now,
+                        approved=approved,
+                    )
+                    if existing is None:
+                        record = _ExtensionRecord(
+                            id=extension_id,
+                            name=source_path.name,
+                            source=registered_source,
+                            record_generation=1,
+                        )
+                    else:
+                        record = existing.model_copy(
+                            update={
+                                "name": source_path.name,
+                                "enabled": False,
+                                "source": registered_source,
+                                "record_generation": existing.record_generation + 1,
+                            }
+                        )
+                    records[extension_id] = record
 
-        try:
-            catalog = self.mutate(
-                extension_id,
-                update,
-                expected_record_generation=expected_record_generation,
-                check_record_generation=check_record_generation,
-            )
-        except Exception:
-            if not object_existed:
-                try:
-                    current = self.read()
-                except _ExtensionCatalogError:
-                    current = None
-                referenced = current is not None and any(
+                updated = current.model_copy(update={"extensions": records})
+                if updated != current:
+                    updated = updated.model_copy(
+                        update={"generation": current.generation + 1}
+                    )
+                    updated = _ExtensionCatalogModel.model_validate(
+                        updated.model_dump(mode="python")
+                    )
+                    self._write_unlocked(updated)
+            except Exception:
+                referenced_before = any(
                     record.source.object_name == object_name
                     for record in current.extensions.values()
                 )
-                if not referenced:
+                if not object_existed and not referenced_before:
                     with contextlib.suppress(OSError):
                         object_path.unlink(missing_ok=True)
-            raise
-        if (
-            replaced_object_name is not None
-            and replaced_object_name != object_name
-            and not any(
-                record.source.object_name == replaced_object_name
-                for record in catalog.extensions.values()
-            )
-        ):
-            with contextlib.suppress(OSError):
-                (self.objects_directory / replaced_object_name).unlink(missing_ok=True)
-        return catalog, source_hash, changed
+                raise
+
+            if (
+                replaced_object_name is not None
+                and replaced_object_name != object_name
+                and not any(
+                    record.source.object_name == replaced_object_name
+                    for record in updated.extensions.values()
+                )
+            ):
+                with contextlib.suppress(OSError):
+                    (self.objects_directory / replaced_object_name).unlink(
+                        missing_ok=True
+                    )
+            return updated, source_hash, changed
+        finally:
+            lock.unlock()
 
     def enable_validated_source(
         self,
@@ -639,7 +685,7 @@ class _ExtensionCatalogStore:
             self.executable_source_path(extension_id, source_hash),
             expected_source_hash=source_hash,
         )
-        entries = loaded.routines if kind == "routine" else loaded.loaders
+        entries = loaded.erlab.routines if kind == "routine" else loaded.erlab.loaders
         try:
             return entries[capability_id][1]
         except KeyError as error:
@@ -683,7 +729,7 @@ class _ExtensionCatalogStore:
             return False
         try:
             self.executable_source_path(record.id, source_hash)
-        except (FileNotFoundError, KeyError, _ExtensionCatalogConflictError):
+        except (FileNotFoundError, KeyError, _ExtensionCatalogError):
             return False
         return True
 

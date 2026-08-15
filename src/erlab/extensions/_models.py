@@ -264,12 +264,12 @@ def _extension_callable(func: Callable[..., typing.Any]) -> Callable[..., typing
     return call
 
 
-class LoadedScript:
-    """Imported extension script and its validated capabilities.
+class LoadedScriptInfo:
+    """ERLab information for one loaded extension script.
 
-    Instances are returned by :func:`erlab.extensions.load_script`. Attributes from
-    the imported module are available directly on the instance, so a loaded routine
-    can be called as ``extension.normalize(data)``.
+    Access this object through :attr:`LoadedScript.erlab`. Keeping ERLab-owned
+    attributes in one namespace lets extension functions use ordinary names such as
+    ``path``, ``module``, or ``loaders``.
 
     Parameters
     ----------
@@ -280,9 +280,9 @@ class LoadedScript:
     module
         Imported Python module.
     routines
-        Routine descriptors and their corresponding functions, keyed by ID.
+        Routine descriptors and functions, keyed by capability ID.
     loaders
-        Loader descriptors and their corresponding functions, keyed by ID.
+        Loader descriptors and functions, keyed by capability ID.
     """
 
     def __init__(
@@ -300,19 +300,9 @@ class LoadedScript:
         self.routines = routines
         self.loaders = loaders
 
-    def __getattr__(self, name: str) -> typing.Any:
-        """Return a public attribute from the imported script module."""
-        for descriptor, func in self.routines.values():
-            if descriptor.function_name == name:
-                return _extension_callable(func)
-        for descriptor, func in self.loaders.values():
-            if descriptor.function_name == name:
-                return _extension_callable(func)
-        return getattr(self.module, name)
-
     @property
     def capabilities(self) -> tuple[CapabilityDescriptor, ...]:
-        """All validated capabilities in source definition order.
+        """Return all validated capabilities in source definition order.
 
         Returns
         -------
@@ -326,3 +316,45 @@ class LoadedScript:
             entry[0] for entry in self.loaders.values()
         ]
         return (*routines, *loaders)
+
+
+class LoadedScript:
+    """Imported extension script with natural access to its public functions.
+
+    Instances are returned by :func:`erlab.extensions.load_script`. Call a decorated
+    function as a normal attribute. Use :attr:`erlab` only when you need descriptors,
+    the source hash, or other import information.
+
+    Parameters
+    ----------
+    erlab
+        ERLab information for the imported script.
+
+    Examples
+    --------
+    >>> from erlab.extensions import load_script
+    >>> extension = load_script("my_extension.py")  # doctest: +SKIP
+    >>> result = extension.normalize(data)  # doctest: +SKIP
+    >>> tuple(extension.erlab.routines)  # doctest: +SKIP
+    ('normalize',)
+    """
+
+    __slots__ = ("__erlab_info",)
+
+    def __init__(self, erlab: LoadedScriptInfo) -> None:
+        self.__erlab_info = erlab
+
+    @property
+    def erlab(self) -> LoadedScriptInfo:
+        """Return descriptors and import information owned by ERLab."""
+        return self.__erlab_info
+
+    def __getattr__(self, name: str) -> typing.Any:
+        """Return a decorated function or another public script attribute."""
+        for descriptor, func in self.erlab.routines.values():
+            if descriptor.function_name == name:
+                return _extension_callable(func)
+        for descriptor, func in self.erlab.loaders.values():
+            if descriptor.function_name == name:
+                return _extension_callable(func)
+        return getattr(self.erlab.module, name)

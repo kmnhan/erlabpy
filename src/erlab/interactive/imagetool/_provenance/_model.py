@@ -3454,10 +3454,17 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         return entries
 
     def _graph_code(self, *, display: bool) -> str | None:
-        if self.kind not in {"script", "file"} or not self.operations:
+        if self.kind not in {"script", "file"}:
             return None
-        if self.kind == "file" and not any(
-            _operation_is(operation, "source_view") for operation in self.operations
+        uses_extensions = self._uses_extension_code_generation()
+        if not self.operations and not uses_extensions:
+            return None
+        if (
+            self.kind == "file"
+            and not uses_extensions
+            and not any(
+                _operation_is(operation, "source_view") for operation in self.operations
+            )
         ):
             return None
         from erlab.interactive.imagetool._provenance._graph import (
@@ -3467,10 +3474,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         )
 
         try:
-            copy_spec = self._copyable_spec()
-            if copy_spec is None:
-                return None
-            graph = compile_replay_graph(copy_spec, display=display)
+            graph = compile_replay_graph(self, display=display)
             return emit_replay_code(
                 graph,
                 output_name=typing.cast("str", self.active_name),
@@ -3478,33 +3482,21 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         except ReplayGraphError:
             return None
 
-    def _copyable_spec(self) -> ToolProvenanceSpec | None:
-        """Resolve extension file paths for copied code without changing replay."""
+    def _uses_extension_code_generation(self) -> bool:
+        """Return whether copied code must resolve a registered local script."""
         load_source = self.file_load_source
         replay_call = None if load_source is None else load_source.replay_call
-        if replay_call is None or replay_call.kind != "extension_loader":
-            return self
-        if load_source is None:
-            return None
-        if self.active_name is None:
-            return None
-        from erlab.interactive.imagetool._load_source import (
-            _extension_load_code_from_provenance,
-        )
-
-        seed_code = _extension_load_code_from_provenance(
-            load_source, assign=self.active_name
-        )
-        load_code = _extension_load_code_from_provenance(load_source, assign="data")
-        if seed_code is None or load_code is None:
-            return None
-        return self.model_copy(
-            update={
-                "seed_code": seed_code,
-                "file_load_source": load_source.model_copy(
-                    update={"load_code": load_code}
-                ),
-            }
+        if replay_call is not None and replay_call.kind == "extension_loader":
+            return True
+        if any(
+            getattr(operation, "op", None) == "extension_routine"
+            for operation in self.operations
+        ):
+            return True
+        return any(
+            nested._uses_extension_code_generation()
+            for script_input in self.script_inputs
+            if (nested := script_input.parsed_provenance_spec()) is not None
         )
 
     def _code_lines_from_entries(
@@ -3545,14 +3537,13 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         return entries
 
     def derivation_code(self) -> str | None:
-        prefix: str | None = None
         if graph_code := self._graph_code(display=True):
             return graph_code
+        prefix: str | None = None
         if self.kind in {"script", "file"}:
-            copy_spec = self._copyable_spec()
-            if copy_spec is None:
+            if self._uses_extension_code_generation():
                 return None
-            prefix = copy_spec.seed_code
+            prefix = self.seed_code
         entries = self._code_fallback_entries()
         step_codes = self._code_lines_from_entries(entries[1:])
         if step_codes is None:
@@ -3726,15 +3717,14 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         The display path preserves exact live-source behavior while omitting user-facing
         no-op and normalization steps from copied provenance code.
         """
-        prefix: str | None = None
         if graph_code := self._graph_code(display=True):
             return graph_code
-        if self.kind in {"script", "file"}:
-            copy_spec = self._copyable_spec()
-            if copy_spec is None:
-                return None
-            prefix = copy_spec.seed_code
 
+        prefix: str | None = None
+        if self.kind in {"script", "file"}:
+            if self._uses_extension_code_generation():
+                return None
+            prefix = self.seed_code
         entries = self._code_fallback_entries(parent_data=parent_data)
         step_codes = self._code_lines_from_entries(entries[1:])
         if step_codes is None:

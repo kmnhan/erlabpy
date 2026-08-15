@@ -25,6 +25,7 @@ from erlab.extensions._models import (
     ExtensionNotFoundError,
     ExtensionSignatureError,
     LoadedScript,
+    LoadedScriptInfo,
     LoaderDescriptor,
     ParameterDescriptor,
     ParameterKind,
@@ -405,6 +406,14 @@ def _coerce_call_parameters(
 def _descriptor_for(
     func: Callable[..., typing.Any], metadata: Mapping[str, typing.Any]
 ) -> RoutineDescriptor | LoaderDescriptor:
+    if (
+        inspect.iscoroutinefunction(func)
+        or inspect.isgeneratorfunction(func)
+        or inspect.isasyncgenfunction(func)
+    ):
+        raise ExtensionSignatureError(
+            f"Extension function {func.__name__!r} must be a synchronous function"
+        )
     signature = inspect.signature(func)
     parameters = tuple(signature.parameters.values())
     if not parameters:
@@ -443,6 +452,20 @@ def _descriptor_for(
     hints = _resolved_hints(func)
     first_annotation = hints.get(parameters[0].name)
     kind = metadata["kind"]
+    if func.__name__ == "erlab":
+        raise ExtensionSignatureError(
+            "Extension function name 'erlab' is reserved for loaded script information"
+        )
+    if kind == "loader":
+        reserved_parameters = {
+            parameter.name for parameter in parameters[1:]
+        }.intersection({"loader_extensions", "without_values"})
+        if reserved_parameters:
+            names = ", ".join(repr(name) for name in sorted(reserved_parameters))
+            raise ExtensionSignatureError(
+                f"Loader {func.__name__!r} uses parameter names reserved by ERLab: "
+                f"{names}"
+            )
     if kind == "routine" and first_annotation is not xr.DataArray:
         raise ExtensionSignatureError(
             f"Routine {func.__name__!r} must annotate its first parameter as "
@@ -519,6 +542,63 @@ def _module_capabilities(
     return routines, loaders
 
 
+def _load_script_bytes(
+    source: bytes,
+    source_path: pathlib.Path,
+    *,
+    module_name: str | None = None,
+    expected_source_hash: str | None = None,
+) -> LoadedScript:
+    """Import an immutable source snapshot with ``source_path`` as its origin."""
+    source_hash = hashlib.sha256(source).hexdigest()
+    if expected_source_hash is not None and source_hash != expected_source_hash:
+        raise ExtensionImportError(
+            f"Extension source hash {source_hash} does not match expected hash "
+            f"{expected_source_hash}"
+        )
+    import_name = (
+        module_name
+        if module_name is not None
+        else f"_erlab_extension_{source_hash[:12]}_{uuid.uuid4().hex}"
+    )
+    if import_name in sys.modules:
+        raise ExtensionImportError(
+            f"Extension module name {import_name!r} is already in use"
+        )
+    spec = importlib.util.spec_from_file_location(import_name, source_path)
+    if spec is None or spec.loader is None:
+        raise ExtensionImportError(f"Could not create an import spec for {source_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[import_name] = module
+    loaded = False
+    try:
+        try:
+            code = compile(source, os.fspath(source_path), "exec")
+            exec(code, module.__dict__)  # noqa: S102 - imports approved extension code
+        except Exception as error:
+            raise ExtensionImportError(
+                f"Could not import extension source {source_path}: {error}"
+            ) from error
+        routines, loaders = _module_capabilities(module)
+        if not routines and not loaders:
+            raise ExtensionSignatureError(
+                f"Extension source {source_path} contains no decorated capabilities"
+            )
+        loaded = True
+    finally:
+        if not loaded and sys.modules.get(import_name) is module:
+            sys.modules.pop(import_name, None)
+    return LoadedScript(
+        LoadedScriptInfo(
+            path=source_path,
+            source_hash=source_hash,
+            module=module,
+            routines=routines,
+            loaders=loaders,
+        )
+    )
+
+
 def load_script(
     path: os.PathLike[str] | str,
     *,
@@ -559,7 +639,7 @@ def load_script(
 
     >>> from erlab.extensions import load_script
     >>> loaded = load_script("my_lab_extension.py")  # doctest: +SKIP
-    >>> tuple(loaded.routines)  # doctest: +SKIP
+    >>> tuple(loaded.erlab.routines)  # doctest: +SKIP
     ('normalize',)
     """
     source_path = pathlib.Path(path).expanduser().resolve()
@@ -569,50 +649,11 @@ def load_script(
         raise ExtensionImportError(
             f"Could not read extension source: {error}"
         ) from error
-    source_hash = hashlib.sha256(source).hexdigest()
-    if expected_source_hash is not None and source_hash != expected_source_hash:
-        raise ExtensionImportError(
-            f"Extension source hash {source_hash} does not match expected hash "
-            f"{expected_source_hash}"
-        )
-    import_name = (
-        module_name
-        if module_name is not None
-        else f"_erlab_extension_{source_hash[:12]}_{uuid.uuid4().hex}"
-    )
-    if import_name in sys.modules:
-        raise ExtensionImportError(
-            f"Extension module name {import_name!r} is already in use"
-        )
-    spec = importlib.util.spec_from_file_location(import_name, source_path)
-    if spec is None or spec.loader is None:
-        raise ExtensionImportError(f"Could not create an import spec for {source_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[import_name] = module
-    loaded = False
-    try:
-        try:
-            code = compile(source, os.fspath(source_path), "exec")
-            exec(code, module.__dict__)  # noqa: S102 - imports approved extension code
-        except Exception as error:
-            raise ExtensionImportError(
-                f"Could not import extension source {source_path}: {error}"
-            ) from error
-        routines, loaders = _module_capabilities(module)
-        if not routines and not loaders:
-            raise ExtensionSignatureError(
-                f"Extension source {source_path} contains no decorated capabilities"
-            )
-        loaded = True
-    finally:
-        if not loaded and sys.modules.get(import_name) is module:
-            sys.modules.pop(import_name, None)
-    return LoadedScript(
-        path=source_path,
-        source_hash=source_hash,
-        module=module,
-        routines=routines,
-        loaders=loaders,
+    return _load_script_bytes(
+        source,
+        source_path,
+        module_name=module_name,
+        expected_source_hash=expected_source_hash,
     )
 
 
@@ -796,7 +837,7 @@ def run_routine(
             typing.cast("os.PathLike[str] | str", source),
             expected_source_hash=source_hash,
         )
-        entry = loaded.routines.get(routine_id)
+        entry = loaded.erlab.routines.get(routine_id)
         if entry is None:
             raise ExtensionNotFoundError(f"Routine {routine_id!r} was not found")
         func = entry[1]
@@ -882,7 +923,7 @@ def run_loader(
             typing.cast("os.PathLike[str] | str", source),
             expected_source_hash=source_hash,
         )
-        entry = loaded.loaders.get(loader_id)
+        entry = loaded.erlab.loaders.get(loader_id)
         if entry is None:
             raise ExtensionNotFoundError(f"Loader {loader_id!r} was not found")
         func = entry[1]

@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import keyword
-import pathlib
-import re
 import typing
 
 import pydantic
@@ -63,13 +60,7 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
         return f"Run {self.routine_name} ({self.extension_name})"
 
     def derivation_entry(self) -> DerivationEntry:
-        try:
-            code = self.replay_code(
-                "derived", output_name="derived", source_name="data"
-            )
-        except NotImplementedError:
-            code = None
-        return DerivationEntry(self.derivation_label(), code, code is not None)
+        return DerivationEntry(self.derivation_label(), None, False)
 
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
@@ -83,9 +74,7 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
         output_name: str,
         source_name: str | None = None,
     ) -> str:
-        return self._extension_statement_code(
-            input_name, output_name=output_name, reserved_names=()
-        )
+        raise NotImplementedError
 
     def _statement_replay_code(
         self,
@@ -95,67 +84,26 @@ class ExtensionRoutineOperation(ToolProvenanceOperation):
         source_name: str | None = None,
         reserved_names: Collection[str] = (),
     ) -> str:
-        return self._extension_statement_code(
-            input_name,
-            output_name=output_name,
-            reserved_names=reserved_names,
-        )
+        del input_name, output_name, source_name, reserved_names
+        raise NotImplementedError
 
-    def _extension_statement_code(
+    def _bound_script_statement_code(
         self,
         input_name: str,
         *,
         output_name: str,
-        reserved_names: Collection[str],
+        module_name: str,
+        function_name: str,
     ) -> str:
+        """Emit only the call for a script binding owned by the graph compiler."""
         parameters = tuple(
             f"    {name}={_provenance_value_code(value)},"
             for name, value in self.parameters.items()
         )
-        unavailable = {input_name, output_name, "load_script", *reserved_names}
-        call_input_name = input_name
-        prelude: list[str] = []
-        if input_name == "load_script":
-            call_input_name = "data"
-            suffix = 2
-            while call_input_name in unavailable:
-                call_input_name = f"data_{suffix}"
-                suffix += 1
-            unavailable.add(call_input_name)
-            prelude.extend((f"{call_input_name} = {input_name}", ""))
-        from erlab.extensions._api import _resolved_script_capability_reference
-
-        try:
-            resolved_path, function_name = _resolved_script_capability_reference(
-                self.extension_id,
-                "routine",
-                self.routine_id,
-            )
-        except erlab.extensions.ExtensionNotFoundError as error:
-            raise NotImplementedError from error
-        source_path = pathlib.Path(resolved_path)
-        module_base = re.sub(r"\W", "_", source_path.stem)
-        if not module_base.isidentifier() or keyword.iskeyword(module_base):
-            module_base = "extension_script"
-        module_name = module_base
-        suffix = 2
-        while module_name in unavailable:
-            module_name = f"{module_base}_{suffix}"
-            suffix += 1
-        call_target = f"{module_name}.{function_name}"
-        prelude.extend(
-            (
-                "from erlab.extensions import load_script",
-                "",
-                f"{module_name} = load_script({str(source_path)!r})",
-            )
-        )
         return "\n".join(
             (
-                *prelude,
-                "",
-                f"{output_name} = {call_target}(",
-                f"    {call_input_name},",
+                f"{output_name} = {module_name}.{function_name}(",
+                f"    {input_name},",
                 *parameters,
                 ")",
             )

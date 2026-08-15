@@ -525,12 +525,13 @@ def _extension_loader_expression(
     )
 
 
-def _extension_load_code_from_provenance(
+def _extension_loader_load_code(
     load_source: FileLoadSource,
     *,
     assign: str,
+    loader_expression: str,
 ) -> str | None:
-    """Build portable code only from a currently registered public source."""
+    """Build one structured file load from an existing script binding."""
     replay_call = load_source.replay_call
     if (
         replay_call is None
@@ -539,29 +540,13 @@ def _extension_load_code_from_provenance(
         or replay_call.capability_id is None
     ):
         return None
-    from erlab.extensions._api import _resolved_script_capability_reference
-
-    try:
-        resolved_path, function_name = _resolved_script_capability_reference(
-            replay_call.target,
-            "loader",
-            replay_call.capability_id,
-        )
-    except erlab.extensions.ExtensionNotFoundError:
-        return None
-    loader_expr, imports = _extension_loader_expression(
-        source_path=pathlib.Path(resolved_path),
-        function_name=function_name,
-    )
-    if not loader_expr:
-        return None
     resolved = _ResolvedLoadFunc(
         kind="extension_loader",
         target=replay_call.target,
         loader_label=load_source.loader_label,
         loader_text=load_source.loader_text,
-        loader_expr=loader_expr,
-        imports=imports,
+        loader_expr=loader_expression,
+        imports=("import pathlib",),
         setup_lines=(),
         loader_name=None,
         kwargs=_deserialize_loader_kwargs(replay_call.kwargs),
@@ -769,7 +754,9 @@ def _load_source_details_from_provenance(
         load_source.replay_call is not None
         and load_source.replay_call.kind == "extension_loader"
     ):
-        load_code = _extension_load_code_from_provenance(load_source, assign="data")
+        # Registered live tools build this code from their current loader object.
+        # Restored provenance must not expose a sender-local script path.
+        load_code = None
     return _LoadSourceDetails(
         path=pathlib.Path(load_source.path),
         loader_label=load_source.loader_label,

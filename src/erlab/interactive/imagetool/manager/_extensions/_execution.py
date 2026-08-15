@@ -24,13 +24,17 @@ from qtpy import QtCore
 
 import erlab
 from erlab.extensions import (
+    EXTENSION_API_VERSION,
     ExtensionExecutionError,
     LoadedScript,
     LoaderDescriptor,
     RoutineDescriptor,
-    load_script,
 )
-from erlab.extensions._api import _CapabilityStatus, _coerce_call_parameters
+from erlab.extensions._api import (
+    _CapabilityStatus,
+    _coerce_call_parameters,
+    _load_script_bytes,
+)
 from erlab.extensions._models import _require_finite_parameter_values
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool._provenance._model import (
@@ -93,6 +97,7 @@ def _cached_script(
     *,
     extension_id: str,
     source_hash: str,
+    source: bytes,
     source_path: pathlib.Path,
     module_name: str,
 ) -> LoadedScript:
@@ -100,7 +105,8 @@ def _cached_script(
     key = (extension_id, source_hash)
     loaded = modules.get(key)
     if loaded is None:
-        loaded = load_script(
+        loaded = _load_script_bytes(
+            source,
             source_path,
             module_name=module_name,
             expected_source_hash=source_hash,
@@ -132,6 +138,7 @@ class _ExtensionRoutineJob:
     source_hash: str
     routine: RoutineDescriptor
     source_path: pathlib.Path
+    source_bytes: bytes = dataclasses.field(repr=False)
     parameters: dict[str, typing.Any]
     input_uid: str
     input_snapshot: str
@@ -170,6 +177,7 @@ class _ExtensionLoaderCall:
     loader_id: str
     descriptor: LoaderDescriptor
     source_path: pathlib.Path
+    source_bytes: bytes = dataclasses.field(repr=False)
     executor: Callable[
         [_ExtensionLoaderCall, pathlib.Path, dict[str, typing.Any]],
         xr.DataArray | xr.Dataset | xr.DataTree,
@@ -212,6 +220,7 @@ class _ExtensionLoaderCall:
                     script_modules,
                     extension_id=self.extension_id,
                     source_hash=self.source_hash,
+                    source=self.source_bytes,
                     source_path=self.source_path,
                     module_name=_manager_module_name(
                         self.manager_session_id,
@@ -219,7 +228,7 @@ class _ExtensionLoaderCall:
                         self.source_hash,
                     ),
                 )
-                entry = loaded.loaders.get(self.loader_id)
+                entry = loaded.erlab.loaders.get(self.loader_id)
                 entry = _require_loader_entry(self, entry)
             except BaseException as error:
                 raise _ExtensionSourceLoadFailure(
@@ -420,13 +429,7 @@ class _ExtensionValidationWorker(QtCore.QRunnable):
                     "catalog_generation": catalog.generation,
                     "extension_source_hash": self.source_hash,
                     "extension_source": (
-                        None
-                        if record is None
-                        else str(
-                            self.catalog_store.executable_source_path(
-                                self.extension_id, self.source_hash
-                            )
-                        )
+                        None if record is None else record.source.source_path
                     ),
                 }
             )
@@ -507,11 +510,22 @@ class _DecoratedLoaderAdapter(LoaderBase):
         self,
     ) -> dict[str, tuple[Callable[..., typing.Any], dict[str, typing.Any]]]:
         patterns = " ".join(f"*{value}" for value in self.descriptor.extensions) or "*"
-        return {f"{self.descriptor.name} ({patterns})": (self.load, {})}
+        return {f"{self.descriptor.name} ({patterns})": (self.load_for_manager, {})}
 
     @property
     def descriptor(self) -> LoaderDescriptor:
         return self._extension_call.descriptor
+
+    def load_for_manager(
+        self, file_path: str | pathlib.Path, **parameters: typing.Any
+    ) -> xr.DataArray | xr.Dataset | xr.DataTree:
+        """Keep extension parameters outside ``LoaderBase.load`` controls."""
+        result = self.load(file_path, load_kwargs=parameters)
+        if isinstance(result, xr.DataArray | xr.Dataset | xr.DataTree):
+            return result
+        raise ExtensionExecutionError(
+            "An extension loader must return one xarray object"
+        )
 
     def load_single(  # type: ignore[override]
         self,
@@ -691,7 +705,7 @@ def _loader_output_log_fields(
 def _require_routine(
     loaded: erlab.extensions.LoadedScript, routine_id: str
 ) -> tuple[RoutineDescriptor, Callable[..., typing.Any]]:
-    entry = loaded.routines.get(routine_id)
+    entry = loaded.erlab.routines.get(routine_id)
     if entry is None:
         raise ExtensionExecutionError(
             f"Routine {routine_id!r} is missing from the registered source"
@@ -750,15 +764,29 @@ def _validate_extension_source(
         raise _ExtensionCatalogConflictError(
             f"Extension {extension_id!r} changed before validation"
         )
+    try:
+        catalog, registered_path, source_bytes = catalog_store.pin_execution_source(
+            extension_id, source_hash
+        )
+    except KeyError as error:
+        raise _ExtensionCatalogConflictError(
+            f"Extension {extension_id!r} changed before validation"
+        ) from error
+    record = catalog.extensions[extension_id]
+    if record.record_generation != expected_record_generation:
+        raise _ExtensionCatalogConflictError(
+            f"Extension {extension_id!r} changed before validation"
+        )
     loaded = _cached_script(
         script_modules,
         extension_id=extension_id,
         source_hash=source_hash,
-        source_path=catalog_store.executable_source_path(extension_id, source_hash),
+        source=source_bytes,
+        source_path=registered_path,
         module_name=_manager_module_name(manager_session_id, extension_id, source_hash),
     )
-    routines = tuple(item[0] for item in loaded.routines.values())
-    loaders = tuple(item[0] for item in loaded.loaders.values())
+    routines = tuple(item[0] for item in loaded.erlab.routines.values())
+    loaders = tuple(item[0] for item in loaded.erlab.loaders.values())
     validated_source = record.source.model_copy(
         update={
             "routines": routines,
@@ -870,6 +898,7 @@ class _ExtensionRoutineWorker(QtCore.QRunnable):
                     self.script_modules,
                     extension_id=self.job.extension_id,
                     source_hash=self.job.source_hash,
+                    source=self.job.source_bytes,
                     source_path=self.job.source_path,
                     module_name=module_name,
                 )
@@ -1245,6 +1274,8 @@ class _ExtensionExecutionController(QtCore.QObject):
     ) -> _ExtensionRoutineJob:
         """Pin catalog state and input identity before queue admission."""
         _require_finite_parameter_values(parameters)
+        if self._catalog.load_error is not None:
+            raise ExtensionExecutionError("The extension catalog is unavailable")
         catalog_store = self._catalog.store
         catalog = catalog_store.read()
         record = catalog.extensions.get(extension_id)
@@ -1282,15 +1313,43 @@ class _ExtensionExecutionController(QtCore.QObject):
         )
         if routine is None:
             raise ExtensionExecutionError(f"Routine {routine_id!r} is not available")
+        try:
+            catalog, registered_path, source_bytes = catalog_store.pin_execution_source(
+                extension_id, pinned_source_hash
+            )
+        except (FileNotFoundError, KeyError) as error:
+            raise ExtensionExecutionError(
+                "The extension source is unavailable: missing-source"
+            ) from error
+        except _ExtensionCatalogConflictError as error:
+            raise ExtensionExecutionError(
+                "The extension source is unavailable: hash-mismatch"
+            ) from error
+        record = catalog.extensions[extension_id]
+        source = record.source
+        if not record.enabled:
+            raise ExtensionExecutionError("The extension is not enabled")
+        if not source.approved:
+            raise ExtensionExecutionError("The extension source is not available")
+        routine = next(
+            (item for item in source.routines if item.id == routine_id), None
+        )
+        if routine is None:
+            raise ExtensionExecutionError(
+                "The extension source is unavailable: missing-capability"
+            )
+        if routine.extension_api_version != EXTENSION_API_VERSION:
+            raise ExtensionExecutionError(
+                "The extension source is unavailable: unsupported-api"
+            )
         return _ExtensionRoutineJob(
             job_id=uuid.uuid4().hex,
             extension_id=extension_id,
             extension_name=record.name,
             source_hash=pinned_source_hash,
             routine=routine,
-            source_path=catalog_store.executable_source_path(
-                extension_id, pinned_source_hash
-            ),
+            source_path=registered_path,
+            source_bytes=source_bytes,
             parameters=dict(parameters),
             input_uid=input_uid,
             input_snapshot=input_snapshot,
@@ -1388,7 +1447,18 @@ class _ExtensionExecutionController(QtCore.QObject):
 
     def _insert_if_current(self, result: _ExtensionRoutineResult) -> None:
         node = self._manager._tool_graph.nodes.get(result.job.input_uid)
-        if node is None or node.snapshot_token != result.job.input_snapshot:
+        try:
+            result.job.catalog_store.pin_execution_source(
+                result.job.extension_id, result.job.source_hash
+            )
+        except (FileNotFoundError, KeyError, _ExtensionCatalogError):
+            source_is_current = False
+        else:
+            source_is_current = True
+        input_is_current = (
+            node is not None and node.snapshot_token == result.job.input_snapshot
+        )
+        if not input_is_current or not source_is_current:
             logger.info(
                 "Discarding stale extension result",
                 extra={
@@ -1398,9 +1468,13 @@ class _ExtensionExecutionController(QtCore.QObject):
                     "capability_id": result.job.routine.id,
                     "input_uid": result.job.input_uid,
                     "input_snapshot": result.job.input_snapshot,
-                    "extension_status": "stale-input",
+                    "extension_status": (
+                        "stale-source" if not source_is_current else "stale-input"
+                    ),
                 },
             )
+            return
+        if node is None:  # pragma: no cover - narrowed by input_is_current above.
             return
         operation = ExtensionRoutineOperation(
             extension_id=result.job.extension_id,

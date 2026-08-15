@@ -13,6 +13,8 @@ import builtins
 import io
 import json
 import keyword
+import pathlib
+import re
 import symtable
 import tokenize
 import typing
@@ -705,11 +707,28 @@ def _file_load_key_payload(
         "dict[str, typing.Any]",
         load_source.model_dump(mode="json"),
     )
-    payload["setup_code"] = setup_code
-    payload["load_code"] = (
-        None if load_code is None else _canonical_file_load_code(load_code, active_name)
-    )
+    if _is_extension_loader_source(load_source):
+        payload["load_code"] = None
+        payload["setup_code"] = None
+    else:
+        payload["setup_code"] = setup_code
+        payload["load_code"] = (
+            None
+            if load_code is None
+            else _canonical_file_load_code(load_code, active_name)
+        )
     return payload
+
+
+def _is_extension_loader_source(load_source: typing.Any) -> bool:
+    replay_call = getattr(load_source, "replay_call", None)
+    return replay_call is not None and replay_call.kind == "extension_loader"
+
+
+def _is_extension_loader_node(node: ReplayNode) -> bool:
+    return node.kind == "file_load" and _is_extension_loader_source(
+        node.payload.get("load_source")
+    )
 
 
 def _add_file_load_node(
@@ -720,6 +739,9 @@ def _add_file_load_node(
     load_code: str | None,
     active_name: str,
 ) -> str:
+    if _is_extension_loader_source(load_source):
+        setup_code = None
+        load_code = None
     setup_key = None
     if setup_code:
         setup_key = graph.add_node(
@@ -912,9 +934,11 @@ def _compile_spec(
         if parsed.active_name is None:
             raise ReplayGraphError("File provenance does not define an active name")
         structured_replay = parsed.file_load_source.replay_call is not None
+        extension_loader = _is_extension_loader_source(parsed.file_load_source)
         setup_code, load_code = (
             (None, None)
-            if (structured_replay and structured_file_replay)
+            if extension_loader
+            or (structured_replay and structured_file_replay)
             or parsed.seed_code is None
             else _file_seed_code_parts(parsed.seed_code, parsed.active_name)
         )
@@ -1116,7 +1140,19 @@ def _compile_spec(
             for name in names:
                 current_bindings = bind_name(name, current_key)
 
-        if parsed.seed_code:
+        if parsed.file_load_source is not None and _is_extension_loader_source(
+            parsed.file_load_source
+        ):
+            script_current_key = _add_file_load_node(
+                graph,
+                parsed.file_load_source,
+                setup_code=None,
+                load_code=None,
+                active_name=active_name,
+            )
+            current_name = active_name
+            current_bindings = bind_name(active_name, script_current_key)
+        elif parsed.seed_code:
             seed_file_load_parts = None
             if parsed.file_load_source is not None:
                 seed_file_load_parts = _script_seed_file_load_parts(
@@ -1213,7 +1249,10 @@ def _compile_spec(
                     continue
 
             preferred_name = operation.preferred_replay_output_name()
-            if pending_codes and preferred_name is not None:
+            if pending_codes and (
+                preferred_name is not None
+                or getattr(operation, "op", None) == "extension_routine"
+            ):
                 flush_script()
 
             if pending_codes:
@@ -1440,6 +1479,17 @@ def _node_names(
         preferred_names[emitted_key(graph.output_key)] = output_name
 
     reserved_names = graph.reserved_names
+    uses_extension_scripts = any(
+        _is_extension_loader_node(node)
+        or (
+            node.kind == "operation"
+            and getattr(node.payload.get("operation"), "op", None)
+            == "extension_routine"
+        )
+        for node in graph.nodes
+    )
+    if uses_extension_scripts:
+        reserved_names.add("load_script")
     dotted_import_roots: set[str] = set()
     if graph.display:
         for node in graph.nodes:
@@ -1447,6 +1497,7 @@ def _node_names(
                 value
                 for field in ("code", "load_code")
                 if isinstance((value := node.payload.get(field)), str)
+                and not (_is_extension_loader_node(node) and field == "load_code")
             ]
             code_fragments.extend(
                 code for code in node.payload.get("codes", ()) if isinstance(code, str)
@@ -1496,6 +1547,7 @@ def _node_names(
             preferred_name is not None
             and preferred_name not in names.values()
             and preferred_name not in dotted_import_roots
+            and not (uses_extension_scripts and preferred_name == "load_script")
         ):
             names[node.key] = preferred_name
             used.add(preferred_name)
@@ -1606,12 +1658,15 @@ def _copied_script_bindings(graph: ReplayGraph) -> set[tuple[str, str, str]]:
     return copied
 
 
-def _inline_adjacent_replay_assignments(code: str) -> str:
+def _inline_adjacent_replay_assignments(
+    code: str, *, protected_names: set[str] | None = None
+) -> str:
     try:
         module = ast.parse(code, mode="exec")
     except SyntaxError:
         return code
     changed = False
+    protected_names = set() if protected_names is None else protected_names
 
     def clone_expr(expr: ast.expr) -> ast.expr:
         return ast.parse(ast.unparse(expr), mode="eval").body
@@ -1622,6 +1677,8 @@ def _inline_adjacent_replay_assignments(code: str) -> str:
                 continue
             target = stmt.targets[0]
             if not isinstance(target, ast.Name):
+                continue
+            if target.id in protected_names:
                 continue
             next_stmt = module.body[idx + 1]
             if not isinstance(
@@ -2256,6 +2313,7 @@ def _cleanup_emitted_replay_code(
     code: str,
     *,
     generated_copy_names: set[str],
+    protected_names: set[str] | None = None,
     compact_temporaries: bool = True,
 ) -> str:
     """Simplify replay code while optionally preserving graph-owned temp names.
@@ -2265,9 +2323,9 @@ def _cleanup_emitted_replay_code(
     """
     code = _remove_noop_assignments(code)
     code = _inline_simple_name_aliases(code)
-    code = _inline_adjacent_replay_assignments(code)
+    code = _inline_adjacent_replay_assignments(code, protected_names=protected_names)
     code = _inline_single_use_replay_names(code)
-    code = _inline_adjacent_replay_assignments(code)
+    code = _inline_adjacent_replay_assignments(code, protected_names=protected_names)
     code = _remove_noop_assignments(code)
     code = _remove_unused_generated_copies(code, generated_copy_names)
     if compact_temporaries:
@@ -2650,14 +2708,98 @@ def _rename_display_replay_temps(
     return _format_long_call_assignments(renamed)
 
 
+def _extension_script_references(
+    graph: ReplayGraph,
+) -> dict[str, tuple[pathlib.Path, str]]:
+    """Resolve each graph-owned extension call to one current local script."""
+    from erlab.extensions import ExtensionNotFoundError
+    from erlab.extensions._api import _resolved_script_capability_reference
+    from erlab.interactive.imagetool._provenance._operations._extension import (
+        ExtensionRoutineOperation,
+    )
+
+    references: dict[str, tuple[pathlib.Path, str]] = {}
+    for node in graph.nodes:
+        capability_kind: typing.Literal["routine", "loader"]
+        if _is_extension_loader_node(node):
+            replay_call = node.payload["load_source"].replay_call
+            extension_id = replay_call.target
+            capability_kind = "loader"
+            capability_id = replay_call.capability_id
+        elif node.kind == "operation" and isinstance(
+            node.payload.get("operation"), ExtensionRoutineOperation
+        ):
+            operation = typing.cast(
+                "ExtensionRoutineOperation", node.payload["operation"]
+            )
+            extension_id = operation.extension_id
+            capability_kind = "routine"
+            capability_id = operation.routine_id
+        else:
+            continue
+        if not isinstance(capability_id, str):
+            raise ReplayGraphError("Extension replay metadata is incomplete")
+        try:
+            source_path, function_name = _resolved_script_capability_reference(
+                extension_id,
+                capability_kind,
+                capability_id,
+            )
+        except ExtensionNotFoundError as exc:
+            raise ReplayGraphError(
+                "Extension call does not have a registered local script"
+            ) from exc
+        references[node.key] = (
+            pathlib.Path(source_path).expanduser().resolve(),
+            function_name,
+        )
+    return references
+
+
+def _extension_script_binding_base(source_path: pathlib.Path) -> str:
+    """Return a readable Python binding based on a registered script name."""
+    module_base = re.sub(r"\W", "_", source_path.stem)
+    if not module_base.isidentifier() or keyword.iskeyword(module_base):
+        return "extension_script"
+    return module_base
+
+
+def _script_reads_name_before_binding(graph: ReplayGraph, name: str) -> bool:
+    """Return whether recorded script code first gets ``name`` from its caller."""
+    bound = False
+    for node in graph.nodes:
+        if node.kind != "script":
+            continue
+        bindings = typing.cast("tuple[tuple[str, str], ...]", node.payload["bindings"])
+        if any(input_name == name for input_name, _input_key in bindings):
+            bound = True
+        for code in typing.cast("tuple[str, ...]", node.payload["codes"]):
+            try:
+                statements = ast.parse(code, mode="exec").body
+            except SyntaxError:
+                continue
+            for statement in statements:
+                scope_names = _statement_scope_names(statement)
+                if not bound and name in scope_names.loads:
+                    return True
+                if name in scope_names.stores:
+                    bound = True
+    return False
+
+
 def emit_replay_code(
     graph: ReplayGraph,
     *,
     output_name: str | None = None,
     include_all_aliases: bool = False,
 ) -> str:
+    from erlab.interactive.imagetool._provenance._operations._extension import (
+        ExtensionRoutineOperation,
+    )
+
     names = _node_names(graph, output_name=output_name)
     node_by_key = {node.key: node for node in graph.nodes}
+    extension_references = _extension_script_references(graph)
     copied_script_bindings = _copied_script_bindings(graph)
     chunks: list[tuple[str, bool]] = []
     materialized_aliases: dict[str, str] = {}
@@ -2665,15 +2807,72 @@ def emit_replay_code(
     materialized_binding_names = set(names.values())
     reserved_binding_names: set[str] = set()
     for replay_node in graph.nodes:
+        for field in ("code", "load_code"):
+            code = replay_node.payload.get(field)
+            if isinstance(code, str) and not (
+                _is_extension_loader_node(replay_node) and field == "load_code"
+            ):
+                accesses, rebindings = _code_name_accesses(code)
+                reserved_binding_names.update(accesses)
+                reserved_binding_names.update(rebindings)
         for code in replay_node.payload.get("codes", ()):
             if isinstance(code, str):
                 accesses, rebindings = _code_name_accesses(code)
                 reserved_binding_names.update(accesses)
                 reserved_binding_names.update(rebindings)
+    extension_binding_names = {
+        *graph.reserved_names,
+        *reserved_binding_names,
+        *names.values(),
+        "load_script",
+    }
+    if any(_is_extension_loader_node(node) for node in graph.nodes):
+        # Structured loader code uses these public modules. Reserve their bindings
+        # before a script file name becomes a generated module name.
+        extension_binding_names.update({"np", "pathlib", "xr"})
+    external_load_script_name: str | None = None
+    if extension_references and _script_reads_name_before_binding(graph, "load_script"):
+        external_load_script_name = "input_data"
+        suffix = 2
+        while external_load_script_name in extension_binding_names:
+            external_load_script_name = f"input_data_{suffix}"
+            suffix += 1
+        extension_binding_names.add(external_load_script_name)
+    extension_script_bindings: dict[pathlib.Path, str] = {}
+    for node in graph.nodes:
+        reference = extension_references.get(node.key)
+        if reference is None:
+            continue
+        source_path, _function_name = reference
+        if source_path in extension_script_bindings:
+            continue
+        module_base = _extension_script_binding_base(source_path)
+        module_name = module_base
+        suffix = 2
+        while module_name in extension_binding_names:
+            module_name = f"{module_base}_{suffix}"
+            suffix += 1
+        extension_binding_names.add(module_name)
+        extension_script_bindings[source_path] = module_name
     active_setup_key: str | None = None
 
     def append_code(code: str, *, group_imports: bool = False) -> None:
         chunks.append((code, graph.display and group_imports))
+
+    def extension_binding(node_key: str) -> tuple[str, str]:
+        source_path, function_name = extension_references[node_key]
+        module_name = extension_script_bindings[source_path]
+        return module_name, function_name
+
+    if extension_script_bindings:
+        if external_load_script_name is not None:
+            append_code(f"{external_load_script_name} = load_script")
+        append_code(
+            "from erlab.extensions import load_script",
+            group_imports=True,
+        )
+        for source_path, module_name in extension_script_bindings.items():
+            append_code(f"{module_name} = load_script({str(source_path)!r})")
 
     def copied_binding_name(input_name: str) -> str:
         if input_name not in materialized_binding_names:
@@ -2716,6 +2915,23 @@ def emit_replay_code(
             continue
         name = names[node.key]
         if node.kind == "file_load":
+            if _is_extension_loader_node(node):
+                from erlab.interactive.imagetool._load_source import (
+                    _extension_loader_load_code,
+                )
+
+                module_name, function_name = extension_binding(node.key)
+                code = _extension_loader_load_code(
+                    node.payload["load_source"],
+                    assign=name,
+                    loader_expression=f"{module_name}.{function_name}",
+                )
+                if code is None:
+                    raise ReplayGraphError(
+                        "Extension loader does not provide copied code"
+                    )
+                append_code(code, group_imports=True)
+                continue
             active_name = typing.cast("str", node.payload["active_name"])
             load_code = node.payload["load_code"]
             if not isinstance(load_code, str):
@@ -2759,6 +2975,16 @@ def emit_replay_code(
                 if getattr(operation, "op", None) == "source_view":
                     input_expression = f"{parent_name}.copy(deep=False)"
                 append_code(f"{name} = {dynamic_restore_name}({input_expression})")
+            elif isinstance(operation, ExtensionRoutineOperation):
+                module_name, function_name = extension_binding(node.key)
+                append_code(
+                    operation._bound_script_statement_code(
+                        parent_name,
+                        output_name=name,
+                        module_name=module_name,
+                        function_name=function_name,
+                    )
+                )
             else:
                 append_code(
                     _operation_replay_code(
@@ -2784,6 +3010,25 @@ def emit_replay_code(
             active_name = typing.cast("str", node.payload["active_name"])
             input_replacements: dict[str, str] = {}
             input_names: set[str] = set()
+            if external_load_script_name is not None and not any(
+                input_name == "load_script"
+                for input_name, _input_key in typing.cast(
+                    "tuple[tuple[str, str], ...]", node.payload["bindings"]
+                )
+            ):
+                try:
+                    codes = [
+                        _replace_code_identifiers(
+                            code, {"load_script": external_load_script_name}
+                        )
+                        for code in codes
+                    ]
+                except SyntaxError as exc:
+                    raise ReplayGraphError(
+                        "Script replay code is not valid Python"
+                    ) from exc
+                if active_name == "load_script":
+                    active_name = external_load_script_name
             for input_name, input_key in typing.cast(
                 "tuple[tuple[str, str], ...]", node.payload["bindings"]
             ):
@@ -2879,6 +3124,7 @@ def emit_replay_code(
             _cleanup_emitted_replay_code(
                 code,
                 generated_copy_names=generated_copy_names,
+                protected_names=set(extension_script_bindings.values()),
                 compact_temporaries=not graph.display,
             ),
         )
@@ -2891,6 +3137,7 @@ def emit_replay_code(
         _cleanup_emitted_replay_code(
             body,
             generated_copy_names=generated_copy_names,
+            protected_names=set(extension_script_bindings.values()),
             compact_temporaries=not graph.display,
         ),
     )

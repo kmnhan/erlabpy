@@ -14,6 +14,7 @@ import traceback
 import typing
 import uuid
 from collections import defaultdict, deque
+from collections.abc import Mapping
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -24,6 +25,7 @@ from erlab.interactive.imagetool._provenance._model import iter_operation_refs
 from erlab.interactive.imagetool.manager._extensions._catalog import (
     _ExtensionCatalog,
     _ExtensionCatalogConflictError,
+    _ExtensionCatalogError,
     _safe_extension_id,
 )
 from erlab.interactive.imagetool.manager._extensions._dialogs import (
@@ -41,6 +43,7 @@ from erlab.interactive.imagetool.manager._extensions._execution import (
     _ExtensionLoaderCall,
 )
 from erlab.interactive.imagetool.manager._extensions._models import (
+    _ExtensionCatalogModel,
     _ExtensionRecord,
     _ExtensionSource,
     _ResolvedWorkspaceRequirement,
@@ -154,11 +157,10 @@ class _ExtensionController(QtCore.QObject):
     @QtCore.Slot(str)
     def _show_catalog_read_error(self, error: str) -> None:
         """Show each distinct catalog read failure once during this manager session."""
-        if (
-            self._closed
-            or error in self._shown_catalog_errors
-            or not erlab.interactive.utils.qt_is_valid(self._manager)
-        ):
+        if self._closed or not erlab.interactive.utils.qt_is_valid(self._manager):
+            return
+        self._refresh_extension_state_views()
+        if error in self._shown_catalog_errors:
             return
         self._shown_catalog_errors.add(error)
         erlab.interactive.utils.MessageDialog.critical(
@@ -190,6 +192,8 @@ class _ExtensionController(QtCore.QObject):
         return menu
 
     def _enabled_routines(self) -> tuple[tuple[str, str, RoutineDescriptor], ...]:
+        if self.catalog.load_error is not None:
+            return ()
         entries: list[tuple[str, str, RoutineDescriptor]] = []
         for record in self.catalog.model.extensions.values():
             if not record.enabled:
@@ -207,6 +211,8 @@ class _ExtensionController(QtCore.QObject):
         paths: str | os.PathLike[str] | Iterable[str | os.PathLike[str]] | None = None,
     ) -> dict[str, tuple[Callable[..., typing.Any], dict[str, typing.Any]]]:
         """Return enabled decorated loaders in the standard file-dialog shape."""
+        if self.catalog.load_error is not None:
+            return {}
         path_values = (
             ()
             if paths is None
@@ -261,18 +267,31 @@ class _ExtensionController(QtCore.QObject):
     ) -> _ExtensionLoaderCall:
         """Create one manager-local call pinned to validated catalog state."""
         pinned_source_hash = source.source_hash if source_hash is None else source_hash
-        self._remember_registered_source(record, pinned_source_hash)
+        catalog, registered_source_path, source_bytes = (
+            self.catalog.store.pin_execution_source(record.id, pinned_source_hash)
+        )
+        pinned_record = catalog.extensions[record.id]
+        pinned_source = pinned_record.source
+        pinned_descriptor = next(
+            (item for item in pinned_source.loaders if item.id == descriptor.id), None
+        )
+        if pinned_descriptor is None:
+            raise erlab.extensions.ExtensionExecutionError(
+                f"Loader {descriptor.id!r} is not available"
+            )
+        self._remember_registered_source(
+            pinned_record, pinned_source_hash, source_bytes=source_bytes
+        )
         return _ExtensionLoaderCall(
             manager_session_id=self._manager._manager_record.internal_id,
-            catalog_generation=self.catalog.model.generation,
-            extension_id=record.id,
-            extension_name=record.name,
+            catalog_generation=catalog.generation,
+            extension_id=pinned_record.id,
+            extension_name=pinned_record.name,
             source_hash=pinned_source_hash,
-            loader_id=descriptor.id,
-            descriptor=descriptor,
-            source_path=self.catalog.store.executable_source_path(
-                record.id, pinned_source_hash
-            ),
+            loader_id=pinned_descriptor.id,
+            descriptor=pinned_descriptor,
+            source_path=registered_source_path,
+            source_bytes=source_bytes,
             executor=self.execution.run_loader,
         )
 
@@ -290,7 +309,11 @@ class _ExtensionController(QtCore.QObject):
             raise erlab.extensions.ExtensionExecutionError(
                 "Extension loader replay metadata is incomplete"
             )
-        catalog = self.catalog.store.read()
+        if self.catalog.load_error is not None:
+            raise erlab.extensions.ExtensionExecutionError(
+                "The extension catalog is unavailable"
+            )
+        catalog = self.catalog.model
         record = catalog.extensions.get(replay_call.target)
         source = (
             record.source
@@ -349,6 +372,8 @@ class _ExtensionController(QtCore.QObject):
         """Resolve application catalog state for this manager."""
         if self.execution.validation_error(extension_id, source_hash) is not None:
             return "validation-failed"
+        if self.catalog.load_error is not None:
+            return "missing-source"
         try:
             global_status = self.catalog.store.capability_status(
                 extension_id,
@@ -356,7 +381,7 @@ class _ExtensionController(QtCore.QObject):
                 kind,
                 capability_id,
             )
-        except KeyError:
+        except (KeyError, _ExtensionCatalogError):
             global_status = "missing-source"
         return global_status
 
@@ -382,6 +407,9 @@ class _ExtensionController(QtCore.QObject):
 
     def _sync_explorer_loaders(self) -> None:
         updated: dict[str, erlab.io.dataloader.LoaderBase] = {}
+        if self.catalog.load_error is not None:
+            self._explorer_loaders.clear()
+            return
         for record in self.catalog.model.extensions.values():
             if not record.enabled:
                 continue
@@ -402,7 +430,9 @@ class _ExtensionController(QtCore.QObject):
         self, name: str
     ) -> tuple[Callable[..., typing.Any], dict[str, typing.Any]] | None:
         adapter = self._explorer_loaders.get(name)
-        return None if adapter is None else (adapter.load, {})
+        if not isinstance(adapter, _DecoratedLoaderAdapter):
+            return None
+        return adapter.load_for_manager, {}
 
     def loader_name_for_callable(self, call: Callable[..., typing.Any]) -> str | None:
         """Return the Data Explorer name for one extension loader call."""
@@ -614,17 +644,23 @@ class _ExtensionController(QtCore.QObject):
         self._recent.appendleft(key)
 
     def _remember_registered_source(
-        self, record: _ExtensionRecord, source_hash: str
+        self,
+        record: _ExtensionRecord,
+        source_hash: str,
+        *,
+        source_bytes: bytes | None = None,
     ) -> None:
         """Retain script bytes used by this workspace before registration changes."""
         key = (record.id, source_hash)
         if key in self._workspace_embedded_sources:
             return
-        try:
-            path = self.catalog.store.executable_source_path(record.id, source_hash)
-            source = path.read_bytes()
-        except (KeyError, OSError, _ExtensionCatalogConflictError):
-            return
+        source = source_bytes
+        if source is None:
+            try:
+                path = self.catalog.store.recovery_source_path(record.id, source_hash)
+                source = path.read_bytes()
+            except (KeyError, OSError, _ExtensionCatalogConflictError):
+                return
         if hashlib.sha256(source).hexdigest() == source_hash:
             self._workspace_embedded_sources[key] = source
 
@@ -968,6 +1004,10 @@ class _ExtensionController(QtCore.QObject):
         self._manage_dialog.raise_()
 
     def _refresh_manage_dialog(self) -> None:
+        if self.catalog.load_error is not None:
+            self._manage_dialog.set_catalog(_ExtensionCatalogModel())
+            self._refresh_removal_eligibility()
+            return
         managed_paths: dict[tuple[str, str], str] = {}
         for record in self.catalog.model.extensions.values():
             source_hash = record.source.source_hash
@@ -1191,6 +1231,14 @@ class _ExtensionController(QtCore.QObject):
                 "the current workspace" if workspace_path is None else workspace_path
             )
             return f"Remove this extension from {location} before you delete it."
+        if any(
+            isinstance(payload, Mapping) and payload.get("extension_id") == extension_id
+            for payload in self._unresolved_workspace_requirement_payloads
+        ):
+            return (
+                "This extension is referenced by workspace data that this ERLab "
+                "version cannot inspect."
+            )
         return None
 
     def _remove_extension(self, record: _ExtensionRecord) -> None:
@@ -1282,8 +1330,9 @@ class _ExtensionController(QtCore.QObject):
         """Rebuild loaded-node dependencies and retain unresolved references.
 
         Current provenance is authoritative for nodes in the graph. References to
-        nodes that did not load and explicit requirements without node references
-        remain unchanged so a degraded Save As does not discard them.
+        nodes that did not load and unresolved requirements without node references
+        remain available for a degraded Save As. A resolved dependency that is not in
+        the current graph is retired from workspace-owned state.
         """
         loaded_node_uids = set(self._manager._tool_graph.nodes)
         persisted: dict[
@@ -1524,6 +1573,7 @@ class _ExtensionController(QtCore.QObject):
             )
             for item in requirements
         }
+        retired_persisted_keys: set[tuple[str, str, str, str]] = set()
         for key in persisted:
             if key in keys:
                 continue
@@ -1531,16 +1581,39 @@ class _ExtensionController(QtCore.QObject):
                 "_WorkspaceExtensionRequirement",
                 merged_persisted_requirement(key),
             )
-            explicit = any(not item.referencing_nodes for item in persisted[key])
+            had_no_references = any(
+                not item.referencing_nodes for item in persisted[key]
+            )
             remaining_node_uids = tuple(
                 uid for uid in previous.referencing_nodes if uid not in loaded_node_uids
             )
-            if explicit or remaining_node_uids:
+            unresolved_no_reference = (
+                had_no_references
+                and self._resolve_requirement(previous).state != "ready"
+            )
+            if remaining_node_uids or unresolved_no_reference:
                 requirements.append(
                     previous.model_copy(
                         update={"referencing_nodes": remaining_node_uids}
                     )
                 )
+            else:
+                # This saved dependency has been reconciled with the current graph.
+                # Remove it from workspace-owned state so a later catalog change
+                # cannot make the discarded dependency appear again.
+                retired_persisted_keys.add(key)
+        if retired_persisted_keys:
+            self._workspace_requirements = tuple(
+                item
+                for item in self._workspace_requirements
+                if (
+                    item.extension_id,
+                    item.source_hash,
+                    item.capability_kind,
+                    item.capability_id,
+                )
+                not in retired_persisted_keys
+            )
         keys.update(
             (
                 item.extension_id,
@@ -1634,7 +1707,7 @@ class _ExtensionController(QtCore.QObject):
             if embedded is not None:
                 candidates.append(embedded)
         if include_catalog:
-            with contextlib.suppress(KeyError, OSError):
+            with contextlib.suppress(KeyError, OSError, _ExtensionCatalogError):
                 candidates.append(
                     self.catalog.store.recovery_source_path(
                         extension_id, source_hash
@@ -1867,6 +1940,12 @@ class _ExtensionController(QtCore.QObject):
                 requirement=requirement,
                 state="unsupported-api",
                 detail=f"API {requirement.extension_api_version} is not supported",
+            )
+        if self.catalog.load_error is not None:
+            return _ResolvedWorkspaceRequirement(
+                requirement=requirement,
+                state="missing",
+                detail="The extension catalog is unavailable",
             )
         record = self.catalog.model.extensions.get(requirement.extension_id)
         if record is None:

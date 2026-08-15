@@ -74,6 +74,9 @@ A routine must follow these rules:
 - The return value must have the {class}`xarray.DataArray` annotation.
 - Each other parameter must have a supported annotation.
 - Do not use positional-only parameters, `*args`, or `**kwargs`.
+- Use a synchronous function. Do not use `async def` or `yield`.
+- Do not use `erlab` as the decorated function name. The loaded script uses
+  `erlab` for script information.
 - Return a result. Do not modify the input data.
 
 You can use these parameter types:
@@ -131,7 +134,8 @@ A loader must follow these rules:
 - The return value must have an {class}`xarray.DataArray`,
   {class}`xarray.Dataset`, or {class}`xarray.DataTree` annotation.
 - Each other parameter must follow the routine parameter rules.
-- Each value in `extensions` must start with a period.
+- A leading period in each `extensions` value is optional.
+- Do not use `loader_extensions` or `without_values` as a parameter name.
 
 You can test the loader as a normal function. You can also load it from its script:
 

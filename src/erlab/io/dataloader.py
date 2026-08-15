@@ -158,7 +158,10 @@ class _Loader(_ReloadStableMeta):
                         errno.ENOENT, os.strerror(errno.ENOENT), file_path
                     )
 
-                if file_path.suffix.lower() not in self.extensions:
+                if (
+                    self.extensions is not None
+                    and file_path.suffix.lower() not in self.extensions
+                ):
                     raise UnsupportedFileError(self, file_path)
                 return original_load_single(self, file_path, **kwargs)
 
