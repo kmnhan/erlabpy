@@ -24,12 +24,20 @@ import erlab.interactive.imagetool.manager._extensions._dialogs as extension_dia
 import erlab.interactive.imagetool.manager._extensions._execution as extension_execution
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.viewer as imagetool_viewer
-from erlab.interactive.imagetool._load_source import _resolve_load_func
+from erlab.interactive.imagetool._load_source import (
+    _load_source_details_from_provenance,
+    _resolve_load_func,
+)
 from erlab.interactive.imagetool._provenance._execution import (
     can_reload_without_trust,
     file_load_source_status,
     replay_file_provenance,
     replay_script_provenance,
+)
+from erlab.interactive.imagetool._provenance._graph import (
+    ReplayGraphError,
+    compile_replay_graph,
+    emit_replay_code,
 )
 from erlab.interactive.imagetool._provenance._model import (
     FileDataSelection,
@@ -39,9 +47,11 @@ from erlab.interactive.imagetool._provenance._model import (
     ToolProvenanceSpec,
     file_load,
     full_data,
+    script,
 )
 from erlab.interactive.imagetool._provenance._operations import (
     ExtensionRoutineOperation,
+    ScriptCodeOperation,
 )
 from erlab.interactive.imagetool.manager._extensions import (
     _controller as extension_controller,
@@ -59,6 +69,7 @@ from erlab.interactive.imagetool.manager._extensions._execution import (
     _ExtensionLoaderCall,
     _ExtensionLoaderWorker,
     _ExtensionRoutineWaiter,
+    _ExtensionRoutineWorker,
     _ExtensionValidationWorker,
     _readonly_array,
     _validate_extension_source,
@@ -618,8 +629,12 @@ def test_controller_filters_loader_paths_and_rejects_duplicate_filters(
         )
         monkeypatch.setattr(
             controller.catalog.store,
-            "executable_source_path",
-            lambda *_args: source_path,
+            "pin_execution_source",
+            lambda *_args: (
+                controller.catalog.model,
+                source_path,
+                source_path.read_bytes(),
+            ),
         )
         assert controller.file_loaders(tmp_path / "value.txt") == {}
         assert tuple(controller.file_loaders(tmp_path / "value.dat")) == (
@@ -1151,6 +1166,7 @@ def test_direct_extension_loader_uses_shared_loader_state(
         loader_id="load_data",
         descriptor=descriptor,
         source_path=pathlib.Path("lab.py"),
+        source_bytes=b"",
         executor=lambda *_args: xr.DataArray([1.0]),
     )
     state = types.SimpleNamespace(
@@ -1352,11 +1368,27 @@ def test_catalog_source_lookup_and_integrity_failures(tmp_path: pathlib.Path) ->
     source = _script(script_path)
     catalog, source_hash, _created = store.add_script(script_path)
 
+    pinned_catalog, pinned_path, pinned_source = store.pin_execution_source(
+        "scale", source_hash
+    )
+    assert pinned_catalog == catalog
+    assert pinned_path == script_path
+    assert pinned_source == source
+    with pytest.raises(KeyError, match="Unknown extension source"):
+        store.pin_execution_source("scale", "0" * 64)
+    managed_path = store.recovery_source_path("scale", source_hash)
+    managed_path.write_bytes(b"corrupt")
+    with pytest.raises(_ExtensionCatalogConflictError, match="Managed script"):
+        store.pin_execution_source("scale", source_hash)
+    store._store_script_source(source, source_hash)
+
     with pytest.raises(KeyError, match="Unknown extension source"):
         store.recovery_source_path("missing", source_hash)
     store.recovery_source_path("scale", source_hash).unlink()
     with pytest.raises(FileNotFoundError):
         store.recovery_source_path("scale", source_hash)
+    with pytest.raises(FileNotFoundError):
+        store.pin_execution_source("scale", source_hash)
     with pytest.raises(ValueError, match="does not match its source hash"):
         store._store_script_source(source, "0" * 64)
 
@@ -1574,6 +1606,7 @@ def test_extension_execution_value_guards_and_log_fields(
         loader_id="load_data",
         descriptor=descriptor,
         source_path=source,
+        source_bytes=b"",
         executor=lambda *_args: xr.DataArray([1.0]),
     )
     assert call.manager_loader_name == "lab:load_data"
@@ -1640,6 +1673,7 @@ def test_decorated_loader_adapter_preserves_loader_contract(
         loader_id="load_data",
         descriptor=descriptor,
         source_path=tmp_path / "loader.py",
+        source_bytes=b"",
         executor=execute,
     )
     adapter = extension_execution._DecoratedLoaderAdapter(call)
@@ -1663,6 +1697,58 @@ def test_decorated_loader_adapter_preserves_loader_contract(
         call(path, scale=float("inf"))
 
 
+def test_decorated_loader_adapter_preserves_manager_parameter_names(
+    tmp_path: pathlib.Path,
+) -> None:
+    calls: list[tuple[pathlib.Path, dict[str, typing.Any]]] = []
+
+    def execute(
+        _call: _ExtensionLoaderCall,
+        path: pathlib.Path,
+        parameters: dict[str, typing.Any],
+    ) -> xr.DataArray:
+        calls.append((path, parameters))
+        return xr.DataArray([float(path.read_text())])
+
+    descriptor = erlab.extensions.LoaderDescriptor(
+        id="load_data",
+        name="Load Data",
+        category="Lab",
+        summary="Load one data file.",
+        function_name="load_data",
+    )
+    call = _ExtensionLoaderCall(
+        manager_session_id="manager",
+        catalog_generation=1,
+        extension_id="lab",
+        extension_name="Lab",
+        source_hash="a" * 64,
+        loader_id="load_data",
+        descriptor=descriptor,
+        source_path=tmp_path / "loader.py",
+        source_bytes=b"",
+        executor=execute,
+    )
+    adapter = extension_execution._DecoratedLoaderAdapter(call)
+    path = tmp_path / "value.unknown"
+    path.write_text("3")
+
+    result = adapter.load_for_manager(
+        path,
+        single=False,
+        chunks=2,
+        metadata="lab metadata",
+    )
+
+    xr.testing.assert_equal(result, xr.DataArray([3.0]))
+    assert calls == [
+        (
+            path,
+            {"single": False, "chunks": 2, "metadata": "lab metadata"},
+        )
+    ]
+
+
 def test_loader_and_validation_workers_ignore_repeated_cancellation(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1682,6 +1768,7 @@ def test_loader_and_validation_workers_ignore_repeated_cancellation(
         loader_id="load_data",
         descriptor=descriptor,
         source_path=tmp_path / "loader.py",
+        source_bytes=b"",
         executor=lambda *_args: xr.DataArray([1.0]),
     )
     store = _ExtensionCatalogStore(tmp_path / "catalog")
@@ -1736,6 +1823,7 @@ def test_loader_worker_contains_process_control_exceptions(
         loader_id="load_data",
         descriptor=descriptor,
         source_path=tmp_path / "loader.py",
+        source_bytes=b"",
         executor=lambda *_args: xr.DataArray([1.0]),
     )
     record = types.SimpleNamespace(enabled=True)
@@ -1827,6 +1915,7 @@ def test_execution_controller_reports_admission_and_validation_failures(
             loader_id="load_data",
             descriptor=descriptor,
             source_path=tmp_path / "loader.py",
+            source_bytes=b"",
             executor=lambda *_args: xr.DataArray([1.0]),
         )
         with pytest.raises(
@@ -1881,6 +1970,7 @@ def test_execution_controller_removes_failed_pool_admission(
         loader_id="load_data",
         descriptor=descriptor,
         source_path=tmp_path / "loader.py",
+        source_bytes=b"",
         executor=lambda *_args: xr.DataArray([1.0]),
     )
 
@@ -2615,6 +2705,87 @@ def test_catalog_recovers_after_an_unreadable_file_is_repaired(
         catalog.close()
 
 
+def test_manager_disables_extensions_until_an_unreadable_catalog_recovers(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "catalog_probe.py"
+    script_path.write_text(
+        """from pathlib import Path
+import xarray as xr
+from erlab.extensions import loader, routine
+
+@routine()
+def scale(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+
+@loader(extensions=(".catalogprobe",))
+def load_data(path: Path) -> xr.DataArray:
+    return xr.DataArray([float(path.read_text())])
+"""
+    )
+    errors: list[str] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda _parent, title, *_args, **_kwargs: errors.append(title),
+    )
+
+    with manager_context() as manager:
+        catalog, source_hash, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        _validate_and_enable(
+            manager._extensions.catalog.store,
+            "catalog_probe",
+            expected_record_generation=(
+                catalog.extensions["catalog_probe"].record_generation
+            ),
+        )
+        manager._extensions.catalog.refresh()
+        valid_payload = manager._extensions.catalog.model.model_dump_json()
+        assert manager._extensions._enabled_routines()
+        assert manager._extensions.file_loaders()
+        assert manager._extensions.explorer_loaders
+
+        manager._extensions.catalog.store.path.write_text("{", encoding="utf-8")
+        manager._extensions.catalog.refresh()
+
+        assert manager._extensions.catalog.load_error is not None
+        assert manager._extensions._enabled_routines() == ()
+        assert manager._extensions.file_loaders() == {}
+        assert manager._extensions.explorer_loaders == {}
+        assert (
+            manager._extensions.capability_status(
+                "catalog_probe", source_hash, "routine", "scale"
+            )
+            == "missing-source"
+        )
+        assert manager._extensions._manage_dialog.tree.topLevelItemCount() == 0
+        assert errors == ["Extension Catalog Unavailable"]
+
+        manager._extensions.catalog.store.path.write_text(
+            valid_payload, encoding="utf-8"
+        )
+        manager._extensions.catalog.refresh()
+
+        assert manager._extensions.catalog.load_error is None
+        assert manager._extensions._enabled_routines()
+        assert manager._extensions.file_loaders()
+        assert manager._extensions.explorer_loaders
+
+        manager._extensions.catalog.store.path.write_text("{", encoding="utf-8")
+        manager._extensions.catalog.refresh()
+
+        assert manager._extensions.catalog.load_error is not None
+        assert manager._extensions._enabled_routines() == ()
+        assert manager._extensions.file_loaders() == {}
+        assert manager._extensions.explorer_loaders == {}
+        assert manager._extensions._manage_dialog.tree.topLevelItemCount() == 0
+        assert errors == ["Extension Catalog Unavailable"]
+
+
 def test_catalog_recovers_after_its_directory_becomes_available(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -2658,6 +2829,50 @@ def test_failed_script_registration_does_not_leave_an_orphaned_source(
         )
 
     assert not store.objects_directory.joinpath(f"{changed_source_hash}.py").exists()
+
+
+def test_script_object_changes_hold_the_catalog_lock(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _ExtensionCatalogStore(tmp_path / "catalog")
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+    catalog, old_source_hash, _created = store.add_script(script_path)
+    old_object_path = store.recovery_source_path("scale", old_source_hash)
+    lock_checks: list[str] = []
+
+    def check_lock(label: str) -> None:
+        probe = QtCore.QLockFile(os.fspath(store.lock_path))
+        acquired = probe.tryLock(0)
+        if acquired:
+            probe.unlock()
+        assert not acquired
+        lock_checks.append(label)
+
+    original_store_source = store._store_script_source
+
+    def store_source(source: bytes, source_hash: str) -> str:
+        check_lock("store")
+        return original_store_source(source, source_hash)
+
+    original_unlink = pathlib.Path.unlink
+
+    def unlink(path: pathlib.Path, missing_ok: bool = False) -> None:
+        if path == old_object_path:
+            check_lock("cleanup")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(store, "_store_script_source", store_source)
+    monkeypatch.setattr(pathlib.Path, "unlink", unlink)
+    _script(script_path, "data + scale")
+
+    store.add_script(
+        script_path,
+        expected_record_generation=catalog.extensions["scale"].record_generation,
+    )
+
+    assert lock_checks == ["store", "cleanup"]
 
 
 def test_unchanged_reload_repairs_corrupt_stored_source(
@@ -2935,7 +3150,15 @@ def test_script_routine_generated_code_uses_public_path_api(
         data = xr.DataArray([1.0, 2.0])
 
         xr.testing.assert_identical(operation.apply(data), data * 3.0)
-        generated = operation.replay_code("data", output_name="result")
+        spec = ToolProvenanceSpec(
+            kind="script",
+            start_label="Start from data",
+            seed_code="result = data",
+            active_name="result",
+        ).append_replay_stage(full_data(operation))
+        generated = spec.display_code()
+        if generated is None:
+            raise RuntimeError("The registered routine did not generate code")
         assert "run_routine" not in generated
         assert "expected_source_hash" not in generated
         assert "manager" not in generated
@@ -2949,6 +3172,548 @@ def test_script_routine_generated_code_uses_public_path_api(
     namespace: dict[str, typing.Any] = {"data": data}
     exec(generated, namespace)  # noqa: S102
     xr.testing.assert_identical(namespace["result"], data * 3.0)
+
+
+@pytest.mark.parametrize("display", [False, True])
+def test_script_routine_workflow_code_reuses_one_loaded_module(
+    tmp_path: pathlib.Path, display: bool
+) -> None:
+    script_path = tmp_path / "stateful.py"
+    script_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+counter = 0
+
+@routine(name="Bump")
+def bump(data: xr.DataArray) -> xr.DataArray:
+    global counter
+    counter += 1
+    return data + counter
+"""
+    )
+    catalog = _ExtensionCatalog(directory=tmp_path / "catalog")
+    try:
+        model, source_hash, _created = catalog.store.add_script(script_path)
+        _validate_and_enable(
+            catalog.store,
+            "stateful",
+            expected_record_generation=model.extensions["stateful"].record_generation,
+        )
+        operation = ExtensionRoutineOperation(
+            extension_id="stateful",
+            source_hash=source_hash,
+            routine_id="bump",
+            extension_name="stateful.py",
+            routine_name="Bump",
+            parameters={},
+        )
+        spec = ToolProvenanceSpec(
+            kind="script",
+            start_label="Create data",
+            seed_code="import xarray as xr\nload_script = xr.DataArray([0])",
+            active_name="load_script",
+        ).append_replay_stage(full_data(operation, operation))
+        code = emit_replay_code(
+            compile_replay_graph(spec, display=display), output_name="result"
+        )
+    finally:
+        catalog.close()
+
+    loaded = erlab.extensions.load_script(script_path)
+    expected = loaded.erlab.routines["bump"][1](xr.DataArray([0]))
+    expected = loaded.erlab.routines["bump"][1](expected)
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+
+    load_calls = [
+        node
+        for node in ast.walk(ast.parse(code))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "load_script"
+    ]
+    assert len(load_calls) == 1
+    xr.testing.assert_identical(namespace["result"], expected)
+
+
+def test_nested_extension_loader_and_routine_share_one_loaded_module(
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "stateful_io.py"
+    script_path.write_text(
+        """from pathlib import Path
+import xarray as xr
+from erlab.extensions import loader, routine
+
+counter = 0
+
+@loader(extensions=(".txt",))
+def load_data(path: Path) -> xr.DataArray:
+    global counter
+    counter += 1
+    return xr.DataArray([float(path.read_text()) + counter])
+
+@routine()
+def bump(data: xr.DataArray) -> xr.DataArray:
+    global counter
+    counter += 1
+    return data + counter
+"""
+    )
+    data_path = tmp_path / "value.txt"
+    data_path.write_text("1")
+    catalog = _ExtensionCatalog(directory=tmp_path / "catalog")
+    try:
+        model, source_hash, _created = catalog.store.add_script(script_path)
+        _validate_and_enable(
+            catalog.store,
+            "stateful_io",
+            expected_record_generation=model.extensions[
+                "stateful_io"
+            ].record_generation,
+        )
+        file_spec = file_load(
+            start_label="Load source data",
+            seed_code="raise RuntimeError('recorded code must not run')",
+            file_load_source=FileLoadSource(
+                path=str(data_path),
+                loader_label="Stateful data",
+                loader_text="stateful_io: load_data",
+                kwargs_text="",
+                replay_call=FileReplayCall(
+                    kind="extension_loader",
+                    target="stateful_io",
+                    source_hash=source_hash,
+                    capability_id="load_data",
+                    selection=FileDataSelection(kind="dataarray"),
+                ),
+                load_code="raise RuntimeError('recorded code must not run')",
+            ),
+        )
+        operation = ExtensionRoutineOperation(
+            extension_id="stateful_io",
+            source_hash=source_hash,
+            routine_id="bump",
+            extension_name="stateful_io.py",
+            routine_name="Bump",
+            parameters={},
+        )
+        spec = ToolProvenanceSpec(
+            kind="script",
+            start_label="Use loaded data",
+            seed_code="derived = load_script",
+            active_name="derived",
+            script_inputs=(
+                ScriptInput(
+                    name="load_script",
+                    label="Loaded source",
+                    provenance_spec=file_spec,
+                ),
+            ),
+        ).append_replay_stage(full_data(operation))
+        code = spec.display_code()
+    finally:
+        catalog.close()
+
+    if code is None:
+        raise RuntimeError("The extension workflow did not generate code")
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+
+    module = ast.parse(code)
+    load_calls = [
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "load_script"
+    ]
+    imports = [
+        node
+        for node in module.body
+        if isinstance(node, ast.ImportFrom) and node.module == "erlab.extensions"
+    ]
+    assert len(load_calls) == 1
+    assert len(imports) == 1
+    assert [(alias.name, alias.asname) for alias in imports[0].names] == [
+        ("load_script", None)
+    ]
+    xr.testing.assert_identical(namespace["derived"], xr.DataArray([4.0]))
+
+
+def test_extension_loader_script_name_does_not_shadow_support_imports(
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "pathlib.py"
+    _loader_script(script_path, name="Path data", extensions=(".txt",))
+    data_path = tmp_path / "value.txt"
+    data_path.write_text("5")
+    catalog = _ExtensionCatalog(directory=tmp_path / "catalog")
+    try:
+        model, source_hash, _created = catalog.store.add_script(script_path)
+        _validate_and_enable(
+            catalog.store,
+            "pathlib",
+            expected_record_generation=model.extensions["pathlib"].record_generation,
+        )
+        spec = file_load(
+            start_label="Load path data",
+            seed_code="raise RuntimeError('recorded code must not run')",
+            file_load_source=FileLoadSource(
+                path=str(data_path),
+                loader_label="Path data",
+                loader_text="pathlib: load_data",
+                kwargs_text="",
+                replay_call=FileReplayCall(
+                    kind="extension_loader",
+                    target="pathlib",
+                    source_hash=source_hash,
+                    capability_id="load_data",
+                    selection=FileDataSelection(kind="dataarray"),
+                ),
+            ),
+        )
+        code = spec.display_code()
+    finally:
+        catalog.close()
+
+    if code is None:
+        raise RuntimeError("The registered loader did not generate code")
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+
+    xr.testing.assert_identical(namespace["derived"], xr.DataArray([5.0]))
+
+
+@pytest.mark.parametrize(
+    ("return_annotation", "return_expression", "selection", "cast_float64"),
+    [
+        (
+            "xr.Dataset",
+            'xr.Dataset({"signal": xr.DataArray([float(path.read_text())])})',
+            FileDataSelection(kind="dataset_variable", value="signal"),
+            False,
+        ),
+        (
+            "xr.DataTree",
+            "xr.DataTree.from_dict("
+            '{"/group": xr.Dataset({"signal": '
+            "xr.DataArray([float(path.read_text())])})})",
+            FileDataSelection(kind="datatree_variable", value=("/group", "signal")),
+            False,
+        ),
+        (
+            "xr.DataArray",
+            "xr.DataArray([int(path.read_text())])",
+            FileDataSelection(kind="dataarray"),
+            True,
+        ),
+    ],
+)
+def test_extension_loader_generated_code_preserves_output_selection(
+    tmp_path: pathlib.Path,
+    return_annotation: str,
+    return_expression: str,
+    selection: FileDataSelection,
+    cast_float64: bool,
+) -> None:
+    script_path = tmp_path / "structured_loader.py"
+    script_path.write_text(
+        f"""from pathlib import Path
+import xarray as xr
+from erlab.extensions import loader
+
+@loader(extensions=(".txt",))
+def load_data(path: Path) -> {return_annotation}:
+    return {return_expression}
+"""
+    )
+    data_path = tmp_path / "value.txt"
+    data_path.write_text("7")
+    catalog = _ExtensionCatalog(directory=tmp_path / "catalog")
+    try:
+        model, source_hash, _created = catalog.store.add_script(script_path)
+        _validate_and_enable(
+            catalog.store,
+            "structured_loader",
+            expected_record_generation=model.extensions[
+                "structured_loader"
+            ].record_generation,
+        )
+        spec = file_load(
+            start_label="Load structured data",
+            seed_code="raise RuntimeError('recorded code must not run')",
+            file_load_source=FileLoadSource(
+                path=str(data_path),
+                loader_label="Structured data",
+                loader_text="structured_loader: load_data",
+                kwargs_text="",
+                replay_call=FileReplayCall(
+                    kind="extension_loader",
+                    target="structured_loader",
+                    source_hash=source_hash,
+                    capability_id="load_data",
+                    selection=selection,
+                    cast_float64=cast_float64,
+                ),
+            ),
+        )
+        code = spec.display_code()
+    finally:
+        catalog.close()
+
+    if code is None:
+        raise RuntimeError("The registered loader did not generate code")
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+
+    expected = xr.DataArray(
+        [7.0],
+        name=(
+            "signal"
+            if selection.kind in {"dataset_variable", "datatree_variable"}
+            else None
+        ),
+    )
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+
+def test_extension_generated_code_coerces_enum_and_path_parameters(
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "typed_extension.py"
+    script_path.write_text(
+        """from enum import Enum
+from pathlib import Path
+import xarray as xr
+from erlab.extensions import loader, routine
+
+class Mode(Enum):
+    ADD = "add"
+
+@loader(extensions=(".txt",))
+def load_data(path: Path, extra_path: Path, mode: Mode) -> xr.DataArray:
+    if mode is not Mode.ADD:
+        raise ValueError("unexpected mode")
+    return xr.DataArray([float(path.read_text()) + float(extra_path.read_text())])
+
+@routine()
+def scale(data: xr.DataArray, factor_path: Path, mode: Mode) -> xr.DataArray:
+    if mode is not Mode.ADD:
+        raise ValueError("unexpected mode")
+    return data * float(factor_path.read_text())
+"""
+    )
+    data_path = tmp_path / "value.txt"
+    extra_path = tmp_path / "extra.txt"
+    factor_path = tmp_path / "factor.txt"
+    data_path.write_text("2")
+    extra_path.write_text("3")
+    factor_path.write_text("4")
+    catalog = _ExtensionCatalog(directory=tmp_path / "catalog")
+    try:
+        model, source_hash, _created = catalog.store.add_script(script_path)
+        _validate_and_enable(
+            catalog.store,
+            "typed_extension",
+            expected_record_generation=model.extensions[
+                "typed_extension"
+            ].record_generation,
+        )
+        operation = ExtensionRoutineOperation(
+            extension_id="typed_extension",
+            source_hash=source_hash,
+            routine_id="scale",
+            extension_name="typed_extension.py",
+            routine_name="Scale",
+            parameters={"factor_path": str(factor_path), "mode": "add"},
+        )
+        spec = file_load(
+            start_label="Load typed data",
+            seed_code="raise RuntimeError('recorded code must not run')",
+            file_load_source=FileLoadSource(
+                path=str(data_path),
+                loader_label="Typed data",
+                loader_text="typed_extension: load_data",
+                kwargs_text="",
+                replay_call=FileReplayCall(
+                    kind="extension_loader",
+                    target="typed_extension",
+                    source_hash=source_hash,
+                    capability_id="load_data",
+                    kwargs={"extra_path": str(extra_path), "mode": "add"},
+                    selection=FileDataSelection(kind="dataarray"),
+                ),
+            ),
+        ).append_replay_stage(full_data(operation))
+        code = spec.display_code()
+    finally:
+        catalog.close()
+
+    if code is None:
+        raise RuntimeError("The typed extension did not generate code")
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+
+    xr.testing.assert_identical(namespace["derived"], xr.DataArray([20.0]))
+
+
+def test_extension_modules_load_before_recorded_code_rebinds_public_import(
+    tmp_path: pathlib.Path,
+) -> None:
+    first_path = tmp_path / "first.py"
+    second_path = tmp_path / "second.py"
+    _script(first_path, expression="data + 1.0")
+    _script(second_path, expression="data * 2.0")
+    catalog = _ExtensionCatalog(directory=tmp_path / "catalog")
+    operations: list[ExtensionRoutineOperation] = []
+    try:
+        for extension_id, path in (("first", first_path), ("second", second_path)):
+            model, source_hash, _created = catalog.store.add_script(
+                path, extension_id=extension_id
+            )
+            _validate_and_enable(
+                catalog.store,
+                extension_id,
+                expected_record_generation=model.extensions[
+                    extension_id
+                ].record_generation,
+            )
+            operations.append(
+                ExtensionRoutineOperation(
+                    extension_id=extension_id,
+                    source_hash=source_hash,
+                    routine_id="scale",
+                    extension_name=path.name,
+                    routine_name="Scale",
+                    parameters={"scale": 1.0},
+                )
+            )
+        spec = script(
+            operations[0],
+            ScriptCodeOperation(
+                label="Use a local load_script variable",
+                code="load_script = data\ndata = load_script + 1.0",
+            ),
+            operations[1],
+            start_label="Create data",
+            seed_code="import xarray as xr\ndata = xr.DataArray([1.0])",
+            active_name="data",
+        )
+        code = spec.display_code()
+    finally:
+        catalog.close()
+
+    if code is None:
+        raise RuntimeError("The extension workflow did not generate code")
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+
+    xr.testing.assert_identical(namespace["data"], xr.DataArray([6.0]))
+
+
+def test_script_routine_workflow_code_separates_same_named_scripts(
+    tmp_path: pathlib.Path,
+) -> None:
+    first_path = tmp_path / "first" / "lab.py"
+    second_path = tmp_path / "second" / "lab.py"
+    first_path.parent.mkdir()
+    second_path.parent.mkdir()
+    first_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def transform(data: xr.DataArray) -> xr.DataArray:
+    return data + 1.0
+"""
+    )
+    second_path.write_text(
+        """import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def transform(data: xr.DataArray) -> xr.DataArray:
+    return data * 2.0
+"""
+    )
+    catalog = _ExtensionCatalog(directory=tmp_path / "catalog")
+    operations: list[ExtensionRoutineOperation] = []
+    try:
+        for extension_id, path in (("first", first_path), ("second", second_path)):
+            model, source_hash, _created = catalog.store.add_script(
+                path, extension_id=extension_id
+            )
+            _validate_and_enable(
+                catalog.store,
+                extension_id,
+                expected_record_generation=model.extensions[
+                    extension_id
+                ].record_generation,
+            )
+            operations.append(
+                ExtensionRoutineOperation(
+                    extension_id=extension_id,
+                    source_hash=source_hash,
+                    routine_id="transform",
+                    extension_name=path.name,
+                    routine_name="Transform",
+                    parameters={},
+                )
+            )
+        spec = ToolProvenanceSpec(
+            kind="script",
+            start_label="Create data",
+            seed_code="import xarray as xr\ndata = xr.DataArray([1.0, 2.0])",
+            active_name="data",
+        ).append_replay_stage(full_data(*operations))
+        code = emit_replay_code(
+            compile_replay_graph(spec, display=True), output_name="result"
+        )
+    finally:
+        catalog.close()
+
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+    module = ast.parse(code)
+    imports = [
+        node
+        for node in module.body
+        if isinstance(node, ast.ImportFrom) and node.module == "erlab.extensions"
+    ]
+    load_calls = [
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "load_script"
+    ]
+    assert len(imports) == 1
+    assert len(load_calls) == 2
+    xr.testing.assert_identical(namespace["result"], xr.DataArray([4.0, 6.0]))
+
+
+def test_unregistered_script_routine_workflow_has_no_copied_code() -> None:
+    operation = ExtensionRoutineOperation(
+        extension_id=f"missing-{uuid.uuid4().hex}",
+        source_hash="a" * 64,
+        routine_id="missing",
+        extension_name="missing.py",
+        routine_name="Missing",
+        parameters={},
+    )
+    spec = ToolProvenanceSpec(
+        kind="script",
+        start_label="Create data",
+        seed_code="import xarray as xr\ndata = xr.DataArray([1.0])",
+        active_name="data",
+    ).append_replay_stage(full_data(operation))
+
+    with pytest.raises(ReplayGraphError, match="registered local script"):
+        emit_replay_code(
+            compile_replay_graph(spec, display=False), output_name="result"
+        )
 
 
 def test_script_routine_generated_code_renames_a_conflicting_data_variable(
@@ -2975,7 +3740,15 @@ def test_script_routine_generated_code_renames_a_conflicting_data_variable(
             parameters={"scale": 3.0},
         )
         data = xr.DataArray([1.0, 2.0])
-        code = operation.replay_code("load_script", output_name="result")
+        spec = ToolProvenanceSpec(
+            kind="script",
+            start_label="Start from data",
+            seed_code="result = load_script",
+            active_name="result",
+        ).append_replay_stage(full_data(operation))
+        code = spec.display_code()
+        if code is None:
+            raise RuntimeError("The registered routine did not generate code")
     finally:
         catalog.close()
 
@@ -3050,7 +3823,15 @@ def scale_data(data: xr.DataArray, scale: float = 2.0) -> xr.DataArray:
             ),
         )
         data = xr.DataArray([1.0, 2.0])
-        code = operation.replay_code("data", output_name="result")
+        spec = ToolProvenanceSpec(
+            kind="script",
+            start_label="Start from data",
+            seed_code="result = data",
+            active_name="result",
+        ).append_replay_stage(full_data(operation))
+        code = spec.display_code()
+        if code is None:
+            raise RuntimeError("The registered routine did not generate code")
     finally:
         catalog.close()
 
@@ -3375,6 +4156,64 @@ def read_data(path: Path) -> xr.DataArray:
     xr.testing.assert_identical(namespace["derived"], xr.DataArray([8.0]))
 
 
+def test_loader_call_uses_pinned_bytes_after_unchanged_relocation(
+    manager_context,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "original" / "lab_loader.py"
+    script_path.parent.mkdir()
+    script_path.write_text(
+        """from pathlib import Path
+import xarray as xr
+from erlab.extensions import loader
+
+@loader(name="Lab data", extensions=(".txt",))
+def load_data(path: Path) -> xr.DataArray:
+    return xr.DataArray([float(path.read_text())], attrs={"origin": __file__})
+"""
+    )
+    data_path = tmp_path / "value.txt"
+    data_path.write_text("4")
+
+    with manager_context() as manager:
+        catalog, source_hash, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        catalog = _validate_and_enable(
+            manager._extensions.catalog.store,
+            "lab_loader",
+            expected_record_generation=(
+                catalog.extensions["lab_loader"].record_generation
+            ),
+        )
+        manager._extensions.catalog.refresh()
+        record = catalog.extensions["lab_loader"]
+        loader_call = manager._extensions._loader_call(
+            record,
+            record.source,
+            record.source.loaders[0],
+        )
+        relocated_path = tmp_path / "relocated" / "lab_loader.py"
+        relocated_path.parent.mkdir()
+        script_path.replace(relocated_path)
+        manager._extensions.catalog.store.add_script(
+            relocated_path,
+            extension_id="lab_loader",
+            expected_source_hash=source_hash,
+            expected_record_generation=record.record_generation,
+            check_record_generation=True,
+        )
+        manager._extensions.catalog.refresh()
+
+        loaded = loader_call(data_path)
+
+    xr.testing.assert_identical(
+        loaded,
+        xr.DataArray([4.0], attrs={"origin": str(script_path.resolve())}),
+    )
+    assert loader_call.source_path == script_path.resolve()
+
+
 def test_embedded_script_loader_has_replay_metadata_but_no_copied_code(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -3388,6 +4227,7 @@ def test_embedded_script_loader_has_replay_metadata_but_no_copied_code(
             loader_label="Embedded data",
             loader_text="workspace_loader.py",
             kwargs_text="",
+            load_code="load_script('/sender/workspace_loader.py').load_data()",
             replay_call=FileReplayCall(
                 kind="extension_loader",
                 target=f"workspace-{uuid.uuid4().hex}",
@@ -3399,6 +4239,23 @@ def test_embedded_script_loader_has_replay_metadata_but_no_copied_code(
     )
 
     assert spec.display_code() is None
+    if spec.file_load_source is None:
+        raise RuntimeError("The file provenance source was not stored")
+    assert _load_source_details_from_provenance(spec.file_load_source).load_code is None
+    nested = ToolProvenanceSpec(
+        kind="script",
+        start_label="Use embedded data",
+        seed_code="derived = embedded_data",
+        active_name="derived",
+        script_inputs=(
+            ScriptInput(
+                name="embedded_data",
+                label="Embedded data",
+                provenance_spec=spec,
+            ),
+        ),
+    )
+    assert nested.display_code() is None
     xr.testing.assert_identical(
         replay_file_provenance(
             spec,
@@ -3909,6 +4766,19 @@ def test_workspace_script_must_be_saved_before_it_can_run(
     )
 
     with manager_context() as manager:
+        operation = ExtensionRoutineOperation(
+            extension_id=requirement.extension_id,
+            source_hash=revision,
+            routine_id="scale",
+            extension_name="workspace_scale.py",
+            routine_name="Scale",
+            parameters={"scale": 3.0},
+        )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0, 2.0])),
+            show=False,
+            provenance_spec=full_data(operation),
+        )
         manager._extensions.set_workspace_requirements(
             (requirement,),
             embedded_sources={(requirement.extension_id, revision): source},
@@ -3927,14 +4797,6 @@ def test_workspace_script_must_be_saved_before_it_can_run(
         assert record.enabled
         assert record.source.approved
         assert manager._extensions.resolved_workspace_requirements()[0].state == "ready"
-        operation = ExtensionRoutineOperation(
-            extension_id=requirement.extension_id,
-            source_hash=revision,
-            routine_id="scale",
-            extension_name=record.name,
-            routine_name="Scale",
-            parameters={"scale": 3.0},
-        )
         xr.testing.assert_identical(
             manager._extensions.execution.run_operation(
                 operation, xr.DataArray([1.0, 2.0])
@@ -3998,6 +4860,20 @@ def test_workspace_source_conflict_creates_a_separate_registration(
             extension_api_version=1,
             metadata_snapshot={"extension_name": "shared.py"},
             embedded_object_id=f"extension-{workspace_source_hash}",
+        )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(xr.DataArray([1.0])),
+            show=False,
+            provenance_spec=full_data(
+                ExtensionRoutineOperation(
+                    extension_id="shared",
+                    source_hash=workspace_source_hash,
+                    routine_id="scale",
+                    extension_name="shared.py",
+                    routine_name="Scale",
+                    parameters={},
+                )
+            ),
         )
         manager._extensions.set_workspace_requirements(
             (requirement,),
@@ -4544,8 +5420,11 @@ def test_workspace_requirement_catalog_states(
         )
         manager._extensions.catalog.refresh()
         manager._extensions.set_workspace_requirements((requirement,))
-        assert manager._extensions.resolved_workspace_requirements()[0].state == (
-            "approval-required"
+        assert (
+            manager._extensions.resolved_workspace_requirements(include_current=False)[
+                0
+            ].state
+            == "approval-required"
         )
 
         catalog = _validate_and_enable(
@@ -4554,9 +5433,8 @@ def test_workspace_requirement_catalog_states(
             expected_record_generation=catalog.extensions["scale"].record_generation,
         )
         manager._extensions.catalog.refresh()
-        assert manager._extensions.resolved_workspace_requirements()[0].state == (
-            "ready"
-        )
+        assert manager._extensions._resolve_requirement(requirement).state == "ready"
+        assert manager._extensions.collect_workspace_requirements() == ()
 
         manager._extensions.catalog.store.update_record(
             "scale",
@@ -4564,21 +5442,26 @@ def test_workspace_requirement_catalog_states(
             enabled=False,
         )
         manager._extensions.catalog.refresh()
-        assert manager._extensions.resolved_workspace_requirements()[0].state == (
-            "disabled"
-        )
+        assert manager._extensions._resolve_requirement(requirement).state == "disabled"
+        assert manager._extensions.collect_workspace_requirements() == ()
 
         manager._extensions.set_workspace_requirements(
             (requirement.model_copy(update={"extension_id": "missing"}),)
         )
-        assert manager._extensions.resolved_workspace_requirements()[0].state == (
-            "missing"
+        assert (
+            manager._extensions.resolved_workspace_requirements(include_current=False)[
+                0
+            ].state
+            == "missing"
         )
         manager._extensions.set_workspace_requirements(
             (requirement.model_copy(update={"extension_api_version": 2}),)
         )
-        assert manager._extensions.resolved_workspace_requirements()[0].state == (
-            "unsupported-api"
+        assert (
+            manager._extensions.resolved_workspace_requirements(include_current=False)[
+                0
+            ].state
+            == "unsupported-api"
         )
         broken_path = tmp_path / "broken.py"
         broken_path.write_text("raise RuntimeError('broken import')\n")
@@ -4603,8 +5486,11 @@ def test_workspace_requirement_catalog_states(
                 ),
             )
         )
-        assert manager._extensions.resolved_workspace_requirements()[0].state == (
-            "validation-failed"
+        assert (
+            manager._extensions.resolved_workspace_requirements(include_current=False)[
+                0
+            ].state
+            == "validation-failed"
         )
 
 
@@ -6374,6 +7260,216 @@ def inspect_input(data: xr.DataArray, offset: float = 0.0) -> xr.DataArray:
         assert graph_replayed.attrs["execution_thread"] != manager_thread
 
 
+def test_queued_routine_uses_pinned_bytes_after_unchanged_relocation(
+    manager_context,
+    qtbot: pytest.QtBot,
+    tmp_path: pathlib.Path,
+) -> None:
+    class BlockingTask(QtCore.QRunnable):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def run(self) -> None:
+            self.started.set()
+            self.release.wait()
+
+    script_path = tmp_path / "original" / "scale.py"
+    script_path.parent.mkdir()
+    _script(script_path)
+    data = xr.DataArray([1.0, 2.0], dims="x")
+
+    with manager_context() as manager:
+        catalog, source_hash, _created = manager._extensions.catalog.store.add_script(
+            script_path
+        )
+        catalog = _validate_and_enable(
+            manager._extensions.catalog.store,
+            "scale",
+            expected_record_generation=catalog.extensions["scale"].record_generation,
+        )
+        manager._extensions.catalog.refresh()
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        blocking_task = BlockingTask()
+        manager._extensions.execution._pool.start(blocking_task)
+        if not blocking_task.started.wait(timeout=2.0):
+            blocking_task.release.set()
+            pytest.fail("The blocking extension task did not start")
+        try:
+            manager._extensions.execution.queue_routine(
+                extension_id="scale",
+                routine_id="scale",
+                parameters={"scale": 3.0},
+                target=0,
+            )
+            queued = manager._extensions.execution.queued
+            assert len(queued) == 1
+            assert queued[0].source_path == script_path.resolve()
+
+            relocated_path = tmp_path / "relocated" / "scale.py"
+            relocated_path.parent.mkdir()
+            script_path.replace(relocated_path)
+            manager._extensions.catalog.store.add_script(
+                relocated_path,
+                extension_id="scale",
+                expected_source_hash=source_hash,
+                expected_record_generation=(
+                    catalog.extensions["scale"].record_generation
+                ),
+                check_record_generation=True,
+            )
+            manager._extensions.catalog.refresh()
+        finally:
+            blocking_task.release.set()
+
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        xr.testing.assert_identical(manager._get_imagetool_data(1), data * 3.0)
+
+
+def test_started_routine_uses_pinned_bytes_during_catalog_reload(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "scale.py"
+    _script(script_path)
+    data = xr.DataArray([1.0, 2.0], dims="x")
+
+    with manager_context() as manager:
+        execution = manager._extensions.execution
+        store = manager._extensions.catalog.store
+        catalog, source_hash, _created = store.add_script(script_path)
+        _validate_and_enable(
+            store,
+            "scale",
+            expected_record_generation=catalog.extensions["scale"].record_generation,
+        )
+        manager._extensions.catalog.refresh()
+        target = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(data, _in_manager=True), show=False
+        )
+        node = manager._node_for_target(target)
+        job = execution._routine_job(
+            extension_id="scale",
+            source_hash=source_hash,
+            routine_id="scale",
+            parameters={"scale": 3.0},
+            input_data=node.data_for_role("displayed"),
+            input_uid=node.uid,
+            input_snapshot=node.snapshot_token,
+        )
+        original_status = store.capability_status
+        reloaded = False
+
+        def reload_after_status(*args: typing.Any, **kwargs: typing.Any) -> str:
+            nonlocal reloaded
+            status = original_status(*args, **kwargs)
+            if not reloaded:
+                reloaded = True
+                _script(script_path, "data * scale + 100.0")
+                current = store.read().extensions["scale"]
+                store.add_script(
+                    script_path,
+                    extension_id="scale",
+                    expected_record_generation=current.record_generation,
+                    check_record_generation=True,
+                )
+            return status
+
+        monkeypatch.setattr(store, "capability_status", reload_after_status)
+        worker = _ExtensionRoutineWorker(
+            job,
+            manager_session_id=execution._manager_session_id,
+            catalog_store=store,
+            script_modules=execution._script_modules,
+            source_is_healthy=lambda *_args: True,
+        )
+
+        worker.run()
+
+        result = worker.result
+        if result is None:
+            raise RuntimeError("The routine worker did not return a result")
+        assert reloaded
+        assert job.source_path == script_path.resolve()
+        assert result.status == "success"
+        xr.testing.assert_identical(result.output, data * 3.0)
+
+        execution._insert_if_current(result)
+        assert manager.ntools == 1
+
+
+def test_started_loader_uses_pinned_bytes_during_catalog_reload(
+    manager_context,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    script_path = tmp_path / "loader.py"
+    _loader_script(script_path, name="Lab data", extensions=(".dat",))
+    data_path = tmp_path / "value.dat"
+    data_path.write_text("4")
+
+    with manager_context() as manager:
+        execution = manager._extensions.execution
+        store = manager._extensions.catalog.store
+        catalog, _source_hash, _created = store.add_script(script_path)
+        catalog = _validate_and_enable(
+            store,
+            "loader",
+            expected_record_generation=catalog.extensions["loader"].record_generation,
+        )
+        manager._extensions.catalog.refresh()
+        record = catalog.extensions["loader"]
+        descriptor = record.source.loaders[0]
+        call = manager._extensions._loader_call(record, record.source, descriptor)
+        original_status = store.capability_status
+        reloaded = False
+
+        def reload_after_status(*args: typing.Any, **kwargs: typing.Any) -> str:
+            nonlocal reloaded
+            status = original_status(*args, **kwargs)
+            if not reloaded:
+                reloaded = True
+                script_path.write_text(
+                    """from pathlib import Path
+import xarray as xr
+from erlab.extensions import loader
+
+@loader(name="Lab data", extensions=(".dat",))
+def load_data(path: Path) -> xr.DataArray:
+    return xr.DataArray([float(path.read_text()) + 100.0])
+"""
+                )
+                current = store.read().extensions["loader"]
+                store.add_script(
+                    script_path,
+                    extension_id="loader",
+                    expected_record_generation=current.record_generation,
+                    check_record_generation=True,
+                )
+            return status
+
+        monkeypatch.setattr(store, "capability_status", reload_after_status)
+        worker = _ExtensionLoaderWorker(
+            call,
+            data_path,
+            {},
+            store,
+            execution._script_modules,
+            source_is_healthy=lambda *_args: True,
+        )
+
+        worker.run()
+
+        assert reloaded
+        assert call.source_path == script_path.resolve()
+        assert worker.error is None
+        xr.testing.assert_identical(worker.output, xr.DataArray([4.0]))
+
+
 def test_active_routine_finishes_and_queued_routine_rechecks_enablement(
     manager_context,
     qtbot: pytest.QtBot,
@@ -6497,6 +7593,7 @@ def test_canceling_pending_loader_releases_qt_waiter(
             function_name="load",
         ),
         source_path=tmp_path / "missing.py",
+        source_bytes=b"",
         executor=lambda *_args: xr.DataArray([1.0]),
     )
     worker = _ExtensionLoaderWorker(
@@ -6780,6 +7877,7 @@ def test_controller_identifies_extension_loader_callables(
         loader_id="load_data",
         descriptor=descriptor,
         source_path=pathlib.Path("lab.py"),
+        source_bytes=b"",
         executor=lambda *_args, **_kwargs: xr.DataArray([1.0]),
     )
     adapter = extension_execution._DecoratedLoaderAdapter(call)
@@ -6788,6 +7886,9 @@ def test_controller_identifies_extension_loader_callables(
         assert manager._extensions.loader_name_for_callable(adapter.load) == (
             "lab:load_data"
         )
+        assert manager._extensions.loader_name_for_callable(
+            adapter.load_for_manager
+        ) == ("lab:load_data")
         assert manager._extensions.loader_name_for_callable(call) == "lab:load_data"
         assert manager._extensions.loader_name_for_callable(lambda: None) is None
 
@@ -7089,6 +8190,78 @@ def test_collecting_always_embedded_referenced_script_avoids_duplicates(
     assert "source_modified_at" in requirements[0].metadata_snapshot
 
 
+@pytest.mark.parametrize("embed_policy", ["referenced", "never"])
+def test_unused_ready_requirement_follows_current_embedding_policy(
+    manager_context,
+    tmp_path: pathlib.Path,
+    embed_policy: str,
+) -> None:
+    script_path = tmp_path / "unused.py"
+    _script(script_path)
+
+    with manager_context() as manager:
+        store = manager._extensions.catalog.store
+        catalog, source_hash, _created = store.add_script(script_path)
+        catalog = _validate_and_enable(
+            store,
+            "unused",
+            expected_record_generation=catalog.extensions["unused"].record_generation,
+        )
+        catalog = store.update_record(
+            "unused",
+            expected_record_generation=catalog.extensions["unused"].record_generation,
+            embed_policy="always",
+        )
+        manager._extensions.catalog.refresh()
+        requirements = manager._extensions.collect_workspace_requirements()
+        assert len(requirements) == 1
+        assert requirements[0].referencing_nodes == ()
+        manager._extensions.set_workspace_requirements(requirements)
+
+        catalog = store.update_record(
+            "unused",
+            expected_record_generation=catalog.extensions["unused"].record_generation,
+            embed_policy=embed_policy,
+        )
+        manager._extensions.catalog.refresh()
+        assert manager._extensions.collect_workspace_requirements() == ()
+        assert manager._extensions._removal_blocker("unused") is None
+
+        store.update_record(
+            "unused",
+            expected_record_generation=catalog.extensions["unused"].record_generation,
+            enabled=False,
+        )
+        manager._extensions.catalog.refresh()
+        assert manager._extensions.collect_workspace_requirements() == ()
+        assert manager._extensions._removal_blocker("unused") is None
+        assert manager._extensions.workspace_requirement_payloads() == ()
+        workspace_path = tmp_path / f"unused-{embed_policy}.itws"
+        manager._workspace_controller.saving._save_workspace_document(workspace_path)
+
+    attrs = workspace_arrays._read_workspace_root_attrs_h5py(workspace_path)
+    manifest = workspace_format._workspace_manifest_from_attrs(attrs)
+    assert manifest["extension_requirements"] == []
+    with workspace_store.WorkspaceStore(workspace_path) as workspace:
+        assert f"extension-{source_hash}" not in workspace.manifest_object_ids(manifest)
+
+
+def test_unresolved_unused_requirement_is_preserved(manager_context) -> None:
+    requirement = _WorkspaceExtensionRequirement(
+        extension_id="missing-unused",
+        capability_id="normalize",
+        capability_kind="routine",
+        source_hash="a" * 64,
+        extension_api_version=1,
+    )
+
+    with manager_context() as manager:
+        manager._extensions.set_workspace_requirements((requirement,))
+
+        assert manager._extensions.collect_workspace_requirements() == (requirement,)
+        assert manager._extensions._removal_blocker("missing-unused") is None
+
+
 def test_workspace_registration_selects_the_script_requirement(
     manager_context,
     monkeypatch: pytest.MonkeyPatch,
@@ -7132,11 +8305,7 @@ def test_workspace_registration_selects_the_script_requirement(
             manager._extensions.catalog.model.extensions["mixed"].name
             == destination.name
         )
-        assert {item.capability_kind for item in requirements} == {"routine"}
-        for requirement in requirements:
-            _WorkspaceExtensionRequirement.model_validate(
-                requirement.model_dump(mode="json")
-            )
+        assert requirements == ()
 
 
 @pytest.mark.parametrize(
@@ -7337,6 +8506,7 @@ def load_data(path: Path) -> xr.DataArray:
         loader_id="load_data",
         descriptor=descriptor,
         source_path=script_path,
+        source_bytes=source,
         executor=lambda *_args, **_kwargs: xr.DataArray([1.0]),
     )
 
@@ -7455,6 +8625,7 @@ def slow(data: xr.DataArray, delay: float = 0.4) -> xr.DataArray:
             loader_id="load_data",
             descriptor=loader_descriptor,
             source_path=script_path,
+            source_bytes=script_path.read_bytes(),
             executor=lambda *_args, **_kwargs: xr.DataArray([1.0]),
         )
 
@@ -7680,6 +8851,16 @@ def test_removal_blockers_cover_managers_jobs_and_workspace_requirements(
                     extension_api_version=1,
                 ),
             )
+        )
+        assert controller._removal_blocker("blocked") is not None
+        controller.set_workspace_requirements(())
+        assert controller._removal_blocker("blocked") is None
+
+        controller.set_workspace_requirements(
+            (),
+            unresolved_payloads=(
+                {"extension_id": "blocked", "future_requirement": True},
+            ),
         )
         assert controller._removal_blocker("blocked") is not None
         controller.set_workspace_requirements(())

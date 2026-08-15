@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
+import traceback
 import types
 import typing
 
@@ -69,7 +70,7 @@ def test_loader_decorator_accepts_one_extension_as_a_string(
         "    return xr.DataArray([1.0])\n"
     )
 
-    descriptor = load_script(source).loaders["load_text"][0]
+    descriptor = load_script(source).erlab.loaders["load_text"][0]
 
     assert descriptor.extensions == (".txt",)
 
@@ -111,7 +112,7 @@ def adjust(
 """
     )
     loaded = load_script(script)
-    descriptor = loaded.routines["stable-adjust"][0]
+    descriptor = loaded.erlab.routines["stable-adjust"][0]
 
     assert descriptor.function_name == "adjust"
     assert tuple(parameter.kind for parameter in descriptor.parameters) == (
@@ -133,7 +134,7 @@ def adjust(
     result = run_routine(
         xr.DataArray([2.0]),
         script=script,
-        source_hash=loaded.source_hash,
+        source_hash=loaded.erlab.source_hash,
         routine_id="stable-adjust",
         parameters={
             "mode": "multiply",
@@ -180,7 +181,7 @@ def choose(data: xr.DataArray, enabled: bool) -> xr.DataArray:
 
     script.write_text(script.read_text() + "\n# changed\n")
     with pytest.raises(erlab.extensions.ExtensionImportError, match="does not match"):
-        load_script(script, expected_source_hash=loaded.source_hash)
+        load_script(script, expected_source_hash=loaded.erlab.source_hash)
 
 
 def test_loaded_script_preserves_natural_function_call_forms(
@@ -237,9 +238,9 @@ def scale(data: xr.DataArray) -> xr.DataArray:
     module_name = "_erlab_test_dataclass_extension"
     try:
         loaded = load_script(script, module_name=module_name)
-        assert sys.modules[module_name] is loaded.module
+        assert sys.modules[module_name] is loaded.erlab.module
         xr.testing.assert_identical(
-            loaded.routines["scale"][1](xr.DataArray([1.0, 2.0])),
+            loaded.erlab.routines["scale"][1](xr.DataArray([1.0, 2.0])),
             xr.DataArray([2.0, 4.0]),
         )
     finally:
@@ -277,8 +278,41 @@ def value(data: xr.DataArray) -> xr.DataArray:
     loaded = load_script(script, expected_source_hash=revision)
 
     xr.testing.assert_identical(
-        loaded.routines["value"][1](xr.DataArray([1])), xr.DataArray([2])
+        loaded.erlab.routines["value"][1](xr.DataArray([1])), xr.DataArray([2])
     )
+
+
+def test_pinned_script_bytes_keep_the_registered_source_origin(
+    tmp_path: pathlib.Path,
+) -> None:
+    source_path = (tmp_path / "removed" / "lab_tools.py").resolve()
+    source = b"""import xarray as xr
+from erlab.extensions import routine
+
+@routine()
+def report_source(data: xr.DataArray) -> xr.DataArray:
+    return data.assign_attrs(source=__file__)
+
+@routine()
+def fail(data: xr.DataArray) -> xr.DataArray:
+    raise RuntimeError("failed")
+"""
+
+    loaded = extension_api._load_script_bytes(source, source_path)
+
+    assert loaded.erlab.module.__file__ == str(source_path)
+    assert loaded.erlab.module.__spec__.origin == str(source_path)
+    assert loaded.report_source(xr.DataArray([1])).attrs["source"] == str(source_path)
+    with pytest.raises(RuntimeError, match="failed") as exc_info:
+        loaded.fail(xr.DataArray([1]))
+    formatted = "".join(
+        traceback.format_exception(
+            exc_info.type,
+            exc_info.value,
+            exc_info.tb,
+        )
+    )
+    assert str(source_path) in formatted
 
 
 def test_load_script_rejects_unsupported_signature(tmp_path: pathlib.Path) -> None:
@@ -329,6 +363,18 @@ def bad(data: xr.DataArray, values: list[float]) -> xr.DataArray:
         (
             "def bad(data: 'MissingType') -> xr.DataArray:\n    return xr.DataArray()",
             "Could not resolve annotations",
+        ),
+        (
+            "async def bad(data: xr.DataArray) -> xr.DataArray:\n    return data",
+            "must be a synchronous function",
+        ),
+        (
+            "def bad(data: xr.DataArray) -> xr.DataArray:\n    yield data",
+            "must be a synchronous function",
+        ),
+        (
+            "async def bad(data: xr.DataArray) -> xr.DataArray:\n    yield data",
+            "must be a synchronous function",
         ),
     ],
 )
@@ -428,6 +474,26 @@ def test_load_script_rejects_invalid_loader_input_and_duplicate_ids(
     )
     with pytest.raises(ExtensionSignatureError, match="defined more than once"):
         load_script(duplicate)
+
+
+@pytest.mark.parametrize("parameter_name", ["loader_extensions", "without_values"])
+def test_load_script_rejects_manager_reserved_loader_parameters(
+    tmp_path: pathlib.Path,
+    parameter_name: str,
+) -> None:
+    source = tmp_path / "reserved_loader_parameter.py"
+    source.write_text(
+        "from pathlib import Path\n"
+        "import xarray as xr\n"
+        "from erlab.extensions import loader\n\n"
+        "@loader()\n"
+        f"def load_data(path: Path, {parameter_name}: str = 'value') "
+        "-> xr.DataArray:\n"
+        "    return xr.DataArray()\n"
+    )
+
+    with pytest.raises(ExtensionSignatureError, match="reserved by ERLab"):
+        load_script(source)
 
 
 def test_load_script_reports_source_and_import_failures(
@@ -550,11 +616,11 @@ def text_values(path: Path, scale: float = 1.0) -> xr.DataArray | xr.Dataset:
     values.write_text("1 2 3")
 
     loaded = load_script(source)
-    descriptor = loaded.loaders["text_values"][0]
+    descriptor = loaded.erlab.loaders["text_values"][0]
     result = run_loader(
         values,
         script=source,
-        source_hash=loaded.source_hash,
+        source_hash=loaded.erlab.source_hash,
         loader_id="text_values",
         parameters={"scale": 2.0},
     )
@@ -806,11 +872,53 @@ def test_loaded_script_exposes_capabilities_and_module_attributes(
 
     loaded = load_script(source)
 
-    assert [descriptor.id for descriptor in loaded.capabilities] == [
+    assert [descriptor.id for descriptor in loaded.erlab.capabilities] == [
         "calculate",
         "load_data",
     ]
     assert loaded.VALUE == 3
+
+
+@pytest.mark.parametrize(
+    "function_name",
+    ["path", "source_hash", "module", "routines", "loaders", "capabilities"],
+)
+def test_loaded_script_capability_names_override_erlab_information_fields(
+    tmp_path: pathlib.Path,
+    function_name: str,
+) -> None:
+    source = tmp_path / "field_name.py"
+    source.write_text(
+        "import xarray as xr\n"
+        "from erlab.extensions import routine\n\n"
+        "@routine()\n"
+        f"def {function_name}(data: xr.DataArray) -> xr.DataArray:\n"
+        "    return data + 1\n"
+    )
+
+    loaded = load_script(source)
+
+    xr.testing.assert_identical(
+        getattr(loaded, function_name)(xr.DataArray([1])),
+        xr.DataArray([2]),
+    )
+    assert loaded.erlab.path == source.resolve()
+
+
+def test_load_script_reserves_one_erlab_information_namespace(
+    tmp_path: pathlib.Path,
+) -> None:
+    source = tmp_path / "reserved_function.py"
+    source.write_text(
+        "import xarray as xr\n"
+        "from erlab.extensions import routine\n\n"
+        "@routine()\n"
+        "def erlab(data: xr.DataArray) -> xr.DataArray:\n"
+        "    return data\n"
+    )
+
+    with pytest.raises(ExtensionSignatureError, match="name 'erlab' is reserved"):
+        load_script(source)
 
 
 def test_run_functions_validate_lookup_and_results(
