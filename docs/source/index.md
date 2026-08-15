@@ -44,19 +44,31 @@ data analysis.
 :::{grid-item-card} Getting started
 :link: getting-started
 :link-type: doc
-The getting started guide covers installation, basic usage, and best practices for working with ERLabPy.
+Install ERLabPy, verify the installation, and choose a learning path.
 :::
 
-:::{grid-item-card} User guide
-:link: user-guide/index
+:::{grid-item-card} Tutorials
+:link: tutorials/index
 :link-type: doc
-The user guide provides tutorials and examples.
+Learn the Python or Manager workflow through guided lessons.
 :::
 
-:::{grid-item-card} API reference
+:::{grid-item-card} Explanation
+:link: explanation/index
+:link-type: doc
+Understand ERLabPy design choices and scientific workflows.
+:::
+
+:::{grid-item-card} How-to guides
+:link: how-to/index
+:link-type: doc
+Complete a specific analysis, configuration, or GUI task.
+:::
+
+:::{grid-item-card} Reference
 :link: reference
 :link-type: doc
-The reference guide provides detailed information of the API, including descriptions of most available methods and parameters.
+Look up Python APIs, GUI applications, settings, and supported formats.
 :::
 
 :::{grid-item-card} Contributing guide
@@ -89,7 +101,9 @@ The contributing guide contains information on how to contribute to the project.
 :maxdepth: 3
 
 getting-started
-user-guide/index
+tutorials/index
+explanation/index
+how-to/index
 reference
 contributing
 bibliography

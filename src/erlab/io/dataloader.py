@@ -6,8 +6,7 @@ Data loaders are plugins used to load data from various file formats.
 Each data loader is a subclass of :class:`LoaderBase` that must implement several
 methods and attributes.
 
-A detailed guide on how to implement a data loader can be found in the :ref:`User Guide
-<implementing-plugins>`.
+For implementation instructions, see :ref:`implementing-plugins`.
 """
 
 from __future__ import annotations

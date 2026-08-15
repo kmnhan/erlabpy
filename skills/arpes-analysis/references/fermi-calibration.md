@@ -74,10 +74,17 @@ Supply a realistic initial energy resolution in electronvolts. This can improve
 convergence. Confirm the units before passing a metadata value; do not assume that an
 instrument metadata field is already in electronvolts.
 
+Keep one fit range when it contains a clean edge and suitable background for every EDC.
+Set `adaptive=True` when a verified outer range contains every edge but a large edge
+shift or nearby spectral features make one fixed range unreliable. The adaptive option
+estimates a separate range for each EDC. If one estimate fails, that EDC uses the
+complete outer range.
+
 ```python
 edge_angle_range = (-15.0, 15.0)
 edge_energy_range = (-0.15, 0.10)
 initial_energy_resolution = 0.015  # eV
+use_separate_fit_ranges = False
 
 metadata_temperature = reference_data.attrs.get("sample_temp")
 try:
@@ -102,6 +109,7 @@ reference_edge_fit = era.gold.poly(
     along="alpha",
     angle_range=edge_angle_range,
     eV_range=edge_energy_range,
+    adaptive=use_separate_fit_ranges,
     vary_temp=False,
     degree=4,
     plot=True,

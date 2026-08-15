@@ -27,7 +27,7 @@ Examples
 
   >>> erlab.io.set_loader("merlin")
 
-Learn more about loaders in the :ref:`User Guide <loading-arpes-data>`.
+Learn how to load supported experimental data in :ref:`loading-arpes-data`.
 
 
 .. rubric:: Modules

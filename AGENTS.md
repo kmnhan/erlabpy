@@ -23,10 +23,37 @@ sentences. Put one idea or instruction in each sentence. Use precise words and
 consistent terms. Do not use idioms, unnecessary jargon, or ambiguous wording.
 Keep a necessary technical term when an approved alternative is not accurate.
 Define the term when the reader might not know it.
+Use concise noun phrases or gerund phrases for headings and titles. Do not use complete
+sentences as headings. Prefer established scientific and ARPES terminology.
 
 ## Documentation Workflow
 
-Sources live in `docs/source/` (MyST + Sphinx). Install extras using `uv sync --all-extras --dev --group docs`, then render locally via `uv run --directory docs make html`. Put tutorials in `docs/source/user-guide/`, guides in `docs/source/contributing.md`, and images in `docs/source/images/`. Run `make linkcheck` before pushing large doc edits to guard cross-references. The `sphinxext-rediraffe` extension is used for maintaining redirects. Add to the `rediraffe_redirects` dict in `docs/source/conf.py` when moving or renaming pages.
+Sources live in `docs/source/` (MyST + Sphinx). Install extras using `uv sync --all-extras --dev --group docs`, then render locally via `uv run --directory docs make html`. Put tutorials in `docs/source/tutorials/`, task guides in `docs/source/how-to/`, explanations in `docs/source/explanation/`, product descriptions in `docs/source/reference/`, and images in `docs/source/images/`. Run `make linkcheck` before pushing large doc edits to guard cross-references. The `sphinxext-rediraffe` extension is used for maintaining redirects. Add to the `rediraffe_redirects` dict in `docs/source/conf.py` when moving or renaming pages.
+
+Use the Diátaxis compass before adding a How-to guide. Confirm that all four statements
+are true:
+
+- The guide informs action during the application of an existing skill.
+- The guide addresses a concrete user goal or problem, not the operation of a tool.
+- A competent user can apply the guide to their own work without recreating
+  tutorial-specific state.
+- The guide gives a focused, executable sequence with only the decisions, checks, and
+  recovery guidance required by the task.
+
+When a capability taught in a tutorial is also a valid work task, illustrate it in a
+How-to guide. Remove the tutorial's teaching and controlled demonstration, but do not
+remove a guide only because its code also appears in a tutorial. Link to Explanation and
+Reference instead of adding digressions or exhaustive option lists.
+
+Teach required xarray concepts and ERLabPy data conventions in the controlled tutorial
+path. Explanation pages can assume that knowledge. Use Explanation for ERLabPy design
+choices and scientific workflow decisions that users must understand. Do not make each
+Explanation page a self-contained introduction. Prefer tables, lists, diagrams, and
+focused figures to long prose. Put figures that demonstrate a procedure in the relevant
+How-to guide.
+
+When changing public API behavior, add a `.. versionchanged::` note in the relevant docstring or documentation page so it shows up in the generated docs. The version should refer to the next release (likely a minor bump under semver), so double-check the planned version before finalizing the note.
+Use `.. versionadded::` sparingly, for user-facing features or APIs where running the same code on older versions would be confusing or yield ambiguous errors.
 
 When changing docs content or URLs, verify that `skills/arpes-analysis/SKILL.md` still matches current docs/links and update it if needed. Write documentation in concrete user-facing terms. Prefer naming the visible object or action over abstract implementation phrasing. Avoid vague category labels and compressed prose that only sounds precise and does not reflect what the user will see.
 

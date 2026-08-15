@@ -1153,7 +1153,8 @@ def test_kspace_input_coordinate_help(qtbot, anglemap, monkeypatch) -> None:
     help_button.click()
 
     assert urls == [
-        "https://erlabpy.readthedocs.io/en/stable/user-guide/kconv.html#nomenclature"
+        "https://erlabpy.readthedocs.io/en/stable/"
+        "reference/data-conventions.html#nomenclature"
     ]
     assert dialog.result() == imagetool_dialogs.QtWidgets.QDialog.DialogCode.Rejected
 

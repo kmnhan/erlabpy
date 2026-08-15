@@ -162,6 +162,9 @@ available only in an external script or pre-rendered artifact.
 - For `gold.poly`, use reliable `sample_temp` metadata. Use
   `use_step_edge=True` when that temperature is missing or unreliable, and supply a
   unit-checked resolution estimate.
+- Use `adaptive=True` when one verified outer energy range contains the reference edge
+  for every EDC but a large edge shift or nearby spectral features make one fixed fit
+  range unreliable.
 - Do not use symmetrized data to justify a normal-emission calibration.
 - Do not use intensity maxima or apparent brightness symmetry to locate normal
   emission. Matrix elements can suppress one side of the same contour.
