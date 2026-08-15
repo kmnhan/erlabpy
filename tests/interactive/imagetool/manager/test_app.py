@@ -1064,7 +1064,7 @@ def test_manager_cloudpickle(
             "1.0.0",
             "1.1.0",
             "Open Documentation",
-            "https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/imagetool.html",
+            "https://erlabpy.readthedocs.io/en/stable/reference/gui/imagetool.html",
             "ImageTool Manager Updated",
             "ImageTool Manager has been successfully updated from version 1.0.0 to "
             "1.1.0.",

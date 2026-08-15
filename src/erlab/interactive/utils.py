@@ -1777,7 +1777,7 @@ def make_help_actions(parent: QtCore.QObject) -> tuple[QtGui.QAction, ...]:
     open_docs_action = QtWidgets.QAction("Documentation", parent)
     open_docs_action.triggered.connect(
         lambda _: webbrowser.open(
-            "https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/imagetool.html"
+            "https://erlabpy.readthedocs.io/en/stable/reference/gui/imagetool.html"
         )
     )
     report_issue_action = QtWidgets.QAction("Report an Issue", parent)

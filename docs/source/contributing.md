@@ -398,9 +398,44 @@ Some other important things to know about the docs:
 - The documentation consists of two parts: the docstrings in the code itself and the
   docs in `erlabpy/docs/source/`.
 
-  The docstrings are meant to provide a clear explanation of the usage of the individual
-  functions, while the documentation in this folder consists of tutorial-like overviews
-  per topic together with some other information.
+  Docstrings and Reference pages describe individual functions and applications. The
+  remaining pages follow the documentation types described below.
+
+### Documentation types
+
+ERLabPy documentation follows [Diátaxis](https://diataxis.fr/). Decide which user need
+the page serves before you add content:
+
+- A **tutorial** is a controlled and linear lesson. It uses fixed inputs, shows expected
+  results, and contains only the explanation needed to complete the lesson.
+- An **explanation** describes an ERLabPy design choice or scientific workflow that a
+  user must understand. It can assume the knowledge taught in the tutorial. Do not use
+  it to teach basic xarray concepts again.
+- A **how-to guide** helps a competent user complete one real task. It must address a
+  user goal, apply to the user's own work, provide an executable sequence, and contain
+  only the decisions, checks, and recovery guidance needed for that task.
+- A **reference** page describes the API or application accurately and completely. Its
+  structure should follow the product that it describes.
+
+Python API Reference is generated from public docstrings. Update the source docstring
+when Python API Reference is incomplete or incorrect. Do not create a hand-written page
+that duplicates function or class details. Use hand-written Reference for GUI
+applications, installation, and other product lookup information.
+
+Teach the required xarray concepts and ERLabPy data conventions in the controlled
+tutorial path. Keep Explanation pages short. Prefer a table, list, diagram, or focused
+figure when it communicates the relationship more clearly than prose. Put a figure that
+demonstrates a procedure in the relevant How-to guide.
+
+Tutorial code is the canonical example for a shared workflow. A How-to guide can reuse
+that code for a concrete task. Link to the tutorial and keep the public API calls and
+scientific conventions consistent. Do not add a competing version of the same example.
+
+A feature does not belong in a tutorial or Explanation only because it is new. Add a
+task procedure to How-to Guides and a GUI control to Reference. Add Explanation only
+when the feature changes an ERLabPy design choice or a scientific workflow that users
+must understand. Update a tutorial when the learning path itself changes. Do not move
+option catalogs into a How-to guide because they do not fit the tutorial.
 
 - The docstrings follow the **NumPy Docstring Standard**, which is used widely in the
   Scientific Python community. This standard specifies the format of the different
@@ -418,7 +453,7 @@ Some other important things to know about the docs:
   automatically included in the documentation. Hence, you may omit the type information
   from the docstring for well-annotated functions.
 
-- We aim to follow the recommendations from the [Python documentation](https://devguide.python.org/documentation/start-documenting/index.html#sections)
+- We aim to follow the recommendations from the [Python documentation](https://devguide.python.org/documentation/start-documenting/index.html)
   and the [Sphinx reStructuredText documentation](https://www.sphinx-doc.org/en/master/usage/restructuredtext/basics.html#sections)
   for section markup characters:
 
@@ -453,6 +488,14 @@ use Google Chrome as your browser, you could enter:
 
 ```sh
 google-chrome docs/build/html/index.html
+```
+
+```{toctree}
+:hidden: true
+
+contributing/loaders
+contributing/interactive-tools
+contributing/build-manager
 ```
 
 in the terminal. You should now see a new tab pop open in your local browser showing the

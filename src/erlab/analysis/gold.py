@@ -588,8 +588,6 @@ def guess_edge_fit_range(
     use_step_edge
         If `True`, use the nominal width of a broadened step edge. If `False`, use the
         combined thermal and resolution width of a Fermi edge. Defaults to `False`.
-    **kwargs
-        Deprecated arguments. Use `use_step_edge` instead of ``fast``.
 
     Returns
     -------
@@ -929,8 +927,7 @@ def edge(
         because dropping NaNs requires computing all fit results. If ``return_full`` is
         `True`, this option is ignored.
     **kwargs
-        Additional keyword arguments to fitting. The old ``fast`` argument is accepted
-        with a deprecation warning. Use `use_step_edge` instead.
+        Additional keyword arguments passed to the fitting operation.
 
     Returns
     -------
@@ -940,10 +937,6 @@ def edge(
     fit_result
         A dataset containing the full fit results, returned when `return_full` is
         `True`.
-
-    .. versionchanged:: 3.27.0
-
-        Added `use_step_edge`. The old ``fast`` argument is deprecated.
 
     """
     use_step_edge = _parse_deprecated_fast(use_step_edge, kwargs)
