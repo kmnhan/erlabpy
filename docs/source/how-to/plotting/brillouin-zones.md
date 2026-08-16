@@ -44,8 +44,7 @@ single first-zone polygon in this guide.
 
 1. In ImageTool Manager, choose
    {menuselection}`File --> New Empty Figure`.
-2. Set {guilabel}`Layout` to a $1 \times 1$ grid. Set the size to $2.5 \times 2.5$
-   inches and select the compressed layout engine.
+2. Set {guilabel}`Layout` to a $1 \times 1$ grid.
 3. Add a {guilabel}`Python` step.
 4. Review this code, enter it in {guilabel}`Code`, and enable {guilabel}`Trusted`:
 
@@ -57,10 +56,9 @@ eplt.plot_bz(avec, ax=ax)
 ax.set(
     xlabel=r"$k_x$ (Å$^{-1}$)",
     ylabel=r"$k_y$ (Å$^{-1}$)",
-    xlim=(-1.5, 1.5),
-    ylim=(-1.5, 1.5),
     aspect="equal",
 )
 ```
 
-See {func}`erlab.plotting.plot_bz` for reciprocal input, rotation, and offset arguments.
+Replace the lattice parameters with those of the measured material. See
+{func}`erlab.plotting.plot_bz` for reciprocal input, rotation, and offset arguments.

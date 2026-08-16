@@ -30,8 +30,7 @@ scalar formatter before you apply this procedure.
 
 ## Figure Composer
 
-1. **Layout:** In {guilabel}`Layout`, use one axes. Set {guilabel}`Size (in)` to
-   `3.4` by `2.1` and {guilabel}`Layout engine` to {guilabel}`compressed`.
+1. **Layout:** In {guilabel}`Layout`, use one axes.
 2. **Sources:** In {guilabel}`Sources`, choose {guilabel}`Add…` and add the
    two-dimensional `cut` array.
 3. **Recipe:** Add an {guilabel}`Image Plot` step that targets the axes. Set

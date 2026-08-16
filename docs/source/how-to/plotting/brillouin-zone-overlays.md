@@ -42,12 +42,9 @@ eplt.plot_hex_bz(
 
 ## Figure Composer
 
-1. Set {guilabel}`Layout` to a $1 \times 1$ grid. Set the size to $3.4 \times 3.0$
-   inches and select the compressed layout engine.
+1. Set {guilabel}`Layout` to a $1 \times 1$ grid.
 2. Add `constant_energy_map` in {guilabel}`Sources`.
-3. Add an {guilabel}`Image Plot` step. Set {guilabel}`Colormap` to `Greys`, select
-   `PowerNorm`, set {guilabel}`Gamma` to `0.5`, and set {guilabel}`Aspect` to
-   `equal`.
+3. Add an {guilabel}`Image Plot` step and set {guilabel}`Aspect` to `equal`.
 
 The current {guilabel}`BZ Overlay` step draws an in-plane section. It does not draw the
 single hexagonal boundary used here.
@@ -63,12 +60,10 @@ eplt.plot_hex_bz(
     a=6.97,
     ax=ax,
     fill=False,
-    edgecolor="tab:purple",
-    linestyle="--",
-    linewidth=1.2,
 )
 ```
 
-The boundary must use the lattice parameters and orientation of the measured material.
-Do not use the appearance of the intensity to select or resize the boundary. See
+Replace `a` with the in-plane lattice constant of the measured material. The boundary
+must use the correct lattice parameters and orientation. Do not use the appearance of
+the intensity to select or resize the boundary. See
 {func}`erlab.plotting.plot_hex_bz` for rotation and offset arguments.

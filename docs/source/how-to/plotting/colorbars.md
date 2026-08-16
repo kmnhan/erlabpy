@@ -36,13 +36,10 @@ See {func}`erlab.plotting.nice_colorbar` for colorbar orientation, ticks, and pl
 
 ## Figure Composer
 
-1. **Layout:** In {guilabel}`Layout`, use one axes. Set {guilabel}`Size (in)` to
-   `3.4` by `2.1` and {guilabel}`Layout engine` to {guilabel}`compressed`.
+1. **Layout:** In {guilabel}`Layout`, use one axes.
 2. **Sources:** In {guilabel}`Sources`, choose {guilabel}`Add…` and add the
    two-dimensional `data` array.
 3. **Recipe:** Add an {guilabel}`Image Plot` step that targets the axes. Set
-   {guilabel}`Image data` to `data`, {guilabel}`Colormap` to `Greys`, and
-   {guilabel}`Gamma` to `0.5`.
+   {guilabel}`Image data` to `data`.
 4. Add an {guilabel}`ERLab Method` step after the image. Select `nice_colorbar`, target
-   the same axes, set {guilabel}`Width` to `10`, and set
-   {guilabel}`Min/max ticks` to {guilabel}`True`.
+   the same axes, and set {guilabel}`Min/max ticks` to {guilabel}`True`.

@@ -88,15 +88,14 @@ First calculate `intensity` and `asymmetry` with the Python code above. Open bot
 in ImageTool Manager and add them as Figure Composer sources. The separate diagnostic
 plots then use editable recipe steps:
 
-1. Set {guilabel}`Layout` to a $1 \times 2$ grid with a compressed layout engine.
+1. Set {guilabel}`Layout` to a $1 \times 2$ grid.
 2. Add `intensity` and `asymmetry` in {guilabel}`Sources`.
 3. Add one {guilabel}`Image Plot` step for each source and target one axes per step.
 4. Set the intensity colormap to `viridis`.
 5. Set the asymmetry colormap to `bwr`. Select `CenteredPowerNorm`, and set
    {guilabel}`Gamma` to `1`. Under {guilabel}`Center/range`, set `vcenter` to `0`
    and `halfrange` to `1`.
-6. Add one {guilabel}`ERLab Method` step with `nice_colorbar` after each image. Set
-   {guilabel}`Width` to `7`.
+6. Add one {guilabel}`ERLab Method` step with `nice_colorbar` after each image.
 7. Add `set_titles` and `clean_labels` {guilabel}`ERLab Method` steps.
 
 The combined lightness-and-hue plot does not have an editable recipe step.

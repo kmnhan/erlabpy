@@ -47,17 +47,13 @@ See {func}`erlab.plotting.set_titles`, {func}`erlab.plotting.set_xlabels`, and
 Add `constant_energy_map` and `edc` to the figure as sources. Then create this ordered
 recipe:
 
-1. In {guilabel}`Layout`, select {guilabel}`subplots`. Set {guilabel}`Rows` to `1`,
-   {guilabel}`Columns` to `2`, and {guilabel}`Size (in)` to `6.4` by `3.0`. Set
-   {guilabel}`Layout engine` to {guilabel}`compressed`.
+1. In {guilabel}`Layout`, select {guilabel}`subplots`. Set {guilabel}`Rows` to `1`
+   and {guilabel}`Columns` to `2`.
 2. Add an {guilabel}`Image Plot` step for `constant_energy_map` on the left axes. Set
-   {guilabel}`Colormap` to `Greys`, {guilabel}`Gamma` to `0.5`, and
    {guilabel}`Aspect` to `equal`.
-3. Add a {guilabel}`Line/Profile` step for `edc` on the right axes. Under
-   {guilabel}`Color`, set {guilabel}`Mode` to {guilabel}`Manual`, then enter `0.2` in
-   the color field.
+3. Add a {guilabel}`Line/Profile` step for `edc` on the right axes.
 4. Add an {guilabel}`ERLab Method` step on the right axes. Select `fermiline`, set
-   {guilabel}`Orientation` to `v`, and set {guilabel}`Line style` to `--`.
+   {guilabel}`Orientation` to `v`.
 5. Add an {guilabel}`ERLab Method` step on both axes. Select `set_titles`, keep
    {guilabel}`Order` set to {guilabel}`C (Row)`, and enter `Constant energy map` and
    `Energy distribution curve` on separate lines in {guilabel}`Text`.
