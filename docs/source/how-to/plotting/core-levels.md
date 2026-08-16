@@ -55,7 +55,7 @@ recipe:
 
 1. Add a {guilabel}`Line/Profile` step for the spectrum on the target axes.
 2. Add an {guilabel}`ERLab Method` step after the spectrum step. Select
-   `plot_core_levels` and target the same axes.
+   {func}`plot_core_levels <erlab.plotting.plot_core_levels>` and target the same axes.
 3. Enter the element symbols for the sample in {guilabel}`Elements`.
 4. Set {guilabel}`Energy` and {guilabel}`Binding sign` to match the energy axis.
 5. Check every marked line against the measured peaks and the known sample

@@ -101,7 +101,7 @@ the watched variable name.
 
 The workspace stores managed windows, their state, row notes, derived relationships,
 and Figure Composer recipes. Row notes remain workspace metadata and do not modify the
-underlying DataArray attributes.
+underlying {class}`DataArray <xarray.DataArray>` attributes.
 
 To reopen the session, choose {menuselection}`File --> Open Workspace…`, press
 {kbd}`Ctrl+O`, or drag the `.itws` file into Manager. Inspect the restored windows and

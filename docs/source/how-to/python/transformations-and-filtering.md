@@ -41,7 +41,8 @@ reshape, and fill-value arguments.
 ## Shift spectra to correct drift
 
 Use {func}`erlab.analysis.transform.shift` when `energy_offsets` contains a verified
-energy offset for every value of another coordinate. The offset DataArray broadcasts
+energy offset for every value of another coordinate. The offset
+{class}`DataArray <xarray.DataArray>` broadcasts
 across the remaining dimensions:
 
 ```python

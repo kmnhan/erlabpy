@@ -41,5 +41,6 @@ See {func}`erlab.plotting.nice_colorbar` for colorbar orientation, ticks, and pl
    two-dimensional `data` array.
 3. **Recipe:** Add an {guilabel}`Image Plot` step that targets the axes. Set
    {guilabel}`Image data` to `data`.
-4. Add an {guilabel}`ERLab Method` step after the image. Select `nice_colorbar`, target
-   the same axes, and set {guilabel}`Min/max ticks` to {guilabel}`True`.
+4. Add an {guilabel}`ERLab Method` step after the image. Select
+   {func}`nice_colorbar <erlab.plotting.nice_colorbar>`, target the same axes, and set
+   {guilabel}`Min/max ticks` to {guilabel}`True`.

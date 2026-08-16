@@ -95,7 +95,8 @@ loader context keeps each load operation next to the settings that control it.
 
 ## Loading data exported from Igor Pro
 
-Load a single `.ibw` wave or a single-wave `.itx` file as a DataArray:
+Load a single `.ibw` wave or a single-wave `.itx` file as a
+{class}`DataArray <xarray.DataArray>`:
 
 ```python
 import xarray as xr
@@ -104,7 +105,8 @@ data = xr.load_dataarray("/path/to/wave.ibw")
 ```
 
 For a packed experiment (`.pxp` or `.pxt`) that contains several folders or waves,
-open the hierarchy as a DataTree and select the required node:
+open the hierarchy as a {class}`DataTree <xarray.DataTree>` and select the required
+node:
 
 ```python
 with xr.open_datatree("/path/to/experiment.pxp") as experiment:
@@ -113,8 +115,9 @@ with xr.open_datatree("/path/to/experiment.pxp") as experiment:
     data = wave_node.dataset["wave_name"].load()
 ```
 
-Use a group path listed in `experiment.groups`. Then select the wave variable from that
-node. The call to `load()` reads the selected wave before the file closes.
+Use a group path listed in {attr}`groups <xarray.DataTree.groups>`. Then select the wave
+variable from that node. The call to {meth}`load <xarray.DataArray.load>` reads the
+selected wave before the file closes.
 
 For an HDF5 file exported by Igor Pro, select the ERLabPy backend explicitly:
 
@@ -268,8 +271,9 @@ with erlab.io.loader_context("merlin", data_dir="/path/to/data"):
     summary = erlab.io.summarize()
 ```
 
-Filter the returned DataFrame to find scans that match the required acquisition
-conditions. If no path is supplied, ERLabPy uses the current data directory.
+Filter the returned {class}`DataFrame <pandas.DataFrame>` to find scans that match the
+required acquisition conditions. If no path is supplied, ERLabPy uses the current data
+directory.
 
 Use the {ref}`Data Explorer <imagetool-manager-data-explorer>` instead when the goal is
 interactive browsing, metadata preview, and opening selected files in Manager.
@@ -278,8 +282,8 @@ interactive browsing, metadata preview, and opening selected files in Manager.
 
 ## Saving analysis data with coordinates and metadata
 
-Save an xarray DataArray in an HDF5-backed NetCDF file when dimensions, coordinates,
-and attributes must remain available to Python:
+Save an xarray {class}`DataArray <xarray.DataArray>` in an HDF5-backed NetCDF file when
+dimensions, coordinates, and attributes must remain available to Python:
 
 ```python
 data.to_netcdf("analysis-result.h5", engine="h5netcdf")
@@ -294,7 +298,7 @@ restored = xr.load_dataarray("analysis-result.h5", engine="h5netcdf")
 ```
 
 Use {func}`erlab.io.igor.save_wave` only when the recipient requires an Igor Binary Wave
-and the DataArray satisfies the format limits:
+and the {class}`DataArray <xarray.DataArray>` satisfies the format limits:
 
 ```python
 import erlab

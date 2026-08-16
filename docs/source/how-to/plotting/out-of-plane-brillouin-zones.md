@@ -55,12 +55,15 @@ ax.set(
 5. Under {guilabel}`Lattice`, enter the lattice parameters and
    {guilabel}`Centering` for the sample.
 6. Under {guilabel}`Points`, enable {guilabel}`Vertices` if corner markers are useful.
-7. Add an {guilabel}`Axes Method` step for `set_xlabel`, and set
-   {guilabel}`Label` to $k_x$ (Å$^{-1}$).
-8. Add an {guilabel}`Axes Method` step for `set_ylabel`, and set
-   {guilabel}`Label` to $k_z$ (Å$^{-1}$).
-9. Add an {guilabel}`Axes Method` step for `set_aspect`, and set
-   {guilabel}`Aspect` to `equal`.
+7. Add an {guilabel}`Axes Method` step for
+   {meth}`set_xlabel <matplotlib.axes.Axes.set_xlabel>`, and set {guilabel}`Label` to
+   $k_x$ (Å$^{-1}$).
+8. Add an {guilabel}`Axes Method` step for
+   {meth}`set_ylabel <matplotlib.axes.Axes.set_ylabel>`, and set {guilabel}`Label` to
+   $k_z$ (Å$^{-1}$).
+9. Add an {guilabel}`Axes Method` step for
+   {meth}`set_aspect <matplotlib.axes.Axes.set_aspect>`, and set {guilabel}`Aspect` to
+   `equal`.
 
 To compare the section with measured intensity, plot the corresponding momentum map on
 the same axes before the boundary. Confirm the fixed momentum, azimuthal direction, and

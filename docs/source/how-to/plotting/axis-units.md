@@ -35,6 +35,6 @@ scalar formatter before you apply this procedure.
    two-dimensional `cut` array.
 3. **Recipe:** Add an {guilabel}`Image Plot` step that targets the axes. Set
    {guilabel}`Image data` to `cut`.
-4. Add an {guilabel}`ERLab Method` step after the image. Select `scale_units`, target
-   the same axes, set {guilabel}`Axis` to `y`, and set {guilabel}`SI exponent` to
-   `-3`.
+4. Add an {guilabel}`ERLab Method` step after the image. Select
+   {func}`scale_units <erlab.plotting.scale_units>`, target the same axes, set
+   {guilabel}`Axis` to `y`, and set {guilabel}`SI exponent` to `-3`.

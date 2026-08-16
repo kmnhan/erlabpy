@@ -73,7 +73,9 @@ Use independent limits when the task is only to compare feature positions.
    `0.0, 0.1, 0.3`. Set {guilabel}`Gamma` to `0.5` and
    {guilabel}`Match limits` to {guilabel}`True`. Clear {guilabel}`Annotate`.
 5. **Slice labels:** Add an {guilabel}`ERLab Method` step for
-   `label_subplot_properties` on the top row. Set {guilabel}`Values` to
+   {func}`label_subplot_properties <erlab.plotting.label_subplot_properties>` on the
+   top row. Set {guilabel}`Values` to
    `{"eV": [-0.4, -0.2, 0.0]}`. Add another step for the bottom row with
    `{"ky": [0.0, 0.1, 0.3]}`.
-6. Add an {guilabel}`ERLab Method` step for `clean_labels` and target all six axes.
+6. Add an {guilabel}`ERLab Method` step for
+   {func}`clean_labels <erlab.plotting.clean_labels>` and target all six axes.

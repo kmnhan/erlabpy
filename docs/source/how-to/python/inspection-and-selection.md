@@ -34,8 +34,9 @@ edc = data.qsel.around(0.06, kx=0.52, ky=0.3)
    :alt: Constant energy surface with four circular averaging regions beside the resulting energy distribution curves
 ```
 
-If the energy range is already selected, use `qsel.mean` to keep the mean energy as a
-scalar coordinate:
+If the energy range is already selected, use
+{meth}`qsel.mean <xarray.DataArray.qsel.mean>` to keep the mean energy as a scalar
+coordinate:
 
 ```python
 energy_window = data.sel(eV=slice(-0.025, 0.025))
@@ -44,8 +45,8 @@ constant_energy_map = energy_window.qsel.mean("eV")
 
 Check the selected coordinate bounds and the number of averaged points before using the
 result. Use the {doc}`Python workflow tutorial <../../tutorials/python/index>` for the
-basic `qsel` sequence. A coordinate slice crops the data. A width averages the selected
-points. Interpolation estimates values on a new grid.
+basic {meth}`qsel <xarray.DataArray.qsel>` sequence. A coordinate slice crops the data.
+A width averages the selected points. Interpolation estimates values on a new grid.
 
 (how-to-python-extract-path)=
 

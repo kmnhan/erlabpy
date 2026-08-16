@@ -42,9 +42,12 @@ sequence.
    two-dimensional `data` array.
 3. **Recipe:** Add an {guilabel}`Image Plot` step that targets the axes. Set
    {guilabel}`Image data` to `data`.
-4. Add an {guilabel}`ERLab Method` step for `fermiline` and target the axes.
-5. Add an {guilabel}`ERLab Method` step for `mark_points`. Target the axes, set
+4. Add an {guilabel}`ERLab Method` step for
+   {func}`fermiline <erlab.plotting.fermiline>` and target the axes.
+5. Add an {guilabel}`ERLab Method` step for
+   {func}`mark_points <erlab.plotting.mark_points>`. Target the axes, set
    {guilabel}`Points` and {guilabel}`Labels` for the cut, and use {guilabel}`Y` to
    place the labels inside or outside the axes.
-6. Add an {guilabel}`ERLab Method` step for `label_subplots`. Target the axes, set
+6. Add an {guilabel}`ERLab Method` step for
+   {func}`label_subplots <erlab.plotting.label_subplots>`. Target the axes, set
    {guilabel}`Prefix` to `(`, and set {guilabel}`Suffix` to `)`.

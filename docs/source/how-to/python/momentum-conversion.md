@@ -17,7 +17,8 @@ Inspect the configuration assigned by the loader:
 data.kspace.configuration
 ```
 
-Create a DataArray with the configuration used by the measurement:
+Create a {class}`DataArray <xarray.DataArray>` with the configuration used by the
+measurement:
 
 ```python
 import erlab
@@ -28,9 +29,10 @@ configured = data.kspace.as_configuration(
 ```
 
 The method returns a copy and renames the angle coordinates for the selected
-configuration. Use `configured` for the remaining analysis. The original DataArray is
-unchanged. The method assumes a typical ARPES setup with a vertical cryostat. For other
-geometries, set the configuration attribute manually and rename the angle coordinates.
+configuration. Use `configured` for the remaining analysis. The original
+{class}`DataArray <xarray.DataArray>` is unchanged. The method assumes a typical ARPES
+setup with a vertical cryostat. For other geometries, set the configuration attribute
+manually and rename the angle coordinates.
 See {attr}`xarray.DataArray.kspace.configuration` and
 {meth}`xarray.DataArray.kspace.as_configuration` for the angle coordinate names used by
 each configuration.
@@ -165,7 +167,8 @@ for `cut_with_momentum` and `converted_map`. Otherwise, the path and map use dif
 conversion parameters. See {meth}`xarray.DataArray.kspace.convert_coords` for the
 returned coordinates. See {doc}`momentum conversion
 <../../explanation/momentum-conversion>` for the difference between adding momentum
-coordinates with `convert_coords()` and interpolating intensity with `convert()`.
+coordinates with {meth}`convert_coords <xarray.DataArray.kspace.convert_coords>` and
+interpolating intensity with {meth}`convert <xarray.DataArray.kspace.convert>`.
 
 (how-to-python-convert-photon-energy-scan)=
 
