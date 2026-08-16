@@ -629,7 +629,7 @@ def test_manager_registry_heartbeat_runs_refresh_off_gui_thread(
     def refresh_record(
         internal_id: str,
         *,
-        workspace_path: str | None | object = None,
+        workspace_path: str | object | None = None,
         lock_timeout_ms: int,
     ) -> None:
         calls.append(
@@ -669,7 +669,7 @@ def test_manager_registry_heartbeat_skips_ticks_and_coalesces_workspace_refreshe
     def refresh_record(
         _internal_id: str,
         *,
-        workspace_path: str | None | object = None,
+        workspace_path: str | object | None = None,
         lock_timeout_ms: int,
     ) -> None:
         calls.append(
@@ -720,7 +720,7 @@ def test_manager_registry_heartbeat_logs_failures_without_modal_alerts(
     def refresh_record(
         _internal_id: str,
         *,
-        workspace_path: str | None | object = None,
+        workspace_path: str | object | None = None,
         lock_timeout_ms: int,
     ) -> None:
         raise failures.pop(0)
@@ -765,7 +765,7 @@ def test_manager_registry_heartbeat_stop_is_safe_while_refresh_is_in_flight(
     def refresh_record(
         _internal_id: str,
         *,
-        workspace_path: str | None | object = None,
+        workspace_path: str | object | None = None,
         lock_timeout_ms: int,
     ) -> None:
         started.set()

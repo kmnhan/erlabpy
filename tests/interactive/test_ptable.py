@@ -343,7 +343,7 @@ def _hover_sequence_between_cards(
     ]
     cards.sort(key=lambda card: card.record.row, reverse=end_row < start_row)
     seen: list[str | None] = []
-    last: str | None | object = object()
+    last: str | object | None = object()
 
     win.table_view.clear_hover_tracking()
     for card in cards:
@@ -403,7 +403,7 @@ def _hover_sequence_between_widgets(
 
     step = 1 if end_pos.y() >= start_pos.y() else -1
     seen: list[str | None] = []
-    last: str | None | object = object()
+    last: str | object | None = object()
     sync_hovered = getattr(container, "_sync_hovered_category_from_position", None)
     if not callable(sync_hovered):
         raise TypeError("Hover path helper requires local hover routing")
