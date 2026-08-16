@@ -386,7 +386,7 @@ class _SelectDataArraysDialog(QtWidgets.QDialog):
                 child_path not in data_paths
                 and len(path_children.get(child_path, ())) == 1
             ):
-                next_part = sorted(path_children[child_path])[0]
+                next_part = min(path_children[child_path])
                 label_parts.append(next_part)
                 child_path = f"{child_path}/{next_part}"
             return child_path, "/".join(label_parts)

@@ -318,7 +318,7 @@ _WORKSPACE_PATH_UNCHANGED = object()
 def refresh_manager_record(
     internal_id: str,
     *,
-    workspace_path: str | None | object = _WORKSPACE_PATH_UNCHANGED,
+    workspace_path: str | object | None = _WORKSPACE_PATH_UNCHANGED,
     lock_timeout_ms: int = _LOCK_TIMEOUT_MS,
 ) -> None:
     """Refresh a manager heartbeat."""

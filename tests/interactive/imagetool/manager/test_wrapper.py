@@ -58,7 +58,7 @@ def test_wrapper_preview_fallback_branches(monkeypatch) -> None:
     class _FakeImageItem:
         def __init__(
             self,
-            pixmap: QtGui.QPixmap | None | object = default_pixmap,
+            pixmap: QtGui.QPixmap | object | None = default_pixmap,
             *,
             raise_pixmap: bool = False,
         ) -> None:

@@ -89,7 +89,7 @@ class _RegistryHeartbeatController(QtCore.QObject):
         self._lock_timeout_ms = lock_timeout_ms
         self._generation = 0
         self._in_flight_generation: int | None = None
-        self._pending_workspace_path: str | None | object = _NO_PENDING_WORKSPACE_PATH
+        self._pending_workspace_path: str | object | None = _NO_PENDING_WORKSPACE_PATH
         self._stopping = False
         self._consecutive_lock_failures = 0
         self._consecutive_registry_failures = 0
