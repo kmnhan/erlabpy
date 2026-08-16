@@ -57,9 +57,8 @@ Use independent limits when the task is only to compare feature positions.
 
 ## Figure Composer
 
-1. **Layout:** In {guilabel}`Layout`, set {guilabel}`Rows` to `2`,
-   {guilabel}`Columns` to `3`, and {guilabel}`Size (in)` to `6.4` by `4.0`. Set
-   {guilabel}`Layout engine` to {guilabel}`compressed`.
+1. **Layout:** In {guilabel}`Layout`, set {guilabel}`Rows` to `2` and
+   {guilabel}`Columns` to `3`.
 2. **Sources:** In {guilabel}`Sources`, choose {guilabel}`Add…` and add the
    three-dimensional `data` array.
 3. **Constant energy maps:** Add a {guilabel}`Slice Plot` step and target the three axes
