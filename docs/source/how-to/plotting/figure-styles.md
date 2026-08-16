@@ -20,7 +20,7 @@ final output format because font substitution and line widths can differ from th
 notebook display.
 
 See the [Matplotlib style-sheet guide](https://matplotlib.org/stable/users/explain/customizing.html)
-for style composition and `rcParams`.
+for style composition and {data}`rcParams <matplotlib.rcParams>`.
 
 ## Figure Composer
 

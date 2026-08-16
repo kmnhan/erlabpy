@@ -92,11 +92,14 @@ plots then use editable recipe steps:
 2. Add `intensity` and `asymmetry` in {guilabel}`Sources`.
 3. Add one {guilabel}`Image Plot` step for each source and target one axes per step.
 4. Set the intensity colormap to `viridis`.
-5. Set the asymmetry colormap to `bwr`. Select `CenteredPowerNorm`, and set
+5. Set the asymmetry colormap to `bwr`. Select
+   {class}`CenteredPowerNorm <erlab.plotting.CenteredPowerNorm>`, and set
    {guilabel}`Gamma` to `1`. Under {guilabel}`Center/range`, set `vcenter` to `0`
    and `halfrange` to `1`.
-6. Add one {guilabel}`ERLab Method` step with `nice_colorbar` after each image.
-7. Add `set_titles` and `clean_labels` {guilabel}`ERLab Method` steps.
+6. Add one {guilabel}`ERLab Method` step with
+   {func}`nice_colorbar <erlab.plotting.nice_colorbar>` after each image.
+7. Add {func}`set_titles <erlab.plotting.set_titles>` and
+   {func}`clean_labels <erlab.plotting.clean_labels>` {guilabel}`ERLab Method` steps.
 
 The combined lightness-and-hue plot does not have an editable recipe step.
 

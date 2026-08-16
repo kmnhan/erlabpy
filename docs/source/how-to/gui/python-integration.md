@@ -9,7 +9,8 @@ understand when to move an operation between the two environments.
 
 ## Opening Python data in ImageTool
 
-Call ImageTool with the DataArray from the current Python session:
+Call ImageTool with the {class}`DataArray <xarray.DataArray>` from the current Python
+session:
 
 ```python
 import erlab.interactive as eri
@@ -85,8 +86,8 @@ Load the IPython extension and start a watch:
 ```
 
 The Manager creates or reconnects an ImageTool row labeled `my_data`. Reassigning a
-DataArray to `my_data` updates the row after the notebook cell finishes. Compatible
-ImageTool edits update the notebook variable.
+{class}`DataArray <xarray.DataArray>` to `my_data` updates the row after the notebook
+cell finishes. Compatible ImageTool edits update the notebook variable.
 
 Run `%watch my_data` again to force a refresh. To stop synchronization but keep the
 ImageTool row, run:
@@ -98,22 +99,25 @@ ImageTool row, run:
 Use `%watch -x my_data` when the row must also close. See
 {ref}`the Manager command reference <imagetool-manager>` for all `%watch` forms.
 
-If the variable is deleted or replaced by a non-DataArray object, the Manager breaks
-the watch and keeps a regular ImageTool row.
+If the variable is deleted or replaced by an object that is not a
+{class}`DataArray <xarray.DataArray>`, the Manager breaks the watch and keeps a regular
+ImageTool row.
 
 (imagetool-manager-reconnect-watches)=
 
 ### Reconnecting variables after restarting
 
 1. Open the saved Manager workspace.
-2. Run the notebook cells that recreate the watched DataArray variables.
+2. Run the notebook cells that recreate the watched
+   {class}`DataArray <xarray.DataArray>` variables.
 3. Reconnect all matching names:
 
    ```python
    %watch --restore
    ```
 
-Rows with missing or non-DataArray variables remain disconnected. If several rows use
+Rows with missing variables or variables that are not
+{class}`DataArray <xarray.DataArray>` objects remain disconnected. If several rows use
 the same variable name, remove the unwanted watch before reconnecting so the Manager
 does not have to guess.
 
@@ -131,9 +135,9 @@ from erlab.interactive.imagetool.manager import watch
 watch("my_data", namespace=globals(), poll_interval_s=0.5)
 ```
 
-Stop one watch with `watch("my_data", stop=True)`. Stop all watches with
-`watch(stop_all=True)`. Use `watch(restore=True)` to reconnect rows from the open
-workspace.
+Use {func}`watch <erlab.interactive.imagetool.manager.watch>` as
+`watch("my_data", stop=True)` to stop one watch. Use `watch(stop_all=True)` to stop all
+watches. Use `watch(restore=True)` to reconnect rows from the open workspace.
 
 Provide `namespace=` when caller scope is not obvious, such as inside a helper or
 callback. Use {func}`shutdown <erlab.interactive.imagetool.manager.shutdown>` before the
@@ -179,7 +183,7 @@ profile. They must also run as the same operating-system user.
    %store -r my_data
    ```
 
-5. Confirm that the restored object is a DataArray:
+5. Confirm that the restored object is a {class}`DataArray <xarray.DataArray>`:
 
    ```python
    import xarray as xr
@@ -189,13 +193,14 @@ profile. They must also run as the same operating-system user.
 
    The result must be `True` before you continue the analysis.
 
-The restored DataArray is independent of the live Manager row. Use
+The restored {class}`DataArray <xarray.DataArray>` is independent of the live Manager
+row. Use
 {ref}`how-to-gui-watch-notebook-variables` instead when changes must remain synchronized
 in both directions.
 
-If `%store` cannot find the variable or the restored object is not a DataArray, use a
-file instead. Different IPython profiles can cause this problem. Save the ImageTool data
-as NetCDF or HDF5 with
+If `%store` cannot find the variable or the restored object is not a
+{class}`DataArray <xarray.DataArray>`, use a file instead. Different IPython profiles
+can cause this problem. Save the ImageTool data as NetCDF or HDF5 with
 {ref}`how-to-gui-export-data-from-imagetool`. Then load the file in the receiving
 notebook:
 

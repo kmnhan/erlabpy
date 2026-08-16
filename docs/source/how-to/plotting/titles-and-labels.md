@@ -52,16 +52,19 @@ recipe:
 2. Add an {guilabel}`Image Plot` step for `constant_energy_map` on the left axes. Set
    {guilabel}`Aspect` to `equal`.
 3. Add a {guilabel}`Line/Profile` step for `edc` on the right axes.
-4. Add an {guilabel}`ERLab Method` step on the right axes. Select `fermiline`, set
-   {guilabel}`Orientation` to `v`.
-5. Add an {guilabel}`ERLab Method` step on both axes. Select `set_titles`, keep
-   {guilabel}`Order` set to {guilabel}`C (Row)`, and enter `Constant energy map` and
+4. Add an {guilabel}`ERLab Method` step on the right axes. Select
+   {func}`fermiline <erlab.plotting.fermiline>`, and set {guilabel}`Orientation` to
+   `v`.
+5. Add an {guilabel}`ERLab Method` step on both axes. Select
+   {func}`set_titles <erlab.plotting.set_titles>`, keep {guilabel}`Order` set to
+   {guilabel}`C (Row)`, and enter `Constant energy map` and
    `Energy distribution curve` on separate lines in {guilabel}`Text`.
-6. Add another {guilabel}`ERLab Method` step on both axes. Select `set_xlabels` and
-   enter `$k_x$ (Å$^{-1}$)` and `$E-E_F$ (eV)` on separate lines in
-   {guilabel}`Text`.
-7. Add another {guilabel}`ERLab Method` step on both axes. Select `set_ylabels` and
-   enter `$k_y$ (Å$^{-1}$)` and `Intensity (arb. units)` on separate lines in
+6. Add another {guilabel}`ERLab Method` step on both axes. Select
+   {func}`set_xlabels <erlab.plotting.set_xlabels>`, and enter
+   `$k_x$ (Å$^{-1}$)` and `$E-E_F$ (eV)` on separate lines in {guilabel}`Text`.
+7. Add another {guilabel}`ERLab Method` step on both axes. Select
+   {func}`set_ylabels <erlab.plotting.set_ylabels>`, and enter
+   `$k_y$ (Å$^{-1}$)` and `Intensity (arb. units)` on separate lines in
    {guilabel}`Text`.
 
 Keep the three label steps after the plotting steps. This order replaces labels that a

@@ -212,7 +212,8 @@ be checked. See {meth}`xarray.DataArray.xlm.modelfit` for the returned variables
 
 Use the interactive result view when a fit result contains many spectra. This task
 requires the `viz` optional dependencies listed in {ref}`optional-dependencies`.
-Here, `fit_result` is the completed xarray fit Dataset.
+Here, `fit_result` is the completed xarray fit
+{class}`Dataset <xarray.Dataset>`.
 
 Open the fitted curves, model components, parameter values, and fit statistics:
 
@@ -476,9 +477,9 @@ Replace the coordinate and parameter values with those for the prepared spectrum
 model. Inspect parameter limits, correlations, uncertainty estimates, and the fitted
 curve before interpreting the result.
 
-`hesse()` estimates local covariance near the minimum. `minos()` calculates
-parameter-dependent profile intervals that can be asymmetric. Active bounds and strong
-correlations can affect both results.
+{meth}`hesse <iminuit.Minuit.hesse>` estimates local covariance near the minimum.
+{meth}`minos <iminuit.Minuit.minos>` calculates parameter-dependent profile intervals
+that can be asymmetric. Active bounds and strong correlations can affect both results.
 
 See {class}`erlab.analysis.fit.minuit.Minuit` for supported minimization and uncertainty
 methods. Compare the estimates only after you confirm that both fits use the same data,
