@@ -685,7 +685,7 @@ rediraffe_redirects = {
     "how-to/python/plotting/annotations.md": "how-to/plotting/annotations.md",
     "how-to/python/plotting/axis-units.md": "how-to/plotting/axis-units.md",
     "how-to/python/plotting/brillouin-zone-overlays.md": (
-        "how-to/plotting/brillouin-zone-overlays.md"
+        "how-to/plotting/brillouin-zones.md"
     ),
     "how-to/python/plotting/brillouin-zones.md": ("how-to/plotting/brillouin-zones.md"),
     "how-to/python/plotting/colorbars.md": "how-to/plotting/colorbars.md",
@@ -701,6 +701,9 @@ rediraffe_redirects = {
     ),
     "how-to/python/plotting/two-dimensional-colormaps.md": (
         "how-to/plotting/two-dimensional-colormaps.md"
+    ),
+    "how-to/plotting/brillouin-zone-overlays.md": (
+        "how-to/plotting/brillouin-zones.md"
     ),
     "reference/data-conventions.md": "explanation/data-conventions.md",
     "explanation/data-model.md": "explanation/data-conventions.md",

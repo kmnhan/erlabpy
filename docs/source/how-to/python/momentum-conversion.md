@@ -139,33 +139,33 @@ cut = data.qsel(beta=-10)
 cut_with_momentum = cut.kspace.convert_coords()
 ```
 
-Convert `data` to momentum space and overlay the cut on a constant energy map:
+Convert `data` to momentum space and select the same energy from the cut and converted
+data:
 
 ```python
-import matplotlib.pyplot as plt
-import erlab.plotting as eplt
-
-converted_map = data.kspace.convert().qsel(eV=-0.3)
+converted_map = data.kspace.convert()
 cut_path = cut_with_momentum.qsel(eV=-0.3)
-
-fig, ax = plt.subplots()
-eplt.plot_array(converted_map, ax=ax, cmap="Greys", aspect="equal")
-ax.plot(cut_path.kx, cut_path.ky, color="tab:red")
+constant_energy_map = converted_map.qsel(eV=-0.3)
 ```
+
+The figure below shows the calculated cut trajectory on the converted constant energy
+surface. See {doc}`cut trajectories <../plotting/cut-trajectories>` for the Python
+plotting code and Figure Composer steps.
 
 ```{eval-rst}
 .. plot:: how_to/momentum_conversion.py overlay_cut_path
    :include-source: false
-   :alt: Measured cut overlaid on a converted constant energy map
+   :alt: Angular cut trajectory overlaid on a converted constant energy surface
 ```
 
 The cut keeps its measured dimensions and intensity values. The added `kx` and `ky`
-coordinates describe its path through the converted constant energy map.
+coordinates describe its path through the converted constant energy surface.
 
 Use the same experimental configuration, work function, and normal emission position
-for `cut_with_momentum` and `converted_map`. Otherwise, the path and map use different
-conversion parameters. See {meth}`xarray.DataArray.kspace.convert_coords` for the
-returned coordinates. See {doc}`momentum conversion
+for `cut_with_momentum` and `converted_map`. Otherwise, the cut trajectory and surface
+use different conversion parameters. See
+{meth}`xarray.DataArray.kspace.convert_coords` for the returned coordinates. See
+{doc}`momentum conversion
 <../../explanation/momentum-conversion>` for the difference between adding momentum
 coordinates with {meth}`convert_coords <xarray.DataArray.kspace.convert_coords>` and
 interpolating intensity with {meth}`convert <xarray.DataArray.kspace.convert>`.
@@ -223,30 +223,14 @@ kz_values = converted.kspace.hv_to_kz(photon_energies).qsel(
 )
 ```
 
-Plot the converted data at the selected binding energy. Add one line for each photon
-energy:
-
-```python
-import matplotlib.pyplot as plt
-import erlab.plotting as eplt
-
-fig, ax = plt.subplots()
-eplt.plot_array(
-    converted.qsel(eV=binding_energy).T,
-    ax=ax,
-    cmap="Greys",
-    aspect="equal",
-)
-for index in range(kz_values.sizes["hv"]):
-    kz = kz_values.isel(hv=index)
-    ax.plot(kz.kx, kz, label=rf"$h\nu={float(kz.hv):g}$ eV")
-ax.legend()
-```
+The figure below shows these coordinates as constant-photon-energy curves. See
+{doc}`photon-energy annotations <../plotting/photon-energy-annotations>` for the Python
+plotting code and Figure Composer steps.
 
 ```{eval-rst}
 .. plot:: how_to/momentum_conversion.py annotate_photon_energies
    :include-source: false
-   :alt: Converted constant energy map with calculated kz values for three photon energies
+   :alt: Converted constant energy surface with calculated kz values for three photon energies
 ```
 
 The lines use the stored geometry, work function, and inner potential. They are

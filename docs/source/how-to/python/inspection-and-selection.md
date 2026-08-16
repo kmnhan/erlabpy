@@ -52,57 +52,40 @@ A width averages the selected points. Interpolation estimates values on a new gr
 
 ## Extracting data along a momentum path
 
-Define the path vertices in the coordinates of `data`, then select a step size in the
-same inverse-length units:
+Define the path vertices in the coordinates of `momentum_data`, then select a step size
+in the same inverse-length units. This example follows Γ–M–K–Γ for the hexagonal model
+used by {func}`erlab.io.exampledata.generate_data`:
 
 ```python
+import numpy as np
+
 import erlab.analysis as era
 
-kx = [0, 0.52, 0.52, 0]
-ky = [0, 0, 0.30, 0]
-
-path_data = era.interpolate.slice_along_path(
-    data,
-    vertices={"kx": kx, "ky": ky},
-    step_size=0.01,
+lattice_constant = 6.97
+high_symmetry_vertices = {
+    "kx": [
+        0.0,
+        2 * np.pi / (np.sqrt(3) * lattice_constant),
+        2 * np.pi / (np.sqrt(3) * lattice_constant),
+        0.0,
+    ],
+    "ky": [0.0, 0.0, 2 * np.pi / (3 * lattice_constant), 0.0],
+}
+high_symmetry_cut = era.interpolate.slice_along_path(
+    momentum_data,
+    vertices=high_symmetry_vertices,
+    step_size=0.005,
 )
 ```
 
-Plot the path on a constant energy map. Place the same vertex labels on the interpolated
-cut:
-
-```python
-import matplotlib.pyplot as plt
-import numpy as np
-import erlab.plotting as eplt
-
-segment_lengths = np.linalg.norm(
-    np.diff(np.vstack([kx, ky]), axis=-1),
-    axis=0,
-)
-vertex_positions = np.concatenate(([0], np.cumsum(segment_lengths)))
-
-fig, axes = plt.subplots(1, 2, figsize=(6.4, 3.0), layout="compressed")
-eplt.plot_array(
-    data.qsel(eV=-0.2),
-    ax=axes[0],
-    cmap="Greys",
-    aspect="equal",
-)
-axes[0].plot(kx, ky, "o-")
-
-eplt.plot_array(path_data, ax=axes[1], cmap="Greys")
-eplt.fermiline(ax=axes[1], linestyle="--")
-axes[1].set_xticks(vertex_positions, labels=["Γ", "M", "K", "Γ"])
-for position in vertex_positions[1:-1]:
-    axes[1].axvline(position, linestyle="--", color="0.5")
-eplt.set_titles(axes, ["Selected path", "Γ-M-K-Γ cut"])
-```
+The figure below shows the Γ–M–K–Γ path on a constant energy surface and the interpolated
+energy–momentum cut. See {doc}`high-symmetry cuts <../plotting/high-symmetry-cuts>` for
+the Python plotting code and Figure Composer steps.
 
 ```{eval-rst}
-.. plot:: how_to/inspection_and_selection.py extract_momentum_path
+.. plot:: how_to/high_symmetry_cuts.py plot_high_symmetry_cut
    :include-source: false
-   :alt: Momentum path and the interpolated energy–momentum data
+   :alt: Γ–M–K–Γ path on a constant energy surface beside the interpolated energy–momentum cut
 ```
 
 The result uses `path` as the interpolation dimension and retains `kx` and `ky` as

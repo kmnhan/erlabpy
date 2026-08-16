@@ -12,12 +12,14 @@ reuse, see {doc}`the Figure Composer guide <../gui/plotting>`.
 colorbars
 maps-and-cuts
 two-dimensional-colormaps
+cut-trajectories
+high-symmetry-cuts
 annotations
+photon-energy-annotations
 titles-and-labels
 axis-units
 core-levels
 brillouin-zones
-brillouin-zone-overlays
 out-of-plane-brillouin-zones
 figure-styles
 ```
@@ -66,6 +68,55 @@ figure-styles
    :show-source-link: false
    :class: plotting-gallery-preview
    :alt: Two-dimensional colormap of intensity and asymmetry
+```
+::::
+
+:::::
+
+## Momentum-space plots
+
+:::::{grid} 1 1 2 2
+:gutter: 2
+
+::::{grid-item-card} Cut trajectories
+:link: cut-trajectories
+:link-type: doc
+:class-card: plotting-gallery-card
+
+```{eval-rst}
+.. plot:: how_to/momentum_conversion.py overlay_cut_path
+   :include-source: false
+   :show-source-link: false
+   :class: plotting-gallery-preview
+   :alt: Angular cut trajectory on a converted constant energy surface
+```
+::::
+
+::::{grid-item-card} hν annotations
+:link: photon-energy-annotations
+:link-type: doc
+:class-card: plotting-gallery-card
+
+```{eval-rst}
+.. plot:: how_to/momentum_conversion.py annotate_photon_energies
+   :include-source: false
+   :show-source-link: false
+   :class: plotting-gallery-preview
+   :alt: Constant-photon-energy curves on converted momentum-space intensity
+```
+::::
+
+::::{grid-item-card} High-symmetry cuts
+:link: high-symmetry-cuts
+:link-type: doc
+:class-card: plotting-gallery-card
+
+```{eval-rst}
+.. plot:: how_to/high_symmetry_cuts.py plot_high_symmetry_cut
+   :include-source: false
+   :show-source-link: false
+   :class: plotting-gallery-preview
+   :alt: Γ–M–K–Γ path and interpolated energy–momentum cut
 ```
 ::::
 
@@ -154,8 +205,8 @@ figure-styles
 ::::
 
 ::::{grid-item-card} Brillouin-zone overlays
-:link: brillouin-zone-overlays
-:link-type: doc
+:link: how-to-python-overlay-brillouin-zone
+:link-type: ref
 :class-card: plotting-gallery-card
 
 ```{eval-rst}

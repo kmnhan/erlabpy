@@ -1,8 +1,6 @@
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
-import numpy as np
 
-import erlab.analysis as era
 import erlab.plotting as eplt
 from erlab.io.exampledata import generate_data
 
@@ -40,30 +38,6 @@ def compare_radial_neighborhoods() -> None:
     axes[1].set(xlabel=r"$E-E_F$ (eV)", ylabel="Intensity")
     axes[1].legend(title="Radius")
     eplt.set_titles(axes, ["Momentum neighborhoods", "Averaged EDCs"])
-    plt.show()
-
-
-def extract_momentum_path() -> None:
-    data = generate_data(seed=1).T
-    kx = [0.0, 0.52, 0.52, 0.0]
-    ky = [0.0, 0.0, 0.30, 0.0]
-    path_data = era.interpolate.slice_along_path(
-        data,
-        vertices={"kx": kx, "ky": ky},
-        step_size=0.01,
-    )
-    distances = np.linalg.norm(np.diff(np.vstack([kx, ky]), axis=-1), axis=0)
-    segment_coordinates = np.concatenate(([0], np.cumsum(distances)))
-
-    _fig, axes = plt.subplots(1, 2, figsize=(6.4, 3.0), layout="compressed")
-    eplt.plot_array(data.qsel(eV=-0.2), ax=axes[0], cmap="Greys", aspect="equal")
-    axes[0].plot(kx, ky, "o-")
-    eplt.plot_array(path_data, ax=axes[1], cmap="Greys")
-    eplt.fermiline(ax=axes[1], linestyle="--")
-    axes[1].set_xticks(segment_coordinates, labels=["Γ", "M", "K", "Γ"])
-    for coordinate in segment_coordinates[1:-1]:
-        axes[1].axvline(coordinate, linestyle="--", color="0.5")
-    eplt.set_titles(axes, ["Selected path", "Γ-M-K-Γ cut"])
     plt.show()
 
 

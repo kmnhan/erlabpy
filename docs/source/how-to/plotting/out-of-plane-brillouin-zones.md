@@ -65,8 +65,8 @@ ax.set(
    {meth}`set_aspect <matplotlib.axes.Axes.set_aspect>`, and set {guilabel}`Aspect` to
    `equal`.
 
-To compare the section with measured intensity, plot the corresponding momentum map on
-the same axes before the boundary. Confirm the fixed momentum, azimuthal direction, and
-coordinate orientation first.
+To compare the section with measured intensity, plot the corresponding momentum-space
+intensity on the same axes before the boundary. Confirm the fixed momentum, azimuthal
+direction, and coordinate orientation first.
 
 See {func}`erlab.plotting.plot_out_of_plane_bz` for the supported slice parameters.
