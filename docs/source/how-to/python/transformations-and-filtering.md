@@ -164,8 +164,7 @@ and output-range arguments.
 
 ## Gaussian convolution
 
-Use Gaussian convolution when you must add a known energy and angular response to a
-simulation. Supply the additional standard deviation in the units of each coordinate:
+Supply the Gaussian standard deviation in the units of each coordinate:
 
 ```python
 import erlab.analysis as era
@@ -181,20 +180,6 @@ broadened = era.image.gaussian_filter(
    :include-source: false
    :alt: Simulated ARPES intensity before and after Gaussian convolution
 ```
-
-The example adds Gaussian standard deviations of 0.01 eV and 0.2 degrees. Convert a
-resolution stated as full width at half maximum before you supply it:
-
-```python
-import numpy as np
-
-sigma = fwhm / np.sqrt(8.0 * np.log(2.0))
-```
-
-Do not add a response that is already present in the simulation. Independent Gaussian
-widths add in quadrature. Apply this procedure to simulated intensity. It adds a stated
-response width. It does not estimate or remove the instrumental response from measured
-data.
 
 See {func}`erlab.analysis.image.gaussian_filter` for dimension selection and boundary
 handling.

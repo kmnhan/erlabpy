@@ -87,5 +87,5 @@ scans:
 
 Use the {ref}`hν-dependent scan conversion guide
 <how-to-python-convert-photon-energy-scan>` for conversion. Use the
-{ref}`photon energy annotation guide <how-to-python-mark-photon-energies>` for calculated
-paths on a converted map.
+{ref}`photon-energy annotation guide <how-to-plotting-photon-energy-annotations>` for
+calculated paths on converted momentum-space intensity.
