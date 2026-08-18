@@ -150,6 +150,19 @@ def test_shift(use_dask) -> None:
     assert np.allclose(shifted, expected, equal_nan=True)
 
 
+def test_shift_coords_ignores_nan_shifts_for_rigid_coordinate_shift() -> None:
+    data = xr.DataArray(
+        np.arange(6, dtype=float).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"y": [10.0, 11.0, 12.0]},
+    )
+    shifts = xr.DataArray([2.0, np.nan], dims="x")
+
+    shifted = shift(data, shifts, along="y", shift_coords=True)
+
+    np.testing.assert_allclose(shifted.y, [12.0, 13.0, 14.0])
+
+
 def test_shift_order1_optimized() -> None:
     arr = xr.DataArray(
         np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
