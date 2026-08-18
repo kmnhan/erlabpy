@@ -112,7 +112,7 @@ figure-styles
 :class-card: plotting-gallery-card
 
 ```{eval-rst}
-.. plot:: how_to/high_symmetry_cuts.py plot_high_symmetry_cut
+.. plot:: how_to/inspection_and_selection.py plot_high_symmetry_cut
    :include-source: false
    :show-source-link: false
    :class: plotting-gallery-preview

@@ -73,7 +73,7 @@ axes[1].set(
 ```
 
 ```{eval-rst}
-.. plot:: how_to/high_symmetry_cuts.py plot_high_symmetry_cut
+.. plot:: how_to/inspection_and_selection.py plot_high_symmetry_cut
    :include-source: false
    :alt: Γ–M–K–Γ path on a constant energy surface beside the interpolated energy–momentum cut
 ```
