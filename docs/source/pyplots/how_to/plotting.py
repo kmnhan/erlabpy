@@ -10,10 +10,9 @@ from erlab.io.exampledata import generate_data
 def add_intensity_colorbar() -> None:
     data = generate_data(bandshift=-0.2, seed=1).T
     cut = data.qsel(ky=0.3)
-    _fig, ax = plt.subplots(figsize=(3.4, 2.1), layout="compressed")
+    _, ax = plt.subplots(figsize=(3.4, 2.1), layout="compressed")
     image = eplt.plot_array(cut, ax=ax, cmap="Greys", gamma=0.5)
     eplt.nice_colorbar(ax=ax, mappable=image, width=10, minmax=True)
-    plt.show()
 
 
 def combine_maps_and_cuts() -> None:
@@ -21,7 +20,7 @@ def combine_maps_and_cuts() -> None:
     energies = [-0.4, -0.2, 0.0]
     ky_values = [0.0, 0.1, 0.3]
 
-    _fig, axes = plt.subplots(
+    _, axes = plt.subplots(
         2,
         3,
         figsize=(6.4, 4.0),
@@ -49,18 +48,16 @@ def combine_maps_and_cuts() -> None:
     eplt.label_subplot_properties(axes[0], values={"eV": energies})
     eplt.label_subplot_properties(axes[1], values={"ky": ky_values})
     eplt.clean_labels(axes)
-    plt.show()
 
 
 def annotate_arpes_figure() -> None:
     data = generate_data(bandshift=-0.2, seed=1).T
     cut = data.qsel(ky=0.3)
-    _fig, ax = plt.subplots(figsize=(3.4, 2.1), layout="compressed")
+    _, ax = plt.subplots(figsize=(3.4, 2.1), layout="compressed")
     eplt.plot_array(cut, ax=ax, cmap="Greys", gamma=0.5)
     eplt.fermiline(ax=ax, linestyle="--")
     eplt.mark_points([-0.6, 0.0, 0.6], ["K", "G", "K"], y=0.02, ax=ax)
     eplt.label_subplots(ax, prefix="(", suffix=")")
-    plt.show()
 
 
 def set_panel_titles_and_labels() -> None:
@@ -68,7 +65,7 @@ def set_panel_titles_and_labels() -> None:
     constant_energy_map = data.qsel(eV=-0.2)
     edc = data.qsel.around(0.06, kx=0.52, ky=0.3)
 
-    _fig, axes = plt.subplots(
+    _, axes = plt.subplots(
         1,
         2,
         figsize=(6.4, 3.0),
@@ -86,16 +83,14 @@ def set_panel_titles_and_labels() -> None:
     eplt.set_titles(axes, ["Constant energy map", "Energy distribution curve"])
     eplt.set_xlabels(axes, [r"$k_x$ (Å$^{-1}$)", r"$E-E_F$ (eV)"])
     eplt.set_ylabels(axes, [r"$k_y$ (Å$^{-1}$)", "Intensity (arb. units)"])
-    plt.show()
 
 
 def display_energy_in_mev() -> None:
     data = generate_data(bandshift=-0.2, seed=1).T
     cut = data.qsel(ky=0.3)
-    _fig, ax = plt.subplots(figsize=(3.4, 2.1), layout="compressed")
+    _, ax = plt.subplots(figsize=(3.4, 2.1), layout="compressed")
     cut.qplot(ax=ax)
     eplt.scale_units(ax, "y", si=-3)
-    plt.show()
 
 
 def mark_core_levels() -> None:
@@ -149,7 +144,7 @@ def mark_core_levels() -> None:
         name="photoelectron_intensity",
     )
 
-    _fig, ax = plt.subplots(figsize=(6.4, 3.0), layout="compressed")
+    _, ax = plt.subplots(figsize=(6.4, 3.0), layout="compressed")
     core_spectrum.plot.line(ax=ax, color="0.15", linewidth=0.8)
     eplt.plot_core_levels(
         ["Bi", "Se"],
@@ -163,7 +158,6 @@ def mark_core_levels() -> None:
         ylabel="Photoelectron intensity (arb. units)",
         ylim=(0.0, None),
     )
-    plt.show()
 
 
 def overlay_brillouin_zone() -> None:
@@ -171,7 +165,7 @@ def overlay_brillouin_zone() -> None:
     data = generate_data(a=lattice_constant, seed=1).T
     constant_energy_surface = data.qsel(eV=-0.2)
 
-    _fig, ax = plt.subplots(figsize=(3.4, 3.0), layout="compressed")
+    _, ax = plt.subplots(figsize=(3.4, 3.0), layout="compressed")
     eplt.plot_array(
         constant_energy_surface,
         ax=ax,
@@ -187,7 +181,6 @@ def overlay_brillouin_zone() -> None:
         linestyle="--",
         linewidth=1.2,
     )
-    plt.show()
 
 
 def draw_out_of_plane_brillouin_zone() -> None:
@@ -195,7 +188,7 @@ def draw_out_of_plane_brillouin_zone() -> None:
     avec_primitive = erlab.lattice.to_primitive(avec, centering_type="F")
     bvec = erlab.lattice.to_reciprocal(avec_primitive)
 
-    _fig, ax = plt.subplots(figsize=(3.0, 3.0), layout="compressed")
+    _, ax = plt.subplots(figsize=(3.0, 3.0), layout="compressed")
     eplt.plot_out_of_plane_bz(
         bvec,
         k_parallel=0.0,
@@ -211,13 +204,12 @@ def draw_out_of_plane_brillouin_zone() -> None:
         ylabel=r"$k_z$ (Å$^{-1}$)",
         aspect="equal",
     )
-    plt.show()
 
 
 def draw_two_dimensional_brillouin_zone() -> None:
     avec = erlab.lattice.abc2avec(3.0, 3.0, 5.0, 90.0, 90.0, 120.0)
 
-    _fig, ax = plt.subplots(figsize=(2.5, 2.5), layout="compressed")
+    _, ax = plt.subplots(figsize=(2.5, 2.5), layout="compressed")
     eplt.plot_bz(avec, ax=ax)
     ax.set(
         xlabel=r"$k_x$ (Å$^{-1}$)",
@@ -226,7 +218,6 @@ def draw_two_dimensional_brillouin_zone() -> None:
         ylim=(-1.5, 1.5),
         aspect="equal",
     )
-    plt.show()
 
 
 def _intensity_and_asymmetry() -> tuple[xr.DataArray, xr.DataArray]:
@@ -245,7 +236,7 @@ def _intensity_and_asymmetry() -> tuple[xr.DataArray, xr.DataArray]:
 def compare_intensity_and_asymmetry() -> None:
     intensity, asymmetry = _intensity_and_asymmetry()
 
-    _fig, axes = plt.subplots(
+    _, axes = plt.subplots(
         1,
         2,
         figsize=(7.2, 3.0),
@@ -270,13 +261,12 @@ def compare_intensity_and_asymmetry() -> None:
     eplt.nice_colorbar(ax=axes[1], mappable=asymmetry_image, width=7)
     eplt.set_titles(axes, ["Total intensity", "Normalized difference"])
     eplt.clean_labels(axes)
-    plt.show()
 
 
 def plot_intensity_and_asymmetry() -> None:
     intensity, asymmetry = _intensity_and_asymmetry()
 
-    _fig, ax = plt.subplots(figsize=(4.8, 3.4), layout="compressed")
+    _, ax = plt.subplots(figsize=(4.8, 3.4), layout="compressed")
     _, colorbar = eplt.plot_array_2d(
         intensity,
         asymmetry,
@@ -286,4 +276,3 @@ def plot_intensity_and_asymmetry() -> None:
     )
     colorbar.ax.set_xticks(colorbar.ax.get_xlim(), labels=["Min", "Max"])
     colorbar.ax.set(xlabel="Intensity", ylabel="Asymmetry")
-    plt.show()

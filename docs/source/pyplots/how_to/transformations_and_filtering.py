@@ -23,7 +23,7 @@ def rotate_map() -> None:
         reshape=True,
     )
     energies = [0.0, -0.2, -0.4]
-    _fig, axes = eplt.plot_slices(
+    _, axes = eplt.plot_slices(
         [volume, rotated],
         eV=energies,
         figsize=(7.2, 4.8),
@@ -38,7 +38,6 @@ def rotate_map() -> None:
     eplt.set_titles(axes[0], [rf"Input, $E={energy:.1f}$ eV" for energy in energies])
     eplt.set_titles(axes[1], [rf"Rotated, $E={energy:.1f}$ eV" for energy in energies])
     eplt.clean_labels(axes)
-    plt.show()
 
 
 def align_spectra_with_offsets() -> None:
@@ -50,14 +49,15 @@ def align_spectra_with_offsets() -> None:
         hv_shift=(-0.012, 0.008),
         noise=False,
     )
-    fit_result = spectra.qsel(alpha=0.0).xlm.modelfit(
-        "eV", model=era.fit.models.StepEdgeModel(), guess=True
+    energy_offsets = (
+        spectra.qsel(alpha=0.0)
+        .xlm.modelfit("eV", model=era.fit.models.StepEdgeModel(), guess=True)
+        .modelfit_coefficients.sel(param="center")
     )
-    energy_offsets = fit_result.modelfit_coefficients.sel(param="center")
     aligned = era.transform.shift(spectra, shift=-energy_offsets, along="eV")
     photon_energies = spectra.hv.values[[0, -1]]
 
-    _fig, axes = plt.subplots(
+    _, axes = plt.subplots(
         2,
         3,
         figsize=(9.6, 5.4),
@@ -66,24 +66,12 @@ def align_spectra_with_offsets() -> None:
         sharey=True,
     )
     for row, data in enumerate((spectra, aligned)):
-        eplt.plot_array(
-            data.isel(hv=0).T,
-            ax=axes[row, 0],
-            cmap="Greys",
-            gamma=0.5,
-        )
-        eplt.plot_array(
-            data.isel(hv=-1).T,
-            ax=axes[row, 1],
-            cmap="Greys",
-            gamma=0.5,
-        )
-        eplt.plot_array(
-            data.qsel(alpha=0.0),
-            ax=axes[row, 2],
-            cmap="Greys",
-            gamma=0.5,
-        )
+        for ax, view in zip(
+            axes[row],
+            (data.isel(hv=0).T, data.isel(hv=-1).T, data.qsel(alpha=0.0)),
+            strict=True,
+        ):
+            eplt.plot_array(view, ax=ax, cmap="Greys", gamma=0.5)
 
     axes[0, 2].plot(
         energy_offsets.hv,
@@ -96,24 +84,16 @@ def align_spectra_with_offsets() -> None:
     eplt.fermiline(ax=axes, linestyle="--", linewidth=0.75)
     for column in axes.T:
         eplt.unify_clim(column)
-    eplt.set_titles(
-        axes[0],
-        [
-            rf"Before, $h\nu={photon_energies[0]:.1f}$ eV",
-            rf"Before, $h\nu={photon_energies[1]:.1f}$ eV",
-            r"Before, $\alpha=0.0^\circ$",
-        ],
-    )
-    eplt.set_titles(
-        axes[1],
-        [
-            rf"After, $h\nu={photon_energies[0]:.1f}$ eV",
-            rf"After, $h\nu={photon_energies[1]:.1f}$ eV",
-            r"After, $\alpha=0.0^\circ$",
-        ],
-    )
+    for row, stage in enumerate(("Before", "After")):
+        eplt.set_titles(
+            axes[row],
+            [
+                rf"{stage}, $h\nu={photon_energies[0]:.1f}$ eV",
+                rf"{stage}, $h\nu={photon_energies[1]:.1f}$ eV",
+                rf"{stage}, $\alpha=0.0^\circ$",
+            ],
+        )
     eplt.clean_labels(axes)
-    plt.show()
 
 
 def preserve_shifted_coordinate_range() -> None:
@@ -125,10 +105,11 @@ def preserve_shifted_coordinate_range() -> None:
         hv_shift=(-0.012, 0.008),
         noise=False,
     )
-    fit_result = spectra.qsel(alpha=0.0).xlm.modelfit(
-        "eV", model=era.fit.models.StepEdgeModel(), guess=True
+    energy_offsets = (
+        spectra.qsel(alpha=0.0)
+        .xlm.modelfit("eV", model=era.fit.models.StepEdgeModel(), guess=True)
+        .modelfit_coefficients.sel(param="center")
     )
-    energy_offsets = fit_result.modelfit_coefficients.sel(param="center")
     aligned = era.transform.shift(spectra, shift=-energy_offsets, along="eV")
     aligned_with_full_range = era.transform.shift(
         spectra,
@@ -137,30 +118,23 @@ def preserve_shifted_coordinate_range() -> None:
         shift_coords=True,
     )
 
-    _figure, axes = plt.subplots(
+    _, axes = plt.subplots(
         1,
         2,
         figsize=(6.4, 3.0),
         layout="compressed",
         sharex=True,
     )
-    eplt.plot_array(
-        aligned.qsel(alpha=0.0),
-        ax=axes[0],
-        cmap="Greys",
-        gamma=0.5,
-    )
-    eplt.plot_array(
-        aligned_with_full_range.qsel(alpha=0.0),
-        ax=axes[1],
-        cmap="Greys",
-        gamma=0.5,
-    )
+    for ax, data in zip(
+        axes,
+        (aligned, aligned_with_full_range),
+        strict=True,
+    ):
+        eplt.plot_array(data.qsel(alpha=0.0), ax=ax, cmap="Greys", gamma=0.5)
     eplt.unify_clim(axes)
     eplt.fermiline(ax=axes, linestyle="--", linewidth=0.75)
     eplt.set_titles(axes, ["Fixed coordinate range", "Expanded coordinate range"])
     eplt.clean_labels(axes)
-    plt.show()
 
 
 def apply_symmetry() -> None:
@@ -181,7 +155,7 @@ def apply_symmetry() -> None:
         average=True,
     )
 
-    _fig, axes = eplt.plot_slices(
+    _, axes = eplt.plot_slices(
         [cut, symmetrized, antisymmetrized],
         figsize=(9.0, 3.0),
         order="F",
@@ -193,7 +167,6 @@ def apply_symmetry() -> None:
     eplt.unify_clim(axes[:2])
     eplt.set_titles(axes, ["Original", "Symmetrized", "Antisymmetrized"])
     eplt.clean_labels(axes)
-    plt.show()
 
 
 def apply_rotational_symmetry() -> None:
@@ -215,7 +188,7 @@ def apply_rotational_symmetry() -> None:
     )
 
     energies = [0.0, -0.2, -0.4]
-    _figure, axes = eplt.plot_slices(
+    _, axes = eplt.plot_slices(
         [partial_volume, symmetrized],
         eV=energies,
         figsize=(7.2, 4.8),
@@ -230,7 +203,6 @@ def apply_rotational_symmetry() -> None:
     eplt.set_titles(axes[0], [rf"Input, $E={energy:.1f}$ eV" for energy in energies])
     eplt.set_titles(axes[1], [rf"Six-fold, $E={energy:.1f}$ eV" for energy in energies])
     eplt.clean_labels(axes)
-    plt.show()
 
 
 def gaussian_convolution() -> None:
@@ -244,7 +216,7 @@ def gaussian_convolution() -> None:
         simulated_data,
         sigma={"eV": 0.01, "alpha": 0.2},
     )
-    _figure, axes = plt.subplots(
+    _, axes = plt.subplots(
         1,
         2,
         figsize=(6.4, 3.0),
@@ -257,4 +229,3 @@ def gaussian_convolution() -> None:
     eplt.unify_clim(axes)
     eplt.set_titles(axes, ["Simulation", "Gaussian convolution"])
     eplt.clean_labels(axes)
-    plt.show()
