@@ -647,13 +647,14 @@ def shift(
         raise ValueError(f"Dimension {along} must have at least 2 points.")
     along_step: float = float(coord[1] - coord[0])
 
-    # Normalize shift values to "index units" and fill NaNs
-    shift = (shift.copy() / along_step).fillna(0.0)
+    # Normalize shift values to "index units"
+    shift = shift.copy() / along_step
 
     if shift_coords:
         # We first apply the integer part of the average shift to the coords
-        rigid_shift: float = float(np.round(shift.values.mean()))
-        shift = shift - rigid_shift
+        rigid_shift: float = round(float(shift.mean()))
+
+        shift = (shift - rigid_shift).fillna(0.0)
 
         # Apply rigid shift to coordinates
         out = out.assign_coords({along: out[along].values + rigid_shift * along_step})
@@ -678,6 +679,8 @@ def shift(
         if bool(out.chunks):
             out = out.chunk({along: -1})
         out = out.assign_coords({along: new_along})
+    else:
+        shift = shift.fillna(0.0)
 
     # Broadcast shift array to match non-along dims of output array
     shift_broadcast = shift.broadcast_like(out.isel({along: 0}, drop=True))
